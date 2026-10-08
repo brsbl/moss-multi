@@ -2,12 +2,9 @@
 // leading `# Title` line, then the body with `%%m:<ids>:start%%` / `%%m:<ids>:end%%` markers around each commented
 // range, beside a comments.json sidecar. The server holds the clean body; these map one form onto the other. Markers
 // move with the text through a character diff, so a comment's markers stay on its words when either side edits.
+import { markerMatches, matchTitleLine } from '@moss-multi/protocol/title-line';
 import { DIFF_DELETE, DIFF_EQUAL, makeDiff, xIndex } from '@sanity/diff-match-patch';
 
-/** moss's modern boundary marker (common/comment-markers.ts). */
-const MARKER = /%%m:\s*[A-Za-z0-9_,\-\s]+?\s*:(?:start|end)%%/g;
-/** moss's LEADING_H1_RE, anchored to the start of the body. */
-const TITLE_LINE = /^#(?!#)[^\S\r\n]+(.*?)(?:[^\S\r\n]+#+)?[^\S\r\n]*(?:\r?\n|$)/;
 const BLANK_LINES = /^(?:[^\S\r\n]*\r?\n)*/;
 
 export interface Marker {
@@ -31,23 +28,23 @@ function frontmatterOf(text: string): string {
 }
 
 /** Whether `text` carries moss comment markers. */
-export const hasMarkers = (text: string): boolean => new RegExp(MARKER.source).test(text);
+export const hasMarkers = (text: string): boolean => !markerMatches(text).next().done;
 
 export function parseMoss(text: string): MossNote {
   const head = frontmatterOf(text);
   let body = text.slice(head.length);
   const lead = BLANK_LINES.exec(body)![0].length;
-  const line = TITLE_LINE.exec(body.slice(lead));
-  const title = line?.[1]?.trim() || undefined;
-  if (line && title) body = body.slice(lead + line[0].length).replace(BLANK_LINES, '');
+  const line = matchTitleLine(body.slice(lead));
+  const title = line?.line.trim() || undefined;
+  if (line && title) body = body.slice(lead + line.length).replace(BLANK_LINES, '');
   const withMarkers = head + body;
   const markers: Marker[] = [];
   let clean = '';
   let last = 0;
-  for (const match of withMarkers.matchAll(MARKER)) {
+  for (const match of markerMatches(withMarkers)) {
     clean += withMarkers.slice(last, match.index);
-    markers.push({ at: clean.length, token: match[0] });
-    last = match.index + match[0].length;
+    markers.push({ at: clean.length, token: match.token });
+    last = match.index + match.token.length;
   }
   clean += withMarkers.slice(last);
   return { title, clean, markers };
