@@ -86,18 +86,6 @@ class FrameSurface implements SessionSurface {
   private committedTitle = '';
   /** Changes from a load, moss's own post-mount transforms included, are not the user's edits. */
   private settling = true;
-  /** Counts loads; one a later load overtook while it awaited its views is dropped. */
-  private loads = 0;
-  /** The load awaiting its node views' chunks, during which every input is frozen, as unmount's write freezes it. */
-  private waitingLoad: number | null = null;
-  /** The session's freeze, during unmount's final write. */
-  private sessionFrozen = false;
-  private disposed = false;
-  private markGone: () => void = () => undefined;
-  /** Settles on dispose, so a load awaiting a chunk lets go at once. */
-  private readonly gone = new Promise<void>((resolve) => {
-    this.markGone = resolve;
-  });
   private pendingReady: (() => void) | null = null;
   private stopUpdates: (() => void) | null = null;
   private stopComments: (() => void) | null = null;
@@ -136,20 +124,13 @@ class FrameSurface implements SessionSurface {
     this.store.set(noteCommentsMapAtom(this.noteId), hydrateComments(content.commentMetadata, content.commentColors));
   }
 
+  /** The views of the lazy families `content` holds, loaded before it shows so it opens with no placeholder. */
+  prepare(content: EditorContent): Promise<void> | null {
+    return preloadNodeViews(content.body);
+  }
+
   async load(content: EditorContent, options: { keepView: boolean }): Promise<void> {
-    // The views of the lazy families this body holds load first, so it shows with no placeholder (lazy-views.ts).
-    const generation = ++this.loads;
-    const views = preloadNodeViews(content.body);
-    // Nothing the user does from here counts until this content shows: the session has already adopted its version,
-    // so an edit made to the old content (a comment reply in moss's portalled popover included) would save the old
-    // body over it. While a chunk loads, every input is frozen too, so none is taken and then lost.
     this.settling = true;
-    this.waitFor(views ? generation : null);
-    if (views) await Promise.race([views, this.gone]);
-    // A later load began while this one waited for its views, or the editor went: the later content wins, so this
-    // one is dropped.
-    if (generation !== this.loads || this.disposed) return;
-    this.waitFor(null);
     this.committedTitle = content.title;
     this.hydrateComments(content);
     // The session commits a focused title before it reloads, so the title shown is the one loaded, focused or not.
@@ -160,16 +141,14 @@ class FrameSurface implements SessionSurface {
       if (replaced) {
         this.hydrateComments(content);
         await nextFrame();
-        if (generation === this.loads) this.settling = false;
+        this.settling = false;
         return;
       }
     }
     // A first load, or an in-place update moss refused: mount moss's editor on the note.
-    const superseded = this.pendingReady;
     const ready = new Promise<void>((resolve) => {
       this.pendingReady = resolve;
     });
-    superseded?.();
     this.set({ content, version: this.state.version + 1 });
     await ready;
   }
@@ -321,18 +300,6 @@ class FrameSurface implements SessionSurface {
   }
 
   freeze(frozen: boolean): void {
-    this.sessionFrozen = frozen;
-    this.applyFreeze();
-  }
-
-  private waitFor(generation: number | null): void {
-    if (this.waitingLoad === generation) return;
-    this.waitingLoad = generation;
-    if (!this.disposed) this.applyFreeze();
-  }
-
-  private applyFreeze(): void {
-    const frozen = this.sessionFrozen || this.waitingLoad !== null;
     this.unfreeze?.();
     this.unfreeze = null;
     if (frozen) {
@@ -405,14 +372,6 @@ class FrameSurface implements SessionSurface {
   }
 
   dispose() {
-    // A load still awaiting its views is dropped, and a mount still waiting for moss's editor lets go, so the
-    // session's start sees the unmount and `ready` rejects with `unmounted`.
-    this.disposed = true;
-    this.loads += 1;
-    this.markGone();
-    const ready = this.pendingReady;
-    this.pendingReady = null;
-    ready?.();
     this.unfreeze?.();
     this.unfreeze = null;
     this.stopUpdates?.();
