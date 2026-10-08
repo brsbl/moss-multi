@@ -77,6 +77,38 @@ function regIdAt(doc: Y.Doc, index: number): string {
   }
 }
 
+/** The first payload node's id, in tree order. */
+function payloadIdOf(doc: Y.Doc): string {
+  const mirror = mirrorOf(doc);
+  try {
+    return mirror.editor.getEditorState().read(() => {
+      const find = (node: LexicalNode): string | undefined => {
+        const id = (node as unknown as { __regId?: string }).__regId;
+        if (id) return id;
+        if ($isElementNode(node)) for (const child of node.getChildren()) {
+          const found = find(child);
+          if (found) return found;
+        }
+        return undefined;
+      };
+      return find($getRoot())!;
+    });
+  } finally {
+    mirror.dispose();
+  }
+}
+
+/** The Yjs id of the visible character at `index` of `text`. */
+function itemIdAt(text: Y.Text, index: number): { client: number; clock: number } | undefined {
+  let left = index;
+  for (let item = text._start; item; item = item.right) {
+    if (item.deleted || !item.countable) continue;
+    if (left < item.length) return { client: item.id.client, clock: item.id.clock + left };
+    left -= item.length;
+  }
+  return undefined;
+}
+
 /** Anchors a comment on the first occurrence of `quote`. */
 function anchorOn(live: Y.Doc, quote: string): Anchor {
   const { text, units } = liveUnits(live);
@@ -421,5 +453,43 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     expect(refusedWithNothingWritten(withChildren([{ ...paragraph, type: 'no-such-node' }]))).toBe(true);
     refusedWithNothingWritten(withChildren([...(paragraph.children as unknown[])]));
     refusedWithNothingWritten(withChildren([{ ...paragraph, type: 'listitem', value: 1 }]));
+  });
+
+  it('a payload changed at both ends past the character table keeps its middle: a peer insert there lands in place (T6.S3)', () => {
+    // 302 code points a side is past the server's 256 × 256 table, and a single line defeats the line tier.
+    const mid = 'x'.repeat(300);
+    const sum = '1+'.repeat(160);
+    const cases = [
+      { body: (p: string) => `Para one.\n\n\`\`\`js\n${p}\n\`\`\``, before: `A${mid}Z`, after: `B${mid}Y`, insert: 'PEER', cut: 150 },
+      { body: (p: string) => `Para one.\n\n\`\`\`moss-html\n${p}\n\`\`\``, before: `<p>A${mid}Z</p>`, after: `<p>B${mid}Y</p>`, insert: 'PEER', cut: 150 },
+      { body: (p: string) => `Total {{${p}|1}} here.`, before: `2+${sum}3`, after: `4+${sum}5`, insert: '9+', cut: 150 },
+    ];
+    for (const { body, before, after, insert, cut } of cases) {
+      const live = docOf(body(before));
+      const targetDoc = docOf(body(after));
+      const id = payloadIdOf(live);
+      const blocks = blockItems(live);
+      const text = () => payloadText(payloadDocsFor(live).hold(id));
+      expect(text().toString()).toBe(before);
+      const middleIds = [cut - 100, cut, cut + 100].map((at) => itemIdAt(text(), at));
+      const peer = fork(live);
+      payloadText(payloadDocsFor(peer).hold(id)).insert(cut, insert);
+
+      expect(reconcileBody(live, bodyState(targetDoc), RESTORE)).toBe(true);
+      expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+      expect(payloadIdOf(live)).toBe(id);
+      const kept = blockItems(live);
+      expect(kept.length).toBe(blocks.length);
+      kept.forEach((item, i) => expect(item === blocks[i], `block ${i} keeps its item`).toBe(true));
+      expect(text().toString()).toBe(after);
+      for (const [at, itemId] of [cut - 100, cut, cut + 100].map((at, i) => [at, middleIds[i]!] as const)) {
+        expect(itemIdAt(text(), at), `the item at ${at} is kept`).toEqual(itemId);
+      }
+      share(peer, live);
+      share(live, peer);
+      expect(text().toString()).toBe(`${after.slice(0, cut)}${insert}${after.slice(cut)}`);
+      expect(payloadText(payloadDocsFor(peer).hold(id)).toString()).toBe(text().toString());
+      expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
+    }
   });
 });
