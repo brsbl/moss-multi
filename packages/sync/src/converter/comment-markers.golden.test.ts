@@ -47,7 +47,9 @@ const ALPHABET = [
 const fuzz = (check: (text: string) => void): void => {
   for (const text of [...CASES, ...FIXTURES.map((f) => f.markdown)]) check(text);
   fc.assert(
-    fc.property(fc.array(fc.constantFrom(...ALPHABET), { maxLength: 30 }), (parts) => check(parts.join(''))),
+    fc.property(fc.array(fc.constantFrom(...ALPHABET), { maxLength: 30 }), (parts) => {
+      check(parts.join(''));
+    }),
     { numRuns: 5000 },
   );
 };
