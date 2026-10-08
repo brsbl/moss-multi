@@ -152,8 +152,8 @@ export async function watchStalls(actor: Actor): Promise<void> {
 }
 
 /**
- * The longest stall since watchStalls, in ms, when it began (ms from the start), and the paste's batches (User Timing
- * measures `moss-paste-*`) that overlap it; measuring stops.
+ * The longest stall since watchStalls, in ms, when it began (ms from the start), and the paste's batches and slow doc
+ * socket work (User Timing measures `moss-paste-*`, `moss-sync-*`) that overlap it; measuring stops.
  */
 export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; during: string }> =>
   actor.page.evaluate(() => {
@@ -162,8 +162,8 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
     const from = probe.__stallStart + probe.__stallAt;
     const to = from + probe.__stall + 25;
     const during = performance.getEntriesByType('measure')
-      .filter((entry) => entry.name.startsWith('moss-paste-') && entry.startTime < to && entry.startTime + entry.duration > from)
-      .map((entry) => `${entry.name} ${Math.round(entry.duration)} ms ${JSON.stringify((entry as PerformanceMeasure).detail)}`)
+      .filter((entry) => /^moss-(paste|sync)-/.test(entry.name) && entry.startTime < to && entry.startTime + entry.duration > from)
+      .map((entry) => `${entry.name} ${Math.round(entry.duration)} ms${(entry as PerformanceMeasure).detail ? ` ${JSON.stringify((entry as PerformanceMeasure).detail)}` : ''}`)
       .join(', ');
     const tasks = window as unknown as { __longTasks?: PerformanceEntry[]; __longTaskObserver?: PerformanceObserver };
     tasks.__longTaskObserver?.disconnect();

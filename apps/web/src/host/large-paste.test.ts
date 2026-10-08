@@ -9,7 +9,14 @@ import {
 import { $createListItemNode, $createListNode, ListItemNode, ListNode } from '@lexical/list';
 import { $createTableCellNode, $createTableNode, $createTableRowNode, TableCellNode, TableNode, TableRowNode } from '@lexical/table';
 import { expect, it } from 'vitest';
-import { $insertBlocks, $keepElementPoints, $planPaste, $replaceEmptyNote, Placer, type PastePlan } from './large-paste.ts';
+import * as Y from 'yjs';
+import { CLIENT_FRAME_MAX_BYTES } from '@moss-multi/protocol/limits';
+import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
+import { seedPayload } from '@moss-multi/sync/payload-docs';
+import { MAP_REGISTERS } from '@moss-multi/sync/registers';
+import {
+  $insertBlocks, $keepElementPoints, $planPaste, $replaceEmptyNote, measurePayloads, Placer, type PastePlan, type PayloadSeed,
+} from './large-paste.ts';
 
 const lexicalInsert = (nodes: LexicalNode[], selection: BaseSelection) => selection.insertNodes(nodes);
 
@@ -223,5 +230,35 @@ it('splits only lists, list items and tables, by whole rows, and counts no paylo
   expect(types[0], 'a long paragraph stays one unit').toBe('paragraph');
   expect(types.filter((type) => type === 'listitem')).toHaveLength(100);
   expect(types.filter((type) => type === 'tablerow'), 'a table lands by whole rows').toHaveLength(40);
-  expect(plan.payloadBytes).toBe(0);
+  expect(plan.payloads).toEqual([]);
+});
+
+const drain = <T>(steps: Generator<void, T>): T => {
+  for (;;) {
+    const next = steps.next();
+    if (next.done) return next.value;
+  }
+};
+
+/** A payload's first frame, as PayloadSync sends it. */
+function firstFrame(seed: PayloadSeed): number {
+  const doc = new Y.Doc();
+  let bytes = 0;
+  doc.on('update', (update: Uint8Array) => {
+    bytes = encodePayloadFrame('0'.repeat(32), PAYLOAD_UPDATE, update).byteLength;
+  });
+  seedPayload(doc, seed, null);
+  return bytes;
+}
+
+it('measures payloads as their first frames encode them: a chart’s keys several times its JSON, past the frame cap', () => {
+  const small = MAP_REGISTERS.chart.encode({ __config: { type: 'bar', data: [{ label: 'Mon', value: 12 }, { label: 'Tue', value: 18 }] } });
+  const code = 'const value = 1;\n'.repeat(2_000);
+  expect(drain(measurePayloads([small, code]))).toEqual({ bytes: firstFrame(small) + firstFrame(code), largest: firstFrame(code) });
+
+  // A bar chart of 30,000 {label:'x',value:1} points: about 720 KB of JSON, under the frame cap, and over 4 MB of keys.
+  const config = { type: 'bar', data: Array.from({ length: 30_000 }, () => ({ label: 'x', value: 1 })) };
+  expect(JSON.stringify(config).length).toBeLessThan(CLIENT_FRAME_MAX_BYTES);
+  const { largest } = drain(measurePayloads([MAP_REGISTERS.chart.encode({ __config: config })]));
+  expect(largest, 'the chart cannot go in one frame').toBeGreaterThan(CLIENT_FRAME_MAX_BYTES);
 });
