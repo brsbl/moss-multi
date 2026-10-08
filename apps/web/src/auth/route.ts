@@ -1,7 +1,7 @@
 // /api/auth/* (A§4.1 step 3): better-auth built per request. Sign-out first ends the session in every open window
 // (A§7): the session's PrincipalDO rechecks each doc it opened and closes its workspace sockets.
 import { endSession } from '@moss-multi/sync/fanout';
-import { NO_STORE } from '../api/respond.ts';
+import { JSON_BODY_MAX_BYTES, NO_STORE, readCapped } from '../api/respond.ts';
 import type { AppEnv } from '../env.ts';
 import { appOrigin, crossOriginCookie } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
@@ -88,8 +88,23 @@ async function signUpRefused(request: Request, env: AuthEnv): Promise<Response |
     { ...NO_STORE, 'retry-after': String(Math.max(1, Math.ceil(wait / 1000))) });
 }
 
+/**
+ * better-auth reads a whole body; this hands it one read no further than JSON_BODY_MAX_BYTES, so an oversized one is
+ * refused with 413 before it is buffered or counted. Null passes the request on as it is.
+ */
+async function cappedBody(request: Request): Promise<Request | Response | null> {
+  if (SAFE_METHODS.has(request.method) || !request.body) return null;
+  const text = await readCapped(request, JSON_BODY_MAX_BYTES);
+  if (text === 'too-large') return json({ code: 'TOO_LARGE', message: 'That request is too large.' }, 413, NO_STORE);
+  if (text === null) return json({ code: 'BAD_REQUEST', message: 'The request body could not be read.' }, 400, NO_STORE);
+  return new Request(request.url, { method: request.method, headers: request.headers, body: text });
+}
+
 export async function handleAuthRoute(request: Request, env: AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>): Promise<Response> {
   if (foreignOrigin(request, env)) return json({ code: 'FOREIGN_ORIGIN', message: 'This request must come from the app itself.' }, 403, NO_STORE);
+  const capped = await cappedBody(request);
+  if (capped instanceof Response) return capped;
+  if (capped) request = capped;
   const tooMany = await signUpRefused(request, env);
   if (tooMany) return tooMany;
   const refused = await endSignedOutSession(request, env);

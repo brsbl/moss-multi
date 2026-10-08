@@ -3,16 +3,18 @@ import { DAY_MS, FEEDBACK_DAILY } from '@moss-multi/protocol/limits';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { json } from '../worker/route.ts';
-import { changed, overDailyBound } from './respond.ts';
+import { changed, overDailyBound, readJsonObject } from './respond.ts';
 
 const MAX_BODY = 10_000;
 const MAX_PAGE = 2_000;
+// The body, page and email at six bytes a character (a JSON-escaped control character), with room for the keys.
+const MAX_REQUEST_BYTES = 128 * 1024;
 
 export async function feedback(request: Request, env: AuthEnv): Promise<Response> {
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'POST' });
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type !== 'user') return json({ error: 'unauthenticated' }, 401);
-  const input = (await request.json().catch(() => null)) as { body?: unknown; email?: unknown; page?: unknown } | null;
+  const input = await readJsonObject(request, MAX_REQUEST_BYTES);
   const text = typeof input?.body === 'string' ? input.body.trim() : '';
   if (!text || text.length > MAX_BODY) return json({ error: 'invalid-body' }, 400);
   const email = typeof input?.email === 'string' && input.email.trim() ? `\n\nReply to: ${input.email.trim().slice(0, 320)}` : '';
