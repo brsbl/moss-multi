@@ -3,7 +3,7 @@
 // the comparison expects) is perturbed, so the reconcile itself succeeds and only the comparison can refuse.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { openDoc, start, type Opened } from './do-harness.ts';
+import { openDoc, start } from './do-harness.ts';
 import { LiveClient, syncAll } from './live-client.ts';
 import { captureRestoreBase } from '../../src/restore-base.ts';
 
@@ -31,7 +31,6 @@ afterEach(() => {
 });
 
 const ADA = { id: 'ada', role: 'editor' as const };
-const seen = (opened: Opened) => ({ ...captureRestoreBase(opened.dobj.document), age: 0 });
 
 describe('restore export mismatch @p:mean-3', () => {
   it("refuses 409 at reconcileBody's export comparison, before any body, payload or note write", async () => {
@@ -55,7 +54,7 @@ describe('restore export mismatch @p:mean-3', () => {
       expect(markdown).toContain('// changed');
 
       forced.on = true;
-      const restored = await opened.dobj.restoreVersion({ base: seen(opened), id: saved.version.id, reviewer: ADA });
+      const restored = await opened.dobj.restoreVersion({ base: { ...captureRestoreBase(ada.doc, ada.payloads), age: 0 }, id: saved.version.id, reviewer: ADA });
       expect(forced.calls, 'the comparison ran').toBeGreaterThan(0);
       expect(restored).toMatchObject({ ok: false, status: 409, reason: 'restore-unverified' });
       expect(await opened.dobj.exportMarkdown()).toBe(markdown);

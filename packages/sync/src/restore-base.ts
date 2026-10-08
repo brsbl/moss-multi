@@ -120,7 +120,7 @@ export function shownSince(doc: Y.Doc, from: StateVector, until: StateVector, ma
 export function namedPayloads(state: Uint8Array): Set<string> {
   const doc = new Y.Doc();
   const named = new Set<string>();
-  const walk = (type: Y.AbstractType<unknown>): void => {
+  const walk = (type: { _start: Y.Item | null }): void => {
     for (let item = type._start; item; item = item.right) {
       if (item.deleted || !(item.content instanceof Y.ContentType)) continue;
       const child = item.content.type;
