@@ -368,6 +368,47 @@ test('a comment reply made while a reload waits for its chart chunk lands in the
   expect(errors).toEqual([]);
 });
 
+test('a title typed while a reload waits for its chart chunk is kept, and the reload becomes a conflict', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${server.url}/fixture/index.html`);
+  await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+  const path = '/Moss/Notes/Plan/Plan.md';
+  const result = await page.evaluate((value) => {
+    const fixture = (window as unknown as FixtureWindow).editorFixture;
+    fixture.reset();
+    fixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nFirst line\n', meta: value });
+    return fixture.mount(value.id);
+  }, meta('Plan'));
+  expect(result).toEqual({ ok: true, status: 'clean' });
+  const body = page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
+  const title = page.locator('[data-moss-editor-title]');
+  await expect(body).toContainText('First line');
+  const external = `# Plan\n\nFirst line\n\n${LAZY_FAMILIES[0].markdown}\n`;
+  server.delay = { pattern: CHART_CHUNK, ms: 2_500 };
+  try {
+    await page.evaluate(([file, markdown]) => (window as unknown as FixtureWindow).editorFixture.externalWrite(file, markdown), [path, external]);
+    await page.waitForTimeout(500);
+    // The title commits only on blur, Enter or Tab: this typing is a draft the reload must not overwrite.
+    await title.click({ timeout: 1_000 });
+    await page.keyboard.press('End');
+    await page.keyboard.type(' renamed');
+    await expect(title).toHaveText('Plan renamed');
+    await page.waitForTimeout(3_000);
+  } finally {
+    server.delay = { pattern: null, ms: 0 };
+  }
+  await expect(title, 'the typed title survives the reload').toHaveText('Plan renamed');
+  const kinds = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.events())).map((event) => event.kind);
+  expect(kinds).not.toContain('reloaded');
+  expect(kinds).toContain('conflict');
+  const flushed = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())) as { kind: string; draft?: { files: { markdown: string } } };
+  expect(flushed.kind).toBe('conflict');
+  expect(flushed.draft?.files.markdown).toMatch(/^# Plan renamed\n/);
+  expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toBe(external);
+  expect(errors).toEqual([]);
+});
+
 test('unmounting while the first mount waits for its chart chunk rejects ready with unmounted', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
