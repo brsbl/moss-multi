@@ -21,7 +21,7 @@ async function seeded(): Promise<Opened> {
   return opened;
 }
 
-async function agentPush(opened: Opened, from: string, to: string, presence: typeof AGENT | undefined = AGENT) {
+async function agentPush(opened: Opened, from: string, to: string, presence: typeof AGENT | null = AGENT) {
   return opened.dobj.push({
     newText: to, baseHash: await sha256Hex(from), baseText: from, reviewer: { id: AGENT.id, role: 'editor' },
     actor: { kind: 'agent', principalId: AGENT.id, sessionId: null, shareToken: null },
@@ -104,8 +104,8 @@ it('a second push inside the window keeps one entry and extends it; a push that 
 it('a push without an agent identity (a person at a terminal) adds no presence', async () => {
   const opened = await seeded();
   const base = await opened.dobj.pullMarkdown();
-  await agentPush(opened, base, base.replace('Beans first.', 'Beans go first.'), undefined);
-  expect(opened.dobj.document.awareness.getStates().size).toBe(0);
+  await agentPush(opened, base, base.replace('Beans first.', 'Beans go first.'), null);
+  expect(bots(opened)).toHaveLength(0);
 });
 
 it('a socket cannot take over the agent entry or clear it', async () => {
