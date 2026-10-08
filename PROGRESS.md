@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 66% done** (79 of 119 planned tasks verified)
+**Overall: 64% done** (80 of 125 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 27 / 27 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 28 / 28 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -98,6 +98,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T3.S6 verified: a large markdown paste (40,000 paragraphs, a 30,000-item list, a 5,000-row table, megabytes of text) now lands whole in one undo step for the pasting person and every collaborator, or is refused whole with nothing applied when it would pass the note's size cap.
 - 2026-10-08 — T3.S4 verified: a note full of unclosed brackets, huge lines or wide tables now imports, pastes and exports in time linear in its size (2 MB in under 5 s), with ordinary notes byte-identical to moss and over-budget lines kept as literal text.
 - 2026-10-08 — T3.S6b verified: a 30,000-item list pasted mid-note now reaches a collaborator and a fresh joiner whole, without the tab stalling or the socket reopening.
+- 2026-10-08 — T3.F verified: the media-revalidation tests now hold copies and duplicates at a fixed point and pass reliably, so a flaky run no longer blocks a PR.
 
 ## T1.1s identity audit
 
