@@ -14,7 +14,7 @@ const REWRITES: [string, (text: string) => unknown, (text: string) => unknown, s
     (text) => count(text, MARKDOWN_TABLE_SEPARATOR_REGEX),
     (text) => count(text, /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*$/gm),
     ['|', '-', '---', ':', ' ', '\t', '\n', '\r', 'a', '|---|---', '| --- |'],
-    [(n) => '\n'.repeat(n), (n) => ' '.repeat(n), (n) => `|${'\n'.repeat(n)}`, (n) => '|---\n'.repeat(n / 5), (n) => '-'.repeat(n)],
+    [(n) => '\n'.repeat(n), (n) => ' '.repeat(n), (n) => `|${'\n'.repeat(n)}`, (n) => '|---\n'.repeat(n / 5), (n) => '-'.repeat(n), (n) => '---|\n'.repeat(n / 5)],
   ],
   [
     'blankWikiLinks',
@@ -81,7 +81,7 @@ describe("linear rewrites of moss's note-store regexes", () => {
   }
 
   it('classifyNoteContentType is linear on attacker-written notes', () => {
-    for (const attack of [(n: number) => '['.repeat(n), (n: number) => `x\n${'\n'.repeat(n)}`, (n: number) => '[a]('.repeat(n / 4)]) {
+    for (const attack of [(n: number) => '['.repeat(n), (n: number) => `x\n${'\n'.repeat(n)}`, (n: number) => '[a]('.repeat(n / 4), (n: number) => '---|\n'.repeat(n / 5), (n: number) => '`'.repeat(n), (n: number) => '!['.repeat(n / 2)]) {
       expectLinear(classifyNoteContentType, attack);
     }
   }, 120_000);
