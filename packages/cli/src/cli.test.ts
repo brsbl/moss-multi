@@ -45,6 +45,10 @@ function fakeServer() {
     refuse: null as null | { status: number; body: unknown },
     /** POST /api/docs creates this doc from the body's markdown, as the server would. */
     createNew: null as null | { id: string; filename: string },
+    /** Runs once a POST /api/docs has created its doc, before the response reaches the CLI. */
+    onCreate: null as null | ((id: string) => void),
+    /** How many title PATCHes answer 503 before they succeed. */
+    renameFailures: 0,
     /** What GET .../comments and .../suggestions answer. */
     comments: [] as unknown[],
     suggestions: [] as unknown[],
@@ -98,7 +102,9 @@ function fakeServer() {
       }
       content.set(id, new TextEncoder().encode(markdown));
       docs.push({ id, title, filename, folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 4 });
-      return reply(201, { doc: { id, title, filename, folderId: 'f' }, role: 'owner' });
+      state.onCreate?.(id);
+      // `content` is the created revision's export, whatever happens to the doc after it.
+      return reply(201, { doc: { id, title, filename, folderId: 'f' }, role: 'owner', content: markdown });
     }
     if (path === '/api/docs' && method === 'POST') return reply(201, { doc: { id: ID_C, title: (body as { title?: string }).title ?? '', filename: 'x.md', folderId: 'f' }, role: 'owner' });
     const match = /^\/api\/docs\/([^/]+)(?:\/(.+))?$/.exec(path);
@@ -110,6 +116,10 @@ function fakeServer() {
     }
     if (!sub && method === 'DELETE') return reply(200, { doc: { id, trashedAt: 1 }, action: 'trashed', restorable: true, retentionDays: 30 });
     if (!sub && method === 'PATCH') {
+      if (state.renameFailures > 0) {
+        state.renameFailures -= 1;
+        return reply(503, { error: 'unavailable' });
+      }
       const row = docs.find((doc) => doc.id === id);
       if (row) row.title = (body as { title: string }).title;
       return reply(200, { doc: { id, title: (body as { title: string }).title }, role: 'owner' });
@@ -981,6 +991,41 @@ describe('sync: moss notes, the H1 and doc identity (T7.4 checker)', () => {
     const push = await cli(['push', join('Tomato log', 'Tomato log.md')]);
     expect(push.code, 'push and pull would drop the moss format, so they point to sync').toBe(1);
     expect(push.err).toContain('sync');
+  });
+
+  it('adoption bases the note on the created revision, so a peer edit made before the first read and a later local edit both survive (T7.S4)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const file = mossNote();
+    // A collaborator appends a paragraph right after the doc is created, before the CLI reads anything back.
+    server.state.onCreate = (id) => server.content.set(id, enc('The cherry tomatoes ripened first.\n\nPeer: the plums came next.\n'));
+    const first = await cli(['sync']);
+    expect(first.code, first.err).toBe(0);
+    server.state.onCreate = null;
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8'), 'the peer\'s paragraph reaches the file, markers kept').toBe(`${NOTE}\nPeer: the plums came next.\n`);
+    writeFileSync(file, readFileSync(file, 'utf8').replace('ripened first.', 'ripened first, in June.'));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(dec(server.content.get(NEW)), 'both edits are in the doc').toBe('The cherry tomatoes ripened first, in June.\n\nPeer: the plums came next.\n');
+    expect(readFileSync(file, 'utf8')).toContain('Peer: the plums came next.');
+    expect(creates(), 'one doc').toHaveLength(1);
+  });
+
+  it('a failure after create resumes on the next sync without a second doc, and the note still takes its stem (T7.S4)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    mkdirSync(join(dir, 'Bean rows'));
+    const file = join(dir, 'Bean rows', 'Bean rows.md');
+    writeFileSync(file, 'Bush beans by the fence.\n');
+    server.state.createNew = { id: NEW, filename: 'bean-rows.md' };
+    server.state.renameFailures = 1;
+    const first = await cli(['sync', '--json']);
+    expect(first.code, 'the rename after create failed').toBe(1);
+    const again = await cli(['sync', '--json']);
+    expect(again.code, again.err).toBe(0);
+    expect(creates(), 'one doc').toHaveLength(1);
+    expect(server.docs.find((doc) => doc.id === NEW)?.title, 'the retry names the doc from its stem').toBe('Bean rows');
+    expect(readFileSync(file, 'utf8'), 'the file is left as it is').toBe('Bush beans by the fence.\n');
+    expect((await cli(['sync', '--json'])).code).toBe(0);
+    expect(creates()).toHaveLength(1);
   });
 
   it('add --moss in a workspace tracks the note, so a later sync makes no second doc and leaves the file alone', async () => {

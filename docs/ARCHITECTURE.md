@@ -636,6 +636,7 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 
 **Sync** follows glyphdown's tracked-file classification.
 - An untracked `.md` becomes a new doc titled from its file stem, and the local file is renamed to the filename projection.
+- An adopted file is tracked right after create, against the created revision's export (`content` in the `POST /api/docs` answer), so a later server edit reaches it through the normal three-way pass and a retry never makes a second doc.
 - Server filename changes rename local files.
 - Deletes never propagate. [R9]
 

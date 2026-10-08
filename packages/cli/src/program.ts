@@ -235,7 +235,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [title] = arity(parsed, 1, 1, 'new <title> [--folder <id>] [--json]');
       const client = api();
       const folderId = value(parsed, 'folder');
-      const doc = await client.create({ title, ...(folderId ? { folderId } : {}) });
+      const { doc } = await client.create({ title, ...(folderId ? { folderId } : {}) });
       if (parsed.flags.has('json')) return json({ ...doc, url: docUrl(client, doc.id) });
       line(doc.id);
     },
@@ -264,10 +264,10 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const comments = moss ? readSidecar(root, path) : undefined;
         // A moss note is named by its "# Title" line; any other file by --title or its stem, and only --title lifts a
         // first line that repeats it.
-        doc = await client.create({
+        ({ doc } = await client.create({
           ...(title !== undefined ? { title } : moss ? {} : { title: stem }), markdown, ...(moss || title !== undefined ? { titleLine: true } : {}),
           ...(comments ? { comments } : {}), ...(folderId ? { folderId } : {}),
-        });
+        }));
         // A moss note with no title line takes its file's stem.
         if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
       }
