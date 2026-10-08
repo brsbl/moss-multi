@@ -15,10 +15,10 @@ const LONG_SHARD_MINUTES = 25;
 const LANES = ['auto', 'checks', 'e2e', 'full', 'parity', 'viewer'];
 const BROWSER_INPUTS = { both: BROWSERS, chromium: ['chromium'], webkit: ['webkit'] };
 
-// BUILDPLAN.md feeds trace.mjs, e2e/ markdown may feed the suite and vendor/ markdown is drift-checked,
-// so none of them is docs-only.
+// BUILDPLAN.md feeds trace.mjs, MIGRATION.md's citations are checked by doc-links.test.mjs, e2e/ markdown may feed
+// the suite and vendor/ markdown is drift-checked, so none of them is docs-only.
 export function isDocsOnlyPath(path) {
-  if (path === 'BUILDPLAN.md' || path.startsWith('e2e/') || path.startsWith('vendor/')) return false;
+  if (path === 'BUILDPLAN.md' || path === 'MIGRATION.md' || path.startsWith('e2e/') || path.startsWith('vendor/')) return false;
   return path.startsWith('docs/') || path.endsWith('.md');
 }
 
