@@ -25,7 +25,7 @@ import {
   isInsideInlineCodeSpan as isInsideInlineCodeSpanIn,
 } from '../utils/color-codes';
 import { $isInsideColorSuppressedRawContext as $isInsideColorSuppressedRawContextIn } from '../utils/colorPickerTriggers';
-import { LINEAR_REGEXP_KEYS } from './linear-match';
+import { LINEAR_REGEXP_KEYS, setTableCellCharge } from './linear-match';
 import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
 
 // Lexical's markdown import with a linear inline pass (A§12; SP2). @lexical/markdown 0.48 imports each line's text
@@ -62,6 +62,9 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
  * - perImport: over one import (nested imports, such as table cells, share their outer import's), the work that grows
  *   faster than its line in moss's own import (moss's callbacks that read the whole paragraph or text per match),
  *   each line paying only what passes what is left of its own work, so a note of many such lines stays within SP2.
+ * - perNote: over one import, all the work its lines are charged, LINE_COST a line and TABLE_CELL_COST a table cell,
+ *   so a note of any lines, however short, stays within SP2: once it is spent, each line after keeps its text as
+ *   literal text and each table row after is not a table row. The densest ordinary notes take 4% less at 2 MB.
  */
 export const LINEAR_IMPORT_LIMITS = {
   lineChars: 1 << 17,
@@ -71,6 +74,7 @@ export const LINEAR_IMPORT_LIMITS = {
   perChar: 1_950,
   base: 1 << 17,
   perImport: 1 << 28,
+  perNote: 4_000_000_000,
 };
 /**
  * Over all imports: lines whose budget ran out (kept as literal text), the work charged, and the largest share
@@ -90,6 +94,12 @@ const CALLBACK_COST = 3_000;
 const LINK_CALLBACK_COST = 3_000;
 const NODE_COST = 2_200;
 const TAB_COST = 6_144;
+// A tab a numeric entity decodes to: moss's normalization wraps the entity in zero-width spaces, which the tab split
+// leaves as text nodes beside the tab node.
+const ENTITY_TAB_COST = 2 * TAB_COST;
+// Each line Lexical imports as a block (its paragraph, text node and joins, and moss's normalization of it), charged
+// to the import's perNote only.
+const LINE_COST = 4_000;
 // A read of the paragraph's text and children, per character.
 const PARAGRAPH_READ = 20;
 // Native regex and string scans take about a unit per character; the format search's scans take several.
@@ -122,7 +132,7 @@ export function $convertFromMarkdownString(
 ): void {
   const outer = importBudget;
   const outerLong = longLines;
-  importBudget ??= { left: LINEAR_IMPORT_LIMITS.perImport };
+  importBudget ??= { left: LINEAR_IMPORT_LIMITS.perImport, work: LINEAR_IMPORT_LIMITS.perNote };
   // A line longer than lineChars goes through Lexical's line loop as a short marker line, which no block transformer
   // takes, so it imports as a paragraph line whose text the inline pass puts back literally.
   const long = markLongLines(markdown);
@@ -176,8 +186,12 @@ function originsOf(markdown: string, prepared: string): { prepared: string; leng
 }
 
 class LineOriginSpy extends RegExp {
-  // Lexical's block import runs `line.match(regExp)` for each element transformer in turn.
+  // Lexical's block import runs `line.match(regExp)` for each element transformer in turn, this one first.
   override exec(text: string): RegExpExecArray | null {
+    if (importBudget) {
+      importBudget.work -= LINE_COST;
+      linearImportStats.spent += LINE_COST;
+    }
     const origins = lineOrigins;
     if (origins) {
       let j = origins.cursor;
@@ -275,8 +289,25 @@ function restoredSplit(lines: string[]): string[] {
   return long.restored!;
 }
 
-// What the import running, if any, has left of its budget.
-let importBudget: { left: number } | null = null;
+// What the import running, if any, has left of its budget for work past its lines' own (`left`) and for all work.
+let importBudget: { left: number; work: number } | null = null;
+
+// A table cell: moss imports its markdown as a note of its own and makes the cell, paragraph and text nodes, about
+// 25 µs of workerd CPU in all; its line's LINE_COST and its text's work are charged as any line's are.
+const TABLE_CELL_COST = 21_000;
+
+// Whether the import running can pay for a table row's cells; it pays for them if so.
+setTableCellCharge((cells) => {
+  if (!importBudget) return true;
+  const cost = cells * TABLE_CELL_COST;
+  if (cost > importBudget.work) {
+    importBudget.work = Math.min(importBudget.work, 0);
+    return false;
+  }
+  importBudget.work -= cost;
+  linearImportStats.spent += cost;
+  return true;
+});
 
 // moss's raw-URL and color callbacks call these once per match, on the text of the match's part. Neither can be
 // true without a backtick before the offset, so that is looked for first and the scan of the whole text skipped.
@@ -406,27 +437,32 @@ class Budget {
   importSpent = 0;
   /** All the line's work, held to perLine. */
   work = 0;
-  constructor(total: number, importLeft: number) {
+  /** The import's budget for all work (perNote), which every charge spends too. */
+  note: { work: number };
+  constructor(total: number, imported: { left: number; work: number } | null) {
     this.left = total;
     this.allowance = total;
-    this.importLeft = importLeft;
+    this.importLeft = imported?.left ?? Infinity;
+    this.note = imported ?? { work: Infinity };
   }
   /** Spends work the import's budget pays once it passes what is left of the line's own. */
   chargeImport(cost: number): void {
     this.importSpent += cost;
     this.work += cost;
+    this.note.work -= cost;
     linearImportStats.spent += cost;
   }
   /** Spends from the line's budget without stopping; the next check stops. */
   charge(cost: number): void {
     this.left -= cost;
     this.work += cost;
+    this.note.work -= cost;
     linearImportStats.spent += cost;
   }
-  /** Spends, and stops the line once its budget, perLine or its import's budget is gone. */
+  /** Spends, and stops the line once its budget, perLine, or its import's budgets are gone. */
   spend(cost: number): void {
     this.charge(cost);
-    if (this.left < 0 || this.work > LINEAR_IMPORT_LIMITS.perLine || this.importExcess() > this.importLeft) throw OVER_BUDGET;
+    if (this.left < 0 || this.work > LINEAR_IMPORT_LIMITS.perLine || this.note.work < 0 || this.importExcess() > this.importLeft) throw OVER_BUDGET;
   }
   /** What the line takes from its import's budget. */
   importExcess(): number {
@@ -465,14 +501,18 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   const literal = marked ? restoreLongLines(long, top.getTextContent()) : top.getTextContent();
   const own = lineOrigins?.current ?? null;
   const allowance = LINEAR_IMPORT_LIMITS.perChar * (own === null ? lineLength : Math.min(lineLength, own)) + LINEAR_IMPORT_LIMITS.base;
-  const tabCount = countTabs(literal, LINEAR_IMPORT_LIMITS.tabs);
-  // Lexical makes a tab node of each tab after this pass: the line pays for them first.
-  const tabs = tabCount > LINEAR_IMPORT_LIMITS.tabs || tabCount * TAB_COST > allowance;
+  const [rawTabs, entityTabs] = countTabs(literal, LINEAR_IMPORT_LIMITS.tabs);
+  const tabCount = rawTabs + entityTabs;
+  const tabCost = rawTabs * TAB_COST + entityTabs * ENTITY_TAB_COST;
+  // Lexical makes a tab node of each tab after this pass, those numeric entities decode to included: the line pays for
+  // them first.
+  const tabs = tabCount > LINEAR_IMPORT_LIMITS.tabs || tabCost > allowance;
   if (marked || tabs || lineLength > LINEAR_IMPORT_LIMITS.lineChars) {
     linearImportStats.cut += 1;
     if (tabs) {
-      // Tab-free until Lexical's tab pass is over, then the text Lexical's unescape would give it.
-      top.setTextContent(literal.split('\t').join(' '));
+      // Free of tabs and of anything Lexical's unescape would make one of until Lexical's tab pass is over, then the
+      // text Lexical's unescape would give it.
+      top.setTextContent(literal.replace(/[\t&\\]/g, ' '));
       heldTabs.push([top, unescapeText(literal)]);
     } else if (marked) {
       top.setTextContent(literal);
@@ -481,8 +521,8 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   }
   const original = { text: top.getTextContent(), format: top.getFormat(), style: top.getStyle(), detail: top.getDetail(), mode: top.getMode() };
   const bounds = { before: top.getPreviousSibling(), after: top.getNextSibling() };
-  const budget = new Budget(allowance, importBudget?.left ?? Infinity);
-  budget.charge(tabCount * TAB_COST);
+  const budget = new Budget(allowance, importBudget);
+  budget.charge(tabCost);
   // The normalization that lengthened the line was work too.
   if (own !== null && lineLength > own) budget.charge(NORMALIZED * (lineLength - own));
   const parent = top.getParent();
@@ -669,12 +709,21 @@ function nodesMade(): number {
   return editor._dirtyLeaves.size + editor._dirtyElements.size;
 }
 
-// The tabs in the text, counted up to one past `limit`.
-function countTabs(text: string, limit: number): number {
-  let count = 0;
-  for (let i = text.indexOf('\t'); i >= 0 && count <= limit; i = text.indexOf('\t', i + 1)) count += 1;
-  return count;
+// The tabs in the text, and the tabs Lexical's unescape would decode numeric entities to (`&#9;`, `&#0009;`, and with
+// an escaped `&`, `#` or `;`), together counted up to one past `limit`. Every candidate is counted wherever it falls, a
+// code span included, so the count is at least what the import makes. One pass over the text.
+function countTabs(text: string, limit: number): [number, number] {
+  let raw = 0;
+  for (let i = text.indexOf('\t'); i >= 0 && raw <= limit; i = text.indexOf('\t', i + 1)) raw += 1;
+  let entity = 0;
+  if (raw > limit || !text.includes('&')) return [raw, entity];
+  const unescaped = unescapeBackslashes(text);
+  ENTITY_TAB.lastIndex = 0;
+  while (raw + entity <= limit && ENTITY_TAB.test(unescaped)) entity += 1;
+  return [raw, entity];
 }
+
+const ENTITY_TAB = /&#0*9;/g;
 
 function canContainTransformableMarkdown(node: LexicalNode | undefined): node is TextNode {
   return $isTextNode(node) && !node.hasFormat('code');
@@ -694,7 +743,11 @@ function $fresh(node: TextNode): TextNode | null {
 
 // Lexical's unescapeText.
 function unescapeText(value: string): string {
-  return value.replace(/\\([!-/:-@[-`{-~])/g, '$1').replace(/&#(\d+);/g, (_, codePoint) => String.fromCodePoint(Number(codePoint)));
+  return unescapeBackslashes(value).replace(/&#(\d+);/g, (_, codePoint) => String.fromCodePoint(Number(codePoint)));
+}
+
+function unescapeBackslashes(value: string): string {
+  return value.replace(/\\([!-/:-@[-`{-~])/g, '$1');
 }
 
 // TextNode.splitText(...offsets) on `text`, the node's text, for a node in a parent with no range selection: the same

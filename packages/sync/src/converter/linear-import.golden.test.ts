@@ -65,6 +65,7 @@ describe('linear inline import @p:tech-4', () => {
         tabs: Number.POSITIVE_INFINITY,
         perChar: Number.POSITIVE_INFINITY,
         perImport: Number.POSITIVE_INFINITY,
+        perNote: Number.POSITIVE_INFINITY,
       });
     });
     afterAll(() => {
@@ -342,6 +343,40 @@ describe('linear inline import @p:tech-4', () => {
       const mixed = `x ${'\t&#9;'.repeat(Math.ceil(over / 2))}`;
       expect(cuts(() => importMarkdown(mixed))).toBe(1);
       expect(childTypes(mixed)).toEqual(['text']);
+    }, 120_000);
+
+    // A note's work, its lines' and its table cells', is held to perNote: past it, each line after keeps its text as
+    // literal text and each table row after is a paragraph line, so a note of any lines stays within SP2.
+    it('keeps the lines after a note has spent perNote as literal text', () => {
+      const perNote = LINEAR_IMPORT_LIMITS.perNote;
+      const line = 'x [a](b) **c**';
+      const note = Array.from({ length: 400 }, () => line).join('\n\n');
+      const table = ['| a | b |', '| --- | --- |', ...Array.from({ length: 400 }, (_, i) => `| *${i}* | [l](u) |`)].join('\n');
+      try {
+        LINEAR_IMPORT_LIMITS.perNote = 2_000_000;
+        let editor = importMarkdown('');
+        const cut = cuts(() => {
+          editor = importMarkdown(note);
+        });
+        const shapes = blocks(editor);
+        expect(shapes).toHaveLength(400);
+        expect(cut).toBeGreaterThan(0);
+        expect(cut).toBeLessThan(400);
+        // The lines before the budget ran out convert; every line after it is literal.
+        expect(shapes[0]).toEqual(['paragraph', 'x a c']);
+        expect(shapes.at(-1)).toEqual(['paragraph', line]);
+        const literal = shapes.findIndex(([, text]) => text === line);
+        expect(shapes.slice(literal).every(([, text]) => text === line)).toBe(true);
+        expect(JSON.stringify(importMarkdown(note).getEditorState().toJSON())).toBe(JSON.stringify(editor.getEditorState().toJSON()));
+        const types = importMarkdown(table).getEditorState().read(() => $getRoot().getChildren().map((block) => block.getType()));
+        expect(types[0]).toBe('table');
+        expect(types.slice(1).length).toBeGreaterThan(0);
+        expect(types.slice(1).every((type) => type === 'paragraph')).toBe(true);
+      } finally {
+        LINEAR_IMPORT_LIMITS.perNote = perNote;
+      }
+      expect(cuts(() => importMarkdown(note))).toBe(0);
+      expect(importMarkdown(table).getEditorState().read(() => $getRoot().getChildren().map((block) => block.getType()))).toEqual(['table']);
     }, 120_000);
 
     // Nothing about a cut depends on timing or on anything but the bytes imported.

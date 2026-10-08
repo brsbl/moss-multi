@@ -699,11 +699,21 @@ export function mergeWikiLinkCells(cells: string[]): string[] {
 export const TABLE_ROW_CELLS = 4_096;
 let rowCellsLeft: number | null = null;
 
-/** `cells.map(make)`, or null when the row, with the rows nested in its cells, would make more than TABLE_ROW_CELLS. */
+let chargeTableCells: (cells: number) => boolean = () => true;
+
+/** Sets what pays for a row's cells (markdown/linear-import.ts's budget for the import running); false refuses the row. */
+export function setTableCellCharge(charge: (cells: number) => boolean): void {
+  chargeTableCells = charge;
+}
+
+/**
+ * `cells.map(make)`, or null when the row, with the rows nested in its cells, would make more than TABLE_ROW_CELLS, or
+ * the import running cannot pay for its cells.
+ */
 export function mapTableRowCells<T>(cells: string[], make: (text: string) => T): T[] | null {
   const outer = rowCellsLeft;
   const left = (outer ?? TABLE_ROW_CELLS) - cells.length;
-  if (left < 0) return null;
+  if (left < 0 || !chargeTableCells(cells.length)) return null;
   rowCellsLeft = left;
   try {
     return cells.map(make);
