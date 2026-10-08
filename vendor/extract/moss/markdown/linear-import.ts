@@ -106,6 +106,9 @@ const PARAGRAPH_READ = 20;
 const NATIVE = 1;
 // Each character moss's normalization added to a line (its passes ran over the longer text).
 const NORMALIZED = 256;
+// The same characters again, to the import's perNote only, cut or not: moss's normalization passes and Lexical's block
+// work ran over the longer line, which a note of such lines pays on every line.
+const NORMALIZED_NOTE = 1_024;
 // A scan of linear-match.ts run again on the rest of a text once its match is passed: its pre-scan tests each
 // candidate opener and closer (a regex call apiece), several units per character, and a run of matches that starts
 // where its match does (wiki links inside one link label) passes and re-runs it once per match.
@@ -500,6 +503,11 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   const marked = long !== null && top.getTextContent().includes(long.marker);
   const literal = marked ? restoreLongLines(long, top.getTextContent()) : top.getTextContent();
   const own = lineOrigins?.current ?? null;
+  if (own !== null && lineLength > own && importBudget) {
+    const cost = NORMALIZED_NOTE * (lineLength - own);
+    importBudget.work -= cost;
+    linearImportStats.spent += cost;
+  }
   const allowance = LINEAR_IMPORT_LIMITS.perChar * (own === null ? lineLength : Math.min(lineLength, own)) + LINEAR_IMPORT_LIMITS.base;
   const [rawTabs, entityTabs] = countTabs(literal, LINEAR_IMPORT_LIMITS.tabs);
   const tabCount = rawTabs + entityTabs;
