@@ -91,6 +91,10 @@ async function watchWire(actor: Actor): Promise<Wire> {
     socket.on('framesent', ({ payload }) => {
       wire.largestFrame = Math.max(wire.largestFrame, typeof payload === 'string' ? Buffer.byteLength(payload) : payload.byteLength);
     });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload === 'string' || payload.byteLength < 512 * 1024) return;
+      console.log(`${actor.label}: received a ${payload.byteLength}-byte frame of type ${payload[0]}/${payload[1]}`);
+    });
   });
   actor.page.on('console', (message) => {
     if (message.text().startsWith(CLOSE_LOG)) wire.closes.push(message.text().slice(CLOSE_LOG.length + 1));
