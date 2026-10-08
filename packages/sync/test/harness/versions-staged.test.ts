@@ -112,6 +112,7 @@ describe('a large restore point is staged locally in the restore turn, then move
     });
     const opened = await created(LARGE);
     const id = await saveNamed(opened, 'Large');
+    const savedTitle = opened.dobj.document.getText('title').toString();
     ben = await editorOn(opened, 'ben');
     await typeTitle(ben, 'Draft');
     const before = await opened.dobj.exportMarkdown();
@@ -134,7 +135,7 @@ describe('a large restore point is staged locally in the restore turn, then move
     // Every keystroke Ben typed after the restore turn is kept, on the server and in his doc.
     await ben.pump();
     const title = opened.dobj.document.getText('title').toString();
-    expect(title).toBe('k'.repeat(putsDuring));
+    expect(title).toBe(`${savedTitle}${'k'.repeat(putsDuring)}`);
     expect(ben.doc.getText('title').toString()).toBe(title);
     expect([...r2.stored.keys()].sort(), 'no orphan in R2').toEqual(liveKeys(opened));
   }, 300_000);
