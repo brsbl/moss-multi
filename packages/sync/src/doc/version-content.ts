@@ -11,7 +11,8 @@ import { decodeRelPos } from '@moss-multi/core/tree-anchor';
 import { isPayloadType, payloadMap, payloadText } from '../payload-docs.ts';
 import { reconcileBody, ReconcileRefused } from '../reconcile.ts';
 import { registerPayloads } from '../registers.ts';
-import { exportMirror, mirrorOf, type Admit } from '../server-doc.ts';
+import { keepsInserts, stateAt, type DecodedBase } from '../restore-base.ts';
+import { exportMirror, mirrorOf, payloadSourceOf, type Admit, type MirrorBase } from '../server-doc.ts';
 import { writeTitle } from '../server-title.ts';
 
 /** One payload's value: a text payload's text, or a compound payload's keys. */
@@ -104,16 +105,37 @@ export function captureContent(live: Y.Doc, noteId: string): VersionContent {
 }
 
 /**
- * Restores `target` as one server write under `origin` through the identity-preserving reconcile (A§14, T6.1): the
- * body and each payload keep the Yjs items of everything the version shares with the doc, and the title and
- * frontmatter take minimal diffs. Throws ReconcileRefused (409) when the reconciled body would not export as the
- * version's body or the title would differ, with nothing written. `admit` runs once that is verified, before
- * anything is written, and throws to refuse: the state cap, or a restore point that could not be stored.
+ * Restores `target` as one server write under `origin` through the identity-preserving reconcile (A§14, T6.1), run
+ * from `base`, the state the restorer saw: the body and each payload keep the Yjs items of everything the version
+ * shares with that state, the title and frontmatter take minimal diffs, and whatever anyone inserted after the base
+ * merges in where it was typed. Throws ReconcileRefused (409) when the reconciled base would not export as the
+ * version's body, the title would differ, or the result would lose an insert made after the base, with nothing
+ * written; StaleBase when the base is not a state of the doc. `admit` runs once that is verified, before anything is
+ * written, and throws to refuse: the state cap, or a restore point that could not be stored.
  */
-export function restoreContent(live: Y.Doc, origin: unknown, target: VersionContent, admit: Admit): boolean {
+export function restoreContent(live: Y.Doc, origin: unknown, target: VersionContent, admit: Admit, base: DecodedBase): boolean {
   // A version names each payload node's payload id, which the reconcile pairs by type instead.
   const state = JSON.parse(target.lexical, (key, value: unknown) => (key === '__regId' ? undefined : value)) as SerializedEditorState;
-  return reconcileBody(live, state, origin, admit, {
+  const source = payloadSourceOf(live);
+  const note = Y.encodeStateAsUpdate(live);
+  // A payload the restorer did not hold is taken as it is now.
+  const payloadAt = (id: string): Uint8Array | null => {
+    const now = source.read(id);
+    const sv = base.payloads.get(id);
+    return now && sv ? stateAt(now, sv) : now;
+  };
+  const from: MirrorBase = { state: stateAt(note, base.note), payload: payloadAt };
+  const keeping: Admit = (diff, payloads) => {
+    let kept = keepsInserts(note, diff, base.note, false);
+    for (const [id, update] of payloads) {
+      const now = source.read(id);
+      const sv = base.payloads.get(id);
+      if (kept && now && sv) kept = keepsInserts(now, update, sv, true);
+    }
+    if (!kept) throw new ReconcileRefused('mismatch', 'the restore would remove what was inserted after its base');
+    admit(diff, payloads);
+  };
+  return reconcileBody(live, state, origin, keeping, {
     mutate(doc) {
       writeTitle(doc, target.title, origin);
       importFrontmatter(doc, target.frontmatter, origin);
@@ -121,5 +143,5 @@ export function restoreContent(live: Y.Doc, origin: unknown, target: VersionCont
     verify(mirror) {
       if (mirror.doc.getText('title').toString() !== target.title) throw new ReconcileRefused('mismatch', 'the restored title differs from the version');
     },
-  });
+  }, from);
 }

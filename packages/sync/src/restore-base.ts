@@ -108,7 +108,7 @@ export function shownSince(doc: Y.Doc, from: StateVector, until: StateVector, ma
     }
     if (item.content instanceof Y.ContentType) walk(item.content.type, visible);
   };
-  const walk = (type: Y.AbstractType<unknown>, shown: boolean): void => {
+  const walk = (type: { _start: Y.Item | null; _map: Map<string, Y.Item> }, shown: boolean): void => {
     for (let item = type._start; item; item = item.right) visit(item, shown);
     if (maps) for (const item of type._map.values()) visit(item, shown);
   };
