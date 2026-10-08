@@ -25,7 +25,7 @@ export interface MergeComputation {
 }
 
 /** One side's edit: base[start, end) becomes `text`. */
-interface Edit {
+export interface Edit {
   start: number;
   end: number;
   text: string;
@@ -65,7 +65,7 @@ const MAX_LINES = 0xd000; // one BMP code unit per distinct line, below the surr
  * character diff never aligns one paragraph with another; changed lines are then diffed by character, and changes on
  * one line separated only by unchanged text are one edit.
  */
-function editsOf(base: string, side: string): Edit[] {
+export function editsOf(base: string, side: string): Edit[] {
   const runs: Run[] = [];
   const codes = new Map<string, string>();
   const encode = (text: string): string => splitLines(text).map((line) => {
