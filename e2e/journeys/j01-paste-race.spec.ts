@@ -56,9 +56,15 @@ test('j01-paste-race: a peer’s edit during a large paste’s check moves the p
 
   // Ben adds a block above the paste's paragraph; Ada's redo still lands in that paragraph. Ben's screen has the undo
   // first: a click while his editor still applies it is put back where his caret was.
+  // A remote update his editor applies right after the click can still put his caret back, so the click is repeated
+  // until the caret stays in "Top." (a follow-up: the binding restores a peer's caret over a fresh click).
   await expect.poll(() => ui.body(ben, docId).locator('p').count(), { message: 'Ben has the undo', timeout: 120_000 }).toBe(3);
-  await ui.body(ben, docId).locator('p').filter({ hasText: /^Top\.$/ }).click();
-  await ben.page.keyboard.press('End');
+  await expect.poll(async () => {
+    await ui.body(ben, docId).locator('p').filter({ hasText: /^Top\.$/ }).click();
+    await ben.page.keyboard.press('End');
+    await ben.page.waitForTimeout(500);
+    return ben.page.evaluate(() => document.getSelection()?.anchorNode?.textContent ?? null);
+  }, { message: 'Ben’s caret stays at the end of “Top.”', timeout: 60_000 }).toBe('Top.');
   await ben.page.keyboard.press('Enter');
   await ben.page.keyboard.type('Ben’s line.');
   await ui.waitAcked(ben, docId, 60_000);

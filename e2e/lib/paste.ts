@@ -40,7 +40,10 @@ export async function normalized(actor: Actor, stack: Stack, markdown: string): 
   return exported(actor, await importNote(actor, stack, 'Reference', markdown));
 }
 
-/** Length and hash of the body's text as Lexical holds it. */
+/**
+ * Length and hash of the body's text as Lexical holds it; null while the page is too busy to answer in 10 s (a peer
+ * applying a large paste), so a poll asks again.
+ */
 export const fingerprint = (actor: Actor, docId: string) =>
   ui.body(actor, docId).evaluate((element) => {
     const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
@@ -48,6 +51,9 @@ export const fingerprint = (actor: Actor, docId: string) =>
     let sum = 0;
     for (let i = 0; i < text.length; i += 1) sum = (sum * 31 + text.charCodeAt(i)) >>> 0;
     return { length: text.length, sum };
+  }).catch((error: Error) => {
+    if (error.name === 'TimeoutError') return null;
+    throw error;
   });
 
 /**
