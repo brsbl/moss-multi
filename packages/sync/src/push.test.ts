@@ -7,8 +7,9 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
 import { readFrontmatter } from '@moss-multi/core/frontmatter';
+import { computeMergedTarget } from '@moss-multi/core/merge';
 import { landPush } from './push.ts';
-import { bodyState } from './reconcile.ts';
+import { bodyState, ReconcileRefused } from './reconcile.ts';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
 
 const PUSH = 'test-push';
@@ -276,5 +277,95 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(after.slice(0, 2)).toEqual(before.slice(0, 2));
     expect(blockIds(live)).toEqual(ids);
     expect(exported(live)).toBe(base.replace('Harvest in autumn.', 'Harvest in late autumn. Pick squash'));
+  });
+});
+
+// Constructs the converter does not re-import exactly (nested and four-backtick fences, no-break spaces from &#160;
+// inside containers, tables, tabs, callouts, raw HTML). Each sits between two plain paragraphs.
+const CORPUS: Record<string, string> = {
+  'nested fence': '````markdown\n```js\ninner fence\n```\n````',
+  'four-backtick fence': '````\nplain ``` inside\n````',
+  'list with a no-break space': '- first&#160;item\n- second item\n- third item',
+  'nested list': '- outer&#160;one\n  - inner one\n  - inner two\n- outer two',
+  'quote with a no-break space': '> quoted&#160;line one\n>\n> quoted line two',
+  'table with a no-break space': '| A | B |\n| --- | --- |\n| x&#160;y | plain |\n| row two | cell |',
+  callout: '```moss-callout\ninfo\nInside&#160;a callout.\n```',
+  'tabs holding a nested fence': ':::tabs\n=== Option A\n````markdown\n```js\ninner\n```\n````\n=== Option B\nContent for B.\n:::',
+  'tabs with a no-break space': ':::tabs\n=== One\nWord&#160;gap here.\n=== Two\nSecond panel.\n:::',
+  html: '<div class="note">\n<b>bold</b> text\n</div>',
+  entities: 'Entities stay literal: &#160; and &amp; and &lt;tag&gt;.',
+};
+
+/** `line` with `Zq` inserted after its first run of letters, or null when it has none. */
+function editLine(line: string): string | null {
+  const match = /[A-Za-z]+/.exec(line);
+  return match ? `${line.slice(0, match.index + match[0].length)}Zq${line.slice(match.index + match[0].length)}` : null;
+}
+
+type Landed = 'landed' | 'refused';
+
+/** Pushes `next` and checks the rule: the doc becomes exactly the merged target, or is refused (409) and unchanged. */
+function pushChecked(live: Y.Doc, base: string, next: string, label: string): Landed {
+  const before = exported(live);
+  const { target } = computeMergedTarget(before, base, next);
+  try {
+    landPush(live, NOTE, { base, newText: next, force: true }, PUSH);
+  } catch (error) {
+    expect(error, label).toBeInstanceOf(ReconcileRefused);
+    expect((error as ReconcileRefused).status, label).toBe(409);
+    expect((error as Error).message, `${label}: the refusal names the block`).toMatch(/block/);
+    expect(exported(live), `${label}: a refused push changes nothing`).toBe(before);
+    return 'refused';
+  }
+  expect(exported(live), `${label}: lands exactly the merged target`).toBe(target);
+  return 'landed';
+}
+
+describe('a push never silently changes content it did not edit @p:agt-1 @p:tech-5', () => {
+  for (const [name, construct] of Object.entries(CORPUS)) {
+    it(`editing any one line next to or inside ${name} lands exactly the target or is refused`, () => {
+      const markdown = `Lead paragraph.\n\n${construct}\n\nTail paragraph.`;
+      const base = exported(docOf(markdown));
+      const lines = base.split('\n');
+      const outcomes: Record<string, Landed> = {};
+      for (let i = 0; i < lines.length; i++) {
+        const edited = editLine(lines[i]!);
+        if (edited === null) continue;
+        const next = [...lines.slice(0, i), edited, ...lines.slice(i + 1)].join('\n');
+        outcomes[lines[i]!] = pushChecked(docOf(markdown), base, next, `${name}, line ${i + 1}`);
+        // The same edit while a person types in the lead paragraph.
+        if (!lines[i]!.startsWith('Lead')) {
+          const live = docOf(markdown);
+          const peer = fork(live);
+          typeAfter(peer, 'Lead paragraph', ' typed');
+          share(peer, live);
+          pushChecked(live, base, next, `${name}, line ${i + 1}, drifted`);
+        }
+      }
+      expect(outcomes['Tail paragraph.'], 'an edit beside the construct always lands').toBe('landed');
+      expect(outcomes['Lead paragraph.'], 'an edit beside the construct always lands').toBe('landed');
+    }, 60_000);
+  }
+
+  it('lands an edit to one item of a list or one row of a table, keeping a sibling that would not re-import exactly', () => {
+    for (const [construct, line] of [
+      [CORPUS['list with a no-break space']!, '- second item'],
+      [CORPUS['table with a no-break space']!, '| row two | cell |'],
+    ] as const) {
+      const live = docOf(`Lead paragraph.\n\n${construct}\n\nTail paragraph.`);
+      const base = exported(live);
+      expect(base).toContain(line);
+      expect(pushChecked(live, base, base.replace(line, editLine(line)!), line)).toBe('landed');
+      expect(exported(live)).toContain(' ');
+    }
+  });
+
+  it('refuses an edit to a paragraph whose untouched words would not re-import exactly, naming the block', () => {
+    const live = docOf('Lead paragraph.\n\nWord&#160;gap here and more.\n\nTail paragraph.');
+    const base = exported(live);
+    const before = exported(live);
+    expect(() => landPush(live, NOTE, { base, newText: base.replace('and more', 'and more still'), force: false }, PUSH))
+      .toThrow(/block 2/);
+    expect(exported(live)).toBe(before);
   });
 });

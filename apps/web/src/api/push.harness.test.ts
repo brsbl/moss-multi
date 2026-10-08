@@ -170,6 +170,20 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(await content(docId, cookieOf(ada))).toBe('Alpha one stays.\n\nNew tail.');
   });
 
+  it('refuses with 409 push-unverified, naming the block, a push that would change words it did not edit', async () => {
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const docId = await seeded(ada, 'Lead paragraph.\n\nWord&#160;gap here and more.\n\nTail paragraph.');
+    const base = await content(docId, cookieOf(ada));
+    const refused = await push(docId, cookieOf(ada), { newText: base.replace('and more', 'and more still'), baseHash: sha(base) });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ ok: false, reason: 'push-unverified' });
+    expect(String(refused.body.message)).toMatch(/block 2/);
+    expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(base);
+    const beside = await push(docId, cookieOf(ada), { newText: base.replace('Tail paragraph.', 'Tail paragraph, pushed.'), baseHash: sha(base) });
+    expect(beside.status, 'an edit beside that paragraph lands').toBe(200);
+    expect(await content(docId, cookieOf(ada))).toBe(base.replace('Tail paragraph.', 'Tail paragraph, pushed.'));
+  });
+
   it('refuses a file past 2 MB and a merged result past the state cap with 413, leaving the doc as it was', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const docId = await seeded(ada, BODY, { small: true });

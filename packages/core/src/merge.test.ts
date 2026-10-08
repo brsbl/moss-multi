@@ -72,3 +72,44 @@ describe('computeMergedTarget keeps concurrent human edits @p:agt-1', () => {
     expect(computeMergedTarget(base, base, `${base}\n`)).toMatchObject({ target: base, failedHunks: [], applied: 0 });
   });
 });
+
+describe('computeMergedTarget runs in linear time on pushed text up to the 2 MB push cap @p:agt-1', () => {
+  const CAP = 2 * 1024 * 1024;
+  /** Adversarial pushes: runs of one character, which a backtracking regex rescans from every position. */
+  const SHAPES: Record<string, (n: number) => { current: string; base: string; next: string }> = {
+    'newlines before the end': (n) => {
+      const base = `${'\n'.repeat(n - 1)}x`;
+      return { base, current: `y${base}`, next: `${base}z` };
+    },
+    'carriage returns': (n) => {
+      const base = `${'\r'.repeat(n - 1)}x`;
+      return { base, current: `y${base}`, next: `${base}z` };
+    },
+    'one long line': (n) => {
+      const base = 'a'.repeat(n);
+      return { base, current: `y${base}`, next: `${base}z` };
+    },
+    'many short lines': (n) => {
+      const base = 'a\n'.repeat(n / 2);
+      return { base, current: `y${base}`, next: `${base}z` };
+    },
+  };
+  for (const [name, shape] of Object.entries(SHAPES)) {
+    it(`doubling the input at most roughly doubles the time (${name})`, () => {
+      const time = (n: number): number => {
+        const { current, base, next } = shape(n);
+        const start = performance.now();
+        computeMergedTarget(current, base, next);
+        return performance.now() - start;
+      };
+      time(16 * 1024); // warm up
+      let previous = time(32 * 1024);
+      for (let n = 64 * 1024; n <= CAP; n *= 2) {
+        const took = time(n);
+        expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 250);
+        expect(took, `${n} chars`).toBeLessThan(5_000);
+        previous = took;
+      }
+    }, 120_000);
+  }
+});
