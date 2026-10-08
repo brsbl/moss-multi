@@ -308,6 +308,21 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # The negative control for deploy-staging's hook-404 assertion (T8.D): given this run's hook secret, it must
+      # fail on this hooks-enabled stack, so a pass on staging means the hooks are off.
+      - name: The hook assertion fails on a hooks stack
+        if: matrix.browser == 'chromium' && matrix.group == 'shell'
+        run: |
+          eval "$(node scripts/provenance.mjs read .local-stack/prebuilt/dist | grep -E '^(commit|bundleHash|clientHash)=')"
+          base=$(node -p "require(process.env.STACK_STATE).baseUrl")
+          ASSERT_HOOK_SECRET=$(node -p "require(require(process.env.STACK_STATE).secretsPath).testHooksSecret")
+          export ASSERT_HOOK_SECRET
+          if out=$(node scripts/deploy/assert-deployed.mjs --base-url "$base" --expect-commit "$commit" --expect-bundle "$bundleHash" --expect-client "$clientHash" 2>&1); then
+            echo "::error::the hook assertion accepted a hooks-enabled stack"
+            exit 1
+          fi
+          echo "$out"
+          grep -q 'with the hook secret: 200' <<<"$out" || { echo "::error::the hook assertion failed, but not on an answering hook"; exit 1; }
       - name: Selftests, then the group's journeys
         working-directory: e2e
         env:

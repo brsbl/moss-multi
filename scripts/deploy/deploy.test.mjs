@@ -150,7 +150,7 @@ describe('the tested run', () => {
   const groups = ['shell', 'editing'];
   const job = (name, conclusion = 'success') => ({ name, conclusion });
   const jobs = [
-    job('plan'), job('checks'), job('build'), job('ci-ok'),
+    ...['plan', 'checks', 'build', 'editor-host', 'oracle', 'parity', 'viewer', 'editor', 'canary', 'ci-ok'].map((name) => job(name)),
     ...['chromium', 'webkit'].flatMap((engine) => groups.map((group) => job(`e2e (${engine}, ${group})`))),
   ];
   const run = { path: '.github/workflows/ci.yml', conclusion: 'success', event: 'workflow_dispatch', head_sha: COMMIT };
@@ -167,6 +167,13 @@ describe('the tested run', () => {
     expect(testedRunProblems({ run: { ...run, path: '.github/workflows/main.yml' }, jobs, groups }).join('\n')).toMatch(/ci\.yml/);
     expect(testedRunProblems({ run: { ...run, conclusion: 'failure' }, jobs, groups }).join('\n')).toMatch(/failure/);
     expect(testedRunProblems({ run: { ...run, event: 'pull_request' }, jobs, groups }).join('\n')).toMatch(/pull_request/);
+  });
+
+  // `lane=e2e` plans no checks (scripts/ci/plan.mjs), so ci-ok is green with checks skipped: not a full lane.
+  it.each(['checks', 'canary', 'parity', 'viewer', 'editor-host'])('refuses a run whose %s job was skipped or missing', (name) => {
+    const skipped = jobs.map((j) => (j.name === name ? job(name, 'skipped') : j));
+    expect(testedRunProblems({ run, jobs: skipped, groups })).toContain(`${name}: skipped`);
+    expect(testedRunProblems({ run, jobs: jobs.filter((j) => j.name !== name), groups })).toContain(`${name}: missing`);
   });
 });
 
@@ -212,7 +219,7 @@ function fakeWorker() {
     } else if (path === '/a.js') {
       res.writeHead(200, { 'content-type': 'text/javascript' });
       res.end('export {}');
-    } else if (options.hooks && path.startsWith('/__test/')) {
+    } else if (options.hooks && path.startsWith('/__test/') && (options.hooks === true || req.headers['x-moss-test-hook'] === options.hooks)) {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"instanceId":"x","constructedAt":1}');
     } else {
@@ -251,6 +258,19 @@ describe('the deployed-build assertion', () => {
       const problems = await hookProblems(baseUrl);
       expect(problems.join('\n')).toMatch(/\/__test\/docs\/[^/]+\/instance/);
       expect(problems.join('\n')).toMatch(/\/__test\/docs\/[^/]+\/reset/);
+    } finally {
+      options.hooks = false;
+    }
+  });
+
+  // The negative control: hooks gated on a per-run secret answer only with it, so the run's secret proves the check.
+  it('fails when a hook answers only to the per-run secret, given that secret', async () => {
+    options.hooks = 'per-run-secret';
+    try {
+      expect(await hookProblems(baseUrl)).toEqual([]);
+      const problems = (await hookProblems(baseUrl, { secret: 'per-run-secret' })).join('\n');
+      expect(problems).toMatch(/\/__test\/docs\/[^/]+\/instance with the hook secret: 200/);
+      expect(problems).toMatch(/\/__test\/docs\/[^/]+\/reset with the hook secret: 200/);
     } finally {
       options.hooks = false;
     }
