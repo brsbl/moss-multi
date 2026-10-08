@@ -1,6 +1,9 @@
 // j18-agents (T7.2): the built moss-multi CLI pushes into notes people are typing in. A push while Ada types in the same
 // paragraph keeps both; the 61st push in a minute gets 429 with retry-after; a 2 MB push lands and the doc stays
 // typeable, and a push past the cap is refused loudly; a push deleting most of the doc is refused without --force.
+// T7.3: an agent's push shows a Bot-badged chip for about 15 s and adds no step to Ada's undo; `push --suggest` lands
+// as a pending suggestion Ada can accept; an agent Ben granted commenter can pull and comment, has its push refused
+// loudly, and is disconnected when the grant is revoked; revoking a key closes its socket and the CLI gets "not signed in".
 //
 // Notes are imported through POST /api/docs as declared setup; import is not this journey's promise.
 import { execFile } from 'node:child_process';
@@ -9,8 +12,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
+import { agentSocket } from '../lib/agent-socket.ts';
+import { SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR } from '../lib/contract.ts';
+import { grant } from '../lib/grants.ts';
 import type { Stack } from '../lib/stack.ts';
+import { openIn } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const CLI = fileURLToPath(new URL('../../packages/cli/dist/moss-multi.mjs', import.meta.url));
@@ -36,10 +44,15 @@ async function importNote(actor: Actor, stack: Stack, title: string, markdown: s
   return ((await response.json()) as { doc: { id: string } }).doc.id;
 }
 
-async function agentKey(actor: Actor, stack: Stack): Promise<string> {
+async function mintAgent(actor: Actor, stack: Stack): Promise<{ id: string; key: string }> {
   const minted = await actor.context.request.post('/api/agents', { headers: { origin: stack.baseUrl }, data: { name: 'Scribe' } });
   expect(minted.status(), 'declared setup: an agent key').toBe(201);
-  return ((await minted.json()) as { key: string }).key;
+  const { agent, key } = (await minted.json()) as { agent: { id: string }; key: string };
+  return { id: agent.id, key };
+}
+
+async function agentKey(actor: Actor, stack: Stack): Promise<string> {
+  return (await mintAgent(actor, stack)).key;
 }
 
 async function served(stack: Stack, docId: string, key: string): Promise<string> {
@@ -197,6 +210,191 @@ test('j18-agents degenerate: a push deleting most of the doc is refused without 
     const forced = await cli.run('push', 'calendar.md', '--force');
     expect(forced.code, forced.stderr).toBe(0);
     expect(await served(stack, docId, key)).toBe('Beans in April.');
+  } finally {
+    cli.dispose();
+  }
+});
+
+/** The agent's chip in the note's face pile: its name, with the Bot badge. */
+const botChip = (actor: Actor): Locator => actor.page.locator('[data-presence-client][title="Scribe (agent)"]');
+const UNDO = 'ControlOrMeta+z';
+/** Past the undo capture window, so a later edit is its own step. */
+const NEW_STEP_MS = 1_500;
+
+test('j18-agents presence: a push shows a Bot-badged chip for about 15 s and adds no undo step @p:agt-1 @p:col-3 @evidence', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const principal = await actors.principal('ada');
+  const setup = await actors.session(principal, { label: 'setup' });
+  const docId = await importNote(setup, stack, 'Bean rows', 'Beans in the first row.\n\nPeas in the second row.');
+  const key = await agentKey(setup, stack);
+  const cli = workspace(stack, key);
+  try {
+    expect((await cli.run('pull', docId, 'rows.md')).code).toBe(0);
+    const ada = await actors.open(principal, { path: `/d/${docId}` });
+    await ui.waitLive(ada, docId);
+    await ada.observeEditor(docId);
+    await expect(botChip(ada), 'no agent is here yet').toHaveCount(0);
+    await ui.body(ada, docId).getByText('Peas in the second row.').click();
+    await ada.page.keyboard.press('End');
+    await ada.page.keyboard.type(' Basil by the fence.');
+    await ui.waitAcked(ada, docId);
+    await ada.page.waitForTimeout(NEW_STEP_MS);
+
+    cli.write('rows.md', cli.read('rows.md').replace('Beans in the first row.', 'Broad beans in the first row.'));
+    const pushed = await cli.run('push', 'rows.md');
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const pushedAt = Date.now();
+    await expect(ui.body(ada, docId), 'Ada sees the agent\'s edit').toContainText('Broad beans in the first row.', { timeout: BIND_TIMEOUT });
+    await expect(botChip(ada), 'the agent appears in Ada\'s face pile').toHaveCount(1, { timeout: 5_000 });
+    await expect(botChip(ada).getByLabel('Agent'), 'with the Bot badge').toHaveCount(1);
+    await expect(botChip(ada)).toHaveAttribute('aria-label', 'Scribe');
+    await actors.checkpoint('agent-chip');
+
+    // Cmd+Z takes back Ada's own words; the agent's push is never one of her steps.
+    await ada.page.keyboard.press(UNDO);
+    await expect(ui.body(ada, docId), 'her typing is undone').not.toContainText('Basil by the fence.', { timeout: BIND_TIMEOUT });
+    await expect(ui.body(ada, docId), 'the agent\'s edit stays').toContainText('Broad beans in the first row.');
+    await ada.page.keyboard.press(UNDO);
+    await ada.page.keyboard.press(UNDO);
+    await ui.waitAcked(ada, docId);
+    await expect.poll(() => served(stack, docId, key), { message: 'the server keeps the agent\'s edit through every Cmd+Z', timeout: BIND_TIMEOUT })
+      .toBe('Broad beans in the first row.\n\nPeas in the second row.');
+    await expect(ui.body(ada, docId)).toContainText('Broad beans in the first row.');
+
+    // About 15 s: still there past a client's 12 s sweep, gone soon after the window.
+    await ada.page.waitForTimeout(Math.max(0, pushedAt + 13_000 - Date.now()));
+    await expect(botChip(ada), 'still shown 13 s after the push').toHaveCount(1);
+    await expect(botChip(ada), 'and gone after about 15 s').toHaveCount(0, { timeout: 12_000 });
+    expect(Date.now() - pushedAt, 'within the window and a sweep').toBeLessThan(25_000);
+  } finally {
+    cli.dispose();
+  }
+});
+
+test('j18-agents suggest: push --suggest lands as a pending suggestion that Ada accepts @p:agt-1 @p:mean-2 @evidence', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const principal = await actors.principal('ada');
+  const setup = await actors.session(principal, { label: 'setup' });
+  const docId = await importNote(setup, stack, 'Pea trellis', 'Peas climb the trellis.\n\nWater them at dawn.');
+  const key = await agentKey(setup, stack);
+  const cli = workspace(stack, key);
+  try {
+    expect((await cli.run('pull', docId, 'trellis.md')).code).toBe(0);
+    const ada = await actors.open(principal, { path: `/d/${docId}` });
+    await openIn(ada, docId, 'edit');
+    await ada.observeEditor(docId);
+    const before = await served(stack, docId, key);
+
+    cli.write('trellis.md', cli.read('trellis.md').replace('Water them at dawn.', 'Water them at dawn and at dusk.'));
+    const suggested = await cli.run('push', 'trellis.md', '--suggest');
+    expect(suggested.code, suggested.stderr).toBe(0);
+    expect(suggested.stdout).toMatch(/suggested trellis\.md \(suggestion [A-Za-z0-9_-]+\)/);
+    expect(cli.read('trellis.md'), 'the file keeps the suggested text').toContain('and at dusk');
+    expect(await served(stack, docId, key), 'the note is unchanged until someone accepts').toBe(before);
+    const listed = await cli.run('suggestions', docId);
+    expect(listed.code, listed.stderr).toBe(0);
+    expect(listed.stdout).toMatch(/Scribe/);
+
+    const button = ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`);
+    await expect(button, 'Ada\'s Suggestions count picks it up').toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+    await expect(ui.body(ada, docId), 'her note does not hold it yet').not.toContainText('and at dusk');
+    await button.click();
+    const panel = ada.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
+    const card = panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+    await expect(card).toHaveCount(1);
+    await expect(card, 'the card names the agent').toContainText('Scribe');
+    await expect(card, 'and shows the suggested text').toContainText('dusk', { timeout: BIND_TIMEOUT });
+    await actors.checkpoint('cli-suggestion');
+    await card.getByRole('button', { name: 'Accept' }).click();
+    await expect(panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="accepted"]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+    await ada.page.keyboard.press('Escape');
+    await expect(ui.body(ada, docId), 'accepted, it is in the note').toContainText('Water them at dawn and at dusk.', { timeout: BIND_TIMEOUT });
+    await expect.poll(() => served(stack, docId, key), { timeout: BIND_TIMEOUT }).toBe('Peas climb the trellis.\n\nWater them at dawn and at dusk.');
+  } finally {
+    cli.dispose();
+  }
+});
+
+test('j18-agents grant: an agent Ben granted commenter pulls and comments, its push is refused loudly, and revoking the grant disconnects it @p:ppl-2 @p:agt-1 @evidence', async ({ actors, stack }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const benPrincipal = await actors.principal('ben');
+  const setup = await actors.session(adaPrincipal, { label: 'setup' });
+  const docId = await importNote(setup, stack, 'Squash bed', 'Squash goes in last.\n\nMulch it well.');
+  // Declared setup: Ben manages the note for a while, which is what lets him add his own agent (PRODUCT ruling 20).
+  await grant(setup, { docId }, benPrincipal, 'owner');
+  const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
+  await ui.waitLive(ben, docId);
+  await actors.requireDistinct(2);
+  const scribe = await mintAgent(ben, stack);
+  const benDialog = await ui.openShare(ben, docId);
+  await ui.shareInDialog(benDialog, scribe.id, 'Can comment', 'Shared with Scribe.');
+  await ben.page.keyboard.press('Escape');
+  // Ben leaves the note before he is removed from it (j09 covers a removed person's open pane).
+  await ben.goto('/');
+
+  const ada = await actors.open(adaPrincipal, { path: `/d/${docId}` });
+  await ui.waitLive(ada, docId);
+  await ada.observeEditor(docId);
+  // Ben steps away; his agent keeps exactly the role he gave it.
+  let dialog = await ui.openShare(ada, docId);
+  await dialog.getByRole('button', { name: `Remove ${benPrincipal.name}`, exact: true }).click();
+  await expect(dialog.getByRole('combobox', { name: `Access for ${benPrincipal.name}`, exact: true }), 'Ben leaves the list').toHaveCount(0);
+  const agentRow = dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Scribe' });
+  await expect(agentRow.getByRole('combobox', { name: 'Access for Scribe', exact: true }), 'Scribe stays, at comment').toHaveValue('commenter');
+  await ada.page.keyboard.press('Escape');
+
+  const cli = workspace(stack, scribe.key);
+  try {
+    const pulled = await cli.run('pull', docId, 'squash.md');
+    expect(pulled.code, pulled.stderr).toBe(0);
+    expect(cli.read('squash.md')).toBe('Squash goes in last.\n\nMulch it well.');
+    const live = await agentSocket(stack.baseUrl, docId, scribe.key);
+
+    cli.write('squash.md', cli.read('squash.md').replace('Mulch it well.', 'Mulch it well with straw.'));
+    const refused = await cli.run('push', 'squash.md');
+    expect(refused.code, 'a commenter\'s push fails').toBe(1);
+    expect(refused.stderr, 'and says why').toContain('push refused: you can\'t edit this doc');
+    expect(await served(stack, docId, scribe.key), 'nothing of it landed').toBe('Squash goes in last.\n\nMulch it well.');
+
+    const commented = await cli.run('comment', docId, 'Leave room for the vines.', '--quote', 'Squash goes in last');
+    expect(commented.code, commented.stderr).toBe(0);
+    await expect(ada.page.locator('[data-comment-gutter-id]'), 'the agent\'s comment lands in Ada\'s note').toHaveCount(1, { timeout: BIND_TIMEOUT });
+    const listed = await cli.run('comments', docId);
+    expect(listed.code, listed.stderr).toBe(0);
+    expect(listed.stdout).toContain('Scribe');
+    expect(listed.stdout).toContain('Leave room for the vines.');
+    await actors.checkpoint('agent-comment');
+
+    dialog = await ui.openShare(ada, docId);
+    await dialog.getByRole('button', { name: 'Remove Scribe', exact: true }).click();
+    await expect(dialog.getByRole('combobox', { name: 'Access for Scribe', exact: true }), 'Scribe leaves the list').toHaveCount(0);
+    await ada.page.keyboard.press('Escape');
+    await expect.poll(live.closeCode, { message: 'the agent\'s live socket closes with a revocation code', timeout: BIND_TIMEOUT }).toBe(4403);
+    live.socket.terminate();
+    const after = await cli.run('pull', docId, 'squash.md', '--force');
+    expect(after.code, 'and its next pull is refused').toBe(1);
+    expect(after.stderr).toContain('not found');
+  } finally {
+    cli.dispose();
+  }
+});
+
+test('j18-agents revoke key: revoking the key closes the agent\'s socket and the CLI gets "not signed in" @p:agt-1 @p:ppl-2', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const docId = await importNote(ada, stack, 'Garlic', 'Garlic goes in in October.');
+  const agent = await mintAgent(ada, stack);
+  const cli = workspace(stack, agent.key);
+  try {
+    expect((await cli.run('cat', docId)).stdout).toBe('Garlic goes in in October.');
+    const live = await agentSocket(stack.baseUrl, docId, agent.key);
+    const revoked = await ada.context.request.delete(`/api/agents/${agent.id}`, { headers: { origin: stack.baseUrl } });
+    expect(revoked.status(), 'declared setup: Ada revokes the key (the Settings flow is j08-agents)').toBe(200);
+    await expect.poll(live.closeCode, { message: 'the agent\'s socket closes', timeout: BIND_TIMEOUT }).toBe(4403);
+    live.socket.terminate();
+    const refused = await cli.run('cat', docId);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain('not signed in');
   } finally {
     cli.dispose();
   }
