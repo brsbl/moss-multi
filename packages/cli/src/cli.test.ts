@@ -1,6 +1,6 @@
 // The CLI against a fake server (T7.1): raw `cat`, doc references, `url`, `rm` copy and JSON, exit codes, key and
 // device sign-in, and pull and push state. @p:agt-1
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,7 +15,7 @@ const ID_A = '11111111-1111-4111-8111-111111111111';
 const ID_B = '22222222-2222-4222-8222-222222222222';
 const ID_C = '33333333-3333-4333-8333-333333333333';
 
-interface Seen { method: string; path: string; auth: string | null; body: unknown }
+interface Seen { method: string; path: string; auth: string | null; origin: string | null; body: unknown }
 
 /** An in-memory moss-multi server: the routes the CLI calls, recording each request. */
 function fakeServer() {
@@ -35,6 +35,8 @@ function fakeServer() {
     pushes: [] as Record<string, unknown>[],
     pushAnswers: [] as { status: number; body: unknown; headers?: Record<string, string> }[],
     deviceAnswers: [] as { status: number; body: unknown }[],
+    /** Runs while a /content request is in flight, before it answers. */
+    onContent: null as null | (() => void),
   };
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
@@ -43,7 +45,7 @@ function fakeServer() {
     const method = init.method ?? 'GET';
     const auth = new Headers(init.headers).get('authorization');
     const body = typeof init.body === 'string' ? JSON.parse(init.body) as unknown : undefined;
-    seen.push({ method, path: url.pathname, auth, body });
+    seen.push({ method, path: url.pathname, auth, origin: new Headers(init.headers).get('origin'), body });
     const path = url.pathname;
     if (path === '/api/auth/device/code') {
       return reply(200, { device_code: 'dev-1', user_code: 'ABCD-EFGH', verification_uri: '/device', verification_uri_complete: '/device?user_code=ABCD-EFGH', expires_in: 900, interval: 5 });
@@ -51,6 +53,10 @@ function fakeServer() {
     if (path === '/api/auth/device/token') {
       const next = state.deviceAnswers.shift() ?? { status: 200, body: { access_token: 'session-1' } };
       return reply(next.status, next.body);
+    }
+    if (path === '/api/auth/sign-out') {
+      // The server's auth wrapper refuses an unsafe auth request without an Origin.
+      return new Headers(init.headers).get('origin') === url.origin ? reply(200, { success: true }) : reply(403, { code: 'MISSING_OR_NULL_ORIGIN' });
     }
     if (auth !== `Bearer ${state.token}`) return reply(401, { error: 'unauthenticated' });
     if (path === '/api/me') {
@@ -62,7 +68,10 @@ function fakeServer() {
     const match = /^\/api\/docs\/([^/]+)(?:\/(.+))?$/.exec(path);
     if (!match || !content.has(match[1])) return reply(404, { error: 'not-found' });
     const [, id, sub] = match;
-    if (sub === 'content') return reply(200, content.get(id)!, { 'content-type': 'text/markdown; charset=utf-8' });
+    if (sub === 'content') {
+      state.onContent?.();
+      return reply(200, content.get(id)!, { 'content-type': 'text/markdown; charset=utf-8' });
+    }
     if (!sub && method === 'DELETE') return reply(200, { doc: { id, trashedAt: 1 }, action: 'trashed', restorable: true, retentionDays: 30 });
     if (!sub && method === 'PATCH') return reply(200, { doc: { id, title: (body as { title: string }).title }, role: 'owner' });
     if (sub === 'push') {
@@ -282,5 +291,89 @@ describe('pull and push', () => {
     const result = await cli(['push', 'loose.md']);
     expect(result.code).toBe(1);
     expect(result.err).toContain('not tracked');
+  });
+});
+
+describe('one owner per tracked file', () => {
+  it('a forced pull of another doc into a tracked file drops the old mapping, so push goes to the new doc', async () => {
+    expect((await cli(['pull', ID_A, 'note.md'])).code).toBe(0);
+    const refused = await cli(['pull', ID_B, 'note.md']);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain('--force');
+    expect((await cli(['pull', ID_B, 'note.md', '--force'])).code).toBe(0);
+    expect(existsSync(join(dir, '.moss-multi', ID_A, 'meta.json')), 'the old doc no longer claims note.md').toBe(false);
+    writeFileSync(join(dir, 'note.md'), '# Garden notes\n\nWater daily, twice in July.\n');
+    const pushed = await cli(['push', 'note.md']);
+    expect(pushed.code, pushed.err).toBe(0);
+    expect(server.seen.find((call) => call.path.endsWith('/push'))?.path).toBe(`/api/docs/${ID_B}/push`);
+    expect(server.state.pushes[0]).toMatchObject({ baseHash: sha256Hex(new TextEncoder().encode('# Garden notes\n\nWater daily.\n')) });
+  });
+});
+
+describe('workspace confinement follows no symbolic link', () => {
+  let outside: string;
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'mm-outside-'));
+  });
+  afterEach(() => rmSync(outside, { recursive: true, force: true }));
+
+  it('pull refuses a destination through a linked directory', async () => {
+    symlinkSync(outside, join(dir, 'link'));
+    const result = await cli(['pull', ID_A, 'link/escaped.md']);
+    expect(result.code).toBe(1);
+    expect(existsSync(join(outside, 'escaped.md'))).toBe(false);
+  });
+
+  it('pull --force refuses a destination that is itself a link, leaving its target alone', async () => {
+    writeFileSync(join(outside, 'target.md'), 'not yours');
+    symlinkSync(join(outside, 'target.md'), join(dir, 'plan.md'));
+    const result = await cli(['pull', ID_A, 'plan.md', '--force']);
+    expect(result.code).toBe(1);
+    expect(readFileSync(join(outside, 'target.md'), 'utf8')).toBe('not yours');
+  });
+
+  it('pull writes no state through a linked .moss-multi', async () => {
+    mkdirSync(join(outside, 'state'));
+    symlinkSync(join(outside, 'state'), join(dir, '.moss-multi'));
+    const result = await cli(['pull', ID_A, 'plan.md']);
+    expect(result.code).toBe(1);
+    expect(existsSync(join(outside, 'state', ID_A))).toBe(false);
+  });
+});
+
+describe('edits saved while a request is in flight', () => {
+  it('pull does not overwrite a file edited while the content was fetched', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    server.state.onContent = () => writeFileSync(join(dir, 'plan.md'), 'saved mid-pull');
+    const result = await cli(['pull', ID_A, 'plan.md']);
+    expect(result.code).toBe(1);
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('saved mid-pull');
+  });
+
+  it('push does not overwrite a file edited while the push was in flight', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    writeFileSync(join(dir, 'plan.md'), 'first edit');
+    server.state.onContent = () => writeFileSync(join(dir, 'plan.md'), 'second edit, saved mid-push');
+    const result = await cli(['push', 'plan.md']);
+    expect(result.code).toBe(1);
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('second edit, saved mid-push');
+  });
+});
+
+describe('transport and sign-out', () => {
+  it('refuses plain http to a host other than loopback, before sending a credential', async () => {
+    const result = await cli(['list'], { MOSS_MULTI_SERVER: 'http://notes.example.invalid', MOSS_MULTI_API_KEY: KEY });
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('https://');
+    expect(server.seen).toHaveLength(0);
+    expect((await cli(['login', '--key', KEY, '--server', 'http://notes.example.invalid'], {})).code).toBe(1);
+    expect(server.seen).toHaveLength(0);
+  });
+
+  it('logout sends the server origin, so the server ends the session', async () => {
+    server.state.token = 'session-1';
+    expect((await cli(['login', '--server', SERVER], {})).code).toBe(0);
+    expect((await cli(['logout'], {})).code).toBe(0);
+    expect(server.seen.find((call) => call.path === '/api/auth/sign-out')).toMatchObject({ auth: 'Bearer session-1', origin: SERVER });
   });
 });

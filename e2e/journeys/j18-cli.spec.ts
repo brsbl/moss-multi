@@ -1,6 +1,7 @@
 // j18-cli (T7.1): the built moss-multi CLI (packages/cli/dist) against the stack. `cat` writes the doc's bytes with
 // no trailing LF added; a title prefix resolves; `url` prints an address that opens the doc in the web app; a 2 MB
-// pull returns every byte; the device flow signs the terminal in, and `rm` reports the trash in words and JSON.
+// pull returns every byte; the device flow signs the terminal in, `rm` reports the trash in words and JSON, and
+// `logout` ends the session on the server.
 //
 // Notes are imported through POST /api/docs as declared setup; import is not this journey's promise.
 import { execFile, spawn } from 'node:child_process';
@@ -15,6 +16,8 @@ import { expect, test, ui } from '../lib/test.ts';
 const CLI = fileURLToPath(new URL('../../packages/cli/dist/moss-multi.mjs', import.meta.url));
 const SOLO = 'one person and her own agent key drive the CLI against her own notes';
 const BIND_TIMEOUT = 30_000;
+/** protocol/limits MARKDOWN_CAP_BYTES. */
+const MARKDOWN_CAP_BYTES = 2 * 1024 * 1024;
 
 interface Run { code: number; stdout: Buffer; stderr: string }
 
@@ -89,7 +92,7 @@ test('j18-cli pull: a 2 MB doc pulls every byte into the file and its base @p:ag
   const ada = await actors.session(await actors.principal('ada'));
   const paragraphs: string[] = [];
   let size = 0;
-  for (let i = 0; size < 1_950_000; i += 1) {
+  for (let i = 0; size < 2_088_000; i += 1) {
     const paragraph = `Paragraph ${i}: ${'the beans climb the trellis and the peas follow them up '.repeat(16)}end ${i}.`;
     paragraphs.push(paragraph);
     size += Buffer.byteLength(paragraph) + 2;
@@ -101,7 +104,8 @@ test('j18-cli pull: a 2 MB doc pulls every byte into the file and its base @p:ag
   const env = { MOSS_MULTI_SERVER: stack.baseUrl, MOSS_MULTI_API_KEY: key, MOSS_MULTI_CONFIG_DIR: join(dir, 'config') };
   try {
     const bytes = await served(stack, docId, key);
-    expect(bytes.byteLength, 'the doc holds about 2 MB').toBeGreaterThan(1_900_000);
+    expect(bytes.byteLength, 'the doc sits just under the 2 MiB cap').toBeGreaterThan(2_085_000);
+    expect(bytes.byteLength).toBeLessThanOrEqual(MARKDOWN_CAP_BYTES);
     const pull = await moss(['pull', docId, 'big.md'], env, dir);
     expect(pull.code, pull.stderr).toBe(0);
     const file = readFileSync(join(dir, 'big.md'));
@@ -151,6 +155,13 @@ test('j18-cli login: the device flow signs the terminal in as Ada, and rm report
     expect(JSON.parse(asJson.stdout.toString('utf8'))).toEqual({ id: second, action: 'trashed', restorable: true, retentionDays: 30 });
     const gone = await moss(['cat', first], env, dir);
     expect(gone.code, 'a trashed doc is gone to cat').toBe(1);
+
+    const { sessionToken } = JSON.parse(readFileSync(config, 'utf8')) as { sessionToken: string };
+    const out = await moss(['logout'], env, dir);
+    expect(out.code, out.stderr).toBe(0);
+    expect(out.stderr, 'the server ends the session').toBe('');
+    const me = await fetch(`${stack.baseUrl}/api/me`, { headers: { authorization: `Bearer ${sessionToken}` }, signal: AbortSignal.timeout(10_000) });
+    expect(me.status, 'the logged-out session no longer signs requests').toBe(401);
   } finally {
     child.kill();
     rmSync(dir, { recursive: true, force: true });
