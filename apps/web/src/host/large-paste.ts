@@ -506,7 +506,10 @@ class Pacer {
     } else if (last && budget <= used && work + laid < TARGET_MS * 2) {
       budget = used * 2;
     }
-    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(this.max, used * 2, budget)));
+    // Whatever the estimate, a batch is never sized past three targets at this batch's whole rate: mixed content
+    // costs more per block in larger batches, and doubling a 1.2 s batch held the tab 3.4 s (WebKit, CI).
+    const ceiling = used * (TARGET_MS * 3) / (work + laid);
+    this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(this.max, used * 2, budget, ceiling)));
   }
 }
 
@@ -603,7 +606,16 @@ class PasteJob {
     for (const stop of this.#stops.splice(0)) stop();
     if (jobs.get(this.editor) === this) {
       jobs.delete(this.editor);
-      markLanding(this.editor, false);
+      // The rest landed inside a pending update (a command's, or the binding's): it is still the paste until it commits.
+      const { editor } = this;
+      if (editor._updating || editor._pendingEditorState !== null) {
+        const stop = editor.registerUpdateListener(() => {
+          stop();
+          if (!jobs.has(editor)) markLanding(editor, false);
+        });
+      } else {
+        markLanding(editor, false);
+      }
     }
     markUnacked(this, false);
   }
@@ -730,8 +742,11 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
 /** The steps of pastes that landed in batches, by the request each is stamped with, and the batch cap they paced with. */
 const pasted = new WeakMap<object, number>();
 const redoing = new WeakSet<LexicalEditor>();
-/** A redo slice's bytes, about: its update goes as a piece or two, well within the frame cap. */
-const REDO_SLICE_BYTES = PIECE_BYTES;
+/**
+ * A redo slice's bytes, about: as much as a batch of MAX_TOP_BATCH short blocks, so the pacer sizes slices and few pay
+ * the note's cost (capped at 256 KiB, a 40,000-paragraph redo took over 100 slices). The outbox sends it in pieces.
+ */
+const REDO_SLICE_BYTES = 8 * 1024 * 1024;
 
 /** The redo of a paste that landed in batches, a slice at a time, the main thread free between slices. */
 function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<void, void> {
@@ -755,6 +770,7 @@ function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<
     }
   } finally {
     slices.finish();
+    settle();
     job.restoreDir();
   }
 }
