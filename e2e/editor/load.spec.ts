@@ -12,6 +12,8 @@ import { EDITOR_DIST, serveEditor, type EditorServer } from './server.ts';
 import { coldAndWarm, collect, loadNotes, meta, report, warmMarks, type LoadNote, type LoadRun } from '../lib/load-timing.ts';
 
 const ENTRY_GZIP_BUDGET = 350 * 1024;
+/** The whole static critical path: the entry plus every chunk it imports statically (editor.json `preload`). */
+const CRITICAL_GZIP_BUDGET = 650 * 1024;
 /** What both engines log for moss's static HTML preview, a sandboxed srcdoc frame that runs no script until Run. */
 const INERT_FRAME = /Blocked script execution in 'about:srcdoc' because the document's frame is sandboxed/;
 const EDITABLE_BUDGET_MS = 1_000;
@@ -96,7 +98,7 @@ const ms = (value: number | undefined) => String(Number.isFinite(value) ? Math.r
 const row = (label: string, marks: Record<string, number>, run: LoadRun) =>
   `${label.padEnd(30)} imported ${ms(marks.imported)}  mount ${ms(marks.mount)}  paint ${ms(marks.paint)}  ready ${ms(marks.ready)}  editable ${ms(marks.editable)}  typed ${ms(marks.typed)}  bridge ${run.readyBridgeCalls ?? '?'}  fetched ${kb((run.served ?? []).reduce((total, entry) => total + entry.bytes, 0))}`;
 
-test('the entry script is at most 350 KB gzip and editor.json names every chunk and the critical ones to preload', async ({ browserName }, testInfo) => {
+test('the entry script is at most 350 KB gzip, the static critical path at most 650 KB gzip, and editor.json names every chunk and the critical ones to preload', async ({ browserName }, testInfo) => {
   test.skip(browserName !== 'chromium', 'one engine checks the built files');
   const built = manifest();
   const scripts = readdirSync(EDITOR_DIST, { recursive: true })
@@ -114,6 +116,8 @@ test('the entry script is at most 350 KB gzip and editor.json names every chunk 
   expect(built.preload, 'editor.json names the chunks the entry imports statically').toBeDefined();
   for (const file of built.preload ?? []) expect(built.chunks).toContain(file);
   expect(sizes[built.entry].gzip, `the entry ${built.entry} is ${kb(sizes[built.entry].gzip)} gzip`).toBeLessThanOrEqual(ENTRY_GZIP_BUDGET);
+  const critical = [built.entry, ...(built.preload ?? [])].reduce((total, file) => total + sizes[file].gzip, 0);
+  expect(critical, `the static critical path is ${kb(critical)} gzip`).toBeLessThanOrEqual(CRITICAL_GZIP_BUDGET);
 });
 
 test('load timing: plain and typical notes are editable within 1 s warm; cold, warm and every-family runs are recorded', async ({ browser, browserName }, testInfo) => {

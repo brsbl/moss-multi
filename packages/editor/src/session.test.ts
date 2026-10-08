@@ -393,6 +393,28 @@ describe('flush and unmount', () => {
     expect(frozenDuringWrite[0]).toBe(true);
   });
 
+  it('decorator drafts open at unmount are committed while the editor is still editable, and are in the final write', async () => {
+    const session = mount();
+    await session.ready;
+    // As moss's chart and HTML flushers: each writes its draft into the document only while the editor is editable.
+    surface.commit = () => {
+      if (!surface.editable || surface.frozen || surface.live.body.includes('Chart value 9')) return;
+      surface.live.body = 'Chart value 9\n\nHTML draft\n';
+      session.markEdited();
+    };
+    const write = host.write.bind(host);
+    const during: { editable: boolean; frozen: boolean }[] = [];
+    host.write = async (noteId, request) => {
+      during.push({ editable: surface.editable, frozen: surface.frozen });
+      return write(noteId, request);
+    };
+    const result = await session.unmount();
+    expect(markdownOnDisk()).toBe('# Plan\n\nChart value 9\n\nHTML draft\n');
+    if (result.kind === 'unmounted' && result.flush.kind === 'saved') expect(result.flush.receipt.files.markdown).toBe('# Plan\n\nChart value 9\n\nHTML draft\n');
+    else throw new Error(`expected a saved flush, got ${result.kind === 'unmounted' ? result.flush.kind : result.kind}`);
+    expect(during).toEqual([{ editable: false, frozen: true }]);
+  });
+
   it('a host reload whose read finishes after unmount leaves the torn-down session alone', async () => {
     const session = mount();
     await session.ready;

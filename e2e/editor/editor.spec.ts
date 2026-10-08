@@ -948,6 +948,53 @@ test.describe('embeddable editor', () => {
   });
 });
 
+// T3.13: a decorator's open draft survives unmount, and typing after a slash-menu chart lands after it.
+test.describe('editor fixes before 0.3.0', () => {
+  const CHART = '```moss-chart\n{"type":"bar","title":"Draft","data":[{"label":"A","value":3},{"label":"B","value":5}]}\n```';
+  const HTML = '```moss-html\n<p>Saved HTML.</p>\n```';
+
+  test('a chart JSON draft and an HTML source draft left open at unmount are in the final write, frozen while it waits', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, `# Plan\n\nFirst line\n\n${CHART}\n\n${HTML}\n`);
+    await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
+    // The chart's JSON editor and the HTML block's source, changed without pressing Apply or Done.
+    await body(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await body(page).locator('textarea').first().fill('{"type":"bar","title":"Edited","data":[{"label":"A","value":9}]}');
+    await body(page).getByRole('button', { name: 'Edit HTML' }).click();
+    await expect(body(page).locator('textarea')).toHaveCount(2);
+    await body(page).locator('textarea').last().fill('<p>HTML draft.</p>');
+    await page.evaluate(() => window.editorFixture.delayWrites(1_500));
+    const unmounting = page.evaluate(() => window.editorFixture.unmountDetail());
+    await expect(page.locator('[data-moss-editor-root]')).toHaveAttribute('inert', '');
+    const result = await unmounting;
+    expect(result.kind).toBe('unmounted');
+    expect(result.flush).toBe('saved');
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written, 'the chart draft is written').toContain('"title": "Edited"');
+    expect(written, 'the HTML draft is written').toContain('<p>HTML draft.</p>');
+    expect(result.markdown).toBe(written);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('typing after inserting a chart from the slash menu lands after the chart, in order', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, '# Plan\n\nFirst line\n');
+    await body(page).getByText('First line').click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('/bar');
+    await expect(page.getByText('Bar Chart', { exact: true })).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
+    await page.keyboard.type('abc');
+    await frames(page);
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written).toMatch(/^# Plan\n\nFirst line\n\n```moss-chart\n[\s\S]*\n```\n\nabc\n?$/);
+    expect(seen.errors).toEqual([]);
+  });
+});
+
 const BODY = '[data-moss-editor] [data-moss-note-editor-root="true"]';
 const SHARE = 'button[aria-label="Share with Agent"]';
 
