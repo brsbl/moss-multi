@@ -12,6 +12,8 @@ import { EDITOR_DIST, serveEditor, type EditorServer } from './server.ts';
 import { coldAndWarm, collect, loadNotes, meta, report, warmMarks, type LoadNote, type LoadRun } from '../lib/load-timing.ts';
 
 const ENTRY_GZIP_BUDGET = 350 * 1024;
+/** What both engines log for moss's static HTML preview, a sandboxed srcdoc frame that runs no script until Run. */
+const INERT_FRAME = /Blocked script execution in 'about:srcdoc' because the document's frame is sandboxed/;
 const EDITABLE_BUDGET_MS = 1_000;
 const DEMO = readFileSync(new URL('../fixtures/demo-note.md', import.meta.url), 'utf8');
 const NOTES = loadNotes(DEMO);
@@ -56,10 +58,10 @@ test.afterAll(async () => {
 async function loadOnce(page: Page, note: LoadNote, options: { latency?: number; settleMs?: number } = {}): Promise<LoadRun> {
   const consoleErrors: string[] = [];
   const onConsole = (message: { type(): string; text(): string }) => {
-    if (message.type() === 'error') consoleErrors.push(message.text());
+    if (message.type() === 'error' && !INERT_FRAME.test(message.text())) consoleErrors.push(message.text());
   };
   page.on('console', onConsole);
-  const spec = { title: note.title, markdown: note.markdown, meta: meta(note.title), probe: note.probe, latency: options.latency ?? 0, settleMs: options.settleMs ?? 0 };
+  const spec = { title: note.title, markdown: note.markdown, meta: meta(note.title), probe: note.probe, latency: options.latency ?? 0 };
   await page.addInitScript((value) => {
     (window as unknown as { __load: unknown }).__load = value;
   }, spec);
@@ -71,6 +73,10 @@ async function loadOnce(page: Page, note: LoadNote, options: { latency?: number;
   await expect(page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]')).toContainText(`${note.probe} typed`);
   run.marks.typed = await page.evaluate(() => (window as unknown as { loadResult: LoadRun }).loadResult.marks.typed);
   run.typed = Number.isFinite(run.marks.typed);
+  if (options.settleMs) {
+    await page.waitForTimeout(options.settleMs);
+    run.settledBlocks = await page.evaluate(() => (window as unknown as { settledBlocks(): LoadRun['paintBlocks'] }).settledBlocks());
+  }
   await page.evaluate(() => (window as unknown as { loadHandle: { unmount(options: object): Promise<unknown> } }).loadHandle.unmount({ discardUnsaved: true }));
   run.served = server.served.slice(served);
   run.errors.push(...consoleErrors);
@@ -78,8 +84,9 @@ async function loadOnce(page: Page, note: LoadNote, options: { latency?: number;
   return run;
 }
 
+const ms = (value: number | undefined) => String(Number.isFinite(value) ? Math.round(value as number) : '-').padStart(5);
 const row = (label: string, marks: Record<string, number>, run: LoadRun) =>
-  `${label.padEnd(22)} imported ${String(marks.imported).padStart(5)}  paint ${String(marks.paint).padStart(5)}  ready ${String(marks.ready).padStart(5)}  editable ${String(marks.editable).padStart(5)}  typed ${String(marks.typed).padStart(5)}  bridge ${run.readyBridgeCalls ?? '?'}  fetched ${kb((run.served ?? []).reduce((total, entry) => total + entry.bytes, 0))}`;
+  `${label.padEnd(30)} imported ${ms(marks.imported)}  mount ${ms(marks.mount)}  paint ${ms(marks.paint)}  ready ${ms(marks.ready)}  editable ${ms(marks.editable)}  typed ${ms(marks.typed)}  bridge ${run.readyBridgeCalls ?? '?'}  fetched ${kb((run.served ?? []).reduce((total, entry) => total + entry.bytes, 0))}`;
 
 test('the entry script is at most 350 KB gzip and editor.json names every chunk and the critical ones to preload', async ({ browserName }, testInfo) => {
   test.skip(browserName !== 'chromium', 'one engine checks the built files');
@@ -115,6 +122,10 @@ test('load timing: plain and typical notes are editable within 1 s warm; cold, w
     }
   } finally {
     server.cache = 'no-store';
+  }
+  const heights = (blocks: LoadRun['paintBlocks']) => (blocks ?? []).map((block) => block.height).join(' ');
+  for (const [label, run] of [['all cold', results.all.cold], ['all warm', results.all.warm[results.all.warm.length - 1]]] as const) {
+    table.push(`${label}: block heights at first paint ${heights(run.paintBlocks)}; settled ${heights(run.settledBlocks)}`);
   }
   report(testInfo, `editor-load-${browserName}.json`, results, table);
   for (const [key, { cold, warm }] of Object.entries(results)) {
@@ -158,7 +169,7 @@ test('heavy families load on first use: none for a plain note, then each renders
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
+    if (message.type() === 'error' && !INERT_FRAME.test(message.text())) errors.push(message.text());
   });
   for (const { family, chunk } of LAZY_FAMILIES) {
     expect(built.chunks?.some((file) => chunk.test(file) && !(built.preload ?? []).includes(file)), `${family} has its own lazy chunk`).toBe(true);

@@ -35,6 +35,7 @@ async function run() {
   const handle = viewer.mountMossViewer(root, { markdown: spec.markdown, theme: 'light', noteId: spec.noteId, services: { assetUrl: () => null, notes: () => [] } });
   await handle.ready;
   mark('ready');
+  for (let i = 0; i < 300 && result.marks.paint === undefined; i += 1) await frame();
   await document.fonts.ready;
   mark('fonts');
 }

@@ -93,7 +93,7 @@ export async function serveEditor(): Promise<EditorServer> {
   const served: Served[] = [];
   const delay: EditorServer['delay'] = { pattern: null, ms: 0 };
   let pageCsp = EDITOR_CSP;
-  let state: EditorServer;
+  const settings: { cache: CacheMode } = { cache: 'no-store' };
   const server: Server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://editor').pathname);
     requests.push(pathname);
@@ -109,7 +109,7 @@ export async function serveEditor(): Promise<EditorServer> {
       response.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
       return;
     }
-    const caching = prefix === '/editor/' ? packageCaching(state.cache, pathname.slice(prefix.length), file, request) : { status: 200, headers: { 'cache-control': 'no-store' } };
+    const caching = prefix === '/editor/' ? packageCaching(settings.cache, pathname.slice(prefix.length), file, request) : { status: 200, headers: { 'cache-control': 'no-store' } };
     const headers: Record<string, string> = {
       'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
       ...caching.headers,
@@ -145,16 +145,20 @@ export async function serveEditor(): Promise<EditorServer> {
   const url = await listen(server);
   const collectorUrl = await listen(collector);
   pageCsp = EDITOR_CSP.replace("frame-src data: https: 'self'", `frame-src data: https: 'self' ${collectorUrl}`);
-  state = {
+  return {
     url,
     requests,
     served,
-    cache: 'no-store',
+    get cache() {
+      return settings.cache;
+    },
+    set cache(mode: CacheMode) {
+      settings.cache = mode;
+    },
     delay,
     collector: { url: collectorUrl, stun: `stun:127.0.0.1:${udp.address().port}`, hits },
     close: async () => {
       await Promise.all([closing(server), closing(collector), new Promise<void>((done) => udp.close(() => done()))]);
     },
   };
-  return state;
 }

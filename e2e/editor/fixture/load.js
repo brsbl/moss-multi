@@ -52,6 +52,9 @@ const blocks = (root) =>
     height: Math.round(element.getBoundingClientRect().height),
   }));
 
+/** The blocks once everything has loaded, for comparison with `paintBlocks`. */
+window.settledBlocks = () => blocks(document.getElementById('editor'));
+
 /** Marks `paint` on the frame after the body first holds the note's text. */
 function watchPaint(root, probe) {
   const check = () => {
@@ -114,10 +117,9 @@ async function run() {
     result.editable = true;
     mark('editable');
   }
+  for (let i = 0; i < 300 && result.marks.paint === undefined; i += 1) await frame();
   await document.fonts.ready;
   mark('fonts');
-  if (spec.settleMs) await sleep(spec.settleMs);
-  result.settledBlocks = blocks(root);
   result.readyBridgeCalls = result.bridge.filter((entry) => entry.start < result.marks.ready).length;
 }
 

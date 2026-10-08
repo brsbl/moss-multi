@@ -219,3 +219,15 @@ declare module '@moss-pristine/asset-url' {
   export function toDisplaySrc(src: string, noteId?: string | null): string;
   export function fromDisplaySrc(src: string, currentNoteId?: string | null): string;
 }
+
+declare module '@moss-desktop/renderer/editor/nodes/node-views' {
+  import type { ReactNode } from 'react';
+  import type { LexicalNode } from 'lexical';
+  export function setNodeViewWrapper(wrapper: (type: string, element: unknown) => unknown): void;
+  export function registerLazyNodeView(type: string, load: () => Promise<unknown>, placeholder: (node: LexicalNode) => ReactNode): void;
+  export function loadNodeView(type: string): Promise<void>;
+}
+
+// The decorator views, which register themselves with node-views as they evaluate.
+declare module '@moss-desktop/renderer/editor/nodes/*';
+declare module '@moss-desktop/renderer/editor/components/ChartRenderer';

@@ -81,6 +81,14 @@
  *    (`MossEditorManifest.htmlFrame`), on an origin the editor frame's
  *    `frame-src` allows. The host serves the file's bytes unchanged: the
  *    document, not only its policy, keeps a block off the network.
+ * 5. The package directory. The host serves every file in `editor.json`
+ *    `files` at its path relative to `entry`, from the origin it serves
+ *    `entry` from, which the frame's `script-src 'self'` covers: the entry
+ *    imports its chunks (`chunks`) and the stylesheet its fonts by relative
+ *    URL, never inlined, from a `blob:` or `data:` URL, or from another
+ *    origin. Files under `assets/` carry a content hash in their names and
+ *    may be cached immutably; `entry`, `css`, the manifest and the frame
+ *    document keep their names across releases and must be revalidated.
  *
  * Compatibility rules for API 2:
  * - `MOSS_EDITOR_API` stays `2` for every release that implements this file.
@@ -1459,6 +1467,20 @@ export interface MossEditorManifest {
   css: string;
   /** Host helper entry: `moss-editor-host.js`. */
   hostEntry: string;
+  /**
+   * Every script chunk besides `entry`, as paths relative to the package
+   * directory (`assets/<name>-<hash>.js`). The entry imports them by URLs
+   * relative to its own, some at load and the rest when a note first uses a
+   * charts, canvas or HTML block, so the host serves the whole package
+   * directory from the origin it serves `entry` from (host obligation 5).
+   */
+  chunks: readonly string[];
+  /**
+   * The chunks `entry` imports statically, which every mount loads; a host may
+   * list them as `<link rel="modulepreload">` so they download alongside the
+   * entry. A subset of `chunks`.
+   */
+  preload: readonly string[];
   /**
    * The moss-html frame document. The host serves `file` and passes its URL
    * as `MossEditorOptions.htmlFrameUrl`, with the response header

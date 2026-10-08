@@ -69,7 +69,7 @@ export async function serveViewer(): Promise<ViewerServer> {
   const media: MediaRequest[] = [];
   const slow = new Set<string>();
   const served: Served[] = [];
-  let state: ViewerServer;
+  const settings: { cache: CacheMode } = { cache: 'no-store' };
   const server: Server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://viewer').pathname);
     const prefix = Object.keys(ROOTS).find((root) => pathname.startsWith(root));
@@ -91,7 +91,7 @@ export async function serveViewer(): Promise<ViewerServer> {
     const size = statSync(file).size;
     const headers: Record<string, string> = { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store', 'accept-ranges': 'bytes' };
     if (prefix === '/viewer/') {
-      const caching = packageCaching(state.cache, pathname.slice(prefix.length), file, request);
+      const caching = packageCaching(settings.cache, pathname.slice(prefix.length), file, request);
       Object.assign(headers, caching.headers);
       served.push({ path: pathname, status: caching.status, bytes: caching.status === 304 ? 0 : size });
       if (caching.status === 304) {
@@ -123,17 +123,21 @@ export async function serveViewer(): Promise<ViewerServer> {
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address() as AddressInfo;
-  state = {
+  return {
     url: `http://127.0.0.1:${port}`,
     media,
     slow,
     served,
-    cache: 'no-store',
+    get cache() {
+      return settings.cache;
+    },
+    set cache(mode: CacheMode) {
+      settings.cache = mode;
+    },
     close: () =>
       new Promise((done) => {
         server.closeAllConnections();
         server.close(() => done());
       }),
   };
-  return state;
 }

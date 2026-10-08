@@ -110,6 +110,9 @@ export interface LoadRun {
   errors: string[];
   editable: boolean;
   typed?: boolean;
+  /** Each block decorator's height when the note first painted, and once everything had loaded. */
+  paintBlocks?: { text: string; height: number }[];
+  settledBlocks?: { text: string; height: number }[];
   served?: { path: string; status: number; bytes: number }[];
 }
 
