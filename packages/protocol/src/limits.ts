@@ -108,3 +108,12 @@ export const ACCESS_TICK_MS = 5_000;
  * closed, and the sockets waiting on it close 1013 and reconnect.
  */
 export const ACCESS_DEADLINE_MS = 5_000;
+
+/** A JSON request body to /api or /api/auth (A§18); the Worker answers 413 past it before any handler reads it. */
+export const JSON_BODY_CAP_BYTES = 1024 * 1024;
+
+/**
+ * A note create (markdown plus its comments sidecar) and a CLI push (newText plus baseText, each up to the 2 MB cap
+ * and escaped as JSON) carry a whole document, so they get this larger cap.
+ */
+export const DOC_BODY_CAP_BYTES = 16 * 1024 * 1024;

@@ -2,6 +2,7 @@
 import {
   isOutdated, OUTDATED_ERROR, OUTDATED_STATUS, PROTOCOL_HEADER, PROTOCOL_PARAM, protocolOf,
 } from '@moss-multi/protocol/client-protocol';
+import { DOC_BODY_CAP_BYTES, JSON_BODY_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { CLOSE } from '@moss-multi/protocol/sync';
 import type { Build } from '../provenance.ts';
 import { HTML_FRAME_PATH, htmlFrameResponse } from './html-frame.ts';
@@ -66,6 +67,46 @@ const outdatedRest = (request: Request): boolean => {
   return sent !== null && isOutdated(protocolOf(sent));
 };
 
+const MEDIA_UPLOAD = /^\/api\/docs\/[^/]+\/assets$/;
+const DOC_BODY = /^\/api\/docs(?:\/[^/]+\/push)?$/;
+
+/** The most an /api body may hold (A§18), or null for a media upload, which checks its own declared length (assets.ts). */
+export function bodyCapFor(pathname: string): number | null {
+  if (MEDIA_UPLOAD.test(pathname)) return null;
+  return DOC_BODY.test(pathname) ? DOC_BODY_CAP_BYTES : JSON_BODY_CAP_BYTES;
+}
+
+const tooLarge = () => json({ error: 'too-large', message: 'The request body is too large.' }, 413, { 'cache-control': 'no-store' });
+
+/**
+ * The request with its body read whole, at most `cap` bytes, or a 413 that reads no further: by the declared length
+ * when there is one, else as the bytes arrive. Handlers buffer and parse bodies, so an unbounded one holds the isolate.
+ */
+async function capBody(request: Request, cap: number): Promise<Request | Response> {
+  if (!request.body) return request;
+  if (Number(request.headers.get('content-length')) > cap) return tooLarge();
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > cap) {
+      await reader.cancel();
+      return tooLarge();
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return new Request(request.url, { method: request.method, headers: request.headers, body });
+}
+
 async function routePartyRequest(request: Request, deps: RouteDeps): Promise<Response> {
   // Split exactly as partyserver does, so the doc we authorize is the room it routes to.
   const parts = new URL(request.url).pathname.split('/').filter(Boolean);
@@ -85,7 +126,8 @@ async function routePartyRequest(request: Request, deps: RouteDeps): Promise<Res
   return response ?? json({ error: 'not-found' }, 404);
 }
 
-export async function routeRequest(request: Request, deps: RouteDeps): Promise<Response> {
+export async function routeRequest(incoming: Request, deps: RouteDeps): Promise<Response> {
+  let request = incoming;
   const { pathname } = new URL(request.url);
   if (pathname === '/api/version') return versionResponse(request, deps.build);
   // Without the gate, or for a path no hook serves, hook paths get the same 404 as any unknown route.
@@ -94,6 +136,12 @@ export async function routeRequest(request: Request, deps: RouteDeps): Promise<R
     if (hooked) return hooked;
   }
   if (under(pathname, '/api') && outdatedRest(request)) return outdatedResponse();
+  const cap = under(pathname, '/api') && request.body ? bodyCapFor(pathname) : null;
+  if (cap !== null) {
+    const capped = await capBody(request, cap);
+    if (capped instanceof Response) return capped;
+    request = capped;
+  }
   if (pathname.startsWith('/api/auth/')) return deps.handleAuth(request);
   if (pathname === '/api/workspace/ws') return deps.handleWorkspaceSocket(request);
   if (under(pathname, '/api')) return deps.handleApi(request);

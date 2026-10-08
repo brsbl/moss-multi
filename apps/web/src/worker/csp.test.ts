@@ -17,6 +17,12 @@ describe('the page CSP', () => {
     expect(contentSecurityPolicy('abc', 'http://127.0.0.1:8850/')).toContain("connect-src 'self' ws://127.0.0.1:8850");
   });
 
+  // T8.3a: a same-site page (another port, a sibling subdomain) gets the session cookie in a frame, as A§18's origin
+  // gate assumes, so only the app may frame its own pages.
+  it("lets only the app frame its pages (frame-ancestors 'self')", () => {
+    expect(contentSecurityPolicy('abc', 'https://moss.example/d/1').split('; ')).toContain("frame-ancestors 'self'");
+  });
+
   it('sets the header on HTML documents only, keeping status and headers', async () => {
     const page = withCsp(new Response('<html></html>', { status: 404, headers: { 'content-type': 'text/html; charset=utf-8', 'x-kept': '1' } }), 'n0', 'http://127.0.0.1/x');
     expect(page.status).toBe(404);

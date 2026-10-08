@@ -187,7 +187,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     outputs:
       commit: ${{ steps.provenance.outputs.commit }}
       bundleHash: ${{ steps.provenance.outputs.bundleHash }}
@@ -233,6 +233,13 @@ jobs:
             echo "::error::the assertion accepted a bundle the stack does not serve"
             exit 1
           fi
+      # docs/SECURITY.md's adversarial sweep against this production-mode stack (no hooks): headers, existence leaks,
+      # tokens, revocation, sockets, SSRF, body caps and rate limits (T8.3a). T8.3 reruns it against staging.
+      - name: Security sweep
+        timeout-minutes: 6
+        run: |
+          base=$(node -p "require('./.local-stack/runs/$SMOKE_RUN/state.json').baseUrl")
+          node scripts/security/sweep.mjs --base-url "$base"
       - name: Stop the smoke stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
