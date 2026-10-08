@@ -1,5 +1,5 @@
 // The version history REST API (A§14): GET /api/docs/:id/versions and /versions/:vid for any signed-in reader, POST
-// /versions {name} saves a named version and POST /versions/:vid/restore restores one, for an editor or above. Named
+// /versions {name} saves a named version and POST /versions/:vid/restore {base} restores one, for an editor or above. Named
 // versions are counted per person by its PrincipalDO and restores as REST writes; the DocDO re-authorizes the actor in
 // the same serialized write (A§8), so the Worker's role is never the last word.
 import { getServerByName } from 'partyserver';
@@ -33,7 +33,22 @@ const REFUSAL: Record<string, string> = {
   'version-limit': `You have saved the most named versions this note keeps for one person (${NAMED_VERSIONS_PER_PERSON}).`,
   'note-version-limit': `This note has the most named versions it keeps (${NAMED_VERSIONS_PER_NOTE}).`,
   'restore-unverified': 'This version could not be restored exactly, so the note was left as it is.',
+  'restore-base-stale': 'The note has changed since Restore was opened. Open Restore again to restore this version.',
 };
+
+/** A restore's base as a client sends it (restore-base.ts), bounded; the DocDO decides whether it is usable. */
+const BASE_MAX_CHARS = 65_536;
+const BASE_MAX_PAYLOADS = 10_000;
+function restoreBase(raw: unknown): { ok: true; base: unknown } | { ok: false } {
+  if (raw === undefined) return { ok: true, base: undefined };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false };
+  const { note, payloads, age } = raw as Record<string, unknown>;
+  if (typeof note !== 'string' || note.length > BASE_MAX_CHARS || typeof age !== 'number') return { ok: false };
+  if (typeof payloads !== 'object' || payloads === null || Array.isArray(payloads)) return { ok: false };
+  const entries = Object.entries(payloads);
+  if (entries.length > BASE_MAX_PAYLOADS || entries.some(([id, sv]) => id.length > 64 || typeof sv !== 'string' || sv.length > BASE_MAX_CHARS)) return { ok: false };
+  return { ok: true, base: { note, payloads: Object.fromEntries(entries), age } };
+}
 
 interface Verdict {
   ok: boolean;
@@ -61,6 +76,8 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   const rawName = (body as { name?: unknown }).name;
   const name = typeof rawName === 'string' ? rawName.trim() : '';
   if (action === 'save' && (!name || name.length > NAME_MAX)) return json({ error: 'bad-request', message: 'A version needs a name of 1 to 80 characters' }, 400, NO_STORE);
+  const base = restoreBase((body as { base?: unknown }).base);
+  if (action === 'restore' && !base.ok) return json({ error: 'bad-request', message: 'A restore base is malformed' }, 400, NO_STORE);
   if (action === 'save' || action === 'restore') {
     const principalDO = await getServerByName(env.PrincipalDO, principal.id);
     const allowed = action === 'save' ? await principalDO.takeVersionToken() : await principalDO.takeWriteToken();
@@ -83,7 +100,7 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   if (action === 'list') verdict = (await stub.listVersions(input)) as Verdict;
   else if (action === 'get') verdict = (await stub.getVersion({ ...input, id: vid })) as Verdict;
   else if (action === 'save') verdict = (await stub.saveVersion({ ...input, name })) as Verdict;
-  else verdict = (await stub.restoreVersion({ ...input, id: vid })) as Verdict;
+  else verdict = (await stub.restoreVersion({ ...input, id: vid, base: base.ok ? base.base : undefined })) as Verdict;
   if (!verdict.ok) {
     const reason = verdict.reason ?? 'refused';
     return json({ error: reason, ...(REFUSAL[reason] ? { message: REFUSAL[reason] } : {}) }, verdict.status ?? 409, NO_STORE);

@@ -136,6 +136,24 @@ describe('version routes @p:mean-3', () => {
     expect(tokens).toEqual([`version:${eve.id}`]);
   });
 
+  it('passes a restore base through to the DocDO, and refuses a malformed one 400 before it', async () => {
+    const base = { note: 'AQID', payloads: { abc: 'AQI=' }, age: 1200 };
+    expect((await send('POST', ada.cookie, `${versions()}/v1/restore`, { base })).status).toBe(200);
+    expect(calls[0].input).toMatchObject({ id: 'v1', base });
+    calls.length = 0;
+    for (const bad of [5, { note: 1, payloads: {}, age: 0 }, { note: '', payloads: [], age: 0 }, { note: '', payloads: { a: 2 }, age: 0 }, { note: 'x'.repeat(70_000), payloads: {}, age: 0 }]) {
+      expect((await send('POST', ada.cookie, `${versions()}/v1/restore`, { base: bad })).status, JSON.stringify(bad).slice(0, 40)).toBe(400);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('explains a stale restore base', async () => {
+    verdict = { ok: false, status: 409, reason: 'restore-base-stale' };
+    const response = await send('POST', ada.cookie, `${versions()}/v1/restore`);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'restore-base-stale', message: expect.stringMatching(/Open Restore again/) });
+  });
+
   it('answers 429 past the per-person write rate for a restore', async () => {
     writeTokens = 0;
     const response = await send('POST', eve.cookie, `${versions()}/v1/restore`);

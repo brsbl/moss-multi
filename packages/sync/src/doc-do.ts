@@ -1178,7 +1178,7 @@ export class DocDO extends YServer<SyncEnv> {
    * past RESTORE_ATTEMPTS changes it answers 503. Detached comments the version held anchored are re-anchored on the
    * restored text. An auto version follows.
    */
-  async restoreVersion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
+  async restoreVersion(input: { id: string; base?: unknown; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
     const store = await this.#ready();
     const versions = this.#versions;
     if (!versions) throw new Error('DocDO started without versions');

@@ -10,6 +10,7 @@ import { NAMED_VERSIONS_PER_PERSON } from '@moss-multi/protocol/limits';
 import { VERSION_SPILL_BYTES, VERSION_TITLE_LIST_MAX, type VersionBlobs, type VersionMeta } from '../../src/doc/versions.ts';
 import { bindLexical, connect, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 import { LiveClient, syncAll } from './live-client.ts';
+import { captureRestoreBase } from '../../src/restore-base.ts';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -95,6 +96,9 @@ async function edit(opened: Opened, who: string, text: string): Promise<void> {
   expect(client.closed, 'an edit is never refused').toBeNull();
   await client.drop();
 }
+
+/** A restore's base as the server holds the note now: a restorer that has seen everything. */
+const seen = (opened: Opened) => ({ ...captureRestoreBase(opened.dobj.document), age: 0 });
 
 async function named(opened: Opened, name: string, reviewer: { id: string; role: 'editor' | 'viewer' | 'owner' } = ADA) {
   return opened.dobj.saveVersion({ name, reviewer });
@@ -251,7 +255,7 @@ describe('restore @p:mean-3', () => {
       ($getRoot().getFirstChild() as ElementNode).append($createTextNode(' peer'));
     }, { discrete: true });
 
-    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    const restored = await opened.dobj.restoreVersion({ base: seen(opened), id: saved.version.id, reviewer: ADA });
     expect(restored).toMatchObject({ ok: true });
     await ben.flush();
     await ada.pump();
@@ -269,8 +273,8 @@ describe('restore @p:mean-3', () => {
     const opened = await created('alpha\n');
     const saved = await named(opened, 'v1');
     if (!saved.ok) throw new Error(saved.reason);
-    expect(await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: { id: 'cara', role: 'commenter' } })).toMatchObject({ ok: false, status: 403 });
-    expect(await opened.dobj.restoreVersion({ id: 'missing', reviewer: ADA })).toMatchObject({ ok: false, status: 404 });
+    expect(await opened.dobj.restoreVersion({ base: seen(opened), id: saved.version.id, reviewer: { id: 'cara', role: 'commenter' } })).toMatchObject({ ok: false, status: 403 });
+    expect(await opened.dobj.restoreVersion({ base: seen(opened), id: 'missing', reviewer: ADA })).toMatchObject({ ok: false, status: 404 });
   });
 });
 
@@ -297,7 +301,7 @@ describe('restore point and comment anchors @p:mean-3', () => {
     failInserts(opened, 'restore-point');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    const restored = await opened.dobj.restoreVersion({ base: seen(opened), id: saved.version.id, reviewer: ADA });
     expect(restored).toMatchObject({ ok: false, status: 503 });
     expect(await opened.dobj.exportMarkdown(), 'the doc keeps the state no version holds').toBe(before);
     expect((await list(opened)).map((version) => version.kind)).toEqual(['named']);
@@ -319,7 +323,7 @@ describe('restore point and comment anchors @p:mean-3', () => {
     await ada.flush();
     expect(anchorOf(opened, 'c1')?.status, 'deleting its text detaches the comment').toBe('orphaned');
 
-    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    const restored = await opened.dobj.restoreVersion({ base: seen(opened), id: saved.version.id, reviewer: ADA });
     expect(restored).toMatchObject({ ok: true });
     const anchor = anchorOf(opened, 'c1');
     expect(anchor?.status).toBe('anchored');
@@ -394,7 +398,7 @@ describe('version titles @p:mean-3', () => {
     expect(row.full_title, 'a spilled title is in its spill').toBeNull();
 
     await typeTitle(ada, ' and more');
-    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    const restored = await opened.dobj.restoreVersion({ base: seen(opened), id: saved.version.id, reviewer: ADA });
     if (!restored.ok) throw new Error(restored.reason);
     expect(opened.dobj.document.getText('title').toString()).toBe(long);
   });
@@ -408,7 +412,7 @@ describe('version titles @p:mean-3', () => {
     if (!saved.ok) throw new Error(saved.reason);
     expect(saved.version).toMatchObject({ spilled: false, title: long.slice(0, VERSION_TITLE_LIST_MAX) });
     await typeTitle(ada, '!');
-    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    const restored = await opened.dobj.restoreVersion({ base: seen(opened), id: saved.version.id, reviewer: ADA });
     if (!restored.ok) throw new Error(restored.reason);
     expect(opened.dobj.document.getText('title').toString()).toBe(long);
   });
@@ -537,7 +541,7 @@ describe("a note's version bounds, kept by pruning (A§14) @p:mean-3", () => {
     if (!two.ok) throw new Error(two.reason);
     const points: string[] = [];
     for (let i = 0; i < 5; i += 1) {
-      const restored = await opened.dobj.restoreVersion({ id: (i % 2 === 0 ? one : two).version.id, reviewer: BEN });
+      const restored = await opened.dobj.restoreVersion({ base: seen(opened), id: (i % 2 === 0 ? one : two).version.id, reviewer: BEN });
       if (!restored.ok) throw new Error(restored.reason);
       expect(restored.restorePoint).toBeTruthy();
       points.push(restored.restorePoint!);
