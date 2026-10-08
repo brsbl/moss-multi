@@ -1,7 +1,8 @@
 // Credentials and server (A§17): MOSS_MULTI_API_KEY and MOSS_MULTI_SERVER win over ~/.config/moss-multi/config.json,
 // which `login` writes at mode 0600. An agent key attributes work to the agent; a device-flow session to the person.
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { CliError } from './errors.ts';
@@ -45,9 +46,16 @@ function readConfigFile(env: Env): ConfigFile {
 function writeConfigFile(env: Env, next: ConfigFile): string {
   mkdirSync(configDir(env), { recursive: true, mode: 0o700 });
   const path = configPath(env);
-  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  // The mode applies only on create; enforce it on overwrite too.
-  chmodSync(path, 0o600);
+  // A fresh 0600 file renamed over the old one: the credential is never written into a file with looser permissions.
+  const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  try {
+    chmodSync(temp, 0o600);
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
   return path;
 }
 

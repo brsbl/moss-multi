@@ -133,8 +133,8 @@ export function createApi(options: ApiOptions) {
       (await json<{ comment: { id: string; quote: string | null } }>(`${doc(id)}/comments`, { method: 'POST', body: body(input) })).comment,
     share: async (id: string, input: { email: string; role: string } | { agentId: string; role: string }) =>
       json<unknown>(`${doc(id)}/members`, { method: 'POST', body: body(input) }),
-    signOut: async () => {
-      await call('/api/auth/sign-out', { method: 'POST', body: '{}' });
-    },
+    /** The auth routes refuse an unsafe request without an Origin; the server's own origin is the one they accept. */
+    signOut: async (): Promise<boolean> =>
+      (await call('/api/auth/sign-out', { method: 'POST', body: '{}', headers: { origin: new URL(base).origin } })).ok,
   };
 }

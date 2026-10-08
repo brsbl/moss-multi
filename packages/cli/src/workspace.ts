@@ -1,8 +1,9 @@
 // Pull and push state (A§17): each workspace keeps `.moss-multi/<docId>/{meta.json, base.md}`. The base is the exact
-// bytes last pulled, so a push sends its hash and the server can three-way merge against it.
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+// bytes last pulled, so a push sends its hash and the server can three-way merge against it. Nothing here follows a
+// symbolic link: every path is checked step by step below the workspace root.
+import { createHash, randomBytes } from 'node:crypto';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, type Stats } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CliError } from './errors.ts';
 
 export const STATE_DIR = '.moss-multi';
@@ -18,9 +19,53 @@ export interface DocMeta {
 
 export const sha256Hex = (bytes: Uint8Array | string): string => createHash('sha256').update(bytes).digest('hex');
 
-const isDir = (path: string) => existsSync(path) && statSync(path).isDirectory();
+const lstat = (path: string): Stats | null => {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+};
 
-/** The nearest directory at or above `start` holding `.moss-multi`, or null. */
+/** A real directory: a link to one does not count. */
+const isDir = (path: string) => lstat(path)?.isDirectory() === true;
+
+/** Refuses a symbolic link at any step from `root` down to `rel`, the last step included; returns the full path. */
+function noLinks(root: string, rel: string): string {
+  let path = root;
+  for (const part of rel.split(sep)) {
+    path = join(path, part);
+    const stats = lstat(path);
+    if (!stats) break;
+    if (stats.isSymbolicLink()) throw new CliError(1, `${relative(root, path)} is a symbolic link; moss-multi does not follow links out of the workspace`);
+  }
+  return join(root, rel);
+}
+
+/**
+ * Writes `bytes` to `rel` through a temporary file and a rename. With `expectHash` the file must still hash to it
+ * (null: still be absent) just before the replace, so an edit saved while a request was in flight is not lost.
+ */
+function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: string | null): void {
+  const target = noLinks(root, rel);
+  mkdirSync(dirname(target), { recursive: true });
+  noLinks(root, rel);
+  const temp = join(dirname(target), `.${basename(target)}.${randomBytes(6).toString('hex')}.tmp`);
+  writeFileSync(temp, bytes, { flag: 'wx' });
+  try {
+    if (expectHash !== undefined) {
+      const current = lstat(target) ? sha256Hex(readFileSync(target)) : null;
+      if (current !== expectHash) throw new CliError(1, `${rel} changed while moss-multi was working, so it was not overwritten; run the command again`);
+    }
+    renameSync(temp, target);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+/** The nearest directory at or above `start` holding a real `.moss-multi` directory, or null. */
 export function findRoot(start: string): string | null {
   let dir = resolve(start);
   for (;;) {
@@ -31,21 +76,22 @@ export function findRoot(start: string): string | null {
   }
 }
 
-/** `file` relative to `root`, refusing anything outside it. */
+/** `file` relative to `root`, refusing anything outside it or reached through a symbolic link. */
 export function confined(root: string, file: string): string {
   const rel = relative(root, resolve(root, file));
   if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new CliError(1, `${file} is outside the workspace at ${root}`);
+  noLinks(root, rel);
   return rel;
 }
 
-function docDir(root: string, docId: string): string {
+function stateRel(docId: string, name?: string): string {
   if (!DOC_ID.test(docId)) throw new CliError(1, `not a doc id: ${docId}`);
-  return join(root, STATE_DIR, docId);
+  return name ? join(STATE_DIR, docId, name) : join(STATE_DIR, docId);
 }
 
 export function readMeta(root: string, docId: string): DocMeta | null {
-  const path = join(docDir(root, docId), 'meta.json');
-  if (!existsSync(path)) return null;
+  const path = noLinks(root, stateRel(docId, 'meta.json'));
+  if (!lstat(path)) return null;
   try {
     const meta = JSON.parse(readFileSync(path, 'utf8')) as DocMeta;
     return meta.docId === docId && typeof meta.file === 'string' && typeof meta.baseHash === 'string' ? meta : null;
@@ -55,7 +101,7 @@ export function readMeta(root: string, docId: string): DocMeta | null {
 }
 
 export function readBase(root: string, docId: string): Uint8Array {
-  return readFileSync(join(docDir(root, docId), 'base.md'));
+  return readFileSync(noLinks(root, stateRel(docId, 'base.md')));
 }
 
 /** The tracked doc whose file is `file`, or null. */
@@ -71,21 +117,25 @@ export function metaForFile(root: string, file: string): DocMeta | null {
   return null;
 }
 
-/** Writes the pulled bytes to `file` and records them as the base. */
-export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array): DocMeta {
+/**
+ * Writes the pulled bytes to `file` and records them as the base. `expectHash` is what the file must still hold
+ * when it is replaced (null: still absent; undefined: --force replaces whatever is there).
+ */
+export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash?: string | null): DocMeta {
   const rel = confined(root, file);
-  const target = join(root, rel);
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, bytes);
+  writeInside(root, rel, bytes, expectHash);
   return recordBase(root, docId, rel, bytes);
 }
 
+/** Records `bytes` as the doc's base for `rel`. Any other doc that tracked `rel` lets go of it: a file has one owner. */
 export function recordBase(root: string, docId: string, rel: string, bytes: Uint8Array): DocMeta {
-  const dir = docDir(root, docId);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'base.md'), bytes);
+  writeInside(root, stateRel(docId, 'base.md'), bytes);
   const meta: DocMeta = { docId, file: rel, baseHash: sha256Hex(bytes), pulledAt: Date.now() };
-  writeFileSync(join(dir, 'meta.json'), `${JSON.stringify(meta, null, 2)}\n`);
+  writeInside(root, stateRel(docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));
+  for (const name of readdirSync(join(root, STATE_DIR))) {
+    if (name === docId || !DOC_ID.test(name)) continue;
+    if (readMeta(root, name)?.file === rel) rmSync(join(root, STATE_DIR, name), { recursive: true, force: true });
+  }
   return meta;
 }
 

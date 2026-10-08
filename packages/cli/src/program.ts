@@ -23,6 +23,7 @@ export interface ProgramDeps {
 }
 
 export const AGENT_KEY_PREFIX = 'mm_sk_';
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
 const ROLES: Record<string, string> = {
   view: 'viewer', viewer: 'viewer', comment: 'commenter', commenter: 'commenter', suggest: 'suggester', suggester: 'suggester',
   edit: 'editor', editor: 'editor',
@@ -114,8 +115,15 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   const server = (override?: string): string => {
     const url = override ? normalizeServer(override) : resolveConfig(env).serverUrl;
     if (!url) throw new CliError(1, 'no server: set MOSS_MULTI_SERVER or run `moss-multi login --server <url>`');
-    if (!/^https?:\/\//i.test(url)) throw new CliError(1, `not a server URL: ${url}`);
-    return url;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new CliError(1, `not a server URL: ${url}`);
+    }
+    // Credentials travel in plaintext over http, so it is allowed only to this machine.
+    if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK.test(parsed.hostname))) return url;
+    throw new CliError(1, `not a server URL: ${url}; use https:// (plain http:// is allowed only for localhost)`);
   };
   const api = (): Api => {
     const config = resolveConfig(env);
@@ -147,8 +155,9 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const { hadCredentials, sessionToken } = clearCredentials(env);
       const serverUrl = resolveConfig(env).serverUrl;
       if (sessionToken && serverUrl) {
-        // Best effort: the stored session is forgotten either way.
-        await createApi({ serverUrl, token: sessionToken, fetchImpl }).signOut().catch(() => undefined);
+        // The stored session is forgotten either way; say so if the server did not end it.
+        const ended = await createApi({ serverUrl, token: sessionToken, fetchImpl }).signOut().catch(() => false);
+        if (!ended) stderr(`the server at ${serverUrl} did not confirm the sign-out; the session ends when it expires`);
       }
       line(hadCredentials ? 'signed out' : 'not signed in');
       if (env.MOSS_MULTI_API_KEY) stderr('MOSS_MULTI_API_KEY is still set in your environment');
@@ -244,14 +253,18 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         rel = confined(root, resolve(cwd(), row ? localName(row.filename, row.title) : `${id}.md`));
       }
       const target = join(root, rel);
-      if (existsSync(target) && !parsed.flags.has('force')) {
+      // What the file must still hold when it is replaced: --force replaces anything, otherwise only the base or nothing.
+      let expectHash: string | null | undefined;
+      if (parsed.flags.has('force')) expectHash = undefined;
+      else if (existsSync(target)) {
         const owner = metaForFile(root, target);
         if (owner && owner.docId !== id) throw new CliError(1, `${rel} tracks another doc (${owner.docId}); pull into another file or use --force`);
         if (!owner) throw new CliError(1, `${rel} exists and is not tracked; pull into another file or use --force`);
         if (sha256Hex(readFileSync(target)) !== owner.baseHash) throw new CliError(1, `${rel} has local edits; push them first or use --force`);
-      }
+        expectHash = owner.baseHash;
+      } else expectHash = null;
       const bytes = await client.content(id);
-      recordPull(root, id, rel, bytes);
+      recordPull(root, id, rel, bytes, expectHash);
       line(`pulled ${rel} (${bytes.byteLength} bytes)`);
     },
 
@@ -296,7 +309,12 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       }
       // The merged doc becomes the file and the new base.
       const merged = await client.content(meta.docId);
-      recordPull(root, meta.docId, meta.file, merged);
+      try {
+        recordPull(root, meta.docId, meta.file, merged, sha256Hex(local));
+      } catch (error) {
+        if (!(error instanceof CliError)) throw error;
+        throw new CliError(1, `pushed ${meta.file} (${response.applied} change(s) applied), but it was edited during the push, so it was left as it is; push again to send the newer edits`);
+      }
       line(`pushed ${meta.file}: ${response.applied} change(s) applied`);
     },
 
