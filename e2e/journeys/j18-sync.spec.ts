@@ -1,7 +1,7 @@
 // j18-sync (T7.4): the built moss-multi CLI keeps a local folder in sync with the stack (PRODUCT ruling 9). `watch`
 // pushes a local edit to the web and writes a web edit into the local file; a local delete never trashes the doc;
 // `init` makes a folder a workspace, and `sync` then turns an untracked file into a doc titled from its stem and renames the file to the doc's filename; a
-// moss-format note imports through the moss interchange path with one title and its comments anchored; and `add
+// moss vault note syncs through the moss interchange path with one title and its comments anchored, and its file stays in moss format; and `add
 // --title` on a file whose first line is that title shows the title once.
 //
 // The note being watched is imported through POST /api/docs as declared setup; import is not this journey's promise.
@@ -146,7 +146,7 @@ test('j18-sync sync: an untracked file becomes a doc titled from its stem, the f
   }
 });
 
-test('j18-sync add --moss: a moss note\'s # Title line becomes its one title and its comments.json anchors its comments @p:agt-2 @p:note-3', async ({ actors, stack }) => {
+test('j18-sync moss note: sync imports a moss vault note with one title and its comments anchored, and leaves the file in moss format @p:agt-2 @p:note-3', async ({ actors, stack }) => {
   actors.solo(SOLO);
   const ada = await actors.session(await actors.principal('ada'));
   const dir = scratch();
@@ -156,9 +156,15 @@ test('j18-sync add --moss: a moss note\'s # Title line becomes its one title and
     mkdirSync(bundle);
     writeFileSync(join(bundle, 'Tomato log.md'), '# Tomato log\n\nThe %%m:c1:start%%cherry tomatoes%%m:c1:end%% ripened first.\n');
     writeFileSync(join(bundle, 'comments.json'), JSON.stringify({ c1: { text: 'Save seeds from these', createdAt: 1_700_000_000, updatedAt: 1_700_000_000, source: 'user' } }));
-    const added = await moss(['add', join('Tomato log', 'Tomato log.md'), '--moss', '--json'], env, dir);
-    expect(added.code, added.stderr).toBe(0);
-    const docId = (JSON.parse(added.stdout) as { id: string }).id;
+    const note = readFileSync(join(bundle, 'Tomato log.md'), 'utf8');
+    expect((await moss(['init'], env, dir)).code).toBe(0);
+    const synced = await moss(['sync', '--json'], env, dir);
+    expect(synced.code, synced.stderr).toBe(0);
+    const created = (JSON.parse(synced.stdout) as { action: string; docId?: string }[]).filter((result) => result.action === 'created');
+    expect(created, `one doc: ${synced.stdout}`).toHaveLength(1);
+    const docId = created[0]!.docId!;
+    expect(readdirSync(bundle).sort(), 'the moss note keeps its name').toEqual(['Tomato log.md', 'comments.json']);
+    expect(readFileSync(join(bundle, 'Tomato log.md'), 'utf8'), 'and its title line and markers').toBe(note);
 
     await openDoc(ada, docId);
     await expect(ui.title(ada, docId), 'the # line is the title').toHaveText('Tomato log', { timeout: BIND_TIMEOUT });
@@ -175,6 +181,10 @@ test('j18-sync add --moss: a moss note\'s # Title line becomes its one title and
     }), { message: 'the comment is anchored on its words', timeout: BIND_TIMEOUT }).toEqual(['cherry tomatoes']);
     const content = await served(ada, docId);
     expect(content.text, 'the export carries neither the title line nor a marker').not.toMatch(/Tomato log|%%m:/);
+    const again = await moss(['sync', '--json'], env, dir);
+    expect(again.code, again.stderr).toBe(0);
+    expect((JSON.parse(again.stdout) as { action: string }[]).filter((result) => result.action !== 'up-to-date'), 'a second sync changes nothing').toEqual([]);
+    expect(readFileSync(join(bundle, 'Tomato log.md'), 'utf8')).toBe(note);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
