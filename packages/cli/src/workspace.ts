@@ -18,6 +18,22 @@ export interface DocMeta {
   file: string;
   baseHash: string;
   pulledAt: number;
+  /** The server filename when the file was last synced, so sync can tell when the server renamed it. */
+  filename?: string;
+  /** The file's hash when it was last synced; the base's hash when absent (the file was the base). */
+  localHash?: string;
+  /** `moss`: the file is a moss note kept in moss format (title line, markers), and the base is its clean body. */
+  mode?: 'moss';
+  /** For a moss note, the title its title line held when it was last synced. */
+  title?: string;
+}
+
+/** What else a synced doc records beside its base. */
+export interface SyncedState {
+  filename?: string;
+  localHash?: string;
+  mode?: 'moss';
+  title?: string;
 }
 
 export const sha256Hex = (bytes: Uint8Array | string): string => createHash('sha256').update(bytes).digest('hex');
@@ -159,34 +175,98 @@ const foldPath = (path: string) => path.normalize('NFC').toLowerCase();
 /** Whether two tracked paths name one file. */
 const samePath = (a: string, b: string, folds: boolean) => (folds ? foldPath(a) === foldPath(b) : a === b);
 
+/** Every doc tracked under `root`. */
+export function trackedMetas(root: string): DocMeta[] {
+  const dir = noLinks(root, STATE_DIR);
+  if (!isDir(dir)) return [];
+  const metas: DocMeta[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    const meta = DOC_ID.test(name) ? readMeta(root, name) : null;
+    if (meta) metas.push(meta);
+  }
+  return metas;
+}
+
 /** The tracked doc whose file is `file`, or null. */
 export function metaForFile(root: string, file: string, folds = false): DocMeta | null {
   const rel = confined(root, file);
-  const dir = join(root, STATE_DIR);
-  if (!isDir(dir)) return null;
-  for (const name of readdirSync(dir)) {
-    if (!DOC_ID.test(name)) continue;
-    const meta = readMeta(root, name);
-    if (meta && samePath(meta.file, rel, folds)) return meta;
-  }
-  return null;
+  return trackedMetas(root).find((meta) => samePath(meta.file, rel, folds)) ?? null;
+}
+
+/** Whether two workspace paths name one file on this volume. */
+export const sameFile = (a: string, b: string, folds: boolean): boolean => samePath(a, b, folds);
+
+/** Writes `bytes` to a confined file through a temporary file and a rename. */
+export function writeConfined(root: string, file: string, bytes: Uint8Array): void {
+  writeInside(root, confined(root, file), bytes);
+}
+
+/** Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. */
+export function writeMeta(root: string, meta: DocMeta): void {
+  writeInside(root, stateRel(meta.docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));
+}
+
+/**
+ * Renames one confined file to another name; false when something already holds the new name (on a volume that folds
+ * case, the file itself does not count).
+ */
+export function renameInside(root: string, from: string, to: string, folds: boolean): boolean {
+  const source = join(root, confined(root, from));
+  const target = join(root, confined(root, to));
+  if (lstat(target) && !(folds && samePath(relative(root, source), relative(root, target), true))) return false;
+  if (!lstat(source)?.isFile()) return false;
+  renameSync(source, target);
+  return true;
+}
+
+/** Whether `root` holds a real state directory. */
+export const isWorkspace = (root: string): boolean => isDir(join(root, STATE_DIR));
+
+/** Creates the state directory, so `root` is a workspace; a link in its place is refused. */
+export function ensureStateDir(root: string): void {
+  const dir = noLinks(root, STATE_DIR);
+  if (!lstat(dir)) mkdirSync(dir);
+  if (!isDir(dir)) throw new CliError(1, `${dir} is not a directory`);
 }
 
 /**
  * Writes the pulled bytes to `file` and records them as the base. `expectHash` is what the file must still hold
  * when it is replaced (null: still absent; undefined: --force replaces whatever is there).
  */
-export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false): DocMeta {
+export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, filename?: string): DocMeta {
   const rel = confined(root, file);
   writeInside(root, rel, bytes, expectHash);
-  return recordBase(root, docId, rel, bytes, folds);
+  return recordBase(root, docId, rel, bytes, folds, filename !== undefined ? { filename } : {});
 }
 
-/** Records `bytes` as the doc's base for `rel`. Any other doc that tracked `rel` lets go of it: a file has one owner. */
-export function recordBase(root: string, docId: string, rel: string, bytes: Uint8Array, folds = false): DocMeta {
+/**
+ * Writes `local` to `file` (which must still hash to `expectHash`) and records `base`, the server's bytes, as its
+ * base: for a file kept in another form than the server's, as a moss note is.
+ */
+export function recordSynced(root: string, docId: string, file: string, local: Uint8Array, base: Uint8Array, expectHash: string | null, folds: boolean, state: SyncedState): DocMeta {
+  const rel = confined(root, file);
+  writeInside(root, rel, local, expectHash);
+  return recordBase(root, docId, rel, base, folds, { ...state, localHash: sha256Hex(local) });
+}
+
+/**
+ * Records `bytes` as the doc's base for `rel`. The file holds the base unless `state.localHash` says otherwise; the
+ * server filename, mode and title carry over unless given. Any other doc that tracked `rel` lets go of it: a file has
+ * one owner.
+ */
+export function recordBase(root: string, docId: string, rel: string, bytes: Uint8Array, folds = false, state: SyncedState = {}): DocMeta {
   writeInside(root, stateRel(docId, 'base.md'), bytes);
-  const meta: DocMeta = { docId, file: rel, baseHash: sha256Hex(bytes), pulledAt: Date.now() };
-  writeInside(root, stateRel(docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));
+  const previous = readMeta(root, docId);
+  const baseHash = sha256Hex(bytes);
+  const known = state.filename ?? previous?.filename;
+  const mode = state.mode ?? previous?.mode;
+  const title = state.title ?? previous?.title;
+  const meta: DocMeta = {
+    docId, file: rel, baseHash, pulledAt: Date.now(), ...(known !== undefined ? { filename: known } : {}),
+    ...(state.localHash !== undefined && state.localHash !== baseHash ? { localHash: state.localHash } : {}),
+    ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}),
+  };
+  writeMeta(root, meta);
   for (const name of readdirSync(join(root, STATE_DIR))) {
     if (name === docId || !DOC_ID.test(name)) continue;
     const other = readMeta(root, name);

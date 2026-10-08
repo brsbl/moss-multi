@@ -364,6 +364,9 @@ importers:
       '@moss-multi/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@sanity/diff-match-patch':
+        specifier: 3.2.0
+        version: 3.2.0
     devDependencies:
       '@types/node':
         specifier: 24.13.3
