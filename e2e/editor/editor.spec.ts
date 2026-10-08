@@ -948,6 +948,95 @@ test.describe('embeddable editor', () => {
   });
 });
 
+// T3.13: a decorator's open draft survives unmount, and typing after a slash-menu chart lands after it.
+test.describe('editor fixes before 0.3.0', () => {
+  const CHART = '```moss-chart\n{"type":"bar","title":"Draft","data":[{"label":"A","value":3},{"label":"B","value":5}]}\n```';
+  const HTML = '```moss-html\n<p>Saved HTML.</p>\n```';
+
+  test('a chart JSON draft and an HTML source draft left open at unmount are in the final write, frozen while it waits', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, `# Plan\n\nFirst line\n\n${CHART}\n\n${HTML}\n`);
+    await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
+    // The chart's JSON editor and the HTML block's source, changed without pressing Apply or Done.
+    await body(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await body(page).locator('textarea').first().fill('{"type":"bar","title":"Edited","data":[{"label":"A","value":9}]}');
+    // moss's preview layer covers the block's header buttons until hover, so the press goes to the button itself.
+    await body(page).getByRole('button', { name: 'Edit HTML' }).dispatchEvent('click');
+    await expect(body(page).locator('textarea')).toHaveCount(2);
+    await body(page).locator('textarea').last().fill('<p>HTML draft.</p>');
+    await page.evaluate(() => window.editorFixture.delayWrites(1_500));
+    const unmounting = page.evaluate(() => window.editorFixture.unmountDetail());
+    await expect(page.locator('[data-moss-editor-root]')).toHaveAttribute('inert', '');
+    const result = await unmounting;
+    expect(result.kind).toBe('unmounted');
+    expect(result.flush).toBe('saved');
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written, 'the chart draft is written').toContain('"title": "Edited"');
+    expect(written, 'the HTML draft is written').toContain('<p>HTML draft.</p>');
+    expect(result.markdown).toBe(written);
+    expect(seen.errors).toEqual([]);
+  });
+
+  const slashChart = async (page: Page) => {
+    await mountNote(page, '# Plan\n\nFirst line\n');
+    await body(page).getByText('First line').click();
+    // The caret at the end of the line (End is not a line end in every engine).
+    await body(page).evaluate((root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data === 'First line') return document.getSelection()?.collapse(node, (node as Text).data.length);
+      }
+      throw new Error('no First line');
+    });
+    await frames(page);
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('/bar');
+    await expect(page.getByText('Bar Chart', { exact: true })).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
+  };
+  const AFTER_CHART = (text: string) => new RegExp(`^# Plan\\n\\nFirst line\\n\\n\`\`\`moss-chart\\n[\\s\\S]*\\n\`\`\`\\n\\n${text}\\n?$`);
+
+  test('typing after inserting a chart from the slash menu lands after the chart, in order', async ({ page }) => {
+    const seen = await open(page);
+    await slashChart(page);
+    await page.keyboard.type('abc');
+    await frames(page);
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written).toMatch(AFTER_CHART('abc'));
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('an IME or dead-key composition after a slash-menu chart lands after the chart', async ({ page, browserName }) => {
+    const seen = await open(page);
+    await slashChart(page);
+    if (browserName === 'chromium') {
+      // A real composition, as an IME (or a macOS dead key) drives it: no keydown Lexical acts on, no insertText beforeinput.
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+      await cdp.send('Input.imeSetComposition', { text: 'にほ', selectionStart: 2, selectionEnd: 2 });
+      await cdp.send('Input.insertText', { text: '日本' });
+      await frames(page);
+      expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+      expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toMatch(AFTER_CHART('日本'));
+    } else {
+      // Playwright drives no IME in WebKit: start the composition on the root as the engine does, and check the caret is
+      // in a new paragraph below the chart, where the engine then composes.
+      await body(page).evaluate((root) => root.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' })));
+      await frames(page);
+      const caret = await body(page).evaluate((root) => {
+        let block = document.getSelection()?.anchorNode ?? null;
+        while (block && block.parentNode !== root) block = block.parentNode;
+        const element = block instanceof Element ? block : null;
+        return { tag: element?.tagName ?? null, afterChart: Boolean(element?.previousElementSibling?.querySelector('.recharts-surface')) };
+      });
+      expect(caret).toEqual({ tag: 'P', afterChart: true });
+    }
+    expect(seen.errors).toEqual([]);
+  });
+});
+
 const BODY = '[data-moss-editor] [data-moss-note-editor-root="true"]';
 const SHARE = 'button[aria-label="Share with Agent"]';
 

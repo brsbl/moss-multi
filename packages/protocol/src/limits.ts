@@ -12,6 +12,12 @@ export const STATE_RATIO = 10.5;
 /** Every entry point checks the encoded doc state against this, so a doc under 2 MB of markdown stays typeable. */
 export const STATE_CAP_BYTES = Math.round(MARKDOWN_CAP_BYTES * STATE_RATIO * 1.25);
 
+/**
+ * The largest frame a client sends on a doc socket (T3.S6). Larger updates go as pieces; a paste that would need a
+ * larger piece (one block's text past it) is refused whole. The DocDO closes a socket with 2 MiB waiting (1013).
+ */
+export const CLIENT_FRAME_MAX_BYTES = 1024 * 1024;
+
 export const MAX_CONNECTIONS = 50;
 
 /** Writes per connection per window; the overflow frame is not applied and the socket closes 4420. */

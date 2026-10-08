@@ -32,6 +32,10 @@ host that mounts it gets `ready` rejected with `apiMismatch` and nothing is read
 - contract.ts states that `onEvent` is required for a host that retains save receipts, and the retitle step onto a
   distinct existing `<folderName>.md` exactly.
 - `selection-1` and `share-with-agent-1` are unchanged.
+- **The package is a directory, not one script** (T3.12): `moss-editor.js` imports content-hashed chunks under
+  `assets/`, listed in editor.json `chunks` (with the ones every mount loads in `preload`). Charts, canvases and HTML
+  blocks load their code when a note first holds one. The host serves the whole package directory from the entry's
+  origin, caching `assets/` immutably (contract.ts host obligation 5; docs/design/editor-embed.md §13 item 8).
 
 ## 0.2.0
 

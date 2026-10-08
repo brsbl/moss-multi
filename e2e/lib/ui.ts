@@ -98,9 +98,15 @@ export async function waitOpen(actor: Actor, docId: string, binding: 'live' | 'r
   await expect(body(actor, docId), `${actor.label}: the body binds ${binding}`).toHaveAttribute(BODY_BINDING_ATTR, binding, { timeout: BIND_TIMEOUT });
 }
 
-/** The server acknowledged every local write. */
+/**
+ * The server acknowledged every local write. Polled as an attribute read, not a locator assertion: each failed poll of
+ * one renders the element's whole accessibility tree in the page, which held the tab for seconds in a note of 40,000
+ * paragraphs while its acks came in (T3.S6).
+ */
 export async function waitAcked(actor: Actor, docId: string, timeout = 10_000): Promise<void> {
-  await expect(pane(actor, docId), `${actor.label}: the DocDO acks every edit`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout });
+  await expect.poll(() => pane(actor, docId).getAttribute(SYNC_UNACKED_ATTR, { timeout: 5_000 }).catch(() => null), {
+    message: `${actor.label}: the DocDO acks every edit`, timeout, intervals: [100, 250, 500, 1_000],
+  }).toBe('0');
 }
 
 /** This document's doc sockets for the note. */

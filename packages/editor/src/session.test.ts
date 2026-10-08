@@ -35,6 +35,12 @@ class FakeSurface implements SessionSurface {
   colors: Record<string, number> = {};
   commit?: () => void;
   frozen = false;
+  /** The chunk a body holding CHART needs before it shows, as the real surface's lazy views: held while set. */
+  chunk: Promise<void> | null = null;
+
+  prepare(content: EditorContent) {
+    return content.body.includes('CHART') ? this.chunk : null;
+  }
 
   freeze(frozen: boolean) {
     this.frozen = frozen;
@@ -336,6 +342,22 @@ describe('conflicts with the Mac app', () => {
     const flushed = await session.flush();
     expect(flushed).toMatchObject({ kind: 'removed' });
   });
+
+  it("a removed note's draft keeps a chart draft that was open, committed before the editor went read-only", async () => {
+    const session = mount();
+    await session.ready;
+    surface.commit = () => {
+      if (!surface.editable || surface.live.body === 'Chart value 9\n') return;
+      surface.live.body = 'Chart value 9\n';
+      session.markEdited();
+    };
+    volume.unlink(`${DIR}/meta.json`);
+    await settle(250);
+    expect(session.status).toBe('removed');
+    const flushed = await session.flush();
+    if (flushed.kind !== 'removed') throw new Error(`expected removed, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan\n\nChart value 9\n');
+  });
 });
 
 describe('flush and unmount', () => {
@@ -385,6 +407,28 @@ describe('flush and unmount', () => {
     if (result.kind === 'unmounted' && result.flush.kind === 'saved') expect(result.flush.receipt.files.markdown).toBe('# Plan\n\nTyped\n\nReply\n');
     else throw new Error(`expected a saved flush, got ${result.flush.kind}`);
     expect(frozenDuringWrite[0]).toBe(true);
+  });
+
+  it('decorator drafts open at unmount are committed while the editor is still editable, and are in the final write', async () => {
+    const session = mount();
+    await session.ready;
+    // As moss's chart and HTML flushers: each writes its draft into the document only while the editor is editable.
+    surface.commit = () => {
+      if (!surface.editable || surface.frozen || surface.live.body.includes('Chart value 9')) return;
+      surface.live.body = 'Chart value 9\n\nHTML draft\n';
+      session.markEdited();
+    };
+    const write = host.write.bind(host);
+    const during: { editable: boolean; frozen: boolean }[] = [];
+    host.write = async (noteId, request) => {
+      during.push({ editable: surface.editable, frozen: surface.frozen });
+      return write(noteId, request);
+    };
+    const result = await session.unmount();
+    expect(markdownOnDisk()).toBe('# Plan\n\nChart value 9\n\nHTML draft\n');
+    if (result.kind === 'unmounted' && result.flush.kind === 'saved') expect(result.flush.receipt.files.markdown).toBe('# Plan\n\nChart value 9\n\nHTML draft\n');
+    else throw new Error(`expected a saved flush, got ${result.kind === 'unmounted' ? result.flush.kind : result.kind}`);
+    expect(during).toEqual([{ editable: false, frozen: true }]);
   });
 
   it('a host reload whose read finishes after unmount leaves the torn-down session alone', async () => {
@@ -516,6 +560,219 @@ describe('reloads never take an edit typed meanwhile', () => {
     expect(kinds()).not.toContain('reloaded');
     expect(session.status).toBe('conflict');
     expect(markdownOnDisk()).toBe('# Q3\n\nBody\n');
+  });
+});
+
+/** Holds the CHART chunk until the returned release is called. */
+function holdChunk(): () => void {
+  let release: () => void = () => undefined;
+  surface.chunk = new Promise<void>((resolve) => (release = resolve));
+  return () => {
+    surface.chunk = null;
+    release();
+  };
+}
+
+describe('a load waiting for its views changes nothing until it applies, and only the newest applies', () => {
+  it('an older reload whose chunk arrives after a newer reload never wins, and edits to the newer one are saved', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion A CHART\n');
+    await settle(250);
+    expect(surface.live.body, 'nothing is shown before its views are in').toBe('Body\n');
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion B\n');
+    await settle(250);
+    expect(surface.live.body).toBe('Version B\n');
+    expect(surface.editable).toBe(true);
+    type(session, 'Version B typed\n');
+    expect(session.status).toBe('dirty');
+    release();
+    await settle(0);
+    expect(surface.live.body, 'the older version never replaces the newer one').toBe('Version B typed\n');
+    expect(kinds().filter((kind) => kind === 'reloaded')).toHaveLength(1);
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe('# Plan\n\nVersion B typed\n');
+    expect(session.status).toBe('clean');
+    expect(kinds()).not.toContain('conflict');
+  });
+
+  it('an edit made while a reload waits for its chunk stays in the document, and the reload becomes a conflict', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    // A comment reply in moss's portalled popover, say: an edit to the document still on screen.
+    type(session, 'Reply meanwhile\n');
+    expect(session.status).toBe('dirty');
+    release();
+    await settle(0);
+    expect(surface.live.body).toBe('Reply meanwhile\n');
+    expect(session.status).toBe('conflict');
+    expect(kinds()).not.toContain('reloaded');
+    await settle(5_000);
+    expect(markdownOnDisk()).toBe('# Plan\n\nRemote CHART\n');
+    const flushed = await session.flush();
+    expect(flushed).toMatchObject({ kind: 'conflict' });
+    if (flushed.kind === 'conflict') expect(flushed.draft.files.markdown).toBe('# Plan\n\nReply meanwhile\n');
+  });
+
+  it('a save during a slow chunk is refused rather than writing the old body over the newer version', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    type(session, 'Reply meanwhile\n');
+    await settle(3_000);
+    expect(markdownOnDisk()).toBe('# Plan\n\nRemote CHART\n');
+    expect(session.status).toBe('conflict');
+    release();
+    await settle(0);
+    expect(surface.live.body).toBe('Reply meanwhile\n');
+    expect(session.status).toBe('conflict');
+    expect(kinds()).not.toContain('reloaded');
+    expect(markdownOnDisk()).toBe('# Plan\n\nRemote CHART\n');
+  });
+
+  it('a first mount shows the note only once its views are in', async () => {
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nHas a CHART\n');
+    const release = holdChunk();
+    const session = mount();
+    await settle(0);
+    expect(session.status).toBe('loading');
+    expect(surface.loads).toHaveLength(0);
+    release();
+    await session.ready;
+    expect(surface.loaded?.body).toBe('Has a CHART\n');
+    expect(session.status).toBe('clean');
+  });
+
+  it('unmounting while the first mount waits for its chunk rejects ready with unmounted at once', async () => {
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nHas a CHART\n');
+    const release = holdChunk();
+    const session = mount();
+    await settle(0);
+    expect(session.status).toBe('loading');
+    await expect(session.unmount()).resolves.toMatchObject({ kind: 'unmounted' });
+    await expect(session.ready).rejects.toMatchObject({ code: 'unmounted' });
+    release();
+    await settle(0);
+    expect(surface.loads).toHaveLength(0);
+    expect(session.status).toBe('unmounted');
+  });
+
+  it('unmounting while a reload waits for its chunk applies nothing', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    await expect(session.unmount()).resolves.toMatchObject({ kind: 'unmounted', flush: { kind: 'clean' } });
+    release();
+    await settle(0);
+    expect(surface.loads).toHaveLength(1);
+    expect(kinds()).not.toContain('reloaded');
+  });
+});
+
+describe('pending drafts and late input during a chunk wait are never dropped', () => {
+  /** A focused title the user types into: reported only when the surface commits it (blur, Enter, Tab, commit()). */
+  function typeTitle(session: EditorSession, title: string) {
+    surface.commit = () => {
+      if (surface.live.title === title) return;
+      surface.live.title = title;
+      session.markEdited();
+    };
+  }
+
+  it('a title typed while an external reload waits for its chunk is committed, and the reload becomes a conflict', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    typeTitle(session, 'Plan renamed');
+    release();
+    await settle(0);
+    expect(kinds()).not.toContain('reloaded');
+    expect(surface.live.title).toBe('Plan renamed');
+    expect(session.status).toBe('conflict');
+    const flushed = await session.flush();
+    if (flushed.kind !== 'conflict') throw new Error(`expected a conflict, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan renamed\n\nBody\n');
+  });
+
+  it('a title typed while a host reload waits for its chunk refuses the reload', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n'));
+    const reloading = session.reload();
+    await settle(50);
+    typeTitle(session, 'Plan renamed');
+    release();
+    await expect(reloading).resolves.toEqual({ kind: 'refused', reason: 'dirty' });
+    expect(kinds()).not.toContain('reloaded');
+    expect(surface.live.title).toBe('Plan renamed');
+    expect(session.status).toBe('dirty');
+  });
+
+  it('a host reload overtaken while it waits for its chunk reports the version on screen, not its own', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion A CHART\n'));
+    const older = session.reload();
+    await settle(50);
+    volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion B\n'));
+    const newer = await session.reload();
+    if (newer.kind !== 'reloaded') throw new Error(`expected reloaded, got ${newer.kind}`);
+    release();
+    const result = await older;
+    expect(result).toEqual({ kind: 'reloaded', version: newer.version });
+    expect(surface.live.body).toBe('Version B\n');
+  });
+
+  it('text typed after pressing Reload in the conflict bar, while the chunk loads, keeps the conflict instead of vanishing', async () => {
+    const session = mount();
+    await session.ready;
+    type(session, 'Local edit\n');
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    expect(session.status).toBe('conflict');
+    const release = holdChunk();
+    const resolving = session.resolveConflict('reload');
+    await settle(50);
+    type(session, 'Local edit late\n');
+    release();
+    await resolving;
+    expect(surface.live.body).toBe('Local edit late\n');
+    expect(session.status).toBe('conflict');
+    expect(kinds()).not.toContain('reloaded');
+    expect(kinds()).not.toContain('conflictResolved');
+  });
+
+  it('a chart JSON draft typed during the chunk wait is committed while the editor is still editable, and the reload becomes a conflict', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    // As moss's chart flusher: it writes its draft into the document only while the editor is editable.
+    surface.commit = () => {
+      if (!surface.editable || surface.live.body === 'Chart value 9\n') return;
+      surface.live.body = 'Chart value 9\n';
+      session.markEdited();
+    };
+    release();
+    await settle(0);
+    expect(kinds()).not.toContain('reloaded');
+    expect(session.status).toBe('conflict');
+    const flushed = await session.flush();
+    if (flushed.kind !== 'conflict') throw new Error(`expected a conflict, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan\n\nChart value 9\n');
   });
 });
 

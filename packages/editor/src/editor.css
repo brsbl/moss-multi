@@ -12,3 +12,9 @@
 [data-moss-editor] iframe[src^='https://platform.twitter.com/'] {
   color-scheme: normal;
 }
+
+/* moss's chart skeleton (ChartNode.view ChartSkeleton, h-64) stands in for recharts' 300 px chart while its module
+   resolves, so the block grew 44 px on its first paint; at the chart's height it keeps its place (T3.12). */
+[data-moss-editor] [data-testid='chart-loading'] {
+  height: 300px;
+}

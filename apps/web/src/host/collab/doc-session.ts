@@ -6,7 +6,7 @@
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
-import { CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -18,6 +18,8 @@ import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
+import { Outbox, type Frame } from './outbox.ts';
+import { timedSync } from './slow.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
 import { markSession, markUnacked } from './unacked.ts';
 
@@ -58,14 +60,19 @@ const VIEW_ONLY = 'You can view this note but can no longer edit it.';
 class DocSocket extends WebSocket {
   declare detached?: boolean;
   declare closeListeners?: ((event: CloseEvent) => void)[];
+  /** Sends large updates in acked pieces (T3.S6); a session's sockets each have their own. */
+  declare outbox?: Outbox;
 
   /** Nothing goes out on a socket that is closing: a reply to a late server frame would be lost and logs an error. */
   override send(...args: Parameters<WebSocket['send']>): void {
-    if (this.readyState === WebSocket.OPEN) super.send(...args);
+    if (this.readyState !== WebSocket.OPEN) return;
+    if (this.outbox) timedSync('send', () => this.outbox!.send(args[0] as Frame));
+    else super.send(...args);
   }
 
   detach(code: number, reason: string): void {
     if (this.detached) return;
+    this.outbox?.close();
     try {
       this.close(code, reason);
     } catch {
@@ -78,6 +85,19 @@ class DocSocket extends WebSocket {
 }
 
 const nativeAddEventListener = WebSocket.prototype.addEventListener;
+const nativeSend = WebSocket.prototype.send;
+
+/** The provider's socket class: each socket sends through its own outbox, emptied when it closes. */
+class OutboxSocket extends DocSocket {
+  constructor(url: string | URL, protocols?: string | string[]) {
+    super(url, protocols);
+    const outbox = new Outbox((frame) => {
+      if (this.readyState === WebSocket.OPEN) nativeSend.call(this, frame);
+    });
+    this.outbox = outbox;
+    nativeAddEventListener.call(this, 'close', () => outbox.close());
+  }
+}
 // Assigned rather than overridden in the class body: one signature cannot override WebSocket's overloads.
 DocSocket.prototype.addEventListener = function addEventListener(
   this: DocSocket,
@@ -95,7 +115,7 @@ DocSocket.prototype.addEventListener = function addEventListener(
     this,
     type,
     (event: Event) => {
-      if (!this.detached) listener.call(this, event);
+      if (!this.detached) timedSync(type, () => listener.call(this, event));
     },
     options,
   );
@@ -238,8 +258,21 @@ export function retryDoc(docId: string): void {
   held.get(docId)?.session.retry();
 }
 
+const byDoc = new WeakMap<Y.Doc, DocSession>();
+
+/** A heartbeat tick this late means the main thread was busy (T3.S6). */
+const BUSY_TICK_MS = 2 * HEARTBEAT_CHECK_MS;
+
+/**
+ * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too, as it last said (T3.S6): a
+ * tab holds only the payloads its tree names. 0 for a doc no session holds, or before the DocDO has said.
+ */
+export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.payloadBytes ?? 0;
+
 export class DocSession {
   readonly doc = new Y.Doc();
+  /** The DocDO's last word on the payload bytes it counts against the cap (countedPayloadBytes). */
+  payloadBytes = 0;
   /** The payload docs this tab holds beside the note (A§10.10), destroyed with it. */
   readonly payloads = attachPayloadDocs(this.doc, new PayloadDocs());
   readonly #payloadSync: PayloadSync;
@@ -259,6 +292,7 @@ export class DocSession {
   #socketOpen = false;
   #lastResync = 0;
   #visibleSince = 0;
+  #lastTick = 0;
   #failedHandshakes = 0;
   #accessRetries = 0;
   #accessRetry: ReturnType<typeof setTimeout> | undefined;
@@ -277,7 +311,7 @@ export class DocSession {
       disableBc: true,
       // The heartbeat sends the 4 s resync itself, so it can pause while the tab is hidden.
       resyncInterval: 0,
-      WebSocketPolyfill: DocSocket as unknown as typeof WebSocket,
+      WebSocketPolyfill: OutboxSocket as unknown as typeof WebSocket,
       params: () => {
         const share = shareToken();
         return share ? { share } : {};
@@ -301,7 +335,7 @@ export class DocSession {
     });
     this.provider.on('custom-message', (message: string) => this.#onServerEvent(message));
     this.doc.on('update', (update: Uint8Array, origin: unknown) => {
-      if (origin !== this.provider) this.#wrote(update);
+      if (origin !== this.provider) timedSync('wrote', () => this.#wrote(update));
     });
     // Payload frames ride the doc socket under their own message type; the provider hands them over whole.
     this.#payloadSync = new PayloadSync(this.payloads, {
@@ -322,6 +356,7 @@ export class DocSession {
     window.addEventListener('pagehide', this.#onPageHide, true);
     window.addEventListener('pageshow', this.#onPageShow);
     sessions.add(this);
+    byDoc.set(this.doc, this);
     markSession(this, true);
     this.#state.writePaused = signingOut || closedForTrash.has(docId);
     this.#publish();
@@ -564,8 +599,13 @@ export class DocSession {
   #heartbeat(): void {
     if (this.#disposed || this.#paused) return;
     const ws = this.provider.ws as DocSocket | null;
+    const now = Date.now();
+    // A main thread busy enough to hold this 1 s tick back (a 2 MB paste, its undo, a peer's large paste applied
+    // here) reads its frames late: that is not a silent socket. Held 6 s was the bar, and a collaborator's tab
+    // applying a 40,000-block paste, its ticks late by 1-5 s, read the server as silent and reconnected.
+    if (this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS) this.#visibleSince = now;
+    this.#lastTick = now;
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
-      const now = Date.now();
       const heard = this.provider.wsLastMessageReceived;
       if (now - Math.max(heard, this.#visibleSince) > SILENCE_LIMIT_MS) {
         // Half-open: close 4408 and reconnect now; the old socket's close event may never come (A§10.5).
@@ -586,7 +626,9 @@ export class DocSession {
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
-      const pending = this.#ledger.pendingUpdate();
+      // Writes still queued in the outbox are on their way; resending them would only queue them twice.
+      if ((ws as DocSocket).outbox?.busy) return;
+      const pending = timedSync('resend', () => this.#ledger.pendingUpdate());
       if (pending && !this.#ended) ws.send(encodeSyncFrame(2, pending));
       // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
       this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
@@ -632,7 +674,15 @@ export class DocSession {
     } catch {
       return;
     }
-    if (event.t === 'ack') {
+    if (event.t === 'usage') {
+      this.payloadBytes = event.pb;
+    } else if (event.t === 'ack') {
+      this.payloadBytes = event.pb ?? 0;
+      try {
+        (this.provider.ws as DocSocket | null)?.outbox?.acked(Y.decodeStateVector(base64ToBytes(event.sv)));
+      } catch {
+        // a malformed vector reopens nothing
+      }
       if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
     } else if (event.t === 'write-refused') {
       this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;

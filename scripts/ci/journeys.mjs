@@ -26,6 +26,20 @@ export const GROUPS = {
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
   // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
   registers: ['j01-registers', 'j01-autolink'],
+  // Large markdown pastes, up to 2 MB, each landing whole for a peer.
+  paste: ['j01-paste'],
+  // Pastes of very many short blocks, into an empty note and between two paragraphs.
+  pasteblocks: ['j01-paste-blocks'],
+  // One large list or nested list pasted: about 10 MB of state in one block, in batches and frames under the cap.
+  pastelist: ['j01-paste-list'],
+  // One 5,000-row table pasted.
+  pastetable: ['j01-paste-table'],
+  // Pastes just past the size cap, with and without payloads, refused whole.
+  pastecap: ['j01-paste-cap'],
+  // A paste past the cap only with the deleted blocks' payloads the server still counts, refused whole.
+  pasteheld: ['j01-paste-held'],
+  // A peer's edits while a large paste is checked, its redo after a peer's new block, and a check list's order.
+  pasterace: ['j01-paste-race', 'j01-paste-check'],
   // Titles and properties.
   title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation.

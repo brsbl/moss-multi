@@ -16,7 +16,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode, $isParagraphNode, $isTextNode, TextNode } from 'lexical';
  import { CodeNode } from '@lexical/code';
  import { $isHeadingNode, $isQuoteNode, $createHeadingNode, type HeadingTagType } from '@lexical/rich-text';
-@@ -136,8 +138,19 @@ import {
+@@ -136,8 +138,23 @@ import {
    SelectionToolbarShell
  } from './components/SelectionToolbarPrimitives';
  import './MarkdownEditor.css';
@@ -29,6 +29,10 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 +import { TRASH_COPY } from '@moss-multi/host/retention';
 +// moss-multi seam: linear-autolink: EMAIL_REGEX's and SCHEMELESS_URL_REGEX's matches in linear time
 +import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
++// moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole in batches, or is refused whole
++import { createEditor } from 'lexical';
++import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, planPlainText, type PastePlan } from '@moss-multi/host/large-paste';
++import { $withDocumentImport } from './markdown/fixes';
  // moss-multi seam: converter-split (A§12; S-conv §2.3)
 -import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
 +import { $convertMossCustomCodeNodes, $postImportNormalize, unescapeHtmlEntities } from './markdown/normalize';
@@ -37,7 +41,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
  import { $normalizeSelectionTableCells, $tryCreateWebEmbedFromBangLinkSelection, MARKDOWN_EDITOR_NODES, MARKDOWN_EDITOR_TRANSFORMERS, extractTableRowContent, getTopLevelElementOrNull, isTableDividerRow, serializeNoteLayoutMetadataForComparison, splitTableRow } from './markdown/transformers';
  export { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, mapOutsideFencedCodeBlocksOnly, normalizeFormattingAroundEmbedPillTargets, normalizeHighlightFormattingBoundaries, normalizeMarkdownForImport, normalizeRichTextInsideHighlightsForImport, recoverEscapedEmphasis, stripFormattingAroundIsolatedWikiLinks, unescapeHtmlEntities } from './markdown/normalize';
-@@ -169,6 +182,8 @@ export interface MarkdownEditorProps {
+@@ -169,6 +186,8 @@ export interface MarkdownEditorProps {
    enableSearchPlugin?: boolean;
    editorMountVersion?: number;
    editorRemountReason?: EditorRemountReason | null;
@@ -46,7 +50,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  }
  
  export type MarkdownEditorHandle = {
-@@ -315,11 +330,12 @@ function CodeNodeNormalizationPlugin(): null {
+@@ -315,11 +334,12 @@ function CodeNodeNormalizationPlugin(): null {
    useEffect(() => {
      // Normalize any pre-existing CodeNodes (e.g. from older sessions/state)
      // so custom code block UI appears without requiring a reload.
@@ -61,7 +65,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        let hasNewCodeNode = false;
        for (const [, mutation] of mutations) {
          if (mutation === 'created') {
-@@ -388,13 +404,14 @@ const SCHEMELESS_URL_REGEX =
+@@ -388,13 +408,14 @@ const SCHEMELESS_URL_REGEX =
    /(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z][a-zA-Z0-9-]{1,23}(?::\d{1,5})?(?:[/?#][^\s<>{}|\\^[\]`]*)?/g;
  
  const matchSchemelessUrl = (text: string) => {
@@ -81,7 +85,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          url
        };
      }
-@@ -411,7 +428,11 @@ export const AUTOLINK_MATCHERS = [
+@@ -411,7 +432,11 @@ export const AUTOLINK_MATCHERS = [
      const match = AUTOLINK_URL_MATCHER(text);
      return match && normalizeEmbeddableWebUrl(match.text) ? null : match;
    },
@@ -94,7 +98,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    matchSchemelessUrl
  ];
  
-@@ -852,8 +873,9 @@ const convertMarkdownPasteToNodes = (markdown: string): LexicalNode[] => {
+@@ -852,8 +877,9 @@ const convertMarkdownPasteToNodes = (markdown: string): LexicalNode[] => {
    const root = $getRoot();
    const savedChildren = root.getChildren();
  
@@ -105,7 +109,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      MARKDOWN_EDITOR_TRANSFORMERS
    );
    $postImportNormalize();
-@@ -905,6 +927,15 @@ const insertMarkdownChunk = (
+@@ -905,6 +931,15 @@ const insertMarkdownChunk = (
          return;
        }
  
@@ -121,16 +125,143 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        // convertMarkdownPasteToNodes nulls the selection to prevent temp root
        // corruption, so we re-restore the saved selection after conversion.
        const nodesToInsert = convertMarkdownPasteToNodes(markdown);
-@@ -1152,7 +1183,7 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
+@@ -998,6 +1033,68 @@ const insertMarkdownFromPaste = (editor: LexicalEditor, markdown: string): boole
+   return true;
+ };
+ 
++// moss-multi seam: whole-paste (T3.S6): the paste parsed off the live editor, as the units it lands in.
++const parseMarkdownPastePlan = (markdown: string, wholeNote: boolean): PastePlan => {
++  const parser = createEditor({
++    namespace: 'moss-multi-paste',
++    nodes: MARKDOWN_EDITOR_NODES,
++    onError: (error) => {
++      throw error;
++    }
++  });
++  parser.update(
++    () => {
++      if (wholeNote) {
++        $importNoteBody(markdown, { comments: {} });
++        return;
++      }
++      // No caret moves while parsing: with a selection, every block placed pays getIndexWithinParent().
++      $withDocumentImport(() => {
++        $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(markdown)), MARKDOWN_EDITOR_TRANSFORMERS);
++        $postImportNormalize();
++      });
++    },
++    { discrete: true }
++  );
++  const state = parser.getEditorState();
++  const json = state.toJSON().root.children;
++  return state.read(() => $planPaste($getRoot().getChildren(), json));
++};
++
++const isEmptyNote = (): boolean => {
++  const root = $getRoot();
++  const only = root.getFirstChild();
++  return root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty();
++};
++
++// moss-multi seam: whole-paste (T3.S6): the whole paste lands, in batches, or none of it does; never text chunks.
++const insertLargePaste = (editor: LexicalEditor, plan: (wholeNote: boolean) => PastePlan): boolean => {
++  const savedSelection = captureSelectionForPaste(editor);
++  if (!savedSelection) {
++    return false;
++  }
++  const wholeNote = editor.getEditorState().read(isEmptyNote);
++  pasteLarge(editor, {
++    plan: plan(wholeNote),
++    nodes: MARKDOWN_EDITOR_NODES,
++    $restore: () => restoreSelectionForPaste(savedSelection),
++    $insert: (nodes) => {
++      if (wholeNote && isEmptyNote()) {
++        $replaceEmptyNote(nodes);
++        return;
++      }
++      const selection = $getSelection();
++      if (selection) {
++        $insertBlocks(nodes, selection, (some, at) => $insertGeneratedNodes(editor, some, at));
++      }
++    }
++  });
++  return true;
++};
++
++const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string): boolean =>
++  insertLargePaste(editor, (wholeNote) => parseMarkdownPastePlan(normalizeClipboardLineEndings(rawMarkdown), wholeNote));
++
+ const insertPlainTextFromPaste = (editor: LexicalEditor, text: string): boolean => {
+   let canInsert = false;
+ 
+@@ -1138,7 +1235,21 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
+         return true;
+       }
+ 
+-      if (shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate)) {
++      // moss-multi seam: whole-paste (T3.S6): a large plain-text paste lands whole in batches, as Lexical's own paste
++      // would place it (forced: as insertRawText would), or is refused whole.
++      const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
++      const plainText = forcedPlainText ? pastedMarkdownCandidate : plainTextPayload;
++      if (
++        (forcedPlainText || !(hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate))) &&
++        shouldChunkMarkdownPaste(plainText) &&
++        insertLargePaste(editor, () => planPlainText(MARKDOWN_EDITOR_NODES, normalizeClipboardLineEndings(plainText), forcedPlainText))
++      ) {
++        event.preventDefault();
++        event.stopPropagation();
++        return true;
++      }
++
++      if (forcedPlainText) {
+         const handled = insertPlainTextFromPaste(editor, pastedMarkdownCandidate);
+         if (!handled) {
+           return false;
+@@ -1152,40 +1263,10 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
        if (hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate)) {
          event.preventDefault();
          event.stopPropagation();
--        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
-+        if (!hasExplicitMarkdownPayload && shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
-           const savedSelection = captureSelectionForPaste(editor);
-           if (!savedSelection) {
-             return false;
-@@ -1755,6 +1786,19 @@ function FloatingSelectionTools({
++        // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole, in batches, never in
++        // text chunks, so nothing is dropped and one undo removes it.
+         if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
+-          const savedSelection = captureSelectionForPaste(editor);
+-          if (!savedSelection) {
+-            return false;
+-          }
+-
+-          const jobId = ++activeChunkedPasteJobId;
+-          const chunks = splitLargeMarkdownPaste(pastedMarkdownCandidate);
+-          let chunkIndex = 0;
+-
+-          const runNextChunk = () => {
+-            if (jobId !== activeChunkedPasteJobId) {
+-              return;
+-            }
+-
+-            const chunk = chunks[chunkIndex];
+-            if (typeof chunk !== 'string') {
+-              return;
+-            }
+-
+-            insertMarkdownChunk(
+-              editor,
+-              chunk,
+-              chunkIndex === 0 ? savedSelection : undefined
+-            );
+-
+-            chunkIndex += 1;
+-            if (chunkIndex < chunks.length) {
+-              window.setTimeout(runNextChunk, 0);
+-            }
+-          };
+-
+-          window.setTimeout(runNextChunk, 0);
+-          return true;
++          return insertLargeMarkdownPaste(editor, pastedMarkdownCandidate);
+         }
+         return insertMarkdownFromPaste(editor, pastedMarkdownCandidate);
+       }
+@@ -1755,6 +1836,19 @@ function FloatingSelectionTools({
      };
    }, [onSelectedImageNodeKeyChange]);
    const floatingToolbarRef = useRef<HTMLDivElement | null>(null);
@@ -150,7 +281,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    // Scroll tracking — hide floating bar while scrolling
    const [isScrolling, setIsScrolling] = useState(false);
    const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-@@ -2548,6 +2592,7 @@ function FloatingSelectionTools({
+@@ -2548,6 +2642,7 @@ function FloatingSelectionTools({
  
    // Clear the temporary visual highlight applied while the link popover is open
    const clearLinkSelectionMark = useCallback(() => {
@@ -158,7 +289,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      editor.update(() => {
        const root = $getRoot();
        const textNodes: TextNode[] = [];
-@@ -2591,7 +2636,8 @@ function FloatingSelectionTools({
+@@ -2591,7 +2686,8 @@ function FloatingSelectionTools({
  
        const selection = selectLinkNodeContents(node);
        if ($isRangeSelection(selection) && !selection.isCollapsed()) {
@@ -168,7 +299,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        }
  
        setLinkInputState({
-@@ -2695,7 +2741,8 @@ function FloatingSelectionTools({
+@@ -2695,7 +2791,8 @@ function FloatingSelectionTools({
        // when the link popover steals focus. Uses a CSS custom property that
        // won't serialize to markdown.
        if (!selection.isCollapsed()) {
@@ -178,7 +309,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        }
  
        if (linkParent) {
-@@ -2721,6 +2768,7 @@ function FloatingSelectionTools({
+@@ -2721,6 +2818,7 @@ function FloatingSelectionTools({
    }, [editor]);
  
    const applyLink = useCallback((url: string) => {
@@ -186,7 +317,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      editor.update(() => {
        // Inline link-selection cleanup to avoid a separate update cycle
        const root = $getRoot();
-@@ -2752,6 +2800,7 @@ function FloatingSelectionTools({
+@@ -2752,6 +2850,7 @@ function FloatingSelectionTools({
    }, [editor]);
  
    const removeLink = useCallback(() => {
@@ -194,7 +325,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      editor.update(() => {
        // Inline link-selection cleanup to avoid a separate update cycle
        const root = $getRoot();
-@@ -3121,7 +3170,7 @@ function FloatingSelectionTools({
+@@ -3121,7 +3220,7 @@ function FloatingSelectionTools({
          }
  
          // Cmd+Shift+A for comment annotation
@@ -203,7 +334,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
            event.preventDefault();
            openCommentInput();
            return true;
-@@ -3509,7 +3558,8 @@ function FloatingSelectionTools({
+@@ -3509,7 +3608,8 @@ function FloatingSelectionTools({
      </ToolbarTooltip>
    );
  
@@ -213,7 +344,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      <ToolbarTooltip label="Comment" keys={['⌘', '⇧', 'A']}>
        <button
          type="button"
-@@ -3551,7 +3601,7 @@ function FloatingSelectionTools({
+@@ -3551,7 +3651,7 @@ function FloatingSelectionTools({
  
    const trashedToolbar = (
      <div className="px-3 py-2 text-sm text-ink-muted">
@@ -222,7 +353,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      </div>
    );
  
-@@ -3565,7 +3615,7 @@ function FloatingSelectionTools({
+@@ -3565,7 +3665,7 @@ function FloatingSelectionTools({
    const showFloatingBar = (
      hasActiveSelection
      || !!linkInputState?.open
@@ -231,7 +362,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    // Calculate floating bar position from selection rect
    // Clamp below the topnav (~48px from viewport top) to avoid overlap
-@@ -3614,6 +3664,7 @@ function FloatingSelectionTools({
+@@ -3614,6 +3714,7 @@ function FloatingSelectionTools({
            <SelectionToolbarShell
              ref={floatingToolbarRef}
              style={floatingBarStyle}
@@ -239,7 +370,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
              data-floating-selection-toolbar="true"
            >
              <SelectionToolbarInner>
-@@ -3644,11 +3695,13 @@ function FloatingSelectionTools({
+@@ -3644,11 +3745,13 @@ function FloatingSelectionTools({
          </TooltipProvider>
        )}
        {/* Bottom bar — shown when NO text is selected (also hidden during scroll with active selection to prevent flash) */}
@@ -254,7 +385,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
            >
              <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
              <SelectionToolbarShell
-@@ -3760,11 +3813,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3760,11 +3863,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        paneId,
        enableSearchPlugin = true,
        editorMountVersion,
@@ -270,7 +401,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    const latestEditorStateRef = useRef<EditorState | null>(null);
    const editorRef = useRef<LexicalEditor | null>(null);
    const lastContentChangeTagsRef = useRef<string | null>(null);
-@@ -3796,7 +3852,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3796,7 +3902,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
    // Capture editor instance when ready
    const handleEditorReady = useCallback((editor: LexicalEditor) => {
      editorRef.current = editor;
@@ -279,7 +410,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        onReady?.(editor);
        return;
      }
-@@ -3813,7 +3869,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3813,7 +3919,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        );
      });
      onReady?.(editor);
@@ -288,7 +419,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    const analyticsOwnerId = `${paneId ?? 'single'}:${noteId}:${editorMountVersion ?? 0}`;
  
-@@ -3850,7 +3906,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3850,7 +3956,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
  
    const initialConfig = useMemo<InitialConfigType>(
      () => {
@@ -297,7 +428,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
        const importMarkdownValue = (editor: LexicalEditor): void => {
          // Strip any residual comment footer from the value (defensive —
-@@ -3870,18 +3926,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3870,18 +3976,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          // Strip leading H1 from body — it lives in the dedicated title field
          let bodyForEditor = strippedContent;
          const h1Match = bodyForEditor.match(/^#(?!#)\s+(.*?)(?:\s*#*)?\s*(?:\n|$)/);
@@ -322,7 +453,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          ? (editor: LexicalEditor) => {
              if (initialSerializedState) {
                try {
-@@ -3903,7 +3960,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3903,7 +4010,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          html: {
            import: MARKDOWN_EDITOR_HTML_IMPORT
          },
@@ -331,7 +462,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          nodes: MARKDOWN_EDITOR_NODES,
          onError(error) {
            throw error;
-@@ -3912,6 +3969,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3912,6 +4019,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        };
      },
      [
@@ -339,7 +470,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        editorStateCacheKey,
        hasInitialSerializedStateProp,
        initialSerializedState,
-@@ -4132,6 +4190,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4132,6 +4240,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        layoutMetadata?: NoteLayoutMetadata;
      }
    ): { success: boolean; frontmatter: Record<string, unknown> | null; h1Title: string | null; body: string; comments: CommentMetadataMap } => {
@@ -350,7 +481,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      const editor = editorRef.current;
      if (!editor) {
        return { success: false, frontmatter: null, h1Title: null, body: markdown, comments: {} };
-@@ -4151,8 +4213,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4151,8 +4263,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
      // Strip leading H1 from body — it lives in the dedicated title field
      const h1Result = extractLeadingH1(strippedContent);
  
@@ -359,7 +490,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      const scrollContainer = options?.scrollContainer;
      const savedScrollTop = scrollContainer?.scrollTop ?? 0;
  
-@@ -4178,7 +4238,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4178,7 +4288,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          }
          const root = $getRoot();
          root.clear();
@@ -369,7 +500,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          $postImportNormalize(commentMetadata, undefined, {
            layoutMetadata: options?.layoutMetadata
          });
-@@ -4209,7 +4270,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4209,7 +4320,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        console.error('[MarkdownEditor] In-place update failed:', error);
        return { success: false, frontmatter: fmResult.data, h1Title: h1Result.h1Title, body: h1Result.body, comments: commentMetadata };
      }
@@ -378,7 +509,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    useImperativeHandle(
      ref,
-@@ -4237,7 +4298,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4237,7 +4348,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
  
    return (
      <CurrentNoteIdContext.Provider value={noteId}>
@@ -388,7 +519,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        <CurrentNoteIdEditorPlugin />
        <div className="relative animate-[fadeIn_150ms_ease-out]" data-lexical-editor>
          <RichTextPlugin
-@@ -4260,7 +4322,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4260,7 +4372,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
            placeholder={<Placeholder>{placeholder ?? 'Start typing...'}</Placeholder>}
            ErrorBoundary={LexicalErrorBoundary}
          />
