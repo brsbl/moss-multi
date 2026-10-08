@@ -2,7 +2,6 @@
 // .../versions {name} (a named version) and .../versions/:vid/restore for an editor or above. Named versions are rate
 // limited per person by its PrincipalDO; the DocDO re-authorizes the actor in the write, and its verdict passes through.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
@@ -144,22 +143,16 @@ describe('version routes @p:mean-3', () => {
     expect(calls).toEqual([]);
   });
 
-  it("refuses a named version 413 when the doc's vault is out of storage, versions counted, before the DocDO", async () => {
-    const full = await insertDoc(d1.db, dan);
-    await d1.db.prepare('UPDATE docs SET version_bytes = ? WHERE id = ?').bind(VAULT_MEDIA_QUOTA_BYTES, full).run();
-    const response = await send('POST', dan.cookie, `/api/docs/${full}/versions`, { name: 'Draft' });
-    expect(response.status).toBe(413);
-    expect(await response.json()).toMatchObject({ error: 'over-quota' });
-    expect(calls).toEqual([]);
-  });
-
-  it("refuses a restore 413 when the doc's vault is out of storage, before the DocDO", async () => {
-    const full = await insertDoc(d1.db, dan);
-    await d1.db.prepare('UPDATE docs SET version_bytes = ? WHERE id = ?').bind(VAULT_MEDIA_QUOTA_BYTES, full).run();
-    const response = await send('POST', dan.cookie, `/api/docs/${full}/versions/v1/restore`);
-    expect(response.status).toBe(413);
-    expect(await response.json()).toMatchObject({ error: 'over-quota' });
-    expect(calls).toEqual([]);
+  it.each([
+    ['version-limit', /You have saved the most named versions/],
+    ['note-version-limit', /This note has the most named versions/],
+  ])('explains a %s refusal', async (reason, message) => {
+    verdict = { ok: false, status: 409, reason };
+    const response = await send('POST', eve.cookie, versions(), { name: 'Draft' });
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as { error: string; message?: string };
+    expect(body.error).toBe(reason);
+    expect(body.message).toMatch(message);
   });
 
   it.each([

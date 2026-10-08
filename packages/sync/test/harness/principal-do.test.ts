@@ -2,7 +2,7 @@
 // wakes empty, so the window lives in its storage and an exhausted identity stays refused after a wake. Also its
 // workspace channel: publishing reaches hibernated sockets, and clients cannot publish.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COMMENT_OP_RATE, REST_WRITE_RATE, UPLOAD_RATE, VERSION_BYTES_PER_PERSON } from '@moss-multi/protocol/limits';
+import { COMMENT_OP_RATE, REST_WRITE_RATE, UPLOAD_RATE } from '@moss-multi/protocol/limits';
 import { TRUSTED } from '@moss-multi/protocol/sync';
 import { PrincipalDO } from '../../src/principal-do.ts';
 import { Backing, FakeState, serverEnds } from './workerd.ts';
@@ -123,21 +123,4 @@ it('publishes to hibernated workspace sockets on a fresh RPC and does not accept
   await cold.webSocketClose(socket as never, 1000, '', true);
   expect(socket.closed).toEqual({ code: 1000, reason: 'closed' });
   backing.db.close();
-});
-
-describe('PrincipalDO version bytes @p:mean-3', () => {
-  it("charges a person's version bytes up to their bound, across wakes, and refunds", () => {
-    let opened = open(new Backing('principal-versions'));
-    expect(opened.dobj.chargeVersionBytes(VERSION_BYTES_PER_PERSON - 10)).toBe(true);
-    expect(opened.dobj.chargeVersionBytes(11)).toBe(false);
-    opened = wake(opened);
-    expect(opened.dobj.chargeVersionBytes(11), 'the total outlives a wake').toBe(false);
-    expect(opened.dobj.chargeVersionBytes(10)).toBe(true);
-    expect(opened.dobj.chargeVersionBytes(-5)).toBe(true);
-    expect(opened.dobj.chargeVersionBytes(5)).toBe(true);
-    expect(opened.dobj.chargeVersionBytes(1)).toBe(false);
-    expect(opened.dobj.chargeVersionBytes(3, true), "a restore's true-up is charged past the bound").toBe(true);
-    expect(opened.dobj.chargeVersionBytes(-3)).toBe(true);
-    expect(opened.dobj.chargeVersionBytes(1)).toBe(false);
-  });
 });
