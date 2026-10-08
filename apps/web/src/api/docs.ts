@@ -15,7 +15,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { liveLink, liveNotesBy, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
+import { actingUserId, liveLink, liveNotesBy, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
@@ -65,13 +65,15 @@ async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUse
 const noteCap = () => refuse(409, 'note-cap',
   `You have ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, the limit. Move some to Trash to make new ones.`);
 
+const docCap = () => json({ error: 'doc-cap' }, 413, NO_STORE);
+
 /** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
 async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
   try {
     await run();
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
-    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
+    if (error instanceof Error && error.message === 'doc-cap') return docCap();
     if (error instanceof Error && error.message === 'media-refused') return notFound();
     throw error;
   }
@@ -84,7 +86,7 @@ async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<u
  * work (A§5.2, A§18); the 429 to send past DOC_CREATE_RATE or DOC_CREATE_DAILY.
  */
 async function takeCreateToken(env: DocsEnv, principal: Exclude<Principal, { type: 'anonymous' }>): Promise<Response | null> {
-  const userId = principal.type === 'agent' ? principal.ownerUserId : principal.id;
+  const userId = actingUserId(principal)!;
   const taken = await (await getServerByName(env.PrincipalDO, userId)).takeCreateToken();
   if (taken === true) return null;
   const waitMs = Number(taken);
@@ -93,8 +95,6 @@ async function takeCreateToken(env: DocsEnv, principal: Exclude<Principal, { typ
     : 'Too many new notes at once. Wait a minute and try again.';
   return json({ error: 'rate-limited', message }, 429, { ...NO_STORE, 'retry-after': String(Math.max(1, Math.ceil(waitMs / 1000))) });
 }
-
-const docCap = () => json({ error: 'doc-cap' }, 413, NO_STORE);
 
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const principal = await resolvePrincipal(request, env);

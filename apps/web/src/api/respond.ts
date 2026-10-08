@@ -59,27 +59,41 @@ export async function readCapped(request: Request, max: number): Promise<string 
   if (Number(request.headers.get('content-length') ?? 0) > max) return 'too-large';
   const reader = request.body?.getReader();
   if (!reader) return '';
-  const chunks: Uint8Array[] = [];
-  let size = 0;
+  let read: Collected | 'too-large';
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > max) {
-        await reader.cancel().catch(() => undefined);
-        return 'too-large';
-      }
-      chunks.push(value);
-    }
+    read = await collectCapped(reader, max, () => reader.cancel().catch(() => undefined));
   } catch {
     return null;
   }
+  return read === 'too-large' ? read : new TextDecoder().decode(joinChunks(read));
+}
+
+type Collected = { chunks: Uint8Array[]; size: number };
+
+/** The chunks a reader yields, or 'too-large' once they run past `max` bytes, after `cancel` has run. */
+export async function collectCapped(reader: ReadableStreamDefaultReader<Uint8Array>, max: number,
+  cancel: () => Promise<unknown>): Promise<Collected | 'too-large'> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return { chunks, size };
+    size += value.byteLength;
+    if (size > max) {
+      await cancel();
+      return 'too-large';
+    }
+    chunks.push(value);
+  }
+}
+
+/** The collected chunks as one array. */
+export function joinChunks({ chunks, size }: Collected): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder().decode(bytes);
+  return bytes;
 }

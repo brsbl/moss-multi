@@ -21,7 +21,7 @@ import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import { editsLiveDoc, MAX_FOLDER_DEPTH, resolveDocAccess, writeActor, writeActorArgs, type WriteActor } from './access.ts';
 import { readCapped, remoteFetch, REMOTE_TIMEOUT_MS, takeFetchToken } from './remote.ts';
-import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { NO_STORE, notFound, readJsonObject, refuse } from './respond.ts';
 import { assertPublicUrl, safeFetch, SsrfBlockedError } from './ssrf.ts';
 import { ownerOfTrashed } from './trash.ts';
 
@@ -41,7 +41,6 @@ const NAME_ATTEMPTS = 50;
 
 const blobKey = (hash: string) => `asset-blobs/sha256/${hash}`;
 const etagOf = (hash: string) => `"${hash}"`;
-const refuse = (status: number, error: string, message: string) => json({ error, message }, status, NO_STORE);
 const tooLarge = (kind: 'image' | 'video') =>
   refuse(413, 'too-large', `${kind === 'image' ? 'Images' : 'Videos'} can be at most ${MEDIA_CAP_BYTES[kind] / (1024 * 1024)} MB.`);
 const unsupported = () =>
