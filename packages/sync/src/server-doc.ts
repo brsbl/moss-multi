@@ -135,28 +135,51 @@ export function mirrorOf(live: Y.Doc): Mirror {
 }
 
 /** What `mutate` changes: an update against `live`'s state, and each payload it wrote. */
-function mirrorDiff(live: Y.Doc, mutate: (doc: Y.Doc) => void): { diff: Uint8Array; payloads: [string, Uint8Array][] } {
+function mirrorDiff(live: Y.Doc, mutate: Mutate, verify?: Verify): { diff: Uint8Array; payloads: [string, Uint8Array][] } {
   const mirror = mirrorOf(live);
   try {
     const hydrated = Y.encodeStateVector(mirror.doc);
-    mirror.editor.update(() => mutate(mirror.doc), { discrete: true });
+    let rest = null as ReturnType<Mutate>;
+    mirror.editor.update(() => {
+      rest = mutate(mirror.doc);
+    }, { discrete: true });
+    // Each follow-up runs in its own update, so the binding syncs it separately; transforms ran with the first.
+    const step = rest;
+    if (typeof step === 'function') {
+      let more = true;
+      while (more) {
+        mirror.editor.update(() => {
+          more = step();
+        }, { discrete: true, skipTransforms: true });
+      }
+    }
+    verify?.(mirror);
     return { diff: Y.encodeStateAsUpdate(mirror.doc, hydrated), payloads: mirror.written() };
   } finally {
     mirror.dispose();
   }
 }
 
+/**
+ * A server write's mutation, run inside a headless update. It may return a follow-up to run in later updates of the
+ * same write until it returns false.
+ */
+export type Mutate = (doc: Y.Doc) => void | null | (() => boolean);
+
 /** Admission for a server write: the note's diff and each payload's; throws to refuse. */
 export type Admit = (diff: Uint8Array, payloads: [string, Uint8Array][]) => void;
+
+/** A check of the mutated mirror before anything is diffed; throws to refuse the write. */
+export type Verify = (mirror: Mirror) => void;
 
 /**
  * The one server-side content writer (seed and import now; push, restore and accept later): run `mutate` inside a
  * headless update on a hydrated mirror, hand the mirror's diffs to `admit` (which throws to refuse them), then write
- * the payloads it changed and apply the note's diff to the live doc under `origin`. The mirror is released before
- * returning. Returns whether the live doc changed.
+ * the payloads it changed and apply the note's diff to the live doc under `origin`. `verify` reads the mutated mirror
+ * first and throws to refuse. The mirror is released before returning. Returns whether the live doc changed.
  */
-export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) => void, admit: Admit = noop): boolean {
-  const { diff, payloads } = mirrorDiff(live, mutate);
+export function serverWrite(live: Y.Doc, origin: unknown, mutate: Mutate, admit: Admit = noop, verify?: Verify): boolean {
+  const { diff, payloads } = mirrorDiff(live, mutate, verify);
   admit(diff, payloads);
   const source = payloadSourceOf(live);
   for (const [id, update] of payloads) source.write(id, update);

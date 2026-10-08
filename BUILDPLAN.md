@@ -588,7 +588,9 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Tests first:** properties: the result exports the target; untouched subtrees keep their Yjs item ids; a concurrent insert in an untouched block survives; anchors survive. **Done:** green.
 - **T6.2 Version storage and triggers** `[A·codex]`
   - **Scope:** A§14 storage, R2 spill, triggers, REST, and a rate limit on named versions.
-  - **Tests first:** harness: an auto version on last disconnect; the activity trigger; dedupe; a spill above 1.5 MB; a failed restore verification gets 409. **Done:** green.
+  - **Tests first:** harness: an auto version on last disconnect; the activity trigger; dedupe; a spill above 1.5 MB; a failed restore verification gets 409.
+  - **Required red-first test (T6.1 checker P2):** force reconcileBody's export-mismatch comparison (not an unknown node type, which fails earlier in stateToMarkdown) and assert the restore is refused before any body, payload or note write.
+  - **Done:** green.
 - **T6.3 History view** `[B·fresh]`
   - **Scope:** glyphdown's history page rebuilt in the moss DS inside the editor pane (A§14): the version list with badges, View and Diff vs current, Restore with ConfirmationDialog, `VersionHistoryEmptyState`, a first named checkpoint from the empty state, honest errors.
   - **Tests first:** journey **j17-history**: an auto version appears after the last disconnect; a selected version is read-only; Diff vs current shows the peer's change; a named version is saved from the empty state and from a non-empty list; restore while the peer types keeps the peer's insert and a comment anchor; a versions fetch failed with `page.route` renders an error, never "No checkpoints".
