@@ -2,7 +2,7 @@
 // 3 degenerate. Output that is content (`cat`) is written as raw bytes; everything else is one line per record.
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { TRASH_COPY, TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { createApi, type Api } from './api.ts';
@@ -10,7 +10,7 @@ import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConf
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { jsonSafe, redact, ttySafe } from './output.ts';
-import { describe, syncExitCode, syncOnce, watchLoop } from './sync.ts';
+import { adopt, describe, readSidecar, syncExitCode, syncOnce, watchLoop } from './sync.ts';
 import { confined, ensureStateDir, findRoot, localName, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
@@ -45,9 +45,10 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   cat <doc>                                    the doc's markdown, byte for byte
   new <title> [--folder <id>] [--json]         create an empty doc; prints its id
   add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]
-                                               create a doc from a local file; prints its id. A first line
-                                               "# <title>" is the title, not a heading. --moss imports a moss
-                                               note: its "# Title" line names it, its comments.json comes too
+                                               create a doc from a local file; prints its id. With --title, a
+                                               first line "# <title>" is the title, not a heading. --moss imports
+                                               a moss note: its "# Title" line names it, its comments.json comes
+                                               too. In a workspace the file is tracked, as sync would
   url <doc>                                    the doc's web address
   mv <doc> <new title>                         rename a doc
   rm <doc> [--json]                            move a doc to Trash
@@ -243,30 +244,33 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const parsed = parseArgs(rest, ['json', 'moss'], ['title', 'folder']);
       const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]');
       const path = resolve(cwd(), file);
-      const root = findRoot(cwd()) ?? cwd();
-      const markdown = toLf(decoder.decode(readConfined(root, path)));
+      const workspace = findRoot(cwd());
+      const root = workspace ?? cwd();
       const moss = parsed.flags.has('moss');
-      const stem = basename(path, extname(path));
-      // A moss note is named by its "# Title" line; any other file by --title or its stem.
-      const title = value(parsed, 'title') ?? (moss ? undefined : stem);
-      let comments: Record<string, unknown> | undefined;
-      const sidecar = join(dirname(path), 'comments.json');
-      if (moss && existsSync(sidecar)) {
-        let parsedSidecar: unknown;
-        try {
-          parsedSidecar = JSON.parse(decoder.decode(readConfined(root, sidecar)));
-        } catch (error) {
-          if (error instanceof CliError) throw error;
-          throw new CliError(1, `${basename(sidecar)} beside ${file} is not JSON`);
-        }
-        if (!parsedSidecar || typeof parsedSidecar !== 'object' || Array.isArray(parsedSidecar)) throw new CliError(1, `${basename(sidecar)} beside ${file} is not moss's comments map`);
-        comments = parsedSidecar as Record<string, unknown>;
-      }
-      const client = api();
+      const title = value(parsed, 'title');
       const folderId = value(parsed, 'folder');
-      let doc = await client.create({ ...(title !== undefined ? { title } : {}), markdown, titleLine: true, ...(comments ? { comments } : {}), ...(folderId ? { folderId } : {}) });
-      // A moss note with no title line takes its file's stem.
-      if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
+      const client = api();
+      let doc: { id: string; title: string };
+      if (workspace) {
+        // In a workspace the file is tracked at once, as sync would, so a later sync makes no second doc.
+        const rel = confined(workspace, path);
+        if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
+        ({ doc } = await adopt({ root: workspace, client, folds: foldsCase(workspace) }, rel, {
+          moss, keepName: true, ...(title !== undefined ? { title, titleLine: true } : {}), ...(folderId ? { folderId } : {}),
+        }));
+      } else {
+        const markdown = toLf(decoder.decode(readConfined(root, path)));
+        const stem = basename(path, extname(path));
+        const comments = moss ? readSidecar(root, path) : undefined;
+        // A moss note is named by its "# Title" line; any other file by --title or its stem, and only --title lifts a
+        // first line that repeats it.
+        doc = await client.create({
+          ...(title !== undefined ? { title } : moss ? {} : { title: stem }), markdown, ...(moss || title !== undefined ? { titleLine: true } : {}),
+          ...(comments ? { comments } : {}), ...(folderId ? { folderId } : {}),
+        });
+        // A moss note with no title line takes its file's stem.
+        if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
+      }
       if (parsed.flags.has('json')) return json({ ...doc, url: docUrl(client, doc.id) });
       line(doc.id);
     },
@@ -301,6 +305,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const id = await resolveDocId(client, ref);
       const root = findRoot(cwd()) ?? cwd();
       const tracked = readMeta(root, id);
+      if (tracked?.mode === 'moss') throw new CliError(1, `${tracked.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
       let rel: string;
       if (fileArg !== undefined) rel = confined(root, resolve(cwd(), fileArg));
       else if (tracked) rel = confined(root, tracked.file);
@@ -332,6 +337,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const root = findRoot(cwd());
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
+      if (meta.mode === 'moss') throw new CliError(1, `${meta.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
