@@ -260,4 +260,21 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
       expect(exported(live)).toBe(next);
     });
   }
+
+  it('edits the paragraph after a block the converter would not re-import exactly, and leaves that block alone', () => {
+    const live = docOf(`Water at dawn.\n\n${LOSSY['code-blocks']!.split('\n\n')[1]}\n\nHarvest in autumn.`);
+    const base = exported(live);
+    const before = bodyState(live).root.children;
+    const ids = blockIds(live);
+    const peer = fork(live);
+    typeAfter(peer, 'Harvest in autumn.', ' Pick squash');
+    share(peer, live);
+    const next = `${base.replace('Harvest in autumn.', 'Harvest in late autumn.')}\n`;
+    expect(landPush(live, NOTE, { base, newText: next, force: false }, PUSH)).toMatchObject({ ok: true, failedHunks: [] });
+    const after = bodyState(live).root.children;
+    expect(after).toHaveLength(3);
+    expect(after.slice(0, 2)).toEqual(before.slice(0, 2));
+    expect(blockIds(live)).toEqual(ids);
+    expect(exported(live)).toBe(base.replace('Harvest in autumn.', 'Harvest in late autumn. Pick squash'));
+  });
 });
