@@ -1,0 +1,205 @@
+// T3.12 editor load performance. The built bundle's entry script is at most 350 KB gzip and editor.json names every
+// chunk a host must serve; a small plain note and a typical note (a table and a code block) are editable within 1 s
+// of navigation with a warm cache, in both engines, served as editor-embed.md §13 asks of a host; the heavy node
+// families (charts, the canvas, HTML blocks) load only once a note uses them, and render with no console errors. Every
+// run records, per engine, cold and warm: script bytes, when the bundle evaluated, first content paint, editable and
+// the bridge calls before ready, plus what a slow bridge and an uncached package cost (test-results/load/*.json).
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
+import { expect, test, type Page } from '@playwright/test';
+import { EDITOR_DIST, serveEditor, type EditorServer } from './server.ts';
+import { coldAndWarm, collect, loadNotes, meta, report, warmMarks, type LoadNote, type LoadRun } from '../lib/load-timing.ts';
+
+const ENTRY_GZIP_BUDGET = 350 * 1024;
+const EDITABLE_BUDGET_MS = 1_000;
+const DEMO = readFileSync(new URL('../fixtures/demo-note.md', import.meta.url), 'utf8');
+const NOTES = loadNotes(DEMO);
+const CONTEXT = { viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, locale: 'en-US', timezoneId: 'UTC', colorScheme: 'light' as const };
+/** The node families that load on first use, by the chunk each one's view lives in. */
+const LAZY_FAMILIES = [
+  { family: 'chart', chunk: /chart/i, markdown: '```moss-chart\n{"type":"bar","title":"Lazy","data":[{"label":"A","value":3},{"label":"B","value":5}]}\n```', rendered: '.recharts-surface' },
+  { family: 'canvas', chunk: /canvas|sketch/i, markdown: '```moss-canvas\n[moss:grid:v2]\n..##..\n```', rendered: '[aria-label="Insert paragraph before canvas"]' },
+  { family: 'HTML block', chunk: /html/i, markdown: '```moss-html\n<p>Lazy HTML.</p>\n```', rendered: '[data-moss-html-preview-viewport]' },
+];
+
+interface Manifest {
+  entry: string;
+  hostEntry: string;
+  files: Record<string, { bytes: number; sha256: string }>;
+  chunks?: string[];
+  preload?: string[];
+}
+
+/** The part of e2e/editor/fixture/fixture.js this spec drives. */
+interface Fixture {
+  violations: string[];
+  reset(): void;
+  seed(segments: string[], note: { markdown: string; meta: object }): string;
+  mount(noteId: string): Promise<{ ok: boolean; status: string }>;
+}
+
+const manifest = (): Manifest => JSON.parse(readFileSync(join(EDITOR_DIST, 'editor.json'), 'utf8')) as Manifest;
+const gzip = (file: string) => gzipSync(readFileSync(join(EDITOR_DIST, file)), { level: 9 }).length;
+const kb = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`;
+
+let server: EditorServer;
+
+test.beforeAll(async () => {
+  server = await serveEditor();
+});
+
+test.afterAll(async () => {
+  await server?.close();
+});
+
+async function loadOnce(page: Page, note: LoadNote, options: { latency?: number; settleMs?: number } = {}): Promise<LoadRun> {
+  const consoleErrors: string[] = [];
+  const onConsole = (message: { type(): string; text(): string }) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  };
+  page.on('console', onConsole);
+  const spec = { title: note.title, markdown: note.markdown, meta: meta(note.title), probe: note.probe, latency: options.latency ?? 0, settleMs: options.settleMs ?? 0 };
+  await page.addInitScript((value) => {
+    (window as unknown as { __load: unknown }).__load = value;
+  }, spec);
+  const served = server.served.length;
+  await page.goto(`${server.url}/fixture/load.html`);
+  const run = await collect(page, 'loadResult');
+  // The caret is in the body: typing lands there.
+  await page.keyboard.type(' typed');
+  await expect(page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]')).toContainText(`${note.probe} typed`);
+  run.marks.typed = await page.evaluate(() => (window as unknown as { loadResult: LoadRun }).loadResult.marks.typed);
+  run.typed = Number.isFinite(run.marks.typed);
+  await page.evaluate(() => (window as unknown as { loadHandle: { unmount(options: object): Promise<unknown> } }).loadHandle.unmount({ discardUnsaved: true }));
+  run.served = server.served.slice(served);
+  run.errors.push(...consoleErrors);
+  page.off('console', onConsole);
+  return run;
+}
+
+const row = (label: string, marks: Record<string, number>, run: LoadRun) =>
+  `${label.padEnd(22)} imported ${String(marks.imported).padStart(5)}  paint ${String(marks.paint).padStart(5)}  ready ${String(marks.ready).padStart(5)}  editable ${String(marks.editable).padStart(5)}  typed ${String(marks.typed).padStart(5)}  bridge ${run.readyBridgeCalls ?? '?'}  fetched ${kb((run.served ?? []).reduce((total, entry) => total + entry.bytes, 0))}`;
+
+test('the entry script is at most 350 KB gzip and editor.json names every chunk and the critical ones to preload', async ({ browserName }, testInfo) => {
+  test.skip(browserName !== 'chromium', 'one engine checks the built files');
+  const built = manifest();
+  const scripts = readdirSync(EDITOR_DIST, { recursive: true })
+    .map(String)
+    .filter((file) => file.endsWith('.js'))
+    .sort();
+  const sizes = Object.fromEntries(scripts.map((file) => [file, { bytes: readFileSync(join(EDITOR_DIST, file)).length, gzip: gzip(file) }]));
+  report(testInfo, 'editor-bundle.json', sizes, ['editor bundle:', ...Object.entries(sizes).map(([file, size]) => `  ${file}: ${kb(size.bytes)}, ${kb(size.gzip)} gzip`)]);
+  const files = readdirSync(EDITOR_DIST, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name !== 'editor.json')
+    .map((entry) => join(entry.parentPath, entry.name).slice(EDITOR_DIST.length + 1))
+    .sort();
+  expect(Object.keys(built.files).sort(), 'editor.json lists every file in the package').toEqual(files);
+  expect(built.chunks, 'editor.json names every script chunk besides the entry and the host helpers').toEqual(scripts.filter((file) => file !== built.entry && file !== built.hostEntry));
+  expect(built.preload, 'editor.json names the chunks the entry imports statically').toBeDefined();
+  for (const file of built.preload ?? []) expect(built.chunks).toContain(file);
+  expect(sizes[built.entry].gzip, `the entry ${built.entry} is ${kb(sizes[built.entry].gzip)} gzip`).toBeLessThanOrEqual(ENTRY_GZIP_BUDGET);
+});
+
+test('load timing: plain and typical notes are editable within 1 s warm; cold, warm and every-family runs are recorded', async ({ browser, browserName }, testInfo) => {
+  test.setTimeout(300_000);
+  server.cache = 'host';
+  const results: Record<string, { cold: LoadRun; warm: LoadRun[]; warmMarks: Record<string, number> }> = {};
+  const table = [`editor load, ${browserName} (ms since navigation start; warm = median of the warm runs):`];
+  try {
+    for (const note of NOTES) {
+      const { cold, warm } = await coldAndWarm(browser, (page) => loadOnce(page, note, { settleMs: note.key === 'all' ? 1_500 : 0 }), CONTEXT);
+      const marks = warmMarks(warm);
+      results[note.key] = { cold, warm, warmMarks: marks };
+      table.push(row(`${note.key} cold`, cold.marks, cold), row(`${note.key} warm`, marks, warm[warm.length - 1]));
+    }
+  } finally {
+    server.cache = 'no-store';
+  }
+  report(testInfo, `editor-load-${browserName}.json`, results, table);
+  for (const [key, { cold, warm }] of Object.entries(results)) {
+    for (const run of [cold, ...warm]) {
+      expect(run.errors, `${key}: no errors`).toEqual([]);
+      expect(run.editable && run.typed, `${key}: the caret is placeable and typing lands`).toBe(true);
+    }
+  }
+  for (const key of ['plain', 'typical']) {
+    expect(results[key].warmMarks.editable, `${key}: editable ${results[key].warmMarks.editable} ms after navigation, warm`).toBeLessThanOrEqual(EDITABLE_BUDGET_MS);
+  }
+});
+
+test('host side: what a slow bridge and an uncached package add to a warm load', async ({ browser, browserName }, testInfo) => {
+  test.setTimeout(240_000);
+  const note = NOTES[0];
+  const variants: Record<string, Record<string, number>> = {};
+  const table = [`editor host-side costs, ${browserName}, the plain note, warm medians:`];
+  const runs: Record<string, LoadRun> = {};
+  for (const [label, cache, latency] of [
+    ['cached, no latency', 'host', 0],
+    ['cached, 50 ms per bridge call', 'host', 50],
+    ['uncached (no-store)', 'no-store', 0],
+  ] as const) {
+    server.cache = cache;
+    try {
+      const { warm } = await coldAndWarm(browser, (page) => loadOnce(page, note, { latency }), CONTEXT);
+      variants[label] = warmMarks(warm);
+      runs[label] = warm[warm.length - 1];
+      table.push(row(label, variants[label], runs[label]));
+    } finally {
+      server.cache = 'no-store';
+    }
+  }
+  report(testInfo, `editor-host-${browserName}.json`, { variants, runs }, table);
+  for (const run of Object.values(runs)) expect(run.errors).toEqual([]);
+});
+
+test('heavy families load on first use: none for a plain note, then each renders once pasted, with no console errors', async ({ page }) => {
+  const built = manifest();
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  for (const { family, chunk } of LAZY_FAMILIES) {
+    expect(built.chunks?.some((file) => chunk.test(file) && !(built.preload ?? []).includes(file)), `${family} has its own lazy chunk`).toBe(true);
+  }
+  const lazy = (path: string) => LAZY_FAMILIES.some(({ chunk }) => chunk.test(path)) && !(built.preload ?? []).some((file) => path.endsWith(file));
+  const before = server.requests.length;
+  await page.goto(`${server.url}/fixture/index.html`);
+  await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+  const note = NOTES[0];
+  const result = await page.evaluate(
+    ({ markdown, meta }) => {
+      const fixture = (window as unknown as { editorFixture: Fixture }).editorFixture;
+      fixture.reset();
+      fixture.seed(['Notes', meta.title], { markdown, meta });
+      return fixture.mount(meta.id);
+    },
+    { markdown: note.markdown, meta: meta(note.title) },
+  );
+  expect(result).toEqual({ ok: true, status: 'clean' });
+  const body = page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
+  await expect(body).toContainText(note.probe);
+  await page.waitForTimeout(500);
+  expect(server.requests.slice(before).filter(lazy), 'a plain note loads no family chunk').toEqual([]);
+  server.delay = { pattern: /\/assets\/.*\.js$/, ms: 400 };
+  try {
+    for (const { family, markdown, rendered } of LAZY_FAMILIES) {
+      await body.getByText('The last line of the note.').click();
+      await page.keyboard.press('End');
+      await page.keyboard.press('Enter');
+      await body.evaluate((element, text) => {
+        const clipboardData = new DataTransfer();
+        clipboardData.setData('text/plain', text);
+        element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+      }, markdown);
+      await expect(body.locator(rendered).first(), `${family} renders after first use`).toBeVisible({ timeout: 15_000 });
+    }
+  } finally {
+    server.delay = { pattern: null, ms: 0 };
+  }
+  expect(server.requests.slice(before).filter(lazy).length, 'the families loaded their chunks on first use').toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+  expect(await page.evaluate(() => (window as unknown as { editorFixture: Fixture }).editorFixture.violations)).toEqual([]);
+});
+
