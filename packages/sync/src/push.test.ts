@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
 import { readFrontmatter } from '@moss-multi/core/frontmatter';
-import { computeMergedTarget } from '@moss-multi/core/merge';
+import { computeMergedTarget, mergeBudget } from '@moss-multi/core/merge';
 import { landPush } from './push.ts';
 import { bodyState, ReconcileRefused } from './reconcile.ts';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
@@ -185,6 +185,27 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(exported(live)).toBe(kept);
     expect(landPush(live, NOTE, { base, newText: most, force: true }, PUSH)).toMatchObject({ ok: true });
     expect(exported(live)).toBe(most);
+  });
+
+  it('refuses a drifted push whose merge runs out of budget: 409, and nothing lands (T7.S2)', () => {
+    const live = docOf(BODY);
+    const base = exported(live);
+    typeAfter(live, 'Alpha one', ' (typed)');
+    const kept = exported(live);
+    const next = base.replace('Echo five stays.', 'Echo five was pushed.');
+    let error: unknown;
+    try {
+      landPush(live, NOTE, { base, newText: next, force: false, budget: mergeBudget(0) }, PUSH);
+    } catch (thrown) {
+      error = thrown;
+    }
+    expect(error).toBeInstanceOf(ReconcileRefused);
+    expect((error as ReconcileRefused).status).toBe(409);
+    expect((error as Error).message).toMatch(/nothing changed/);
+    expect(exported(live), 'a refused push changes nothing').toBe(kept);
+    expect(landPush(live, NOTE, { base, newText: next, force: false }, PUSH), 'the default budget lands it').toMatchObject({ ok: true, failedHunks: [] });
+    expect(exported(live)).toContain('Echo five was pushed.');
+    expect(exported(live)).toContain('Alpha one (typed)');
   });
 
   it('returns a hunk it cannot place and lands the rest', () => {
