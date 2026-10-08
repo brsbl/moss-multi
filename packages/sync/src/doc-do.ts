@@ -181,6 +181,11 @@ function send(connection: Connection, message: Uint8Array): void {
  * socket and sets the trusted headers; this class persists, seeds, gates writes and answers RPCs. Every RPC that
  * reads the doc starts with ready(), so a stub that outlives an eviction never reads an empty doc.
  */
+
+/** A sync frame that holds the DO this long is logged (T3.S6: large pastes, their undo and redo). */
+const SLOW_FRAME_MS = 1_000;
+/** A slow save waits for this long without a client write. */
+const WRITE_PAUSE_MS = 2_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -236,6 +241,10 @@ export class DocDO extends YServer<SyncEnv> {
   #fed: string | null = null;
   /** Doc edits since load; a feed marks the doc fed only if none landed while it ran. */
   #edits = 0;
+  /** When the last client write landed, how long the last save took, and a save waiting for the writes to pause. */
+  #lastWriteAt = 0;
+  #saveMs = 0;
+  #quietSave: ReturnType<typeof setTimeout> | undefined;
   /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
   #searchStale = false;
   /** A feed queued by a payload edit; payload docs do not trigger the note's debounced save. */
@@ -307,10 +316,21 @@ export class DocDO extends YServer<SyncEnv> {
     if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
   }
 
-  /** Debounced by y-partyserver (2 s, at most 10 s). */
+  /**
+   * Debounced by y-partyserver (2 s, at most 10 s). On a large note its compaction and search export take seconds, and
+   * at most every 10 s while a large paste streams in they held the DO, with the writes it was applying, past a peer's
+   * 12 s silence limit (T3.S6): a save that took over a second waits until the writes pause.
+   */
   override async onSave(): Promise<void> {
+    clearTimeout(this.#quietSave);
+    if (this.#saveMs > SLOW_FRAME_MS && Date.now() - this.#lastWriteAt < WRITE_PAUSE_MS) {
+      this.#quietSave = setTimeout(() => void this.onSave(), WRITE_PAUSE_MS);
+      return;
+    }
+    const started = Date.now();
     if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
     await this.#feedSearch();
+    this.#saveMs = Date.now() - started;
   }
 
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
@@ -359,6 +379,9 @@ export class DocDO extends YServer<SyncEnv> {
     encoding.writeVarUint(encoder, 0);
     writeSyncStep1(encoder, this.document);
     connection.send(encoding.toUint8Array(encoder));
+    // The payload bytes the cap counts, withheld ones too (a client holds only the payloads its tree names); none: 0.
+    const payloadBytes = this.#payloads?.totalBytes ?? 0;
+    if (payloadBytes > 0) this.sendCustomMessage(connection, JSON.stringify({ t: 'usage', pb: payloadBytes } satisfies ServerEvent));
     if (attachment.presenceAllowed && this.document.awareness.getStates().size) {
       connection.send(awarenessFrame(this.document.awareness, [...this.document.awareness.getStates().keys()]));
     }
@@ -383,6 +406,7 @@ export class DocDO extends YServer<SyncEnv> {
     const waiting = this.#waiting.get(connection) ?? { frames: 0, bytes: 0 };
     if (waiting.frames + 1 > this.#limits.inboxFramesPerConnection || waiting.bytes + bytes > this.#limits.inboxBytesPerConnection
       || this.#waitingBytes + bytes > this.#limits.inboxBytes) {
+      console.warn(`DocDO: a socket's inbox is full (${waiting.frames} frames, ${waiting.bytes} bytes waiting; ${this.#waitingBytes} in all): closing it`);
       this.#dropWaiting(connection);
       connection.close(TRY_AGAIN, 'inbox full');
       return;
@@ -504,6 +528,7 @@ export class DocDO extends YServer<SyncEnv> {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
     }
+    const started = Date.now();
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
       const { changes, missing, deletes } = classifySync(this.document, frame.update);
@@ -520,6 +545,8 @@ export class DocDO extends YServer<SyncEnv> {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
+      const ms = Date.now() - started;
+      if (ms > SLOW_FRAME_MS && frame.kind === 'sync') console.warn(`DocDO: a ${frame.update.byteLength}-byte sync frame took ${ms} ms`);
     }
   }
 
@@ -855,7 +882,10 @@ export class DocDO extends YServer<SyncEnv> {
     if (!feed) return;
     try {
       // Never through ready(): called from onLoad's timer and onSave, the doc is already loaded.
+      const started = Date.now();
       this.#exported ??= exportDocMarkdown(this.document, this.name);
+      const ms = Date.now() - started;
+      if (ms > SLOW_FRAME_MS) console.warn(`DocDO: exporting ${this.#exported.length} characters for search took ${ms} ms`);
       const markdown = this.#exported;
       const entry: IndexEntry = { docId: this.name, title: this.document.getText('title').toString(), body: splitFrontmatter(markdown).body };
       const signature = `${entry.title}\u0000${entry.body}`;
@@ -886,6 +916,7 @@ export class DocDO extends YServer<SyncEnv> {
     store.record(update, this.document);
     this.#edited(store);
     if (isConnection(origin)) {
+      this.#lastWriteAt = Date.now();
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
     }
@@ -1042,6 +1073,8 @@ export class DocDO extends YServer<SyncEnv> {
       sv: bytesToBase64(Y.encodeStateVector(this.document)),
       ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(deletes, new Map()))),
     };
+    const payloadBytes = this.#payloads?.totalBytes ?? 0;
+    if (payloadBytes > 0) event.pb = payloadBytes;
     if (payloads.size) {
       const acked: Record<string, PayloadAck> = {};
       for (const [id, covered] of payloads) {

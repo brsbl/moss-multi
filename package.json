@@ -104,7 +104,9 @@
     },
     "patchedDependencies": {
       "wrangler@4.113.0": "patches/wrangler@4.113.0.patch",
-      "y-partyserver@2.2.0": "patches/y-partyserver@2.2.0.patch"
+      "y-partyserver@2.2.0": "patches/y-partyserver@2.2.0.patch",
+      "@lexical/yjs@0.48.0": "patches/@lexical__yjs@0.48.0.patch",
+      "yjs@13.6.31": "patches/yjs@13.6.31.patch"
     }
   }
 }
