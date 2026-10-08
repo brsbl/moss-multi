@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { parseDocRef } from './docref.ts';
+import { isUnsafeChar } from './output.ts';
 import { runCli } from './program.ts';
 import { sha256Hex } from './workspace.ts';
 
@@ -426,8 +427,8 @@ describe('device sign-in opens only the server\'s own pages', () => {
 describe('server text never drives the terminal', () => {
   const ID_D = '44444444-4444-4444-8444-444444444444';
   const ID_E = '66666666-6666-4666-8666-666666666666';
-  const EVIL = 'Plan\u001b[2J\u001b]8;;https://evil.example.invalid\u0007click\u001b]8;;\u0007\u009b31m‮gnp.exe\r';
-  const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/;
+  const EVIL = 'Plan\u001b[2J\u001b]8;;https://evil.example.invalid\u0007click\u001b]8;;\u0007\u009b31m\u202egnp.exe\r';
+  const hasControl = (text: string) => [...text].some((char) => isUnsafeChar(char.charCodeAt(0)));
   const row = (id: string, title: string) => ({ id, title, filename: 'plan.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 0 });
 
   it('a title with escape sequences prints escaped in list, mv, a doc-reference error and a refusal', async () => {
@@ -435,27 +436,27 @@ describe('server text never drives the terminal', () => {
     server.content.set(ID_D, new TextEncoder().encode(`# ${EVIL}`));
     const listed = await cli(['list']);
     expect(listed.code).toBe(0);
-    expect(listed.out).not.toMatch(CONTROL);
+    expect(hasControl(listed.out)).toBe(false);
     expect(listed.out).toContain('Plan\\x1b[2J');
     expect(listed.out).toContain('\\u202e');
     const renamed = await cli(['mv', ID_D, EVIL]);
     expect(renamed.code).toBe(0);
-    expect(renamed.out).not.toMatch(CONTROL);
+    expect(hasControl(renamed.out)).toBe(false);
     const ambiguous = await cli(['cat', 'Pla']);
     expect(ambiguous.code).toBe(1);
     expect(ambiguous.err).toContain(ID_E);
-    expect(ambiguous.err).not.toMatch(CONTROL);
+    expect(hasControl(ambiguous.err)).toBe(false);
     server.state.refuse = { status: 403, body: { message: 'no \u001b]52;c;cm0gLXJmIH4=\u0007 way' } };
     const refused = await cli(['history', ID_D]);
     expect(refused.code).toBe(1);
     expect(refused.err).toContain('forbidden');
-    expect(refused.err).not.toMatch(CONTROL);
+    expect(hasControl(refused.err)).toBe(false);
   });
 
   it('--json keeps the exact title, escaped so no control character reaches the terminal raw', async () => {
     server.docs.push(row(ID_D, EVIL));
     const listed = await cli(['list', '--json']);
-    expect(listed.out).not.toMatch(CONTROL);
+    expect(hasControl(listed.out)).toBe(false);
     expect((JSON.parse(listed.out) as { id: string; title: string }[]).find((doc) => doc.id === ID_D)?.title).toBe(EVIL);
   });
 

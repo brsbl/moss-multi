@@ -1,10 +1,13 @@
 // Pull and push state (A§17): each workspace keeps `.moss-multi/<docId>/{meta.json, base.md}`. The base is the exact
 // bytes last pulled, so a push sends its hash and the server can three-way merge against it. Nothing here follows a
-// symbolic link: every path is checked step by step below the workspace root.
+// symbolic link: every path is checked step by step below the workspace root, its real parent must lie inside the
+// root's real path, and each name passes moss's filename rules. Every command that reads or writes a local file
+// goes through `confined`.
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, type Stats } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CliError } from './errors.ts';
+import { isUnsafeChar } from './output.ts';
 
 export const STATE_DIR = '.moss-multi';
 const DOC_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -31,6 +34,21 @@ const lstat = (path: string): Stats | null => {
 /** A real directory: a link to one does not count. */
 const isDir = (path: string) => lstat(path)?.isDirectory() === true;
 
+/** moss's filename rules: no `< > : " / \ | ? *` or control characters, not `.` or `..`, at most 255 UTF-8 bytes. */
+const BAD_NAME = /[<>:"/\\|?*]/;
+export const isAllowedName = (name: string): boolean =>
+  name !== '' && name !== '.' && name !== '..' && !BAD_NAME.test(name) && Buffer.byteLength(name, 'utf8') <= 255 &&
+  ![...name].some((char) => isUnsafeChar(char.charCodeAt(0)));
+
+/** The nearest existing directory holding `root/rel` must resolve inside the root's real path. */
+function realInside(root: string, rel: string): void {
+  const realRoot = realpathSync(root);
+  let dir = dirname(join(root, rel));
+  while (!lstat(dir) && dir !== root) dir = dirname(dir);
+  const inner = relative(realRoot, realpathSync(dir));
+  if (inner === '..' || inner.startsWith(`..${sep}`) || isAbsolute(inner)) throw new CliError(1, `${rel} resolves outside the workspace at ${root}`);
+}
+
 /** Refuses a symbolic link at any step from `root` down to `rel`, the last step included; returns the full path. */
 function noLinks(root: string, rel: string): string {
   let path = root;
@@ -51,6 +69,7 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
   const target = noLinks(root, rel);
   mkdirSync(dirname(target), { recursive: true });
   noLinks(root, rel);
+  realInside(root, rel);
   const temp = join(dirname(target), `.${basename(target)}.${randomBytes(6).toString('hex')}.tmp`);
   writeFileSync(temp, bytes, { flag: 'wx' });
   try {
@@ -76,12 +95,27 @@ export function findRoot(start: string): string | null {
   }
 }
 
-/** `file` relative to `root`, refusing anything outside it or reached through a symbolic link. */
+/**
+ * `file` relative to `root`, refusing anything outside it, reached through a symbolic link, inside the state
+ * directory, or named against moss's filename rules.
+ */
 export function confined(root: string, file: string): string {
   const rel = relative(root, resolve(root, file));
   if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new CliError(1, `${file} is outside the workspace at ${root}`);
+  const parts = rel.split(sep);
+  if (parts[0] === STATE_DIR) throw new CliError(1, `${rel} is inside ${STATE_DIR}, where moss-multi keeps its own state`);
+  const bad = parts.find((part) => !isAllowedName(part));
+  if (bad !== undefined) throw new CliError(1, `"${bad}" is not a file name moss allows (no < > : " / \\ | ? * or control characters)`);
   noLinks(root, rel);
+  realInside(root, rel);
   return rel;
+}
+
+/** The bytes of a regular file confined to `root`: a link, a directory or a missing file is refused. */
+export function readConfined(root: string, file: string): Buffer {
+  const rel = confined(root, file);
+  if (!lstat(join(root, rel))?.isFile()) throw new CliError(1, `no such file: ${rel}`);
+  return readFileSync(join(root, rel));
 }
 
 function stateRel(docId: string, name?: string): string {
@@ -142,7 +176,7 @@ export function recordBase(root: string, docId: string, rel: string, bytes: Uint
 /** A local file name for a doc: its server filename's last segment, or one made from its title. */
 export function localName(filename: string, title: string): string {
   const last = filename.split(/[\\/]/).pop() ?? '';
-  if (last && !last.startsWith('pending-') && last !== '.md' && !last.startsWith('.')) return last;
+  if (isAllowedName(last) && !last.startsWith('pending-') && last !== '.md' && !last.startsWith('.')) return last;
   const slug = title.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80);
   return `${slug || 'untitled'}.md`;
 }
