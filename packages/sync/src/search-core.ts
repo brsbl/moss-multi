@@ -1,6 +1,5 @@
 // Pure helpers for the search index (A§5.3; ported from glyphdown's search-core.ts). Engine-agnostic: the FTS5 path
 // uses buildFtsMatch and bm25, the LIKE fallback scoreEntry, and both snippet through makeSnippet. No I/O.
-import { stripWikiLinks } from '@moss-desktop/common/utils';
 import { slug } from '@moss-multi/core/filenames';
 
 /** The one index's name (A§5.3): SearchDO('global'). */
@@ -73,13 +72,32 @@ export function buildFtsMatch(query: string): string | null {
 
 /** moss's snippet cleaning (ipc-handlers notes:search at the pin): structure out, inline markdown kept for NoteCard. */
 export function cleanForSnippet(body: string): string {
-  return linkTexts(withoutTags(body.replace(/<!--[\s\S]*?-->/g, '')))
+  return linkTexts(withoutTags(withoutComments(body)))
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^>\s?/gm, '')
     .replace(/-{3,}/g, '')
     .replace(/~~([^~]+)~~/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** `text.replace(/<!--[\s\S]*?-->/g, '')` in one pass. */
+export const withoutComments = (text: string): string => withoutSpans(text, '<!--', '-->');
+
+/** `text.replace(/```[\s\S]*?```/g, '')` in one pass. */
+export const withoutFences = (text: string): string => withoutSpans(text, '```', '```');
+
+/** Drops each `open` through the first `close` after it; once an `open` has no `close` after it, no later one does. */
+function withoutSpans(text: string, open: string, close: string): string {
+  let out = '';
+  let last = 0;
+  for (let at = text.indexOf(open); at !== -1; at = text.indexOf(open, last)) {
+    const end = text.indexOf(close, at + open.length);
+    if (end === -1) break;
+    out += text.slice(last, at);
+    last = end + close.length;
+  }
+  return out + text.slice(last);
 }
 
 /** `text.replace(/<[^>]*>/g, '')` in one pass: once a `<` has no `>` after it, no later one does. */
@@ -177,12 +195,45 @@ export interface HeadingInfo {
 
 /** moss's getHeadings (note-store at the pin): h1–h4 outside fenced code, wiki-link syntax stripped. */
 export function parseHeadings(markdown: string): HeadingInfo[] {
-  const outsideCode = markdown.replace(/```[\s\S]*?```/g, '');
+  const outsideCode = withoutFences(markdown);
   const headings: HeadingInfo[] = [];
   for (const [hashes, text] of headingMatches(outsideCode)) {
-    headings.push({ level: hashes.length as HeadingInfo['level'], text: stripWikiLinks(text).trim() });
+    headings.push({ level: hashes.length as HeadingInfo['level'], text: wikiLinkTexts(text).trim() });
   }
   return headings;
+}
+
+/**
+ * moss's stripWikiLinks, `text.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1')`, in one pass: a start that fails
+ * at the `]` or `|` ending a non-empty title shares that end with every start before it, and one whose alias finds no
+ * `]]` shares that alias's `]`, so the scan resumes past it; once no `]` follows, nothing more matches.
+ */
+export function wikiLinkTexts(text: string): string {
+  let out = '';
+  let last = 0;
+  let at = text.indexOf('[[');
+  while (at !== -1) {
+    let end = at + 2;
+    while (end < text.length && text[end] !== ']' && text[end] !== '|') end += 1;
+    if (end === text.length) break;
+    if (end === at + 2) {
+      at = text.indexOf('[[', end + 1);
+      continue;
+    }
+    let close = end;
+    if (text[end] === '|') {
+      close = text.indexOf(']', end + 1);
+      if (close === -1) break;
+    }
+    if (text[close + 1] === ']' && close !== end + 1) {
+      out += text.slice(last, at) + text.slice(at + 2, end);
+      last = close + 2;
+      at = text.indexOf('[[', last);
+    } else {
+      at = text.indexOf('[[', close + 1);
+    }
+  }
+  return out + text.slice(last);
 }
 
 const isLineBreak = (char: string): boolean => char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029';
