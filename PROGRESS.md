@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 77% done** (89 of 116 planned tasks verified)
+**Overall: 80% done** (90 of 112 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 4 / 4 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 1 / 5 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -110,6 +110,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T6.2 verified: each note now keeps automatic versions (on last disconnect and on activity, deduplicated, large ones spilled to R2) and rate-limited named versions over REST, its history bounded by pruning rather than charging anyone, and a restore whose result fails verification is refused with 409.
 - 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
 - 2026-10-07 — T6.S2 verified: named versions saved through an agent key now count against the agent's owner for the per-person cap and the save rate, so an editor can no longer bypass their own limits with an agent key.
+- 2026-10-07 — T7.1 verified: a person or agent can use the `moss-multi` CLI to sign in by device login or API key, list notes, `cat`, `pull` and `add` notes byte-exact by id, URL or title prefix, read history and snapshots, comment, and share, with JSON output and defined exit codes.
 
 ## T1.1s identity audit
 
@@ -142,6 +143,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.1's checker (168b07b, 2026-10-07)
+
+- T7.1 checker P2 (logout skips the https/loopback check and sends the stored session token to the MOSS_MULTI_SERVER override; Codex P1, downgraded): program.ts logout calls resolveConfig and createApi directly instead of server(), and clears credentials first, so an off-loopback http:// override receives the session in cleartext while the session stays valid.
+- T7.1 checker P2 (one owner per tracked file compares path strings, so a case variant on APFS keeps two owners; Codex P1, downgraded): routed to T7.2 as a required red-first test.
+- T7.1 checker P2 (share <email> never prints the invitation link): under ruling 19 an email share grants nothing until redeemed, but the CLI prints 'shared with ...' and never fetches or prints the link (program.ts, api.ts).
+- T7.1 checker P2 (the A§17 `comments` and `suggestions` read commands are missing): routed to T7.3 as a required red-first test.
+- T7.1 checker P2 (`add` keeps a leading `# Title` line, so the title shows twice): routed to T7.4 as a required red-first test.
 
 ### From T6.S2's checker (7c68dfa, 2026-10-07)
 

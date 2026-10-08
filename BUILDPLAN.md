@@ -617,10 +617,13 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **T7.2 Structural push merge** `[B·codex]`
   - **Scope:** the A§17 push path through the T6.1 reconcile; the PrincipalDO rate limit; the base cache; the degenerate guard; the size-cap check on the simulated result.
   - **Tests first:** merge properties: untouched blocks keep identity, duplicates keep their positions, `:::tabs` splits correctly. Journey **j18-agents**: a CLI push while a human types in the same paragraph keeps both; the 61st push in a minute gets 429 with `retry-after`; a 2 MB push lands and the doc stays typeable, and a push past the cap is refused loudly; a push deleting most of the doc is refused without `--force`. **Done:** green.
+  - **Required red-first test (T7.1 checker P2):** on a case-insensitive volume, `pull A note.md` then `pull B NOTE.md --force` leaves exactly one owner for the file (B), and `push note.md` targets B, never A; compare tracked paths case-insensitively where the filesystem is (workspace.ts recordBase, metaForFile).
 - **T7.3 Agent presence, agent grants, `--suggest`, key revocation** `[B·codex]`
   - **Tests first:** a push shows a Bot-badged chip for about 15 s and adds no undo step; `--suggest` lands as a pending suggestion; another user's agent granted commenter can pull, has its push refused loudly, has its comment land, and is disconnected when the grant is revoked; revoking the key closes the agent's socket and 401s the CLI. **Done:** green.
+  - **Required red-first test (T7.1 checker P2):** the A§17 read commands `comments <doc>` and `suggestions <doc>` exist and list a note's comment threads and open suggestions; today both fail as unknown commands with exit 1.
 - **T7.4 Folder-watch daemon and sync** `[A·codex]`
   - **Tests first:** in the CI e2e job: a local edit appears on the web; a web edit updates the local file; an untracked file becomes a doc titled from its stem and the file is renamed; a local delete doesn't propagate; a CLI-created doc renders in the web editor; a moss-format note with its `# Title` line and comments sidecar imports through the moss interchange path with one title and anchored comments. **Done:** green.
+  - **Required red-first test (T7.1 checker P2):** `add tomato.md --title 'Tomato log'` on a file starting with `# Tomato log` yields a note whose web view shows the title once, with no duplicate H1.
 
 **Exit criteria** [L§7.3 M7]: a CLI push during typing preserves both sides; `cat` is byte-exact; a 2 MB push and pull work; a CLI-created doc renders; an agent grant is enforced; revoking a key closes its socket; the daemon round-trips a local edit.
 - **M7 coordinator notes** (2026-10-07, since M1-M6 and later rulings landed after this plan was written):
