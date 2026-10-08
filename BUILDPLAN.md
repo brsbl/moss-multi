@@ -663,6 +663,14 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** demo notes built through the UI in a test account on staging (R8), with live comments and pending suggestions; a share link to the demo vault posted with the staging URL so the owner can open it signed in as themselves; the signature shot: a peer's cursor and a suggestion in a long sentence beside rich nodes. **Done:** green.
 
 **Exit criteria:** every journey passes on the deployed build; staging `/api/version` equals the tested bytes; the critic passes on staging; the signature shot and demo link are posted inline.
+- **M8 coordinator notes** (2026-10-08). The owner said staging credentials come **later**: build everything that does not need the Cloudflare account now, then ask before deploying.
+  - **T8.0 (rule 10):** the DocDO refuses bundles that predate payload docs, plus a general minimum-client-version gate.
+  - **T8.D:** the deploy pipeline (T1.10 plus T8.1 hygiene), validated by dry run: `env.staging`, `deploy-staging.yml` deploying the exact tested `dist`, the `/api/version` assertion, test hooks returning 404, `.dev.vars` never uploaded, a fixed principal pool and a request budget.
+  - **T8.4:** MIGRATION.md.
+  - **T8.5p:** a demo-content and signature-shot generator that runs against any stack.
+  - **T8.3a:** an adversarial sweep against a local production build.
+  - **After credentials:** T1.10/T8.2 run the suite on staging, T8.3 repeats the sweep on staging, and T8.5 builds the demo on staging.
+  - **Rules:** CLI QA uses `MOSS_MULTI_NO_OPEN=1`. Test principals only. Credentials only through `bb secret request` into `/Users/brsbl/.config/moss-multi/cloudflare.env`, never printed or read by agents.
 
 ---
 
