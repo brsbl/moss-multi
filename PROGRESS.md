@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (87 of 108 planned tasks verified)
+**Overall: 81% done** (88 of 108 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 2 / 4 | |
+| M6 History | Versions, view, diff, identity-preserving restore | 3 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -108,6 +108,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T5.S1 verified: a character a suggester strikes stays struck when an edit such as a join, unwrap, split, retyped block or its undo re-creates the text around it, so the reviewer's card, paint and accept show and land exactly the strike.
 - 2026-10-07 — T6.1 verified: a note body and its payload docs can be reconciled to a target version in place, keeping the Yjs identity of untouched blocks so a peer's concurrent insert and comment anchors survive, and a result that would not export the target is refused.
 - 2026-10-07 — T6.2 verified: each note now keeps automatic versions (on last disconnect and on activity, deduplicated, large ones spilled to R2) and rate-limited named versions over REST, its history bounded by pruning rather than charging anyone, and a restore whose result fails verification is refused with 409.
+- 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
 
 ## T1.1s identity audit
 
@@ -140,6 +141,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T6.3's checker (aa8ec26, 2026-10-07)
+
+- T6.3 checker P2 (a named checkpoint can be saved without the person's own unsent edits): SaveVersion in HistoryView.tsx posts to /versions at once, so a reconnecting or held doc socket records the checkpoint (and Diff vs current's /content) without local words; wait on waitDocsAcked (doc-session.ts) or refuse the save. From Codex code reading, not reproduced.
+- T6.3 checker P2 (View drops body text between two leading horizontal rules): bodyOf() in HistoryView.tsx treats any leading pair of '---' lines as frontmatter, so a property-less note starting with a rule hides text up to the second rule; Diff, stored versions and restore are unaffected.
+- T6.3 checker P2 (no History triptych stored in CI): e2e/parity/targets.ts has no History target; the checker compared glyphdown's history page, our 2x History view and the moss shell by hand and found them matching. Add a parity target.
 
 ### From T6.2's checker (cf7e40f, 2026-10-07)
 
