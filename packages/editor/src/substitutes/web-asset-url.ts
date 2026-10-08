@@ -3,7 +3,7 @@
 // those are the URLs a mounted editor's host issued, recognised only by its `assets.parseUrl`. The plugin then copies
 // each one into the destination note through `assets.copyFromNote`, as desktop does for `moss-asset://`.
 import { hostAsset } from '@moss-editor/registry';
-import { URL_IN_HTML } from './url-in-html';
+import { URL_IN_HTML } from '@moss-editor/substitutes/url-in-html';
 
 export { shareToken, uploadedFilename, webAssetUrl } from '@moss-web-pristine/media/web-asset-url';
 
