@@ -11,7 +11,8 @@ import { decodeRelPos } from '@moss-multi/core/tree-anchor';
 import { isPayloadType, payloadMap, payloadText } from '../payload-docs.ts';
 import { reconcileBody, ReconcileRefused } from '../reconcile.ts';
 import { registerPayloads } from '../registers.ts';
-import { exportMirror, mirrorOf, type Admit } from '../server-doc.ts';
+import { keepsInserts, namedPayloads, shownAfter, StaleBase, stateAt, type DecodedBase } from '../restore-base.ts';
+import { exportMirror, mirrorOf, payloadSourceOf, type Admit, type MirrorBase } from '../server-doc.ts';
 import { writeTitle } from '../server-title.ts';
 
 /** One payload's value: a text payload's text, or a compound payload's keys. */
@@ -104,16 +105,53 @@ export function captureContent(live: Y.Doc, noteId: string): VersionContent {
 }
 
 /**
- * Restores `target` as one server write under `origin` through the identity-preserving reconcile (A§14, T6.1): the
- * body and each payload keep the Yjs items of everything the version shares with the doc, and the title and
- * frontmatter take minimal diffs. Throws ReconcileRefused (409) when the reconciled body would not export as the
- * version's body or the title would differ, with nothing written. `admit` runs once that is verified, before
- * anything is written, and throws to refuse: the state cap, or a restore point that could not be stored.
+ * Restores `target` as one server write under `origin` through the identity-preserving reconcile (A§14, T6.1), run
+ * from `base`, the state the restorer saw: the body and each payload keep the Yjs items of everything the version
+ * shares with that state, the title and frontmatter take minimal diffs, and whatever anyone inserted after the base
+ * merges in where it was typed. Throws ReconcileRefused (409) when the reconciled base would not export as the
+ * version's body, the title would differ, or the result would lose an insert made after the base, with nothing
+ * written; StaleBase when the base is not a state of the doc. `admit` runs once that is verified, before anything is
+ * written, and throws to refuse: the state cap, or a restore point that could not be stored.
  */
-export function restoreContent(live: Y.Doc, origin: unknown, target: VersionContent, admit: Admit): boolean {
+export function restoreContent(live: Y.Doc, origin: unknown, target: VersionContent, admit: Admit, base: DecodedBase): boolean {
   // A version names each payload node's payload id, which the reconcile pairs by type instead.
   const state = JSON.parse(target.lexical, (key, value: unknown) => (key === '__regId' ? undefined : value)) as SerializedEditorState;
-  return reconcileBody(live, state, origin, admit, {
+  const source = payloadSourceOf(live);
+  const note = Y.encodeStateAsUpdate(live);
+  const from: MirrorBase = {
+    state: stateAt(note, base.note),
+    payload: (id) => {
+      const now = source.read(id);
+      const sv = base.payloads.get(id);
+      if (now && !sv) throw new StaleBase('the base leaves out a payload');
+      return now && sv ? stateAt(now, sv) : now;
+    },
+  };
+  // Every payload the note named at the base needs its base: without it, what was typed in it since is unknown.
+  for (const id of namedPayloads(from.state)) if (!base.payloads.has(id) && source.read(id)) throw new StaleBase('the base leaves out a payload');
+  const keeping: Admit = (diff, payloads) => {
+    if (!keepsInserts(note, diff, base.note, false)) throw new ReconcileRefused('mismatch', 'the restore would remove what was inserted after its base');
+    const written = new Map(payloads);
+    let named: Set<string> | null = null;
+    for (const [id, sv] of base.payloads) {
+      const now = source.read(id);
+      if (!now) continue;
+      const update = written.get(id);
+      if (update && !keepsInserts(now, update, sv, true)) throw new ReconcileRefused('mismatch', 'the restore would remove what was inserted after its base');
+      // A payload typed in since the base must stay named, or the restore would take the block, and the typing, away.
+      if (!shownAfter(now, sv)) continue;
+      if (!named) {
+        const merged = new Y.Doc();
+        Y.applyUpdate(merged, note);
+        Y.applyUpdate(merged, diff);
+        named = namedPayloads(Y.encodeStateAsUpdate(merged));
+        merged.destroy();
+      }
+      if (!named.has(id)) throw new ReconcileRefused('mismatch', 'the restore would remove a block typed in after its base');
+    }
+    admit(diff, payloads);
+  };
+  return reconcileBody(live, state, origin, keeping, {
     mutate(doc) {
       writeTitle(doc, target.title, origin);
       importFrontmatter(doc, target.frontmatter, origin);
@@ -121,5 +159,5 @@ export function restoreContent(live: Y.Doc, origin: unknown, target: VersionCont
     verify(mirror) {
       if (mirror.doc.getText('title').toString() !== target.title) throw new ReconcileRefused('mismatch', 'the restored title differs from the version');
     },
-  });
+  }, from);
 }

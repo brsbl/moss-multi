@@ -83,14 +83,20 @@ export interface Mirror {
   dispose: () => void;
 }
 
+/** A state a write starts from instead of `live`'s (a restore's base, A§14): the note's, and each payload's. */
+export interface MirrorBase {
+  state: Uint8Array;
+  payload(id: string): Uint8Array | null;
+}
+
 /**
- * A headless editor bound to a fresh Y.Doc that holds `live`'s state, with the hydration committed. Payloads load on
- * first read, from the named ones only.
+ * A headless editor bound to a fresh Y.Doc that holds `live`'s state (or `base`), with the hydration committed.
+ * Payloads load on first read, from the named ones only.
  */
-export function mirrorOf(live: Y.Doc): Mirror {
+export function mirrorOf(live: Y.Doc, base?: MirrorBase): Mirror {
   const doc = new Y.Doc();
   const source = payloadSourceOf(live);
-  const payloads = new PayloadDocs((id) => source.read(id), (id) => source.has(id));
+  const payloads = new PayloadDocs((id) => (base ? base.payload(id) : source.read(id)), (id) => source.has(id));
   const writes = new Map<string, Uint8Array[]>();
   payloads.onHold((id, held) => {
     held.on('update', (update: Uint8Array, origin: unknown) => {
@@ -114,7 +120,7 @@ export function mirrorOf(live: Y.Doc): Mirror {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
-  Y.applyUpdate(doc, Y.encodeStateAsUpdate(live), HYDRATE);
+  Y.applyUpdate(doc, base?.state ?? Y.encodeStateAsUpdate(live), HYDRATE);
   // The hydration commits on its own, under the collaboration tag, before any mutation runs.
   editor.update(noop, { discrete: true, skipTransforms: true });
   return {
@@ -135,8 +141,8 @@ export function mirrorOf(live: Y.Doc): Mirror {
 }
 
 /** What `mutate` changes: an update against `live`'s state, and each payload it wrote. */
-function mirrorDiff(live: Y.Doc, mutate: Mutate, verify?: Verify): { diff: Uint8Array; payloads: [string, Uint8Array][] } {
-  const mirror = mirrorOf(live);
+function mirrorDiff(live: Y.Doc, mutate: Mutate, verify?: Verify, base?: MirrorBase): { diff: Uint8Array; payloads: [string, Uint8Array][] } {
+  const mirror = mirrorOf(live, base);
   try {
     const hydrated = Y.encodeStateVector(mirror.doc);
     let rest = null as ReturnType<Mutate>;
@@ -181,8 +187,8 @@ export type Verify = (mirror: Mirror) => void;
  * the payloads it changed and apply the note's diff to the live doc under `origin`. `verify` reads the mutated mirror
  * first and throws to refuse. The mirror is released before returning. Returns whether the live doc changed.
  */
-export function serverWrite(live: Y.Doc, origin: unknown, mutate: Mutate, admit: Admit = noop, verify?: Verify): boolean {
-  const { diff, payloads } = mirrorDiff(live, mutate, verify);
+export function serverWrite(live: Y.Doc, origin: unknown, mutate: Mutate, admit: Admit = noop, verify?: Verify, base?: MirrorBase): boolean {
+  const { diff, payloads } = mirrorDiff(live, mutate, verify, base);
   admit(diff, payloads);
   const source = payloadSourceOf(live);
   for (const [id, update] of payloads) source.write(id, update);

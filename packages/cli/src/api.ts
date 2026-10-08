@@ -1,5 +1,6 @@
 // The REST client (A§17). Every call carries the agent key or the device-flow session as a bearer, never a cookie,
 // so the origin gate passes it (A§18). Content is read as raw bytes: nothing here decodes, trims or appends.
+// No request follows a redirect: a 3xx is an error, so a credential is only ever sent to the configured server.
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { CliError, NOT_SIGNED_IN } from './errors.ts';
 
@@ -67,6 +68,22 @@ export async function refusal(response: Response, what = 'that doc', read?: stri
   return new CliError(1, `the server refused the request (HTTP ${status})${message ? `: ${message}` : ''}`, status);
 }
 
+/** `fetch` with redirects refused: a 3xx answer (or an opaque redirect) becomes an error naming where it pointed. */
+export async function fetchNoRedirect(fetchImpl: typeof fetch, url: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetchImpl(url, { ...init, redirect: 'manual' });
+  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+    const location = response.headers.get('location');
+    let where = 'elsewhere';
+    try {
+      if (location) where = new URL(location, url).origin === new URL(url).origin ? new URL(location, url).pathname : new URL(location, url).origin;
+    } catch {
+      // An unparseable Location still refuses.
+    }
+    throw new CliError(1, `the server answered with a redirect (HTTP ${response.status}) to ${where}; moss-multi does not follow redirects, so set MOSS_MULTI_SERVER to the address it should use`);
+  }
+  return response;
+}
+
 export function createApi(options: ApiOptions) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const base = options.serverUrl;
@@ -76,8 +93,9 @@ export function createApi(options: ApiOptions) {
     if (options.token) headers.set('authorization', `Bearer ${options.token}`);
     if (init.body !== undefined) headers.set('content-type', 'application/json');
     try {
-      return await fetchImpl(`${base}${path}`, { ...init, headers });
+      return await fetchNoRedirect(fetchImpl, `${base}${path}`, { ...init, headers });
     } catch (error) {
+      if (error instanceof CliError) throw error;
       throw new CliError(1, `cannot reach ${base}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }

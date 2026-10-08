@@ -1,15 +1,16 @@
 // The moss-multi command surface (A§17). `runCli` returns the exit code: 0 clean, 1 other, 2 failed hunks,
 // 3 degenerate. Output that is content (`cat`) is written as raw bytes; everything else is one line per record.
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { basename, extname, join, resolve } from 'node:path';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { TRASH_COPY, TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { createApi, type Api } from './api.ts';
 import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConfig, writeConfig } from './config.ts';
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
-import { confined, findRoot, localName, metaForFile, probeFoldsCase, readBase, readMeta, recordPull, sha256Hex } from './workspace.ts';
+import { jsonSafe, redact, ttySafe } from './output.ts';
+import { confined, findRoot, localName, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -111,9 +112,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   const fetchImpl = deps.fetchImpl ?? fetch;
   const foldsCase = deps.foldsCase ?? probeFoldsCase;
   const stdout = deps.stdout ?? ((chunk) => process.stdout.write(chunk));
-  const stderr = deps.stderr ?? ((line) => process.stderr.write(`${line}\n`));
-  const line = (text: string) => stdout(`${text}\n`);
-  const json = (data: unknown) => line(JSON.stringify(data, null, 2));
+  const rawStderr = deps.stderr ?? ((line) => process.stderr.write(`${line}\n`));
+  // Everything but `cat` and the usage text goes through these: credentials redacted, control characters escaped.
+  const secrets = new Set<string>();
+  const known = resolveConfig(env);
+  for (const secret of [known.apiKey, known.sessionToken]) if (secret) secrets.add(secret);
+  const line = (text: string) => stdout(`${ttySafe(redact(text, secrets))}\n`);
+  const stderr = (text: string) => rawStderr(ttySafe(redact(text, secrets)));
+  const json = (data: unknown) => stdout(`${jsonSafe(redact(JSON.stringify(data, null, 2), secrets))}\n`);
 
   const server = (override?: string): string => {
     const url = override ? normalizeServer(override) : resolveConfig(env).serverUrl;
@@ -140,6 +146,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       arity(parsed, 0, 0, 'login [--key <mm_sk_...>] [--server <url>]');
       const serverUrl = server(value(parsed, 'server'));
       const key = value(parsed, 'key');
+      if (key) secrets.add(key);
       if (key !== undefined) {
         if (!key.startsWith(AGENT_KEY_PREFIX)) throw new CliError(1, `an agent key starts with ${AGENT_KEY_PREFIX}; mint one in Settings → Agents`);
         const me = await createApi({ serverUrl, token: key, fetchImpl }).me();
@@ -148,6 +155,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         return;
       }
       const token = await deviceLogin(serverUrl, { fetchImpl, out: line, ...(deps.sleep ? { sleep: deps.sleep } : {}), ...(deps.openUrl ? { openUrl: deps.openUrl } : {}) });
+      secrets.add(token);
       const me = await createApi({ serverUrl, token, fetchImpl }).me();
       writeConfig(env, { serverUrl, sessionToken: token });
       line(`signed in as ${me.email ?? me.name}; session saved to ${configPath(env)}`);
@@ -208,8 +216,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const parsed = parseArgs(rest, ['json'], ['title', 'folder']);
       const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--json]');
       const path = resolve(cwd(), file);
-      if (!existsSync(path)) throw new CliError(1, `no such file: ${file}`);
-      const markdown = toLf(decoder.decode(readFileSync(path)));
+      const markdown = toLf(decoder.decode(readConfined(findRoot(cwd()) ?? cwd(), path)));
       const title = value(parsed, 'title') ?? basename(path, extname(path));
       const client = api();
       const folderId = value(parsed, 'folder');
@@ -250,7 +257,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const tracked = readMeta(root, id);
       let rel: string;
       if (fileArg !== undefined) rel = confined(root, resolve(cwd(), fileArg));
-      else if (tracked) rel = tracked.file;
+      else if (tracked) rel = confined(root, tracked.file);
       else {
         const row = (await client.listDocs()).find((doc) => doc.id === id);
         rel = confined(root, resolve(cwd(), row ? localName(row.filename, row.title) : `${id}.md`));
@@ -263,7 +270,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const owner = metaForFile(root, target, foldsCase(root));
         if (owner && owner.docId !== id) throw new CliError(1, `${rel} tracks another doc (${owner.docId}); pull into another file or use --force`);
         if (!owner) throw new CliError(1, `${rel} exists and is not tracked; pull into another file or use --force`);
-        if (sha256Hex(readFileSync(target)) !== owner.baseHash) throw new CliError(1, `${rel} has local edits; push them first or use --force`);
+        if (sha256Hex(readConfined(root, rel)) !== owner.baseHash) throw new CliError(1, `${rel} has local edits; push them first or use --force`);
         expectHash = owner.baseHash;
       } else expectHash = null;
       const bytes = await client.content(id);
@@ -276,10 +283,10 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [fileArg] = arity(parsed, 1, 1, 'push <file> [--suggest] [--force]');
       const path = resolve(cwd(), fileArg);
       if (!existsSync(path)) throw new CliError(1, `no such file: ${fileArg}`);
-      const root = findRoot(dirname(path));
+      const root = findRoot(cwd());
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
-      const local = readFileSync(path);
+      const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
         return;

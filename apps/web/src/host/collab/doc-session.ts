@@ -194,6 +194,12 @@ export function docOwner(docId: string): object | null {
   return held.get(docId)?.owner ?? null;
 }
 
+/** The note and payload docs this tab holds for `docId`, or null: what a restore's base is read from (A§14). */
+export function heldDocOf(docId: string): { doc: Y.Doc; payloads: PayloadDocs } | null {
+  const session = held.get(docId)?.session;
+  return session ? { doc: session.doc, payloads: session.payloads } : null;
+}
+
 let signingOut = false;
 /** Docs closed to writes while a trash waits for their acks (A§10.6). */
 const closedForTrash = new Set<string>();

@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (90 of 112 planned tasks verified)
+**Overall: 79% done** (94 of 119 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,8 +10,8 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 4 / 4 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 1 / 5 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 2 / 5 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -111,6 +111,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
 - 2026-10-07 — T6.S2 verified: named versions saved through an agent key now count against the agent's owner for the per-person cap and the save rate, so an editor can no longer bypass their own limits with an agent key.
 - 2026-10-07 — T7.1 verified: a person or agent can use the `moss-multi` CLI to sign in by device login or API key, list notes, `cat`, `pull` and `add` notes byte-exact by id, URL or title prefix, read history and snapshots, comment, and share, with JSON output and defined exit codes.
+- 2026-10-07 — T6.S3 verified: restoring a version whose code, HTML or formula payload changed at both ends now keeps the unchanged middle's identity, so a peer's concurrent insert there survives the restore.
+- 2026-10-07 — T6.S1 verified: restoring a version now reconciles three-way from the base the restorer opened Restore on, so words a peer or agent typed after that base survive the restore, and a stale base or a dropped block someone typed into is refused with 409.
+- 2026-10-08 — T6.S4 verified: restoring a version on a large note now succeeds while a peer types, because its restore point is staged in DocDO SQLite in the restore's turn and moved to R2 afterwards, and a crash before the move recovers on wake.
+- 2026-10-08 — T7.1s verified: the CLI now keeps every local read and write inside the workspace (real paths, no links out), opens device sign-in only on the server's own origin, follows no redirects, never prints the key, and escapes server text before it reaches the terminal.
 
 ## T1.1s identity audit
 
@@ -144,6 +148,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+### From T7.1s's checker (43529ee, 2026-10-08)
+
+- T7.1s checker P2 (confinement is check-then-open, so a concurrent directory swap can defeat it; Codex P1, downgraded): readConfined and writeInside lstat/realpath the path then reopen it by name (packages/cli/src/workspace.ts), and realInside recomputes realRoot per call, so a same-user process that renames the workspace or a parent to a symlink during pull's await on /content redirects the write.
+- T7.1s checker P2 (state-directory guard is case-sensitive): routed to T7.2 as a required red-first test.
+- T7.1s checker P2 (ttySafe keeps LF and tab, so a server message can add extra lines to stderr): isUnsafeChar exempts 0x09 and 0x0a (packages/cli/src/output.ts), so a server error or title with a newline prints as several lines and could fake a line like 'signed in as ...'; single-line record output could also escape LF.
+
 ### From T7.1's checker (168b07b, 2026-10-07)
 
 - T7.1 checker P2 (logout skips the https/loopback check and sends the stored session token to the MOSS_MULTI_SERVER override; Codex P1, downgraded): program.ts logout calls resolveConfig and createApi directly instead of server(), and clears credentials first, so an off-loopback http:// override receives the session in cleartext while the session stays valid.
@@ -151,6 +161,18 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T7.1 checker P2 (share <email> never prints the invitation link): under ruling 19 an email share grants nothing until redeemed, but the CLI prints 'shared with ...' and never fetches or prints the link (program.ts, api.ts).
 - T7.1 checker P2 (the A§17 `comments` and `suggestions` read commands are missing): routed to T7.3 as a required red-first test.
 - T7.1 checker P2 (`add` keeps a leading `# Title` line, so the title shows twice): routed to T7.4 as a required red-first test.
+### From T6.S4's checker (2b48bb4, 2026-10-08)
+
+- T6.S4 checker P2 (a sweep can target the R2 key of a version that is still staged; Codex P1, downgraded): sweep() in packages/sync/src/doc/versions.ts does not skip keys still in version_staged while migrate() reuses the key; loss needs R2 to commit the delete after the put, which the same-turn batch delete and migrate's due reset to now + 1 h prevent in practice.
+- T6.S4 checker P2 (a late duplicate migrate can leave an untracked R2 object; Codex P1, downgraded): two overlapping #versionsChanged calls can upload the same staged point, and if it is pruned and swept between them the second put recreates the object and its UPDATE finds no orphan row, so it leaks storage (no content lost).
+
+### From T6.S1's checker (254a93a, 2026-10-07)
+
+- T6.S1 checker P2 (typing still in flight into a block the restore removes is lost after the restore; Codex P1, downgraded, not reproduced): the admit check sees only what the server already holds, so an update that arrives after the confirm integrates under a deleted parent; this is the normal Yjs result of an insert racing a parent deletion (PRODUCT item 18).
+
+### From T6.S3's checker (abdccd9, 2026-10-07)
+
+- T6.S3 checker P2 (formula case does not assert the inline decorator's own Yjs item identity): the reconcile test checks top-level block items, covering the code and HTML decorators, but for the formula decorator inside a paragraph it checks only the payload __regId and character ids, not the decorator node's Yjs item.
 
 ### From T6.S2's checker (7c68dfa, 2026-10-07)
 

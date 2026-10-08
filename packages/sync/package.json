@@ -12,6 +12,7 @@
     "./fanout": "./src/fanout.ts",
     "./access-epoch": "./src/access-epoch.ts",
     "./registers": "./src/registers.ts",
+    "./restore-base": "./src/restore-base.ts",
     "./search": "./src/search-core.ts",
     "./suggest/client": "./src/suggest/client.ts",
     "./suggest/records": "./src/suggest/records.ts"

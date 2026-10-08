@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { fetchNoRedirect } from './api.ts';
 import { CliError } from './errors.ts';
 
 /** The client id the server's deviceAuthorization plugin accepts. */
@@ -107,6 +108,17 @@ function defaultOpenUrl(url: string): void {
   }
 }
 
+/** `uri` resolved against the server, if it is an http(s) page on the server's own origin; anything else is null. */
+function ownPage(serverUrl: string, uri: unknown): string | null {
+  if (typeof uri !== 'string') return null;
+  try {
+    const url = new URL(uri, `${serverUrl}/`);
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.origin === new URL(serverUrl).origin ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 interface DeviceGrant {
@@ -125,7 +137,7 @@ interface DeviceGrant {
 export async function deviceLogin(serverUrl: string, io: DeviceLoginIO): Promise<string> {
   const sleep = io.sleep ?? defaultSleep;
   const openUrl = io.openUrl ?? defaultOpenUrl;
-  const post = (path: string, body: unknown) => io.fetchImpl(`${serverUrl}${path}`, {
+  const post = (path: string, body: unknown) => fetchNoRedirect(io.fetchImpl, `${serverUrl}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -135,12 +147,17 @@ export async function deviceLogin(serverUrl: string, io: DeviceLoginIO): Promise
     throw new CliError(1, `device sign-in is unavailable at ${serverUrl} (HTTP ${started.status}); use \`moss-multi login --key <mm_sk_...>\``);
   }
   const grant = (await started.json()) as DeviceGrant;
-  const page = new URL(grant.verification_uri, `${serverUrl}/`).toString();
-  const complete = new URL(grant.verification_uri_complete ?? `${grant.verification_uri}?user_code=${encodeURIComponent(grant.user_code)}`, `${serverUrl}/`).toString();
-  io.out('To sign in, open:');
-  io.out(`  ${complete}`);
-  io.out(`and confirm the code ${grant.user_code} (or enter it at ${page}).`);
-  openUrl(complete);
+  const userCode = String(grant.user_code);
+  const page = ownPage(serverUrl, grant.verification_uri) ?? `${serverUrl}/device`;
+  const complete = ownPage(serverUrl, grant.verification_uri_complete ?? `${grant.verification_uri}?user_code=${encodeURIComponent(userCode)}`);
+  if (complete) {
+    io.out('To sign in, open:');
+    io.out(`  ${complete}`);
+    io.out(`and confirm the code ${userCode} (or enter it at ${page}).`);
+    openUrl(complete);
+  } else {
+    io.out(`To sign in, open ${page} and enter the code ${userCode}.`);
+  }
 
   const deadline = Date.now() + grant.expires_in * 1000;
   let interval = Math.max(1, grant.interval) * 1000;

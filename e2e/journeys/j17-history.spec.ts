@@ -23,9 +23,9 @@ const IMAGE_MD = `![A test card](assets/${IMAGE})`;
 
 interface Version { id: string; kind: string; name: string | null; createdAt: number; title: string }
 
-async function createNote(actor: Actor, baseUrl: string, title = 'History note', image = false): Promise<string> {
+async function createNote(actor: Actor, baseUrl: string, title = 'History note', image = false, seed = SEED): Promise<string> {
   // The image leads, so the body still ends in text a peer types after.
-  const markdown = image ? `${IMAGE_MD}\n\n${SEED}` : SEED;
+  const markdown = image ? `${IMAGE_MD}\n\n${seed}` : seed;
   const created = await actor.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { markdown, title } });
   expect(created.status()).toBe(201);
   const id = ((await created.json()) as { doc: { id: string } }).doc.id;
@@ -40,10 +40,12 @@ async function createNote(actor: Actor, baseUrl: string, title = 'History note',
 }
 
 /** Ada's note, open and live, with Ben on it at editor (granted as declared setup). */
-async function sharedNote(actors: Actors, baseUrl: string, { title, severable = false, image = false }: { title?: string; severable?: boolean; image?: boolean } = {}) {
+async function sharedNote(
+  actors: Actors, baseUrl: string, { title, severable = false, image = false, seed }: { title?: string; severable?: boolean; image?: boolean; seed?: string } = {},
+) {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
-  const id = await createNote(ada, baseUrl, title, image);
+  const id = await createNote(ada, baseUrl, title, image, seed);
   await ada.goto(`/d/${id}`);
   await ui.waitLive(ada, id);
   await ada.observeEditor(id);
@@ -292,6 +294,99 @@ test('j17-history: a restore while the peer types keeps the peer\'s insert and t
   await expect(point, 'the restore point is listed').toHaveCount(1);
   await expect(point, 'with its Restore point badge').toContainText('Restore point');
   await closeHistory(ada, id);
+});
+
+const CODE = 'const answer = 42;';
+const codeField = (actor: Actor, id: string): Locator => ui.body(actor, id).locator('textarea.moss-codeblock-textarea');
+/** Every code block's text as the editor holds it. */
+const codes = (actor: Actor, id: string) => ui.body(actor, id).evaluate((element) => {
+  const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+  return editor.read(() => [...editor.getEditorState()._nodeMap.values()]
+    .filter((node) => node.getType() === 'code-block' && node.isAttached())
+    .map((node) => (node as unknown as { getCode(): string }).getCode()));
+});
+
+/** Opens the note's code block and puts the caret in its text at `at` (the end when omitted). */
+async function codeCaret(actor: Actor, id: string, at?: number): Promise<void> {
+  await ui.body(actor, id).locator('.moss-codeblock-pre').click();
+  const field = codeField(actor, id);
+  await expect(field, `${actor.label}: the code field is writable`).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await field.evaluate((element: HTMLTextAreaElement, at) => {
+    element.focus();
+    const offset = at ?? element.value.length;
+    element.setSelectionRange(offset, offset);
+  }, at);
+}
+
+const serverText = async (actor: Actor, id: string): Promise<string> => {
+  const response = await actor.context.request.get(`/api/docs/${id}/content`);
+  expect(response.status()).toBe(200);
+  return response.text();
+};
+
+/** Ada restores `name` while Ben types `text` across her confirm click: his head reaches the server first. */
+async function restoreAcross(actors: Actors, ada: Actor, ben: Actor, id: string, name: string, text: string, head: string): Promise<void> {
+  const view = await openHistory(ada, id);
+  await row(ada, id, name).click();
+  // Opening Restore is the base: what anyone types from now on is kept.
+  await view.getByRole('button', { name: 'Restore', exact: true }).click();
+  const dialog = ada.page.locator('[data-remote-web-surface-blocking-dialog]');
+  await expect(dialog).toBeVisible();
+  await expect(dialog, 'the dialog says others keep their typing').toContainText('anything others type from now on is kept');
+  const typing = ben.page.keyboard.type(text, { delay: 90 });
+  await expect.poll(() => serverText(ada, id), { message: "the head of Ben's typing reaches the server before the restore", timeout: PEER_TIMEOUT }).toContain(head);
+  await dialog.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(historyView(ada, id), 'the restored note is shown').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await typing;
+  await actors.checkpoint(`history-restore-across-${name.toLowerCase().replace(/\W+/g, '-')}`);
+}
+
+test('j17-history: a peer typing across the restore click keeps his whole words, in the body and in a code block @p:mean-3 @evidence', async ({ actors, stack }) => {
+  const seed = `The quick brown fox jumps over the lazy dog.\n\n\`\`\`js\n${CODE}\n\`\`\`\n\nA second line for the peer.`;
+  const { id, ada, ben } = await sharedNote(actors, stack.baseUrl, { seed });
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'First checkpoint');
+  await closeHistory(ada, id);
+
+  // Ada changes the second line after the version; the restore takes it back out.
+  await ui.body(ada, id).getByText('A second line for the peer.').click();
+  await caretAfter(ada, id, 'for the peer.');
+  await ada.page.keyboard.type(' Ada added this.');
+  await ui.waitAcked(ada, id);
+  await expect.poll(() => bodyText(ben, id), { timeout: PEER_TIMEOUT }).toContain('Ada added this.');
+
+  // Ben types a sentence in the first line at 90 ms a key, across Ada's confirm click.
+  const words = ' Ben keeps typing this sentence right across the restore.';
+  await ui.body(ben, id).getByText('lazy dog.').click();
+  await caretAfter(ben, id, 'lazy dog.');
+  await restoreAcross(actors, ada, ben, id, 'First checkpoint', words, ' Ben ke');
+  ben.typed({ docId: id, field: 'body', text: words, ordered: true });
+  await ui.waitAcked(ben, id);
+  for (const actor of [ada, ben]) {
+    await expect.poll(() => bodyText(actor, id), { message: `${actor.label}: Ben's whole sentence survives, in place`, timeout: PEER_TIMEOUT })
+      .toContain(`The quick brown fox jumps over the lazy dog.${words}`);
+    await expect.poll(() => bodyText(actor, id), { message: `${actor.label}: Ada's later change is gone`, timeout: PEER_TIMEOUT }).not.toContain('Ada added this.');
+  }
+  expect(await serverText(ada, id), 'the server holds the whole sentence').toContain(`lazy dog.${words}`);
+
+  // The same in a code block: a second checkpoint, Ada's later code change, Ben typing at the code's start.
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'Second checkpoint');
+  await closeHistory(ada, id);
+  await codeCaret(ada, id);
+  await ada.page.keyboard.type(' // ada');
+  await expect.poll(() => codes(ben, id), { timeout: PEER_TIMEOUT }).toEqual([`${CODE} // ada`]);
+
+  const code = '/* peer types here */ ';
+  await codeCaret(ben, id, 0);
+  await restoreAcross(actors, ada, ben, id, 'Second checkpoint', code, '/* peer');
+  for (const actor of [ada, ben]) {
+    await expect.poll(() => codes(actor, id), { message: `${actor.label}: Ben's whole insert survives at the code's start`, timeout: PEER_TIMEOUT })
+      .toEqual([`${code}${CODE}`]);
+  }
+  await ui.waitAcked(ben, id);
+  expect(await serverText(ada, id), 'the server holds the whole insert').toContain(`${code}${CODE}`);
+  await expect.poll(() => bodyText(ben, id), { message: 'the body keeps Ben\'s sentence', timeout: PEER_TIMEOUT }).toContain(words.trim());
 });
 
 test('j17-history: a versions fetch that fails shows an error, never "No checkpoints"; a version left mid-load still loads @p:mean-3', async ({ actors, stack }) => {
