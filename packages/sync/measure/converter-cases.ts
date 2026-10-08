@@ -157,7 +157,12 @@ export interface MultilineCase {
    * broken rows past TABLE_ABSORB_CHARS (markdown/linear-match.ts).
    */
   parityBytes?: number[];
+  /** Sizes measure-converter.mjs measures in workerd, smaller first (default 128 and 256 KB). */
+  sizes?: number[];
 }
+
+// A header of 256 columns: moss pads each narrower row after it to 256 cells.
+const WIDE_HEADER = `|${' h |'.repeat(256)}\n|${' --- |'.repeat(256)}\n`;
 
 export const MULTILINE_CASES: Record<string, MultilineCase> = {
   'lines of one paragraph': { line: 'a\n' },
@@ -173,6 +178,14 @@ export const MULTILINE_CASES: Record<string, MultilineCase> = {
   'table rows of open formulas': { line: '| {{a\n', parityBytes: [40, 200] },
   'table rows of open wiki links after a table': { head: '| a | b |\n| --- | --- |\n', line: '| [[c | d |\n', parityBytes: [60, 200] },
   'blank lines': { line: '\n' },
+  // T3.S4's fifth check: the empty cells a narrow row was padded with went unpaid.
+  'narrow table rows after a wide header': { head: WIDE_HEADER, line: '| b | c |\n', parityBytes: [40, 3_000] },
+  'long narrow table rows after a wide header': {
+    head: WIDE_HEADER,
+    line: `| ${'b'.repeat(244)} | c |\n`,
+    parityBytes: [40, 4_000],
+    sizes: [1024 * 1024, 2 * 1024 * 1024],
+  },
 };
 
 /** The case's markdown, `bytes` long or just over. */

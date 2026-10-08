@@ -669,9 +669,10 @@ function ordinaryProblems(results) {
   return problems;
 }
 
-// Notes of one short line repeated (converter-cases.ts MULTILINE_CASES), each in a fresh worker at MULTILINE_SIZES:
-// the larger may cost at most ADVERSARIAL_SCALING times the smaller (no work per line that grows with the lines before
-// it) and IMPORT_BUDGET_MS to import or export; a request past ADVERSARIAL_TIMEOUT_MS fails the case.
+// Notes of one short line repeated (converter-cases.ts MULTILINE_CASES), each in a fresh worker at its sizes (by default
+// MULTILINE_SIZES): the larger may cost at most ADVERSARIAL_SCALING times the smaller (no work per line that grows with
+// the lines before it) and IMPORT_BUDGET_MS to import or export, a size over it measured ADVERSARIAL_RUNS times and
+// judged by the median; a request past ADVERSARIAL_TIMEOUT_MS fails the case.
 const MULTILINE_SIZES = [128 * 1024, 256 * 1024];
 
 async function measureMultiline(port) {
@@ -683,12 +684,16 @@ async function measureMultiline(port) {
     const sizes = [];
     try {
       await warm(server, [multilineBody(c, 8 * 1024)]);
-      for (const bytes of MULTILINE_SIZES) {
+      for (const bytes of c.sizes ?? MULTILINE_SIZES) {
         const body = multilineBody(c, bytes);
         const signal = () => AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS);
-        const imported = await timedRequest(server, '/import', { method: 'POST', body, signal: signal() });
-        const exported = await timedRequest(server, '/export', { signal: signal() });
-        sizes.push({ bytes: body.length, importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs });
+        const runs = [];
+        do {
+          const imported = await timedRequest(server, '/import', { method: 'POST', body, signal: signal() });
+          const exported = await timedRequest(server, '/export', { signal: signal() });
+          runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs });
+        } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > IMPORT_BUDGET_MS && runs[0][op] < 4 * IMPORT_BUDGET_MS));
+        sizes.push({ bytes: body.length, importCpuMs: median(runs.map((r) => r.importCpuMs)), exportCpuMs: median(runs.map((r) => r.exportCpuMs)) });
       }
       results.push({ name, sizes });
     } catch (error) {

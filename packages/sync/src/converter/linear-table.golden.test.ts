@@ -8,6 +8,7 @@ import {
   TABLE_PADDING_CELLS,
   TABLE_ROW_CELLS,
 } from '@moss-desktop/renderer/editor/markdown/linear-match';
+import { LINEAR_IMPORT_LIMITS } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { $getRoot, $isElementNode, type LexicalNode } from 'lexical';
 import { $isTableCellNode, $isTableNode } from '@lexical/table';
 import { describe, expect, it } from 'vitest';
@@ -109,5 +110,23 @@ describe('linear table parsing @p:tech-4', () => {
     expect(shape(table(100))).toEqual(['table 102x4']);
     const rows = TABLE_PADDING_CELLS / 2 + 10;
     expect(shape(table(rows))[0]).toBe(`table ${rows + 1}x2`);
+  }, 120_000);
+
+  // A row narrower than its table is padded with empty cells, each a cell's work: the import pays for them as for the
+  // row's own, and a row it cannot pay for is not a table row, so narrow rows under a wide header stay within perNote.
+  it('pays for the empty cells a narrow row is padded with', () => {
+    const note = [`|${' h |'.repeat(64)}`, `|${' --- |'.repeat(64)}`, ...Array.from({ length: 200 }, () => '| b | c |')].join('\n');
+    expect(shape(note)).toEqual(['table 201x64']);
+    const perNote = LINEAR_IMPORT_LIMITS.perNote;
+    try {
+      LINEAR_IMPORT_LIMITS.perNote = 20_000_000;
+      const blocks = shape(note);
+      const rows = Number(/^table (\d+)x64$/.exec(blocks[0])?.[1]);
+      expect(rows).toBeGreaterThan(1);
+      expect(rows).toBeLessThan(40);
+      expect(blocks.slice(1)).toEqual(Array.from({ length: 201 - rows }, () => 'paragraph'));
+    } finally {
+      LINEAR_IMPORT_LIMITS.perNote = perNote;
+    }
   }, 120_000);
 });

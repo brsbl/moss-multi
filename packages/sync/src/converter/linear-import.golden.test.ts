@@ -349,6 +349,25 @@ describe('linear inline import @p:tech-4', () => {
       expect(childTypes(dense)).toEqual(['text']);
     }, 120_000);
 
+    // A table cell is imported as a note of its own inside its table's import, before that import's tab pass: a cell
+    // line cut on its tabs keeps them, and its `&` and `\`, as the same line in a paragraph does.
+    it('keeps the tabs, & and \\ of a table cell cut on its tabs', () => {
+      const firstCell = (markdown: string) =>
+        importMarkdown(markdown).getEditorState().read(() => {
+          const table = $getRoot().getFirstChildOrThrow<ElementNode>();
+          expect(table.getType()).toBe('table');
+          return table.getFirstChildOrThrow<ElementNode>().getFirstChildOrThrow<ElementNode>().getTextContent();
+        });
+      for (const tabs of [2, 64, LINEAR_IMPORT_LIMITS.tabs + 1]) {
+        const repro = `| a&b${'\t'.repeat(tabs)}c | d |\n| --- | --- |`;
+        expect(exportMarkdown(importMarkdown(repro))).toBe(repro);
+        if (tabs === 2) continue;
+        for (const cell of [`a&b${'\t'.repeat(tabs)}c`, `a\\\\b&#38;c${'\t'.repeat(tabs)}d\\*`]) {
+          expect(firstCell(`| ${cell} | e |\n| --- | --- |`)).toBe(textOf(importMarkdown(`x ${cell}`)).slice(2));
+        }
+      }
+    }, 120_000);
+
     // A note's work, its lines' and its table cells', is held to perNote: past it, each line after keeps its text as
     // literal text and each table row after is a paragraph line, so a note of any lines stays within SP2.
     it('keeps the lines after a note has spent perNote as literal text', () => {
