@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { openDoc, start } from './do-harness.ts';
 import { LiveClient, syncAll } from './live-client.ts';
+import { captureRestoreBase } from '../../src/restore-base.ts';
 
 const forced = vi.hoisted(() => ({ on: false, calls: 0 }));
 
@@ -53,7 +54,7 @@ describe('restore export mismatch @p:mean-3', () => {
       expect(markdown).toContain('// changed');
 
       forced.on = true;
-      const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+      const restored = await opened.dobj.restoreVersion({ base: { ...captureRestoreBase(ada.doc, ada.payloads), age: 0 }, id: saved.version.id, reviewer: ADA });
       expect(forced.calls, 'the comparison ran').toBeGreaterThan(0);
       expect(restored).toMatchObject({ ok: false, status: 409, reason: 'restore-unverified' });
       expect(await opened.dobj.exportMarkdown()).toBe(markdown);

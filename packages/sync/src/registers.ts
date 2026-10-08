@@ -104,9 +104,12 @@ export function writeRegister(node: LexicalNode, next: string): boolean {
   if (!registry || !id || registry.pending.has(id)) return false;
   const text = payloadText(registry.host.hold(id));
   const current = payload(text);
-  // The DocDO mirror writes text no client typed, so it diffs within the server budget.
-  const budget = registry.mirror ? SERVER_CELL_BUDGET : undefined;
-  if (current !== next) text.doc!.transact(() => text.applyDelta(diffText(current, next, budget)), REGISTER_LOCAL_ORIGIN);
+  // The DocDO mirror (restore, push) writes text no client typed: it diffs within the server budget, sparse past the
+  // table, so a long payload changed at both ends keeps its unchanged middle's items and a peer's insert there.
+  if (current !== next) {
+    const ops = registry.mirror ? diffText(current, next, SERVER_CELL_BUDGET, true) : diffText(current, next);
+    text.doc!.transact(() => text.applyDelta(ops), REGISTER_LOCAL_ORIGIN);
+  }
   return true;
 }
 
