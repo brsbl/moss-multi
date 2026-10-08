@@ -254,7 +254,10 @@ function firstFrame(seed: PayloadSeed): number {
 it('measures payloads as their first frames encode them: a chart’s keys several times its JSON, past the frame cap', () => {
   const small = MAP_REGISTERS.chart.encode({ __config: { type: 'bar', data: [{ label: 'Mon', value: 12 }, { label: 'Tue', value: 18 }] } });
   const code = 'const value = 1;\n'.repeat(2_000);
-  expect(drain(measurePayloads([small, code]))).toEqual({ bytes: firstFrame(small) + firstFrame(code), largest: firstFrame(code) });
+  // Each doc's random client id is a varint of 1 to 5 bytes, so frames of one seed differ by a few bytes.
+  const measured = drain(measurePayloads([small, code]));
+  expect(Math.abs(measured.bytes - firstFrame(small) - firstFrame(code))).toBeLessThanOrEqual(16);
+  expect(Math.abs(measured.largest - firstFrame(code))).toBeLessThanOrEqual(8);
 
   // A bar chart of 30,000 {label:'x',value:1} points: about 720 KB of JSON, under the frame cap, and over 4 MB of keys.
   const config = { type: 'bar', data: Array.from({ length: 30_000 }, () => ({ label: 'x', value: 1 })) };

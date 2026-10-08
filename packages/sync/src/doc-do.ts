@@ -181,6 +181,9 @@ function send(connection: Connection, message: Uint8Array): void {
  * socket and sets the trusted headers; this class persists, seeds, gates writes and answers RPCs. Every RPC that
  * reads the doc starts with ready(), so a stub that outlives an eviction never reads an empty doc.
  */
+
+/** A sync frame that holds the DO this long is logged (T3.S6: large pastes, their undo and redo). */
+const SLOW_FRAME_MS = 1_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -507,6 +510,7 @@ export class DocDO extends YServer<SyncEnv> {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
     }
+    const started = Date.now();
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
       const { changes, missing, deletes } = classifySync(this.document, frame.update);
@@ -523,6 +527,8 @@ export class DocDO extends YServer<SyncEnv> {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
+      const ms = Date.now() - started;
+      if (ms > SLOW_FRAME_MS && frame.kind === 'sync') console.warn(`DocDO: a ${frame.update.byteLength}-byte sync frame took ${ms} ms`);
     }
   }
 
