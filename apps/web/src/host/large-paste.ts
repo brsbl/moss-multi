@@ -576,9 +576,9 @@ class Pacer {
     } else if (last && budget <= used && work + laid < TARGET_MS * 2) {
       budget = used * 2;
     }
-    // Whatever the estimate, a batch is never sized past two targets at this batch's whole rate: mixed content
+    // Whatever the estimate, a batch is never sized past three targets at this batch's whole rate: mixed content
     // costs more per block in larger batches, and doubling a 1.2 s batch held the tab 3.4 s (WebKit, CI).
-    const ceiling = used * (TARGET_MS * 2) / (work + laid);
+    const ceiling = used * (TARGET_MS * 3) / (work + laid);
     this.budget = Math.round(Math.max(FIRST_BATCH, Math.min(this.max, used * 2, budget, ceiling)));
   }
 }
