@@ -40,6 +40,17 @@ describe('SearchDO', () => {
     expect((await index.search({ query: 'quokka', allowedDocIds: ['mine'] })).results.map((hit) => hit.docId)).toEqual(['mine']);
   });
 
+  it('snippets a 2 MB body of unclosed comment openers in linear time', async () => {
+    const index = await searchIndex();
+    const body = `quokka ${'<!--'.repeat((2 * 1024 * 1024 - 8) / 4)}`;
+    await index.index({ docId: 'big', title: 'Big', body });
+    const start = performance.now();
+    const answer = await index.search({ query: 'quokka', allowedDocIds: ['big'] });
+    const took = performance.now() - start;
+    expect(answer.results.map((hit) => hit.snippet.slice(0, 15))).toEqual(['quokka <!--<!--']);
+    expect(took, `search took ${Math.round(took)} ms`).toBeLessThan(2000);
+  }, 120_000);
+
   it('finds backlinks by any of a doc’s keys, within the allowed set, and says when a doc’s links change', async () => {
     const index = await searchIndex();
     expect(await index.index({ docId: 'src', title: 'Kickoff', body: 'Read [[Launch Plan]].' })).toEqual({ linksChanged: true });
