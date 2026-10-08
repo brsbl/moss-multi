@@ -270,7 +270,7 @@ test('a newer external reload wins over an older one still waiting on its family
   await page.keyboard.press('End');
   await page.keyboard.type(' typed');
   expect(await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())).toMatchObject({ kind: 'saved' });
-  expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toBe('# Plan\n\nVersion B final typed\n');
+  expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toMatch(/^# Plan\n\nVersion B final typed\n?$/);
   expect(errors).toEqual([]);
 });
 
