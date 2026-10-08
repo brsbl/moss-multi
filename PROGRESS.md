@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (100 of 124 planned tasks verified)
+**Overall: 81% done** (101 of 124 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 8 / 8 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 9 / 9 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -121,6 +121,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.L verified: CI's lint now fails any regex that can backtrack super-linearly, and every flagged one, including the CLI title-line parse and moss's note-type classifier, is a linear scan with the same results, so a hostile note or title can no longer stall the editor or server on a regex.
 - 2026-10-08 — T7.S1 verified: pushing a note with `%%m:` comment markers, images or trailing whitespace now converts in linear-time scans with the same output as moss, so a hostile 2 MB push can no longer stall the server.
 - 2026-10-08 — T7.S2 verified: a push merge now runs on one counted step budget instead of a clock, so a costly or hostile push can no longer stall the server; a drifted push past the budget is refused 409 `push-unverified` with nothing landed, and a degenerate push is refused before the doc's own edits are diffed.
+- 2026-10-08 — T7.S3 verified: search snippets and heading text now strip comment markers, code fences and wiki-links in linear-time scans, so a hostile note can no longer stall search indexing.
 
 ## T1.1s identity audit
 
