@@ -639,6 +639,84 @@ describe('a load waiting for its views changes nothing until it applies, and onl
   });
 });
 
+describe('pending drafts and late input during a chunk wait are never dropped', () => {
+  /** A focused title the user types into: reported only when the surface commits it (blur, Enter, Tab, commit()). */
+  function typeTitle(session: EditorSession, title: string) {
+    surface.commit = () => {
+      if (surface.live.title === title) return;
+      surface.live.title = title;
+      session.markEdited();
+    };
+  }
+
+  it('a title typed while an external reload waits for its chunk is committed, and the reload becomes a conflict', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    typeTitle(session, 'Plan renamed');
+    release();
+    await settle(0);
+    expect(kinds()).not.toContain('reloaded');
+    expect(surface.live.title).toBe('Plan renamed');
+    expect(session.status).toBe('conflict');
+    const flushed = await session.flush();
+    if (flushed.kind !== 'conflict') throw new Error(`expected a conflict, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan renamed\n\nBody\n');
+  });
+
+  it('a title typed while a host reload waits for its chunk refuses the reload', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n'));
+    const reloading = session.reload();
+    await settle(50);
+    typeTitle(session, 'Plan renamed');
+    release();
+    await expect(reloading).resolves.toEqual({ kind: 'refused', reason: 'dirty' });
+    expect(kinds()).not.toContain('reloaded');
+    expect(surface.live.title).toBe('Plan renamed');
+    expect(session.status).toBe('dirty');
+  });
+
+  it('a host reload overtaken while it waits for its chunk reports the version on screen, not its own', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion A CHART\n'));
+    const older = session.reload();
+    await settle(50);
+    volume.silently(() => volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nVersion B\n'));
+    const newer = await session.reload();
+    if (newer.kind !== 'reloaded') throw new Error(`expected reloaded, got ${newer.kind}`);
+    release();
+    const result = await older;
+    expect(result).toEqual({ kind: 'reloaded', version: newer.version });
+    expect(surface.live.body).toBe('Version B\n');
+  });
+
+  it('text typed after pressing Reload in the conflict bar, while the chunk loads, keeps the conflict instead of vanishing', async () => {
+    const session = mount();
+    await session.ready;
+    type(session, 'Local edit\n');
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    expect(session.status).toBe('conflict');
+    const release = holdChunk();
+    const resolving = session.resolveConflict('reload');
+    await settle(50);
+    type(session, 'Local edit late\n');
+    release();
+    await resolving;
+    expect(surface.live.body).toBe('Local edit late\n');
+    expect(session.status).toBe('conflict');
+    expect(kinds()).not.toContain('reloaded');
+    expect(kinds()).not.toContain('conflictResolved');
+  });
+});
+
 describe('the fixture host', () => {
   it('a raced write rolls back only files that still hold its own bytes', async () => {
     const session = mount();
