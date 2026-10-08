@@ -142,11 +142,9 @@ function toDeleteSet(ranges: Range[]): DeleteSet {
 export class RedoSlices {
   readonly #atoms: Atom[];
   #at = 0;
-  readonly blocks: number;
 
   constructor(manager: Y.UndoManager, readonly step: StackItem) {
     this.#atoms = atomsOf(manager, step);
-    this.blocks = this.#atoms.reduce((sum, atom) => sum + atom.blocks, 0);
   }
 
   get done(): boolean {

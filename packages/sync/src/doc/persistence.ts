@@ -105,7 +105,6 @@ export class DocStore {
 
   /** Swaps the log for the re-encoded live doc in one transaction. */
   compact(doc: Y.Doc): void {
-    const started = Date.now();
     const state = Y.encodeStateAsUpdate(doc);
     this.storage.transactionSync(() => {
       this.sql.exec('DELETE FROM ystate');
@@ -118,8 +117,6 @@ export class DocStore {
     this.rows = 0;
     this.bytes = 0;
     this.stateBytes = state.byteLength;
-    const ms = Date.now() - started;
-    if (ms > 500) console.warn(`DocStore: compacting ${state.byteLength} bytes took ${ms} ms`);
   }
 
   meta(key: string): string | null {

@@ -184,7 +184,7 @@ function send(connection: Connection, message: Uint8Array): void {
  * reads the doc starts with ready(), so a stub that outlives an eviction never reads an empty doc.
  */
 
-/** A sync frame that holds the DO this long is logged (T3.S6: large pastes, their undo and redo). */
+/** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
@@ -408,7 +408,6 @@ export class DocDO extends YServer<SyncEnv> {
     const waiting = this.#waiting.get(connection) ?? { frames: 0, bytes: 0 };
     if (waiting.frames + 1 > this.#limits.inboxFramesPerConnection || waiting.bytes + bytes > this.#limits.inboxBytesPerConnection
       || this.#waitingBytes + bytes > this.#limits.inboxBytes) {
-      console.warn(`DocDO: a socket's inbox is full (${waiting.frames} frames, ${waiting.bytes} bytes waiting; ${this.#waitingBytes} in all): closing it`);
       this.#dropWaiting(connection);
       connection.close(TRY_AGAIN, 'inbox full');
       return;
@@ -534,7 +533,6 @@ export class DocDO extends YServer<SyncEnv> {
       this.#answer(connection, message);
       return;
     }
-    const started = Date.now();
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
       const { changes, missing, deletes } = classifySync(this.document, frame.update);
@@ -551,8 +549,6 @@ export class DocDO extends YServer<SyncEnv> {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
-      const ms = Date.now() - started;
-      if (ms > SLOW_FRAME_MS && frame.kind === 'sync') console.warn(`DocDO: a ${frame.update.byteLength}-byte sync frame took ${ms} ms`);
     }
   }
 
@@ -903,10 +899,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (!feed) return;
     try {
       // Never through ready(): called from onLoad's timer and onSave, the doc is already loaded.
-      const started = Date.now();
       this.#exported ??= exportDocMarkdown(this.document, this.name);
-      const ms = Date.now() - started;
-      if (ms > SLOW_FRAME_MS) console.warn(`DocDO: exporting ${this.#exported.length} characters for search took ${ms} ms`);
       const markdown = this.#exported;
       const entry: IndexEntry = { docId: this.name, title: this.document.getText('title').toString(), body: splitFrontmatter(markdown).body };
       const signature = `${entry.title}\u0000${entry.body}`;

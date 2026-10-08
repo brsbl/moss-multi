@@ -165,7 +165,6 @@ describe('server writes', () => {
     expect(readFrontmatter(source.dobj.document)).toEqual({ tag: 'keep' });
   });
 
-
   it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
     const legacy = await start(openDoc());
     await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });

@@ -501,6 +501,31 @@ async function warm(server, bodies) {
 const failure = (error) =>
   error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError' ? `a request ran past ${ADVERSARIAL_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0];
 
+/**
+ * Imports `body` then exports it, ADVERSARIAL_RUNS times when either's first run is over `budget` (and, with `cap`,
+ * under 4 times it), each request with its own ADVERSARIAL_TIMEOUT_MS: the medians, the run count, and what `extract`
+ * read from the first and the last import's answer.
+ */
+async function sample(server, body, budget, { cap = true, extract } = {}) {
+  const runs = [];
+  const read = [];
+  do {
+    const imported = await timedRequest(server, '/import', { method: 'POST', body, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+    const exported = await timedRequest(server, '/export', { signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+    runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs });
+    if (extract) read.push(extract(imported));
+  } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > budget && (!cap || runs[0][op] < 4 * budget)));
+  return {
+    runs: runs.length,
+    importCpuMs: median(runs.map((r) => r.importCpuMs)),
+    exportCpuMs: median(runs.map((r) => r.exportCpuMs)),
+    first: read[0],
+    last: read.at(-1),
+  };
+}
+
+const cutAndWork = (imported) => JSON.parse(imported.body);
+
 /** A note of `line` repeated as paragraphs to `bytes`. */
 const noteOf = (line, bytes) => Array.from({ length: Math.max(1, Math.floor(bytes / (line.length + 2))) }, () => line).join('\n\n');
 
@@ -520,24 +545,17 @@ async function measureAdversarial(port) {
         await warm(server, warmBodies);
       }
       const live = server;
-      const request = (path, body) => timedRequest(live, path, { method: body === undefined ? 'GET' : 'POST', body, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
       const measure = async (bytes) => {
         const body = converterBody(c, bytes);
-        const runs = [];
         // A first run clearly within the budget, or clearly over it, needs no second look.
-        do {
-          const imported = await request('/import', body);
-          const exported = await request('/export');
-          const { cut, work } = JSON.parse(imported.body);
-          runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, cut, work });
-        } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > LINE_BUDGET_MS && runs[0][op] < 4 * LINE_BUDGET_MS));
+        const sampled = await sample(live, body, LINE_BUDGET_MS, { extract: cutAndWork });
         const size = {
           bytes: body.length,
-          runs: runs.length,
-          importCpuMs: median(runs.map((r) => r.importCpuMs)),
-          exportCpuMs: median(runs.map((r) => r.exportCpuMs)),
-          cut: runs[0].cut,
-          work: runs[0].work,
+          runs: sampled.runs,
+          importCpuMs: sampled.importCpuMs,
+          exportCpuMs: sampled.exportCpuMs,
+          cut: sampled.first.cut,
+          work: sampled.first.work,
         };
         sizes.push(size);
         return size;
@@ -564,21 +582,15 @@ async function measureAdversarial(port) {
         const lineSizes = [...new Set([...NOTE_LINE_BYTES, ...(nearCut ? [nearCut.bytes] : []), worst.bytes])].filter((bytes) => bytes < NOTE_BYTES);
         for (const lineBytes of lineSizes) {
           const note = noteOf(converterBody(c, lineBytes), NOTE_BYTES);
-          const runs = [];
-          do {
-            const imported = await request('/import', note);
-            const exported = await request('/export');
-            const { cut, work } = JSON.parse(imported.body);
-            runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, cut, work });
-          } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > IMPORT_BUDGET_MS && runs[0][op] < 4 * IMPORT_BUDGET_MS));
+          const sampled = await sample(live, note, IMPORT_BUDGET_MS, { extract: cutAndWork });
           notes.push({
             lineBytes,
             bytes: note.length,
-            runs: runs.length,
-            importCpuMs: median(runs.map((r) => r.importCpuMs)),
-            exportCpuMs: median(runs.map((r) => r.exportCpuMs)),
-            cut: runs[0].cut,
-            work: runs[0].work,
+            runs: sampled.runs,
+            importCpuMs: sampled.importCpuMs,
+            exportCpuMs: sampled.exportCpuMs,
+            cut: sampled.first.cut,
+            work: sampled.first.work,
           });
         }
         sizes.sort((a, b) => a.bytes - b.bytes);
@@ -618,26 +630,17 @@ async function measureOrdinary(port) {
     await warm(server, Object.values(ORDINARY_NOTES).map((body) => body()));
     for (const { name, body, ceiling, family } of runs) {
       try {
-        const markdown = body();
         // A run over the ceiling is measured ADVERSARIAL_RUNS times and judged by the median, as the adversarial lines are.
-        const samples = [];
-        let cut = 0;
-        let work = 0;
-        do {
-          const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
-          const exported = await timedRequest(server, '/export', { signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
-          samples.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs });
-          ({ cut, work } = JSON.parse(imported.body));
-        } while (samples.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => samples[0][op] > ceiling));
+        const sampled = await sample(server, body(), ceiling, { cap: false, extract: cutAndWork });
         results.push({
           name,
           ceiling,
           family,
-          importCpuMs: median(samples.map((r) => r.importCpuMs)),
-          exportCpuMs: median(samples.map((r) => r.exportCpuMs)),
-          runs: samples.length,
-          cut,
-          work,
+          importCpuMs: sampled.importCpuMs,
+          exportCpuMs: sampled.exportCpuMs,
+          runs: sampled.runs,
+          cut: sampled.last.cut,
+          work: sampled.last.work,
         });
       } catch (error) {
         results.push({ name, ceiling, family, failed: String(error.message).split('\n')[0] });
@@ -686,14 +689,8 @@ async function measureMultiline(port) {
       await warm(server, [multilineBody(c, 8 * 1024)]);
       for (const bytes of c.sizes ?? MULTILINE_SIZES) {
         const body = multilineBody(c, bytes);
-        const signal = () => AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS);
-        const runs = [];
-        do {
-          const imported = await timedRequest(server, '/import', { method: 'POST', body, signal: signal() });
-          const exported = await timedRequest(server, '/export', { signal: signal() });
-          runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs });
-        } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > IMPORT_BUDGET_MS && runs[0][op] < 4 * IMPORT_BUDGET_MS));
-        sizes.push({ bytes: body.length, importCpuMs: median(runs.map((r) => r.importCpuMs)), exportCpuMs: median(runs.map((r) => r.exportCpuMs)) });
+        const sampled = await sample(server, body, IMPORT_BUDGET_MS);
+        sizes.push({ bytes: body.length, importCpuMs: sampled.importCpuMs, exportCpuMs: sampled.exportCpuMs });
       }
       results.push({ name, sizes });
     } catch (error) {
@@ -735,13 +732,8 @@ async function measureEntityTabs(port) {
     const body = (n) => `x ${'&#9;'.repeat(n)}`;
     await warm(server, [body(1_000)]);
     for (const tabs of ENTITY_TAB_COUNTS) {
-      const runs = [];
-      do {
-        const imported = await timedRequest(server, '/import', { method: 'POST', body: body(tabs), signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
-        const exported = await timedRequest(server, '/export', { signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
-        runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, cut: JSON.parse(imported.body).cut });
-      } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > LINE_BUDGET_MS && runs[0][op] < 4 * LINE_BUDGET_MS));
-      sizes.push({ tabs, importCpuMs: median(runs.map((r) => r.importCpuMs)), exportCpuMs: median(runs.map((r) => r.exportCpuMs)), cut: runs[0].cut });
+      const sampled = await sample(server, body(tabs), LINE_BUDGET_MS, { extract: (imported) => JSON.parse(imported.body).cut });
+      sizes.push({ tabs, importCpuMs: sampled.importCpuMs, exportCpuMs: sampled.exportCpuMs, cut: sampled.first });
     }
     return { sizes };
   } catch (error) {
@@ -955,10 +947,6 @@ async function main() {
     `The scale note repeats one ${kb(unitBytes)} unit of the family corpus (packages/sync/src/converter/fixtures/scale.json lists what it leaves out). CPU (10 ms ticks) and RSS come from /proc for the workerd children of \`wrangler dev --local\`, which enforces no CPU limit; RSS growth stands in for isolate heap, which workerd does not report.`,
   ];
   const report = lines.join('\n');
-  // Every swept size, for calibrating the budgets: import / export ms, lines kept literal, and the work charged.
-  for (const r of adversarial) {
-    console.log(`sizes, ${r.name}: ${r.sizes.map((size) => `${size.bytes} ${size.importCpuMs}/${size.exportCpuMs}${size.cut ? ' cut' : ''} w${Math.round(size.work / 1e6)}M`).join('; ')}`);
-  }
   console.log(report);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n`);
   const failed = conversions.filter((c) => c.failed);

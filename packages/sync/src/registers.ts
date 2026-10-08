@@ -3,7 +3,7 @@
 // the node's own fields are a render cache that never ride the wire. Getters read the payload doc, setters write minimal diffs to it, and only the client (or server
 // mirror) that mints an id writes its payload's first text, in the update that creates its element.
 import {
-  $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
+  $getEditor, $getNodeByKey, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
 } from 'lexical';
 import * as Y from 'yjs';
 import { diffAtCaret, diffText, rebaseOps, SERVER_CELL_BUDGET } from '@moss-multi/core/text-diff';
@@ -186,16 +186,8 @@ export function $assignRegisterIds(): void {
   };
   // Every node the update holds, rather than a walk of the tree: an import makes millions, and the walk looked each
   // one up by key. A payload node counts only in the tree; ids are random, so the order is immaterial.
-  const nodes = $getEditor()._pendingEditorState?._nodeMap;
-  if (nodes) {
-    for (const node of nodes.values()) if (isPayloadType(node.__type) && node.isAttached()) assign(node);
-    return;
-  }
-  const walk = (node: LexicalNode) => {
-    if (isPayloadType(node.getType())) assign(node);
-    if ($isElementNode(node)) for (const child of node.getChildren()) walk(child);
-  };
-  walk($getRoot());
+  const nodes = $getEditor()._pendingEditorState!._nodeMap;
+  for (const node of nodes.values()) if (isPayloadType(node.__type) && node.isAttached()) assign(node);
 }
 
 /**
