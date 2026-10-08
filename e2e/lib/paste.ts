@@ -173,9 +173,12 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
     clearInterval(probe.__stallTimer);
     const from = probe.__stallStart + probe.__stallAt;
     const to = from + probe.__stall + 25;
-    const during = performance.getEntriesByType('measure')
-      .filter((entry) => /^moss-(paste|sync)-/.test(entry.name) && entry.startTime < to && entry.startTime + entry.duration > from)
-      .map((entry) => `${entry.name} ${Math.round(entry.duration)} ms${(entry as PerformanceMeasure).detail ? ` ${JSON.stringify((entry as PerformanceMeasure).detail)}` : ''}`)
+    // Measures that overlap the stall, and marks in it or in the second before it.
+    const during = [...performance.getEntriesByType('measure'), ...performance.getEntriesByType('mark')]
+      .filter((entry) => /^moss-(paste|sync)-/.test(entry.name) && entry.startTime < to && entry.startTime + entry.duration > from - (entry.entryType === 'mark' ? 1_000 : 0))
+      .map((entry) => (entry.entryType === 'mark'
+        ? `${entry.name} at ${Math.round(entry.startTime - from)} ms`
+        : `${entry.name} ${Math.round(entry.duration)} ms${(entry as PerformanceMeasure).detail ? ` ${JSON.stringify((entry as PerformanceMeasure).detail)}` : ''}`))
       .join(', ');
     const tasks = window as unknown as { __longTasks?: PerformanceEntry[]; __longTaskObserver?: PerformanceObserver };
     tasks.__longTaskObserver?.disconnect();

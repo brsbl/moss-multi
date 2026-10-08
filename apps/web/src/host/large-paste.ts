@@ -671,6 +671,7 @@ class PasteJob {
   #end(): void {
     if (this.#ended) return;
     this.#ended = true;
+    performance.mark('moss-paste-landed');
     clearTimeout(this.#timer);
     this.#dir.restore();
     for (const stop of this.#stops.splice(0)) stop();
