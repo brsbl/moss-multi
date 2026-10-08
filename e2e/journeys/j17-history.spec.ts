@@ -191,7 +191,11 @@ test('j17-history: a first named checkpoint from the empty state and one from th
   await expect(row(ada, id, 'First checkpoint'), 'with its Named badge').toContainText('Named');
 
   // Ben changes the note while Ada looks at the version.
-  await ui.typeBody(ben, id, ' Ben was here.');
+  // The note leads with an image, so Ben's caret goes to the end of the text, not to wherever a click lands.
+  await ui.body(ben, id).getByText('A second line for the peer.').click();
+  await caretAfter(ben, id, 'for the peer.');
+  await ben.page.keyboard.type(' Ben was here.');
+  ben.typed({ docId: id, field: 'body', text: ' Ben was here.', ordered: true });
   await ui.waitAcked(ben, id);
 
   await row(ada, id, 'First checkpoint').click();
