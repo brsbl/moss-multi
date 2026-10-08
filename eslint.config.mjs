@@ -59,6 +59,23 @@ export default defineConfig([
       'regexp/optimal-quantifier-concatenation': 'error',
     },
   },
+  // The same guard on the converter's own files (the extract templates and what they generate) and on the vendored
+  // comment-import.ts, whose marker regexes pushed and imported text reaches.
+  {
+    files: [
+      `vendor/extract/**/*.${CODE}`,
+      'vendor/moss/packages/desktop/src/renderer/editor/markdown/{fixes,format-whitespace,pipeline}.ts',
+      'vendor/moss/packages/desktop/src/renderer/editor/nodes/{node-views.ts,register-views.tsx}',
+      'vendor/moss/packages/desktop/src/renderer/editor/utils/{comment-import,comment-marker-scan}.ts',
+    ],
+    plugins: { regexp },
+    rules: {
+      'regexp/no-super-linear-backtracking': 'error',
+      'regexp/no-super-linear-move': 'error',
+      'regexp/no-misleading-capturing-group': 'error',
+      'regexp/optimal-quantifier-concatenation': 'error',
+    },
+  },
   // Inline directives in vendor/ are ignored, so a vendored file can neither disable the ban
   // nor fail on disable comments naming moss's own lint plugins.
   {
