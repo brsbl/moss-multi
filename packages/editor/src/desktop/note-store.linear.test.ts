@@ -90,9 +90,14 @@ const FIXTURES = [
 function expectLinear(run: (text: string) => unknown, attack: (n: number) => string): void {
   const time = (n: number): number => {
     const text = attack(n);
-    const start = performance.now();
-    run(text);
-    return performance.now() - start;
+    let best = Infinity;
+    // The fastest of three, so a GC pause on a busy runner is not read as growth.
+    for (let i = 0; i < 3; i += 1) {
+      const start = performance.now();
+      run(text);
+      best = Math.min(best, performance.now() - start);
+    }
+    return best;
   };
   time(8 * 1024);
   let previous = time(16 * 1024);
