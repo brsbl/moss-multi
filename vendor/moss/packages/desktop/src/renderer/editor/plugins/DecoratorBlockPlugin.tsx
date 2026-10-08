@@ -30,6 +30,7 @@ import {
   $isRangeSelection,
   $isTextNode,
   $setSelection,
+  BEFORE_INPUT_COMMAND, // moss-multi seam: type-after-block (T3.13)
   CLICK_COMMAND,
   COMMAND_PRIORITY_HIGH,
   COMMAND_PRIORITY_LOW,
@@ -638,6 +639,26 @@ export function DecoratorBlockPlugin(): null {
       unregisterBackspaceFromText();
       unregisterDelete();
     };
+  }, [editor]);
+
+  // moss-multi seam: type-after-block (T3.13): text typed while a block is node-selected (as a slash-menu insert
+  // leaves a chart) starts a paragraph below it, as Enter does. Lexical's beforeinput leaves a NodeSelection to the
+  // browser, which typed at the root's first caret position, each character before the last.
+  useEffect(() => {
+    return editor.registerCommand(
+      BEFORE_INPUT_COMMAND,
+      (event) => {
+        if (event.inputType !== 'insertText' || !event.data || !editor.isEditable()) return false;
+        const node = $getSelectedAnyBlockDecorator();
+        if (!node) return false;
+        event.preventDefault();
+        $insertParagraphAt(node, 'after');
+        const selection = $getSelection();
+        if ($isRangeSelection(selection)) selection.insertText(event.data);
+        return true;
+      },
+      COMMAND_PRIORITY_LOW
+    );
   }, [editor]);
 
   // Clicking a horizontal rule (divider) — or the visible gap just above/below

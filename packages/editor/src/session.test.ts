@@ -342,6 +342,22 @@ describe('conflicts with the Mac app', () => {
     const flushed = await session.flush();
     expect(flushed).toMatchObject({ kind: 'removed' });
   });
+
+  it("a removed note's draft keeps a chart draft that was open, committed before the editor went read-only", async () => {
+    const session = mount();
+    await session.ready;
+    surface.commit = () => {
+      if (!surface.editable || surface.live.body === 'Chart value 9\n') return;
+      surface.live.body = 'Chart value 9\n';
+      session.markEdited();
+    };
+    volume.unlink(`${DIR}/meta.json`);
+    await settle(250);
+    expect(session.status).toBe('removed');
+    const flushed = await session.flush();
+    if (flushed.kind !== 'removed') throw new Error(`expected removed, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan\n\nChart value 9\n');
+  });
 });
 
 describe('flush and unmount', () => {
