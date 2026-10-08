@@ -11,7 +11,7 @@ import { decodeRelPos } from '@moss-multi/core/tree-anchor';
 import { isPayloadType, payloadMap, payloadText } from '../payload-docs.ts';
 import { reconcileBody, ReconcileRefused } from '../reconcile.ts';
 import { registerPayloads } from '../registers.ts';
-import { keepsInserts, stateAt, type DecodedBase } from '../restore-base.ts';
+import { keepsInserts, namedPayloads, shownAfter, StaleBase, stateAt, type DecodedBase } from '../restore-base.ts';
 import { exportMirror, mirrorOf, payloadSourceOf, type Admit, type MirrorBase } from '../server-doc.ts';
 import { writeTitle } from '../server-title.ts';
 
@@ -118,21 +118,37 @@ export function restoreContent(live: Y.Doc, origin: unknown, target: VersionCont
   const state = JSON.parse(target.lexical, (key, value: unknown) => (key === '__regId' ? undefined : value)) as SerializedEditorState;
   const source = payloadSourceOf(live);
   const note = Y.encodeStateAsUpdate(live);
-  // A payload the restorer did not hold is taken as it is now.
-  const payloadAt = (id: string): Uint8Array | null => {
-    const now = source.read(id);
-    const sv = base.payloads.get(id);
-    return now && sv ? stateAt(now, sv) : now;
-  };
-  const from: MirrorBase = { state: stateAt(note, base.note), payload: payloadAt };
-  const keeping: Admit = (diff, payloads) => {
-    let kept = keepsInserts(note, diff, base.note, false);
-    for (const [id, update] of payloads) {
+  const from: MirrorBase = {
+    state: stateAt(note, base.note),
+    payload: (id) => {
       const now = source.read(id);
       const sv = base.payloads.get(id);
-      if (kept && now && sv) kept = keepsInserts(now, update, sv, true);
+      if (now && !sv) throw new StaleBase('the base leaves out a payload');
+      return now && sv ? stateAt(now, sv) : now;
+    },
+  };
+  // Every payload the note named at the base needs its base: without it, what was typed in it since is unknown.
+  for (const id of namedPayloads(from.state)) if (!base.payloads.has(id) && source.read(id)) throw new StaleBase('the base leaves out a payload');
+  const keeping: Admit = (diff, payloads) => {
+    if (!keepsInserts(note, diff, base.note, false)) throw new ReconcileRefused('mismatch', 'the restore would remove what was inserted after its base');
+    const written = new Map(payloads);
+    let named: Set<string> | null = null;
+    for (const [id, sv] of base.payloads) {
+      const now = source.read(id);
+      if (!now) continue;
+      const update = written.get(id);
+      if (update && !keepsInserts(now, update, sv, true)) throw new ReconcileRefused('mismatch', 'the restore would remove what was inserted after its base');
+      // A payload typed in since the base must stay named, or the restore would take the block, and the typing, away.
+      if (!shownAfter(now, sv)) continue;
+      if (!named) {
+        const merged = new Y.Doc();
+        Y.applyUpdate(merged, note);
+        Y.applyUpdate(merged, diff);
+        named = namedPayloads(Y.encodeStateAsUpdate(merged));
+        merged.destroy();
+      }
+      if (!named.has(id)) throw new ReconcileRefused('mismatch', 'the restore would remove a block typed in after its base');
     }
-    if (!kept) throw new ReconcileRefused('mismatch', 'the restore would remove what was inserted after its base');
     admit(diff, payloads);
   };
   return reconcileBody(live, state, origin, keeping, {

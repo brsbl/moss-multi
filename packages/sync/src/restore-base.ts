@@ -4,7 +4,7 @@
 // would be lost.
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
-import type { PayloadDocs } from './payload-docs.ts';
+import { isPayloadType, type PayloadDocs } from './payload-docs.ts';
 
 /** What a client sends with a restore. */
 export interface RestoreBase {
@@ -19,8 +19,8 @@ export interface RestoreBase {
 /** The base of a restore, captured when its dialog opens; the caller adds its age when it sends it. */
 export function captureRestoreBase(doc: Y.Doc, payloads?: PayloadDocs): Omit<RestoreBase, 'age'> {
   const held: Record<string, string> = {};
-  // A payload not arrived yet is left out: the server takes its state as the base.
-  for (const [id, payload] of payloads?.docs ?? []) if (payload.store.clients.size) held[id] = toBase64(Y.encodeStateVector(payload));
+  // Every payload held, an empty one too; one still loading is left out, and the server refuses a base without it.
+  for (const [id, payload] of payloads?.docs ?? []) if (!payloads?.awaiting(id)) held[id] = toBase64(Y.encodeStateVector(payload));
   return { note: toBase64(Y.encodeStateVector(doc)), payloads: held };
 }
 
@@ -114,6 +114,41 @@ export function shownSince(doc: Y.Doc, from: StateVector, until: StateVector, ma
   };
   for (const type of doc.share.values()) walk(type, true);
   return count;
+}
+
+/** The payload ids that visible elements of `state` name. */
+export function namedPayloads(state: Uint8Array): Set<string> {
+  const doc = new Y.Doc();
+  const named = new Set<string>();
+  const walk = (type: Y.AbstractType<unknown>): void => {
+    for (let item = type._start; item; item = item.right) {
+      if (item.deleted || !(item.content instanceof Y.ContentType)) continue;
+      const child = item.content.type;
+      if (child instanceof Y.XmlElement) {
+        const id: unknown = child.getAttribute('__regId');
+        if (isPayloadType(String(child.getAttribute('__type'))) && typeof id === 'string' && id) named.add(id);
+      }
+      walk(child);
+    }
+  };
+  try {
+    Y.applyUpdate(doc, state);
+    for (const type of doc.share.values()) walk(type);
+    return named;
+  } finally {
+    doc.destroy();
+  }
+}
+
+/** Countable content in `state` made after `from` that is visible. */
+export function shownAfter(state: Uint8Array, from: StateVector): number {
+  const doc = new Y.Doc();
+  try {
+    Y.applyUpdate(doc, state);
+    return shownSince(doc, from, stateOf(doc), true);
+  } finally {
+    doc.destroy();
+  }
 }
 
 /** Whether applying `diff` to `state` keeps every insert made after `from` visible. */
