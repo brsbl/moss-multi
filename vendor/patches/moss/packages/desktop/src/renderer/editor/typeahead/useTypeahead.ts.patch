@@ -1,22 +1,32 @@
 diff --git a/packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts b/packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts
 --- a/packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts
 +++ b/packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts
-@@ -97,8 +97,11 @@ export function useTypeahead<T extends TypeaheadItem>({
+@@ -91,7 +91,10 @@
+ }: UseTypeaheadOptions<T>): UseTypeaheadReturn<T> {
+   const [editor] = useLexicalComposerContext();
+   const [state, setState] = useState<TypeaheadState>(getInitialState);
+-  const [results, setResults] = useState<T[]>([]);
++  // moss-multi seam: live-query-select (T3.F2): the results and the query they were searched for, set together so a
++  // key handler's closure never pairs one query's list with another's text.
++  const [found, setFound] = useState<{ query: string | null; items: T[] }>({ query: null, items: [] });
++  const results = found.items;
+ 
+   const menuRef = useRef<HTMLDivElement>(null);
    const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-   const searchRequestIdRef = useRef(0);
-   const isMenuInteractingRef = useRef(false);
-+  // moss-multi seam: live-query-select (T3.F2): the query `results` were searched for.
-+  const resultsQueryRef = useRef<string | null>(null);
+@@ -100,7 +103,7 @@
  
    const closeMenu = useCallback(() => {
-+    resultsQueryRef.current = null;
      setState(getInitialState());
-     setResults([]);
+-    setResults([]);
++    setFound({ query: null, items: [] });
    }, []);
-@@ -113,13 +116,40 @@ export function useTypeahead<T extends TypeaheadItem>({
+ 
+   const selectItem = useCallback(
+@@ -112,14 +115,45 @@
+     },
      [state.triggerOffset, onSelect, closeMenu]
    );
- 
++
 +  // moss-multi seam: live-query-select (T3.F2): a synchronous search (debounce 0) that has not caught up with the
 +  // text typed after the trigger (its timer waits behind a busy main thread) is run now, so Enter or Tab picks
 +  // the first match for everything typed, never a row of the previous query's list.
@@ -32,12 +42,16 @@ diff --git a/packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts b/pa
 +      if (text.lastIndexOf(trigger.trigger) !== start) return null;
 +      return text.slice(start + trigger.trigger.length);
 +    });
-+    if (live === null || live === resultsQueryRef.current) return null;
++    if (live === null || live === found.query) return null;
 +    if (trigger.closingChars?.some((char) => live.includes(char))) return null;
-+    const fresh = onSearch(live);
-+    return Array.isArray(fresh) ? fresh : null;
-+  }, [debounceMs, editor, onSearch, state.triggerOffset, trigger]);
-+
++    try {
++      const fresh = onSearch(live);
++      return Array.isArray(fresh) ? fresh : null;
++    } catch {
++      return null;
++    }
++  }, [debounceMs, editor, onSearch, state.triggerOffset, trigger, found.query]);
+ 
    const handleSelect = useCallback(() => {
 +    const fresh = liveResults();
 +    if (fresh) {
@@ -55,11 +69,16 @@ diff --git a/packages/desktop/src/renderer/editor/typeahead/useTypeahead.ts b/pa
  
    // Keyboard navigation
    useEffect(() => {
-@@ -377,6 +407,7 @@ export function useTypeahead<T extends TypeaheadItem>({
+@@ -377,10 +411,10 @@
        try {
          const searchResults = await onSearch(state.query);
          if (requestId !== searchRequestIdRef.current) return;
-+        resultsQueryRef.current = state.query;
-         setResults(searchResults);
+-        setResults(searchResults);
++        setFound({ query: state.query, items: searchResults });
          setState((prev) => ({ ...prev, selectedIndex: 0 }));
        } catch {
+-        setResults([]);
++        setFound({ query: null, items: [] });
+       }
+     }, effectiveDebounce);
+ 

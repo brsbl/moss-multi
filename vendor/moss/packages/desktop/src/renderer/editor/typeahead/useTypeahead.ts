@@ -92,19 +92,19 @@ export function useTypeahead<T extends TypeaheadItem>({
 }: UseTypeaheadOptions<T>): UseTypeaheadReturn<T> {
   const [editor] = useLexicalComposerContext();
   const [state, setState] = useState<TypeaheadState>(getInitialState);
-  const [results, setResults] = useState<T[]>([]);
+  // moss-multi seam: live-query-select (T3.F2): the results and the query they were searched for, set together so a
+  // key handler's closure never pairs one query's list with another's text.
+  const [found, setFound] = useState<{ query: string | null; items: T[] }>({ query: null, items: [] });
+  const results = found.items;
 
   const menuRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRequestIdRef = useRef(0);
   const isMenuInteractingRef = useRef(false);
-  // moss-multi seam: live-query-select (T3.F2): the query `results` were searched for.
-  const resultsQueryRef = useRef<string | null>(null);
 
   const closeMenu = useCallback(() => {
-    resultsQueryRef.current = null;
     setState(getInitialState());
-    setResults([]);
+    setFound({ query: null, items: [] });
   }, []);
 
   const selectItem = useCallback(
@@ -132,11 +132,15 @@ export function useTypeahead<T extends TypeaheadItem>({
       if (text.lastIndexOf(trigger.trigger) !== start) return null;
       return text.slice(start + trigger.trigger.length);
     });
-    if (live === null || live === resultsQueryRef.current) return null;
+    if (live === null || live === found.query) return null;
     if (trigger.closingChars?.some((char) => live.includes(char))) return null;
-    const fresh = onSearch(live);
-    return Array.isArray(fresh) ? fresh : null;
-  }, [debounceMs, editor, onSearch, state.triggerOffset, trigger]);
+    try {
+      const fresh = onSearch(live);
+      return Array.isArray(fresh) ? fresh : null;
+    } catch {
+      return null;
+    }
+  }, [debounceMs, editor, onSearch, state.triggerOffset, trigger, found.query]);
 
   const handleSelect = useCallback(() => {
     const fresh = liveResults();
@@ -408,11 +412,10 @@ export function useTypeahead<T extends TypeaheadItem>({
       try {
         const searchResults = await onSearch(state.query);
         if (requestId !== searchRequestIdRef.current) return;
-        resultsQueryRef.current = state.query;
-        setResults(searchResults);
+        setFound({ query: state.query, items: searchResults });
         setState((prev) => ({ ...prev, selectedIndex: 0 }));
       } catch {
-        setResults([]);
+        setFound({ query: null, items: [] });
       }
     }, effectiveDebounce);
 
