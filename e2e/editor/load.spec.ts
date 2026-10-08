@@ -409,6 +409,49 @@ test('a title typed while a reload waits for its chart chunk is kept, and the re
   expect(errors).toEqual([]);
 });
 
+test('a chart JSON draft left open while a reload waits for the canvas chunk is kept, and the reload becomes a conflict', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${server.url}/fixture/index.html`);
+  await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+  const path = '/Moss/Notes/Plan/Plan.md';
+  const chart = LAZY_FAMILIES[0].markdown;
+  const result = await page.evaluate(
+    ({ value, markdown }) => {
+      const fixture = (window as unknown as FixtureWindow).editorFixture;
+      fixture.reset();
+      fixture.seed(['Notes', 'Plan'], { markdown, meta: value });
+      return fixture.mount(value.id);
+    },
+    { value: meta('Plan'), markdown: `# Plan\n\nFirst line\n\n${chart}\n` },
+  );
+  expect(result).toEqual({ ok: true, status: 'clean' });
+  const body = page.locator('[data-moss-editor] [data-moss-note-editor-root="true"]');
+  await expect(body.locator('.recharts-surface')).toHaveCount(1);
+  const external = `# Plan\n\nFirst line\n\n${chart}\n\n${LAZY_FAMILIES[1].markdown}\n`;
+  const edited = '{"type":"bar","title":"Edited","data":[{"label":"A","value":9},{"label":"B","value":5}]}';
+  server.delay = { pattern: /\/assets\/[^/]*(canvas|sketch)[^/]*\.js$/i, ms: 2_500 };
+  try {
+    await page.evaluate(([file, markdown]) => (window as unknown as FixtureWindow).editorFixture.externalWrite(file, markdown), [path, external]);
+    await page.waitForTimeout(500);
+    // The chart's JSON editor, changed without pressing Apply: a decorator draft the reload must not overwrite.
+    await body.getByRole('button', { name: 'Edit', exact: true }).click({ timeout: 1_000 });
+    await body.locator('textarea').fill(edited, { timeout: 1_000 });
+    await page.waitForTimeout(3_000);
+  } finally {
+    server.delay = { pattern: null, ms: 0 };
+  }
+  const kinds = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.events())).map((event) => event.kind);
+  expect(kinds).not.toContain('reloaded');
+  expect(kinds).toContain('conflict');
+  const flushed = (await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.flush())) as { kind: string; draft?: { files: { markdown: string } } };
+  expect(flushed.kind).toBe('conflict');
+  expect(flushed.draft?.files.markdown, 'the draft keeps the chart edit').toContain('Edited');
+  expect(flushed.draft?.files.markdown).not.toContain('moss-canvas');
+  expect((await page.evaluate(() => (window as unknown as FixtureWindow).editorFixture.files()))[path]).toBe(external);
+  expect(errors).toEqual([]);
+});
+
 test('unmounting while the first mount waits for its chart chunk rejects ready with unmounted', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));

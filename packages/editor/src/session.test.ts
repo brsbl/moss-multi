@@ -715,6 +715,27 @@ describe('pending drafts and late input during a chunk wait are never dropped', 
     expect(kinds()).not.toContain('reloaded');
     expect(kinds()).not.toContain('conflictResolved');
   });
+
+  it('a chart JSON draft typed during the chunk wait is committed while the editor is still editable, and the reload becomes a conflict', async () => {
+    const session = mount();
+    await session.ready;
+    const release = holdChunk();
+    volume.writeFile(`${DIR}/Plan.md`, '# Plan\n\nRemote CHART\n');
+    await settle(250);
+    // As moss's chart flusher: it writes its draft into the document only while the editor is editable.
+    surface.commit = () => {
+      if (!surface.editable || surface.live.body === 'Chart value 9\n') return;
+      surface.live.body = 'Chart value 9\n';
+      session.markEdited();
+    };
+    release();
+    await settle(0);
+    expect(kinds()).not.toContain('reloaded');
+    expect(session.status).toBe('conflict');
+    const flushed = await session.flush();
+    if (flushed.kind !== 'conflict') throw new Error(`expected a conflict, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan\n\nChart value 9\n');
+  });
 });
 
 describe('the fixture host', () => {
