@@ -472,8 +472,8 @@ class Pacer {
   time(used: number, run: () => number | void, layout?: () => void): void {
     const started = performance.now();
     const before = this.#ended === null ? 0 : started - this.#ended;
-    const ran = run();
-    if (typeof ran === 'number' && ran > 0) used = ran;
+    const counted = run();
+    if (typeof counted === 'number' && counted > 0) used = counted;
     const ran = performance.now();
     layout?.();
     this.#ended = performance.now();

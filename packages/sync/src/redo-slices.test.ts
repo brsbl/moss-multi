@@ -4,7 +4,7 @@
 // redo chain after it still redoes, and the slices are one undo step again.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES } from '@moss-multi/protocol/limits';
-import { $getRoot, $isTextNode, $parseSerializedNode, type LexicalEditor } from 'lexical';
+import { $getRoot, $isElementNode, $isTextNode, $parseSerializedNode, type LexicalEditor } from 'lexical';
 import { expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor } from './converter/index.ts';
@@ -163,7 +163,7 @@ it('redoes a paste in slices where peers have moved it: a block a peer added abo
   ben.editor.update(() => {
     const top = $getRoot().getFirstChild()!;
     const hello = top.getNextSibling()!;
-    const first = hello.getFirstDescendant();
+    const first = $isElementNode(hello) ? hello.getFirstDescendant() : null;
     if ($isTextNode(first)) first.spliceText(0, 0, 'XY');
     const parsed = createConverterEditor();
     parsed.update(() => $importNoteBody('Ben’s line.'), { discrete: true });
