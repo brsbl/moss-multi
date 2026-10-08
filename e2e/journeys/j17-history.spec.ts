@@ -24,7 +24,8 @@ const IMAGE_MD = `![A test card](assets/${IMAGE})`;
 interface Version { id: string; kind: string; name: string | null; createdAt: number; title: string }
 
 async function createNote(actor: Actor, baseUrl: string, title = 'History note', image = false): Promise<string> {
-  const markdown = image ? `${SEED}\n\n${IMAGE_MD}` : SEED;
+  // The image leads, so the body still ends in text a peer types after.
+  const markdown = image ? `${IMAGE_MD}\n\n${SEED}` : SEED;
   const created = await actor.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { markdown, title } });
   expect(created.status()).toBe(201);
   const id = ((await created.json()) as { doc: { id: string } }).doc.id;
