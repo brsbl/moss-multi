@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (99 of 124 planned tasks verified)
+**Overall: 81% done** (100 of 124 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 7 / 7 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 8 / 8 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -120,6 +120,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.4 verified: `moss-multi sync` keeps a local folder in step with the web: local edits appear on the web, web edits update the file, untracked files become docs titled from their stem, local deletes stay local, and moss vault notes keep their `# Title` line and comment markers.
 - 2026-10-08 — T7.L verified: CI's lint now fails any regex that can backtrack super-linearly, and every flagged one, including the CLI title-line parse and moss's note-type classifier, is a linear scan with the same results, so a hostile note or title can no longer stall the editor or server on a regex.
 - 2026-10-08 — T7.S1 verified: pushing a note with `%%m:` comment markers, images or trailing whitespace now converts in linear-time scans with the same output as moss, so a hostile 2 MB push can no longer stall the server.
+- 2026-10-08 — T7.S2 verified: a push merge now runs on one counted step budget instead of a clock, so a costly or hostile push can no longer stall the server; a drifted push past the budget is refused 409 `push-unverified` with nothing landed, and a degenerate push is refused before the doc's own edits are diffed.
 
 ## T1.1s identity audit
 
@@ -152,6 +153,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S2's checker (7b539b3, 2026-10-08)
+
+- T7.S2 checker P2 (a coarse diff fallback can wrongly refuse a large undrifted push as degenerate): merge.ts counts pushed.deleted exactly, but past DIFF_WORK/DENSE_WORK tokenRuns replaces the whole span, so a large doc with >~1000 consecutive changed lines that keeps nearly all its text can exceed the 60% guard and get 409 degenerate (CLI exit 3) unless --force; safe, nothing lost.
+- T7.S2 checker P2 (the `applied` count in the push response now counts something different): merge.ts counts accepted line-grouped pushed edits instead of non-equal diff ops, so PushResponse.applied and the CLI's 'N change(s) applied' change (e.g. 2 to 1 for 'abc' to 'aBc'); same name and type, informational only.
+- T7.S2 checker P2 (the budget refusal tests compare plain exported text, not payloads byte for byte): the refusal tests compare exported Markdown and an empty fork.ops rather than live body and payload bytes; the code throws before any write, but there is no regression test for decorator payloads.
 
 ### From T7.S1's checker (7470712, 2026-10-08)
 
