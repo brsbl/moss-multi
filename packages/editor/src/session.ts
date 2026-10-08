@@ -695,15 +695,18 @@ export class EditorSession {
   }
 
   /**
-   * Starts applying a preparation: takes the editor read-only, commits drafts not yet reported (a focused title,
-   * decorator drafts) so they count, and checks that nothing moved since `revision` and `base`. Returns the in-place
-   * load's number to apply under, with no further await before the apply; or 'stale' (a newer preparation or an
-   * unmount overtook it) or 'edited' (an edit or a save landed, unless `discard`), with editing given back.
+   * Starts applying a preparation: commits drafts not yet reported (a focused title, decorator drafts) while the
+   * editor is still editable, since moss's decorators write nothing into a read-only editor, then takes it read-only
+   * in the same step and checks that nothing moved since `revision` and `base`. Returns the in-place load's number to
+   * apply under, with no further await before the apply; or 'stale' (a newer preparation or an unmount overtook it)
+   * or 'edited' (an edit or a save landed, unless `discard`), with editing given back.
    */
   private async beginApply(preparation: number, revision: number, base: NoteRead | null, discard: boolean): Promise<number | 'stale' | 'edited'> {
     const load = ++this.loads;
+    // commit() flushes the drafts synchronously; the edits they cause are counted once it settles.
+    const committing = this.surface.commit?.();
     this.surface.setEditable(false);
-    await this.surface.commit?.();
+    await committing;
     const outcome = !this.current(preparation) ? 'stale' : !discard && (this.revision !== revision || this.read !== base) ? 'edited' : load;
     if (typeof outcome !== 'number') this.giveBack(load);
     return outcome;
