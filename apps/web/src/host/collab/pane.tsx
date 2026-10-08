@@ -32,6 +32,7 @@ import { modeFor, offerUnsaved, showMode, subscribeModes } from './suggest/mode.
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
 import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
+import { HistoryButton, HistoryView, useHistoryOpen } from '../history/HistoryView.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
@@ -569,6 +570,8 @@ export interface MossMultiPane {
   paneProps: Record<string, string>;
   /** Web chrome at the start of the top bar's right group. */
   topBarCollab: ReactNode;
+  /** The History view, which occupies the pane in place of the editor canvas while it is open (A§14). */
+  history: ReactNode;
   noticeBand: ReactNode;
   readOnly: boolean;
 }
@@ -605,6 +608,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   const state = usePaneState(binding);
   if (state.bodyVisible) synced.current.synced = true;
   const terminal = useTerminal(docId);
+  const historyOpen = useHistoryOpen(docId);
   const plugin = useMemo(
     () => (docId && binding ? <DocBinding key={`${docId}:${epoch}`} docId={docId} binding={binding} /> : null),
     [binding, docId, epoch],
@@ -632,6 +636,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
       hasBodyText: false,
       paneProps: { [EDITOR_PANE_ATTR]: '', [DOC_ID_ATTR]: docId, [DOC_STATE_ATTR]: 'terminal', [TERMINAL_REASON_ATTR]: 'deleted' },
       topBarCollab: null,
+      history: null,
     };
   }
   return {
@@ -656,7 +661,10 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
-    topBarCollab: docId ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}<TopBarCollab docId={docId} /></> : null,
+    topBarCollab: docId
+      ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}{terminal ? null : <HistoryButton docId={docId} />}<TopBarCollab docId={docId} /></>
+      : null,
+    history: docId && historyOpen && !terminal ? <HistoryView key={docId} docId={docId} /> : null,
   };
 }
 
