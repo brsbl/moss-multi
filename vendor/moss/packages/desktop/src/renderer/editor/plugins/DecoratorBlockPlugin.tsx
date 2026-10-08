@@ -38,6 +38,7 @@ import {
   KEY_ARROW_UP_COMMAND,
   KEY_BACKSPACE_COMMAND,
   KEY_DELETE_COMMAND,
+  KEY_DOWN_COMMAND, // moss-multi seam: type-after-block (T3.13)
   KEY_ENTER_COMMAND,
   type LexicalEditor,
   type LexicalNode
@@ -643,22 +644,42 @@ export function DecoratorBlockPlugin(): null {
 
   // moss-multi seam: type-after-block (T3.13): text typed while a block is node-selected (as a slash-menu insert
   // leaves a chart) starts a paragraph below it, as Enter does. Lexical's beforeinput leaves a NodeSelection to the
-  // browser, which typed at the root's first caret position, each character before the last.
+  // browser, which typed at the root's first caret position, each character before the last (Chromium), or nowhere
+  // (WebKit, which has no DOM selection to type into). A printable key on the root itself is taken at keydown; any
+  // other text input (a virtual keyboard) at beforeinput.
   useEffect(() => {
-    return editor.registerCommand(
-      BEFORE_INPUT_COMMAND,
+    const $typeAfter = (text: string): boolean => {
+      if (!editor.isEditable()) return false;
+      const node = $getSelectedAnyBlockDecorator();
+      if (!node) return false;
+      $insertParagraphAt(node, 'after');
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) selection.insertText(text);
+      return true;
+    };
+    const unregisterKey = editor.registerCommand(
+      KEY_DOWN_COMMAND,
       (event) => {
-        if (event.inputType !== 'insertText' || !event.data || !editor.isEditable()) return false;
-        const node = $getSelectedAnyBlockDecorator();
-        if (!node) return false;
+        if (event.target !== editor.getRootElement() || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return false;
+        if ([...event.key].length !== 1 || !$typeAfter(event.key)) return false;
         event.preventDefault();
-        $insertParagraphAt(node, 'after');
-        const selection = $getSelection();
-        if ($isRangeSelection(selection)) selection.insertText(event.data);
         return true;
       },
       COMMAND_PRIORITY_LOW
     );
+    const unregisterInput = editor.registerCommand(
+      BEFORE_INPUT_COMMAND,
+      (event) => {
+        if (event.inputType !== 'insertText' || !event.data || !$typeAfter(event.data)) return false;
+        event.preventDefault();
+        return true;
+      },
+      COMMAND_PRIORITY_LOW
+    );
+    return () => {
+      unregisterKey();
+      unregisterInput();
+    };
   }, [editor]);
 
   // Clicking a horizontal rule (divider) — or the visible gap just above/below
