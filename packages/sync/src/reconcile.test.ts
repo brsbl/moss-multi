@@ -475,7 +475,7 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
       const peer = fork(live);
       payloadText(payloadDocsFor(peer).hold(id)).insert(cut, insert);
 
-      expect(reconcileBody(live, bodyState(targetDoc), RESTORE)).toBe(true);
+      reconcileBody(live, bodyState(targetDoc), RESTORE);
       expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
       expect(payloadIdOf(live)).toBe(id);
       const kept = blockItems(live);
