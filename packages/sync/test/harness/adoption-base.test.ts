@@ -11,14 +11,14 @@ it('create returns the created revision\'s export and keeps it as a push base', 
   const created = await opened.dobj.create({ folderId: 'f', ownerId: 'ada', markdown: 'Beans first.\n\nPeas next.' });
   expect(typeof created).toBe('string');
   expect(created).toBe(await opened.dobj.exportMarkdown());
-  const baseHash = await sha256Hex(created as string);
+  const baseHash = await sha256Hex(created);
   const push = (newText: string) => opened.dobj.push({
     newText, baseHash, reviewer: { id: AGENT.id, role: 'editor' },
     actor: { kind: 'agent', principalId: AGENT.id, sessionId: null, shareToken: null },
   });
   // A peer edits after create; the adopting CLI then pushes its own edit against the created base.
-  expect(await push((created as string).replace('Peas next.', 'Peas next.\n\nSquash last.'))).toMatchObject({ ok: true });
-  expect(await push((created as string).replace('Beans first.', 'Beans first, in June.'))).toMatchObject({ ok: true });
+  expect(await push(created.replace('Peas next.', 'Peas next.\n\nSquash last.'))).toMatchObject({ ok: true });
+  expect(await push(created.replace('Beans first.', 'Beans first, in June.'))).toMatchObject({ ok: true });
   const merged = await opened.dobj.exportMarkdown();
   expect(merged).toContain('Beans first, in June.');
   expect(merged).toContain('Squash last.');

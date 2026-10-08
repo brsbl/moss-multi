@@ -64,17 +64,21 @@ async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUse
   return (inserted.meta?.changes ?? 0) > 0 ? doc : null;
 }
 
-/** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
-async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
+/**
+ * Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}, plus
+ * `content` when `run` answers the created revision's export.
+ */
+async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<string | void>): Promise<Response> {
+  let content: string | void;
   try {
-    await run();
+    content = await run();
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
     throw error;
   }
   const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
-  return json({ doc: projected, role }, 201, NO_STORE);
+  return json({ doc: projected, role, ...(typeof content === 'string' ? { content } : {}) }, 201, NO_STORE);
 }
 
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
@@ -112,11 +116,10 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   const stub = await getServerByName(env.DocDO, doc.id);
-  return seeded(db, doc, folder.role, async () => {
-    await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
-      ...(markdown !== undefined ? { markdown } : {}),
-      ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) });
-  });
+  // `content`: the created revision's export, the base the CLI adopts a file against (A§17).
+  return seeded(db, doc, folder.role, () => stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
+    ...(markdown !== undefined ? { markdown } : {}),
+    ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) }));
 }
 
 /**
