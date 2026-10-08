@@ -3,13 +3,12 @@
 // versions are counted per person by its PrincipalDO and restores as REST writes; the DocDO re-authorizes the actor in
 // the same serialized write (A§8), so the Worker's role is never the last word.
 import { getServerByName } from 'partyserver';
-import { NAMED_VERSION_RATE, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
+import { NAMED_VERSION_RATE, NAMED_VERSIONS_PER_NOTE, NAMED_VERSIONS_PER_PERSON, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess } from './access.ts';
-import { vaultFull } from './assets.ts';
 import type { DocsEnv } from './docs.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
 
@@ -27,6 +26,13 @@ const MESSAGE: Record<Action, string> = {
   get: "You can't open this note.",
   save: 'Only an editor can save a version.',
   restore: 'Only an editor can restore a version.',
+};
+
+/** What a person reads for a DocDO refusal; a note's history is bounded per note (A§14), never charged to anyone. */
+const REFUSAL: Record<string, string> = {
+  'version-limit': `You have saved the most named versions this note keeps for one person (${NAMED_VERSIONS_PER_PERSON}).`,
+  'note-version-limit': `This note has the most named versions it keeps (${NAMED_VERSIONS_PER_NOTE}).`,
+  'restore-unverified': 'This version could not be restored exactly, so the note was left as it is.',
 };
 
 interface Verdict {
@@ -63,12 +69,6 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
       return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(window / 1000) });
     }
   }
-  // A vault whose storage (media and version history) is full takes no more named versions or restores (each stores a
-  // restore point and an auto version); each person's own version bytes are bounded too, by the DocDO's charge to
-  // their PrincipalDO.
-  if ((action === 'save' || action === 'restore') && (await vaultFull(env, access.folderId))) {
-    return json({ error: 'over-quota', message: "This note's vault is out of storage. Delete media from its notes and try again." }, 413, NO_STORE);
-  }
   const input = {
     reviewer: { id: principal.id, role: access.role },
     actor: {
@@ -84,7 +84,10 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   else if (action === 'get') verdict = (await stub.getVersion({ ...input, id: vid })) as Verdict;
   else if (action === 'save') verdict = (await stub.saveVersion({ ...input, name })) as Verdict;
   else verdict = (await stub.restoreVersion({ ...input, id: vid })) as Verdict;
-  if (!verdict.ok) return json({ error: verdict.reason ?? 'refused' }, verdict.status ?? 409, NO_STORE);
+  if (!verdict.ok) {
+    const reason = verdict.reason ?? 'refused';
+    return json({ error: reason, ...(REFUSAL[reason] ? { message: REFUSAL[reason] } : {}) }, verdict.status ?? 409, NO_STORE);
+  }
   if (action === 'list') return json({ versions: verdict.versions ?? [] }, 200, NO_STORE);
   if (action === 'restore') return json({ restorePoint: verdict.restorePoint ?? null, version: verdict.version ?? null }, 200, NO_STORE);
   return json({ version: verdict.version }, action === 'save' ? 201 : 200, NO_STORE);

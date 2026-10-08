@@ -1,7 +1,12 @@
 // Version history storage (A§14): one row per version in the DocDO's SQLite, its content spilled to R2 above 1.5 MB.
-// Auto versions and restore points are pruned oldest first; named versions are bounded per person, so nobody can fill
-// a bound that refuses someone else's. A version charged to a person is refunded to them when it is pruned. A spill is written before its row and recorded as an orphan until the row
-// lands; a pruned or unwritten spill stays recorded until R2 confirms its delete, so no blob outlives every record.
+// A note's history is bounded per note by pruning, never by charging a person or a vault: auto versions and restore
+// points are pruned oldest first past their counts and the note's history bytes, in the write that adds a version.
+// Named versions are never pruned; they are capped per person and per note. A spill is written before its row and
+// recorded as an orphan until the row lands; a pruned or unwritten spill stays recorded until R2 confirms its delete.
+import {
+  NAMED_VERSIONS_PER_NOTE, NAMED_VERSIONS_PER_PERSON, VERSION_AUTO_KEPT, VERSION_HISTORY_BYTES_PER_NOTE, VERSION_RESTORE_POINTS_KEPT,
+  VERSION_RESTORE_POINTS_PROTECTED,
+} from '@moss-multi/protocol/limits';
 import type { VersionContent } from './version-content.ts';
 
 export type VersionKind = 'auto' | 'named' | 'restore-point';
@@ -41,24 +46,34 @@ export interface InsertOptions {
   authorIds?: string[];
   at?: number;
   dedupe?: boolean;
-  /** Whether its bytes were charged to `createdBy`, so pruning it refunds them. */
-  charged?: boolean;
 }
 
-/** A refund owed to a person for a pruned version charged to them. */
-export interface Refund {
-  id: number;
-  principal: string;
-  bytes: number;
+/** A note's version bounds (A§14); the DocDO passes the protocol limits, tests lower them. */
+export interface VersionBounds {
+  /** Auto versions kept; older ones are pruned. */
+  autoKept: number;
+  /** Restore points kept; older ones are pruned. */
+  restorePointsKept: number;
+  /** The newest restore points, never pruned for bytes. */
+  restorePointsProtected: number;
+  /** Bytes of auto versions and restore points kept; the oldest are pruned past it. */
+  historyBytes: number;
+  /** Live named versions one person may keep on the note, and the note may keep. */
+  namedPerPerson: number;
+  namedPerNote: number;
 }
+
+export const VERSION_BOUNDS: VersionBounds = {
+  autoKept: VERSION_AUTO_KEPT,
+  restorePointsKept: VERSION_RESTORE_POINTS_KEPT,
+  restorePointsProtected: VERSION_RESTORE_POINTS_PROTECTED,
+  historyBytes: VERSION_HISTORY_BYTES_PER_NOTE,
+  namedPerPerson: NAMED_VERSIONS_PER_PERSON,
+  namedPerNote: NAMED_VERSIONS_PER_NOTE,
+};
 
 /** Content above this many bytes spills to R2 (a DO SQLite row holds at most 2 MB). */
 export const VERSION_SPILL_BYTES = 1.5 * 1024 * 1024;
-/** Named versions one person may keep on one doc. */
-export const NAMED_VERSIONS_PER_PERSON = 50;
-/** Auto versions and restore points a doc keeps; older ones are pruned. */
-export const AUTO_VERSIONS_KEPT = 50;
-export const RESTORE_POINTS_KEPT = 20;
 /** The activity trigger (A§14): this many updates, or this long since the last auto version, checked on save. */
 export const ACTIVITY_UPDATES = 500;
 export const ACTIVITY_MS = 10 * 60_000;
@@ -140,14 +155,13 @@ export class VersionStore {
     private readonly blobs: () => VersionBlobs | null,
     private readonly spillBytes = VERSION_SPILL_BYTES,
     private readonly transact: <T>(run: () => T) => T = (run) => run(),
+    private readonly bounds: () => VersionBounds = () => VERSION_BOUNDS,
   ) {
     sql.exec(`CREATE TABLE IF NOT EXISTS versions (
       id TEXT PRIMARY KEY, seq INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT, created_at INTEGER NOT NULL, created_by TEXT,
       author_ids TEXT NOT NULL, title TEXT NOT NULL, full_title TEXT, frontmatter TEXT, markdown TEXT, lexical_json TEXT,
-      payloads TEXT, comments TEXT, anchors TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL,
-      charged INTEGER NOT NULL DEFAULT 0)`);
+      payloads TEXT, comments TEXT, anchors TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL)`);
     sql.exec('CREATE TABLE IF NOT EXISTS version_orphans (r2_key TEXT PRIMARY KEY, due INTEGER NOT NULL)');
-    sql.exec('CREATE TABLE IF NOT EXISTS version_refunds (id INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL, bytes INTEGER NOT NULL)');
   }
 
   /** Newest first. */
@@ -160,13 +174,14 @@ export class VersionStore {
     return row ? metaOf(row) : null;
   }
 
-  namedBy(principal: string): number {
-    return Number(this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM versions WHERE kind = 'named' AND created_by = ?", principal).one().n);
-  }
-
-  /** Every version's bytes: what the doc's vault is charged. */
-  totalBytes(): number {
-    return Number(this.sql.exec<{ n: number }>('SELECT COALESCE(SUM(bytes), 0) AS n FROM versions').one().n);
+  /** Why `principal` may not add a named version now, or null; check and insert in one turn so no save races past it. */
+  namedRefusal(principal: string): 'version-limit' | 'note-version-limit' | null {
+    const { namedPerPerson, namedPerNote } = this.bounds();
+    const count = (where: string, ...args: string[]) =>
+      Number(this.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM versions WHERE kind = 'named'${where}`, ...args).one().n);
+    if (count(' AND created_by = ?', principal) >= namedPerPerson) return 'version-limit';
+    if (count('') >= namedPerNote) return 'note-version-limit';
+    return null;
   }
 
   /** The version's content, from its row or its spill; null when there is none. */
@@ -229,8 +244,7 @@ export class VersionStore {
     return this.transact(() => {
       this.#insertRow(kind, prepared, options);
       if (r2Key !== null) this.sql.exec('DELETE FROM version_orphans WHERE r2_key = ?', r2Key);
-      if (kind === 'auto') this.#prune('auto', AUTO_VERSIONS_KEPT);
-      if (kind === 'restore-point') this.#prune('restore-point', RESTORE_POINTS_KEPT);
+      if (kind !== 'named') this.#prune(id);
       return this.meta(id);
     });
   }
@@ -239,36 +253,18 @@ export class VersionStore {
     const inline = r2Key === null;
     const listed = listTitle(content.title);
     this.sql.exec(
-      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash, charged)
-       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash)
+       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id, kind, options.name ?? null, options.at ?? Date.now(), options.createdBy ?? null, JSON.stringify(options.authorIds ?? []), listed,
       inline && listed !== content.title ? content.title : null,
       inline ? content.frontmatter : null, inline ? content.markdown : null, inline ? content.lexical : null,
       inline ? content.payloads : null, inline ? content.comments : null, inline ? content.anchors : null, r2Key, bytes, hash,
-      options.charged && options.createdBy ? bytes : 0,
     );
   }
 
-  /** Refunds owed for pruned versions, oldest first. */
-  refunds(): Refund[] {
-    return this.sql.exec<{ id: number; principal: string; bytes: number }>('SELECT id, principal, bytes FROM version_refunds ORDER BY id LIMIT ?', SWEEP_BATCH)
-      .toArray().map((row) => ({ id: Number(row.id), principal: row.principal, bytes: Number(row.bytes) }));
-  }
-
-  /** Records a refund owed to `principal`, paid at the next sweep. */
-  owe(principal: string, bytes: number): void {
-    if (bytes > 0) this.sql.exec('INSERT INTO version_refunds (principal, bytes) VALUES (?, ?)', principal, bytes);
-  }
-
-  refunded(id: number): void {
-    this.sql.exec('DELETE FROM version_refunds WHERE id = ?', id);
-  }
-
-  /** Whether anything is left for a later sweep: a spill to delete or a refund to pay. */
+  /** Whether a spill is still left for a later sweep. */
   pending(): boolean {
-    const orphans = Number(this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM version_orphans').one().n);
-    const refunds = Number(this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM version_refunds').one().n);
-    return orphans + refunds > 0;
+    return Number(this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM version_orphans').one().n) > 0;
   }
 
   /** A prepared version that will not be inserted: its spill, if any, is deleted at the next sweep. */
@@ -303,17 +299,31 @@ export class VersionStore {
     for (const key of keys) this.sql.exec('DELETE FROM version_orphans WHERE r2_key = ?', key);
   }
 
-  /** Drops the oldest versions of `kind` past `keep`; their spills are recorded for the sweep. */
-  #prune(kind: VersionKind, keep: number): void {
-    const stale = this.sql.exec<{ id: string; r2_key: string | null; created_by: string | null; charged: number }>(
-      'SELECT id, r2_key, created_by, charged FROM versions WHERE kind = ? ORDER BY seq DESC LIMIT -1 OFFSET ?',
-      kind,
-      keep,
-    ).toArray();
-    for (const { id, r2_key: key, created_by: principal, charged } of stale) {
+  /**
+   * Keeps the note's history within its bounds after `added` is inserted: auto versions and restore points past their
+   * counts go, then, while their bytes exceed the bound, the oldest auto versions and then the oldest restore points
+   * past the protected newest few. `added` and named versions are never pruned. Pruned spills are recorded for the sweep.
+   */
+  #prune(added: string): void {
+    const { autoKept, restorePointsKept, restorePointsProtected, historyBytes } = this.bounds();
+    type Stale = { id: string; r2_key: string | null; bytes: number };
+    const oldestFirst = (kind: VersionKind, skipNewest: number) => this.sql.exec<Stale>(
+      'SELECT id, r2_key, bytes FROM versions WHERE kind = ? AND id != ? ORDER BY seq DESC LIMIT -1 OFFSET ?', kind, added, skipNewest,
+    ).toArray().reverse();
+    const drop = ({ id, r2_key: key }: Stale) => {
       if (key) this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, 0)', key);
-      if (principal && Number(charged) > 0) this.sql.exec('INSERT INTO version_refunds (principal, bytes) VALUES (?, ?)', principal, Number(charged));
       this.sql.exec('DELETE FROM versions WHERE id = ?', id);
+    };
+    const kindOf = this.meta(added)?.kind;
+    // The added version holds one of its kind's places.
+    for (const row of oldestFirst('auto', Math.max(0, autoKept - (kindOf === 'auto' ? 1 : 0)))) drop(row);
+    for (const row of oldestFirst('restore-point', Math.max(0, restorePointsKept - (kindOf === 'restore-point' ? 1 : 0)))) drop(row);
+    let total = Number(this.sql.exec<{ n: number }>("SELECT COALESCE(SUM(bytes), 0) AS n FROM versions WHERE kind != 'named'").one().n);
+    const protectedPoints = Math.max(0, restorePointsProtected - (kindOf === 'restore-point' ? 1 : 0));
+    for (const row of [...oldestFirst('auto', 0), ...oldestFirst('restore-point', protectedPoints)]) {
+      if (total <= historyBytes) break;
+      drop(row);
+      total -= Number(row.bytes);
     }
   }
 }
