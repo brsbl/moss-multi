@@ -977,8 +977,7 @@ test.describe('editor fixes before 0.3.0', () => {
     expect(seen.errors).toEqual([]);
   });
 
-  test('typing after inserting a chart from the slash menu lands after the chart, in order', async ({ page }) => {
-    const seen = await open(page);
+  const slashChart = async (page: Page) => {
     await mountNote(page, '# Plan\n\nFirst line\n');
     await body(page).getByText('First line').click();
     // The caret at the end of the line (End is not a line end in every engine).
@@ -995,11 +994,45 @@ test.describe('editor fixes before 0.3.0', () => {
     await expect(page.getByText('Bar Chart', { exact: true })).toBeVisible();
     await page.keyboard.press('Enter');
     await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
+  };
+  const AFTER_CHART = (text: string) => new RegExp(`^# Plan\\n\\nFirst line\\n\\n\`\`\`moss-chart\\n[\\s\\S]*\\n\`\`\`\\n\\n${text}\\n?$`);
+
+  test('typing after inserting a chart from the slash menu lands after the chart, in order', async ({ page }) => {
+    const seen = await open(page);
+    await slashChart(page);
     await page.keyboard.type('abc');
     await frames(page);
     expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
     const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
-    expect(written).toMatch(/^# Plan\n\nFirst line\n\n```moss-chart\n[\s\S]*\n```\n\nabc\n?$/);
+    expect(written).toMatch(AFTER_CHART('abc'));
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('an IME or dead-key composition after a slash-menu chart lands after the chart', async ({ page, browserName }) => {
+    const seen = await open(page);
+    await slashChart(page);
+    if (browserName === 'chromium') {
+      // A real composition, as an IME (or a macOS dead key) drives it: no keydown Lexical acts on, no insertText beforeinput.
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+      await cdp.send('Input.imeSetComposition', { text: 'にほ', selectionStart: 2, selectionEnd: 2 });
+      await cdp.send('Input.insertText', { text: '日本' });
+      await frames(page);
+      expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+      expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toMatch(AFTER_CHART('日本'));
+    } else {
+      // Playwright drives no IME in WebKit: start the composition on the root as the engine does, and check the caret is
+      // in a new paragraph below the chart, where the engine then composes.
+      await body(page).evaluate((root) => root.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' })));
+      await frames(page);
+      const caret = await body(page).evaluate((root) => {
+        let block = document.getSelection()?.anchorNode ?? null;
+        while (block && block.parentNode !== root) block = block.parentNode;
+        const element = block instanceof Element ? block : null;
+        return { tag: element?.tagName ?? null, afterChart: Boolean(element?.previousElementSibling?.querySelector('.recharts-surface')) };
+      });
+      expect(caret).toEqual({ tag: 'P', afterChart: true });
+    }
     expect(seen.errors).toEqual([]);
   });
 });
