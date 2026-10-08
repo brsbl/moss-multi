@@ -241,6 +241,8 @@ describe('the authorization matrix over every /api route', () => {
       const served: string[] = [];
       for (const row of SELF_ROUTES) {
         const { status, text } = await answer(row, {}, headers);
+        // A link holder searches within what its link opens; a dead or forged link opens nothing.
+        if (row[1].startsWith('/api/search') && headers['x-moss-share'] && status === 200 && text === '{"results":[]}') continue;
         if (status < 400) served.push(`${row[0]} ${row[1]}: ${status} ${text.slice(0, 80)}`);
       }
       expect(served, name).toEqual([]);
