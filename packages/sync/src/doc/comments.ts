@@ -594,3 +594,55 @@ function toRecord(entry: SidecarEntry, author: string, seq: number): CommentReco
     seq,
   };
 }
+
+/** One comment as the CLI's `comments` lists it (A§17): a thread's root, then its replies. Times in ms. */
+export interface CommentListing {
+  id: string;
+  parentId: string | null;
+  author: string;
+  text: string;
+  /** The passage a root is anchored on; null for a reply. */
+  quote: string | null;
+  status: 'anchored' | 'orphaned' | null;
+  resolved: boolean;
+  createdAt: number;
+}
+
+/** Every comment in the doc, threads ordered by when they started, each root followed by its replies. */
+export function listComments(doc: Y.Doc): CommentListing[] {
+  const map = doc.getMap<unknown>('comments');
+  const records: [string, CommentRecord][] = [];
+  for (const [key, value] of map) {
+    if (!key.startsWith('c:') || !value || typeof value !== 'object') continue;
+    const record = value as CommentRecord;
+    if (typeof record.author !== 'string' || typeof record.text !== 'string') continue;
+    records.push([key.slice(2), record]);
+  }
+  records.sort(([a, x], [b, y]) => (x.createdAt ?? 0) - (y.createdAt ?? 0) || seqOf(x) - seqOf(y) || (a < b ? -1 : a > b ? 1 : 0));
+  const ids = new Set(records.map(([id]) => id));
+  const row = ([id, record]: [string, CommentRecord], root: boolean): CommentListing => {
+    const anchor = root ? (map.get(`a:${id}`) as Partial<Anchor> | undefined) : undefined;
+    return {
+      id,
+      parentId: root ? null : (record.parentId ?? null),
+      author: record.author,
+      text: record.text,
+      quote: typeof anchor?.quote === 'string' ? anchor.quote : null,
+      status: anchor?.status === 'anchored' || anchor?.status === 'orphaned' ? anchor.status : null,
+      resolved: typeof record.resolvedAt === 'number',
+      createdAt: (record.createdAt ?? 0) * 1000,
+    };
+  };
+  const replies = new Map<string, [string, CommentRecord][]>();
+  for (const entry of records) {
+    const parent = entry[1].parentId;
+    if (parent && ids.has(parent)) replies.set(parent, [...(replies.get(parent) ?? []), entry]);
+  }
+  const out: CommentListing[] = [];
+  for (const entry of records) {
+    if (entry[1].parentId && ids.has(entry[1].parentId)) continue;
+    out.push(row(entry, true));
+    for (const reply of replies.get(entry[0]) ?? []) out.push(row(reply, false));
+  }
+  return out;
+}

@@ -14,11 +14,14 @@ export interface PushRequest {
 
 export type PushResponse =
   | { ok: true; mode: 'edit'; applied: number; failedHunks: string[] }
-  | { ok: true; mode: 'suggest'; suggestionId: string }
+  /** The change landed as an open suggestion; `failedHunks` were left out of it. */
+  | { ok: true; mode: 'suggest'; suggestionId: string; failedHunks?: string[] }
   | { ok: false; reason: 'degenerate'; deletedRatio: number }
   | { ok: false; reason: 'base-missing' }
   /** The result would differ from the merged file somewhere (the converter cannot store a block exactly): nothing landed. */
   | { ok: false; reason: 'push-unverified'; message: string }
+  /** The suggestion ingest refused the change (a cap, or a change a suggestion cannot hold): nothing was suggested. */
+  | { ok: false; reason: 'suggest-refused'; message: string }
   | { ok: false; reason: 'forbidden' | 'too-large' | 'rate-limited'; retryAfterSec?: number };
 
 /** CLI exit codes (A§17). */

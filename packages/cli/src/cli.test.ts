@@ -1,5 +1,5 @@
 // The CLI against a fake server (T7.1): raw `cat`, doc references, `url`, `rm` copy and JSON, exit codes, key and
-// device sign-in, and pull and push state. @p:agt-1
+// device sign-in, pull and push state, and the comments and suggestions read commands (T7.3). @p:agt-1
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -45,6 +45,9 @@ function fakeServer() {
     refuse: null as null | { status: number; body: unknown },
     /** POST /api/docs creates this doc from the body's markdown, as the server would. */
     createNew: null as null | { id: string; filename: string },
+    /** What GET .../comments and .../suggestions answer. */
+    comments: [] as unknown[],
+    suggestions: [] as unknown[],
   };
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
@@ -102,11 +105,13 @@ function fakeServer() {
     if (sub === 'push') {
       state.pushes.push(body as Record<string, unknown>);
       const next = state.pushAnswers.shift() ?? { status: 200, body: { ok: true, mode: 'edit', applied: 1, failedHunks: [] } };
-      // A failed hunk leaves the doc as it was; the fake applies nothing then.
-      const answer = next.body as { ok?: boolean; failedHunks?: string[] };
-      if (next.status === 200 && answer.ok && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
+      // A failed hunk leaves the doc as it was; the fake applies nothing then, nor for a suggestion.
+      const answer = next.body as { ok?: boolean; mode?: string; failedHunks?: string[] };
+      if (next.status === 200 && answer.ok && answer.mode === 'edit' && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
       return reply(next.status, next.body, next.headers);
     }
+    if (sub === 'comments' && method === 'GET') return reply(200, { comments: state.comments });
+    if (sub === 'suggestions' && method === 'GET') return reply(200, { suggestions: state.suggestions });
     if (sub === 'versions') return reply(200, { versions: [{ id: 'v1', kind: 'named', name: 'First', createdAt: 0, title: 'Garden plan' }] });
     return reply(404, { error: 'not-found' });
   }) as typeof fetch;
@@ -635,6 +640,103 @@ describe('the key never appears in output', () => {
       expect(output.err).not.toContain(KEY);
     }
     expect(outputs[4].err).toContain('forbidden');
+  });
+});
+
+describe('comments and suggestions (A§17 read commands)', () => {
+  const ada = { id: 'user-1', name: 'Ada', type: 'user' };
+  const scribe = { id: 'agent-1', name: 'Scribe', type: 'agent' };
+  const threads = [
+    { id: 'c-root', parentId: null, author: ada, text: 'Is this the right order?', quote: 'Beans, then peas', status: 'anchored', resolved: false, createdAt: 1_700_000_000_000 },
+    { id: 'c-reply', parentId: 'c-root', author: scribe, text: 'Yes: \u2063@person:Ada\u2062user-1\u2064 beans go first.', quote: null, status: null, resolved: false, createdAt: 1_700_000_100_000 },
+    { id: 'c-done', parentId: null, author: scribe, text: 'Water daily?', quote: 'Water', status: 'orphaned', resolved: true, createdAt: 1_700_000_200_000 },
+  ];
+  const open = [
+    { id: 's-1', author: scribe, status: 'open', source: 'cli', createdAt: 1_700_000_300_000, updatedAt: 1_700_000_300_000, outdated: false },
+    { id: 's-2', author: ada, status: 'open', source: 'live', createdAt: 1_700_000_400_000, updatedAt: 1_700_000_400_000, outdated: true },
+  ];
+
+  it('comments <doc> lists the doc\'s threads, replies under their root, by reference', async () => {
+    server.state.comments = threads;
+    const result = await cli(['comments', 'Garden plan']);
+    expect(result.err).toBe('');
+    expect(result.code).toBe(0);
+    expect(server.seen.at(-1)).toMatchObject({ method: 'GET', path: `/api/docs/${ID_A}/comments` });
+    const lines = result.out.trimEnd().split('\n');
+    const root = lines.findIndex((line) => line.includes('c-root'));
+    const reply = lines.findIndex((line) => line.includes('c-reply'));
+    const done = lines.findIndex((line) => line.includes('c-done'));
+    expect(root).toBeGreaterThanOrEqual(0);
+    expect(reply).toBeGreaterThan(root);
+    expect(done).toBeGreaterThan(reply);
+    expect(lines[root]).toContain('Ada');
+    expect(lines[root]).toContain('Is this the right order?');
+    expect(result.out).toContain('"Beans, then peas"');
+    expect(lines[reply]).toContain('Scribe');
+    expect(lines[reply], 'a mention reads as @Name').toContain('Yes: @Ada beans go first.');
+    expect(result.out).toMatch(/c-done.*resolved/);
+  });
+
+  it('comments --json prints the records; an empty doc says so', async () => {
+    server.state.comments = threads;
+    const json = await cli(['comments', ID_A, '--json']);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.out)).toEqual(threads);
+    server.state.comments = [];
+    const none = await cli(['comments', ID_A]);
+    expect(none.code).toBe(0);
+    expect(none.out).toBe('no comments\n');
+  });
+
+  it('suggestions <doc> lists the open suggestions with their author', async () => {
+    server.state.suggestions = open;
+    const result = await cli(['suggestions', ID_A]);
+    expect(result.err).toBe('');
+    expect(result.code).toBe(0);
+    expect(server.seen.at(-1)).toMatchObject({ method: 'GET', path: `/api/docs/${ID_A}/suggestions` });
+    expect(result.out).toMatch(/s-1.*Scribe/);
+    expect(result.out).toMatch(/s-2.*Ada.*outdated/);
+    const json = await cli(['suggestions', ID_A, '--json']);
+    expect(JSON.parse(json.out)).toEqual(open);
+    server.state.suggestions = [];
+    expect((await cli(['suggestions', ID_A])).out).toBe('no open suggestions\n');
+  });
+
+  it('both are in the usage, and a doc you cannot open is a 404', async () => {
+    const help = await cli(['help']);
+    expect(help.out).toContain('comments <doc>');
+    expect(help.out).toContain('suggestions <doc>');
+    const missing = await cli(['comments', '99999999-9999-4999-8999-999999999999']);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain('not found');
+  });
+});
+
+describe('a refused push says why', () => {
+  it('a push the doc\'s role does not allow names the role it needs', async () => {
+    await cli(['pull', ID_A, 'plan.md']);
+    writeFileSync(join(dir, 'plan.md'), 'changed');
+    server.state.pushAnswers.push({ status: 403, body: { ok: false, reason: 'forbidden' } });
+    const edit = await cli(['push', 'plan.md']);
+    expect(edit.code).toBe(1);
+    expect(edit.err).toContain('push refused: you can\'t edit this doc');
+    server.state.pushAnswers.push({ status: 403, body: { ok: false, reason: 'forbidden' } });
+    const suggest = await cli(['push', 'plan.md', '--suggest']);
+    expect(suggest.code).toBe(1);
+    expect(suggest.err).toContain('push refused: you can\'t suggest changes to this doc');
+  });
+
+  it('push --suggest reports the suggestion and leaves the file and its base as they are', async () => {
+    await cli(['pull', ID_A, 'plan.md']);
+    const base = readFileSync(join(dir, '.moss-multi', ID_A, 'base.md'));
+    writeFileSync(join(dir, 'plan.md'), 'suggested text');
+    server.state.pushAnswers.push({ status: 200, body: { ok: true, mode: 'suggest', suggestionId: 's-9' } });
+    const result = await cli(['push', 'plan.md', '--suggest']);
+    expect(result.code).toBe(0);
+    expect(server.state.pushes.at(-1)).toMatchObject({ suggest: true });
+    expect(result.out).toContain('suggestion s-9');
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('suggested text');
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'base.md')).equals(base)).toBe(true);
   });
 });
 

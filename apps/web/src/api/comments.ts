@@ -5,16 +5,16 @@
 // a user re-checked against their live access, never the actor and never an agent.
 import { getServerByName } from 'partyserver';
 import { COMMENT_OP_RATE } from '@moss-multi/protocol/limits';
-import type { CommentActor, CommentDeleteScope, CommentResult } from '@moss-multi/sync';
+import type { CommentActor, CommentDeleteScope, CommentListing, CommentResult } from '@moss-multi/sync';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, inJson, type Db } from '../db/client.ts';
-import { user } from '../db/schema.ts';
+import { agents, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { notify } from './invites.ts';
-import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
 
 /** Moss's marker ids, which the client proposes so its composer can show the comment before the record arrives. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -188,4 +188,40 @@ async function notifyComment(env: DocsEnv, docId: string, actor: Actor, comment:
   } catch (error) {
     console.error('comment notifications failed', error);
   }
+}
+
+/** Each author's display name and kind: a person by their name, an agent by its own; never an email. */
+async function authorsOf(db: Db, ids: string[]): Promise<Map<string, { id: string; name: string; type: 'user' | 'agent' }>> {
+  const out = new Map<string, { id: string; name: string; type: 'user' | 'agent' }>();
+  if (!ids.length) return out;
+  const [people, bots] = await Promise.all([
+    db.select({ id: user.id, name: user.name }).from(user).where(inJson(user.id, ids)),
+    db.select({ id: agents.id, name: agents.name }).from(agents).where(inJson(agents.id, ids)),
+  ]);
+  for (const { id, name } of people) out.set(id, { id, name, type: 'user' });
+  for (const { id, name } of bots) out.set(id, { id, name, type: 'agent' });
+  return out;
+}
+
+/**
+ * GET /api/docs/:id/comments (A§17 `comments`): every comment thread for any reader, each root followed by its
+ * replies, with authors named; the DocDO re-authorizes the reader in its serialized turn (A§8).
+ */
+export async function listDocComments(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return unauthenticated();
+  const db = createDb(env.DB);
+  const access = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to read comments' }, 401, NO_STORE);
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.listComments({ reviewer: { id: principal.id, role: access.role }, actor: actorOf(principal, request) })) as
+    { ok: true; comments: CommentListing[] } | { ok: false; status: number; reason: string };
+  if (!result.ok) return result.status === 404 ? notFound() : json({ error: result.reason }, result.status, NO_STORE);
+  const names = await authorsOf(db, [...new Set(result.comments.map((comment) => comment.author))]);
+  const comments = result.comments.map((comment) => ({
+    ...comment,
+    author: names.get(comment.author) ?? { id: comment.author, name: 'Someone', type: 'user' as const },
+  }));
+  return json({ comments }, 200, NO_STORE);
 }

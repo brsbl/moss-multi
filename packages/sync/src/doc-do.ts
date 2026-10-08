@@ -17,12 +17,17 @@ import {
 import {
   attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
-import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
+import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence, sendPresence } from './doc/awareness.ts';
+import { AGENT_PRESENCE_MS, AGENT_PRESENCE_REFRESH_MS, colorOf, seedColor } from '@moss-multi/protocol/presence';
+import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
-import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
+import {
+  coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, listComments, type CommentCreate, type CommentDeleteScope, type CommentListing, type CommentResult,
+  type CommentSource,
+} from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
-import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
+import { newSuggestionsClient, patchMeta, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter, writeSuggestions } from './suggest/records.ts';
 import {
   acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
 } from './suggest/review.ts';
@@ -53,8 +58,33 @@ export const CLI_PUSH = 'cli-push';
 
 /** What a push answers: the merge landed (possibly with hunks it could not place), or why it was refused. */
 export type PushVerdict =
-  | { ok: true; applied: number; failedHunks: string[] }
+  /** `suggestionId`: a `--suggest` push landed as this open suggestion and the doc is unchanged. */
+  | { ok: true; applied: number; failedHunks: string[]; suggestionId?: string }
   | { ok: false; status: number; reason: string; deletedRatio?: number; message?: string };
+
+/** The awareness origin of an agent's Bot-badged presence entry (A§10.7). */
+const AGENT_PRESENCE = Symbol('agent-presence');
+
+/** Why a `--suggest` push could not be recorded, in the CLI's words. */
+const SUGGEST_REFUSALS: Partial<Record<string, string>> = {
+  'record-cap': 'the change is too large for one suggestion; push it in smaller parts',
+  'ops-cap': 'this note holds too many pending suggestions; review some first',
+  'open-cap': 'you have too many open suggestions on this note; withdraw some or wait for them to be reviewed',
+  'lease-cap': 'you have too many suggestions in progress on this note; try again shortly',
+  'doc-cap': 'the note is full; a note holds at most 2 MB of markdown',
+  channel: 'a suggestion can change only the note\'s text',
+  'node-type': 'the change holds a block this note cannot show',
+};
+
+/** One awareness entry `[client, clock, state]` as an awareness update. */
+function awarenessEntry(client: number, clock: number, state: unknown): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 1);
+  encoding.writeVarUint(encoder, client);
+  encoding.writeVarUint(encoder, clock);
+  encoding.writeVarString(encoder, JSON.stringify(state));
+  return encoding.toUint8Array(encoder);
+}
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -165,6 +195,19 @@ export type ReviewRefusal = { ok: false; status: number; reason: string };
 export type SuggestionPreview = Preview & { closed?: boolean };
 
 /** A new live suggestion, for the bell. */
+/** One open suggestion as the CLI's `suggestions` lists it (A§17). Times in ms. */
+export interface SuggestionListing {
+  id: string;
+  author: string;
+  authorName: string;
+  status: string;
+  source: 'live' | 'cli';
+  createdAt: number;
+  updatedAt: number;
+  /** An editor changed the text under it since, or it cannot be shown: it cannot be accepted as it is. */
+  outdated: boolean;
+}
+
 export type SuggestionNotifier = (notice: { docId: string; author: string; record: string }) => Promise<void>;
 
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
@@ -355,6 +398,8 @@ export class DocDO extends YServer<SyncEnv> {
   #versionUpdates = 0;
   #stagedRetry: ReturnType<typeof setTimeout> | null = null;
   #versionAuthors = new Set<string>();
+  /** Agents shown in the face pile after a push (A§10.7), by agent id: their awareness client and until when. In memory. */
+  readonly #bots = new Map<string, { client: number; name: string; until: number; timer: ReturnType<typeof setTimeout> | null }>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -644,7 +689,7 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     if (frame.kind === 'awareness') {
-      if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
+      if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()], (id) => this.#botClient(id));
       return;
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
@@ -1134,8 +1179,14 @@ export class DocDO extends YServer<SyncEnv> {
    * base is the cached one its hash names, or `baseText` when it hashes to it; the file is merged three ways and
    * landed through the identity-preserving reconcile as one server write, the state cap checked on the simulated
    * result. A degenerate push is refused unless forced. An auto version follows a push that changed the doc (A§14).
+   * With `suggest` (a suggester or above), the same merge is written as a fork under a fresh lease and recorded as an
+   * open suggestion through the suggestion ingest, so it meets every gate a live suggestion meets; the doc is unchanged
+   * (docs/design/suggestions.md §5). `presence` (an agent) shows it in the face pile for about 15 s (A§10.7).
    */
-  async push(input: { newText: string; baseHash: string; baseText?: string; force?: boolean; reviewer: Reviewer; actor?: CommentActor }): Promise<PushVerdict> {
+  async push(input: {
+    newText: string; baseHash: string; baseText?: string; force?: boolean; suggest?: boolean; authorName?: string;
+    presence?: { id: string; name: string }; reviewer: Reviewer; actor?: CommentActor;
+  }): Promise<PushVerdict> {
     const store = await this.#ready();
     const bases = this.#bases;
     if (!bases) throw new Error('DocDO started without a base cache');
@@ -1144,13 +1195,23 @@ export class DocDO extends YServer<SyncEnv> {
       if ((await sha256Hex(supplied)) !== input.baseHash) return { ok: false, status: 400, reason: 'base-mismatch' };
     }
     const landed = { changed: false };
-    const verdict = await this.#review(input, 'editor', (reviewer): PushVerdict => {
+    const verdict = await this.#review(input, input.suggest ? 'suggester' : 'editor', (reviewer): PushVerdict => {
       const base = supplied ?? bases.get(input.baseHash);
       if (base === null) return { ok: false, status: 409, reason: 'base-missing' };
       try {
+        if (input.suggest) {
+          const suggested = this.#suggestPush(reviewer, input.authorName ?? reviewer.id, { base, newText: input.newText, force: input.force === true });
+          if (suggested.ok && suggested.suggestionId) {
+            if (supplied !== null) bases.put(input.baseHash, supplied);
+            landed.changed = true;
+          }
+          return suggested;
+        }
         const outcome = landPush(this.document, this.name, { base, newText: input.newText, force: input.force === true }, CLI_PUSH,
           (diff, payloads) => this.#admitServerWrite(store, diff, payloads));
-        if (!outcome.ok) return { ok: false, status: 409, reason: outcome.reason, deletedRatio: outcome.deletedRatio };
+        if (!outcome.ok) {
+          return outcome.reason === 'degenerate' ? { ok: false, status: 409, reason: 'degenerate', deletedRatio: outcome.deletedRatio } : { ok: false, status: 409, reason: outcome.reason };
+        }
         if (supplied !== null) bases.put(input.baseHash, supplied);
         landed.changed = outcome.changed;
         if (outcome.changed) {
@@ -1168,8 +1229,97 @@ export class DocDO extends YServer<SyncEnv> {
         throw error;
       }
     });
-    if (landed.changed) await this.#autoVersion(store, input.reviewer.id);
+    if (landed.changed && input.presence) this.#showAgent(input.presence);
+    if (landed.changed && !input.suggest) await this.#autoVersion(store, input.reviewer.id);
     return verdict;
+  }
+
+  /**
+   * `push --suggest`, inside the push's serialized write: one lease on a connection of its own, the merge written as a
+   * fork under it, each op through the ingest exactly as a live suggester's fork transactions arrive. A push that
+   * changes nothing suggests nothing; a refusal after the first op withdraws the record, so no partial one stays open.
+   */
+  #suggestPush(reviewer: Reviewer, name: string, push: { base: string; newText: string; force: boolean }): PushVerdict {
+    const ingest = this.#ingest;
+    if (!ingest) throw new Error('DocDO started without the suggestion ingest');
+    const who: Suggester = { id: reviewer.id, name, role: reviewer.role, connection: `cli-push:${crypto.randomUUID()}` };
+    const refused = (reason: string): PushVerdict => ({
+      ok: false, status: 409, reason: 'suggest-refused', message: SUGGEST_REFUSALS[reason] ?? `the suggestion was refused (${reason})`,
+    });
+    const leased = ingest.lease(who, [], 1);
+    if (!leased.ok) return refused(leased.reason);
+    const lease = leased.leases[0]!;
+    try {
+      const fork = { client: lease.client, ops: [] as { doc: string; update: Uint8Array }[] };
+      const outcome = landPush(this.document, this.name, { ...push, fork }, CLI_PUSH);
+      if (!outcome.ok) {
+        if (outcome.reason === 'degenerate') return { ok: false, status: 409, reason: 'degenerate', deletedRatio: outcome.deletedRatio };
+        return { ok: false, status: 409, reason: 'suggest-refused', message: 'a suggestion can change only the note\'s text, not its properties; nothing was suggested' };
+      }
+      if (fork.ops.length === 0) return { ok: true, applied: 0, failedHunks: outcome.failedHunks };
+      let record = lease.record;
+      let created = false;
+      for (const op of fork.ops) {
+        const result = ingest.ops(who, record, op);
+        if (!result.ok) {
+          if (created) ingest.withdraw(who, record);
+          return refused(result.reason);
+        }
+        record = result.record;
+        created = true;
+      }
+      writeSuggestions(this.document, () => patchMeta(this.document, record, { source: 'cli' }));
+      return { ok: true, applied: outcome.applied, failedHunks: outcome.failedHunks, suggestionId: record };
+    } finally {
+      ingest.expireConnection(who.connection);
+    }
+  }
+
+  /** True for the awareness client of an agent shown after a push: no socket may claim it. */
+  #botClient(id: number): boolean {
+    for (const bot of this.#bots.values()) if (bot.client === id) return true;
+    return false;
+  }
+
+  /**
+   * Shows an agent in every member's face pile for AGENT_PRESENCE_MS after its push (A§10.7), Bot-badged: a server-owned
+   * awareness entry, re-sent before a client's 12 s sweep would drop it, then removed. A second push extends it.
+   */
+  #showAgent(agent: { id: string; name: string }): void {
+    const awareness = this.document.awareness;
+    let bot = this.#bots.get(agent.id);
+    if (!bot) {
+      let client = 0;
+      while (client === 0 || awareness.getStates().has(client) || awareness.meta.has(client) || this.document.store.clients.has(client)) {
+        client = crypto.getRandomValues(new Uint32Array(1))[0]! >>> 1;
+      }
+      bot = { client, name: agent.name, until: 0, timer: null };
+      this.#bots.set(agent.id, bot);
+    }
+    bot.until = Date.now() + AGENT_PRESENCE_MS;
+    this.#sayAgent(agent.id);
+  }
+
+  #sayAgent(agentId: string): void {
+    const bot = this.#bots.get(agentId);
+    if (!bot) return;
+    if (bot.timer) clearTimeout(bot.timer);
+    bot.timer = null;
+    const awareness = this.document.awareness;
+    const now = Date.now();
+    if (now >= bot.until) {
+      this.#bots.delete(agentId);
+      if (!awareness.getStates().has(bot.client)) return;
+      removeAwarenessStates(awareness, [bot.client], AGENT_PRESENCE);
+      sendPresence(this.getConnections(), awarenessFrame(awareness, [bot.client]));
+      return;
+    }
+    const slot = seedColor(agentId);
+    const color = colorOf(slot);
+    const state = { name: bot.name, color, user: { principalId: agentId, name: bot.name, color, colorSettled: true, isAgent: true, slot } };
+    applyAwarenessUpdate(awareness, awarenessEntry(bot.client, (awareness.meta.get(bot.client)?.clock ?? 0) + 1, state), AGENT_PRESENCE);
+    sendPresence(this.getConnections(), awarenessFrame(awareness, [bot.client]));
+    bot.timer = setTimeout(() => this.#sayAgent(agentId), Math.min(AGENT_PRESENCE_REFRESH_MS, bot.until - now));
   }
 
   /**
@@ -1182,6 +1332,25 @@ export class DocDO extends YServer<SyncEnv> {
     if (!this.#workingRate.allow(this)) return null;
     this.#working = exportWorkingMarkdown(this.document, this.name);
     return this.#working;
+  }
+
+  /** The doc's comment threads, for any reader (A§17 `comments`). */
+  async listComments(input: { reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; comments: CommentListing[] } | ReviewRefusal> {
+    const result = await this.#review(input, 'viewer', () => listComments(this.document));
+    return Array.isArray(result) ? { ok: true, comments: result } : result;
+  }
+
+  /** The doc's open suggestions, oldest first, for any reader (A§17 `suggestions`). */
+  async listSuggestions(input: { reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; suggestions: SuggestionListing[] } | ReviewRefusal> {
+    const result = await this.#review(input, 'viewer', () => recordIds(this.document)
+      .map((id) => readMeta(this.document, id))
+      .filter((meta): meta is NonNullable<typeof meta> => meta !== null && meta.status === 'open')
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((meta): SuggestionListing => ({
+        id: meta.id, author: meta.author, authorName: meta.authorName, status: meta.status, source: meta.source,
+        createdAt: meta.createdAt, updatedAt: meta.updatedAt, outdated: (meta.outdated?.length ?? 0) > 0 || meta.broken !== undefined,
+      })));
+    return Array.isArray(result) ? { ok: true, suggestions: result } : result;
   }
 
   /** The doc's versions, newest first, for any reader (A§14). */

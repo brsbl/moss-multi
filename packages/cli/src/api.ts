@@ -29,6 +29,27 @@ export interface VersionRow {
   title: string;
 }
 
+export interface CommentRow {
+  id: string;
+  parentId: string | null;
+  author: { id: string; name: string; type: 'user' | 'agent' };
+  text: string;
+  quote: string | null;
+  status: 'anchored' | 'orphaned' | null;
+  resolved: boolean;
+  createdAt: number;
+}
+
+export interface SuggestionRow {
+  id: string;
+  author: { id: string; name: string };
+  status: string;
+  source: string;
+  createdAt: number;
+  updatedAt: number;
+  outdated: boolean;
+}
+
 export interface Me {
   type: 'user' | 'agent';
   id: string;
@@ -150,6 +171,8 @@ export function createApi(options: ApiOptions) {
       (await json<{ version: VersionRow }>(`${doc(id)}/versions`, { method: 'POST', body: body({ name }) })).version,
     comment: async (id: string, input: { id: string; text: string; parentId?: string; anchor?: { quote: string } }) =>
       (await json<{ comment: { id: string; quote: string | null } }>(`${doc(id)}/comments`, { method: 'POST', body: body(input) })).comment,
+    comments: async (id: string) => (await json<{ comments: CommentRow[] }>(`${doc(id)}/comments`)).comments,
+    suggestions: async (id: string) => (await json<{ suggestions: SuggestionRow[] }>(`${doc(id)}/suggestions`)).suggestions,
     share: async (id: string, input: { email: string; role: string } | { agentId: string; role: string }) =>
       json<unknown>(`${doc(id)}/members`, { method: 'POST', body: body(input) }),
     /** The auth routes refuse an unsafe request without an Origin; the server's own origin is the one they accept. */

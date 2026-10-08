@@ -46,8 +46,11 @@ export function sendPresence(connections: Iterable<Connection>, frame: Uint8Arra
     try { connection.send(frame); } catch { /* A closing peer must not interrupt delivery to the others. */ }
   }
 }
-/** One awareness id per socket, persisted across hibernation; malformed or forged frames have no effect. */
-export function receivePresence(awareness: Awareness, connection: Connection, message: ArrayBuffer | ArrayBufferView, connections: Connection[]): void {
+/**
+ * One awareness id per socket, persisted across hibernation; malformed or forged frames have no effect. `reserved` ids
+ * belong to the server (an agent shown after its push) and no socket may write them.
+ */
+export function receivePresence(awareness: Awareness, connection: Connection, message: ArrayBuffer | ArrayBufferView, connections: Connection[], reserved: (id: number) => boolean = () => false): void {
   const identity = attachmentOf(connection);
   if (!identity?.presenceAllowed || superseded(connection)) return;
   try {
@@ -62,6 +65,7 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
     const clock = decoding.readVarUint(decoder);
     const state = JSON.parse(decoding.readVarString(decoder));
     if (decoding.hasContent(decoder)) return;
+    if (reserved(id)) return;
     const owned = clientId(connection);
     if (owned !== undefined && owned !== id) return;
     if (state !== null) {

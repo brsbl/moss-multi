@@ -4,6 +4,7 @@
 // DocDO re-authorizes the actor in the same serialized turn as the action (A§8), so the Worker's role is never the
 // last word. A new live suggestion writes the bell's rows for the people who can review it.
 import { getServerByName } from 'partyserver';
+import type { SuggestionListing } from '@moss-multi/sync';
 import { SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, sha256Hex, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -90,6 +91,29 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   }
   const status = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'withdrawn';
   return json({ suggestion: { id: sid, status } }, 200, NO_STORE);
+}
+
+export const SUGGESTIONS_ROUTE = /^\/api\/docs\/([^/]+)\/suggestions$/;
+
+/**
+ * GET /api/docs/:id/suggestions (A§17 `suggestions`): the doc's open suggestions for any reader, oldest first, each
+ * with its author's name as the record holds it; the DocDO re-authorizes the reader in its serialized turn (A§8).
+ */
+export async function listSuggestions(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return json({ error: 'unauthenticated' }, 401, NO_STORE);
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to review suggestions' }, 401, NO_STORE);
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.listSuggestions({
+    reviewer: { id: principal.id, role: access.role },
+    actor: { kind: principal.type, principalId: principal.id, sessionId: principal.type === 'user' ? principal.sessionId : null, shareToken: shareTokenOf(request) },
+  })) as { ok: true; suggestions: SuggestionListing[] } | { ok: false; status: number; reason: string };
+  if (!result.ok) return result.status === 404 ? notFound() : json({ error: result.reason }, result.status, NO_STORE);
+  const suggestions = result.suggestions.map(({ author, authorName, ...rest }) => ({ ...rest, author: { id: author, name: authorName } }));
+  return json({ suggestions }, 200, NO_STORE);
 }
 
 /**

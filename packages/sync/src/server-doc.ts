@@ -93,12 +93,14 @@ export interface MirrorBase {
  * A headless editor bound to a fresh Y.Doc that holds `live`'s state (or `base`), with the hydration committed.
  * Payloads load on first read, from the named ones only.
  */
-export function mirrorOf(live: Y.Doc, base?: MirrorBase): Mirror {
+export function mirrorOf(live: Y.Doc, base?: MirrorBase, client?: number): Mirror {
   const doc = new Y.Doc();
+  if (client !== undefined) doc.clientID = client;
   const source = payloadSourceOf(live);
   const payloads = new PayloadDocs((id) => (base ? base.payload(id) : source.read(id)), (id) => source.has(id));
   const writes = new Map<string, Uint8Array[]>();
   payloads.onHold((id, held) => {
+    if (client !== undefined) held.clientID = client;
     held.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin === PAYLOAD_LOADED) return;
       const list = writes.get(id);
@@ -140,30 +142,56 @@ export function mirrorOf(live: Y.Doc, base?: MirrorBase): Mirror {
   };
 }
 
+/** Runs `mutate` and its follow-ups on the mirror's editor. */
+function runMutation(mirror: Mirror, mutate: Mutate): void {
+  let rest = null as ReturnType<Mutate>;
+  mirror.editor.update(() => {
+    rest = mutate(mirror.doc);
+  }, { discrete: true });
+  // Each follow-up runs in its own update, so the binding syncs it separately; transforms ran with the first.
+  const step = rest;
+  if (typeof step === 'function') {
+    let more = true;
+    while (more) {
+      mirror.editor.update(() => {
+        more = step();
+      }, { discrete: true, skipTransforms: true });
+    }
+  }
+}
+
 /** What `mutate` changes: an update against `live`'s state, and each payload it wrote. */
 function mirrorDiff(live: Y.Doc, mutate: Mutate, verify?: Verify, base?: MirrorBase): { diff: Uint8Array; payloads: [string, Uint8Array][] } {
   const mirror = mirrorOf(live, base);
   try {
     const hydrated = Y.encodeStateVector(mirror.doc);
-    let rest = null as ReturnType<Mutate>;
-    mirror.editor.update(() => {
-      rest = mutate(mirror.doc);
-    }, { discrete: true });
-    // Each follow-up runs in its own update, so the binding syncs it separately; transforms ran with the first.
-    const step = rest;
-    if (typeof step === 'function') {
-      let more = true;
-      while (more) {
-        mirror.editor.update(() => {
-          more = step();
-        }, { discrete: true, skipTransforms: true });
-      }
-    }
+    runMutation(mirror, mutate);
     // Taken before `verify`, which may edit the mirror to read it (an export recomputes formulas); those edits are dropped.
     const diff = Y.encodeStateAsUpdate(mirror.doc, hydrated);
     const payloads = mirror.written();
     verify?.(mirror);
     return { diff, payloads };
+  } finally {
+    mirror.dispose();
+  }
+}
+
+/**
+ * A write made as a fork under the leased Yjs client `client` (a CLI `--suggest`, docs/design/suggestions.md §5): `mutate`
+ * runs on a mirror of `live` exactly as in serverWrite, and what it wrote comes back as record ops, one for the note and
+ * one per payload it touched, each carrying only its own transactions' deletes (never the doc's whole delete set, which
+ * accept would read as outdated). `live` is not written.
+ */
+export function forkWrite(live: Y.Doc, client: number, mutate: Mutate, verify?: Verify): { doc: string; update: Uint8Array }[] {
+  const mirror = mirrorOf(live, undefined, client);
+  try {
+    const updates: Uint8Array[] = [];
+    mirror.doc.on('update', (update: Uint8Array) => updates.push(update));
+    runMutation(mirror, mutate);
+    const ops = updates.length ? [{ doc: 'body', update: Y.mergeUpdates(updates) }] : [];
+    for (const [id, update] of mirror.written()) ops.push({ doc: id, update });
+    verify?.(mirror);
+    return ops;
   } finally {
     mirror.dispose();
   }
