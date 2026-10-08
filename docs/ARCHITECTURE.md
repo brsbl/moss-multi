@@ -622,6 +622,8 @@ Designed in [docs/design/suggestions.md](design/suggestions.md) (T5.0, after a d
 
 Configuration lives in `~/.config/moss-multi/config.json` (mode 0600) and `MOSS_MULTI_API_KEY` / `MOSS_MULTI_SERVER`. Each workspace keeps `.moss-multi/<docId>/{meta.json, base.md}`. Exit codes: 0 clean, 1 other, 2 failed hunks, 3 degenerate. Doc references take an id, a URL or a unique title prefix (H-19); `url` prints `/d/<id>`, which opens the doc itself, not an empty workspace (H-10). [L§1.8; L§4.10]
 
+**Client safety.** No CLI request follows a redirect (a 3xx is an error), so the key or session goes only to the configured server. Device sign-in opens a verification page only if it is http(s) on the server's own origin. Server text is escaped before it reaches a terminal, `--json` escapes control and bidi characters, and only `cat` writes raw bytes. The key is redacted from every output. Every local read or write passes one confinement check: inside the workspace's real path, no symbolic links, and moss's filename rules. The workspace is found from the working directory, never from a file's own directory.
+
 **Push.** `POST /api/docs/:id/push {newText, baseHash, baseText?, suggest?}`:
 1. Take a PrincipalDO rate token.
 2. `DocDO.push` looks up the base (409 `base-missing` if absent) and runs glyphdown's pure three-way `computeMergedTarget`.
