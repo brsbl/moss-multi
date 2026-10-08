@@ -23,14 +23,21 @@ const DocDO = {
   }),
 };
 
-/** Named hold points a test may set: a request reaching one signals `reached`, then waits until the test opens it. */
+/**
+ * Named hold points a test may set: a request reaching one waits there until the test opens it. `reach(response)`
+ * settles once the request is held, and fails if it was answered without getting there.
+ */
 const holds = new Map<string, { arrive: () => void; opened: Promise<void> }>();
 function hold(point: string) {
   let arrive = () => {};
   let open = () => {};
   const reached = new Promise<void>((resolve) => (arrive = resolve));
   holds.set(point, { arrive, opened: new Promise<void>((resolve) => (open = resolve)) });
-  return { reached, open };
+  const reach = async (response: Promise<Response>) => {
+    const early = await Promise.race([reached.then(() => null), response]);
+    if (early) throw new Error(`answered ${early.status} before ${point}: ${await early.clone().text()}`);
+  };
+  return { reach, open };
 }
 async function pass(point: string) {
   const held = holds.get(point);
@@ -253,7 +260,7 @@ describe('a media write in flight meets a change committed after its access chec
     const copying = post(`/api/docs/${target}/assets/copy`, asUser(ben), {
       body: JSON.stringify({ sourceNoteId: source, sourceRelativePath: 'assets/seed.png' }), headers: { 'content-type': 'application/json' },
     });
-    await admission.reached;
+    await admission.reach(copying);
     await run('DELETE FROM doc_members WHERE doc_id = ?1 AND principal_id = ?2', target, ben.id);
     admission.open();
     const refused = await copying;
@@ -273,7 +280,7 @@ describe('a media write in flight meets a change committed after its access chec
     // Media admission runs after the doc and folder access checks and before the guarded media commit.
     const admission = hold(`upload:${ben.id}`);
     const duplicating = post(`/api/docs/${source}/duplicate`, asUser(ben));
-    await admission.reached;
+    await admission.reach(duplicating);
     await run('DELETE FROM folder_members WHERE folder_id = ?1 AND principal_id = ?2', folder, ben.id);
     admission.open();
     const refused = await duplicating;
@@ -297,7 +304,7 @@ describe('a media write in flight meets a change committed after its access chec
     // The creation token is taken before any access check.
     const token = hold(`create:${ben.id}`);
     const duplicating = post(`/api/docs/${source}/duplicate`, asUser(ben));
-    await token.reached;
+    await token.reach(duplicating);
     await run('DELETE FROM folder_members WHERE folder_id = ?1 AND principal_id = ?2', folder, ben.id);
     token.open();
     const landed = await duplicating;
