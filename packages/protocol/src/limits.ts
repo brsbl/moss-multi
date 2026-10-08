@@ -54,8 +54,11 @@ export const DOC_CREATE_RATE = { max: 60, windowMs: 60_000 } as const;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const DOC_CREATE_DAILY = { max: 2_000, windowMs: DAY_MS } as const;
 
-/** The largest `POST /api/docs` body: 2 MB of markdown even if JSON escapes every byte (`\u00XX`), plus the fields. */
-export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
+/**
+ * The largest `POST /api/docs` body: 2 MB of markdown and a 2 MB comments sidecar, each even if JSON escapes every
+ * byte (`\u00XX`), plus the fields.
+ */
+export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 12 + 64 * 1024;
 
 /**
  * Live (untrashed) notes one acting user has created, wherever they are and their agents' included; a create or

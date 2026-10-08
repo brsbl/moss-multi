@@ -6,6 +6,7 @@ import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/
 import { handleAuthRoute } from '../auth/route.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { COMMENT_BODY_MAX_BYTES } from './comments.ts';
 import { JSON_BODY_MAX_BYTES } from './respond.ts';
 import { handleApi } from './router.ts';
 
@@ -13,7 +14,7 @@ const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: () => ({
     setName: async () => undefined, recheck: async () => ({ closed: 0 }), renameTitle: async () => undefined,
-    createComment: async () => ({ ok: true, id: 'c-cap', quote: null }), editComment: async () => ({ ok: true }),
+    createComment: async () => ({ ok: true, id: 'c-cap', quote: null }),
   }),
 };
 const PrincipalDO = {
@@ -62,6 +63,10 @@ const ROUTES: Route[] = [
   { method: 'PATCH', path: () => `/api/vaults/${ada.homeId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Home again' }) },
   { method: 'POST', path: () => '/api/agents', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Scribe' }) },
   { method: 'POST', path: () => '/api/notifications/read', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ ids: [] }) },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ id: 'c-ok', text: 'Fine' }) },
+  { method: 'PATCH', path: () => `/api/docs/${docId}/comments/c-ok`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ text: 'Edited' }) },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/resolve`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ resolved: true }) },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/reactions`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ emoji: '👍', on: true }) },
   { method: 'POST', path: () => '/api/unfurl', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ noteId: docId, url: 'http://127.0.0.1/' }) },
   { method: 'POST', path: () => '/api/feedback', cap: FEEDBACK_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ body: 'Lovely.' }) },
 ];
@@ -136,13 +141,6 @@ describe('JSON bodies are capped on every route that reads one', () => {
     expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES);
     const response = await comment('POST', `/api/docs/${docId}/comments`, sent);
     expect(response.status, await response.clone().text()).toBe(201);
-  }, 30_000);
-
-  it('a comment edit takes the longest text, every character escaped', async () => {
-    const sent = JSON.stringify({ text: '\u0001'.repeat(10_000) });
-    expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES);
-    const response = await comment('PATCH', `/api/docs/${docId}/comments/c-cap`, sent);
-    expect(response.status, await response.clone().text()).toBe(200);
   }, 30_000);
 
   it('note creation takes 2 MB of markdown, every byte escaped, with a full comments sidecar', async () => {
