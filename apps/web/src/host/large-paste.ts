@@ -121,11 +121,15 @@ function heldBytes(editor: LexicalEditor): number | null {
 /** Room under the frame cap for a frame's own header beyond what a piece or payload frame measures. */
 const FRAME_SLACK = 64;
 
-/** Below the cap with a little headroom for what the estimate leaves out; every frame within the frame cap. */
+/**
+ * Below the cap with a little headroom for what the estimate leaves out; every frame within the frame cap. The figures
+ * are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart from a bug.
+ */
 function fits(editor: LexicalEditor, bytes: number, largestFrame: number): boolean {
-  if (largestFrame > CLIENT_FRAME_MAX_BYTES - FRAME_SLACK) return false;
   const held = heldBytes(editor);
-  return held === null || held + bytes <= STATE_CAP_BYTES * 0.97;
+  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= STATE_CAP_BYTES * 0.97);
+  performance.mark('moss-paste-admission', { detail: { adds: bytes, held, largestFrame, fit } });
+  return fit;
 }
 
 /** A payload's value as its first frame carries it (registers.ts seedOf): text, or a chart's or sketch's keys. */
@@ -329,6 +333,9 @@ function $placeBefore(target: LexicalNode, node: LexicalNode): void {
   else target.insertBefore(node, false);
 }
 
+/** What a placed part's JSON becomes when its Placer releases it. */
+const PLACED: SerializedLexicalNode = { type: 'placed', version: 1 };
+
 /**
  * Places a plan's units in batches, each in an update of its own. The first batch is the first units and the last
  * one, with their lists and tables around them, inserted by the caller (at the caret, as Lexical's paste would, so
@@ -345,8 +352,15 @@ export class Placer {
   #gap: NodeKey | undefined;
   #done = false;
 
-  constructor(readonly plan: PastePlan) {
+  /** With `release`, each part's JSON is dropped once placed, so a large paste's plan shrinks as it lands. */
+  constructor(readonly plan: PastePlan, readonly release = false) {
     if (plan.units.length === 0) this.#done = true;
+  }
+
+  #parse(part: Part): LexicalNode {
+    const node = $parseSerializedNode(part.json);
+    if (this.release) part.json = PLACED;
+    return node;
   }
 
   get done(): boolean {
@@ -366,7 +380,7 @@ export class Placer {
     while (common && common.lo > k - 1) common = common.parent;
     const gap = k < n && common === null ? $createParagraphNode() : null;
     const build = (part: Part): LexicalNode => {
-      const node = $parseSerializedNode(part.json);
+      const node = this.#parse(part);
       this.#keys.set(part, node.getKey());
       if (part.parent === null && part.children.length > 0) this.spines.push(node.getKey());
       if ($isElementNode(node)) for (const child of part.children) if (wanted(child)) node.append(build(child));
@@ -402,7 +416,7 @@ export class Placer {
     let top = unit;
     while (top.parent && !this.#keys.has(top.parent)) top = top.parent;
     const build = (part: Part): LexicalNode => {
-      const node = $parseSerializedNode(part.json);
+      const node = this.#parse(part);
       this.#keys.set(part, node.getKey());
       if (part.parent === null && part.children.length > 0) this.spines.push(node.getKey());
       const child = part.children.find((each) => each.lo <= unit.lo && unit.lo <= each.hi);
@@ -767,7 +781,7 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   // 2. The paste itself: the first batch at the caret, then the rest, all one undo step.
   const undo = collabUndo(editor);
   undo?.stopCapturing();
-  const placer = new Placer(plan);
+  const placer = new Placer(plan, true);
   // Laid out after each batch, in it: laid out later, several batches' list items would go at once (MAX_BATCH).
   const layout = () => void editor.getRootElement()?.offsetHeight;
   // Paced afresh: the live editor also renders and lays out each batch.

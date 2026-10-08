@@ -145,7 +145,7 @@ async function busyStretches(actor: Actor): Promise<string> {
   profile.samples.forEach((id, i) => {
     at += (profile.timeDeltas[i] ?? 0) / 1000;
     const name = byId.get(id)!.callFrame.functionName;
-    if (name !== '(idle)' && name !== '(program)') {
+    if (name !== '(idle)') {
       current ??= { from: at, to: at, samples: [] };
       current.to = at;
       current.samples.push(i);
