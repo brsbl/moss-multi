@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (97 of 119 planned tasks verified)
+**Overall: 82% done** (98 of 120 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 5 / 5 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 6 / 6 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -118,6 +118,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.2 verified: an agent can `push` an edited local note and it lands through a three-way structural merge against the base it pulled, so concurrent human edits survive and a push that would delete most of the note is refused unless forced.
 - 2026-10-08 — T7.3 verified: an agent's push shows a Bot-badged presence chip, `push --suggest` lands as a pending suggestion, an agent granted commenter by its owner can pull and comment but is refused on push and disconnected on revoke, a revoked key closes the agent's socket and 401s the CLI, and `comments` and `suggestions` list a note's threads and open suggestions.
 - 2026-10-08 — T7.4 verified: `moss-multi sync` keeps a local folder in step with the web: local edits appear on the web, web edits update the file, untracked files become docs titled from their stem, local deletes stay local, and moss vault notes keep their `# Title` line and comment markers.
+- 2026-10-08 — T7.L verified: CI's lint now fails any regex that can backtrack super-linearly, and every flagged one, including the CLI title-line parse and moss's note-type classifier, is a linear scan with the same results, so a hostile note or title can no longer stall the editor or server on a regex.
 
 ## T1.1s identity audit
 
@@ -150,6 +151,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.L's checker (adf7ead, 2026-10-08)
+
+- T7.L checker P2 (editing a very large note causes long main-thread tasks from note size, not from a regex): on a 40,000-line note editing took 150-490 ms long tasks and a same-size harmless control note 1.75-2.75 s (about 4.3 s to open), while classifyNoteContentType itself takes 2-20 ms; the implementer's 55 ms figure did not reproduce. Not ReDoS and not caused by T7.L; large-note editor and render cost needs its own task.
 
 ### From T7.4's checker (d34777d, 2026-10-08)
 
