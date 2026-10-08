@@ -264,11 +264,11 @@ export interface WatchOptions {
 export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promise<void> {
   const { signal, out, err } = options;
   const debounceMs = options.debounceMs ?? 300;
-  let dirty = false;
+  let changes = 0;
   let wake: (() => void) | null = null;
   let debounce: ReturnType<typeof setTimeout> | undefined;
   const poke = () => {
-    dirty = true;
+    changes += 1;
     clearTimeout(debounce);
     debounce = setTimeout(() => wake?.(), debounceMs);
   };
@@ -302,7 +302,7 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
   out(`watching ${ctx.root} (syncing on changes and every ${options.intervalMs / 1000} s; Ctrl+C stops)`);
   try {
     while (!signal.aborted) {
-      dirty = false;
+      const seen = changes;
       let waitMs = options.intervalMs;
       try {
         for (const result of await syncOnce(ctx)) {
@@ -314,7 +314,7 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
         err(`sync failed: ${failure(error)}`);
       }
       if (signal.aborted) break;
-      if (dirty && waitMs === options.intervalMs) continue;
+      if (changes !== seen && waitMs === options.intervalMs) continue;
       await pause(waitMs);
     }
   } finally {

@@ -678,7 +678,7 @@ describe('sync (T7.4)', () => {
     const result = await cli(['sync']);
     expect(result.code, result.err).toBe(0);
     expect(readFileSync(join(dir, 'plan.md'), 'utf8'), 'the server change reaches the file').toContain('And squash.');
-    expect(server.pushes.map((push) => push.newText), 'the local edit is pushed').toEqual(['# Garden notes\n\nWater daily, twice in July.\n']);
+    expect(server.state.pushes.map((push) => push.newText), 'the local edit is pushed').toEqual(['# Garden notes\n\nWater daily, twice in July.\n']);
     expect(server.seen.filter((call) => call.path === `/api/docs/${ID_A}/push`), 'an unchanged file is not pushed').toEqual([]);
   });
 
@@ -728,11 +728,11 @@ describe('sync (T7.4)', () => {
     const deadline = Date.now() + 5_000;
     while (!server.seen.slice(before).some((call) => call.path === `/api/docs/${ID_A}/content`) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
     writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans only.');
-    while (server.pushes.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    while (server.state.pushes.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
     controller.abort();
     const result = await running;
     expect(result.code, result.err).toBe(0);
     expect(result.out).toContain('watching');
-    expect(server.pushes.map((push) => push.newText)).toEqual(['# Garden plan\n\nBeans only.']);
+    expect(server.state.pushes.map((push) => push.newText)).toEqual(['# Garden plan\n\nBeans only.']);
   });
 });
