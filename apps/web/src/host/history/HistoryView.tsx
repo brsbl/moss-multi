@@ -13,11 +13,13 @@ import {
   HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR, type HistoryViewState,
 } from '@moss-multi/protocol/dom-contract';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
+import { captureRestoreBase, type RestoreBase } from '@moss-multi/sync/restore-base';
 import { useAtomValue } from 'jotai';
 import { ArrowLeft, Clock, History, RotateCcw, Tag } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
+import { heldDocOf } from '../collab/doc-session.ts';
 import { displayTitle } from '../collab/title-binding.ts';
 import { versionPreviewNoteId } from '../media/web-asset-url.ts';
 import { timeAgo } from '../surfaces/NotificationsBell.tsx';
@@ -256,6 +258,8 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
   const [confirming, setConfirming] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  // The note as this tab held it when Restore was opened: the restore's base, so what others type after it is kept.
+  const restoreBase = useRef<{ base: Omit<RestoreBase, 'age'>; at: number } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -329,12 +333,20 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
     setCurrentRound((r) => r + 1);
   }, []);
 
+  const openRestore = () => {
+    const held = heldDocOf(docId);
+    restoreBase.current = held ? { base: captureRestoreBase(held.doc, held.payloads), at: performance.now() } : null;
+    setConfirming(true);
+  };
+
   const restore = async () => {
     if (!selected) return;
     setRestoring(true);
     setRestoreError(null);
     try {
-      const result = await call(`${docUrl(docId)}/versions/${encodeURIComponent(selected.id)}/restore`, {});
+      const seen = restoreBase.current;
+      const base = seen ? { ...seen.base, age: Math.max(0, Math.round(performance.now() - seen.at)) } : undefined;
+      const result = await call(`${docUrl(docId)}/versions/${encodeURIComponent(selected.id)}/restore`, { base });
       if (!result.ok) {
         setRestoreError(refusal(result.json, 'The version could not be restored.'));
         return;
@@ -449,7 +461,7 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
                       ))}
                     </div>
                     {editor ? (
-                      <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={restoring} onClick={() => setConfirming(true)}>
+                      <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={restoring} onClick={openRestore}>
                         <RotateCcw aria-hidden className="h-3 w-3" />
                         Restore
                       </Button>
@@ -500,7 +512,7 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
         open={confirming}
         onOpenChange={setConfirming}
         title="Restore this version?"
-        description="The note will be changed back to this version. Restoring is itself an edit: the note as it is now is kept as a restore point, and anyone typing keeps their words."
+        description="The note will be changed back to this version. Restoring is itself an edit: the note as it is now is kept as a restore point, and anything others type from now on is kept where they typed it."
         confirmLabel="Restore"
         onConfirm={() => void restore()}
       />

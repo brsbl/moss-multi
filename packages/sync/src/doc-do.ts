@@ -5,7 +5,8 @@ import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WORKING_EXPORT_DOC_RATE, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, RESTORE_BASE_MAX_AGE_MS, STATE_CAP_BYTES,
+  WORKING_EXPORT_DOC_RATE, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -36,6 +37,7 @@ import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER
 import { writeTitle } from './server-title.ts';
 import { captureContent, restoreContent, type AnchorSpans, type VersionContent } from './doc/version-content.ts';
 import { ReconcileRefused } from './reconcile.ts';
+import { decodeRestoreBase, StaleBase, type DecodedBase } from './restore-base.ts';
 import {
   ACTIVITY_MS, ACTIVITY_UPDATES, VERSION_BOUNDS, VERSION_NAME_MAX, VERSION_SPILL_BYTES, VersionStore, type Prepared, type VersionBlobs,
   type VersionBounds, type VersionMeta,
@@ -1180,9 +1182,20 @@ export class DocDO extends YServer<SyncEnv> {
    * restore points. One too large for its row is written to R2 first and used only if the doc has not changed since;
    * past RESTORE_ATTEMPTS changes it answers 503. Detached comments the version held anchored are re-anchored on the
    * restored text. An auto version follows.
+   *
+   * The reconcile runs from `base`, the note and payloads as the restorer saw them when it opened Restore, so what
+   * anyone inserted since merges in where it was typed and is never removed (checked before applying). A missing base,
+   * one older than RESTORE_BASE_MAX_AGE_MS, or one that is not a state of the doc is refused 409 `restore-base-stale`.
    */
-  async restoreVersion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
+  async restoreVersion(input: { id: string; base?: unknown; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
     const store = await this.#ready();
+    const stale: ReviewRefusal = { ok: false, status: 409, reason: 'restore-base-stale' };
+    let base: DecodedBase | null = null;
+    try {
+      base = decodeRestoreBase(input.base, RESTORE_BASE_MAX_AGE_MS);
+    } catch (error) {
+      if (!(error instanceof StaleBase)) throw error;
+    }
     const versions = this.#versions;
     if (!versions) throw new Error('DocDO started without versions');
     // Read first (a spill is a fetch); a version never changes, and nothing is returned before the actor is checked.
@@ -1193,6 +1206,7 @@ export class DocDO extends YServer<SyncEnv> {
       for (let attempt = 0; attempt < RESTORE_ATTEMPTS; attempt += 1) {
         const step = await this.#review(input, 'editor', (reviewer): { point: VersionMeta | null } | { capture: Prepared; seen: number } | ReviewRefusal => {
           if (!target) return { ok: false, status: 404, reason: 'not-found' };
+          if (!base) return stale;
           const reuse = early !== null && early.seen === this.#generation;
           const prepared = reuse ? early!.prepared : versions.prepare(this.#capture());
           // A capture that must spill leaves the write to spill it.
@@ -1204,8 +1218,9 @@ export class DocDO extends YServer<SyncEnv> {
               this.#admitServerWrite(store, diff, payloads);
               stored.point = versions.insert('restore-point', prepared, { createdBy: reviewer.id, authorIds });
               this.#versionTaken(store, Date.now());
-            });
+            }, base);
           } catch (error) {
+            if (error instanceof StaleBase) return stale;
             if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'restore-unverified' };
             if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap' };
             console.error('DocDO could not store a restore point; the restore is refused', error);

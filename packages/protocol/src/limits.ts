@@ -63,6 +63,9 @@ export const VERSION_HISTORY_BYTES_PER_NOTE = 4 * STATE_CAP_BYTES;
 /** The newest restore points, never pruned for bytes, so a restore always keeps its restore point. */
 export const VERSION_RESTORE_POINTS_PROTECTED = 3;
 
+/** How old a restore's base (the note as the restorer saw it when it opened Restore) may be; past it, refused 409. */
+export const RESTORE_BASE_MAX_AGE_MS = 10 * 60_000;
+
 /** Live named versions one person may keep on a note, and a note may keep; past either a save is refused 409, and a
  * named version is never pruned. */
 export const NAMED_VERSIONS_PER_PERSON = 10;
