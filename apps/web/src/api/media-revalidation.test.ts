@@ -253,12 +253,14 @@ describe('a media write in flight meets a change committed after its access chec
     const bytes = uniquePng();
     const seeded = await post(`/api/docs/${source}/assets?filename=seed.png`, asUser(ada), { body: bytes, headers: { 'content-type': 'image/png' } });
     expect(seeded.status, await seeded.clone().text()).toBe(201);
+    // The folder may already hold a seed.png, so the upload can take a suffixed name.
+    const { relativePath } = await seeded.json() as { relativePath: string };
     await insertGrant(d1.db, { docId: source }, ben, 'viewer');
     await insertGrant(d1.db, { docId: target }, ben, 'editor');
     // Admission runs after the target's access check and before the guarded commit.
     const admission = hold(`upload:${ben.id}`);
     const copying = post(`/api/docs/${target}/assets/copy`, asUser(ben), {
-      body: JSON.stringify({ sourceNoteId: source, sourceRelativePath: 'assets/seed.png' }), headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceNoteId: source, sourceRelativePath: relativePath }), headers: { 'content-type': 'application/json' },
     });
     await admission.reach(copying);
     await run('DELETE FROM doc_members WHERE doc_id = ?1 AND principal_id = ?2', target, ben.id);
