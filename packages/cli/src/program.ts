@@ -2,7 +2,7 @@
 // 3 degenerate. Output that is content (`cat`) is written as raw bytes; everything else is one line per record.
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { TRASH_COPY, TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { createApi, type Api } from './api.ts';
@@ -10,6 +10,7 @@ import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConf
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { jsonSafe, redact, ttySafe } from './output.ts';
+import { describe, syncExitCode, syncOnce, watchLoop } from './sync.ts';
 import { confined, findRoot, localName, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
@@ -23,6 +24,8 @@ export interface ProgramDeps {
   openUrl?: (url: string) => void;
   /** Whether the volume under a workspace root folds case (APFS and NTFS do by default); probed when absent. */
   foldsCase?: (root: string) => boolean;
+  /** Stops `watch`; SIGINT and SIGTERM when absent. */
+  signal?: AbortSignal;
 }
 
 export const AGENT_KEY_PREFIX = 'mm_sk_';
@@ -41,13 +44,18 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   vaults [--json]                              your vaults
   cat <doc>                                    the doc's markdown, byte for byte
   new <title> [--folder <id>] [--json]         create an empty doc; prints its id
-  add <file.md> [--title <t>] [--folder <id>] [--json]
-                                               create a doc from a local file; prints its id
+  add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]
+                                               create a doc from a local file; prints its id. A first line
+                                               "# <title>" is the title, not a heading. --moss imports a moss
+                                               note: its "# Title" line names it, its comments.json comes too
   url <doc>                                    the doc's web address
   mv <doc> <new title>                         rename a doc
   rm <doc> [--json]                            move a doc to Trash
   pull <doc> [file] [--force]                  write the doc to a file and track it here
   push <file> [--suggest] [--force]            merge your edits to a pulled file into the doc
+  sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
+                                               doc; deleting a file here never deletes the doc
+  watch [dir] [--interval <s>]                 sync on every change and every 60 s, until Ctrl+C
   history <doc> [--json]                       the doc's versions
   snapshot <doc> <name>                        save a named version
   comment <doc> <text> (--quote <text> | --reply <comment id>)
@@ -138,7 +146,15 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     const config = resolveConfig(env);
     return createApi({ serverUrl: server(), token: config.apiKey ?? config.sessionToken, fetchImpl });
   };
+  /** A command that finishes with a code other than 0 sets it here (`sync`); a CliError carries its own. */
+  let exitCode: number = EXIT.ok;
   const docUrl = (client: Api, id: string) => `${client.serverUrl}/d/${encodeURIComponent(id)}`;
+  /** The workspace for `sync` and `watch`: the one holding `dir` (default the working directory), else `dir` itself. */
+  const workspaceAt = (dir?: string): string => {
+    const start = resolve(cwd(), dir ?? '.');
+    if (!existsSync(start)) throw new CliError(1, `no such directory: ${dir ?? start}`);
+    return findRoot(start) ?? start;
+  };
 
   const commands: Record<string, (rest: string[]) => Promise<number | void>> = {
     async login(rest) {
@@ -213,14 +229,33 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     },
 
     async add(rest) {
-      const parsed = parseArgs(rest, ['json'], ['title', 'folder']);
-      const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--json]');
+      const parsed = parseArgs(rest, ['json', 'moss'], ['title', 'folder']);
+      const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]');
       const path = resolve(cwd(), file);
-      const markdown = toLf(decoder.decode(readConfined(findRoot(cwd()) ?? cwd(), path)));
-      const title = value(parsed, 'title') ?? basename(path, extname(path));
+      const root = findRoot(cwd()) ?? cwd();
+      const markdown = toLf(decoder.decode(readConfined(root, path)));
+      const moss = parsed.flags.has('moss');
+      const stem = basename(path, extname(path));
+      // A moss note is named by its "# Title" line; any other file by --title or its stem.
+      const title = value(parsed, 'title') ?? (moss ? undefined : stem);
+      let comments: Record<string, unknown> | undefined;
+      const sidecar = join(dirname(path), 'comments.json');
+      if (moss && existsSync(sidecar)) {
+        let parsedSidecar: unknown;
+        try {
+          parsedSidecar = JSON.parse(decoder.decode(readConfined(root, sidecar)));
+        } catch (error) {
+          if (error instanceof CliError) throw error;
+          throw new CliError(1, `${basename(sidecar)} beside ${file} is not JSON`);
+        }
+        if (!parsedSidecar || typeof parsedSidecar !== 'object' || Array.isArray(parsedSidecar)) throw new CliError(1, `${basename(sidecar)} beside ${file} is not moss's comments map`);
+        comments = parsedSidecar as Record<string, unknown>;
+      }
       const client = api();
       const folderId = value(parsed, 'folder');
-      const doc = await client.create({ title, markdown, ...(folderId ? { folderId } : {}) });
+      let doc = await client.create({ ...(title !== undefined ? { title } : {}), markdown, titleLine: true, ...(comments ? { comments } : {}), ...(folderId ? { folderId } : {}) });
+      // A moss note with no title line takes its file's stem.
+      if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
       if (parsed.flags.has('json')) return json({ ...doc, url: docUrl(client, doc.id) });
       line(doc.id);
     },
@@ -331,6 +366,40 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       line(`pushed ${meta.file}: ${response.applied} change(s) applied`);
     },
 
+    async sync(rest) {
+      const parsed = parseArgs(rest, ['force', 'json'], []);
+      const [dir] = arity(parsed, 0, 1, 'sync [dir] [--force] [--json]');
+      const root = workspaceAt(dir);
+      const results = await syncOnce({ root, client: api(), folds: foldsCase(root), force: parsed.flags.has('force') });
+      if (parsed.flags.has('json')) json(results);
+      else {
+        for (const result of results) {
+          if (result.action === 'failed' || result.action === 'skipped-degenerate') stderr(describe(result));
+          else if (result.action !== 'up-to-date') line(describe(result));
+        }
+        if (results.every((result) => result.action === 'up-to-date')) line('everything is up to date');
+      }
+      exitCode = syncExitCode(results);
+    },
+
+    async watch(rest) {
+      const parsed = parseArgs(rest, [], ['interval']);
+      const [dir] = arity(parsed, 0, 1, 'watch [dir] [--interval <seconds>]');
+      const seconds = Number(value(parsed, 'interval') ?? 60);
+      if (!Number.isFinite(seconds) || seconds <= 0) throw new CliError(1, '--interval is a number of seconds above 0');
+      const root = workspaceAt(dir);
+      const client = api();
+      let signal = deps.signal;
+      if (!signal) {
+        const controller = new AbortController();
+        const stop = () => controller.abort();
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+        signal = controller.signal;
+      }
+      await watchLoop({ root, client, folds: foldsCase(root), force: false }, { intervalMs: seconds * 1000, signal, out: line, err: stderr });
+    },
+
     async history(rest) {
       const parsed = parseArgs(rest, ['json'], []);
       const [ref] = arity(parsed, 1, 1, 'history <doc> [--json]');
@@ -383,7 +452,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     const run = Object.hasOwn(commands, command) ? commands[command] : undefined;
     if (!run) throw new CliError(1, `unknown command "${command}"; run \`moss-multi help\``);
     await run(rest);
-    return EXIT.ok;
+    return exitCode;
   } catch (error) {
     if (error instanceof CliError) {
       stderr(`moss-multi: ${error.message}`);

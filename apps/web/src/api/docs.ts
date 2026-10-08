@@ -6,6 +6,7 @@
 // edit, delete, resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
+import { liftTitleLine } from '@moss-multi/sync/title-line';
 import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
@@ -100,13 +101,20 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   if (!roleAtLeast(folder.role, 'editor')) {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
   }
-  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  let title = typeof body.title === 'string' ? body.title.trim() : '';
+  let markdown = typeof body.markdown === 'string' ? body.markdown : undefined;
+  // `titleLine`: a leading `# Title` line is the note's name, not a body H1 (moss interchange, A§12).
+  if (body.titleLine === true && markdown !== undefined) {
+    const lifted = liftTitleLine(markdown, title || undefined);
+    markdown = lifted.markdown;
+    title = lifted.title ?? '';
+  }
   const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
   if (!doc) return folderNotFound();
   const stub = await getServerByName(env.DocDO, doc.id);
   return seeded(db, doc, folder.role, async () => {
     await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
-      ...(typeof body.markdown === 'string' ? { markdown: body.markdown } : {}),
+      ...(markdown !== undefined ? { markdown } : {}),
       ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) });
   });
 }
