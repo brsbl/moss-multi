@@ -7,8 +7,7 @@
 // frozen on and never half applied.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
-import { exported, fingerprint, longestStall, MAX_STALL_MS, normalized, pasteAndCheck, pastePlain, setup, watchStalls } from '../lib/paste.ts';
+import { expectRefusedPaste, MAX_STALL_MS, normalized, pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /** `count` short paragraphs, blank-line separated, ending with a known last line. */
@@ -38,23 +37,5 @@ test('j01-paste-blocks: 40,000 short paragraphs pasted between two paragraphs la
 
 test('j01-paste-blocks: 100,000 short paragraphs, past the note’s size cap, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(240_000);
-  const { ada, ben, docId } = await setup(actors, stack, 'Kept.');
-  await ui.waitAcked(ada, docId, 30_000);
-  const before = await exported(ada, docId);
-  const print = await fingerprint(ada, docId);
-  await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
-  await ada.page.keyboard.press('End');
-  await watchStalls(ada);
-  await pastePlain(ada, docId, shortParagraphs(100_000));
-  await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
-  const stall = await longestStall(ada);
-  expect(stall.ms, `the refused paste never holds the tab longer than ${MAX_STALL_MS} ms at a time (during: ${stall.during})`).toBeLessThanOrEqual(MAX_STALL_MS);
-  await ui.waitAcked(ada, docId, 30_000);
-  expect(await fingerprint(ada, docId), 'nothing of the paste is in the editor').toEqual(print);
-  await ada.page.waitForTimeout(3_000);
-  expect(await exported(ada, docId), 'nothing of the paste reached the server').toBe(before);
-  expect(await fingerprint(ben, docId), 'nor the collaborator').toEqual(print);
-  await ui.typeBody(ada, docId, ' Still typing.');
-  await ui.waitAcked(ada, docId, 30_000);
-  await expect.poll(() => exported(ada, docId), { message: 'the note stays editable', timeout: 30_000 }).toBe(await normalized(ada, stack, 'Kept. Still typing.'));
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, shortParagraphs(100_000), { checkWire: false });
 });

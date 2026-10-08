@@ -7,6 +7,7 @@
 // The notes are imported through POST /api/docs as declared setup.
 import type { Actor } from '../lib/actors.ts';
 import { APP_STATE_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, SIDEBAR_ROW_ATTR } from '../lib/contract.ts';
+import { importNote } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const SOLO = 'one person opens and types in their own notes; nothing here is shared';
@@ -41,12 +42,6 @@ async function readStall(actor: Actor): Promise<number> {
 
 const bodyLength = (actor: Actor, docId: string) => ui.body(actor, docId).evaluate((el) => el.textContent?.length ?? 0);
 
-async function importNote(actor: Actor, baseUrl: string, title: string, markdown: string): Promise<string> {
-  const response = await actor.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title, markdown } });
-  expect(response.status(), 'declared setup: the note is imported').toBe(201);
-  return ((await response.json()) as { doc: { id: string } }).doc.id;
-}
-
 /** Clicks the body and puts the caret after its last character. */
 async function caretAtEnd(actor: Actor, docId: string): Promise<void> {
   await ui.body(actor, docId).click();
@@ -78,7 +73,7 @@ test('j01-autolink: a note holding one long word opens, and takes keystrokes at 
   const actor = await actors.session(await actors.principal('ada'));
   await actor.context.addInitScript(installStallMonitor);
   const ids: string[] = [];
-  for (const n of SIZES) ids.push(await importNote(actor, stack.baseUrl, `Long word ${n}`, 'a'.repeat(n)));
+  for (const n of SIZES) ids.push(await importNote(actor, stack, `Long word ${n}`, 'a'.repeat(n)));
   // The shell lands on the newest note, the 100k one, and the loop below opens it again.
   actor.expectReconnects(1, ids[ids.length - 1]);
   await actor.goto('/');
@@ -120,7 +115,7 @@ test('j01-autolink: a note holding one long word opens, and takes keystrokes at 
 test('j01-autolink: ordinary URLs, schemeless URLs and emails still become the same links', async ({ actors, stack }) => {
   actors.solo(SOLO);
   const actor = await actors.session(await actors.principal('ada'));
-  const docId = await importNote(actor, stack.baseUrl, 'Links', 'Start');
+  const docId = await importNote(actor, stack, 'Links', 'Start');
   await actor.goto(`/d/${docId}`);
   await ui.waitLive(actor, docId);
   await actor.observeEditor(docId);
