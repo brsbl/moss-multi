@@ -125,7 +125,19 @@ function describeHunk(base: string, edit: Edit): string {
   return [`@@ line ${line} @@`, ...lines('-', base.slice(edit.start, edit.end)), ...lines('+', edit.text)].join('\n');
 }
 
+const finalEol = (text: string): string => text.slice(text.replace(/\n+$/, '').length);
+const withoutFinalEol = (text: string): string => text.slice(0, text.length - finalEol(text).length);
+
+/**
+ * Final newlines are not content (an editor adds one on save; the export has none), so the three texts merge without
+ * them and the target keeps `current`'s.
+ */
 export function computeMergedTarget(current: string, base: string, next: string): MergeComputation {
+  const merge = mergeBodies(withoutFinalEol(current), withoutFinalEol(base), withoutFinalEol(next));
+  return { ...merge, target: merge.target + finalEol(current) };
+}
+
+function mergeBodies(current: string, base: string, next: string): MergeComputation {
   const drifted = current !== base;
   if (base === next) return { target: current, failedHunks: [], deletedRatio: 0, drifted, applied: 0 };
   const deletedRatio = deleted(cleanupSemantic(makeDiff(base, next))) / Math.max(base.length, 1);

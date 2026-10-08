@@ -99,7 +99,7 @@ function identityOf(own: SerializedNode, kind: Kind, options: ReconcileOptions):
   return stableStringify(copy);
 }
 
-function fullOf(json: SerializedNode): string {
+export function fullOf(json: SerializedNode): string {
   const own = stableStringify(ownOf(json));
   return Array.isArray(json.children) ? `${own}[${childrenOf(json).map(fullOf).join(',')}]` : own;
 }
@@ -163,7 +163,7 @@ function alignUnique(a: readonly string[], b: readonly string[]): Array<[number,
  * then the heaviest common subsequence of the middle while its table fits, weighting each pair by `weight` (1 when
  * absent). Past the budget the middle aligns on unique signatures.
  */
-function align(a: readonly string[], b: readonly string[], weigh?: (i: number, j: number) => number): Array<[number, number]> {
+export function align(a: readonly string[], b: readonly string[], weigh?: (i: number, j: number) => number): Array<[number, number]> {
   const weight = weigh && a.length * b.length <= WEIGHED_CELL_BUDGET ? weigh : undefined;
   const limit = Math.min(a.length, b.length);
   let prefix = 0;
