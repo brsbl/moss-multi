@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (96 of 119 planned tasks verified)
+**Overall: 82% done** (97 of 119 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 4 / 5 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 5 / 5 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -117,6 +117,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.1s verified: the CLI now keeps every local read and write inside the workspace (real paths, no links out), opens device sign-in only on the server's own origin, follows no redirects, never prints the key, and escapes server text before it reaches the terminal.
 - 2026-10-08 — T7.2 verified: an agent can `push` an edited local note and it lands through a three-way structural merge against the base it pulled, so concurrent human edits survive and a push that would delete most of the note is refused unless forced.
 - 2026-10-08 — T7.3 verified: an agent's push shows a Bot-badged presence chip, `push --suggest` lands as a pending suggestion, an agent granted commenter by its owner can pull and comment but is refused on push and disconnected on revoke, a revoked key closes the agent's socket and 401s the CLI, and `comments` and `suggestions` list a note's threads and open suggestions.
+- 2026-10-08 — T7.4 verified: `moss-multi sync` keeps a local folder in step with the web: local edits appear on the web, web edits update the file, untracked files become docs titled from their stem, local deletes stay local, and moss vault notes keep their `# Title` line and comment markers.
 
 ## T1.1s identity audit
 
@@ -149,6 +150,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.4's checker (d34777d, 2026-10-08)
+
+- T7.4 checker P2 (moss adoption records a base fetched after create; Codex P1, downgraded): adopt() (packages/cli/src/sync.ts) records base = content fetched after POST /docs with localHash of the original file, so a peer edit between create and that GET, followed by a local edit, can be lost; base the record on the create response's own export.
+- T7.4 checker P2 (marker remap guesses between identical paragraphs; Codex P1, downgraded): remapMarkers (packages/cli/src/moss-format.ts) is a text diff, so local `%%m:` markers can land on the surviving one of two identical paragraphs; server anchors are unaffected. Carry anchors from the M4 state once web comments are written into comments.json.
+- T7.4 checker P2 (`add --moss --title X` on a file whose title line differs; Codex P1, downgraded): the next local edit renames the doc to the line and lifts the H1; refuse --moss when --title differs from the file's title line, or normalize the file at adoption.
+- T7.4 checker P2 (a plain file whose H1 equals its stem shows the title twice on the web): 'Garden plan.md' starting with '# Garden plan' becomes doc 'Garden plan' with a body H1 'Garden plan'; intended (a plain file's H1 is content), only `add --title` lifts it, but a person may read it as a duplicate.
 
 ### From T7.3's checker (436984d, 2026-10-08)
 
