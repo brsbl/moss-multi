@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 79% done** (94 of 119 planned tasks verified)
+**Overall: 80% done** (95 of 119 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 2 / 5 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 3 / 5 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -115,6 +115,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T6.S1 verified: restoring a version now reconciles three-way from the base the restorer opened Restore on, so words a peer or agent typed after that base survive the restore, and a stale base or a dropped block someone typed into is refused with 409.
 - 2026-10-08 — T6.S4 verified: restoring a version on a large note now succeeds while a peer types, because its restore point is staged in DocDO SQLite in the restore's turn and moved to R2 afterwards, and a crash before the move recovers on wake.
 - 2026-10-08 — T7.1s verified: the CLI now keeps every local read and write inside the workspace (real paths, no links out), opens device sign-in only on the server's own origin, follows no redirects, never prints the key, and escapes server text before it reaches the terminal.
+- 2026-10-08 — T7.2 verified: an agent can `push` an edited local note and it lands through a three-way structural merge against the base it pulled, so concurrent human edits survive and a push that would delete most of the note is refused unless forced.
 
 ## T1.1s identity audit
 
@@ -147,6 +148,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.2's checker (5e89406, 2026-10-08)
+
+- T7.2 checker P2 (degenerate guard measures deletion against the base, not the merged result on a drifted doc; Codex P1, downgraded): landPush (packages/sync/src/push.ts) checks isDegenerate on base->newText (packages/core/src/merge.ts), so an agent deletion adjacent to a concurrent human deletion can merge to a much smaller or empty doc without --force; glyphdown also measures against the base.
+- T7.2 checker P2 (the 'drifted or not' degenerate test never drifts the doc): packages/sync/src/push.test.ts, the push harness test and the j18 degenerate leg cover only the undrifted case; add a drifted case if the guard semantics change.
 
 ### From T7.1s's checker (43529ee, 2026-10-08)
 
