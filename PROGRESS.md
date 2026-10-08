@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 69% done** (73 of 106 planned tasks verified)
+**Overall: 68% done** (74 of 109 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 21 / 21 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 22 / 22 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -92,6 +92,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-06 — T3.11 verified: a host on editor API 2 (moss-editor 0.3.0) shows each moss-html block inert until the user presses Run on it, a running block cannot make requests or navigate away, `copyFromNote` copies only from notes open in the host, and an API 1 host gets `apiMismatch` at mount.
 - 2026-10-06 — T3.S3b verified: note creation, sign-up, folders, vaults, agent keys, share links and feedback each have per-person daily bounds (2,000 new notes a day, 10,000 live notes, 30 sign-ups a day per client address), refused before anything is written.
 - 2026-10-06 — T3.S5 verified: typing at the end of a very long word (50k+ characters) no longer freezes the tab, because auto-link matching scans in linear time with the same links as moss's.
+- 2026-10-08 — T3.12 verified: the moss editor loads faster: its entry script is under 350 KB gzip with charts, the canvas and HTML blocks loaded on first use, load timings are measured in CI per engine, and every chunk is named in editor.json for hosts that serve the package directory.
 
 ## T1.1s identity audit
 
@@ -164,6 +165,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.10 (Selection and Share with Agent) checker P2: live HTML and nested (tab-panel) code drafts are not projected into the selection export; `$draftOf` handles only a root-level decorator with `getCode()`, so for a focused HTML source textarea or a code block in a tab panel the text comes from the textarea while markdown and lines come from the uncommitted old node until blur → selection follow-up.
 - T3.10 (Selection and Share with Agent) checker P2: an end boundary at offset 0 of the next list item includes that item; the list branch of `$lineIn` ignores side and offset, so a range ending at the start of 'Second item' reports lines 9-10 and includes '- Second item' in markdown → selection follow-up.
 - T3.10 (Selection and Share with Agent) checker P2: the editor's list-into-code selection case is `test.skip` in WebKit because WebKit clamps the programmatic DOM range out of the contenteditable=false code block (viewer covers it in WebKit, editor in Chromium) → selection test follow-up: a real-mouse WebKit editor variant.
+- T3.12 (Editor load performance) checker P2 (pre-existing, also at fa716786): typing right after inserting a chart from the slash menu, without clicking, lands reversed at offset 0 of the first paragraph; typing after a mouse click is correct → slash-menu chart insert follow-up.
+- T3.12 (Editor load performance) checker P2: the 350 KB gzip budget covers only the entry script (155-161 KB, enforced in load.spec.ts; bundle-size.mjs only reports); the static critical path is 593 KB gzip → coordinator to decide whether the budget should cover the whole critical path.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
