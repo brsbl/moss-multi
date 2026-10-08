@@ -120,7 +120,9 @@ describe('version triggers @p:mean-3', () => {
     await opened.dobj.onSave();
     const versions = await list(opened);
     expect(versions.map((version) => version.kind)).toEqual(['auto', 'auto']);
-    expect(versions[0].title.endsWith('yz')).toBe(true);
+    // Past VERSION_TITLE_LIST_MAX, the whole title is in the row's content, not the listed title.
+    const [row] = opened.backing.query<{ full_title: string | null }>('SELECT full_title FROM versions WHERE id = ?', versions[0].id);
+    expect(row.full_title?.endsWith('yz')).toBe(true);
   });
 
   it('dedupes an auto version identical to the latest version', async () => {
