@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 78% done** (91 of 116 planned tasks verified)
+**Overall: 79% done** (92 of 116 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 15 / 15 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 6 / 6 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -112,6 +112,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T6.S2 verified: named versions saved through an agent key now count against the agent's owner for the per-person cap and the save rate, so an editor can no longer bypass their own limits with an agent key.
 - 2026-10-07 — T6.S3 verified: restoring a version whose code, HTML or formula payload changed at both ends now keeps the unchanged middle's identity, so a peer's concurrent insert there survives the restore.
 - 2026-10-07 — T6.S1 verified: restoring a version now reconciles three-way from the base the restorer opened Restore on, so words a peer or agent typed after that base survive the restore, and a stale base or a dropped block someone typed into is refused with 409.
+- 2026-10-08 — T6.S4 verified: restoring a version on a large note now succeeds while a peer types, because its restore point is staged in DocDO SQLite in the restore's turn and moved to R2 afterwards, and a crash before the move recovers on wake.
 
 ## T1.1s identity audit
 
@@ -144,6 +145,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T6.S4's checker (2b48bb4, 2026-10-08)
+
+- T6.S4 checker P2 (a sweep can target the R2 key of a version that is still staged; Codex P1, downgraded): sweep() in packages/sync/src/doc/versions.ts does not skip keys still in version_staged while migrate() reuses the key; loss needs R2 to commit the delete after the put, which the same-turn batch delete and migrate's due reset to now + 1 h prevent in practice.
+- T6.S4 checker P2 (a late duplicate migrate can leave an untracked R2 object; Codex P1, downgraded): two overlapping #versionsChanged calls can upload the same staged point, and if it is pruned and swept between them the second put recreates the object and its UPDATE finds no orphan row, so it leaks storage (no content lost).
 
 ### From T6.S1's checker (254a93a, 2026-10-07)
 
