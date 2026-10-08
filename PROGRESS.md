@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 66% done** (78 of 119 planned tasks verified)
+**Overall: 66% done** (79 of 119 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 26 / 27 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 27 / 27 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -97,6 +97,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T3.13 verified: closing or removing an editor with an open chart or HTML draft now saves that draft before going read-only, typing right after inserting a chart from the slash menu (or composing with an IME after a selected block) lands after it in order, and CI holds the editor's static critical path to 650 KB gzip.
 - 2026-10-08 — T3.S6 verified: a large markdown paste (40,000 paragraphs, a 30,000-item list, a 5,000-row table, megabytes of text) now lands whole in one undo step for the pasting person and every collaborator, or is refused whole with nothing applied when it would pass the note's size cap.
 - 2026-10-08 — T3.S4 verified: a note full of unclosed brackets, huge lines or wide tables now imports, pastes and exports in time linear in its size (2 MB in under 5 s), with ordinary notes byte-identical to moss and over-budget lines kept as literal text.
+- 2026-10-08 — T3.S6b verified: a 30,000-item list pasted mid-note now reaches a collaborator and a fresh joiner whole, without the tab stalling or the socket reopening.
 
 ## T1.1s identity audit
 
@@ -182,6 +183,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.S6 (Large pastes land whole) checker P2: concurrent near-cap admission is not atomic, and the outbox does not recover after lost acks → paste admission and outbox follow-up.
 - T3.S4 (Linear converter matching) checker P2: table cells cost 2-3x TABLE_CELL_COST end to end (binding and state-cap check), so a note that spends the whole budget on cells takes ~9 s before a 500 DocCapError whose body is a stack trace → import budget follow-up: charge cells at their end-to-end cost and return a clean 413 doc-cap instead of a 500.
 - T3.S4 (Linear converter matching) checker P2 (carried from the previous check): a cut line's first export escapes the author's delimiters; a line's allowance depends on the rest of the document; long-line protection turns off when the document contains all nine marker characters → import cut follow-up.
+- T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the DocDO cuts a step 1 answer for a multi-author doc with splitUpdate, whose pieces assume a single writer; when the paster's client id is above the server-import client's, list pieces wait in Yjs pending structs until the last lands (measured acceptable for one 30,000-item join) → sync answer follow-up: split multi-writer answers in dependency order.
+- T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the 4 s periodic resync stays held back while peer sync frames keep arriving, with no time limit, so a lost step 1 answer on an open socket would delay the resync, awareness refresh and unacked resend until a lull → sync robustness follow-up: cap the hold-back.
+- T3.S6b (30,000-item list paste) checker P2 (inherited from T3.S6): e2e/lib/paste.ts sets the CI stall gate MAX_STALL_MS to 5 s while BUILDPLAN T3.S6 says 2 s → paste test follow-up: reconcile the stall bound.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
