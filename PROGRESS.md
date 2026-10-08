@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (101 of 124 planned tasks verified)
+**Overall: 78% done** (102 of 130 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 9 / 9 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 1 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -122,6 +122,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.S1 verified: pushing a note with `%%m:` comment markers, images or trailing whitespace now converts in linear-time scans with the same output as moss, so a hostile 2 MB push can no longer stall the server.
 - 2026-10-08 — T7.S2 verified: a push merge now runs on one counted step budget instead of a clock, so a costly or hostile push can no longer stall the server; a drifted push past the budget is refused 409 `push-unverified` with nothing landed, and a degenerate push is refused before the doc's own edits are diffed.
 - 2026-10-08 — T7.S3 verified: search snippets and heading text now strip comment markers, code fences and wiki-links in linear-time scans, so a hostile note can no longer stall search indexing.
+- 2026-10-08 — T8.0 verified: every web bundle now names its client protocol on the doc socket and REST, and the server refuses an older bundle (socket closed 4426, REST 426) so it never writes, showing a prompt to reload instead.
 
 ## T1.1s identity audit
 
@@ -154,6 +155,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.0's checker (02d9cbc, 2026-10-08)
+
+- T8.0 checker P2 (Reload on an outdated pane discards unacked edits without asking; Codex P1, downgraded): if MIN_CLIENT_PROTOCOL rises while a pane holds unacked offline edits, the session ends `outdated` and Reload calls reloadDocument() → allowUnload(), so the beforeunload guard never fires; unreachable while CLIENT_PROTOCOL = MIN_CLIENT_PROTOCOL = 1.
+- T8.0 checker P2 (a REST 426 before any doc session exists gives no reload prompt): reportOutdated() only ends existing sessions, so an access GET refused 426 maps to 'unavailable' in access.ts and retries; handle with the first real protocol bump.
+- T8.0 checker P2 (bundles from before T8.0 retry on 4426 instead of stopping): their closeAction treats unknown codes as 'retry', so they reconnect with backoff and the connection-lost banner rather than the Reload prompt, never writing; no pre-T8.0 bundle has shipped.
 
 ### From T7.S2's checker (7b539b3, 2026-10-08)
 

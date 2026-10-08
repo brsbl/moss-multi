@@ -14,6 +14,8 @@ export const CLOSE = {
   writeRefused: 4409,
   deleted: 4410,
   writeRate: 4420,
+  /** The bundle's client protocol is older than the server admits (client-protocol.ts): reload to update. */
+  outdated: 4426,
   connectionLimit: 4429,
 } as const;
 export type CloseCode = (typeof CLOSE)[keyof typeof CLOSE];
@@ -44,6 +46,8 @@ export function closeAction(code: number): CloseAction {
       return { kind: 'terminal', reason: 'deleted' };
     case CLOSE.connectionLimit:
       return { kind: 'terminal', reason: 'conn-limit' };
+    case CLOSE.outdated:
+      return { kind: 'terminal', reason: 'outdated' };
     case CLOSE.revoked:
       return { kind: 'reask' };
     case CLOSE.writeRefused:

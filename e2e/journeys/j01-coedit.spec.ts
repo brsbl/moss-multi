@@ -8,7 +8,7 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
-import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
+import { cookieHeader, openDocClient, PROTOCOL_QUERY } from '../lib/doc-client.ts';
 import { acceptInvite, grant } from '../lib/grants.ts';
 import { signIn } from '../lib/principals.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
@@ -116,7 +116,7 @@ test('j01 setup: a signed-in stranger opening the note URL gets the denial page;
   await actors.checkpoint('denied');
 
   // His own socket to the note, with his cookie and the app's Origin: opened, then closed 4404, never a refused handshake.
-  const url = `${stack.baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${docId}`;
+  const url = `${stack.baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${docId}?${PROTOCOL_QUERY}`;
   expect(await cy.page.evaluate(probe, url), "the stranger's doc socket").toEqual({ opened: true, code: CLOSE.unavailable });
   // The page itself never opened the doc socket and does not retry it.
   await cy.page.waitForTimeout(3_000);

@@ -238,6 +238,13 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   const localChanged = localHash !== syncedHash(meta);
   let title = row?.title.trim() || meta.title || '';
   let message: string | undefined;
+  // Adopted with no title, and the rename to the file's stem never finished: finish it.
+  if (meta.title === undefined && !title) {
+    title = (await client.rename(meta.docId, basename(meta.file, extname(meta.file)))).title;
+    meta = { ...meta, title };
+    writeMeta(root, meta);
+    message = `named the doc "${title}"`;
+  }
   // A title line edited here renames the doc; one the web renamed is rewritten below.
   if (localChanged && note.title && note.title !== meta.title && note.title !== title) {
     title = (await client.rename(meta.docId, note.title)).title;
@@ -299,7 +306,7 @@ export function readSidecar(root: string, rel: string): Record<string, unknown> 
   return parsed as Record<string, unknown>;
 }
 
-type CreatedDoc = Awaited<ReturnType<Api['create']>>;
+type CreatedDoc = Awaited<ReturnType<Api['create']>>['doc'];
 
 export interface AdoptOptions {
   /** The doc's title; the file stem when absent. */
@@ -326,14 +333,21 @@ export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds'>,
   const folder = options.folderId ? { folderId: options.folderId } : {};
   if (options.moss ?? isMossNote(rel, text)) {
     const comments = readSidecar(root, rel);
-    let doc = await client.create({ ...(options.title !== undefined ? { title: options.title } : {}), markdown: text, titleLine: true, ...(comments ? { comments } : {}), ...folder });
+    const created = await client.create({ ...(options.title !== undefined ? { title: options.title } : {}), markdown: text, titleLine: true, ...(comments ? { comments } : {}), ...folder });
+    let doc = created.doc;
+    // Tracked at once, the file as it is, against the created revision's body: a later edit on the server reaches the
+    // file through the next pass's three-way reconcile, and nothing failing below can make a second doc. With no
+    // title yet, the title is left unrecorded so the next pass finishes the rename below.
+    const base = created.content !== undefined ? Buffer.from(created.content) : await client.content(doc.id);
+    const meta = recordBase(root, doc.id, rel, base, folds, { mode: 'moss', ...(doc.title.trim() ? { title: doc.title } : {}), localHash: sha256Hex(bytes) });
     // A moss note with no title line takes its file's stem.
-    if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
-    // Tracked at once, the file as it is: the next pass pulls or pushes against the doc's body.
-    recordBase(root, doc.id, rel, await client.content(doc.id), folds, { mode: 'moss', title: doc.title, localHash: sha256Hex(bytes) });
+    if (!doc.title.trim()) {
+      doc = { ...doc, ...(await client.rename(doc.id, stem)) };
+      writeMeta(root, { ...meta, title: doc.title });
+    }
     return { result: { docId: doc.id, file: rel, action: 'created' }, doc };
   }
-  const doc = await client.create({ title: options.title ?? stem, markdown: text, ...(options.titleLine ? { titleLine: true } : {}), ...folder });
+  const { doc } = await client.create({ title: options.title ?? stem, markdown: text, ...(options.titleLine ? { titleLine: true } : {}), ...folder });
   const to = options.keepName ? rel : join(dirname(rel), localName(doc.filename, doc.title));
   const moved = to !== rel && renameInside(root, rel, to, folds);
   const file = moved ? to : rel;

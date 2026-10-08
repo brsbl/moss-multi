@@ -26,6 +26,8 @@ const { DocSession, severDocSessions } = sessionModule;
 const reopenDocs = (docIds: string[]) => (sessionModule as { reopenDocs?: (ids: string[]) => void }).reopenDocs?.(docIds);
 const { terminalOf, clearTerminal } = await import('./terminal.ts');
 const { hasUnacked } = await import('./unacked.ts');
+const { CLIENT_PROTOCOL, PROTOCOL_PARAM } = await import('@moss-multi/protocol/client-protocol');
+const { reportOutdated } = await import('../client-protocol.ts');
 let session: InstanceType<typeof DocSession>;
 const latest = () => sockets[sockets.length - 1];
 beforeEach(async () => {
@@ -50,7 +52,7 @@ it('detaches a half-open socket without its close event and ignores its late clo
   expect(session.doc.getText('title').toString()).toBe('kept');
   expect(hasUnacked()).toBe(true);
 });
-it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4429, 'conn-limit']] as const)(
+it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4426, 'outdated'], [4429, 'conn-limit']] as const)(
   'stops reconnecting synchronously on %s', async (code, reason) => {
     latest().open(); latest().ended(code);
     expect(terminalOf('doc')).toBe(reason);
@@ -59,6 +61,15 @@ it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [442
     expect(sockets).toHaveLength(1);
   },
 );
+it('names its client protocol on the socket, so a server that has moved on can refuse it (rule 10)', () => {
+  expect(new URL(latest().url).searchParams.get(PROTOCOL_PARAM)).toBe(String(CLIENT_PROTOCOL));
+});
+it('ends every session outdated when REST says this bundle is too old', () => {
+  latest().open(); session.provider.synced = true;
+  reportOutdated();
+  expect(terminalOf('doc')).toBe('outdated');
+  expect(session.provider.shouldConnect).toBe(false);
+});
 it('a rate close keeps the doc and reconnects', async () => {
   latest().open(); session.provider.synced = true;
   session.doc.getText('title').insert(0, 'pending');
