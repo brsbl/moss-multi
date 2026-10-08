@@ -270,13 +270,20 @@ export const batchReport = (actor: Actor): Promise<string> =>
     return `${batches.length}: ${batches.map((entry) => `${Math.round(entry.startTime - first)}:${Object.values((entry as PerformanceMeasure).detail as Record<string, number>).join('/')}`).join(' ')}`;
   });
 
-/** With `severablePeer`, Ben's doc sockets run through a sever proxy, so a test can hold his edits in flight. */
-export async function setup(actors: Actors, stack: Stack, markdown?: string, { elsewhere = false, severablePeer = false } = {}) {
+/**
+ * With `severablePeer`, Ben's doc sockets run through a sever proxy, so a test can hold his edits in flight. `prepare`
+ * runs once the note exists, before Ada or Ben open it.
+ */
+export async function setup(
+  actors: Actors, stack: Stack, markdown?: string,
+  { elsewhere = false, severablePeer = false, prepare }: { elsewhere?: boolean; severablePeer?: boolean; prepare?: (ada: Actor, docId: string) => Promise<void> } = {},
+) {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await importNote(ada, stack, 'Paste target', markdown);
   const otherId = elsewhere ? await importNote(ada, stack, 'Elsewhere', 'Another note.') : '';
   const principal = await actors.principal('ben');
   await grantDoc(ada, docId, principal);
+  await prepare?.(ada, docId);
   const wire = await watchWire(ada);
   await ada.goto(`/d/${docId}`);
   const ben = await actors.session(principal, { severable: severablePeer });

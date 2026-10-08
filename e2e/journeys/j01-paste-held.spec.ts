@@ -5,11 +5,10 @@
 // a later one is refused. It must be refused whole before anything is applied, as a paste past the cap is.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { CLIENT_FRAME_MAX_BYTES } from '../../packages/protocol/src/limits.ts';
+import type { LexicalEditor, LexicalNode } from 'lexical';
 import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
-import {
-  exported, fingerprint, longestStall, MAX_STALL_MS, NEW_STEP_MS, normalized, pastePlain, setup, UNDO, watchStalls,
-} from '../lib/paste.ts';
+import { grantDoc } from '../lib/grants.ts';
+import { exported, expectWire, fingerprint, longestStall, MAX_STALL_MS, normalized, pastePlain, setup, watchStalls } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /** A fenced block of `language` holding about `bytes` of `line(i)` lines. */
@@ -23,42 +22,48 @@ function fence(language: string, bytes: number, line: (i: number) => string): st
   return `\`\`\`${language}\n${lines.join('\n')}\n\`\`\``;
 }
 
-test('j01-paste-held: a paste that fits beside the payloads this tab holds, but not beside the deleted ones the server still counts, is refused whole @p:col-1', async ({ actors, stack }) => {
-  test.setTimeout(600_000);
-  const { ada, ben, docId, wire } = await setup(actors, stack, 'Kept.');
+// Ten code and HTML blocks of 190 KB: about 1.9 MB of payload docs, under the import's 2 MB of markdown.
+const BLOCKS = Array.from({ length: 10 }, (_, b) => b % 2
+  ? fence('moss-html', 190_000, (i) => `<p>block ${b} line ${i}</p>`)
+  : fence('js', 190_000, (i) => `const value${b}_${i} = ${i};`));
+
+test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not beside the deleted ones the server still counts, is refused whole @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(400_000);
+  // Before Ada or Ben open the note, Cy deletes its blocks: the DocDO keeps their 1.9 MB withheld and counts it.
+  const { ada, ben, docId, wire } = await setup(actors, stack, ['Kept.', ...BLOCKS].join('\n\n'), {
+    prepare: async (owner, id) => {
+      const principal = await actors.principal('cy');
+      await grantDoc(owner, id, principal);
+      const cy = await actors.session(principal);
+      await cy.goto(`/d/${id}`);
+      await ui.waitLive(cy, id);
+      const removed = await ui.body(cy, id).evaluate((element) => {
+        const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+        let count = 0;
+        editor.update(() => {
+          const root = editor._pendingEditorState!._nodeMap.get('root') as LexicalNode & { getChildren(): LexicalNode[] };
+          for (const child of root.getChildren()) {
+            if (child.getType() === 'paragraph') continue;
+            child.remove();
+            count += 1;
+          }
+        }, { discrete: true });
+        return count;
+      });
+      expect(removed, 'declared setup: the blocks are deleted').toBe(10);
+      await ui.waitAcked(cy, id, 60_000);
+      await cy.goto('/');
+    },
+  });
   await ui.waitAcked(ada, docId, 30_000);
   const before = await exported(ada, docId);
+  expect(before, 'only the paragraph is left').toBe(await normalized(ada, stack, 'Kept.'));
   const print = await fingerprint(ada, docId);
 
-  // 76 code and HTML blocks of 200 KB each: about 15 MB of payload docs, which land, then leave in one undo. The
-  // DocDO keeps their text for a redo and counts it against the cap.
-  const blocks: string[] = [];
-  for (let b = 0; b < 38; b += 1) {
-    blocks.push(fence('js', 200_000, (i) => `const value${b}_${i} = ${i};`));
-    blocks.push(fence('moss-html', 200_000, (i) => `<p>block ${b} line ${i}</p>`));
-  }
-  await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
-  await ada.page.keyboard.press('End');
-  await ada.page.waitForTimeout(NEW_STEP_MS);
-  await pastePlain(ada, docId, blocks.join('\n\n'));
-  await ui.waitAcked(ada, docId, 300_000);
-  await expect.poll(() => exported(ada, docId), { message: 'the blocks land', timeout: 60_000 }).toContain('const value37_0 = 0;');
-  await ada.page.waitForTimeout(NEW_STEP_MS);
-  await ada.page.keyboard.press(UNDO);
-  await ui.waitAcked(ada, docId, 60_000);
-  await expect.poll(() => exported(ada, docId), { message: 'one undo removes them', timeout: 60_000 }).toBe(before);
-
-  // Opened afresh, the tab holds none of their payloads.
-  await ada.page.reload();
-  await ui.waitLive(ada, docId);
-  await ada.declareRemount(docId);
-  await ui.waitAcked(ada, docId, 30_000);
-  expect(await fingerprint(ada, docId)).toEqual(print);
-  const sockets = wire.opened;
-
-  // 44,000 short paragraphs are about 13 MB of note state: under the cap alone, past it with the 15 MB kept.
+  // 52,000 short paragraphs are about 25.8 MB of note state: under the cap beside the note Ada holds, past it with
+  // the 1.9 MB the server keeps.
   const lines: string[] = [];
-  for (let i = 0; i < 44_000; i += 1) lines.push(`p${i}`);
+  for (let i = 0; i < 52_000; i += 1) lines.push(`p${i}`);
   lines.push('Last line of the paste.');
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
   await ada.page.keyboard.press('End');
@@ -75,6 +80,5 @@ test('j01-paste-held: a paste that fits beside the payloads this tab holds, but 
   await ui.typeBody(ada, docId, ' Still typing.');
   await ui.waitAcked(ada, docId, 30_000);
   await expect.poll(() => exported(ada, docId), { message: 'the note stays editable', timeout: 30_000 }).toBe(await normalized(ada, stack, 'Kept. Still typing.'));
-  expect(wire.largestFrame, 'no frame the client sends exceeds the frame cap').toBeLessThanOrEqual(CLIENT_FRAME_MAX_BYTES);
-  expect(wire.opened, `the doc socket never closed and reopened after the reload (closes: ${wire.closes.join('; ') || 'none seen'})`).toBe(sockets);
+  expectWire(wire);
 });
