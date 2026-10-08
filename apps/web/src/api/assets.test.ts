@@ -20,7 +20,7 @@ const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    exportMarkdown: async () => exported.get(id.name) ?? '',
+    pullMarkdown: async () => exported.get(id.name) ?? '',
     snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), payloads: [] }),
     createFromSnapshot: async (...args: unknown[]) => {
       created.set(id.name, args);

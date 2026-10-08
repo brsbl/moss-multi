@@ -125,29 +125,32 @@ async function seeded(owner: TestUser, markdown: string, options: { small?: bool
 const BODY = ['Alpha one stays.', 'Bravo two stays.', 'Charlie three changes.', 'Delta four stays.', 'Echo five stays.'].join('\n\n');
 
 describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
-  it('asks for the base once, merges with it, then finds the pushed result cached for the next push', async () => {
+  it('merges against the base a pull served; a base it never served is asked for, checked against its hash, then used', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const docId = await seeded(ada, BODY);
     const base = await content(docId, cookieOf(ada));
     const next = base.replace('Charlie three changes.', 'Charlie three has changed.');
-    const missing = await push(docId, cookieOf(ada), { newText: next, baseHash: sha(base) });
-    expect(missing.status).toBe(409);
-    expect(missing.body).toEqual({ ok: false, reason: 'base-missing' });
-    expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(base);
-
-    const forged = await push(docId, cookieOf(ada), { newText: next, baseHash: sha(base), baseText: `${base} (not the base)` });
-    expect(forged.status, 'a base text that does not hash to baseHash is not trusted').toBe(400);
-
-    const landed = await push(docId, cookieOf(ada), { newText: next, baseHash: sha(base), baseText: base });
-    expect(landed.status).toBe(200);
+    const landed = await push(docId, cookieOf(ada), { newText: next, baseHash: sha(base) });
+    expect(landed.status, 'the pulled export is a cached base').toBe(200);
     expect(landed.body).toMatchObject({ ok: true, mode: 'edit', failedHunks: [] });
     expect(landed.body.applied).toBeGreaterThan(0);
     const after = await content(docId, cookieOf(ada));
     expect(after).toBe(next);
 
-    const again = await push(docId, cookieOf(ada), { newText: after.replace('Echo five', 'Echo five, again,'), baseHash: sha(after) });
-    expect(again.status, 'the pushed result is a cached base').toBe(200);
-    expect(await content(docId, cookieOf(ada))).toContain('Echo five, again, stays.');
+    // A file kept from elsewhere: its base was never served here.
+    const elsewhere = `${BODY}\n\nA paragraph this doc never had.`;
+    const edited = elsewhere.replace('Echo five stays.', 'Echo five was pushed.');
+    const missing = await push(docId, cookieOf(ada), { newText: edited, baseHash: sha(elsewhere) });
+    expect(missing.status).toBe(409);
+    expect(missing.body).toEqual({ ok: false, reason: 'base-missing' });
+    expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(after);
+    const forged = await push(docId, cookieOf(ada), { newText: edited, baseHash: sha(elsewhere), baseText: `${elsewhere} (not the base)` });
+    expect(forged.status, 'a base text that does not hash to baseHash is not trusted').toBe(400);
+    const resent = await push(docId, cookieOf(ada), { newText: edited, baseHash: sha(elsewhere), baseText: elsewhere });
+    expect(resent.status).toBe(200);
+    const merged = await content(docId, cookieOf(ada));
+    expect(merged).toContain('Charlie three has changed.');
+    expect(merged).toContain('Echo five was pushed.');
   });
 
   it('refuses a push deleting most of the doc unless forced, and lands CRLF as LF', async () => {

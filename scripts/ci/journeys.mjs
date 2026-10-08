@@ -36,8 +36,8 @@ export const GROUPS = {
   media: ['j11', 'j14'],
   // Comments and agents.
   meaning: ['j15', 'j18'],
-  // The built CLI against the stack.
-  cli: ['j18-cli'],
+  // The built CLI against the stack, and its pushes into notes being typed in.
+  cli: ['j18-cli', 'j18-agents'],
   // Version history: the History view, restore under a peer.
   history: ['j17'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent.
