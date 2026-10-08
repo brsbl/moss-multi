@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (104 of 130 planned tasks verified)
+**Overall: 81% done** (105 of 130 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 2 / 5 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 3 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -125,6 +125,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T8.0 verified: every web bundle now names its client protocol on the doc socket and REST, and the server refuses an older bundle (socket closed 4426, REST 426) so it never writes, showing a prompt to reload instead.
 - 2026-10-08 — T8.4 verified: MIGRATION.md maps each part of moss-multi back onto moss desktop at the pin (vendor seams, bridge namespaces, converter extraction, collab layer, registers, comments, suggestions, history, server model, CLI), and CI fails if any of its file or symbol citations goes stale.
 - 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
+- 2026-10-08 — T8.D verified: the staging deploy pipeline exists and is validated by dry run: `env.staging`, a `deploy-staging.yml` that ships the exact tested `dist`, an `/api/version` check, test hooks answering 404 on staging, `.dev.vars` never uploaded, and a canary that uses a fixed pool of test principals under a request budget.
 
 ## T1.1s identity audit
 
@@ -157,6 +158,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.D's checker (aff3e75, 2026-10-08)
+
+- T8.D checker P2 (request budget only partly counts and enforces requests): RequestBudget counts browser-context requests and sockets only, not Node fetch or APIRequestContext traffic (direct note creation, grants.ts invites, denial probes); Actors.principal charges a sign-in even for a cached pooled principal, sign-up and retries are not charged one by one, and the limit is checked only after each test.
+- T8.D checker P2 (canary creates new DocDOs each run): only principals are pooled; the canary journeys create about 12 new notes per run whose DocDO storage is never reclaimed, while A§21 recommends a fixed doc pool too; docs/METHOD.md records the growth but does not bound it.
 
 ### From T8.4's checker (a30e669, 2026-10-08)
 
