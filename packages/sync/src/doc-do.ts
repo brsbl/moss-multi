@@ -1143,9 +1143,11 @@ export class DocDO extends YServer<SyncEnv> {
   /**
    * A named version (A§14), for an editor or above. It is captured (and spilled) first; the per-person and per-note
    * caps are checked and the row inserted in one turn of the serialized write after the actor is re-authorized (T2.5),
-   * so two saves cannot both take the last place. A refused save's spill is swept. The Worker rate-limits named saves.
+   * so two saves cannot both take the last place. The per-person cap counts the acting user (`actingUserId`: an agent
+   * counts as its owner, so minting keys adds no allowance); `createdBy` stays the saving principal. A refused save's
+   * spill is swept. The Worker rate-limits named saves per acting user.
    */
-  async saveVersion(input: { name: string; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; version: VersionMeta } | ReviewRefusal> {
+  async saveVersion(input: { name: string; reviewer: Reviewer; actor?: CommentActor; actingUserId?: string }): Promise<{ ok: true; version: VersionMeta } | ReviewRefusal> {
     const name = typeof input.name === 'string' ? input.name.trim() : '';
     if (!name || name.length > VERSION_NAME_MAX) return { ok: false, status: 400, reason: 'bad-name' };
     await this.#ready();
@@ -1157,9 +1159,10 @@ export class DocDO extends YServer<SyncEnv> {
     try {
       await versions.spill(prepared);
       result = await this.#review(input, 'editor', (reviewer): { version: VersionMeta | null } | ReviewRefusal => {
-        const refusal = versions.namedRefusal(reviewer.id);
+        const person = input.actingUserId ?? reviewer.id;
+        const refusal = versions.namedRefusal(person);
         if (refusal) return { ok: false, status: 409, reason: refusal };
-        return { version: versions.insert('named', prepared, { name, createdBy: reviewer.id }) };
+        return { version: versions.insert('named', prepared, { name, createdBy: reviewer.id, countedBy: person }) };
       });
     } catch (error) {
       console.error('DocDO could not store a named version', error);

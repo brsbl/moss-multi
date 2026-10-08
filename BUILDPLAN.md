@@ -598,6 +598,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Required red-first test (T6.2 checker P2):** j17's last-disconnect leg closes every actor page (page.close()) or moves it off the doc before expecting the auto version, and asserts the version appears within a few seconds of the last socket closing.
   - **Done:** j17 is green, with a triptych against the glyphdown history page.
 - **T6.S1 Three-way restore** (Slop Cop P1, PR #8): restore reconciles from the base the restorer opened Restore on and keeps every insert made after it (A§14); a stale or missing base is refused 409. **Tests:** a peer's word typed across the restore in the body, a code block and a formula; an agent write after the base; a stale base; no concurrent edit equals the version; j17 with Ben typing across the confirm click. **Done:** green.
+- **T6.S2 Named versions count per person, not per key** (Slop Cop P1): the per-person named cap and the save rate count the acting user (an agent as its owner) in the serialized insert; `createdBy` stays the key. **Done:** green harness and route tests.
 
 **Exit criteria:** a restore during peer typing keeps the peer's insert and the anchors; view is read-only and diff shows the peer's change; a failed fetch shows an error.
 - **M6 coordinator notes** (2026-10-07, since T1.F2, M4 and M5 landed after this plan was written):
