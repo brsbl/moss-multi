@@ -51,10 +51,11 @@ export const SUGGEST_PREVIEW_RATE = { max: 120, windowMs: 60_000 } as const;
 export const NAMED_VERSION_RATE = { max: 10, windowMs: 60_000 } as const;
 
 /**
- * Named version bytes one person may store over every doc, charged by their PrincipalDO; 413 past it. Each person's
- * own bound, so nobody fills it for anyone else; the doc's vault also counts every version's bytes in its storage.
+ * Version bytes one person may store over every doc (their named versions, and the restore point and auto version
+ * of each restore they run), charged by their PrincipalDO and refunded when a version is pruned; 413 past it. Each
+ * person's own bound, so nobody fills it for anyone else; the doc's vault also counts every version's bytes.
  */
-export const NAMED_VERSION_BYTES_PER_PERSON = 256 * 1024 * 1024;
+export const VERSION_BYTES_PER_PERSON = 256 * 1024 * 1024;
 
 /**
  * Working-view exports (the note with every open suggestion applied, O(doc) per record) one DocDO computes per window,

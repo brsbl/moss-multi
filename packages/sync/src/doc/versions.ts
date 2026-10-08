@@ -1,6 +1,6 @@
 // Version history storage (A§14): one row per version in the DocDO's SQLite, its content spilled to R2 above 1.5 MB.
 // Auto versions and restore points are pruned oldest first; named versions are bounded per person, so nobody can fill
-// a bound that refuses someone else's. A spill is written before its row and recorded as an orphan until the row
+// a bound that refuses someone else's. A version charged to a person is refunded to them when it is pruned. A spill is written before its row and recorded as an orphan until the row
 // lands; a pruned or unwritten spill stays recorded until R2 confirms its delete, so no blob outlives every record.
 import type { VersionContent } from './version-content.ts';
 
@@ -41,6 +41,15 @@ export interface InsertOptions {
   authorIds?: string[];
   at?: number;
   dedupe?: boolean;
+  /** Whether its bytes were charged to `createdBy`, so pruning it refunds them. */
+  charged?: boolean;
+}
+
+/** A refund owed to a person for a pruned version charged to them. */
+export interface Refund {
+  id: number;
+  principal: string;
+  bytes: number;
 }
 
 /** Content above this many bytes spills to R2 (a DO SQLite row holds at most 2 MB). */
@@ -54,6 +63,8 @@ export const RESTORE_POINTS_KEPT = 20;
 export const ACTIVITY_UPDATES = 500;
 export const ACTIVITY_MS = 10 * 60_000;
 export const VERSION_NAME_MAX = 80;
+/** A version lists with at most this much of its title; the whole title is part of its content and its bytes. */
+export const VERSION_TITLE_LIST_MAX = 200;
 /** How long a spill may wait for its row before it counts as an orphan to delete. */
 const SPILL_GRACE_MS = 60 * 60_000;
 const SWEEP_BATCH = 100;
@@ -80,10 +91,18 @@ type Row = {
   r2_key: string | null;
 };
 
-type ContentRow = Row & Record<'frontmatter' | 'markdown' | 'lexical_json' | 'payloads' | 'comments' | 'anchors', string | null>;
+type ContentRow = Row & Record<'full_title' | 'frontmatter' | 'markdown' | 'lexical_json' | 'payloads' | 'comments' | 'anchors', string | null>;
 
 const META_COLUMNS = 'id, kind, name, created_at, created_by, author_ids, title, bytes, hash, r2_key';
-const CONTENT_KEYS = ['frontmatter', 'markdown', 'lexical', 'payloads', 'comments', 'anchors'] as const;
+/** What a version's bytes count and its spill holds: the title too, since only a short prefix of it is listed. */
+const CONTENT_KEYS = ['title', 'frontmatter', 'markdown', 'lexical', 'payloads', 'comments', 'anchors'] as const;
+
+/** The title a version lists with: at most VERSION_TITLE_LIST_MAX UTF-16 units, never half a surrogate pair. */
+function listTitle(title: string): string {
+  if (title.length <= VERSION_TITLE_LIST_MAX) return title;
+  const cut = title.slice(0, VERSION_TITLE_LIST_MAX);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
 
 const metaOf = (row: Row): VersionMeta => ({
   id: row.id,
@@ -124,9 +143,11 @@ export class VersionStore {
   ) {
     sql.exec(`CREATE TABLE IF NOT EXISTS versions (
       id TEXT PRIMARY KEY, seq INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT, created_at INTEGER NOT NULL, created_by TEXT,
-      author_ids TEXT NOT NULL, title TEXT NOT NULL, frontmatter TEXT, markdown TEXT, lexical_json TEXT, payloads TEXT,
-      comments TEXT, anchors TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL)`);
+      author_ids TEXT NOT NULL, title TEXT NOT NULL, full_title TEXT, frontmatter TEXT, markdown TEXT, lexical_json TEXT,
+      payloads TEXT, comments TEXT, anchors TEXT, r2_key TEXT, bytes INTEGER NOT NULL, hash TEXT NOT NULL,
+      charged INTEGER NOT NULL DEFAULT 0)`);
     sql.exec('CREATE TABLE IF NOT EXISTS version_orphans (r2_key TEXT PRIMARY KEY, due INTEGER NOT NULL)');
+    sql.exec('CREATE TABLE IF NOT EXISTS version_refunds (id INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL, bytes INTEGER NOT NULL)');
   }
 
   /** Newest first. */
@@ -151,13 +172,13 @@ export class VersionStore {
   /** The version's content, from its row or its spill; null when there is none. */
   async content(id: string): Promise<VersionContent | null> {
     const [row] = this.sql.exec<ContentRow>(
-      'SELECT title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key FROM versions WHERE id = ?',
+      'SELECT title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key FROM versions WHERE id = ?',
       id,
     ).toArray();
     if (!row) return null;
     if (row.r2_key === null) {
       return {
-        title: row.title,
+        title: row.full_title ?? row.title,
         frontmatter: row.frontmatter ?? '',
         markdown: row.markdown ?? '',
         lexical: row.lexical_json ?? '{"root":{"type":"root","children":[]}}',
@@ -169,8 +190,8 @@ export class VersionStore {
     const blobs = this.blobs();
     const body = blobs ? await blobs.get(row.r2_key) : null;
     if (body === null) return null;
-    const spilled = JSON.parse(body) as Omit<VersionContent, 'title' | 'anchors'> & { anchors?: string };
-    return { ...spilled, anchors: spilled.anchors ?? '{}', title: row.title };
+    const spilled = JSON.parse(body) as Omit<VersionContent, 'title' | 'anchors'> & { title?: string; anchors?: string };
+    return { ...spilled, anchors: spilled.anchors ?? '{}', title: spilled.title ?? row.title };
   }
 
   /** A captured content's id, hash and size, in the caller's turn; `spill` must run first when it has an R2 key. */
@@ -178,7 +199,7 @@ export class VersionStore {
     const id = crypto.randomUUID();
     const encoder = new TextEncoder();
     const bytes = CONTENT_KEYS.reduce((sum, key) => sum + encoder.encode(content[key]).byteLength, 0);
-    const hash = hashText(JSON.stringify([content.title, ...CONTENT_KEYS.map((key) => content[key])]));
+    const hash = hashText(JSON.stringify(CONTENT_KEYS.map((key) => content[key])));
     return { id, content, hash, bytes, r2Key: bytes > this.spillBytes ? `versions/${this.docId}/${id}.json` : null };
   }
 
@@ -216,13 +237,38 @@ export class VersionStore {
 
   #insertRow(kind: VersionKind, { id, content, hash, bytes, r2Key }: Prepared, options: InsertOptions): void {
     const inline = r2Key === null;
+    const listed = listTitle(content.title);
     this.sql.exec(
-      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash)
-       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, kind, options.name ?? null, options.at ?? Date.now(), options.createdBy ?? null, JSON.stringify(options.authorIds ?? []), content.title,
+      `INSERT INTO versions (id, seq, kind, name, created_at, created_by, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors, r2_key, bytes, hash, charged)
+       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM versions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, kind, options.name ?? null, options.at ?? Date.now(), options.createdBy ?? null, JSON.stringify(options.authorIds ?? []), listed,
+      inline && listed !== content.title ? content.title : null,
       inline ? content.frontmatter : null, inline ? content.markdown : null, inline ? content.lexical : null,
       inline ? content.payloads : null, inline ? content.comments : null, inline ? content.anchors : null, r2Key, bytes, hash,
+      options.charged && options.createdBy ? bytes : 0,
     );
+  }
+
+  /** Refunds owed for pruned versions, oldest first. */
+  refunds(): Refund[] {
+    return this.sql.exec<{ id: number; principal: string; bytes: number }>('SELECT id, principal, bytes FROM version_refunds ORDER BY id LIMIT ?', SWEEP_BATCH)
+      .toArray().map((row) => ({ id: Number(row.id), principal: row.principal, bytes: Number(row.bytes) }));
+  }
+
+  /** Records a refund owed to `principal`, paid at the next sweep. */
+  owe(principal: string, bytes: number): void {
+    if (bytes > 0) this.sql.exec('INSERT INTO version_refunds (principal, bytes) VALUES (?, ?)', principal, bytes);
+  }
+
+  refunded(id: number): void {
+    this.sql.exec('DELETE FROM version_refunds WHERE id = ?', id);
+  }
+
+  /** Whether anything is left for a later sweep: a spill to delete or a refund to pay. */
+  pending(): boolean {
+    const orphans = Number(this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM version_orphans').one().n);
+    const refunds = Number(this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM version_refunds').one().n);
+    return orphans + refunds > 0;
   }
 
   /** A prepared version that will not be inserted: its spill, if any, is deleted at the next sweep. */
@@ -259,13 +305,14 @@ export class VersionStore {
 
   /** Drops the oldest versions of `kind` past `keep`; their spills are recorded for the sweep. */
   #prune(kind: VersionKind, keep: number): void {
-    const stale = this.sql.exec<{ id: string; r2_key: string | null }>(
-      'SELECT id, r2_key FROM versions WHERE kind = ? ORDER BY seq DESC LIMIT -1 OFFSET ?',
+    const stale = this.sql.exec<{ id: string; r2_key: string | null; created_by: string | null; charged: number }>(
+      'SELECT id, r2_key, created_by, charged FROM versions WHERE kind = ? ORDER BY seq DESC LIMIT -1 OFFSET ?',
       kind,
       keep,
     ).toArray();
-    for (const { id, r2_key: key } of stale) {
+    for (const { id, r2_key: key, created_by: principal, charged } of stale) {
       if (key) this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, 0)', key);
+      if (principal && Number(charged) > 0) this.sql.exec('INSERT INTO version_refunds (principal, bytes) VALUES (?, ?)', principal, Number(charged));
       this.sql.exec('DELETE FROM versions WHERE id = ?', id);
     }
   }

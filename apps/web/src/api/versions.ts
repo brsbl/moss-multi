@@ -63,9 +63,10 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
       return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(window / 1000) });
     }
   }
-  // A vault whose storage (media and version history) is full takes no more named versions; each person's own named
-  // bytes are bounded too, by the DocDO's charge to their PrincipalDO.
-  if (action === 'save' && (await vaultFull(env, access.folderId))) {
+  // A vault whose storage (media and version history) is full takes no more named versions or restores (each stores a
+  // restore point and an auto version); each person's own version bytes are bounded too, by the DocDO's charge to
+  // their PrincipalDO.
+  if ((action === 'save' || action === 'restore') && (await vaultFull(env, access.folderId))) {
     return json({ error: 'over-quota', message: "This note's vault is out of storage. Delete media from its notes and try again." }, 413, NO_STORE);
   }
   const input = {

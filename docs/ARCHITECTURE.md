@@ -550,12 +550,12 @@ Designed in [docs/design/suggestions.md](design/suggestions.md) (T5.0, after a d
 
 [P:Meaning; L§4.13; S-gd §6.3]
 
-- **Storage.** A DocDO table `versions(id, kind auto|named|restore-point, name, created_at, author_ids, title, frontmatter, markdown, lexical_json, payloads, comments, anchors | r2_key)`. Payloads over 1.5 MB spill to R2; a spill whose row was never written or was pruned is swept until R2 confirms its delete.
-- **Bounds.** Auto versions and restore points are pruned past 50 and 20 per doc. Named versions are capped at 50 per person per doc and at `NAMED_VERSION_BYTES_PER_PERSON` over every doc, charged to the actor's PrincipalDO. Every version's bytes count in the doc's vault storage (`docs.version_bytes`, with media), and a full vault refuses named versions 413.
+- **Storage.** A DocDO table `versions(id, kind auto|named|restore-point, name, created_at, author_ids, title, full_title, frontmatter, markdown, lexical_json, payloads, comments, anchors | r2_key)`. A version's bytes count every field, the title included; content over 1.5 MB spills to R2, and a version lists with at most 200 characters of its title. A spill whose row was never written or was pruned is swept until R2 confirms its delete.
+- **Bounds.** Auto versions and restore points are pruned past 50 and 20 per doc. Named versions are capped at 50 per person per doc. A person's named versions, and the restore point and auto version of each restore they run, are charged to their PrincipalDO under `VERSION_BYTES_PER_PERSON` over every doc (413 `version-quota`), and refunded when pruned. Every version's bytes count in the doc's vault storage (`docs.version_bytes`, with media), and a full vault refuses named versions and restores 413. A failed D1 update, spill delete or refund is retried at the next version write or wake.
 - **Triggers:**
   - the last disconnect, when the doc changed;
   - every push;
-  - activity: 500 updates or 10 minutes since the last auto version, checked in `onSave`;
+  - activity: 500 updates or 10 minutes since the last auto version, checked in `onSave` and after payload edits;
   - a named version on request, rate-limited;
   - a restore point before each restore and an auto version after.
 - **Restore is an edit.** It runs `serverWrite` with an identity-preserving two-tier reconcile from the version's Lexical JSON. That is moss-collab's `tree-markdown` reconcile, re-derived on 0.48 (SP12).

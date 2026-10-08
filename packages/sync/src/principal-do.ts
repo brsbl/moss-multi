@@ -2,7 +2,7 @@ import { getServerByName, Server, type Connection, type ConnectionContext, type 
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, NAMED_VERSION_BYTES_PER_PERSON, NAMED_VERSION_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, NAMED_VERSION_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE, VERSION_BYTES_PER_PERSON,
 } from '@moss-multi/protocol/limits';
 import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
 import { windowed } from './doc/admission.ts';
@@ -312,15 +312,15 @@ export class PrincipalDO extends Server<SyncEnv> {
   }
 
   /**
-   * Charges `bytes` of named versions to this principal (a negative amount refunds); false, charging nothing, past
-   * NAMED_VERSION_BYTES_PER_PERSON. Called by the DocDO before it stores the version.
+   * Charges `bytes` of versions this principal wrote (a negative amount refunds); false, charging nothing, past
+   * VERSION_BYTES_PER_PERSON unless `force` (the true-up of a restore already stored). Called by the DocDO.
    */
-  chargeVersionBytes(bytes: number): boolean {
+  chargeVersionBytes(bytes: number, force = false): boolean {
     const sql = this.ctx.storage.sql;
     sql.exec('CREATE TABLE IF NOT EXISTS version_bytes (k INTEGER PRIMARY KEY CHECK (k = 0), total INTEGER NOT NULL)');
     const [row] = sql.exec<{ total: number }>('SELECT total FROM version_bytes WHERE k = 0').toArray();
     const total = Number(row?.total ?? 0);
-    if (!Number.isFinite(bytes) || (bytes > 0 && total + bytes > NAMED_VERSION_BYTES_PER_PERSON)) return false;
+    if (!Number.isFinite(bytes) || (bytes > 0 && !force && total + bytes > VERSION_BYTES_PER_PERSON)) return false;
     sql.exec('INSERT INTO version_bytes (k, total) VALUES (0, ?) ON CONFLICT(k) DO UPDATE SET total = excluded.total', Math.max(0, total + bytes));
     return true;
   }
