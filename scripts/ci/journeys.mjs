@@ -28,8 +28,10 @@ export const GROUPS = {
   registers: ['j01-registers'],
   // Titles and properties.
   title: ['j02'],
-  // A doc's connection: drops, stalls, limits, hibernation.
-  session: ['j03', 'j04'],
+  // A doc's connection: drops, stalls, limits.
+  session: ['j03'],
+  // Hibernation and wake, including the staging canary's owner-route leg (T8.D).
+  hibernation: ['j04'],
   // Trash, folders, search, vaults, export.
   workspace: ['j05', 'j06', 'j12', 'j13', 'export'],
   // Media, embeds and the demo note.

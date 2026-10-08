@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 79% done** (103 of 130 planned tasks verified)
+**Overall: 81% done** (105 of 130 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,8 +11,8 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 9 / 9 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 9 / 9 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 2 / 5 | |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
+| M8 Ship | Everything on a permanent staging URL with demo content | 3 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -124,6 +124,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.S3 verified: search snippets and heading text now strip comment markers, code fences and wiki-links in linear-time scans, so a hostile note can no longer stall search indexing.
 - 2026-10-08 — T8.0 verified: every web bundle now names its client protocol on the doc socket and REST, and the server refuses an older bundle (socket closed 4426, REST 426) so it never writes, showing a prompt to reload instead.
 - 2026-10-08 — T8.4 verified: MIGRATION.md maps each part of moss-multi back onto moss desktop at the pin (vendor seams, bridge namespaces, converter extraction, collab layer, registers, comments, suggestions, history, server model, CLI), and CI fails if any of its file or symbol citations goes stale.
+- 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
+- 2026-10-08 — T8.D verified: the staging deploy pipeline exists and is validated by dry run: `env.staging`, a `deploy-staging.yml` that ships the exact tested `dist`, an `/api/version` check, test hooks answering 404 on staging, `.dev.vars` never uploaded, and a canary that uses a fixed pool of test principals under a request budget.
 
 ## T1.1s identity audit
 
@@ -157,6 +159,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+### From T8.D's checker (aff3e75, 2026-10-08)
+
+- T8.D checker P2 (request budget only partly counts and enforces requests): RequestBudget counts browser-context requests and sockets only, not Node fetch or APIRequestContext traffic (direct note creation, grants.ts invites, denial probes); Actors.principal charges a sign-in even for a cached pooled principal, sign-up and retries are not charged one by one, and the limit is checked only after each test.
+- T8.D checker P2 (canary creates new DocDOs each run): only principals are pooled; the canary journeys create about 12 new notes per run whose DocDO storage is never reclaimed, while A§21 recommends a fixed doc pool too; docs/METHOD.md records the growth but does not bound it.
+
 ### From T8.4's checker (a30e669, 2026-10-08)
 
 - T8.4 checker P2 (MIGRATION.md says notes.getContent is the server export, but the bridge stubs it): `createBridge` returns empty content for every known note; the doc should separate the intended route from what exists today.
@@ -169,6 +176,11 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T8.0 checker P2 (Reload on an outdated pane discards unacked edits without asking; Codex P1, downgraded): if MIN_CLIENT_PROTOCOL rises while a pane holds unacked offline edits, the session ends `outdated` and Reload calls reloadDocument() → allowUnload(), so the beforeunload guard never fires; unreachable while CLIENT_PROTOCOL = MIN_CLIENT_PROTOCOL = 1.
 - T8.0 checker P2 (a REST 426 before any doc session exists gives no reload prompt): reportOutdated() only ends existing sessions, so an access GET refused 426 maps to 'unavailable' in access.ts and retries; handle with the first real protocol bump.
 - T8.0 checker P2 (bundles from before T8.0 retry on 4426 instead of stopping): their closeAction treats unknown codes as 'retry', so they reconnect with backoff and the connection-lost banner rather than the Reload prompt, never writing; no pre-T8.0 bundle has shipped.
+### From T7.S4's checker (5e4f773, 2026-10-08)
+
+- T7.S4 checker P2 (the fallback for an older server keeps the original race; Codex P1, downgraded): if POST /api/docs omits `content`, adopt in packages/cli/src/sync.ts still records a later GET /content as base before checkpointing, so the lost-edit race and duplicate-on-failure remain on that path; dead code against the server shipped with this CLI (never published, never deployed).
+- T7.S4 checker P2 (the two adoption fault scenarios are not covered by a real-stack journey): the new CLI tests use fakeServer and the DocDO test the Node harness; add the peer-edit-after-create and rename-failure cases to j18-sync.
+- T7.S4 integration P2 (SP2 payload-frame RSS budget is flaky): run 37834993962 first failed 'Converter in workerd (SP2)' with RSS growth 69.1 MB over the 64 MB budget on the T7.S4 merge, then passed on rerun with no code change; the measurement is noisy near its budget.
 
 ### From T7.S2's checker (7b539b3, 2026-10-08)
 

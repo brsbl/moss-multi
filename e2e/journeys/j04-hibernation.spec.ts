@@ -1,8 +1,9 @@
-// T1.7: one shared natural-idle window, with constructor identity proving every cold path.
+// T1.7: one shared natural-idle window, with constructor identity proving every cold path. The @staging leg (T8.D) is
+// the canary's: it proves the wake through the owner-only instance route, so it runs where no hook exists.
 import type { Actor, Actors } from '../lib/actors.ts';
 import { acceptInvite } from '../lib/grants.ts';
 import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
-import { IDLE_MS, induce, inductionProblems } from '../lib/hibernate.ts';
+import { IDLE_MS, induce, inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { awarenessFrames, visibility } from '../lib/idle.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -50,6 +51,29 @@ test('j04-hibernation: a UI-authored note reopens non-empty after a process rest
   expect(proof.after.instanceId).not.toBe(proof.base.instanceId);
   await reader.page.reload();
   await live(reader, docId);
+});
+
+test('j04-hibernation: after an idle the peer reopens the note non-empty from a new instance, proven through the owner-only route @staging @p:col-6 @p:tech-6', async ({ actors, stack }, info) => {
+  // Staging and the canary rehearsal have no hooks, so the DO sleeps by natural idle (at least 15 s on Cloudflare,
+  // SP14); a hook stack resets the one DO instead.
+  const canary = stack.canary;
+  test.setTimeout((canary?.idleMs ?? 0) + 120_000);
+  const owner = await actors.principal('ada');
+  const peer = await actors.principal('ben');
+  const { actor, docId } = await note(actors, owner, peer, 'creator');
+  const reader = await actors.session(peer);
+  const proof = await induce(stack, {
+    docId,
+    lever: canary ? 'idle' : 'reset',
+    idleMs: canary?.idleMs,
+    probe: ownerProbe(stack, owner),
+    // Staging's clock is Cloudflare's, not the runner's.
+    skewMs: canary ? 2_000 : undefined,
+    quiesce: async () => { await actor.page.close(); },
+    decisive: async () => { await reader.goto(`/d/${docId}`); await live(reader, docId); },
+  });
+  await info.attach('owner-route-instance.json', { body: JSON.stringify({ ...proof, idleMs: canary?.idleMs ?? null }), contentType: 'application/json' });
+  expect(proof.after.instanceId).not.toBe(proof.base.instanceId);
 });
 
 test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @p:col-6 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {

@@ -29,7 +29,7 @@ describe('groupOf', () => {
     expect(groupOf('j01-registers.spec.ts')).toBe('registers');
     expect(groupOf('j08-share.spec.ts')).toBe('share');
     expect(groupOf('j11-media.spec.ts')).toBe('media');
-    expect(groupOf('j04-hibernation.spec.ts')).toBe('session');
+    expect(groupOf('j04-hibernation.spec.ts')).toBe('hibernation');
     expect(groupOf('j05-trash.spec.ts')).toBe('workspace');
     expect(groupOf('j18-agents.spec.ts')).toBe('cli');
     expect(groupOf('j18-other.spec.ts')).toBe('meaning');

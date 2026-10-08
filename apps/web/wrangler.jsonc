@@ -1,4 +1,4 @@
-// Local bindings (A§4, A§5). Staging (T1.10) adds env.staging with the permanent names of A§21.
+// Local bindings (A§4, A§5) at the top level; env.staging carries the permanent staging names of A§21.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   // DO storage is bound to the Worker name: never rename it.
@@ -24,5 +24,39 @@
       "migrations_dir": "drizzle"
     }
   ],
-  "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "moss-multi-assets" }]
+  "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "moss-multi-assets" }],
+  "env": {
+    // Staging (A§21; docs/DEPLOY.md). An env inherits no bindings, so every block is repeated. The names are permanent:
+    // DO storage is bound to the Worker name. scripts/deploy/staging-config.mjs lays this env over the tested dist's
+    // config and fills in what is per account: the D1 id (looked up by name) and BETTER_AUTH_URL (vars.STAGING_URL).
+    "staging": {
+      "name": "moss-multi-staging",
+      "workers_dev": true,
+      "preview_urls": false,
+      "routes": [],
+      "observability": { "enabled": true },
+      "vars": {
+        // Hooks never exist on staging (A§19); config.ts also refuses "1" with a non-loopback BETTER_AUTH_URL.
+        "MOSS_TEST_HOOKS": "0"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "DocDO", "class_name": "DocDO" },
+          { "name": "PrincipalDO", "class_name": "PrincipalDO" },
+          { "name": "SearchDO", "class_name": "SearchDO" }
+        ]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DocDO", "PrincipalDO", "SearchDO"] }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "moss-multi-staging",
+          // Placeholder: the deploy looks the id up by name, so no account resource id is committed.
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "moss-multi-staging-assets" }]
+    }
+  }
 }
