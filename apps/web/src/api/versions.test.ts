@@ -153,6 +153,15 @@ describe('version routes @p:mean-3', () => {
     expect(calls).toEqual([]);
   });
 
+  it("refuses a restore 413 when the doc's vault is out of storage, before the DocDO", async () => {
+    const full = await insertDoc(d1.db, dan);
+    await d1.db.prepare('UPDATE docs SET version_bytes = ? WHERE id = ?').bind(VAULT_MEDIA_QUOTA_BYTES, full).run();
+    const response = await send('POST', dan.cookie, `/api/docs/${full}/versions/v1/restore`);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error: 'over-quota' });
+    expect(calls).toEqual([]);
+  });
+
   it.each([
     [{ ok: false, status: 409, reason: 'restore-unverified' }, 409],
     [{ ok: false, status: 409, reason: 'version-limit' }, 409],

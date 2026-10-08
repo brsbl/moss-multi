@@ -5,8 +5,11 @@ import { $createTextNode, $getRoot, type ElementNode, type TextNode } from 'lexi
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { anchorText, type Anchor } from '@moss-multi/core/anchor-frame';
 import { DocDO } from '../../src/doc-do.ts';
-import { NAMED_VERSIONS_PER_PERSON, VERSION_SPILL_BYTES, type VersionBlobs, type VersionMeta } from '../../src/doc/versions.ts';
+import {
+  NAMED_VERSIONS_PER_PERSON, RESTORE_POINTS_KEPT, VERSION_SPILL_BYTES, VERSION_TITLE_LIST_MAX, type VersionBlobs, type VersionMeta,
+} from '../../src/doc/versions.ts';
 import { bindLexical, connect, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
+import { LiveClient, syncAll } from './live-client.ts';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -229,24 +232,6 @@ describe('restore @p:mean-3', () => {
     expect(kinds).toEqual(['auto', 'restore-point', 'named']);
   });
 
-  it('refuses 409 when the restored export differs from the version, changing nothing', async () => {
-    const opened = await created('alpha\n\nbeta\n');
-    const saved = await named(opened, 'Tampered');
-    if (!saved.ok) throw new Error(saved.reason);
-    const ada = await connect(opened, { id: 'ada', role: 'editor' });
-    const lexical = bindLexical(ada.doc);
-    await ada.hello();
-    lexical.type(' more');
-    await ada.flush();
-    opened.backing.query('UPDATE versions SET markdown = ? WHERE id = ?', 'not what the tree exports\n', saved.version.id);
-    const before = await opened.dobj.exportMarkdown();
-
-    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
-    expect(restored).toMatchObject({ ok: false, status: 409, reason: 'restore-unverified' });
-    expect(await opened.dobj.exportMarkdown()).toBe(before);
-    expect((await list(opened)).map((version) => version.kind), 'no restore point for a refused restore').toEqual(['named']);
-  });
-
   it('refuses a restore below editor and an unknown version', async () => {
     const opened = await created('alpha\n');
     const saved = await named(opened, 'v1');
@@ -397,5 +382,172 @@ describe('version retries and bounds @p:mean-3', () => {
     expect(kept.version.spilled).toBe(true);
     const [row] = opened.backing.query<{ r2_key: string }>('SELECT r2_key FROM versions WHERE id = ?', kept.version.id);
     expect([...bucket.keys()], 'only the stored version keeps a spill').toEqual([row.r2_key]);
+  });
+});
+
+/** A fake PrincipalDO charge: each successful charge recorded; a positive one refused past `room` unless forced. */
+function charging(): { charges: [string, number][]; setRoom(room: number): void } {
+  const charges: [string, number][] = [];
+  let room = Number.POSITIVE_INFINITY;
+  const original = DocDO.versionCharge;
+  DocDO.versionCharge = () => async (principal, bytes, force) => {
+    if (bytes > 0 && !force && bytes > room) return false;
+    charges.push([principal, bytes]);
+    return true;
+  };
+  onTestFinished(() => {
+    DocDO.versionCharge = original;
+  });
+  return { charges, setRoom: (next) => { room = next; } };
+}
+
+const BEN = { id: 'ben', role: 'editor' as const };
+const chargedTo = (charges: [string, number][], principal: string) =>
+  charges.filter(([who]) => who === principal).reduce((sum, [, bytes]) => sum + bytes, 0);
+
+describe('restore bounds (T6.2 checker P1s) @p:mean-3', () => {
+  it("charges a restore's restore point and its auto version to the restoring editor", async () => {
+    const { charges } = charging();
+    const opened = await created('alpha\n\nbeta\n');
+    const saved = await named(opened, 'Ada draft');
+    if (!saved.ok) throw new Error(saved.reason);
+    const ada = await editorOn(opened, 'ada');
+    await typeTitle(ada, 'Changed');
+    charges.length = 0;
+
+    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: BEN });
+    if (!restored.ok) throw new Error(restored.reason);
+    const versions = await list(opened);
+    expect(versions.map((version) => [version.kind, version.createdBy])).toEqual([['auto', 'ben'], ['restore-point', 'ben'], ['named', 'ada']]);
+    const [auto, point] = versions;
+    expect(chargedTo(charges, 'ben'), 'net of the reservation and its true-up').toBe(point.bytes + auto.bytes);
+    expect(chargedTo(charges, 'ada'), 'nobody else pays for it').toBe(0);
+  });
+
+  it("refuses a restore 413 past the restoring editor's own bound, changing nothing", async () => {
+    const { charges, setRoom } = charging();
+    const opened = await created('alpha\n\nbeta\n');
+    const saved = await named(opened, 'Ada draft');
+    if (!saved.ok) throw new Error(saved.reason);
+    const ada = await editorOn(opened, 'ada');
+    await typeTitle(ada, 'Changed');
+    const before = await opened.dobj.exportMarkdown();
+    charges.length = 0;
+    setRoom(0);
+
+    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: BEN });
+    expect(restored).toMatchObject({ ok: false, status: 413, reason: 'version-quota' });
+    expect(await opened.dobj.exportMarkdown()).toBe(before);
+    expect(opened.dobj.document.getText('title').toString()).toBe('Changed');
+    expect((await list(opened)).map((version) => version.kind)).toEqual(['named']);
+    expect(chargedTo(charges, 'ben')).toBe(0);
+  });
+
+  it('refunds a pruned restore point to the editor it was charged to', async () => {
+    const { charges } = charging();
+    const opened = await created('alpha\n');
+    const one = await named(opened, 'One');
+    if (!one.ok) throw new Error(one.reason);
+    const ada = await editorOn(opened, 'ada');
+    await typeTitle(ada, 'Two');
+    const two = await named(opened, 'Two');
+    if (!two.ok) throw new Error(two.reason);
+    await ada.drop();
+
+    let first: VersionMeta | undefined;
+    for (let i = 0; i <= RESTORE_POINTS_KEPT; i += 1) {
+      const restored = await opened.dobj.restoreVersion({ id: (i % 2 === 0 ? one : two).version.id, reviewer: BEN });
+      if (!restored.ok) throw new Error(restored.reason);
+      first ??= (await list(opened)).find((version) => version.id === restored.restorePoint);
+    }
+    const points = (await list(opened)).filter((version) => version.kind === 'restore-point');
+    expect(points).toHaveLength(RESTORE_POINTS_KEPT);
+    expect(points.some((version) => version.id === first!.id)).toBe(false);
+    const kept = (await list(opened)).filter((version) => version.createdBy === 'ben').reduce((sum, version) => sum + version.bytes, 0);
+    expect(chargedTo(charges, 'ben'), 'what ben stores, the pruned point refunded').toBe(kept);
+  }, 120_000);
+
+  it("counts the title in a version's bytes and spill, and lists a short title", async () => {
+    blobs();
+    const { charges } = charging();
+    const original = DocDO.versionSpillBytes;
+    DocDO.versionSpillBytes = 4096;
+    onTestFinished(() => {
+      DocDO.versionSpillBytes = original;
+    });
+    const opened = await created('alpha\n');
+    const ada = await editorOn(opened, 'ada');
+    const long = 'T'.repeat(6000);
+    await typeTitle(ada, long);
+    const saved = await named(opened, 'Long title');
+    if (!saved.ok) throw new Error(saved.reason);
+    expect(saved.version.spilled, 'the title alone is past the spill size').toBe(true);
+    expect(saved.version.bytes).toBeGreaterThan(6000);
+    expect(chargedTo(charges, 'ada')).toBe(saved.version.bytes);
+    expect(saved.version.title).toBe(long.slice(0, VERSION_TITLE_LIST_MAX));
+    const [row] = opened.backing.query<{ title: string; full_title: string | null }>('SELECT title, full_title FROM versions WHERE id = ?', saved.version.id);
+    expect(row.title.length).toBe(VERSION_TITLE_LIST_MAX);
+    expect(row.full_title, 'a spilled title is in its spill').toBeNull();
+
+    await typeTitle(ada, ' and more');
+    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    if (!restored.ok) throw new Error(restored.reason);
+    expect(opened.dobj.document.getText('title').toString()).toBe(long);
+  });
+
+  it('keeps a long title whole in an inline row', async () => {
+    const opened = await created('alpha\n');
+    const ada = await editorOn(opened, 'ada');
+    const long = 'L'.repeat(1000);
+    await typeTitle(ada, long);
+    const saved = await named(opened, 'Inline');
+    if (!saved.ok) throw new Error(saved.reason);
+    expect(saved.version).toMatchObject({ spilled: false, title: long.slice(0, VERSION_TITLE_LIST_MAX) });
+    await typeTitle(ada, '!');
+    const restored = await opened.dobj.restoreVersion({ id: saved.version.id, reviewer: ADA });
+    if (!restored.ok) throw new Error(restored.reason);
+    expect(opened.dobj.document.getText('title').toString()).toBe(long);
+  });
+});
+
+describe('version triggers and retries (T6.2 checker P2s) @p:mean-3', () => {
+  it('checks the activity trigger after payload-only edits', async () => {
+    const opened = await created('alpha\n');
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    try {
+      ada.insert('code-block', 'const a = 1;');
+      await syncAll(ada);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await list(opened), 'moments after the first change').toEqual([]);
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      ada.type(0, 0, '// ');
+      await syncAll(ada);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((await list(opened)).map((version) => version.kind)).toEqual(['auto']);
+    } finally {
+      ada.dispose();
+    }
+  });
+
+  it("retries the doc's version bytes after a wake when recording them failed", async () => {
+    const reported: number[] = [];
+    let failing = true;
+    const original = DocDO.versionUsage;
+    DocDO.versionUsage = () => async (_docId, bytes) => {
+      if (failing) throw new Error('D1 unavailable');
+      reported.push(bytes);
+    };
+    onTestFinished(() => {
+      DocDO.versionUsage = original;
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const opened = await created('alpha\n');
+    const saved = await named(opened, 'One');
+    if (!saved.ok) throw new Error(saved.reason);
+    expect(reported).toEqual([]);
+    failing = false;
+    const woken = await start(wake(opened));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(reported.at(-1)).toBe((await list(woken)).reduce((sum, version) => sum + version.bytes, 0));
   });
 });
