@@ -7,7 +7,9 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
 import { readFrontmatter } from '@moss-multi/core/frontmatter';
+import { fixture } from './converter/fixtures.ts';
 import { landPush } from './push.ts';
+import { bodyState } from './reconcile.ts';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
 
 const PUSH = 'test-push';
@@ -227,4 +229,31 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     })).toThrow('doc-cap');
     expect(Y.encodeStateVector(live)).toEqual(vector);
   });
+
+  it('keeps typing at the end of the last paragraph in that paragraph when the pushed file ends with a newline', () => {
+    const live = docOf(BODY);
+    const base = exported(live);
+    const peer = fork(live);
+    typeAfter(peer, 'Echo five stays', ' and more');
+    share(peer, live);
+    const next = `${base.replace('Echo five stays.', 'Echo five still stays.')}\n`;
+    expect(landPush(live, NOTE, { base, newText: next, force: false }, PUSH)).toMatchObject({ ok: true, failedHunks: [] });
+    expect(exported(live).endsWith('\n\nEcho five still stays and more.')).toBe(true);
+  });
+
+  for (const name of ['code-blocks', 'entities']) {
+    it(`leaves untouched blocks the converter would not re-import exactly alone (${name})`, () => {
+      const live = docOf(fixture(name).markdown);
+      const base = exported(live);
+      const before = bodyState(live).root.children;
+      const ids = blockIds(live);
+      const next = `${base}\n\nA pushed paragraph.`;
+      expect(landPush(live, NOTE, { base, newText: next, force: false }, PUSH)).toMatchObject({ ok: true, failedHunks: [] });
+      const after = bodyState(live).root.children;
+      expect(after).toHaveLength(before.length + 1);
+      expect(after.slice(0, before.length)).toEqual(before);
+      expect(blockIds(live).slice(0, ids.length)).toEqual(ids);
+      expect(exported(live)).toBe(next);
+    });
+  }
 });

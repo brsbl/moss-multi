@@ -61,4 +61,14 @@ describe('computeMergedTarget keeps concurrent human edits @p:agt-1', () => {
     expect(computeMergedTarget('éabcdefghij', 'abcdefghij', 'abcdeFghij')).toMatchObject({ target: 'éabcdeFghij', failedHunks: [] });
     expect(computeMergedTarget('😀 café\n\nb', 'café\n\nb', 'café\n\nb 🌱')).toMatchObject({ target: '😀 café\n\nb 🌱', failedHunks: [] });
   });
+
+  it('ignores a final newline the pushed file adds: typing at the end of the last paragraph stays in it', () => {
+    const base = 'Water at dawn.\n\nHarvest in autumn.';
+    const current = `${base} Pick squash`;
+    expect(computeMergedTarget(current, base, 'Water at dawn.\n\nHarvest in late autumn.\n'))
+      .toMatchObject({ target: 'Water at dawn.\n\nHarvest in late autumn. Pick squash', failedHunks: [] });
+    expect(computeMergedTarget(current, base, 'Water at noon.\n\nHarvest in autumn.\n'))
+      .toMatchObject({ target: 'Water at noon.\n\nHarvest in autumn. Pick squash', failedHunks: [] });
+    expect(computeMergedTarget(base, base, `${base}\n`)).toMatchObject({ target: base, failedHunks: [], applied: 0 });
+  });
 });
