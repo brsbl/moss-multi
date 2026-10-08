@@ -33,6 +33,9 @@ export function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
+/** The cap on a JSON request body. */
+export const JSON_BODY_MAX_BYTES = 64 * 1024;
+
 export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
   try {
     return parseJsonObject(await request.text());
