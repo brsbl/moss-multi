@@ -10,6 +10,7 @@ import {
 import {
   $createTextNode,
   $getEditor,
+  $getRoot,
   $getSelection,
   $isRangeSelection,
   $isTextNode,
@@ -62,9 +63,9 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
  * - perImport: over one import (nested imports, such as table cells, share their outer import's), the work that grows
  *   faster than its line in moss's own import (moss's callbacks that read the whole paragraph or text per match),
  *   each line paying only what passes what is left of its own work, so a note of many such lines stays within SP2.
- * - perNote: over one import, all the work its lines are charged, LINE_COST a line and TABLE_CELL_COST a table cell,
- *   so a note of any lines, however short, stays within SP2: once it is spent, each line after keeps its text as
- *   literal text and each table row after is not a table row. The densest ordinary notes take 4% less at 2 MB.
+ * - perNote: over one import, all the work its lines are charged, LINE_COST a line and TABLE_CELL_COST a table cell
+ *   (the empty cells a row is padded with included), so a note of any lines, however short, stays within SP2: once
+ *   it is spent, each line after keeps its text as literal text and each table row after is not a table row. The densest ordinary notes take 4% less at 2 MB.
  */
 export const LINEAR_IMPORT_LIMITS = {
   lineChars: 1 << 17,
@@ -149,8 +150,14 @@ export function $convertFromMarkdownString(
   try {
     const list = long ? guardedTransformers(transformers) : importTransformers(transformers);
     $lexicalConvertFromMarkdownString(long ? long.marked : markdown, list, node, shouldPreserveNewLines, shouldMergeAdjacentLines);
-    // Lexical has made a tab node of every tab it saw; the lines with too many get theirs back as text.
-    for (const [held, text] of heldTabs) if (held.isAttached()) held.setTextContent(text);
+    // Lexical has made a tab node of every tab it saw; the lines with too many get theirs back as text. A nested import
+    // (a table cell's) runs before its outer import's tab pass, which would split them again: the outer import gives
+    // them back after its own pass.
+    if (outer) for (const held of heldTabs) outerTabs.push(held);
+    else {
+      const container = node ?? $getRoot();
+      for (const [held, text] of heldTabs) if (container.isParentOf(held)) held.setTextContent(text);
+    }
   } finally {
     if (!outer) {
       const share = 1 - importBudget.left / LINEAR_IMPORT_LIMITS.perImport;

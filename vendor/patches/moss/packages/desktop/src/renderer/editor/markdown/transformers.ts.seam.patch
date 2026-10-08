@@ -29,7 +29,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
 +// moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
 +import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
 +// moss-multi seam: linear-match (A§12; SP2)
-+import { absorbedLength, linearRegExp, mapTableRowCells, mergeWikiLinkCells, oddBackslashesBefore, recordAbsorbed, repairBacktickWrappedCells, TABLE_ABSORB_CHARS, tableMayWiden, withLinearRegExps } from './linear-match';
++import { absorbedLength, chargeTablePadding, linearRegExp, mapTableRowCells, mergeWikiLinkCells, oddBackslashesBefore, recordAbsorbed, repairBacktickWrappedCells, TABLE_ABSORB_CHARS, tableMayWiden, withLinearRegExps } from './linear-match';
 +// moss-multi seam: linear-import (A§12; SP2)
 +import { $convertFromMarkdownString, $isInsideColorSuppressedRawContext, isAfterUnclosedBacktick, isInsideInlineCodeSpan } from './linear-import';
  
@@ -292,7 +292,15 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
  
      const immediatePrevious = parentNode.getPreviousSibling();
-@@ -1914,7 +1902,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1885,6 +1873,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+       }
+     }
+ 
++    chargeTablePadding(rows.reduce((sum, cells) => sum + maxCells - cells.length, 0)); // moss-multi seam: linear-match (A§12; SP2)
+     const table = $createTableNode();
+     const normalizedManualColWidths = normalizeTableColumnWidths(manualColWidths, maxCells);
+     if (normalizedManualColWidths) {
+@@ -1914,7 +1903,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        parentNode.replace(table);
      }
  
@@ -301,7 +309,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    },
    type: 'element'
  };
-@@ -2207,10 +2195,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
+@@ -2207,10 +2196,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
    // Match whole candidate markdown image lines and parse with a balanced parser.
    // Matching only `![` can truncate content before replace() runs.
    regExp: /^!\[.*\]\(.*\)\s*$/,
@@ -314,7 +322,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
      parentNode.replace(mediaNode);
    },
-@@ -2611,7 +2599,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
+@@ -2611,7 +2600,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
    regExp: /^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)/i
  };
  
@@ -324,7 +332,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    // Custom element transformers for block-level content
    // Obsidian embed must come before standard image so ![[ref]] is matched first
    OBSIDIAN_EMBED_TRANSFORMER,
-@@ -2657,7 +2646,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
+@@ -2657,7 +2647,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
    HIGHLIGHT_TRANSFORMER,
    UNDERLINE_TRANSFORMER,
    FONT_FAMILY_TRANSFORMER

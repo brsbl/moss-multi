@@ -727,9 +727,20 @@ export function mapTableRowCells<T>(cells: string[], make: (text: string) => T):
 // does not join that table.
 export const TABLE_PADDING_CELLS = 16_384;
 
-/** Whether a row of `cells` cells may join a table of `rows` rows of `columns` columns. */
+/**
+ * Whether a row of `cells` cells may join a table of `rows` rows of `columns` columns: a widening row pads the earlier
+ * rows with at most TABLE_PADDING_CELLS empty cells, and the import running pays for every empty cell the row adds,
+ * its own padding to `columns` or the earlier rows' (it pays for them if so).
+ */
 export function tableMayWiden(rows: number, columns: number, cells: number): boolean {
-  return cells <= columns || rows * (cells - columns) <= TABLE_PADDING_CELLS;
+  const padding = cells <= columns ? columns - cells : rows * (cells - columns);
+  if (cells > columns && padding > TABLE_PADDING_CELLS) return false;
+  return padding === 0 || chargeTableCells(padding);
+}
+
+/** Pays for empty cells a table is padded with that no row can refuse; the import running then cuts what follows. */
+export function chargeTablePadding(cells: number): void {
+  if (cells > 0) chargeTableCells(cells);
 }
 
 // tryAbsorbTableContinuationRow re-imports a table's last cell with each broken row it absorbs, so a cell that absorbs

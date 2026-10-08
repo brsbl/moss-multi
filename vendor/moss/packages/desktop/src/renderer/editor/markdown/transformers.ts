@@ -40,7 +40,7 @@ import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR
 // moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
 import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
 // moss-multi seam: linear-match (A§12; SP2)
-import { absorbedLength, linearRegExp, mapTableRowCells, mergeWikiLinkCells, oddBackslashesBefore, recordAbsorbed, repairBacktickWrappedCells, TABLE_ABSORB_CHARS, tableMayWiden, withLinearRegExps } from './linear-match';
+import { absorbedLength, chargeTablePadding, linearRegExp, mapTableRowCells, mergeWikiLinkCells, oddBackslashesBefore, recordAbsorbed, repairBacktickWrappedCells, TABLE_ABSORB_CHARS, tableMayWiden, withLinearRegExps } from './linear-match';
 // moss-multi seam: linear-import (A§12; SP2)
 import { $convertFromMarkdownString, $isInsideColorSuppressedRawContext, isAfterUnclosedBacktick, isInsideInlineCodeSpan } from './linear-import';
 
@@ -1874,6 +1874,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
       }
     }
 
+    chargeTablePadding(rows.reduce((sum, cells) => sum + maxCells - cells.length, 0)); // moss-multi seam: linear-match (A§12; SP2)
     const table = $createTableNode();
     const normalizedManualColWidths = normalizeTableColumnWidths(manualColWidths, maxCells);
     if (normalizedManualColWidths) {
