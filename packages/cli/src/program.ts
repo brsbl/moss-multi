@@ -11,7 +11,7 @@ import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { jsonSafe, redact, ttySafe } from './output.ts';
 import { describe, syncExitCode, syncOnce, watchLoop } from './sync.ts';
-import { confined, findRoot, localName, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
+import { confined, ensureStateDir, findRoot, localName, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -53,6 +53,7 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   rm <doc> [--json]                            move a doc to Trash
   pull <doc> [file] [--force]                  write the doc to a file and track it here
   push <file> [--suggest] [--force]            merge your edits to a pulled file into the doc
+  init [dir]                                   make a folder a workspace, so sync and watch may use it
   sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
                                                doc; deleting a file here never deletes the doc
   watch [dir] [--interval <s>]                 sync on every change and every 60 s, until Ctrl+C
@@ -149,11 +150,16 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   /** A command that finishes with a code other than 0 sets it here (`sync`); a CliError carries its own. */
   let exitCode: number = EXIT.ok;
   const docUrl = (client: Api, id: string) => `${client.serverUrl}/d/${encodeURIComponent(id)}`;
-  /** The workspace for `sync` and `watch`: the one holding `dir` (default the working directory), else `dir` itself. */
+  /**
+   * The workspace for `sync` and `watch`: the one holding `dir` (default the working directory). They never make
+   * one: a folder becomes a workspace through `init` or `pull`, so a stray `sync` cannot upload a code repository.
+   */
   const workspaceAt = (dir?: string): string => {
     const start = resolve(cwd(), dir ?? '.');
     if (!existsSync(start)) throw new CliError(1, `no such directory: ${dir ?? start}`);
-    return findRoot(start) ?? start;
+    const root = findRoot(start);
+    if (!root) throw new CliError(1, `${dir ?? start} is not in a moss-multi workspace; run \`moss-multi init\` in the folder to sync, or \`moss-multi pull <doc>\` there`);
+    return root;
   };
 
   const commands: Record<string, (rest: string[]) => Promise<number | void>> = {
@@ -366,6 +372,15 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       line(`pushed ${meta.file}: ${response.applied} change(s) applied`);
     },
 
+    async init(rest) {
+      const parsed = parseArgs(rest, [], []);
+      const [dir] = arity(parsed, 0, 1, 'init [dir]');
+      const root = resolve(cwd(), dir ?? '.');
+      if (!existsSync(root)) throw new CliError(1, `no such directory: ${dir ?? root}`);
+      ensureStateDir(root);
+      line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
+    },
+
     async sync(rest) {
       const parsed = parseArgs(rest, ['force', 'json'], []);
       const [dir] = arity(parsed, 0, 1, 'sync [dir] [--force] [--json]');
@@ -374,7 +389,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (parsed.flags.has('json')) json(results);
       else {
         for (const result of results) {
-          if (result.action === 'failed' || result.action === 'skipped-degenerate') stderr(describe(result));
+          if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) stderr(describe(result));
           else if (result.action !== 'up-to-date') line(describe(result));
         }
         if (results.every((result) => result.action === 'up-to-date')) line('everything is up to date');

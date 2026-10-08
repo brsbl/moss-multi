@@ -200,6 +200,9 @@ export function renameInside(root: string, from: string, to: string, folds: bool
   return true;
 }
 
+/** Whether `root` holds a real state directory. */
+export const isWorkspace = (root: string): boolean => isDir(join(root, STATE_DIR));
+
 /** Creates the state directory, so `root` is a workspace; a link in its place is refused. */
 export function ensureStateDir(root: string): void {
   const dir = noLinks(root, STATE_DIR);

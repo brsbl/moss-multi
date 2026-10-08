@@ -9,7 +9,7 @@ import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
 import {
-  confined, type DocMeta, ensureStateDir, isAllowedName, localName, readBase, readConfined, recordBase, recordPull, renameInside,
+  confined, type DocMeta, isAllowedName, isWorkspace, localName, readBase, readConfined, recordBase, recordPull, renameInside,
   sameFile, sha256Hex, trackedMetas, writeMeta,
 } from './workspace.ts';
 
@@ -24,6 +24,8 @@ export interface SyncResult {
   /** The file's old name, for `renamed` and `created`. */
   from?: string;
   failedHunks?: number;
+  /** The text of each failed hunk: the file keeps it, and so does the output. */
+  hunks?: string[];
   message?: string;
 }
 
@@ -54,8 +56,21 @@ export async function pushWithBase(client: Api, root: string, meta: DocMeta, req
 }
 
 const isMarkdown = (name: string) => extname(name).toLowerCase() === '.md';
+/** Directories that are someone else's: installed packages, and another repository or workspace nested inside. */
+const isForeign = (path: string, name: string): boolean =>
+  name === 'node_modules' || ['.git', '.moss-multi'].some((marker) => {
+    try {
+      lstatSync(join(path, marker));
+      return true;
+    } catch {
+      return false;
+    }
+  });
 
-/** Every regular `.md` file below `root`, relative to it: no hidden entries, no links, no names moss refuses. */
+/**
+ * Every regular `.md` file below `root`, relative to it: no hidden entries, no links, no names moss refuses, nothing
+ * inside node_modules or a nested repository or workspace.
+ */
 function markdownFiles(root: string): string[] {
   const out: string[] = [];
   const walk = (dir: string, depth: number) => {
@@ -68,7 +83,7 @@ function markdownFiles(root: string): string[] {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (entry.name.startsWith('.') || !isAllowedName(entry.name)) continue;
       const path = join(dir, entry.name);
-      if (entry.isDirectory() && depth < 8) walk(path, depth + 1);
+      if (entry.isDirectory() && depth < 8 && !isForeign(path, entry.name)) walk(path, depth + 1);
       else if (entry.isFile() && isMarkdown(entry.name)) out.push(relative(root, path));
     }
   };
@@ -98,8 +113,11 @@ function refused(meta: DocMeta, response: Exclude<PushResponse, { ok: true }>): 
   return { ...id, action: 'failed', message: `push refused: ${response.reason}` };
 }
 
-/** Moves the local file when the server renamed the doc's file since the last sync. */
-function followServerName(ctx: SyncContext, meta: DocMeta, row: DocRow | undefined): { meta: DocMeta; result?: SyncResult } {
+/**
+ * Moves the local file when the server renamed the doc's file since the last sync. A name another tracked doc owns
+ * is taken even when that file is deleted here: it comes back on that doc's pass.
+ */
+function followServerName(ctx: SyncContext, meta: DocMeta, row: DocRow | undefined, metas: DocMeta[]): { meta: DocMeta; result?: SyncResult } {
   if (!row || row.filename.startsWith('pending-')) return { meta };
   if (meta.filename === undefined) {
     // Tracked by `pull`: the server name is learnt now, and only a later change renames the file.
@@ -112,7 +130,8 @@ function followServerName(ctx: SyncContext, meta: DocMeta, row: DocRow | undefin
   let next: DocMeta = { ...meta, filename: row.filename };
   let result: SyncResult | undefined;
   if (to !== meta.file && exists(ctx.root, meta.file)) {
-    if (renameInside(ctx.root, meta.file, to, ctx.folds)) {
+    const owned = metas.some((other) => other.docId !== meta.docId && sameFile(other.file, to, ctx.folds));
+    if (!owned && renameInside(ctx.root, meta.file, to, ctx.folds)) {
       next = { ...next, file: to };
       result = { docId: meta.docId, file: to, from: meta.file, action: 'renamed' };
     } else {
@@ -160,17 +179,21 @@ async function reconcile(ctx: SyncContext, meta: DocMeta): Promise<SyncResult> {
   });
   if (!response.ok) return refused(meta, response);
   if (response.mode === 'suggest') return { ...id, action: 'suggested', message: `landed as suggestion ${response.suggestionId}; the file keeps your text` };
-  const merged = await client.content(meta.docId);
   const failedHunks = response.failedHunks.length;
-  const action: SyncAction = remoteHash === meta.baseHash && failedHunks === 0 ? 'pushed' : 'merged';
+  if (failedHunks) {
+    // As `push` does: the file and its base stay, so the rejected text is neither lost nor pushed as a deletion.
+    return { ...id, action: 'merged', failedHunks, hunks: response.failedHunks, message: `${failedHunks} hunk(s) failed to apply; the file keeps your text, so re-apply them on the web or edit the file and sync again` };
+  }
+  const merged = await client.content(meta.docId);
+  const action: SyncAction = remoteHash === meta.baseHash ? 'pushed' : 'merged';
   try {
     recordPull(root, meta.docId, meta.file, merged, localHash, folds);
   } catch (error) {
     if (!(error instanceof CliError)) throw error;
-    // Edited again during the push: keep the newer text; with the merged base it pushes on the next pass.
-    recordBase(root, meta.docId, meta.file, merged, folds);
+    // Edited again during the push: the file and its base stay, so the next pass three-way merges the newer text.
+    return { ...id, action, message: 'edited during the push, so the file was left as it is; the newer edits go on the next pass' };
   }
-  return { ...id, action, ...(failedHunks ? { failedHunks, message: `${failedHunks} hunk(s) failed to apply; the file now holds the merged doc` } : {}) };
+  return { ...id, action };
 }
 
 /** An untracked file becomes a doc titled from its stem, and the file takes the doc's filename. */
@@ -187,16 +210,16 @@ async function adopt(ctx: SyncContext, rel: string): Promise<SyncResult> {
   try {
     recordPull(root, doc.id, file, merged, sha256Hex(bytes), folds, doc.filename);
   } catch (error) {
+    // Edited during the create: the file and the base it was created from stay, and the next pass merges the edit.
     if (!(error instanceof CliError)) throw error;
-    recordBase(root, doc.id, file, merged, folds, doc.filename);
   }
   return { docId: doc.id, file, ...(file !== rel ? { from: rel } : {}), action: 'created' };
 }
 
-/** One sync pass over the workspace at `ctx.root`. */
+/** One sync pass over the workspace at `ctx.root`, which must already hold a state directory. */
 export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
   const { root, client, folds } = ctx;
-  ensureStateDir(root);
+  if (!isWorkspace(root)) throw new CliError(1, `${root} is not a moss-multi workspace`);
   const rows = new Map((await client.listDocs()).map((row) => [row.id, row]));
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
@@ -216,7 +239,7 @@ export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
 
   for (const tracked of metas) {
     try {
-      const { meta, result } = followServerName(ctx, tracked, rows.get(tracked.docId));
+      const { meta, result } = followServerName(ctx, tracked, rows.get(tracked.docId), trackedMetas(root));
       if (result) results.push(result);
       results.push(await reconcile(ctx, meta));
     } catch (error) {
@@ -246,7 +269,8 @@ export function syncExitCode(results: SyncResult[]): number {
 /** One line per result that did something. */
 export function describe(result: SyncResult): string {
   const name = result.from ? `${result.from} → ${result.file}` : result.file;
-  return `${result.action} ${name}${result.message ? `: ${result.message}` : ''}`;
+  const hunks = (result.hunks ?? []).map((hunk) => `\nfailed hunk:\n${hunk}`).join('');
+  return `${result.action} ${name}${result.message ? `: ${result.message}` : ''}${hunks}`;
 }
 
 export interface WatchOptions {
@@ -288,14 +312,15 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
     if (signal.aborted) resolve();
     else signal.addEventListener('abort', () => resolve(), { once: true });
   });
-  const pause = (ms: number) => new Promise<void>((resolve) => {
+  /** Sleeps `ms`; a filesystem event ends it early unless the server asked us to wait. */
+  const pause = (ms: number, wakeable: boolean) => new Promise<void>((resolve) => {
     const timer = setTimeout(done, ms);
     function done() {
       clearTimeout(timer);
       wake = null;
       resolve();
     }
-    wake = done;
+    if (wakeable) wake = done;
     void stopped.then(done);
   });
 
@@ -303,19 +328,19 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
   try {
     while (!signal.aborted) {
       const seen = changes;
-      let waitMs = options.intervalMs;
+      let limitedMs = 0;
       try {
         for (const result of await syncOnce(ctx)) {
-          if (result.action === 'failed' || result.action === 'skipped-degenerate') err(describe(result));
+          if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) err(describe(result));
           else if (result.action !== 'up-to-date') out(describe(result));
         }
       } catch (error) {
-        if (error instanceof RateLimited) waitMs = Math.max(waitMs, error.retryAfterSec * 1000);
+        if (error instanceof RateLimited) limitedMs = error.retryAfterSec * 1000;
         err(`sync failed: ${failure(error)}`);
       }
       if (signal.aborted) break;
-      if (changes !== seen && waitMs === options.intervalMs) continue;
-      await pause(waitMs);
+      if (limitedMs > 0) await pause(limitedMs, false);
+      else if (changes === seen) await pause(options.intervalMs, true);
     }
   } finally {
     clearTimeout(debounce);
