@@ -34,12 +34,15 @@ interface Edit {
 const deleted = (diffs: Diff[]): number => diffs.reduce((sum, [op, text]) => sum + (op === DIFF_DELETE ? text.length : 0), 0);
 const changes = (diffs: Diff[]): number => diffs.reduce((sum, [op]) => sum + (op === DIFF_EQUAL ? 0 : 1), 0);
 
-/** The edits turning `base` into `side`, those on one line separated only by unchanged text joined into one. */
+/**
+ * The edits turning `base` into `side`, those on one line separated only by unchanged text joined into one. The raw
+ * diff is used: a semantic cleanup can fold the blank line between two edited paragraphs into one edit.
+ */
 function editsOf(base: string, side: string): Edit[] {
   const runs: { start: number; end: number; from: number; to: number }[] = [];
   let at = 0;
   let from = 0;
-  for (const [op, text] of cleanupSemantic(makeDiff(base, side))) {
+  for (const [op, text] of makeDiff(base, side)) {
     if (op !== DIFF_EQUAL) {
       const last = runs.at(-1);
       const run = last && last.end === at && last.to === from ? last : { start: at, end: at, from, to: from };
