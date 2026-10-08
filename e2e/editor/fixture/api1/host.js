@@ -20,7 +20,10 @@ window.api1Fixture = {
       () => ({ ok: true }),
       (error) => ({ ok: false, name: error.name, code: error.code, message: error.message }),
     );
-    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    // ready rejects before React's first commit; WebKit can take more than two frames to paint it.
+    for (let waited = 0; waited < 3_000 && !element.querySelector('[data-moss-editor-unavailable]'); waited += 50) {
+      await new Promise((done) => setTimeout(done, 50));
+    }
     const placeholder = element.querySelector('[data-moss-editor-unavailable]')?.textContent ?? null;
     const status = handle.status;
     const flush = await handle.flush();
