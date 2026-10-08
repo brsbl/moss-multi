@@ -343,6 +343,10 @@ describe('linear inline import @p:tech-4', () => {
       const mixed = `x ${'\t&#9;'.repeat(Math.ceil(over / 2))}`;
       expect(cuts(() => importMarkdown(mixed))).toBe(1);
       expect(childTypes(mixed)).toEqual(['text']);
+      // A line cut at its work budget keeps its tabs as text too.
+      const dense = `x ${'[a](b) '.repeat(2_000)}\t&#9;`;
+      expect(cuts(() => importMarkdown(dense))).toBe(1);
+      expect(childTypes(dense)).toEqual(['text']);
     }, 120_000);
 
     // A note's work, its lines' and its table cells', is held to perNote: past it, each line after keeps its text as

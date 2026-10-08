@@ -510,10 +510,7 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
   if (marked || tabs || lineLength > LINEAR_IMPORT_LIMITS.lineChars) {
     linearImportStats.cut += 1;
     if (tabs) {
-      // Free of tabs and of anything Lexical's unescape would make one of until Lexical's tab pass is over, then the
-      // text Lexical's unescape would give it.
-      top.setTextContent(literal.replace(/[\t&\\]/g, ' '));
-      heldTabs.push([top, unescapeText(literal)]);
+      holdTabs(top, literal);
     } else if (marked) {
       top.setTextContent(literal);
     }
@@ -631,12 +628,21 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     if (error !== OVER_BUDGET) throw error;
     linearImportStats.cut += 1;
     $restoreLine(top, original, bounds, parent);
+    // A literal line's tabs stay text, as a line past the tab cap's do: the tab nodes were never paid for.
+    if (tabCount > 0) holdTabs(top, original.text);
   } finally {
     activeLine = outerLine;
     if (importBudget) importBudget.left -= budget.importExcess();
     const share = 1 - budget.left / budget.allowance;
     if (share > linearImportStats.peakLineShare) linearImportStats.peakLineShare = share;
   }
+}
+
+// Free of tabs and of anything Lexical's unescape would make one of until Lexical's tab pass is over, then the text
+// Lexical's unescape would give the line.
+function holdTabs(top: TextNode, literal: string): void {
+  top.setTextContent(literal.replace(/[\t&\\]/g, ' '));
+  heldTabs.push([top, unescapeText(literal)]);
 }
 
 // A cut line goes back to the one text node it came in as: its whole text literal, which the outer import then
