@@ -1,4 +1,8 @@
 // The Worker's routing order (A§4.1). Pure: server.ts supplies the handlers, so the order is unit-tested in Node.
+import {
+  isOutdated, OUTDATED_ERROR, OUTDATED_STATUS, PROTOCOL_HEADER, PROTOCOL_PARAM, protocolOf,
+} from '@moss-multi/protocol/client-protocol';
+import { CLOSE } from '@moss-multi/protocol/sync';
 import type { Build } from '../provenance.ts';
 import { HTML_FRAME_PATH, htmlFrameResponse } from './html-frame.ts';
 
@@ -54,10 +58,22 @@ const PARTY_STATUS = {
   4410: [410, 'gone'],
 } as const;
 
+const outdatedResponse = () => json({ error: OUTDATED_ERROR }, OUTDATED_STATUS, { 'cache-control': 'no-store' });
+
+/** REST from a bundle naming an older protocol; a request naming none is not a bundle (the CLI, an agent). */
+const outdatedRest = (request: Request): boolean => {
+  const sent = request.headers.get(PROTOCOL_HEADER);
+  return sent !== null && isOutdated(protocolOf(sent));
+};
+
 async function routePartyRequest(request: Request, deps: RouteDeps): Promise<Response> {
   // Split exactly as partyserver does, so the doc we authorize is the room it routes to.
   const parts = new URL(request.url).pathname.split('/').filter(Boolean);
   if (parts.length !== 3 || parts[1] !== DOC_PARTY) return json({ error: 'not-found' }, 404);
+  // Before anything else: a bundle older than the server's protocol must not write, whoever it is (rule 10).
+  if (isOutdated(protocolOf(new URL(request.url).searchParams.get(PROTOCOL_PARAM)))) {
+    return isUpgrade(request) ? deps.refuseSocket(CLOSE.outdated) : outdatedResponse();
+  }
   const auth = await deps.authenticateParty(request, parts[2]);
   if (!auth.ok) {
     // Never refuse before the upgrade: a refused handshake is a 1006 the client retries forever.
@@ -77,6 +93,7 @@ export async function routeRequest(request: Request, deps: RouteDeps): Promise<R
     const hooked = await deps.handleTestHook(request);
     if (hooked) return hooked;
   }
+  if (under(pathname, '/api') && outdatedRest(request)) return outdatedResponse();
   if (pathname.startsWith('/api/auth/')) return deps.handleAuth(request);
   if (pathname === '/api/workspace/ws') return deps.handleWorkspaceSocket(request);
   if (under(pathname, '/api')) return deps.handleApi(request);

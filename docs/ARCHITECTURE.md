@@ -133,12 +133,15 @@ The Worker exports `createServerEntry({fetch})` and re-exports the DO classes. [
 4. **`/api/workspace/ws`** authenticates through the origin gate (§18), then upgrades to `PrincipalDO(principalId)` (§5.2).
 5. **`/api/*`** goes to `handleApi`, which runs the origin gate (§18) before any unsafe method. Unknown paths get a JSON 404.
 6. **`/parties/doc-d-o/<docId>`** is the only party namespace; any other gets 404.
+   - First, the client protocol (`packages/protocol/client-protocol.ts`, registers.md rule 10): every doc socket names it as `?protocol=`, and one older than `MIN_CLIENT_PROTOCOL` (a missing one is 0, a bundle from before payload docs) is accepted and closed 4426 before authentication, without waking the DocDO. Raising the minimum with any client/server change older bundles cannot follow refuses them the same way.
    - Authenticate by cookie, bearer or `?share=`, pass the origin gate (§18), then resolve the role (§8).
    - Never refuse before the upgrade: a refused handshake reaches the client as a transient 1006, and it would retry forever [L§4.6]. On a denial the Worker accepts the upgrade itself (`WebSocketPair`) and closes it, without waking the DocDO: 4401 with no credential or a cookie from another origin; 4404 for a missing, inaccessible, forged-token or revoked-token doc (one code for all four, so nothing is disclosed); 4410 for a trashed doc the caller could otherwise open.
    - Strip every client `x-moss-*` and `x-partykit-*` header by prefix, then set the trusted `x-moss-principal|role|session|share` headers.
    - Clone the request without an init before setting headers, so `Upgrade` and `Sec-WebSocket-*` survive. Then call `routePartykitRequest`. [L§4.7 upgrade trap; S-gd §1.3]
 7. **`/frame/html`** serves the HTML-block frame: a fixed document whose only policy is `sandbox allow-scripts`, which writes the block HTML its embedding page posts to it (SP13).
 8. **Everything else** goes to TanStack Start SSR.
+
+**Client protocol on REST.** Before steps 3 to 5, an `/api/*` request (other than `/api/version`) whose `x-moss-client-protocol` header names a protocol older than the minimum gets `426 {error: "client-outdated"}`, and the bundle's fetch wrapper ends every open doc `outdated`. A request without the header (the CLI, an agent) is not a bundle and is not refused; the file-backed viewer and editor packages hold no socket and are unaffected.
 
 Errors are logged through `waitUntil` and rethrown. `/api` never answers with HTML.
 
@@ -425,11 +428,12 @@ The plugin is passed as MarkdownEditor's `collaboration` prop in place of `<Hist
 | 4404 | Doc unavailable: missing, no access, forged or revoked link (§4.1) | terminal `unavailable`; the DenialPage on next load |
 | 4409 | Write refused; the reason arrives in the unicast just before | discard the local Y.Doc, rebind fresh, announce the refusal |
 | 4410 | Doc deleted | terminal `deleted`; a workspace `meta` push naming the doc makes it re-ask REST and reopen if the note is live (a trash that never committed) |
+| 4426 | The bundle's client protocol is older than the server admits (§4.1) | terminal `outdated`, with a Reload action that loads the deployed bundle |
 | 4429 | Connection limit | terminal `conn-limit`, with a retry action |
 
 ### 10.6 Terminal states and durability honesty
 
-**Terminal store.** `host/collab/terminal.ts` is a doc-level `useSyncExternalStore` store keyed by docId, with reasons `deleted`, `revoked`, `session-ended`, `unavailable` and `conn-limit`. A terminal close sets `provider.shouldConnect=false` synchronously inside the close handler, before y-partyserver can schedule a reconnect. Every editable surface (title, body, frontmatter, comment composer, decorator controls) subscribes and goes inert in place, and `data-terminal-reason` is published on the pane. [L§4.6; S-prior §3.4]
+**Terminal store.** `host/collab/terminal.ts` is a doc-level `useSyncExternalStore` store keyed by docId, with reasons `deleted`, `revoked`, `session-ended`, `unavailable`, `conn-limit` and `outdated`. A terminal close sets `provider.shouldConnect=false` synchronously inside the close handler, before y-partyserver can schedule a reconnect. Every editable surface (title, body, frontmatter, comment composer, decorator controls) subscribes and goes inert in place, and `data-terminal-reason` is published on the pane. [L§4.6; S-prior §3.4]
 
 **Before a destructive action** (trash or sign-out), the client closes the doc to writes and waits for `data-sync-unacked=0`, at most 5 s; past that, a ConfirmationDialog says some edits have not synced, with Cancel as the default. That attribute is driven by the DO's acks (§5.1). Copy-link never vouches for bytes while unacked. [L§4.6 C-12]
 
