@@ -29,6 +29,8 @@ describe('doc-links checker', () => {
     const ok = '`moss:packages/desktop/src/renderer/App.tsx` `moss:packages/desktop/src/main/storage/note-store.ts`';
     expect(checkText(ok, { repo: REPO })).toEqual([]);
     expect(checkText('`moss:packages/desktop/src/main/no-such.ts`', { repo: REPO })[0]).toMatch(/neither vendored nor ported/);
+    expect(checkText('`moss:<path>` `moss:packages/desktop/src/renderer/<file>`', { repo: REPO })).toEqual([]);
+    expect(checkText('`moss:packages/nope/<file>`', { repo: REPO })[0]).toMatch(/moss no directory packages\/nope\//);
   });
 
   it('checks the directory before a placeholder, and ignores code that is not a path', () => {

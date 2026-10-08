@@ -104,7 +104,7 @@ function checkPath(repo, path) {
   const hole = path.indexOf('<');
   if (hole >= 0) {
     const dir = path.slice(0, path.lastIndexOf('/', hole) + 1);
-    return dir && existsSync(join(repo, dir)) && statSync(join(repo, dir)).isDirectory() ? null : `no directory ${dir || path}`;
+    return existsSync(join(repo, dir)) && statSync(join(repo, dir)).isDirectory() ? null : `no directory ${dir}`;
   }
   if (/[*{}]/.test(path)) return `not a checkable path: ${path}`;
   const full = join(repo, path);
@@ -121,6 +121,11 @@ export function checkText(text, { repo = REPO, docDir = repo, ported } = {}) {
     if (/\s/.test(span)) continue;
     if (span.startsWith('moss:')) {
       const path = span.slice('moss:'.length);
+      if (path.includes('<')) {
+        const missing = checkPath(join(repo, 'vendor/moss'), path);
+        if (missing) problems.push(`line ${line}: moss ${missing}`);
+        continue;
+      }
       ported ??= portedPaths(repo);
       if (!existsSync(join(repo, 'vendor/moss', path)) && !ported.has(path)) {
         problems.push(`line ${line}: moss path neither vendored nor ported: ${path}`);
