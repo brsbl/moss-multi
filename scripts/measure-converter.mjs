@@ -10,7 +10,8 @@
 // single rename exceeds it by more than one /proc tick. Last, it runs the real DocDO (packages/sync/measure/doc-worker.ts)
 // and sends many tiny payload frames over thousands of ids (T1.F2), exiting non-zero past the stated per-frame CPU,
 // memory, held-doc and scaling budgets, and feeds the real SearchDO bodies of unclosed openers, exiting non-zero past
-// the per-request CPU and linear-scaling budgets.
+// the per-request CPU and linear-scaling budgets. The converter also imports and exports notes of unclosed openers
+// (packages/sync/measure/converter-cases.ts) as single lines from 1 KB to 2 MB, exiting non-zero past LINE_BUDGET_MS.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -246,8 +247,9 @@ async function measureSize(unit, units, port, bound) {
     const unitBlocks = JSON.parse((await timedRequest(server, '/import', { method: 'POST', body: unit })).body).blocks;
     for (let run = 0; run < CONVERSION_RUNS; run += 1) {
       const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown });
-      const { blocks } = JSON.parse(imported.body);
+      const { blocks, cut } = JSON.parse(imported.body);
       if (blocks !== units * unitBlocks) throw new Error(`${blocks} top-level blocks, expected ${units} × ${unitBlocks}`);
+      if (cut > 0) throw new Error(`${cut} lines cut at the work budget, which must never cut ordinary content`);
       runs.import.push({ ...imported, blocks });
       runs.export.push(await timedRequest(server, '/export'));
     }
@@ -464,6 +466,322 @@ async function measureSearch(port) {
   return results;
 }
 
+// Every converter case (converter-cases.ts) as one line at each size from 1 KB to PRODUCT's 2 MB cap, doubling, in a
+// warmed worker, then between the last size that converts and the first kept literal (NEAR_CUT_FLOOR when 1 KB is
+// already kept literal), halving the gap NEAR_CUT_STEPS times, so the size just under the cut is measured too: no
+// single line, of any size, may cost more than LINE_BUDGET_MS of workerd CPU to import or to export. Then whole notes
+// of 2 MB, each one line of the case repeated (a 256 B line, a 4 KB line, the line just under the cut, however short,
+// and the line of the swept sizes that costs most per byte): none may cost more than IMPORT_BUDGET_MS to import or to
+// export, with no case or line size left out. A line or note over its budget is measured ADVERSARIAL_RUNS times and
+// judged by the median; a request past ADVERSARIAL_TIMEOUT_MS fails the case.
+const ADVERSARIAL_SIZES = Array.from({ length: 12 }, (_, i) => 1024 << i);
+const NEAR_CUT_STEPS = 7;
+const NEAR_CUT_FLOOR = 64;
+const NOTE_BYTES = 2 * 1024 * 1024;
+const NOTE_LINE_BYTES = [256, 4 * 1024];
+const LINE_BUDGET_MS = 250;
+const ADVERSARIAL_RUNS = 3;
+const ADVERSARIAL_TIMEOUT_MS = 20_000;
+const ADVERSARIAL_OPS = ['importCpuMs', 'exportCpuMs'];
+// 10 ms CPU ticks and noise: scaling compares against no less than this.
+const ADVERSARIAL_FLOOR_MS = 100;
+const ADVERSARIAL_SCALING = 3;
+const WARM_ROUNDS = 3;
+
+// Runs every code path a few times first, so no case is charged the JIT's first compilations.
+async function warm(server, bodies) {
+  for (let round = 0; round < WARM_ROUNDS; round += 1) {
+    for (const body of bodies) {
+      await timedRequest(server, '/import', { method: 'POST', body });
+      await timedRequest(server, '/export');
+    }
+  }
+}
+
+const failure = (error) =>
+  error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError' ? `a request ran past ${ADVERSARIAL_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0];
+
+/** A note of `line` repeated as paragraphs to `bytes`. */
+const noteOf = (line, bytes) => Array.from({ length: Math.max(1, Math.floor(bytes / (line.length + 2))) }, () => line).join('\n\n');
+
+async function measureAdversarial(port) {
+  const { CONVERTER_CASES, ORDINARY_NOTES, converterBody } = await import('../packages/sync/measure/converter-cases.ts');
+  const warmBodies = [
+    ORDINARY_NOTES['a paragraph of 1,000 sentences of italic, bold, code and strikethrough'](),
+    ...Object.values(CONVERTER_CASES).map((c) => converterBody(c, 8 * 1024)),
+  ];
+  const results = [];
+  let server = null;
+  try {
+    for (const [name, c] of Object.entries(CONVERTER_CASES)) {
+      if (!server) {
+        server = await startWorker('converter', port);
+        port += 1;
+        await warm(server, warmBodies);
+      }
+      const live = server;
+      const request = (path, body) => timedRequest(live, path, { method: body === undefined ? 'GET' : 'POST', body, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+      const measure = async (bytes) => {
+        const body = converterBody(c, bytes);
+        const runs = [];
+        // A first run clearly within the budget, or clearly over it, needs no second look.
+        do {
+          const imported = await request('/import', body);
+          const exported = await request('/export');
+          const { cut, work } = JSON.parse(imported.body);
+          runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, cut, work });
+        } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > LINE_BUDGET_MS && runs[0][op] < 4 * LINE_BUDGET_MS));
+        const size = {
+          bytes: body.length,
+          runs: runs.length,
+          importCpuMs: median(runs.map((r) => r.importCpuMs)),
+          exportCpuMs: median(runs.map((r) => r.exportCpuMs)),
+          cut: runs[0].cut,
+          work: runs[0].work,
+        };
+        sizes.push(size);
+        return size;
+      };
+      const sizes = [];
+      const notes = [];
+      let nearCut = null;
+      try {
+        const swept = [];
+        for (const bytes of ADVERSARIAL_SIZES) swept.push(await measure(bytes));
+        const first = swept.findIndex((size) => size.cut > 0);
+        const floor = first === 0 ? await measure(NEAR_CUT_FLOOR) : null;
+        if (first > 0 || (floor && floor.cut === 0)) {
+          let [low, high] = [first > 0 ? swept[first - 1] : floor, swept[first]];
+          for (let step = 0; step < NEAR_CUT_STEPS; step += 1) {
+            const mid = await measure(Math.round((low.bytes + high.bytes) / 2));
+            if (mid.cut > 0) high = mid;
+            else low = mid;
+          }
+          nearCut = low;
+        }
+        const perByte = (size) => size.importCpuMs / size.bytes;
+        const worst = swept.reduce((a, b) => (perByte(b) > perByte(a) ? b : a));
+        const lineSizes = [...new Set([...NOTE_LINE_BYTES, ...(nearCut ? [nearCut.bytes] : []), worst.bytes])].filter((bytes) => bytes < NOTE_BYTES);
+        for (const lineBytes of lineSizes) {
+          const note = noteOf(converterBody(c, lineBytes), NOTE_BYTES);
+          const runs = [];
+          do {
+            const imported = await request('/import', note);
+            const exported = await request('/export');
+            const { cut, work } = JSON.parse(imported.body);
+            runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, cut, work });
+          } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > IMPORT_BUDGET_MS && runs[0][op] < 4 * IMPORT_BUDGET_MS));
+          notes.push({
+            lineBytes,
+            bytes: note.length,
+            runs: runs.length,
+            importCpuMs: median(runs.map((r) => r.importCpuMs)),
+            exportCpuMs: median(runs.map((r) => r.exportCpuMs)),
+            cut: runs[0].cut,
+            work: runs[0].work,
+          });
+        }
+        sizes.sort((a, b) => a.bytes - b.bytes);
+        results.push({ name, sizes, nearCut, notes });
+      } catch (error) {
+        sizes.sort((a, b) => a.bytes - b.bytes);
+        results.push({ name, sizes, nearCut, notes, failed: failure(error) });
+        await stop(live.child);
+        server = null;
+      }
+    }
+  } finally {
+    if (server) await stop(server.child);
+  }
+  return results;
+}
+
+// Ordinary notes (converter-cases.ts), in one warmed worker, each imported in full (no line cut at the work budget)
+// and within IMPORT_BUDGET_MS (a run over it is measured ADVERSARIAL_RUNS times and judged by the median): the
+// single-paragraph ORDINARY_NOTES, and at 1 MB and 2 MB the LARGE_ORDINARY_NOTES (several times the scale note's
+// matches per byte) and NEAR_BUDGET_NOTES (many lines each just under the per-line caps, all of which convert), which
+// are also held to linear growth from 1 MB to 2 MB.
+const LARGE_ORDINARY_SIZES = [1024 * 1024, 2 * 1024 * 1024];
+const LARGE_ORDINARY_CEILING_MS = IMPORT_BUDGET_MS;
+
+async function measureOrdinary(port) {
+  const { LARGE_ORDINARY_NOTES, NEAR_BUDGET_NOTES, ORDINARY_NOTES } = await import('../packages/sync/measure/converter-cases.ts');
+  const server = await startWorker('converter', port);
+  const runs = [
+    ...Object.entries(ORDINARY_NOTES).map(([name, body]) => ({ name, body, ceiling: IMPORT_BUDGET_MS })),
+    ...Object.entries({ ...LARGE_ORDINARY_NOTES, ...NEAR_BUDGET_NOTES }).flatMap(([name, body]) =>
+      LARGE_ORDINARY_SIZES.map((bytes) => ({ name: `${name} (at ${bytes / 1024} KB)`, body: () => body(bytes), ceiling: LARGE_ORDINARY_CEILING_MS, family: name })),
+    ),
+  ];
+  const results = [];
+  try {
+    await warm(server, Object.values(ORDINARY_NOTES).map((body) => body()));
+    for (const { name, body, ceiling, family } of runs) {
+      try {
+        const markdown = body();
+        // A run over the ceiling is measured ADVERSARIAL_RUNS times and judged by the median, as the adversarial lines are.
+        const samples = [];
+        let cut = 0;
+        let work = 0;
+        do {
+          const imported = await timedRequest(server, '/import', { method: 'POST', body: markdown, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+          const exported = await timedRequest(server, '/export', { signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+          samples.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs });
+          ({ cut, work } = JSON.parse(imported.body));
+        } while (samples.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => samples[0][op] > ceiling));
+        results.push({
+          name,
+          ceiling,
+          family,
+          importCpuMs: median(samples.map((r) => r.importCpuMs)),
+          exportCpuMs: median(samples.map((r) => r.exportCpuMs)),
+          runs: samples.length,
+          cut,
+          work,
+        });
+      } catch (error) {
+        results.push({ name, ceiling, family, failed: String(error.message).split('\n')[0] });
+      }
+    }
+  } finally {
+    await stop(server.child);
+  }
+  return results;
+}
+
+function ordinaryProblems(results) {
+  const problems = results.flatMap((r) => {
+    if (r.failed) return [`${r.name}: ${r.failed}`];
+    return [
+      ...(r.cut > 0 ? [`${r.name}: ${r.cut} lines cut at the work budget`] : []),
+      ...(r.importCpuMs > r.ceiling ? [`${r.name}: import ${r.importCpuMs} ms`] : []),
+      ...(r.exportCpuMs > r.ceiling ? [`${r.name}: export ${r.exportCpuMs} ms`] : []),
+    ];
+  });
+  const families = new Set(results.filter((r) => r.family).map((r) => r.family));
+  for (const family of families) {
+    const [small, large] = results.filter((r) => r.family === family);
+    if (small.failed || large.failed) continue;
+    if (large.importCpuMs > ADVERSARIAL_SCALING * Math.max(small.importCpuMs, ADVERSARIAL_FLOOR_MS)) {
+      problems.push(`${family}: import grew from ${small.importCpuMs} ms to ${large.importCpuMs} ms`);
+    }
+  }
+  return problems;
+}
+
+// Notes of one short line repeated (converter-cases.ts MULTILINE_CASES), each in a fresh worker at its sizes (by default
+// MULTILINE_SIZES): the larger may cost at most ADVERSARIAL_SCALING times the smaller (no work per line that grows with
+// the lines before it) and IMPORT_BUDGET_MS to import or export, a size over it measured ADVERSARIAL_RUNS times and
+// judged by the median; a request past ADVERSARIAL_TIMEOUT_MS fails the case.
+const MULTILINE_SIZES = [128 * 1024, 256 * 1024];
+
+async function measureMultiline(port) {
+  const { MULTILINE_CASES, multilineBody } = await import('../packages/sync/measure/converter-cases.ts');
+  const results = [];
+  for (const [name, c] of Object.entries(MULTILINE_CASES)) {
+    const server = await startWorker('converter', port);
+    port += 1;
+    const sizes = [];
+    try {
+      await warm(server, [multilineBody(c, 8 * 1024)]);
+      for (const bytes of c.sizes ?? MULTILINE_SIZES) {
+        const body = multilineBody(c, bytes);
+        const signal = () => AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS);
+        const runs = [];
+        do {
+          const imported = await timedRequest(server, '/import', { method: 'POST', body, signal: signal() });
+          const exported = await timedRequest(server, '/export', { signal: signal() });
+          runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs });
+        } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > IMPORT_BUDGET_MS && runs[0][op] < 4 * IMPORT_BUDGET_MS));
+        sizes.push({ bytes: body.length, importCpuMs: median(runs.map((r) => r.importCpuMs)), exportCpuMs: median(runs.map((r) => r.exportCpuMs)) });
+      }
+      results.push({ name, sizes });
+    } catch (error) {
+      results.push({ name, sizes, failed: failure(error) });
+    } finally {
+      await stop(server.child);
+    }
+  }
+  return results;
+}
+
+function multilineProblems(results) {
+  const problems = [];
+  for (const r of results) {
+    if (r.failed) {
+      problems.push(`${r.name}: ${r.failed}`);
+      continue;
+    }
+    for (const size of r.sizes) {
+      for (const op of ADVERSARIAL_OPS) if (size[op] > IMPORT_BUDGET_MS) problems.push(`${r.name}, ${size.bytes} B: ${op} ${size[op]} ms`);
+    }
+    const [small, large] = r.sizes;
+    for (const op of ADVERSARIAL_OPS) {
+      if (large[op] > ADVERSARIAL_SCALING * Math.max(small[op], ADVERSARIAL_FLOOR_MS)) problems.push(`${r.name}: ${op} grew from ${small[op]} ms to ${large[op]} ms`);
+    }
+  }
+  return problems;
+}
+
+// One line of numeric-entity tabs (`x ` then `&#9;` N times), which Lexical's unescape decodes to tabs after the inline
+// pass, at each of ENTITY_TAB_COUNTS in one warmed worker: each import and export within LINE_BUDGET_MS (a run over it
+// measured ADVERSARIAL_RUNS times and judged by the median), and each doubling at most ADVERSARIAL_SCALING times the last.
+const ENTITY_TAB_COUNTS = [5_000, 10_000, 20_000, 40_000];
+
+async function measureEntityTabs(port) {
+  const server = await startWorker('converter', port);
+  const sizes = [];
+  try {
+    const body = (n) => `x ${'&#9;'.repeat(n)}`;
+    await warm(server, [body(1_000)]);
+    for (const tabs of ENTITY_TAB_COUNTS) {
+      const runs = [];
+      do {
+        const imported = await timedRequest(server, '/import', { method: 'POST', body: body(tabs), signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+        const exported = await timedRequest(server, '/export', { signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS) });
+        runs.push({ importCpuMs: imported.cpuMs, exportCpuMs: exported.cpuMs, cut: JSON.parse(imported.body).cut });
+      } while (runs.length < ADVERSARIAL_RUNS && ADVERSARIAL_OPS.some((op) => runs[0][op] > LINE_BUDGET_MS && runs[0][op] < 4 * LINE_BUDGET_MS));
+      sizes.push({ tabs, importCpuMs: median(runs.map((r) => r.importCpuMs)), exportCpuMs: median(runs.map((r) => r.exportCpuMs)), cut: runs[0].cut });
+    }
+    return { sizes };
+  } catch (error) {
+    return { sizes, failed: failure(error) };
+  } finally {
+    await stop(server.child);
+  }
+}
+
+function entityTabProblems(result) {
+  const problems = result.failed ? [`entity tabs: ${result.failed}`] : [];
+  result.sizes.forEach((size, i) => {
+    for (const op of ADVERSARIAL_OPS) {
+      if (size[op] > LINE_BUDGET_MS) problems.push(`entity tabs × ${size.tabs}: ${op} ${size[op]} ms over the ${LINE_BUDGET_MS} ms line budget`);
+      const last = result.sizes[i - 1];
+      if (last && size[op] > ADVERSARIAL_SCALING * Math.max(last[op], ADVERSARIAL_FLOOR_MS)) problems.push(`entity tabs: ${op} grew from ${last[op]} ms at ${last.tabs} to ${size[op]} ms at ${size.tabs}`);
+    }
+  });
+  return problems;
+}
+
+/** Every way the adversarial lines and notes miss the stated budgets (empty when they meet them). */
+function adversarialBudgetProblems(results) {
+  const problems = [];
+  for (const r of results) {
+    if (r.failed) problems.push(`${r.name}: ${r.failed}`);
+    for (const size of r.sizes) {
+      for (const op of ADVERSARIAL_OPS) {
+        if (size[op] > LINE_BUDGET_MS) problems.push(`${r.name}, ${size.bytes} B: ${op} ${size[op]} ms over the ${LINE_BUDGET_MS} ms line budget`);
+      }
+    }
+    for (const note of r.notes) {
+      for (const op of ADVERSARIAL_OPS) {
+        if (note[op] > IMPORT_BUDGET_MS) problems.push(`${r.name}, a 2 MB note of ${note.lineBytes} B lines: ${op} ${note[op]} ms over the ${IMPORT_BUDGET_MS} ms note budget`);
+      }
+    }
+  }
+  return problems;
+}
+
 const SEARCH_OPS = ['indexCpuMs', 'searchCpuMs', 'headingsCpuMs'];
 
 /** Every way the search runs miss the stated budget (empty when they meet it). */
@@ -547,6 +865,10 @@ async function main() {
   const titles = await measureTitleWrites(port + 1);
   const payloads = await measurePayloadFrames(port + 2);
   const searches = await measureSearch(port + 3);
+  const adversarial = await measureAdversarial(port + 100);
+  const ordinary = await measureOrdinary(port + 99);
+  const multiline = await measureMultiline(port + 200);
+  const entityTabs = await measureEntityTabs(port + 300);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -594,6 +916,36 @@ async function main() {
       ),
       ...(r.failed ? [`| Search, ${r.name} | FAILED: ${r.failed} |`] : []),
     ]),
+    ...adversarial.flatMap((r) => {
+      const worst = (op) => r.sizes.reduce((a, b) => (b[op] > a[op] ? b : a), r.sizes[0] ?? { [op]: 0, bytes: 0 });
+      const [importWorst, exportWorst] = ADVERSARIAL_OPS.map(worst);
+      const literalFrom = r.sizes.find((size) => size.cut > 0);
+      const measured = r.sizes.length > 0 ? `${kb(r.sizes[0].bytes)} to ${kb(r.sizes.at(-1).bytes)}` : 'no size';
+      const notes = [
+        `line budget ${LINE_BUDGET_MS} ms`,
+        ...(r.nearCut ? [`${r.nearCut.importCpuMs} / ${r.nearCut.exportCpuMs} ms at ${r.nearCut.bytes} B, the largest converted`] : []),
+        ...(literalFrom ? [`kept literal from ${literalFrom.bytes} B`] : []),
+        ...(r.failed ? [`FAILED: ${r.failed}`] : []),
+      ];
+      return [
+        `| Adversarial line, ${r.name}, ${measured}: worst workerd CPU (import / export) | ${importWorst.importCpuMs} ms at ${kb(importWorst.bytes)} / ${exportWorst.exportCpuMs} ms at ${kb(exportWorst.bytes)} (${notes.join('; ')}) |`,
+        ...r.notes.map(
+          (note) =>
+            `| Adversarial note, ${r.name}, 2 MB of ${note.lineBytes} B lines: workerd CPU (import / export)${note.runs > 1 ? `, median of ${note.runs}` : ''} | ${note.importCpuMs} / ${note.exportCpuMs} ms (note budget ${IMPORT_BUDGET_MS} ms${note.cut ? `; ${note.cut} lines kept literal` : ''}; work ${Math.round(note.work / 1e6)}M) |`,
+        ),
+      ];
+    }),
+    ...ordinary.map((r) =>
+      r.failed
+        ? `| Ordinary note, ${r.name} | FAILED: ${r.failed} |`
+        : `| Ordinary note, ${r.name}: workerd CPU (import / export), ${r.runs > 1 ? `median of ${r.runs}` : 'one run'} | ${r.importCpuMs} / ${r.exportCpuMs} ms (${r.family ? 'ceiling' : 'budget'} ${r.ceiling} ms; work ${Math.round(r.work / 1e6)}M)${r.cut ? `; ${r.cut} lines cut at the work budget` : ''} |`,
+    ),
+    ...multiline.map((r) =>
+      r.failed
+        ? `| Lines repeated, ${r.name} | FAILED: ${r.failed}${r.sizes.length ? ` (${r.sizes.map((size) => `${kb(size.bytes)} ${size.importCpuMs} / ${size.exportCpuMs} ms`).join(', ')})` : ''} |`
+        : `| Lines repeated, ${r.name}: workerd CPU (import / export) | ${r.sizes.map((size) => `${kb(size.bytes)} ${size.importCpuMs} / ${size.exportCpuMs} ms`).join(', ')} (growth at most ${ADVERSARIAL_SCALING}x) |`,
+    ),
+    `| Entity tabs, one line of \`&#9;\` × ${ENTITY_TAB_COUNTS.join(' / ')}: workerd CPU (import / export) | ${entityTabs.sizes.map((size) => `${size.importCpuMs} / ${size.exportCpuMs} ms${size.cut ? ' (kept literal)' : ''}`).join(', ')}${entityTabs.failed ? `; FAILED: ${entityTabs.failed}` : ''} (line budget ${LINE_BUDGET_MS} ms, growth at most ${ADVERSARIAL_SCALING}x a doubling) |`,
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -603,6 +955,10 @@ async function main() {
     `The scale note repeats one ${kb(unitBytes)} unit of the family corpus (packages/sync/src/converter/fixtures/scale.json lists what it leaves out). CPU (10 ms ticks) and RSS come from /proc for the workerd children of \`wrangler dev --local\`, which enforces no CPU limit; RSS growth stands in for isolate heap, which workerd does not report.`,
   ];
   const report = lines.join('\n');
+  // Every swept size, for calibrating the budgets: import / export ms, lines kept literal, and the work charged.
+  for (const r of adversarial) {
+    console.log(`sizes, ${r.name}: ${r.sizes.map((size) => `${size.bytes} ${size.importCpuMs}/${size.exportCpuMs}${size.cut ? ' cut' : ''} w${Math.round(size.work / 1e6)}M`).join('; ')}`);
+  }
   console.log(report);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n`);
   const failed = conversions.filter((c) => c.failed);
@@ -625,6 +981,26 @@ async function main() {
   const searchProblems = searchBudgetProblems(searches);
   if (searchProblems.length > 0) {
     console.error(`measure-converter: search over budget in workerd: ${searchProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const ordinaryFailures = ordinaryProblems(ordinary);
+  if (ordinaryFailures.length > 0) {
+    console.error(`measure-converter: ordinary notes cut or over budget in workerd: ${ordinaryFailures.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const adversarialProblems = adversarialBudgetProblems(adversarial);
+  if (adversarialProblems.length > 0) {
+    console.error(`measure-converter: adversarial lines over budget in workerd: ${adversarialProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const repeatedLineProblems = multilineProblems(multiline);
+  if (repeatedLineProblems.length > 0) {
+    console.error(`measure-converter: notes of repeated lines over budget or growing faster than linearly in workerd: ${repeatedLineProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const tabProblems = entityTabProblems(entityTabs);
+  if (tabProblems.length > 0) {
+    console.error(`measure-converter: entity-tab lines over budget or growing faster than linearly in workerd: ${tabProblems.join('; ')}`);
     process.exitCode = 1;
   }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);

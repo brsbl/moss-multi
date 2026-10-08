@@ -12,6 +12,22 @@ declare module '@moss-desktop/common/noteTypes' {
   }
 }
 
+declare module '@moss-desktop/renderer/editor/markdown/linear-import' {
+  import type { Transformer } from '@lexical/markdown';
+  import type { ElementNode } from 'lexical';
+  export function $convertFromMarkdownString(
+    markdown: string,
+    transformers?: Transformer[],
+    node?: ElementNode,
+    shouldPreserveNewLines?: boolean,
+    shouldMergeAdjacentLines?: boolean,
+  ): void;
+}
+
+declare module '@moss-desktop/renderer/editor/markdown/pipeline' {
+  export function prepareNoteMarkdown(markdown: string): string;
+}
+
 declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
   import type { ForwardRefExoticComponent, RefAttributes } from 'react';
   import type { LexicalEditor } from 'lexical';
@@ -42,8 +58,6 @@ declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
   >;
   export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[];
   export function unescapeHtmlEntities(markdown: string): string;
-  export function escapeHtmlEntities(markdown: string): string;
-  export function normalizeMarkdownForImport(markdown: string): string;
   export function $postImportNormalize(commentMetadata?: CommentMetadataMap, root?: undefined, options?: { layoutMetadata?: NoteLayoutMetadata }): void;
   export function $collectTableLayoutMetadata(): NoteLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<NoteLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;

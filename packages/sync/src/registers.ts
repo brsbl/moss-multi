@@ -180,11 +180,19 @@ function $mint(registry: Registry, node: RegisterNode, id: string = newPayloadId
  */
 export function $assignRegisterIds(): void {
   const registry = currentRegistry();
+  const assign = (node: LexicalNode) => {
+    if (registry) $mint(registry, node as RegisterNode);
+    else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
+  };
+  // Every node the update holds, rather than a walk of the tree: an import makes millions, and the walk looked each
+  // one up by key. A payload node counts only in the tree; ids are random, so the order is immaterial.
+  const nodes = $getEditor()._pendingEditorState?._nodeMap;
+  if (nodes) {
+    for (const node of nodes.values()) if (isPayloadType(node.__type) && node.isAttached()) assign(node);
+    return;
+  }
   const walk = (node: LexicalNode) => {
-    if (isPayloadType(node.getType())) {
-      if (registry) $mint(registry, node as RegisterNode);
-      else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
-    }
+    if (isPayloadType(node.getType())) assign(node);
     if ($isElementNode(node)) for (const child of node.getChildren()) walk(child);
   };
   walk($getRoot());

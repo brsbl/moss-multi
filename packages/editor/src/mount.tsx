@@ -15,15 +15,13 @@ import {
   SKIP_SCROLL_INTO_VIEW_TAG,
   type LexicalEditor,
 } from 'lexical';
-import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
+import { $convertToMarkdownString } from '@lexical/markdown';
 import {
   $collectTabGroupLayoutMetadata,
   $collectTableLayoutMetadata,
   $postImportNormalize,
   MARKDOWN_EDITOR_TRANSFORMERS,
   MarkdownEditor,
-  escapeHtmlEntities,
-  normalizeMarkdownForImport,
   type MarkdownEditorHandle,
 } from '@moss-desktop/renderer/editor/MarkdownEditor';
 import { CanvasArea } from '@moss/shared/components/layout/CanvasArea';
@@ -38,6 +36,8 @@ import {
   DIRTY_TRACKER_IGNORED_TAGS,
   hasTrackedEditorUpdateTag,
 } from '@moss-desktop/renderer/editor/utils/editorUpdateTags';
+import { $convertFromMarkdownString } from '@moss-desktop/renderer/editor/markdown/linear-import';
+import { prepareNoteMarkdown } from '@moss-desktop/renderer/editor/markdown/pipeline';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
 import { linesBeforeBody, offsetLines, readSelection } from '@moss-multi/host/selection.ts';
 import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
@@ -180,7 +180,7 @@ class FrameSurface implements SessionSurface {
           $addUpdateTag(SKIP_SCROLL_INTO_VIEW_TAG);
           if ($getSelection() !== null) $setSelection(null);
           $getRoot().clear();
-          $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(content.body)), MARKDOWN_EDITOR_TRANSFORMERS);
+          $convertFromMarkdownString(prepareNoteMarkdown(content.body), MARKDOWN_EDITOR_TRANSFORMERS);
           $postImportNormalize(content.commentMetadata, undefined, { layoutMetadata: content.layoutMetadata });
         },
         { tag: 'agent-content-update' },
