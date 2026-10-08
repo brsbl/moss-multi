@@ -388,7 +388,7 @@ test('j03-connection: a bundle older than the server\'s client protocol is close
 
   // Nothing it types lands: the body stays inert and the note on the server is unchanged.
   await expect(ui.body(bea, docId)).not.toHaveAttribute(BODY_BINDING_ATTR, 'live');
-  await ui.body(bea, docId).click({ force: true });
+  await ui.pane(bea, docId).click({ position: { x: 200, y: 200 } });
   await bea.page.keyboard.type(OUTDATED_TRY);
   await bea.page.waitForTimeout(3_000);
   expect(ui.socketsFor(bea, docId), 'the refusal is never retried on its own').toHaveLength(1);
