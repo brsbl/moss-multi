@@ -977,7 +977,7 @@ test.describe('editor fixes before 0.3.0', () => {
     expect(seen.errors).toEqual([]);
   });
 
-  const slashChart = async (page: Page) => {
+  const slashChart = async (page: Page, { behind = false } = {}) => {
     await mountNote(page, '# Plan\n\nFirst line\n');
     await body(page).getByText('First line').click();
     // The caret at the end of the line (End is not a line end in every engine).
@@ -990,9 +990,47 @@ test.describe('editor fixes before 0.3.0', () => {
     });
     await frames(page);
     await page.keyboard.press('Enter');
-    await page.keyboard.type('/bar');
-    await expect(page.getByText('Bar Chart', { exact: true })).toBeVisible();
-    await page.keyboard.press('Enter');
+    if (behind) {
+      // The menu lists every command. Then, as on a busy main thread (j11's flake), the search for "bar" runs but
+      // React has not yet committed its results: zero-delay timers are held while typing, then run with React's
+      // scheduler (MessagePort) held, so the menu still shows the list for "/" when Enter comes.
+      await page.keyboard.type('/');
+      await expect(page.locator('button[data-index]').first()).toBeVisible();
+      await page.evaluate(() => {
+        const w = window as unknown as { held: { timers: (() => void)[]; messages: (() => void)[] }; realSetTimeout: typeof setTimeout; realPost: MessagePort['postMessage'] };
+        w.held = { timers: [], messages: [] };
+        w.realSetTimeout = window.setTimeout;
+        w.realPost = MessagePort.prototype.postMessage;
+        window.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+          if (ms) return w.realSetTimeout(fn, ms, ...args);
+          w.held.timers.push(() => fn(...args));
+          return 0;
+        }) as typeof setTimeout;
+      });
+      await page.keyboard.type('bar');
+      await frames(page);
+      await page.evaluate(async () => {
+        const w = window as unknown as { held: { timers: (() => void)[]; messages: (() => void)[] }; realSetTimeout: typeof setTimeout; realPost: MessagePort['postMessage'] };
+        MessagePort.prototype.postMessage = function (this: MessagePort, ...args: unknown[]) {
+          w.held.messages.push(() => (w.realPost as (...a: unknown[]) => void).apply(this, args));
+        } as MessagePort['postMessage'];
+        window.setTimeout = w.realSetTimeout;
+        for (const run of w.held.timers.splice(0)) run();
+        await Promise.resolve();
+      });
+      await frames(page);
+      await expect(page.locator('button[data-index="0"]'), 'the menu still shows the search for "/"').not.toContainText('Bar Chart');
+      await page.keyboard.press('Enter');
+      await page.evaluate(() => {
+        const w = window as unknown as { held: { messages: (() => void)[] }; realPost: MessagePort['postMessage'] };
+        MessagePort.prototype.postMessage = w.realPost;
+        for (const post of w.held.messages.splice(0)) post();
+      });
+    } else {
+      await page.keyboard.type('/bar');
+      await expect(page.getByText('Bar Chart', { exact: true })).toBeVisible();
+      await page.keyboard.press('Enter');
+    }
     await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
   };
   const AFTER_CHART = (text: string) => new RegExp(`^# Plan\\n\\nFirst line\\n\\n\`\`\`moss-chart\\n[\\s\\S]*\\n\`\`\`\\n\\n${text}\\n?$`);
@@ -1005,6 +1043,17 @@ test.describe('editor fixes before 0.3.0', () => {
     expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
     const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
     expect(written).toMatch(AFTER_CHART('abc'));
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('Enter in the slash menu runs the command for the whole query, even before the menu\'s search catches up', async ({ page }) => {
+    const seen = await open(page);
+    await slashChart(page, { behind: true });
+    await expect(body(page).locator('table'), 'no command from the stale list ran').toHaveCount(0);
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written).toMatch(/^# Plan\n\nFirst line\n\n```moss-chart\n/);
+    expect(written, 'no table was inserted').not.toContain('|');
     expect(seen.errors).toEqual([]);
   });
 
