@@ -12,9 +12,10 @@ import {
   NOTICE_BAND_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TOP_BAR_ATTR,
 } from '../lib/contract.ts';
 import { acceptInvite } from '../lib/grants.ts';
-import { cookieHeader, holdDocSockets } from '../lib/doc-client.ts';
+import { cookieHeader, holdDocSockets, openDocClient } from '../lib/doc-client.ts';
 import { signIn, type Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
+import { OUTDATED_ERROR, PROTOCOL_HEADER, PROTOCOL_PARAM } from '../../packages/protocol/src/client-protocol.ts';
 
 const BOOT_TIMEOUT = 30_000;
 const BIND_TIMEOUT = 15_000;
@@ -24,6 +25,7 @@ const RECOVER_TIMEOUT = 30_000;
 const BANNER_BUDGET_MS = 14_000;
 const HEARTBEAT_CLOSE = 4408;
 const CONN_LIMIT_CLOSE = 4429;
+const OUTDATED_CLOSE = 4426;
 
 interface ConnEvent {
   kind: 'open' | 'close-call' | 'close' | 'connection' | 'banner';
@@ -344,6 +346,80 @@ test('j03-connection: a 51st connection goes terminal conn-limit with a Retry th
   }
 });
 
+
+/**
+ * Init script: this window runs a bundle from before the client protocol, whose doc sockets name none, until the
+ * session flag says a newer bundle has been deployed. The flag survives the reload the banner offers.
+ */
+function olderBundle({ path, param, flag }: { path: string; param: string; flag: string }): void {
+  if (sessionStorage.getItem(flag) === '1') return;
+  const Current = window.WebSocket;
+  window.WebSocket = class extends Current {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      const target = new URL(url, location.href);
+      if (target.pathname.startsWith(path)) target.searchParams.delete(param);
+      super(target, protocols);
+    }
+  };
+}
+
+const OPENING_6 = 'Written before the server moved on';
+const OUTDATED_TRY = ' typed into the old bundle';
+const UPDATED_EDIT = ' and typed after the reload';
+const NEW_BUNDLE_FLAG = 'j03-new-bundle';
+
+test('j03-connection: a bundle older than the server\'s client protocol is closed 4426 with reload to update, writes nothing, and a reload on the new bundle binds @p:col-4 @evidence', async ({ actors, stack }) => {
+  const shared = await sharedNote(actors, OPENING_6);
+  const { docId } = shared;
+  const bea = await windowFor(actors, shared.peer, { label: 'ben' });
+  await bea.context.addInitScript(olderBundle, { path: DOC_SOCKET_PATH, param: PROTOCOL_PARAM, flag: NEW_BUNDLE_FLAG });
+  await land(bea, `/d/${docId}`);
+  await actors.requireDistinct(2);
+
+  await expect(ui.pane(bea, docId), 'the older bundle is refused').toHaveAttribute(TERMINAL_REASON_ATTR, 'outdated', { timeout: BIND_TIMEOUT });
+  await expect(ui.pane(bea, docId)).toHaveAttribute(DOC_STATE_ATTR, 'terminal');
+  await expect(banner(bea, docId)).toHaveAttribute(CONNECTION_BANNER_ATTR, 'outdated');
+  await expect(banner(bea, docId), 'the banner says to reload for the update').toContainText(/reload/i);
+  const reload = banner(bea, docId).getByRole('button', { name: 'Reload', exact: true });
+  await expect(reload).toBeVisible();
+  const closes = (await timeline(bea)).filter((e) => e.kind === 'close');
+  expect(closes.map((e) => e.code), 'the server closed the socket 4426').toEqual([OUTDATED_CLOSE]);
+  await actors.checkpoint('outdated');
+
+  // Nothing it types lands: the body stays inert and the note on the server is unchanged.
+  await expect(ui.body(bea, docId)).not.toHaveAttribute(BODY_BINDING_ATTR, 'live');
+  await ui.body(bea, docId).click({ force: true });
+  await bea.page.keyboard.type(OUTDATED_TRY);
+  await bea.page.waitForTimeout(3_000);
+  expect(ui.socketsFor(bea, docId), 'the refusal is never retried on its own').toHaveLength(1);
+  expect(await bodyText(shared.ada, docId), "Ada's note is untouched").toBe(OPENING_6);
+  const reader = await openDocClient(stack.baseUrl, docId, cookieHeader(await signIn(stack.baseUrl, shared.owner)));
+  try {
+    await reader.synced;
+    expect(reader.text(), 'the server holds only what the current bundle wrote').toBe(OPENING_6);
+  } finally {
+    reader.close();
+  }
+
+  // REST refuses a bundle that names an older protocol, with the same verdict.
+  bea.expectHttp(426, `/api/docs/${docId}/access`);
+  const rest = await bea.page.evaluate(async ({ url, header }) => {
+    const response = await fetch(url, { headers: { [header]: '0' }, credentials: 'same-origin' });
+    return { status: response.status, body: (await response.json()) as { error?: string } };
+  }, { url: `/api/docs/${encodeURIComponent(docId)}/access`, header: PROTOCOL_HEADER });
+  expect(rest.status).toBe(426);
+  expect(rest.body.error).toBe(OUTDATED_ERROR);
+
+  // The new bundle is deployed; the banner's Reload picks it up and the note binds and writes.
+  await bea.page.evaluate((flag) => sessionStorage.setItem(flag, '1'), NEW_BUNDLE_FLAG);
+  await Promise.all([bea.page.waitForEvent('load'), reload.click()]);
+  await ui.waitBodyLive(bea, docId);
+  await expect(ui.pane(bea, docId)).not.toHaveAttribute(TERMINAL_REASON_ATTR, /./);
+  expect(await bodyText(bea, docId), 'the reloaded window has the note').toBe(OPENING_6);
+  await ui.typeBody(bea, docId, UPDATED_EDIT);
+  await ui.waitAcked(bea, docId, ACK_TIMEOUT);
+  await expect.poll(() => bodyText(shared.ada, docId), { timeout: RECOVER_TIMEOUT }).toBe(`${OPENING_6}${UPDATED_EDIT}`);
+});
 
 test('j03-connection: a refused write rebinds fresh and a deleted doc locks in place @p:col-4', async ({ actors }) => {
   const shared = await sharedNote(actors, 'The server keeps this sentence');
