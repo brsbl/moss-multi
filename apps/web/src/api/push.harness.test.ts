@@ -197,11 +197,11 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
       return (seed >>> 0) / 4294967296;
     };
     const letters = (n: number): string => Array.from({ length: n }, () => 'abcd'[Math.floor(next() * 4)]).join('');
-    /** Each paragraph after the first with every fifth letter redrawn: 200 of them cost more than a merge's budget. */
+    /** Each paragraph after the first with every fifth letter redrawn: 150 of them cost more than a merge's budget. */
     const rewrite = (text: string): string => text.split('\n\n').map((paragraph, p) => (p === 0 ? paragraph
       : [...paragraph].map((c, i) => (i > 14 && i % 5 === 0 ? 'abcd'[Math.floor(next() * 4)] : c)).join(''))).join('\n\n');
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
-    const docId = await seeded(ada, ['Intro stays.', ...Array.from({ length: 200 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
+    const docId = await seeded(ada, ['Intro stays.', ...Array.from({ length: 150 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
     const base = await content(docId, cookieOf(ada));
     const typed = await push(docId, cookieOf(ada), { newText: base.replace('Intro stays.', 'Intro, typed, stays.'), baseHash: sha(base) });
     expect(typed.status).toBe(200);

@@ -20,7 +20,7 @@ export interface PushInput {
   force: boolean;
   /** `--suggest`: the merge is written as a fork under a leased client and collected as record ops; the doc is untouched. */
   fork?: ForkTarget;
-  /** The merge's time and work; one per push by default. */
+  /** The merge's work; one per push by default. */
   budget?: MergeBudget;
 }
 
@@ -137,12 +137,33 @@ function spliceByBlock(liveState: SerializedEditorState, current: string, target
   if (current.slice(cursor).trim() !== '') throw new ReconcileRefused('unverified', 'a block of this note cannot be placed in its export, so the push cannot be applied block by block');
   bounds.push(current.length);
   // Block i owns [bounds[i], bounds[i + 1]): its text and the separator after it.
-  const edits = editsOf(current, target, budget);
-  const touched = live.map((_, i) => edits.some(({ start, end }) =>
-    start === end ? bounds[i]! <= start && start <= bounds[i + 1]! : start < bounds[i + 1]! && end > bounds[i]!));
+  // Coarser edits only touch more blocks, so this diff never refuses; edits are disjoint and in order, so both scans are linear.
+  const edits = editsOf(current, target, budget, false);
+  const touched = live.map(() => false);
+  for (let i = 0, first = 0; i < live.length; i++) {
+    const from = bounds[i]!;
+    const to = bounds[i + 1]!;
+    while (first < edits.length && edits[first]!.end < from) first++;
+    for (let k = first; k < edits.length && edits[k]!.start <= to && !touched[i]; k++) {
+      const { start, end } = edits[k]!;
+      touched[i] = start === end ? from <= start && start <= to : start < to && end > from;
+    }
+  }
+  const sums = [0];
+  for (const edit of edits) sums.push(sums.at(-1)! + edit.text.length - (edit.end - edit.start));
   /** Where `at` in `current` lands in `target`; an insertion at `at` itself counts only for the end of a run. */
-  const shift = (at: number, end: boolean): number => edits.reduce(
-    (sum, edit) => (edit.end < at || (edit.end === at && (end || edit.start < at)) ? sum + edit.text.length - (edit.end - edit.start) : sum), at);
+  const shift = (at: number, end: boolean): number => {
+    // The edits before `at` are a prefix of the list: found by binary search.
+    let lo = 0;
+    let hi = edits.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const edit = edits[mid]!;
+      if (edit.end < at || (edit.end === at && (end || edit.start < at))) lo = mid + 1;
+      else hi = mid;
+    }
+    return at + sums[lo]!;
+  };
   const out: SerializedNode[] = [];
   for (let i = 0; i < live.length;) {
     if (!touched[i]) {
@@ -194,7 +215,7 @@ function mismatch(expected: string, actual: string, current: string): string {
   return `${name} would be stored differently${stored ? ` (as "${stored}")` : ''}, so nothing changed; write it the way moss writes Markdown (for example *emphasis*, **strong**, \`\`\`javascript) and push again`;
 }
 
-const OVER_BUDGET = 'the push changes too many places in a note that changed since it was pulled to merge in time, so nothing changed; pull and push again';
+const OVER_BUDGET = 'the push changes too many places in a note that changed since it was pulled to merge them safely, so nothing changed; pull and push again';
 
 /** A merge past its budget lands nothing: it is refused (409) before anything is written. */
 export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: unknown, admit?: Admit): PushOutcome {

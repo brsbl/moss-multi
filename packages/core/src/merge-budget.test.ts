@@ -44,7 +44,7 @@ afterEach(() => {
 describe('a push merge runs on one counted budget @p:agt-1', { timeout: 60_000 }, () => {
   it('never reads a clock, so the bound holds where time stands still, as on deployed Workers', () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(0);
-    const precise = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const precise = vi.spyOn((globalThis as unknown as { performance: { now: () => number } }).performance, 'now').mockReturnValue(0);
     // Two unrelated lines: an exact diff is quadratic, so only a limit on the search itself ends it.
     const letters = random(3);
     const line = (): string => Array.from({ length: 20_000 }, () => 'ab'[Math.floor(letters() * 2)]).join('');

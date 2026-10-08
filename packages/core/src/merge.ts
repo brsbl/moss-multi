@@ -3,28 +3,27 @@
 // pushed edit whose base region the doc also changed is returned as a failed hunk and the doc's text stays, so a
 // push never consumes concurrent human work. Edits are grouped per line, so a rewrite of a sentence lands whole or not
 // at all. The DocDO lands the target through the identity-preserving reconcile, so untouched blocks keep their items.
-import { cleanupSemantic, DIFF_DELETE, DIFF_EQUAL, DIFF_INSERT, type Diff, makeDiff } from '@sanity/diff-match-patch';
 
 /** The share of the base a push may delete before it is refused as degenerate without --force. */
 export const DEGENERATE_DELETE_RATIO = 0.6;
 
-// Pushed text is up to 2 MB: every scan over it below is linear, with no backtracking regex.
+// Pushed text is up to 2 MB: every scan over it below is linear (or n log n), with no backtracking regex, except the
+// diff searches. Those are counted in steps, never read from a clock: on deployed Workers the clock does not move during
+// synchronous code, so a deadline would never fire.
 
-/** The time one push's merge may take, across every diff it makes. */
-export const MERGE_TIME_MS = 3_000;
-/** The work one push's merge may do: each diff costs DIFF_CALL_WORK plus the characters it compares. */
-export const MERGE_WORK = 64 * 1024 * 1024;
-export const DIFF_CALL_WORK = 1024;
-/** No single diff runs longer than diff-match-patch's own default. */
-const DIFF_TIMEOUT_MS = 1_000;
+/** The search one push's merge may do, in steps (a diagonal searched or a token matched): under 100 ms of CPU. */
+export const MERGE_WORK = 8_000_000;
+/** One diff's search stops past this many steps (its trace stays under 8 MB) and replaces its whole span instead. */
+export const DIFF_WORK = 2_000_000;
+/** Nor may a character diff pass this many steps per character compared: that dense a change is a rewrite, replaced whole. */
+export const DENSE_WORK = 32;
 
-/** What a push's merge has left; every diff draws on it, so changed regions cannot each restart a time limit. */
+/** The steps a push's merge has left; every diff draws on it, so changed regions cannot each restart a limit. */
 export interface MergeBudget {
   work: number;
-  deadline: number;
 }
 
-export const mergeBudget = (work = MERGE_WORK, ms = MERGE_TIME_MS): MergeBudget => ({ work, deadline: Date.now() + ms });
+export const mergeBudget = (work = MERGE_WORK): MergeBudget => ({ work });
 
 /** The merge ran out of budget before it finished; nothing of it may land. */
 export class MergeBudgetExceeded extends Error {
@@ -33,13 +32,13 @@ export class MergeBudgetExceeded extends Error {
   }
 }
 
-/** One diff charged to `budget`, limited to the time the budget has left. */
-function budgetedDiff(budget: MergeBudget, a: string, b: string, checkLines = true): Diff[] {
-  const cost = DIFF_CALL_WORK + a.length + b.length;
-  const left = budget.deadline - Date.now();
-  if (cost > budget.work || left <= 0) throw new MergeBudgetExceeded();
-  budget.work -= cost;
-  return makeDiff(a, b, { checkLines, timeout: Math.min(left, DIFF_TIMEOUT_MS) / 1000 });
+/**
+ * Charges `steps`. A strict diff (of a drifted doc, whose edits must be exact) throws once the budget is spent; a
+ * lenient one goes on with nothing left to search, so each later diff replaces its whole span.
+ */
+function charge(budget: MergeBudget, steps: number, strict: boolean): void {
+  if (steps > budget.work && strict) throw new MergeBudgetExceeded();
+  budget.work = Math.max(0, budget.work - steps);
 }
 
 /** LF line endings; every text entering the merge passes through this. */
@@ -54,7 +53,7 @@ export interface MergeComputation {
   deletedRatio: number;
   /** Whether the doc changed since the base was pulled. */
   drifted: boolean;
-  /** Changed runs between the current text and the target. */
+  /** Pushed edits applied to the current text. */
   applied: number;
   /** Refused as degenerate (only with refuseDegenerate): the regions were not merged and `target` is the current text. */
   degenerate: boolean;
@@ -73,9 +72,7 @@ export interface Edit {
   text: string;
 }
 
-const deleted = (diffs: Diff[]): number => diffs.reduce((sum, [op, text]) => sum + (op === DIFF_DELETE ? text.length : 0), 0);
-const changes = (diffs: Diff[]): number => diffs.reduce((sum, [op]) => sum + (op === DIFF_EQUAL ? 0 : 1), 0);
-
+/** A changed run: a[start, end) became b[from, to), in tokens or in UTF-16 units. */
 interface Run {
   start: number;
   end: number;
@@ -83,20 +80,158 @@ interface Run {
   to: number;
 }
 
-/** Changed runs of a character diff, positions offset into the whole texts. */
-function charRuns(base: string, side: string, at: number, from: number, runs: Run[], budget: MergeBudget): void {
-  for (const [op, text] of budgetedDiff(budget, base, side)) {
-    if (op !== DIFF_EQUAL) {
-      const last = runs.at(-1);
-      const run = last && last.end === at && last.to === from ? last : { start: at, end: at, from, to: from };
-      if (run !== last) runs.push(run);
-      if (op === DIFF_DELETE) run.end = at += text.length;
-      if (op === DIFF_INSERT) run.to = from += text.length;
-    } else {
-      at += text.length;
-      from += text.length;
+/**
+ * Myers' shortest edit script of a[aFrom, aTo) and b[bFrom, bTo), appended to `out` as changed runs of token indexes,
+ * or false once it passes `cap` steps (a diagonal searched or a token matched). `spent.steps` is what it took. Round d
+ * keeps its d + 1 diagonals and costs at least d + 1 steps, so the trace never holds more than `cap` integers.
+ */
+function myers(a: Int32Array, aFrom: number, aTo: number, b: Int32Array, bFrom: number, bTo: number, cap: number, out: Run[], spent: { steps: number }): boolean {
+  const n = aTo - aFrom;
+  const m = bTo - bFrom;
+  const reach = Math.min(n + m, Math.ceil(Math.sqrt(2 * cap)) + 1) + 1;
+  const v = new Int32Array(2 * reach + 1);
+  const trace: Int32Array[] = [];
+  let steps = 0;
+  let found = -1;
+  for (let d = 0; found < 0; d++) {
+    const row = new Int32Array(d + 1);
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[reach + k - 1]! < v[reach + k + 1]!) ? v[reach + k + 1]! : v[reach + k - 1]! + 1;
+      let y = x - k;
+      while (x < n && y < m && a[aFrom + x] === b[bFrom + y]) {
+        x++;
+        y++;
+        steps++;
+      }
+      v[reach + k] = x;
+      row[(k + d) >> 1] = x;
+      if (++steps > cap) {
+        spent.steps = steps;
+        return false;
+      }
+      if (x >= n && y >= m) {
+        found = d;
+        break;
+      }
     }
+    trace.push(row);
   }
+  spent.steps = steps;
+  // Walk back from the end; each round is one move from (x, y): 1 inserts b[y], 0 deletes a[x]. Kept last to first.
+  const moves: number[] = [];
+  let x = n;
+  let y = m;
+  for (let d = found; d > 0; d--) {
+    const prev = trace[d - 1]!;
+    const at = (k: number): number => prev[(k + d - 1) >> 1]!;
+    const k = x - y;
+    const down = k === -d || (k !== d && at(k - 1) < at(k + 1));
+    const pk = down ? k + 1 : k - 1;
+    x = at(pk);
+    y = x - pk;
+    moves.push(down ? 1 : 0, x, y);
+  }
+  for (let i = moves.length - 3; i >= 0; i -= 3) {
+    const mx = aFrom + moves[i + 1]!;
+    const my = bFrom + moves[i + 2]!;
+    const last = out.at(-1);
+    const run = last && last.end === mx && last.to === my ? last : { start: mx, end: mx, from: my, to: my };
+    if (run !== last) out.push(run);
+    if (moves[i] === 1) run.to++;
+    else run.end++;
+  }
+  return true;
+}
+
+/**
+ * The gaps of a[aFrom, aTo) and b[bFrom, bTo) between the longest chain of tokens that occur once on each side and
+ * keep their order (patience diff), as flat [aStart, aEnd, bStart, bEnd] quadruples trimmed of their equal ends.
+ */
+function patience(a: Int32Array, aFrom: number, aTo: number, b: Int32Array, bFrom: number, bTo: number): number[] {
+  const inA = new Map<number, number>(); // a token's index in a when it occurs there once, else -1
+  for (let i = aFrom; i < aTo; i++) inA.set(a[i]!, inA.has(a[i]!) ? -1 : i);
+  const inB = new Map<number, number>();
+  for (let j = bFrom; j < bTo; j++) if ((inA.get(b[j]!) ?? -1) >= 0) inB.set(b[j]!, inB.has(b[j]!) ? -1 : j);
+  const pairs: number[] = []; // [i, j] flat, in a's order
+  for (let i = aFrom; i < aTo; i++) {
+    const j = inB.get(a[i]!) ?? -1;
+    if (j >= 0 && inA.get(a[i]!) === i) pairs.push(i, j);
+  }
+  // The longest chain of pairs increasing in b, by patience sorting: O(p log p).
+  const count = pairs.length / 2;
+  const tails: number[] = [];
+  const back = new Int32Array(count).fill(-1);
+  for (let p = 0; p < count; p++) {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pairs[2 * tails[mid]! + 1]! < pairs[2 * p + 1]!) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0) back[p] = tails[lo - 1]!;
+    tails[lo] = p;
+  }
+  const chain: number[] = [];
+  for (let p = tails.at(-1) ?? -1; p >= 0; p = back[p]!) chain.push(p);
+  const gaps: number[] = [];
+  let i = aFrom;
+  let j = bFrom;
+  for (let c = chain.length - 1; c >= -1; c--) {
+    const ai = c >= 0 ? pairs[2 * chain[c]!]! : aTo;
+    const bj = c >= 0 ? pairs[2 * chain[c]! + 1]! : bTo;
+    let s = i;
+    let f = j;
+    let e = ai;
+    let t = bj;
+    while (s < e && f < t && a[s] === b[f]) {
+      s++;
+      f++;
+    }
+    while (e > s && t > f && a[e - 1] === b[t - 1]) {
+      e--;
+      t--;
+    }
+    gaps.push(s, e, f, t);
+    i = ai + 1;
+    j = bj + 1;
+  }
+  return gaps;
+}
+
+/**
+ * The changed runs between token lists `a` and `b`. With `anchors` (lines), patience gaps come first, so scattered
+ * edits cost only their own gaps. A gap whose search passes DIFF_WORK (or, by character, DENSE_WORK) is replaced
+ * whole; a strict diff throws once the push's budget is spent.
+ */
+function tokenRuns(a: Int32Array, b: Int32Array, anchors: boolean, budget: MergeBudget, strict: boolean): Run[] {
+  let aFrom = 0;
+  let bFrom = 0;
+  let aTo = a.length;
+  let bTo = b.length;
+  while (aFrom < aTo && bFrom < bTo && a[aFrom] === b[bFrom]) {
+    aFrom++;
+    bFrom++;
+  }
+  while (aTo > aFrom && bTo > bFrom && a[aTo - 1] === b[bTo - 1]) {
+    aTo--;
+    bTo--;
+  }
+  const gaps = anchors && aFrom < aTo && bFrom < bTo ? patience(a, aFrom, aTo, b, bFrom, bTo) : [aFrom, aTo, bFrom, bTo];
+  const out: Run[] = [];
+  const spent = { steps: 0 };
+  for (let g = 0; g < gaps.length; g += 4) {
+    const s = gaps[g]!;
+    const e = gaps[g + 1]!;
+    const f = gaps[g + 2]!;
+    const t = gaps[g + 3]!;
+    if (s === e && f === t) continue;
+    spent.steps = 0;
+    const found = s < e && f < t && myers(a, s, e, b, f, t, Math.min(budget.work, DIFF_WORK, anchors ? DIFF_WORK : DENSE_WORK * (e - s + t - f)), out, spent);
+    charge(budget, spent.steps, strict);
+    if (!found) out.push({ start: s, end: e, from: f, to: t });
+  }
+  return out;
 }
 
 /** Each line with its newline; a last line without one stays as it is. */
@@ -110,56 +245,84 @@ function splitLines(text: string): string[] {
   if (from < text.length) out.push(text.slice(from));
   return out;
 }
-const MAX_LINES = 0xd000; // one BMP code unit per distinct line, below the surrogates
+
+/** text[from, to) as code points, so no run splits a surrogate pair. */
+function codePoints(text: string, from: number, to: number): Int32Array {
+  const out = new Int32Array(to - from);
+  let n = 0;
+  for (let at = from; at < to; n++) {
+    const code = text.codePointAt(at)!;
+    out[n] = code;
+    at += code > 0xffff ? 2 : 1;
+  }
+  return out.subarray(0, n);
+}
+
+/** Token runs as UTF-16 runs offset by `at` and `from`, appended to `out`; the runs are in order, so one walk sizes them. */
+function unitRuns(runs: Run[], sizeA: (i: number) => number, sizeB: (j: number) => number, at: number, from: number, out: Run[]): void {
+  let i = 0;
+  let j = 0;
+  for (const run of runs) {
+    for (; i < run.start; i++) at += sizeA(i);
+    for (; j < run.from; j++) from += sizeB(j);
+    const start = at;
+    const was = from;
+    for (; i < run.end; i++) at += sizeA(i);
+    for (; j < run.to; j++) from += sizeB(j);
+    out.push({ start, end: at, from: was, to: from });
+  }
+}
+
+const unitSize = (codes: Int32Array) => (i: number): number => (codes[i]! > 0xffff ? 2 : 1);
 
 /**
- * The edits turning `base` into `side`. Lines are diffed first, so an unchanged line always separates two edits and a
- * character diff never aligns one paragraph with another; changed lines are then diffed by character, and changes on
- * one line separated only by unchanged text are one edit. Every diff draws on `budget`; MergeBudgetExceeded when it runs out.
+ * The edits turning `base` into `side`, and the base characters they delete. Lines are diffed first, so an unchanged
+ * line always separates two edits and a character diff never aligns one paragraph with another; changed lines are
+ * then diffed by character, and changes on one line separated only by unchanged text are one edit.
  */
-export function editsOf(base: string, side: string, budget: MergeBudget = mergeBudget()): Edit[] {
-  const runs: Run[] = [];
-  const codes = new Map<string, string>();
-  const encode = (text: string): string => splitLines(text).map((line) => {
-    let code = codes.get(line);
-    if (code === undefined) codes.set(line, (code = String.fromCharCode(codes.size + 1)));
-    return code;
-  }).join('');
-  const baseCodes = encode(base);
-  const sideCodes = encode(side);
-  if (codes.size >= MAX_LINES) {
-    charRuns(base, side, 0, 0, runs, budget);
-  } else {
-    const lines = [...codes.keys()];
-    const length = (codesOf: string): number => [...codesOf].reduce((sum, code) => sum + lines[code.charCodeAt(0) - 1]!.length, 0);
-    let at = 0;
-    let from = 0;
-    let region: Run | null = null;
-    const flush = (): void => {
-      if (region) charRuns(base.slice(region.start, region.end), side.slice(region.from, region.to), region.start, region.from, runs, budget);
-      region = null;
-    };
-    for (const [op, text] of budgetedDiff(budget, baseCodes, sideCodes, false)) {
-      const size = length(text);
-      if (op === DIFF_EQUAL) {
-        flush();
-        at += size;
-        from += size;
-        continue;
-      }
-      region ??= { start: at, end: at, from, to: from };
-      if (op === DIFF_DELETE) region.end = at += size;
-      if (op === DIFF_INSERT) region.to = from += size;
+function sideEdits(base: string, side: string, budget: MergeBudget, strict: boolean): { edits: Edit[]; deleted: number } {
+  const ids = new Map<string, number>();
+  const sizes: number[] = [];
+  const encode = (text: string): Int32Array => Int32Array.from(splitLines(text), (line) => {
+    let id = ids.get(line);
+    if (id === undefined) {
+      ids.set(line, (id = ids.size));
+      sizes.push(line.length);
     }
-    flush();
+    return id;
+  });
+  const baseLines = encode(base);
+  const sideLines = encode(side);
+  const regions: Run[] = [];
+  unitRuns(tokenRuns(baseLines, sideLines, true, budget, strict), (i) => sizes[baseLines[i]!]!, (j) => sizes[sideLines[j]!]!, 0, 0, regions);
+  const runs: Run[] = [];
+  for (const region of regions) {
+    const a = codePoints(base, region.start, region.end);
+    const b = codePoints(side, region.from, region.to);
+    unitRuns(tokenRuns(a, b, false, budget, strict), unitSize(a), unitSize(b), region.start, region.from, runs);
   }
+  let deleted = 0;
+  let newline = -1; // the first newline at or after the last joined run's end, or base.length
   const joined: Run[] = [];
   for (const run of runs) {
+    deleted += run.end - run.start;
     const last = joined.at(-1);
-    if (last && !base.slice(last.end, run.start).includes('\n')) Object.assign(last, { end: run.end, to: run.to });
+    if (last && newline < last.end) {
+      newline = base.indexOf('\n', last.end);
+      if (newline < 0) newline = base.length;
+    }
+    if (last && newline >= run.start) Object.assign(last, { end: run.end, to: run.to });
     else joined.push({ ...run });
   }
-  return joined.map(({ start, end, from, to }) => ({ start, end, text: side.slice(from, to) }));
+  return { edits: joined.map(({ start, end, from, to }) => ({ start, end, text: side.slice(from, to) })), deleted };
+}
+
+/**
+ * The edits turning `base` into `side` (see sideEdits), drawing on `budget`. A strict diff throws MergeBudgetExceeded
+ * once the budget is spent; a lenient one returns coarser edits instead.
+ */
+export function editsOf(base: string, side: string, budget: MergeBudget = mergeBudget(), strict = true): Edit[] {
+  return sideEdits(base, side, budget, strict).edits;
 }
 
 /** Whether two edits touch the same base region; an insertion at the edge of another edit does not. */
@@ -195,8 +358,8 @@ export const withoutFinalEol = (text: string): string => text.slice(0, bodyEnd(t
 
 /**
  * Final newlines are not content (an editor adds one on save; the export has none), so the three texts merge without
- * them and the target keeps `current`'s. With refuseDegenerate, a degenerate push is refused before the regions are merged.
- * Every diff draws on one budget; MergeBudgetExceeded when it runs out.
+ * them and the target keeps `current`'s. With refuseDegenerate, a degenerate push is refused before the doc's own edits
+ * are diffed. Every diff draws on one budget; a drifted merge throws MergeBudgetExceeded once it is spent.
  */
 export function computeMergedTarget(current: string, base: string, next: string, options: MergeOptions = {}): MergeComputation {
   const merge = mergeBodies(withoutFinalEol(current), withoutFinalEol(base), withoutFinalEol(next), options.refuseDegenerate === true, options.budget ?? mergeBudget());
@@ -207,16 +370,27 @@ function mergeBodies(current: string, base: string, next: string, refuseDegenera
   const drifted = current !== base;
   const unchanged = { failedHunks: [], drifted, applied: 0, degenerate: false };
   if (base === next) return { ...unchanged, target: current, deletedRatio: 0 };
-  const deletedRatio = deleted(cleanupSemantic(budgetedDiff(budget, base, next))) / Math.max(base.length, 1);
+  // An undrifted push lands `next` whatever its edits are, so only a drifted merge needs them exact.
+  const pushed = sideEdits(base, next, budget, drifted);
+  const deletedRatio = pushed.deleted / Math.max(base.length, 1);
   if (refuseDegenerate && isDegenerate(base, next, deletedRatio)) return { ...unchanged, target: current, deletedRatio, degenerate: true };
-  if (!drifted) return { ...unchanged, target: next, deletedRatio, applied: changes(cleanupSemantic(budgetedDiff(budget, current, next))) };
-  const theirs = editsOf(base, current, budget);
+  if (!drifted) return { ...unchanged, target: next, deletedRatio, applied: pushed.edits.length };
+  const theirs = editsOf(base, current, budget, true);
   const accepted: Edit[] = [];
   const failed: Edit[] = [];
-  for (const edit of editsOf(base, next, budget)) {
+  // Both lists are in base order and each is disjoint, so one sweep finds every edit of theirs a pushed edit touches.
+  let first = 0;
+  for (const edit of pushed.edits) {
+    while (first < theirs.length && theirs[first]!.end < edit.start) first++;
+    let same = false;
+    let clash = false;
+    for (let k = first; k < theirs.length && theirs[k]!.start <= edit.end; k++) {
+      const other = theirs[k]!;
+      if (other.start === edit.start && other.end === edit.end && other.text === edit.text) same = true;
+      else if (overlaps(edit, other)) clash = true;
+    }
     // Made identically on both sides: already in the doc.
-    if (theirs.some((other) => other.start === edit.start && other.end === edit.end && other.text === edit.text)) continue;
-    (theirs.some((other) => overlaps(edit, other)) ? failed : accepted).push(edit);
+    if (!same) (clash ? failed : accepted).push(edit);
   }
   const ordered = [...theirs, ...accepted].sort((a, b) => a.start - b.start || (a.end - a.start) - (b.end - b.start));
   let target = '';
@@ -226,8 +400,7 @@ function mergeBodies(current: string, base: string, next: string, refuseDegenera
     at = edit.end;
   }
   target += base.slice(at);
-  const applied = target === current ? 0 : changes(cleanupSemantic(budgetedDiff(budget, current, target)));
-  return { target, failedHunks: describeHunks(base, failed), deletedRatio, drifted, applied, degenerate: false };
+  return { target, failedHunks: describeHunks(base, failed), deletedRatio, drifted, applied: accepted.length, degenerate: false };
 }
 
 /** A push that empties the doc, or deletes more than DEGENERATE_DELETE_RATIO of its base, drifted or not. */
