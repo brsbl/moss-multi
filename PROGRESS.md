@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 62% done** (85 of 137 planned tasks verified)
+**Overall: 54% done** (86 of 160 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 33 / 33 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 34 / 34 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -104,6 +104,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S8 verified: a peer that sends malformed cursor positions no longer breaks cursor painting for everyone; the server drops those positions and the other collaborators' cursors still show.
 - 2026-10-09 — T3.S11 verified: importing or pushing a note with tens of thousands of frontmatter keys now costs linear work, so it is admitted or refused at the cap in moments instead of a minute.
 - 2026-10-09 — T3.S12 verified: unfurling a link to a page full of unclosed meta, link or title tags now costs linear work, so the card preview returns in moments instead of tying up the server.
+- 2026-10-09 — T3.S13 verified: a forged payload frame that Yjs would park is now refused and purged, so compaction and restarts never persist parked state in a note's payloads.
 
 ## T1.1s identity audit
 
@@ -453,3 +454,6 @@ Local browser verification remains assigned to the independent checker under the
 - Layout persistence walks the whole tree and writes localStorage on every editor update (apps/web/src/host/collab/layout-local.ts:39-76). Skip updates that do not touch tables or tabs, write only values that changed, and batch writes into one, flushing on teardown.
 - The ack ledger keeps acknowledged writes during a continuous editing stream (apps/web/src/host/collab/acks.ts:48-57). On each ack, drop the writes it fully covers, and keep only those still outstanding.
 - Expanding YAML aliases in imported frontmatter is unbounded (packages/sync/src/doc-do.ts:257). Before normalizing, detect aliases and cycles or count expanded nodes against a budget, and refuse import when the budget is exceeded.
+- T3.S13 (Payload frames leave nothing parked) checker P2: a near-cap self-parented or parent-cycle frame throws inside the state-cap estimate (`stateBytesAfter`, packages/sync/src/doc/admission.ts:174-182) and is silently dropped by doc-do.ts:1029 with no 4409 and no ack; refuse it `unresolved` for parity (forged frames only, nothing parked).
+- T3.S13 (Payload frames leave nothing parked) checker P2: rows compacted before the fix may already hold parked structs, so `applyFrame` (payloads.ts:338-355) blames the next honest frame with 4409 until a threshold compaction; purge pending state when the rows load.
+- T3.S13 (Payload frames leave nothing parked) checker P2: `payloads.test` first inspects the rows after a second compaction (so it does not isolate compact-after-purge), never gives `raw()` delete ranges (pendingDs untested), and its throwing fixtures use higher client ids (partial apply untested); check the rows right after the refused frame and add those cases.
