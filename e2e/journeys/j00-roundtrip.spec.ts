@@ -110,7 +110,8 @@ async function servePage(host: string): Promise<{ url: string; close: () => Prom
   return { url: `http://${host}:${port}/`, close: () => new Promise((resolve) => server.close(() => resolve())) };
 }
 
-test('j00-roundtrip: a page on another origin opens the doc socket with the signed-in cookie and reads nothing @p:ppl-1', async ({ actors, stack }) => {
+// local-only: serves the other-origin page on another port of the stack's own host.
+test('j00-roundtrip: a page on another origin opens the doc socket with the signed-in cookie and reads nothing @local-only @p:ppl-1', async ({ actors, stack }) => {
   actors.solo('one signed-in person; the other side is a page on another port, not a principal');
   const ada = await actors.principal('ada');
   const adaCookie = cookieHeader(await signIn(stack.baseUrl, ada));

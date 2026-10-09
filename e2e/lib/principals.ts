@@ -1,6 +1,7 @@
 // Per-run principals (S-test §3.3). Sign-up and sign-in go through the real auth API as declared setup (the auth
 // journey uses the login UI instead); the guard makes the owner's accounts unreachable by construction.
 import { createHmac, randomBytes } from 'node:crypto';
+import { test } from '@playwright/test';
 
 export const EXAMPLE_DOMAIN = '@example.invalid';
 
@@ -79,8 +80,15 @@ export async function mintPrincipal(baseUrl: string, runToken: string, label: st
 async function pastAuthLimit(post: () => Promise<Response>): Promise<Response> {
   let response = await post();
   for (let attempt = 0; attempt < 3 && response.status === 429; attempt += 1) {
-    const wait = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65);
-    await new Promise((done) => setTimeout(done, wait * 1000 + 500));
+    const waitMs = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65) * 1000 + 500;
+    // The wait is setup's, not the leg's: the running test's timeout grows by it.
+    try {
+      const info = test.info();
+      if (info.timeout > 0) info.setTimeout(info.timeout + waitMs);
+    } catch {
+      // Outside a test.
+    }
+    await new Promise((done) => setTimeout(done, waitMs));
     response = await post();
   }
   return response;

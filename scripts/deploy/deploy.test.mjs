@@ -320,7 +320,7 @@ describe('deploy-staging.yml', () => {
     expect(job.strategy.matrix.browser).toEqual(['chromium', 'webkit']);
     expect(job.strategy['fail-fast']).toBe(false);
     const run = job.steps.find((step) => /playwright test/.test(step.run ?? '')).run;
-    expect(run).toMatch(/--project=staging-\$\{?BROWSER/);
+    expect(run).toMatch(/--project=staging-"?\$\{?BROWSER/);
     expect(run).not.toMatch(/--reporter|PLAYWRIGHT_|--grep/);
     // Per-run principals, never the pool secret, and this run's own budget.
     const state = job.steps.find((step) => /canary-state\.mjs/.test(step.run ?? ''));
