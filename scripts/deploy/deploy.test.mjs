@@ -1,13 +1,17 @@
 // T8.D: the staging deploy pipeline's pure parts and its assertion script, against a fake Worker on loopback. The
 // build job runs the same assertion against the real production-mode smoke stack (ci.yml).
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import yaml from 'js-yaml';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deployedProblems, hookProblems } from './assert-deployed.mjs';
+import { canarySummary, recordingFor } from './canary-artifacts.mjs';
 import { canaryState } from './canary-state.mjs';
 import { preflightProblems } from './preflight.mjs';
+import { gateProblems, runProblems } from './run-gate.mjs';
 import { forbiddenFiles, migrationProblems, parseJsonc, readStagingEnv, stagingConfig } from './staging-config.mjs';
 import { testedRunProblems } from './tested-run.mjs';
 
@@ -153,7 +157,14 @@ describe('the tested run', () => {
     ...['plan', 'checks', 'build', 'editor-host', 'oracle', 'parity', 'viewer', 'editor', 'canary', 'ci-ok'].map((name) => job(name)),
     ...['chromium', 'webkit'].flatMap((engine) => groups.map((group) => job(`e2e (${engine}, ${group})`))),
   ];
-  const run = { path: '.github/workflows/ci.yml', conclusion: 'success', event: 'workflow_dispatch', head_sha: COMMIT };
+  const repo = { full_name: 'brsbl/moss-multi' };
+  const run = { path: '.github/workflows/ci.yml', conclusion: 'success', event: 'workflow_dispatch', head_sha: COMMIT, repository: repo, head_repository: repo };
+
+  it('refuses a run whose head repository is a fork', () => {
+    const fork = { ...run, head_repository: { full_name: 'mallory/moss-multi' } };
+    expect(testedRunProblems({ run: fork, jobs, groups, repository: 'brsbl/moss-multi' }).join('\n')).toMatch(/mallory\/moss-multi/);
+    expect(testedRunProblems({ run, jobs, groups, repository: 'brsbl/moss-multi' })).toEqual([]);
+  });
 
   it('accepts a green full lane in both engines over every journey group', () => {
     expect(testedRunProblems({ run, jobs, groups })).toEqual([]);
@@ -174,6 +185,167 @@ describe('the tested run', () => {
     const skipped = jobs.map((j) => (j.name === name ? job(name, 'skipped') : j));
     expect(testedRunProblems({ run, jobs: skipped, groups })).toContain(`${name}: skipped`);
     expect(testedRunProblems({ run, jobs: jobs.filter((j) => j.name !== name), groups })).toContain(`${name}: missing`);
+  });
+});
+
+// The gate deploy-staging.yml runs from its own commit before any of the run's code or a secret is in reach.
+describe('the run gate', () => {
+  const REPO = 'brsbl/moss-multi';
+  const TIP = 'e'.repeat(40);
+  const repo = { full_name: REPO };
+  const run = {
+    id: 1,
+    path: '.github/workflows/ci.yml',
+    status: 'completed',
+    conclusion: 'success',
+    event: 'push',
+    head_sha: COMMIT,
+    head_branch: 'm8',
+    repository: repo,
+    head_repository: repo,
+  };
+  const ref = (sha, name = 'm8') => ({ ref: `refs/heads/${name}`, object: { sha, type: 'commit' } });
+  const compare = (status, base = COMMIT) => ({ status, base_commit: { sha: base }, merge_base_commit: { sha: base } });
+  const gate = (overrides) => gateProblems({ run, ref: ref(COMMIT), compare: compare('identical'), repository: REPO, ...overrides });
+
+  it('passes a green push run at its branch head, and a few commits behind it', () => {
+    expect(gate({})).toEqual([]);
+    expect(gate({ run: { ...run, event: 'workflow_dispatch' } })).toEqual([]);
+    expect(gate({ ref: ref(TIP), compare: compare('ahead') })).toEqual([]);
+    expect(runProblems(run, REPO)).toEqual([]);
+  });
+
+  it('refuses a fork pull request run, even one whose own checks would pass', () => {
+    const fork = { ...run, event: 'pull_request', head_branch: 'main', head_repository: { full_name: 'mallory/moss-multi' } };
+    expect(gate({ run: fork }).join('\n')).toMatch(/mallory\/moss-multi/);
+    expect(runProblems(fork, REPO).join('\n')).toMatch(/mallory\/moss-multi/);
+  });
+
+  it('refuses a same-repository pull request run', () => {
+    expect(gate({ run: { ...run, event: 'pull_request' } }).join('\n')).toMatch(/pull_request/);
+  });
+
+  it('refuses a foreign head repository on a push-shaped run, and a run listed under another repository', () => {
+    expect(gate({ run: { ...run, head_repository: { full_name: 'mallory/moss-multi' } } }).join('\n')).toMatch(/mallory/);
+    expect(gate({ run: { ...run, repository: { full_name: 'mallory/moss-multi' } } }).join('\n')).toMatch(/mallory/);
+    expect(gate({ run: { ...run, head_repository: null } })).not.toEqual([]);
+    expect(gate({ repository: '' })).not.toEqual([]);
+  });
+
+  it('refuses another workflow, a failed or unfinished run, and a malformed head', () => {
+    expect(gate({ run: { ...run, path: '.github/workflows/main.yml' } }).join('\n')).toMatch(/ci\.yml/);
+    expect(gate({ run: { ...run, conclusion: 'failure' } }).join('\n')).toMatch(/failure/);
+    expect(gate({ run: { ...run, status: 'in_progress', conclusion: null } }).join('\n')).toMatch(/in_progress/);
+    expect(gate({ run: { ...run, head_sha: 'abc' } }).join('\n')).toMatch(/head_sha/);
+    expect(gate({ run: { ...run, head_branch: '../../hooks' } }).join('\n')).toMatch(/branch/);
+    expect(gate({ run: null })).not.toEqual([]);
+  });
+
+  it('refuses a run whose branch no longer exists', () => {
+    expect(gate({ ref: null, compare: null }).join('\n')).toMatch(/m8 does not exist/);
+    expect(gate({ ref: ref(COMMIT, 'm8-other') }).join('\n')).toMatch(/does not exist/);
+  });
+
+  it('refuses a head that is not reachable from its branch', () => {
+    expect(gate({ ref: ref(TIP), compare: compare('diverged') }).join('\n')).toMatch(/not on m8/);
+    expect(gate({ ref: ref(TIP), compare: compare('behind') }).join('\n')).toMatch(/not on m8/);
+    expect(gate({ ref: ref(TIP), compare: null }).join('\n')).toMatch(/not on m8/);
+    expect(gate({ ref: ref(TIP), compare: compare('ahead', TIP) }).join('\n')).toMatch(/not on m8/);
+    expect(gate({ ref: ref(TIP), compare: compare('identical') }).join('\n')).toMatch(/not on m8/);
+  });
+});
+
+const WORKFLOW = yaml.load(readFileSync(fileURLToPath(new URL('../../.github/workflows/deploy-staging.yml', import.meta.url)), 'utf8'));
+
+describe('deploy-staging.yml', () => {
+  const needsOf = (name) => [WORKFLOW.jobs[name].needs ?? []].flat();
+  const upstream = (name) => needsOf(name).flatMap((need) => [need, ...upstream(need)]);
+  const holdsSecret = (value) => JSON.stringify(value ?? {}).includes('secrets.');
+  // A step that runs the run's code or holds a secret: a checkout of another ref, pnpm, or a secret in reach.
+  const risky = (job, step) =>
+    holdsSecret(job.env) ||
+    holdsSecret(step.env) ||
+    holdsSecret(step.with) ||
+    holdsSecret(step.run) ||
+    (step.uses?.startsWith('actions/checkout') && step.with?.ref !== undefined) ||
+    step.uses?.startsWith('pnpm/') ||
+    /\bpnpm\b/.test(step.run ?? '');
+
+  it('decides whether the run may deploy before any of its code or any secret is in reach', () => {
+    const gateJob = Object.keys(WORKFLOW.jobs).find((name) => WORKFLOW.jobs[name].steps.some((step) => step.id === 'gate'));
+    expect(gateJob, 'a step with id gate').toBeTruthy();
+    const steps = WORKFLOW.jobs[gateJob].steps;
+    const at = steps.findIndex((step) => step.id === 'gate');
+    expect(steps[at].run).toMatch(/scripts\/deploy\/run-gate\.mjs/);
+    for (const step of steps.slice(0, at + 1)) expect(risky(WORKFLOW.jobs[gateJob], step), step.name ?? step.uses).toBe(false);
+    // The only checkout before the gate is the workflow's own commit.
+    for (const step of steps.slice(0, at)) if (step.uses?.startsWith('actions/checkout')) expect(step.with?.ref).toBeUndefined();
+    expect(WORKFLOW.jobs[gateJob].outputs.sha).toBe('${{ steps.gate.outputs.sha }}');
+    for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
+      if (name === gateJob) continue;
+      for (const step of job.steps) {
+        if (risky(job, step)) expect(upstream(name), `${name}: ${step.name ?? step.uses}`).toContain(gateJob);
+        if (step.uses?.startsWith('actions/checkout') && step.with?.ref !== undefined) {
+          expect(step.with.ref, `${name} checks out the gated sha`).toBe(`\${{ needs.${gateJob}.outputs.sha }}`);
+        }
+      }
+    }
+  });
+
+  it('uploads only the credential-free canary files', () => {
+    const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+  });
+});
+
+describe('canary recording', () => {
+  const RETAIN = { trace: 'retain-on-failure', screenshot: 'only-on-failure', video: 'off' };
+  const OFF = { trace: 'off', screenshot: 'off', video: 'off' };
+
+  it('keeps traces against a loopback stack', () => {
+    for (const url of ['http://127.0.0.1:8850', 'http://localhost:8787', 'http://[::1]:8850', 'http://127.4.5.6']) expect(recordingFor(url), url).toEqual(RETAIN);
+  });
+
+  it('turns trace, screenshot and video off for any other target, and when the target is unknown', () => {
+    for (const url of [URL_STAGING, 'http://10.0.0.5:8850', 'http://127.0.0.1.example.com', 'http://localhost.example.com', 'not a url', '', undefined]) {
+      expect(recordingFor(url), String(url)).toEqual(OFF);
+    }
+  });
+
+  it('resolves the canary project from STACK_STATE in e2e/playwright.config.ts', async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), 'canary-config-'));
+    const load = async (baseUrl) => {
+      const statePath = join(dir, `${encodeURIComponent(baseUrl)}.json`);
+      writeFileSync(statePath, JSON.stringify({ baseUrl }));
+      vi.stubEnv('STACK_STATE', statePath);
+      vi.resetModules();
+      const config = (await import('../../e2e/playwright.config.ts')).default;
+      return { ...config.use, ...config.projects.find((project) => project.name === 'canary').use };
+    };
+    try {
+      expect(await load(URL_STAGING)).toMatchObject(OFF);
+      expect(await load('http://127.0.0.1:8850')).toMatchObject(RETAIN);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('summarizes results as title, status and duration only', () => {
+    const failed = { status: 'failed', duration: 1234, error: { message: 'Cookie: better-auth.session_token=SECRET' }, attachments: [{ name: 'trace', path: '/x/trace.zip' }] };
+    const results = {
+      suites: [
+        {
+          title: 'journeys/j00-shell.spec.ts',
+          specs: [],
+          suites: [{ title: 'j00 shell', specs: [{ title: 'signs in', tests: [{ projectName: 'canary', results: [failed] }] }] }],
+        },
+      ],
+    };
+    const summary = canarySummary(results);
+    expect(summary).toEqual({ tests: [{ title: 'journeys/j00-shell.spec.ts › j00 shell › signs in', status: 'failed', duration: 1234 }] });
+    expect(JSON.stringify(summary)).not.toMatch(/SECRET|trace\.zip|Cookie/);
   });
 });
 
