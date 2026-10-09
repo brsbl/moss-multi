@@ -123,13 +123,14 @@ describe('highlight normalization is bounded @p:tech-4', () => {
     expect(normalizeRichTextInsideHighlightsForImport(line)).toBe(line);
   });
 
-  // Past 2^20 added characters the import's own budget (perImport over NORMALIZED) leaves every further line literal,
-  // so a note's highlights together add no more than that.
+  // Past about 3M added characters the import's note budget (perNote over NORMALIZED and NORMALIZED_NOTE) leaves every
+  // further line literal, so a note's highlights together add at most 2^22.
   it('bounds what a note of many highlights adds as a whole', () => {
-    const note = Array.from({ length: 40_000 }, () => '<mark data-color="yellow">**a** b</mark>').join('\n\n');
+    const highlight = `<mark data-color="yellow" style="${' '.repeat(60)}">**a** b **c** d</mark>`;
+    const note = Array.from({ length: 20_000 }, () => highlight).join('\n\n');
     const out = normalizeRichTextInsideHighlightsForImport(note);
-    expect(out.length - note.length).toBeLessThanOrEqual(1 << 20);
-    expect(out.startsWith('<mark data-color="yellow">**a**</mark><mark data-color="yellow"> b</mark>')).toBe(true);
-    expect(out.endsWith('<mark data-color="yellow">**a** b</mark>')).toBe(true);
+    expect(out.length - note.length).toBeLessThanOrEqual(1 << 22);
+    expect(out.startsWith(`<mark data-color="yellow" style="${' '.repeat(60)}">**a**</mark>`)).toBe(true);
+    expect(out.endsWith(highlight)).toBe(true);
   });
 });
