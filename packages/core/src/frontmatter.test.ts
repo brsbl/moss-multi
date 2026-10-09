@@ -135,9 +135,9 @@ describe('frontmatter scale', () => {
     const doc = new Y.Doc();
     const ms: Record<string, number> = {};
     const time = (name: string, run: () => void) => {
-      const started = performance.now();
+      const started = Date.now();
       run();
-      ms[name] = performance.now() - started;
+      ms[name] = Date.now() - started;
     };
     const keys = flat(count);
     time('import', () => updateFrontmatter(doc, null, keys, LOCAL));
