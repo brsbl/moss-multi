@@ -125,9 +125,10 @@ test('j18-agents rate: the 61st push in a minute gets 429 with retry-after @p:ag
       body: JSON.stringify({ newText: base, baseHash, baseText: base }),
       signal: AbortSignal.timeout(30_000),
     });
-    for (let i = 0; i < PUSHES_PER_MINUTE; i += 1) {
-      const response = await push();
-      expect(response.status, `push ${i + 1} of ${PUSHES_PER_MINUTE}`).toBe(200);
+    // Ten at a time, so the minute's pushes land inside one window even at staging's round trip.
+    for (let i = 0; i < PUSHES_PER_MINUTE; i += 10) {
+      const batch = await Promise.all(Array.from({ length: Math.min(10, PUSHES_PER_MINUTE - i) }, () => push()));
+      expect(batch.map((response) => response.status), `pushes ${i + 1} to ${i + batch.length} of ${PUSHES_PER_MINUTE}`).toEqual(batch.map(() => 200));
     }
     const over = await push();
     expect(over.status, 'the 61st push in the minute').toBe(429);

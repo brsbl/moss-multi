@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
+import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor } from './detectors.js';
 import { assertNotInfra, InfraBlocked } from './infra.ts';
 import {
@@ -147,6 +148,11 @@ export class Actors {
         })
       : null;
     this.options.stack?.budget?.watch(context);
+    // The card's own sign-ins and sign-ups count against the auth limit setup paces under (auth-pace.ts).
+    context.on('response', (response) => {
+      const kind = authKind(response.url(), response.request().method());
+      if (kind && response.status() !== 429) recordAuth(kind);
+    });
     const page = await context.newPage();
     telemetry = Telemetry.install(page, { routed: !!sever });
     await telemetry.ready;

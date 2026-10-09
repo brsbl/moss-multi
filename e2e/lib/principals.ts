@@ -1,7 +1,7 @@
 // Per-run principals (S-test §3.3). Sign-up and sign-in go through the real auth API as declared setup (the auth
 // journey uses the login UI instead); the guard makes the owner's accounts unreachable by construction.
 import { createHmac, randomBytes } from 'node:crypto';
-import { test } from '@playwright/test';
+import { authHeadroom, type AuthKind, extendTimeout, recordAuth, RESERVE } from './auth-pace.ts';
 
 export const EXAMPLE_DOMAIN = '@example.invalid';
 
@@ -58,7 +58,7 @@ export function newPrincipal(runToken: string, label: string, n: number): Princi
 /** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
 export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
   const { email, name, password } = newPrincipal(runToken, label, n);
-  const response = await pastAuthLimit(() => fetch(`${baseUrl}/api/auth/sign-up/email`, {
+  const response = await pastAuthLimit('sign-up', () => fetch(`${baseUrl}/api/auth/sign-up/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email, password, name }),
@@ -71,23 +71,19 @@ export async function mintPrincipal(baseUrl: string, runToken: string, label: st
 }
 
 /**
- * Sign-up and sign-in are limited to 10 a minute per address off the hook stack (auth.ts): staging and the canary
- * rehearsal. A 429 waits out the window, at most three times.
+ * Sign-up and sign-in are limited per address off the hook stack (auth.ts): staging and the canary rehearsal. Setup
+ * paces itself under the limit (auth-pace.ts); a 429 that still comes waits out the window, at most three times.
  */
-async function pastAuthLimit(post: () => Promise<Response>): Promise<Response> {
+async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Promise<Response> {
+  await authHeadroom(kind, RESERVE);
   let response = await post();
   for (let attempt = 0; attempt < 3 && response.status === 429; attempt += 1) {
     const waitMs = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65) * 1000 + 500;
-    // The wait is setup's, not the leg's: the running test's timeout grows by it.
-    try {
-      const info = test.info();
-      if (info.timeout > 0) info.setTimeout(info.timeout + waitMs);
-    } catch {
-      // Outside a test.
-    }
+    extendTimeout(waitMs);
     await new Promise((done) => setTimeout(done, waitMs));
     response = await post();
   }
+  if (response.status !== 429) recordAuth(kind);
   return response;
 }
 
@@ -137,7 +133,7 @@ export async function signIn(baseUrl: string, principal: Principal): Promise<Ses
   assertTestEmail(principal.email);
   const pooled = principal.pooled ? pooledSessions.get(`${baseUrl} ${principal.email}`) : undefined;
   if (pooled) return pooled.map((cookie) => ({ ...cookie }));
-  const response = await pastAuthLimit(() => postSignIn(baseUrl, principal));
+  const response = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
   if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
   const cookies = sessionCookies(response, baseUrl, principal.email);
   if (principal.pooled) pooledSessions.set(`${baseUrl} ${principal.email}`, cookies);

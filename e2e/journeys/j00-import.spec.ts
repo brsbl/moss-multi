@@ -51,9 +51,11 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     const imported = await actors.session(await actors.principal('imported'));
     const pasted = await actors.session(await actors.principal('pasted'));
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=', 'base64');
+    const app = new URL(stack.baseUrl).origin;
     for (const actor of [imported, pasted]) {
-      // Fixture media is synthetic. Keep the renderer's resource path while answering it deterministically.
-      await actor.page.route('https://**/*', (route) => route.request().resourceType() === 'image'
+      // Fixture media is synthetic. Keep the renderer's resource path while answering it deterministically. The app's
+      // own origin is https on staging, so it is left alone.
+      await actor.page.route((url) => url.protocol === 'https:' && url.origin !== app, (route) => route.request().resourceType() === 'image'
         ? route.fulfill({ status: 200, contentType: 'image/png', body: png })
         : route.fulfill({ status: 200, contentType: 'text/html', body: '' }));
       // The fixtures' local `assets/` media was never uploaded; its asset route (T3.1) is answered the same way.
