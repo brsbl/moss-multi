@@ -7,10 +7,12 @@
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
 import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
+import { forkOf } from '@moss-multi/sync/suggest/forks';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
@@ -764,11 +766,17 @@ function* rehearse(request: PasteRequest, max: number): Generator<void, { bytes:
   return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
 }
 
+const SUGGEST_PASTE_TOO_LARGE = 'This paste is too large for one suggestion, so none of it was added.';
+const SUGGEST_PASTE_CLOSED = 'Suggesting stopped before the paste went in, so none of it was added.';
+
 /** Lands `request`: its scratch replay, then its batches or its refusal. */
 function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void> {
   const { editor } = job;
   const { plan } = request;
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
+  const doc = noteDoc(editor);
+  // Suggest mode: the paste is one suggestion's ops, under the DocDO's record cap.
+  const fork = doc ? forkOf(doc) : undefined;
 
   // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
   const { bytes, largestFrame } = yield* rehearse(request, max);
@@ -776,7 +784,16 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
   }
+  // Some headroom: the batches' ops encode a little larger than the replay's one state.
+  if (fork && bytes > SUGGEST_LIMITS.recordOpsBytes * 0.9) {
+    refuseInput(SUGGEST_PASTE_TOO_LARGE);
+    return;
+  }
   yield;
+  if (fork?.closed) {
+    refuseInput(SUGGEST_PASTE_CLOSED);
+    return;
+  }
 
   // 2. The paste itself: the first batch at the caret, then the rest, all one undo step.
   const undo = collabUndo(editor);
@@ -803,8 +820,9 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   while (!placer.done) {
     job.liftDir(placer);
     batches += 1;
-    // Without a step to hold open (no collaborative undo), the rest goes in now.
-    if (undo?.hold && !job.flushing) yield;
+    // Without a step to hold open (no collaborative undo), the rest goes in now. In Suggest mode too: a refusal
+    // closes F, and only ops already sent are offered back, so every batch is sent before any reply can arrive.
+    if (undo?.hold && !job.flushing && !fork) yield;
     // Every later batch joins the paste's undo step (BodyUndo.hold), released once its update has committed.
     if (!editor._updating) settle();
     const release = undo?.hold?.();

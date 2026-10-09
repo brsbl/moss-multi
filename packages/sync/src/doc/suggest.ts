@@ -163,8 +163,7 @@ export class SqlLeases implements LeaseStore {
 }
 
 export const SUGGEST_CAPS = {
-  /** Bytes of ops (and delete parts) per record. */
-  recordOpsBytes: 256 * 1024,
+  recordOpsBytes: SUGGEST_LIMITS.recordOpsBytes,
   openPerPrincipal: 20,
   /** All open records' ops, as a share of the state cap. */
   openOpsShare: 0.25,

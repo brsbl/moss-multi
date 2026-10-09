@@ -11,6 +11,7 @@ import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type S
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
+import { registerFork } from './forks.ts';
 import { openRecords, readMeta } from './records.ts';
 import { bindCheck } from './review.ts';
 
@@ -497,6 +498,7 @@ export class SuggestFork {
     readonly body: Y.Doc,
     readonly options: ForkOptions,
   ) {
+    registerFork(this.doc, this);
     this.#payloads = derivedPayloads(body, this.doc, SHIM_BODY_APPLY);
     this.#payloads.host.onHold((id, doc) => {
       doc.clientID = this.doc.clientID;
