@@ -126,3 +126,40 @@ it.each(['---\n# no fields yet\n---\n', '---\n---\n'])('imports an empty YAML bl
   expect(readFrontmatter(doc)).toBeNull();
   doc.destroy();
 });
+
+describe('frontmatter scale', () => {
+  // Each step here, for 4x the keys, must cost well under the 16x a quadratic step would.
+  const flat = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${String(i).padStart(6, '0')}`, 0]));
+
+  function steps(count: number): Record<string, number> {
+    const doc = new Y.Doc();
+    const ms: Record<string, number> = {};
+    const time = (name: string, run: () => void) => {
+      const started = performance.now();
+      run();
+      ms[name] = performance.now() - started;
+    };
+    const keys = flat(count);
+    time('import', () => updateFrontmatter(doc, null, keys, LOCAL));
+    expect(frontmatterKeys(doc)).toEqual(Object.keys(keys));
+    time('one-key update', () => writeFrontmatterKey(doc, 'k000001', 1, LOCAL));
+    time('one-key addition', () => writeFrontmatterKey(doc, 'added', 1, LOCAL));
+    const reversed = Object.fromEntries(Object.entries(readFrontmatter(doc) ?? {}).reverse());
+    time('reorder', () => updateFrontmatter(doc, readFrontmatter(doc), reversed, LOCAL));
+    expect(frontmatterKeys(doc)).toEqual(Object.keys(reversed));
+    time('re-import with every value changed', () => updateFrontmatter(doc, readFrontmatter(doc), Object.fromEntries(Object.keys(keys).map((key) => [key, 2])), LOCAL));
+    expect(frontmatterKeys(doc)).toEqual(Object.keys(keys));
+    doc.destroy();
+    return ms;
+  }
+
+  it('imports, updates and reorders tens of thousands of flat keys in time linear in the keys', { timeout: 600_000 }, () => {
+    steps(2_000);
+    const small = steps(10_000);
+    const large = steps(40_000);
+    for (const [name, ms] of Object.entries(large)) {
+      expect(ms, `${name}: 10,000 keys took ${small[name].toFixed(0)} ms, 40,000 took ${ms.toFixed(0)} ms`).toBeLessThanOrEqual(7 * small[name] + 150);
+    }
+    expect(large['one-key update'], 'a one-key update on 40,000 keys stays cheap').toBeLessThan(500);
+  });
+});
