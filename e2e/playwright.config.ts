@@ -3,9 +3,9 @@
 // E2E_GROUP narrows the journey projects to one shard's group (scripts/ci/journeys.mjs); `all` or unset runs every
 // journey.
 import { existsSync, readFileSync } from 'node:fs';
-import { defineConfig } from '@playwright/test';
+import { defineConfig, type ReporterDescription } from '@playwright/test';
 import { ALL, journeyMatch } from '../scripts/ci/journeys.mjs';
-import { RECORD_FAILURES, recordingFor } from '../scripts/deploy/canary-artifacts.mjs';
+import { CANARY_REPORTER, isLoopback, RECORD_FAILURES, recordingFor } from '../scripts/deploy/canary-artifacts.mjs';
 
 const statePath = process.env.STACK_STATE;
 const stack = statePath && existsSync(statePath) ? (JSON.parse(readFileSync(statePath, 'utf8')) as { baseUrl: string }) : null;
@@ -13,6 +13,10 @@ const group = process.env.E2E_GROUP;
 const journeys = group && group !== ALL ? { testMatch: journeyMatch(group) } : {};
 // No trace, screenshot or video against a non-loopback target: they would carry real session cookies.
 const recording = stack ? recordingFor(stack.baseUrl) : RECORD_FAILURES;
+// Nor error text or test output in the log: a failed request's call log lists its cookie header, and a staging run's
+// log is public. The JSON results stay on the runner.
+const offLoopback = stack !== null && !isLoopback(stack.baseUrl);
+const files: ReporterDescription[] = [['json', { outputFile: 'test-results/results.json' }], ['./lib/reporter.ts']];
 
 export default defineConfig({
   testDir: '.',
@@ -25,13 +29,14 @@ export default defineConfig({
   // A 2-vCPU runner holds workerd and 2-3 contexts; raise only after repeat_each=5 stays green.
   workers: 1,
   fullyParallel: false,
-  reporter: [
-    ['list'],
-    ...(process.env.CI ? [['github'] as const] : []),
-    ['html', { open: 'never', outputFolder: 'playwright-report' }],
-    ['json', { outputFile: 'test-results/results.json' }],
-    ['./lib/reporter.ts'],
-  ],
+  reporter: offLoopback
+    ? [[CANARY_REPORTER], ...files]
+    : [
+        ['list'],
+        ...(process.env.CI ? [['github'] as const] : []),
+        ['html', { open: 'never', outputFolder: 'playwright-report' }],
+        ...files,
+      ],
   use: {
     baseURL: stack?.baseUrl,
     viewport: { width: 1440, height: 1000 },

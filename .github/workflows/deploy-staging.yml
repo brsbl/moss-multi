@@ -219,7 +219,8 @@ jobs:
           CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
           RUN_ID: staging-${{ github.run_id }}
         run: pnpm exec playwright test --project=canary
-      # The artifact is public: the request count, and each test's title, status and duration. Never a trace, report,
+      # The log and artifact are public: the config prints only titles, statuses and durations off loopback, and the
+      # artifact is the request count and each test's title, status and duration. Never a trace, report,
       # error text or URL, which can carry the pooled sessions' cookies or bearer links.
       - name: A credential-free summary
         if: always()

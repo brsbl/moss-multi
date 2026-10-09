@@ -182,6 +182,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T8.D checker P2 (canary creates new DocDOs each run): only principals are pooled; the canary journeys create about 12 new notes per run whose DocDO storage is never reclaimed, while A§21 recommends a fixed doc pool too; docs/METHOD.md records the growth but does not bound it.
 - Slop Cop PR #11: canary pool emails are public and squattable (derive identifiers from the secret or pre-provision).
 - Slop Cop PR #11: validate request_budget and idle_seconds in preflight, before any Cloudflare step.
+- T8.Ds checker P2 (explicit screenshots still record off loopback): Actors.checkpoint and fail call page.screenshot() and attach the PNG whatever the screenshot setting; nothing uploads them, but the runner holds them.
+- T8.Ds checker P2 (the gate and the artifact policy are proven by unit and YAML tests only): no remote negative control dispatches deploy-staging.yml with sentinel credentials, since it must not be dispatched before staging is approved.
 
 ### From T8.4's checker (a30e669, 2026-10-08)
 

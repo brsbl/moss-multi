@@ -54,7 +54,7 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
    - **Legs:** j00-shell, the j01 setup legs, and j04's `@staging` leg. That leg idles for `idle_seconds`, then proves the wake through the owner-only `GET /api/docs/:id/instance`.
    - **Principals:** the fixed pool `canary-<label>@example.invalid`. Each signs up on the pool's first run and signs in once per run.
    - **Budget:** the run fails past `request_budget` Worker requests.
-   - **Artifacts:** off loopback, Playwright records no trace, screenshot or video, since they would carry the pool's session cookies. The public artifact holds only `requests.json` and `summary.json` (each test's title, status and duration).
+   - **Artifacts and log:** off loopback, Playwright records no trace or automatic screenshot or video, since they would carry the pool's session cookies. The run log prints only each test's title, status and duration (`scripts/deploy/canary-reporter.mjs`): a failed request's error lists its cookie header, and the log is public. The public artifact holds only `requests.json` and `summary.json` (each test's title, status and duration).
 
 CI rehearses the same canary on every full lane, against a production-mode local stack: the `canary` job in `ci.yml`.
 

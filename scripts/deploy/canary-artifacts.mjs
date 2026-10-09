@@ -5,7 +5,10 @@
 //   node scripts/deploy/canary-artifacts.mjs summary <results.json> <out.json>   (Playwright's JSON reporter output)
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+/** The run log off loopback: titles, statuses and durations, never error text or test output. */
+export const CANARY_REPORTER = fileURLToPath(new URL('./canary-reporter.mjs', import.meta.url));
 
 /** @typedef {{ trace: 'retain-on-failure' | 'off', screenshot: 'only-on-failure' | 'off', video: 'off' }} Recording */
 
@@ -15,7 +18,7 @@ export const RECORD_FAILURES = { trace: 'retain-on-failure', screenshot: 'only-o
 const OFF = { trace: 'off', screenshot: 'off', video: 'off' };
 
 /** @param {string | undefined} baseUrl */
-function isLoopback(baseUrl) {
+export function isLoopback(baseUrl) {
   let host;
   try {
     host = new URL(baseUrl ?? '').hostname;

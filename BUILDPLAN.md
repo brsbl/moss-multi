@@ -667,7 +667,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **M8 coordinator notes** (2026-10-08). The owner said staging credentials come **later**: build everything that does not need the Cloudflare account now, then ask before deploying.
   - **T8.0 (rule 10):** the DocDO refuses bundles that predate payload docs, plus a general minimum-client-version gate.
   - **T8.D:** the deploy pipeline (T1.10 plus T8.1 hygiene), validated by dry run: `env.staging`, `deploy-staging.yml` deploying the exact tested `dist`, the `/api/version` assertion, test hooks returning 404, `.dev.vars` never uploaded, a fixed principal pool and a request budget.
-  - **T8.Ds** (Slop Cop P1s, PR #11): `deploy-staging.yml` gates the CI run with its own `run-gate.mjs` (same-repository branch run of ci.yml, green, head on its branch) before checking out the run's commit or reaching a secret; the canary records no trace, screenshot or video off loopback and uploads only `requests.json` and a title, status and duration summary.
+  - **T8.Ds** (Slop Cop P1s, PR #11): `deploy-staging.yml` gates the CI run with its own `run-gate.mjs` (same-repository branch run of ci.yml, green, head on its branch) before checking out the run's commit or reaching a secret; the canary records no trace, screenshot or video off loopback, its run log prints only titles, statuses and durations, and it uploads only `requests.json` and a title, status and duration summary.
   - **T8.4:** MIGRATION.md.
   - **T8.5p:** a demo-content and signature-shot generator that runs against any stack.
   - **T8.3a:** an adversarial sweep against a local production build.
