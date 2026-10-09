@@ -33,14 +33,14 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
 
 1. Run the full CI lane on the branch to deploy, and wait for it to pass:
    `gh workflow run ci.yml --ref m8 -f lane=full`
-2. Dispatch the deploy with that run's id. The run must be green, a branch run (not a pull request), and less than 3 days old, because `web-dist` artifacts expire after 3 days:
+2. Dispatch the deploy with that run's id. The run must be green, a push or dispatch run of this repository (never a pull request or a fork), its head still on its branch, and less than 3 days old, because `web-dist` artifacts expire after 3 days:
    `gh workflow run deploy-staging.yml --ref m8 -f ci_run_id=<run id>`
    The optional inputs are `request_budget` (default 2000 Worker requests for the canary) and `idle_seconds` (default 20, at least 15).
 3. Watch it with `gh run watch <id> --interval 60 --exit-status`. The first deploy waits for the new `workers.dev` certificate, which took about 8 minutes before.
 
 ## What a run does
 
-1. **preflight:** checks every secret is set, and that `STAGING_URL` is https and not loopback.
+1. **preflight:** first gates the CI run with this workflow's own `scripts/deploy/run-gate.mjs`, before any of the run's code is checked out or a secret is in reach: a completed, successful `ci.yml` run of this repository from a push or dispatch, whose branch exists and whose head is that branch's head or an ancestor of it. Only then does it emit the commit the later jobs check out. It then checks every secret is set, and that `STAGING_URL` is https and not loopback.
 2. **deploy:**
    - **Checks the run.** The CI run must be a green full lane: `checks`, `build`, `editor-host`, `oracle`, `parity`, `viewer`, `editor`, `canary` and `ci-ok` all succeeded, and an e2e shard for every journey group in both engines. A grep run is refused.
    - **Gets the bytes.** It downloads that run's `web-dist` artifact, the bytes e2e ran on. Nothing is rebuilt. It checks the provenance commit equals the run's head.
@@ -54,6 +54,7 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
    - **Legs:** j00-shell, the j01 setup legs, and j04's `@staging` leg. That leg idles for `idle_seconds`, then proves the wake through the owner-only `GET /api/docs/:id/instance`.
    - **Principals:** the fixed pool `canary-<label>@example.invalid`. Each signs up on the pool's first run and signs in once per run.
    - **Budget:** the run fails past `request_budget` Worker requests.
+   - **Artifacts and log:** off loopback, Playwright records no trace or automatic screenshot or video, since they would carry the pool's session cookies. The run log prints only each test's title, status and duration (`scripts/deploy/canary-reporter.mjs`): a failed request's error lists its cookie header, and the log is public. The public artifact holds only `requests.json` and `summary.json` (each test's title, status and duration).
 
 CI rehearses the same canary on every full lane, against a production-mode local stack: the `canary` job in `ci.yml`.
 
