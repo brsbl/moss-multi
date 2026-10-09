@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deployedProblems, hookProblems } from './assert-deployed.mjs';
 import { canarySummary, recordingFor } from './canary-artifacts.mjs';
 import { canaryState } from './canary-state.mjs';
+import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
 import { gateProblems, runProblems } from './run-gate.mjs';
 import { forbiddenFiles, migrationProblems, parseJsonc, readStagingEnv, stagingConfig } from './staging-config.mjs';
@@ -302,8 +303,89 @@ describe('deploy-staging.yml', () => {
 
   it('uploads only the credential-free canary files', () => {
     const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
-    expect(uploads).toHaveLength(1);
-    expect(uploads[0].with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+    expect(uploads.length).toBeGreaterThanOrEqual(1);
+    for (const upload of uploads) {
+      expect(upload.with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+    }
+  });
+
+  it('runs the full suite on staging only when dispatched with suite=full, after the canary, in both engines @p:R15', () => {
+    const input = WORKFLOW.on.workflow_dispatch.inputs.suite;
+    expect(input).toMatchObject({ type: 'choice', default: 'canary' });
+    expect(input.options).toEqual(['canary', 'full']);
+    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => j.steps.some((step) => /--project=staging-/.test(step.run ?? ''))) ?? [];
+    expect(name, 'a job runs the staging projects').toBeTruthy();
+    expect(job.if).toMatch(/inputs\.suite == 'full'/);
+    expect(needsOf(name)).toEqual(expect.arrayContaining(['preflight', 'deploy', 'canary']));
+    expect(job.strategy.matrix.browser).toEqual(['chromium', 'webkit']);
+    expect(job.strategy['fail-fast']).toBe(false);
+    const run = job.steps.find((step) => /playwright test/.test(step.run ?? '')).run;
+    expect(run).toMatch(/--project=staging-\$\{?BROWSER/);
+    expect(run).not.toMatch(/--reporter|PLAYWRIGHT_|--grep/);
+    // Per-run principals, never the pool secret, and this run's own budget.
+    const state = job.steps.find((step) => /canary-state\.mjs/.test(step.run ?? ''));
+    expect(state.run).toMatch(/--principals per-run/);
+    expect(state.run).toMatch(/--budget/);
+    expect(JSON.stringify(job)).not.toMatch(/CANARY_POOL_SECRET/);
+  });
+});
+
+describe('the staging suite @p:R15', () => {
+  it('tags every journey leg that needs the local stack @local-only, each with a reason', () => {
+    const scan = scanJourneys();
+    expect(scan.flatMap((spec) => spec.problems)).toEqual([]);
+    const local = Object.fromEntries(scan.filter((spec) => spec.localOnly.length > 0).map((spec) => [spec.file, spec.localOnly.length]));
+    for (const file of ['j00-roundtrip.spec.ts', 'j01-registers.spec.ts', 'j02-title.spec.ts', 'j03-connection.spec.ts', 'j04-hibernation.spec.ts', 'j09-revoke-live.spec.ts']) {
+      expect(local[file], file).toBeGreaterThan(0);
+    }
+    // The wake on staging is j04's owner-route leg, which stays in the suite.
+    expect(readFileSync(fileURLToPath(new URL('../../e2e/journeys/j04-hibernation.spec.ts', import.meta.url)), 'utf8')).toMatch(/owner-only route @staging/);
+  });
+
+  it('flags an untagged hook leg, a stack lever, the default hook probe, and a tag with no reason', () => {
+    const spec = [
+      "test('probes', async ({ stack }) => { await stack.docInstance('d'); });",
+      "test('restarts', async ({ stack }) => { await induce(stack, { docId, lever: 'restart', probe: p }); });",
+      "test('hook probe', async ({ stack }) => { await induce(stack, { docId }); });",
+      "test('tagged @local-only', async ({ stack }) => { await stack.pause(); });",
+      '// local-only: SIGSTOPs the stack.',
+      "test('explained @local-only', async ({ stack }) => { await stack.pause(); });",
+      "test('owner route', async ({ stack }) => { await induce(stack, { docId, lever: canary ? 'idle' : 'reset', probe: ownerProbe(stack, a) }); });",
+      'for (const s of [1, 2]) {',
+      '  // local-only: resets the DO through the hook.',
+      "  test(`loop ${s === 2 ? ' @local-only' : ''}`, async ({ stack }) => { if (s === 2) await stack.resetDoc('d'); });",
+      '}',
+    ].join('\n');
+    const problems = localOnlyProblems(spec, 'x.spec.ts');
+    expect(problems).toHaveLength(4);
+    expect(problems[0]).toMatch(/x\.spec\.ts:1 uses a test hook/);
+    expect(problems[1]).toMatch(/:2 uses a restart or reset lever/);
+    expect(problems[2]).toMatch(/:3 uses induce\(\) with the hook probe/);
+    expect(problems[3]).toMatch(/:4 is @local-only with no/);
+  });
+
+  it('runs every journey but the @local-only legs in each engine on staging, recording nothing', async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), 'suite-config-'));
+    try {
+      const statePath = join(dir, 'state.json');
+      writeFileSync(statePath, JSON.stringify({ baseUrl: URL_STAGING }));
+      vi.stubEnv('STACK_STATE', statePath);
+      vi.resetModules();
+      const config = (await import('../../e2e/playwright.config.ts')).default;
+      for (const engine of ['chromium', 'webkit']) {
+        const project = config.projects.find((p) => p.name === `staging-${engine}`);
+        expect(project, engine).toBeTruthy();
+        expect(project.testDir).toMatch(/journeys$/);
+        expect(project.dependencies ?? []).toEqual([]);
+        expect(project.grep).toBeUndefined();
+        expect(project.grepInvert.test('j03 a leg @local-only @p:col-6')).toBe(true);
+        expect(project.grepInvert.test('j04-hibernation: proven through the owner-only route @staging')).toBe(false);
+        expect({ ...config.use, ...project.use }).toMatchObject({ browserName: engine, trace: 'off', screenshot: 'off', video: 'off' });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -445,6 +527,12 @@ describe('the canary state', () => {
       expected: base.expected,
       canary: { budget: 2000, idleMs: 20_000, poolSecretEnv: 'CANARY_POOL_SECRET', budgetPath: '/tmp/canary/requests.json' },
     });
+  });
+
+  it('signs in the fixed pool by default, and per-run principals for the full suite', () => {
+    expect(canaryState({ ...base, budget: 2000, idleMs: 20_000 }).canary.principals).toBe('pool');
+    expect(canaryState({ ...base, budget: 5000, idleMs: 20_000, principals: 'per-run' }).canary.principals).toBe('per-run');
+    expect(() => canaryState({ ...base, budget: 2000, idleMs: 20_000, principals: 'mine' })).toThrow(/principals/);
   });
 
   it('refuses an idle under 15 s (SP14) and a missing budget', () => {
