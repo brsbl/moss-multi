@@ -195,7 +195,8 @@ test('j09 sign-out: signing out in one window ends the same session in the other
   expect((await ben.context.request.get('/api/me')).status()).toBe(200);
 });
 
-test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
+// local-only: reads the DO instances through the loopback hook, against workerd's calibrated idle window.
+test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @local-only @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
   test.setTimeout(300_000);
   // Ada works over the API only: an open shell shows the most recently edited note, so the holders' typing would
   // switch her window between their notes and keep their DOs awake.

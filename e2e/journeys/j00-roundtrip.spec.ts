@@ -26,7 +26,8 @@ async function createNote(baseUrl: string, cookie: string): Promise<string> {
   return (JSON.parse(body) as { doc: { id: string } }).doc.id;
 }
 
-test('j00-roundtrip: a seeded note takes an edit and reopens with it after a restart on a new DO instance @p:tech-1 @p:tech-6', async ({ actors, stack }) => {
+// local-only: restarts the stack and reads the DO instance through the loopback hook.
+test('j00-roundtrip: a seeded note takes an edit and reopens with it after a restart on a new DO instance @local-only @p:tech-1 @p:tech-6', async ({ actors, stack }) => {
   const ada = await actors.principal('ada');
   const ben = await actors.principal('ben');
   const adaCookie = cookieHeader(await signIn(stack.baseUrl, ada));

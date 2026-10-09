@@ -57,17 +57,37 @@ export function newPrincipal(runToken: string, label: string, n: number): Princi
 /** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
 export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
   const { email, name, password } = newPrincipal(runToken, label, n);
-  const response = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
+  const response = await pastAuthLimit(() => fetch(`${baseUrl}/api/auth/sign-up/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email, password, name }),
     signal: AbortSignal.timeout(15_000),
-  });
+  }));
   const text = await response.text();
   if (!response.ok) throw new Error(`sign-up for ${email}: ${response.status} ${text.slice(0, 200)}`);
   const id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
+  // Sign-up opens a session: the first signIn takes it instead of signing in again.
+  const cookies = response.headers.getSetCookie().map((header) => parseSetCookie(header, baseUrl));
+  if (cookies.length > 0) spareSessions.set(`${baseUrl} ${email}`, cookies);
   return { label, name, email, password, id };
 }
+
+/**
+ * Sign-up and sign-in are limited to 10 a minute per address off the hook stack (auth.ts): staging and the canary
+ * rehearsal. A 429 waits out the window, at most three times.
+ */
+async function pastAuthLimit(post: () => Promise<Response>): Promise<Response> {
+  let response = await post();
+  for (let attempt = 0; attempt < 3 && response.status === 429; attempt += 1) {
+    const wait = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65);
+    await new Promise((done) => setTimeout(done, wait * 1000 + 500));
+    response = await post();
+  }
+  return response;
+}
+
+/** The session each sign-up opened, until a signIn takes it. */
+const spareSessions = new Map<string, SessionCookie[]>();
 
 export function parseSetCookie(header: string, url: string): SessionCookie {
   const [pair, ...attributes] = header.split(';').map((part) => part.trim());
@@ -115,7 +135,12 @@ export async function signIn(baseUrl: string, principal: Principal): Promise<Ses
   assertTestEmail(principal.email);
   const pooled = principal.pooled ? pooledSessions.get(`${baseUrl} ${principal.email}`) : undefined;
   if (pooled) return pooled.map((cookie) => ({ ...cookie }));
-  const response = await postSignIn(baseUrl, principal);
+  const spare = principal.pooled ? undefined : spareSessions.get(`${baseUrl} ${principal.email}`);
+  if (spare) {
+    spareSessions.delete(`${baseUrl} ${principal.email}`);
+    return spare;
+  }
+  const response = await pastAuthLimit(() => postSignIn(baseUrl, principal));
   if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
   const cookies = sessionCookies(response, baseUrl, principal.email);
   if (principal.pooled) pooledSessions.set(`${baseUrl} ${principal.email}`, cookies);

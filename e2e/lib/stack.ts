@@ -31,6 +31,8 @@ export interface CanaryState {
   budget: number;
   /** The natural idle before a wake is proven (≥ 15 s; SP14). */
   idleMs: number;
+  /** `pool`: the fixed canary principals (the default); `per-run`: fresh ones, for the full suite on staging (T8.2). */
+  principals?: 'pool' | 'per-run';
   /** The environment variable holding the pool's password secret. */
   poolSecretEnv: string;
   budgetPath: string;

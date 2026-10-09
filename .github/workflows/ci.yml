@@ -42,6 +42,10 @@ on:
         description: 'Also run the @slow legs (60 s holds, soaks, idles); milestone gates and the nightly always do'
         type: boolean
         default: false
+      staging_suite:
+        description: 'Rehearse the staging full suite (T8.2): journeys on a stack with no test hooks, per-run principals, no @local-only legs'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -269,9 +273,10 @@ jobs:
   # One shard per engine and journey group (scripts/ci/journeys.mjs), each booting its own Worker stack on the
   # build job's bytes, then running the selftests and its group's journeys. A ready-PR shard has 13 minutes;
   # repeated and @slow runs get 25. The Playwright image carries both engines and their system libraries, so no
-  # job waits on apt mirrors.
+  # job waits on apt mirrors. A staging_suite dispatch rehearses the staging full suite (T8.2) on these shards with no
+  # test hooks; its jobs are named rehearsal, so deploy-staging never takes such a run for a tested full lane.
   e2e:
-    name: e2e (${{ matrix.browser }}, ${{ matrix.group }})
+    name: ${{ github.event.inputs.staging_suite == 'true' && 'rehearsal' || 'e2e' }} (${{ matrix.browser }}, ${{ matrix.group }})
     needs: [plan, build]
     if: needs.plan.outputs.e2e == 'true'
     runs-on: ubuntu-latest
@@ -287,6 +292,7 @@ jobs:
     env:
       RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}-${{ matrix.group }}
       PLAYWRIGHT_IMAGE: v1.61.1
+      STAGING_SUITE: ${{ github.event.inputs.staging_suite == 'true' && '1' || '' }}
     defaults:
       run:
         shell: bash
@@ -312,13 +318,19 @@ jobs:
       - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
       - name: Boot the Worker stack on the built bytes
         run: >
-          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks --state-dir /dev/shm/moss-stack
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist $([ -n "$STAGING_SUITE" ] || echo --hooks) --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      - name: The staging suite's state (per-run principals, a request budget)
+        if: env.STAGING_SUITE == '1'
+        run: |
+          idle=$(node -p "require('./e2e/lib/calibrated.json').idleMs")
+          node scripts/deploy/canary-state.mjs --from-stack "$STACK_STATE" --out "$RUNNER_TEMP/suite/state.json" --budget 100000 --idle-ms "$idle" --run-id "$RUN_ID" --principals per-run
+          echo "STACK_STATE=$RUNNER_TEMP/suite/state.json" >> "$GITHUB_ENV"
       # The negative control for deploy-staging's hook-404 assertion (T8.D): given this run's hook secret, it must
       # fail on this hooks-enabled stack, so a pass on staging means the hooks are off.
       - name: The hook assertion fails on a hooks stack
-        if: matrix.browser == 'chromium' && matrix.group == 'shell'
+        if: matrix.browser == 'chromium' && matrix.group == 'shell' && env.STAGING_SUITE != '1'
         run: |
           eval "$(node scripts/provenance.mjs read .local-stack/prebuilt/dist | grep -E '^(commit|bundleHash|clientHash)=')"
           base=$(node -p "require(process.env.STACK_STATE).baseUrl")
@@ -340,6 +352,7 @@ jobs:
           SLOW: ${{ needs.plan.outputs.slow }}
         run: |
           args=(--project="selftest-$BROWSER" --project="$BROWSER" --repeat-each="$REPEAT")
+          if [ -n "$STAGING_SUITE" ]; then args=(--project="staging-$BROWSER" --repeat-each="$REPEAT"); fi
           if [ -n "$GREP" ]; then args+=(--grep "$GREP"); fi
           case "$SLOW" in
             exclude) args+=(--grep-invert @slow) ;;

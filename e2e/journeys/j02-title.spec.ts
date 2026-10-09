@@ -906,7 +906,8 @@ test('j02-title: @tierA an open list-property draft survives a peer deleting it 
 const REST_WRITES = 60;
 const REST_WINDOW_MS = 60_000;
 
-test('j02-title: REST renames past 60 a minute get 429 and never reach the doc, per identity, across a restart @p:col-5 @p:tech-8', async ({ actors, stack }) => {
+// local-only: restarts the stack to rebuild every PrincipalDO.
+test('j02-title: REST renames past 60 a minute get 429 and never reach the doc, per identity, across a restart @local-only @p:col-5 @p:tech-8', async ({ actors, stack }) => {
   const headers = { origin: stack.baseUrl };
   const ada = await actors.session(await actors.principal('ada'));
   const created = await ada.context.request.post('/api/docs', { headers, data: { title: 'Rate' } });

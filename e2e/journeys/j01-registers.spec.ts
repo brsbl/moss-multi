@@ -58,7 +58,8 @@ async function settled(actors: Actor[], id: string) {
 
 for (const stackState of ['warm', 'cold'] as const) {
   for (const ben of ['opens', 'types'] as const) {
-    test(`j01 registers: Ada drafts a new code block, Ben joins mid-draft and ${ben === 'opens' ? 'opens it' : 'types into it'} (${stackState} stack); Ada's code survives both reloads @p:col-1`, async ({ actors, stack }) => {
+    // local-only: the cold variant resets the DO through the loopback hook.
+    test(`j01 registers: Ada drafts a new code block, Ben joins mid-draft and ${ben === 'opens' ? 'opens it' : 'types into it'} (${stackState} stack); Ada's code survives both reloads${stackState === 'cold' ? ' @local-only' : ''} @p:col-1`, async ({ actors, stack }) => {
       const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Intro line.');
       await ui.body(ada, id).locator('p').filter({ hasText: /^Intro line/ }).click();
       await ada.page.keyboard.press('End');

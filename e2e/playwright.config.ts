@@ -23,7 +23,8 @@ export default defineConfig({
   outputDir: 'test-results',
   timeout: 120_000,
   expect: { timeout: 10_000 },
-  globalTimeout: 18 * 60_000,
+  // A staging shard runs longer than a local one (deploy-staging.yml sets E2E_GLOBAL_TIMEOUT_MIN).
+  globalTimeout: Number(process.env.E2E_GLOBAL_TIMEOUT_MIN || 18) * 60_000,
   forbidOnly: !!process.env.CI,
   retries: 0,
   // A 2-vCPU runner holds workerd and 2-3 contexts; raise only after repeat_each=5 stays green.
@@ -64,6 +65,16 @@ export default defineConfig({
       // Fails closed: with no target, nothing is recorded.
       use: { browserName: 'chromium', ...recordingFor(stack?.baseUrl) },
     },
+    // The full suite on staging (A§21, T8.2): every journey but the @local-only legs, which need test hooks or stack
+    // control, in each engine on a Worker with no hooks, per-run principals and a request budget (STACK_STATE from
+    // scripts/deploy/canary-state.mjs --principals per-run). deploy-staging.yml runs them when dispatched with suite=full.
+    ...(['chromium', 'webkit'] as const).map((engine) => ({
+      name: `staging-${engine}`,
+      testDir: './journeys',
+      ...journeys,
+      grepInvert: /@local-only/,
+      use: { browserName: engine, ...recordingFor(stack?.baseUrl) },
+    })),
     // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.
     { name: 'parity', testDir: './parity', use: { browserName: 'chromium' } },
     // The read-only viewer bundle's acceptance fixture (T0.13): the viewer job only, against packages/viewer/dist.

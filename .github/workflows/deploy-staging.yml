@@ -1,5 +1,6 @@
-# Deploys the exact bytes a green CI full lane tested to staging, then runs the staging canary (A§21, T8.D). Manual
-# dispatch only. Setup and use: docs/DEPLOY.md. Without the repository secrets it lists, the first job fails at once.
+# Deploys the exact bytes a green CI full lane tested to staging, then runs the staging canary (A§21, T8.D) and, with
+# suite=full, the full suite (T8.2). Manual dispatch only. Setup and use: docs/DEPLOY.md. Without the repository secrets
+# it lists, the first job fails at once.
 name: Deploy staging
 
 on:
@@ -17,6 +18,15 @@ on:
         description: 'Idle before the canary proves a wake (15 or more; SP14)'
         type: number
         default: 20
+      suite:
+        description: 'canary: the canary legs only. full: then every journey but the @local-only legs, in both engines (T8.2)'
+        type: choice
+        options: [canary, full]
+        default: canary
+      suite_request_budget:
+        description: 'Worker requests each full-suite shard may make (12 shards)'
+        type: number
+        default: 5000
 
 permissions:
   contents: read
@@ -234,6 +244,80 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: staging-canary-${{ github.run_attempt }}
+          path: |
+            e2e/canary-artifacts/requests.json
+            e2e/canary-artifacts/summary.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The full suite on staging (A§21, T8.2), after a green canary: every journey but the @local-only legs (test hooks or
+  # stack control), in both engines, sharded six ways. Per-run @example.invalid principals, so no pool secret; each
+  # shard has its own request budget; the wake is j04's owner-route leg. The canary's log and artifact policy holds.
+  suite:
+    name: suite (${{ matrix.browser }}, ${{ matrix.shard }}/6)
+    needs: [preflight, deploy, canary]
+    if: inputs.suite == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}-${{ matrix.shard }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # j18 runs the moss-multi CLI against the Worker; the deployed bytes are never rebuilt.
+      - name: Build the CLI
+        run: pnpm --filter @moss-multi/cli build
+      - name: Suite state
+        env:
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+          COMMIT: ${{ needs.deploy.outputs.commit }}
+          BUNDLE: ${{ needs.deploy.outputs.bundleHash }}
+          CLIENT: ${{ needs.deploy.outputs.clientHash }}
+          BUDGET: ${{ inputs.suite_request_budget }}
+          IDLE: ${{ inputs.idle_seconds }}
+        run: |
+          node scripts/deploy/canary-state.mjs --out "$RUNNER_TEMP/canary/state.json" --base-url "$STAGING_URL" \
+            --commit "$COMMIT" --bundle "$BUNDLE" --client "$CLIENT" --budget "$BUDGET" --idle-ms "$((IDLE * 1000))" \
+            --run-id "$RUN_ID" --principals per-run
+          echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
+      - name: The journeys
+        working-directory: e2e
+        env:
+          BROWSER: ${{ matrix.browser }}
+          SHARD: ${{ matrix.shard }}
+          E2E_GLOBAL_TIMEOUT_MIN: '50'
+          MOSS_MULTI_NO_OPEN: '1'
+        run: pnpm exec playwright test --project=staging-"$BROWSER" --shard="$SHARD/6"
+      - name: A credential-free summary
+        if: always()
+        run: |
+          mkdir -p e2e/canary-artifacts
+          cp "$RUNNER_TEMP/canary/requests.json" e2e/canary-artifacts/requests.json || true
+          cat e2e/canary-artifacts/requests.json || true
+          node scripts/deploy/canary-artifacts.mjs summary e2e/test-results/results.json e2e/canary-artifacts/summary.json
+      - name: Upload the summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: staging-suite-${{ matrix.browser }}-${{ matrix.shard }}-${{ github.run_attempt }}
           path: |
             e2e/canary-artifacts/requests.json
             e2e/canary-artifacts/summary.json

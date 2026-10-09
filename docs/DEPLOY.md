@@ -35,7 +35,8 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
    `gh workflow run ci.yml --ref m8 -f lane=full`
 2. Dispatch the deploy with that run's id. The run must be green, a push or dispatch run of this repository (never a pull request or a fork), its head still on its branch, and less than 3 days old, because `web-dist` artifacts expire after 3 days:
    `gh workflow run deploy-staging.yml --ref m8 -f ci_run_id=<run id>`
-   The optional inputs are `request_budget` (default 2000 Worker requests for the canary) and `idle_seconds` (default 20, at least 15).
+   The optional inputs are `request_budget` (default 2000 Worker requests for the canary), `idle_seconds` (default 20, at least 15), `suite` (`canary`, the default, or `full`) and `suite_request_budget` (default 5000 Worker requests for each full-suite shard).
+   To run the full suite on staging, add `-f suite=full`.
 3. Watch it with `gh run watch <id> --interval 60 --exit-status`. The first deploy waits for the new `workers.dev` certificate, which took about 8 minutes before.
 
 ## What a run does
@@ -56,7 +57,13 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
    - **Budget:** the run fails past `request_budget` Worker requests.
    - **Artifacts and log:** off loopback, Playwright records no trace or automatic screenshot or video, since they would carry the pool's session cookies. The run log prints only each test's title, status and duration (`scripts/deploy/canary-reporter.mjs`): a failed request's error lists its cookie header, and the log is public. The public artifact holds only `requests.json` and `summary.json` (each test's title, status and duration).
 
-CI rehearses the same canary on every full lane, against a production-mode local stack: the `canary` job in `ci.yml`.
+4. **suite** (only with `suite=full`, after a green canary): runs every journey on staging except the `@local-only` legs, in Chromium and WebKit, six shards per engine (`staging-chromium` and `staging-webkit` in `e2e/playwright.config.ts`).
+   - **Left out:** a leg tagged `@local-only` needs a local stack: it reads or resets a DO through a test hook, or pauses or restarts the stack. A `// local-only: <reason>` line above each says why, and `scripts/deploy/local-only.mjs` (run by the unit tests) fails on an untagged leg that uses a hook or lever.
+   - **The wake:** j04's `@staging` leg, as in the canary, proven through the owner-only instance route.
+   - **Principals:** per-run `mm-<run>-<label>-<n>@example.invalid` accounts, because the journeys assume fresh accounts. A sign-up's session serves the first sign-in, and a 429 from the auth limit (10 a minute per address) waits out the window. The pool secret is not in reach.
+   - **Budget, artifacts and log:** each shard fails past `suite_request_budget` Worker requests, and the canary's rules for recording, the log and the artifact hold unchanged.
+
+CI rehearses the same canary on every full lane, against a production-mode local stack: the `canary` job in `ci.yml`. A `ci.yml` dispatch with `-f staging_suite=true` rehearses the full suite the same way: each journey shard on a stack with no test hooks, per-run principals and the `staging-<engine>` projects, with traces kept because the stack is loopback. Its jobs are named `rehearsal`, so `deploy-staging` never takes such a run as a tested full lane.
 
 ## Demo content
 

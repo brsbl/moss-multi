@@ -37,7 +37,8 @@ async function note(actors: Actors, owner: Principal, peer: Principal, label: st
   return { actor, docId, frames };
 }
 
-test('j04-hibernation: a UI-authored note reopens non-empty after a process restart @p:col-6 @p:tech-6', async ({ actors, stack }, info) => {
+// local-only: restarts the stack and reads the DO instance through the loopback hook.
+test('j04-hibernation: a UI-authored note reopens non-empty after a process restart @local-only @p:col-6 @p:tech-6', async ({ actors, stack }, info) => {
   const owner = await actors.principal('ada');
   const peer = await actors.principal('ben');
   const { actor, docId } = await note(actors, owner, peer, 'creator');
@@ -76,7 +77,8 @@ test('j04-hibernation: after an idle the peer reopens the note non-empty from a 
   expect(proof.after.instanceId).not.toBe(proof.base.instanceId);
 });
 
-test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @p:col-6 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
+// local-only: reads both DO instances through the loopback hook, against workerd's calibrated idle window.
+test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @local-only @p:col-6 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
   test.setTimeout(240_000);
   info.annotations.push({ type: 'quiescence', description: 'simulated document visibility; real surviving WebSocket' });
   const owner = await actors.principal('ada');
