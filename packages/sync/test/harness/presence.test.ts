@@ -171,7 +171,7 @@ it('a direct viewer or an agent cannot relay malformed cursor positions; well-fo
   expect(states.get(42)).toMatchObject({ anchorPos: lexical, focusPos: { tname: 'root', assoc: 0 } });
   expect(states.get(43)).toMatchObject({ anchorPos: compact, focusPos: compact });
   await viewer.deliver(frame(42, { ...state(), focusing: false, anchorPos: null, focusPos: null }, clock++));
-  await agent.deliver(frame(43, { ...bot, focusing: false }, clock++));
+  await agent.deliver(frame(43, { ...bot, focusing: false }, clock));
   expect(relayed()).toBe(before + 2);
   expect(states.get(43)?.focusing).toBe(false);
 });
