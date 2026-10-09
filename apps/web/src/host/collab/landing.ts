@@ -14,6 +14,18 @@ export function markLanding(editor: LexicalEditor, on: boolean): void {
 
 export const isLanding = (editor: LexicalEditor): boolean => landing.has(editor);
 
+const geometry = new Map<LexicalEditor, () => void>();
+
+/** `run` reads layout for `editor` (remote cursors); a landing batch calls it after its own layout, so its pacer counts it. */
+export function setBatchGeometry(editor: LexicalEditor, run: () => void): () => void {
+  geometry.set(editor, run);
+  return () => {
+    if (geometry.get(editor) === run) geometry.delete(editor);
+  };
+}
+
+export const runBatchGeometry = (editor: LexicalEditor): void => geometry.get(editor)?.();
+
 export function subscribeLanding(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

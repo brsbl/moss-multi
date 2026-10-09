@@ -2,6 +2,7 @@ import { syncCursorPositions, type Binding, type Provider, type SyncCursorPositi
 import type { LexicalEditor } from 'lexical';
 import type YProvider from 'y-partyserver/provider';
 import { avatarInk } from '../../../../../packages/ui/src/FacePile.tsx';
+import { setBatchGeometry } from './landing.ts';
 import type { PresenceUser } from './presence.ts';
 
 /** The official geometry, coalesced with identity and typing-label decoration. */
@@ -38,13 +39,18 @@ export function cursorController(editor: LexicalEditor) {
       }
     }
   };
-  // Cursor geometry reads layout, so it waits for the task that changed awareness to finish, once for any number of
-  // changes: inside an editor update (a large paste's batch, whose selection and typing clock each change awareness)
-  // it laid the whole note out per change, before the batch's own layout.
+  // Cursor geometry reads layout, so it runs once the task that changed awareness is done, once for any number of
+  // changes, or in a large paste's batch right after the batch's own layout (setBatchGeometry). Inside the editor
+  // update (each batch changes the selection and the typing clock) it laid the whole note out per change.
+  const flush = () => {
+    if (!queued) return;
+    queued = false;
+    paint();
+  };
   const queue = () => {
     if (queued || stopped) return;
     queued = true;
-    queueMicrotask(() => { queued = false; paint(); });
+    queueMicrotask(flush);
   };
   const sync: SyncCursorPositionsFn = (next, source) => {
     binding = next as Binding; provider = source;
@@ -61,9 +67,10 @@ export function cursorController(editor: LexicalEditor) {
       }
       queue();
     });
+    const stopGeometry = setBatchGeometry(editor, flush);
     const timer = setInterval(queue, 250);
     window.addEventListener('resize', queue);
-    return () => { stopped = true; clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', queue); };
+    return () => { stopped = true; stopGeometry(); clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', queue); };
   };
   return { sync, start };
 }
