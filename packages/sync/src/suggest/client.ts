@@ -867,10 +867,12 @@ export class SuggestFork {
   /**
    * Whether an edit adding `bytes` of ops, and with `strike` a delete part of those targets, fits every cap the DocDO
    * checks it against, counted as it counts them: the record the edit writes (what the body shows of it and what is
-   * still unanswered), all open records' ops, the author's open records, the part's spans. Null when it fits, else the
-   * refusal it would meet. Some headroom on the record: an edit's ops encode a little larger than a replay measures.
+   * still unanswered, and the same of every older open record of the author's it would merge), all open records' ops,
+   * the author's open records, the part's spans. `blocks`: the top-level blocks the edit spans (the caret's by
+   * default). Null when it fits, else the refusal it would meet. Some headroom on the record: an edit's ops encode a
+   * little larger than a replay measures.
    */
-  admit(bytes: number, strike?: readonly IdSpan[]): SuggestRefusal | null {
+  admit(bytes: number, strike?: readonly IdSpan[], blocks?: { from: number; to: number }): SuggestRefusal | null {
     if (!this.#ready || this.#closed) return 'record-closed';
     const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
     if (!lease) return 'lease';
@@ -885,8 +887,14 @@ export class SuggestFork {
       if (request.t === 'suggest-ops' && op) pending.set(request.record, (pending.get(request.record) ?? 0) + op.update.byteLength);
       if (request.t === 'suggest-delete') pending.set(request.record, (pending.get(request.record) ?? 0) + pendingPartBytes(request.part.targets));
     }
+    const held = (id: string) => {
+      const record = readRecord(this.body, id);
+      return (record ? recordBytes(record) : 0) + (pending.get(id) ?? 0);
+    };
     const stored = readRecord(this.body, lease.record);
-    if ((stored ? recordBytes(stored) : 0) + (pending.get(lease.record) ?? 0) + adds > SUGGEST_LIMITS.recordOpsBytes * 0.9) return 'record-cap';
+    let total = held(lease.record) + adds;
+    for (const other of this.#mergedBy(lease.record, blocks ?? { from: this.#caretBlock, to: this.#caretBlock })) total += held(other);
+    if (total > SUGGEST_LIMITS.recordOpsBytes * 0.9) return 'record-cap';
     let open = [...pending.values()].reduce((sum, add) => sum + add, 0);
     for (const id of recordIds(this.body)) {
       const record = readMeta(this.body, id)?.status === 'open' ? readRecord(this.body, id) : null;
@@ -896,6 +904,43 @@ export class SuggestFork {
     const creates = !stored && !pending.has(lease.record);
     if (creates && openRecords(this.body, this.options.me).length >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';
     return null;
+  }
+
+  /**
+   * The author's open records other than `into` that an edit in top-level blocks `from`..`to` may build on or delete,
+   * and so merge into its record (#forward): any holding an item of those blocks, or an item of the root from the block
+   * before them to the block after. Every block when the blocks are unknown.
+   */
+  #mergedBy(into: string, { from, to }: { from: number; to: number }): Set<string> {
+    const found = new Set<string>();
+    const mine = this.#openMine();
+    for (const record of openRecords(this.body, this.options.me)) for (const client of record.meta.clients) mine.set(client, record.meta.id);
+    if (mine.size === 0) return found;
+    const see = (item: Y.Item) => {
+      const record = mine.get(item.id.client);
+      if (record && record !== into) found.add(record);
+    };
+    const walk = (type: Y.AbstractType<unknown>) => {
+      const visit = (item: Y.Item) => {
+        see(item);
+        if (item.content instanceof Y.ContentType) walk(item.content.type as Y.AbstractType<unknown>);
+      };
+      for (let item = type._start; item; item = item.right) visit(item);
+      for (const last of type._map.values()) for (let item: Y.Item | null = last; item; item = item.left) visit(item);
+    };
+    const root = this.doc.get('root', Y.XmlText);
+    const every = from < 0 || to < 0;
+    let index = -1;
+    for (let item = root._start; item; item = item.right) {
+      const block = !item.deleted && item.content instanceof Y.ContentType;
+      if (block) index += 1;
+      // A tombstone or a format between blocks sits after the block before it.
+      const at = block ? index : index + 0.5;
+      if (!every && (at < from - 1 || at > to + 1)) continue;
+      see(item);
+      if (block && (every || (index >= from && index <= to))) walk(item.content.type as Y.AbstractType<unknown>);
+    }
+    return found;
   }
 
   /** The next group: the spare lease becomes active, and a new spare is asked for. */

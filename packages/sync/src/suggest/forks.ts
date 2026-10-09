@@ -5,10 +5,10 @@ import type * as Y from 'yjs';
 /** What an editor needs of the fork it writes into. */
 export interface ForkView {
   /**
-   * Whether an edit adding `bytes` of ops, and striking `strike`, fits every suggestion cap: null, or the refusal it
-   * would meet.
+   * Whether an edit adding `bytes` of ops, and striking `strike`, in top-level blocks `blocks`, fits every suggestion
+   * cap: null, or the refusal it would meet.
    */
-  admit(bytes: number, strike?: readonly IdSpan[]): SuggestRefusal | null;
+  admit(bytes: number, strike?: readonly IdSpan[], blocks?: { from: number; to: number }): SuggestRefusal | null;
 }
 
 const forks = new WeakMap<Y.Doc, ForkView>();

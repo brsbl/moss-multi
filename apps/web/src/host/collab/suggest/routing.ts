@@ -531,8 +531,9 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
    * A non-collapsed selection: body items in it become one delete part, the author's own text in it is removed
    * natively, and the caret goes to its end (its start with `toStart`, for a backward word or line delete).
    * `own`: only the author's own text, which deletes natively. `skip`: nothing left to strike; the caret still moves.
+   * `joined`: the binding step that follows is the same edit (a whole paste), so its undo and redo take the strike too.
    */
-  const $routeRange = (toStart = false): Routed => {
+  const $routeRange = (toStart = false, joined = false): Routed => {
     const selection = $getSelection();
     if (!$isRangeSelection(selection) || selection.isCollapsed()) return 'none';
     const range = $inRange(selection);
@@ -540,7 +541,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     const { start, end, body, mine, mineLeaves } = range;
     const owned = mine.length + mineLeaves.length;
     if (body.length === 0 && owned > 0) return 'own';
-    if (body.length > 0 && !strike(body, owned > 0)) return 'skip';
+    if (body.length > 0 && !strike(body, joined || owned > 0)) return 'skip';
     const at = toStart ? start : end;
     const caret = { key: at.key, offset: at.offset, type: at.type };
     // His own characters go natively, last first so earlier offsets hold (all of them sit after the start).
@@ -736,7 +737,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
         return range ? toSpans(range.body) : [];
       },
       $route: () => {
-        $routeRange();
+        $routeRange(false, true);
       },
     }),
     editor.registerCommand(CUT_COMMAND, (event) => {

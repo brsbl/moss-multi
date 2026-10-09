@@ -875,7 +875,10 @@ function landSuggested(editor: LexicalEditor, request: PasteRequest, fork: ForkV
   editor.update(() => {
     if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
     // Inside the update: a flush from a command's update queues this one.
-    outcome.refusal = fork.admit(bytes, route?.$targets());
+    // The blocks it spans: an older open record of the author's it builds on merges into its record.
+    const selection = $getSelection();
+    const tops = $isRangeSelection(selection) ? [selection.anchor, selection.focus].map((point) => point.getNode().getTopLevelElement()?.getIndexWithinParent() ?? -1) : [-1];
+    outcome.refusal = fork.admit(bytes, route?.$targets(), { from: Math.min(...tops), to: Math.max(...tops) });
     if (outcome.refusal) {
       refuseInput(SUGGEST_PASTE_REFUSED[outcome.refusal] ?? SUGGEST_PASTE_REFUSED.default);
       return;
