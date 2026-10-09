@@ -5,12 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { ACK_COALESCE_MS } from '@moss-multi/protocol/limits';
-import { base64ToBytes, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
-import { PAYLOAD_DOCS_HELD } from '../../src/payloads.ts';
-import { payloadText } from '../../src/payload-docs.ts';
+import { COMPACT_BYTES, PAYLOAD_DOCS_HELD } from '../../src/payloads.ts';
+import { PAYLOAD_TEXT, payloadText } from '../../src/payload-docs.ts';
 import { Backing, connect, openDoc, start, syncFrame, wake, type Opened } from './do-harness.ts';
 import { heldText, KINDS, LiveClient, syncAll } from './live-client.ts';
+import { forged, raw } from './raw-frames.ts';
 import { serverEnds, type FakeSocket } from './workerd.ts';
 
 beforeEach(() => {
@@ -980,4 +981,71 @@ describe('T1.F2 checker regressions @p:col-1 @p:tech-8', () => {
       for (const peer of [ada, ben]) expect(peer.texts(), 'undo brings back her typing').toEqual(['ADA-offline']);
     } finally { ada.dispose(); ben.dispose(); }
   });
+});
+
+describe('T3.S13 a payload frame leaves nothing parked: refused unresolved, compacted only after the purge @p:col-1 @p:tech-8', () => {
+  /** A struct that integrates, so the frame's update crosses the compaction threshold while the rest is parked. */
+  const kept = (text: string) => forged(Y.createID(776, 0), { parent: PAYLOAD_TEXT }, new Y.ContentString(text));
+  // The body path's fixtures (T4.1): Yjs throws mid-apply on a self-parented struct and on a parent cycle, and parks
+  // right origins that name each other; all of them pass the missing-clock check.
+  const FIXTURES: [string, Y.Item[]][] = [
+    ['a self-parented struct', [forged(Y.createID(777, 0), { parent: Y.createID(777, 0) }, new Y.ContentType(new Y.Map()))]],
+    ['a parent cycle', [
+      forged(Y.createID(778, 0), { parent: Y.createID(778, 1) }, new Y.ContentType(new Y.Map())),
+      forged(Y.createID(778, 1), { parent: Y.createID(778, 0) }, new Y.ContentType(new Y.Map())),
+    ]],
+    ['right origins that name each other', [
+      forged(Y.createID(779, 0), { right: Y.createID(780, 0) }, new Y.ContentString('a')),
+      forged(Y.createID(780, 0), { right: Y.createID(779, 0) }, new Y.ContentString('b')),
+    ]],
+  ];
+  const FORGED = [777, 778, 779, 780];
+
+  /** The payload's rows, loaded as a wake loads them. */
+  function persisted(opened: Opened, id: string): Y.Doc {
+    const doc = new Y.Doc();
+    for (const row of opened.backing.query<{ data: ArrayBuffer }>('SELECT data FROM payload_updates WHERE reg_id = ? ORDER BY seq', id)) {
+      Y.applyUpdate(doc, new Uint8Array(row.data));
+    }
+    return doc;
+  }
+
+  function expectNothingParked(doc: Y.Doc, label: string): void {
+    expect(doc.store.pendingStructs, `${label}: no parked struct`).toBeNull();
+    expect(doc.store.pendingDs, `${label}: no parked delete`).toBeNull();
+    for (const client of FORGED) expect(doc.store.clients.has(client), `${label}: client ${client} never integrates`).toBe(false);
+  }
+
+  for (const [label, step] of [['PAYLOAD_UPDATE', PAYLOAD_UPDATE], ['PAYLOAD_STEP2', PAYLOAD_STEP2]] as const) {
+    it.each(FIXTURES)(`${label}: %s is refused unresolved, and neither compaction nor a restart keeps it`, async (_name, structs) => {
+      const opened = await seeded();
+      const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+      try {
+        ada.insert('code-block', 'x'.repeat(COMPACT_BYTES - 16 * 1024));
+        await ada.sync();
+        const id = ada.ids()[0];
+        const eve = await connect(opened, { id: 'eve', role: 'editor' });
+        await eve.hello();
+        await eve.deliver(encodePayloadFrame(id, step, raw([kept('k'.repeat(32 * 1024)), ...structs])));
+        await eve.pump();
+        expect(eve.events).toContainEqual({ t: 'write-refused', reason: 'unresolved' });
+        expect(eve.closed?.code).toBe(CLOSE.writeRefused);
+        // An honest edit past the threshold compacts the payload, whatever the frame did.
+        ada.type(0, 0, 'y'.repeat(COMPACT_BYTES));
+        await ada.sync();
+        expect(ada.socket.closed).toBeNull();
+        expectNothingParked(persisted(opened, id), 'the compacted rows');
+        const woken = await start(wake(opened));
+        const late = await LiveClient.open(woken, { id: 'ada', role: 'editor' });
+        try {
+          expect(late.texts()[0]).toContain('y'.repeat(COMPACT_BYTES));
+          expectNothingParked(late.payloadDoc(0)!, 'after a restart');
+          expectNothingParked(persisted(woken, id), 'the rows after a restart');
+        } finally {
+          await late.socket.drop();
+          late.dispose();
+        }
+      } finally { ada.dispose(); }
+    });
+  }
 });
