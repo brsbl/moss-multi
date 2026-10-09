@@ -471,6 +471,16 @@ describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
     expect(await leases(back)).toHaveLength(2);
   });
 
+  it('frames already sent behind a refusal, for the same record on the same socket, count as one refusal (T5.R2)', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    // A client stops at its first refusal; the frames it had already sent for that record are refused too.
+    for (let i = 0; i < 4; i += 1) expect(await send(sam, { t: 'suggest-withdraw', record: 'nope' })).toMatchObject({ t: 'suggest-refused' });
+    expect(sam.closed, 'one refusal so far').toBeNull();
+    for (let i = 0; i < 2; i += 1) expect(await send(sam, { t: 'suggest-withdraw', record: `other-${i}` })).toMatchObject({ t: 'suggest-refused' });
+    expect(sam.closed?.code, 'three refusals').toBe(CLOSE.connectionLimit);
+  });
+
   it('role refusals of body frames count toward the cooldown', async () => {
     const opened = await seeded();
     const body = bodyState(opened.dobj.document);
