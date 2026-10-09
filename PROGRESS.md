@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 61% done** (83 of 137 planned tasks verified)
+**Overall: 61% done** (84 of 137 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 31 / 31 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 32 / 32 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -102,6 +102,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T3.F2 verified: typing a slash command and pressing Enter now always inserts what the typed query names, so `/media` inserts media even on a busy page instead of a row from the previous list.
 - 2026-10-09 — T3.S9 verified: a formula with a long run of blank space before a number now imports, saves and feeds search in linear time, matching the same numbers moss does.
 - 2026-10-09 — T3.S8 verified: a peer that sends malformed cursor positions no longer breaks cursor painting for everyone; the server drops those positions and the other collaborators' cursors still show.
+- 2026-10-09 — T3.S11 verified: importing or pushing a note with tens of thousands of frontmatter keys now costs linear work, so it is admitted or refused at the cap in moments instead of a minute.
 
 ## T1.1s identity audit
 
@@ -191,6 +192,7 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the 4 s periodic resync stays held back while peer sync frames keep arriving, with no time limit, so a lost step 1 answer on an open socket would delay the resync, awareness refresh and unacked resend until a lull → sync robustness follow-up: cap the hold-back.
 - T3.S6b (30,000-item list paste) checker P2 (inherited from T3.S6): e2e/lib/paste.ts sets the CI stall gate MAX_STALL_MS to 5 s while BUILDPLAN T3.S6 says 2 s → paste test follow-up: reconcile the stall bound.
 - T3.S9 (Linear formula literals) checker P2: the export and search-feed timing cases above lineChars (256 KB to 2 MB) contain no stored FormulaNode, because import keeps lines over 131072 chars as literal text; the shared scanner is linear on its own (1.35-20 ms at 128 KB-2 MB), so a coverage gap → formula timing follow-up: build a stored FormulaNode above lineChars and time its uncached export.
+- T3.S11 (Linear frontmatter updates) checker P2 (infrastructure): the browser QA pass was cut short because the host disk was full (ENOSPC opening the browser session; 80k/180k-key POST /api/docs 500s and a workerd search-feed 'internal error' point to storage, not import CPU), so no Properties-panel screenshots were taken → rerun that QA pass on a host with free disk.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
