@@ -38,14 +38,17 @@ export function cursorController(editor: LexicalEditor) {
       }
     }
   };
+  // Cursor geometry reads layout, so it runs in a task of its own, once for any number of changes: inside an editor
+  // update (a large paste's batch, whose selection and typing clock each change awareness) it forced a layout of the
+  // whole note per change.
   const queue = () => {
     if (queued || stopped) return;
     queued = true;
-    queueMicrotask(() => { queued = false; paint(); });
+    setTimeout(() => { queued = false; paint(); }, 0);
   };
   const sync: SyncCursorPositionsFn = (next, source) => {
     binding = next as Binding; provider = source;
-    syncCursorPositions(next, source); queue();
+    queue();
   };
   const start = (source: YProvider) => {
     stopped = false;
