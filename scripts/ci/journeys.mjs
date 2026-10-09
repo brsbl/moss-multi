@@ -54,6 +54,8 @@ export const GROUPS = {
   social: ['j15-social', 'j08-agents'],
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
+  // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
+  suggestPaste: ['j16-paste'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.

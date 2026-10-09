@@ -1,0 +1,70 @@
+// j16-paste (T5.R2; docs/design/suggestions.md §5, T3.S6): in Suggest mode a large paste is never batched. It is
+// admitted against the suggestion caps before anything changes, the strike of a selection it replaces included, then
+// lands in one transaction, one frame, one suggestion; or it is refused whole, visibly, with nothing struck or sent
+// and the selection kept. One undo takes it back and one redo brings it back.
+import type { Actor } from '../lib/actors.ts';
+import { INPUT_REFUSAL_ATTR, SUGGEST_SENT_ATTR } from '../lib/contract.ts';
+import { grantDoc } from '../lib/grants.ts';
+import { pastePlain } from '../lib/paste.ts';
+import { caret, content, mod, openIn, painted, settled } from '../lib/suggest.ts';
+import { expect, test, ui } from '../lib/test.ts';
+
+type Actors = Parameters<Parameters<typeof test>[2]>[0]['actors'];
+
+/** A note owned by ada, open in ben's window as a suggester. */
+async function suggesting(actors: Actors, markdown: string) {
+  const ada = await actors.open(await actors.principal('ada'));
+  const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown } });
+  expect(response.status()).toBe(201);
+  const docId = ((await response.json()) as { doc: { id: string } }).doc.id;
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'suggester');
+  const ben = await actors.session(benPrincipal);
+  await openIn(ben, docId);
+  await ben.observeEditor(docId);
+  return { ada, ben, docId };
+}
+
+const sent = async (actor: Actor, docId: string): Promise<number> => Number(await ui.pane(actor, docId).getAttribute(SUGGEST_SENT_ATTR));
+
+test('j16-paste: a large paste over a selection, past the suggestion record cap, is refused whole: nothing struck or sent, the selection kept @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
+  const working = await content(ada, docId, 'working');
+  await caret(ben, docId, 'original', 0, 8);
+  const before = await sent(ben, docId);
+  // About 280 KB in 14 lines: past the 256 KiB of ops one suggestion holds, far under the note's cap.
+  await pastePlain(ben, docId, Array.from({ length: 14 }, (_, i) => `Big line ${i} ${'x'.repeat(20_000)}`).join('\n'));
+  await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'refused visibly').toContainText('too large for one suggestion', { timeout: 60_000 });
+  await settled(ben, docId, 'the refused paste');
+  expect(await sent(ben, docId), 'nothing was sent').toBe(before);
+  expect(await painted(ben, 'suggest-delete'), 'nothing is struck').toEqual([]);
+  await expect(ui.body(ben, docId)).not.toContainText('Big line');
+  expect(await ben.page.evaluate(() => window.getSelection()?.toString()), 'the selection is kept').toBe('original');
+  expect(await content(ada, docId, 'working'), 'no suggestion was made').toBe(working);
+});
+
+test('j16-paste: an admissible large paste lands as one frame, one suggestion; one undo takes it back and one redo brings it back @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
+  const body = ui.body(ben, docId);
+  await caret(ben, docId, 'Second line.', 12);
+  const before = await sent(ben, docId);
+  // 42,000 characters: a large paste (T3.S6), many batches in Edit mode, well under the record cap.
+  await pastePlain(ben, docId, Array.from({ length: 60 }, (_, i) => `Pasted ${i} ${'y'.repeat(690)}`).join('\n'));
+  await settled(ben, docId, 'the paste');
+  expect(await sent(ben, docId) - before, 'the paste is one frame').toBe(1);
+  await expect.poll(() => content(ada, docId, 'working'), { message: 'the whole paste is one pending suggestion' }).toContain('Pasted 59');
+  expect(await content(ada, docId, 'working')).toContain('Pasted 0 ');
+
+  await ben.page.keyboard.press(`${mod}+z`);
+  await settled(ben, docId, 'the undo');
+  expect(await sent(ben, docId) - before, 'the undo is one frame').toBe(2);
+  await expect(body).not.toContainText('Pasted');
+
+  await ben.page.keyboard.press(`${mod}+Shift+z`);
+  await settled(ben, docId, 'the redo');
+  expect(await sent(ben, docId) - before, 'the redo is one frame').toBe(3);
+  await expect(body).toContainText('Pasted 0 ');
+  await expect(body).toContainText('Pasted 59 ');
+});

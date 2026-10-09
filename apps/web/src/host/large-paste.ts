@@ -908,6 +908,19 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   return true;
 }
 
+/** Each editor's test of whether its paste handler lands a paste through pasteLarge (the MarkdownEditor seam's). */
+const wholePastes = new WeakMap<LexicalEditor, (event: unknown) => boolean>();
+
+export function registerWholePaste(editor: LexicalEditor, takes: (event: unknown) => boolean): () => void {
+  wholePastes.set(editor, takes);
+  return () => {
+    if (wholePastes.get(editor) === takes) wholePastes.delete(editor);
+  };
+}
+
+/** Whether `editor`'s paste handler lands `event` through pasteLarge. */
+export const takesWholePaste = (editor: LexicalEditor, event: unknown): boolean => wholePastes.get(editor)?.(event) ?? false;
+
 /** Lands `request` in batches, after its scratch replay fits; a paste still landing in `editor` lands first. */
 export function pasteLarge(editor: LexicalEditor, request: PasteRequest): void {
   jobs.get(editor)?.flush();

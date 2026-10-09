@@ -1,24 +1,28 @@
 // @vitest-environment jsdom
-// T5.R2 (checker P1): a large paste in Suggest mode lands whole in F or is refused whole (T3.S6), and a refusal of any
-// of its ops offers every pasted block back (suggestions.md §5). A paste past the record cap is refused before any of
-// it reaches F; one that fits lands in one task, so a refusal arriving later still finds all of its ops unanswered.
+// T5.R2: in Suggest mode a large paste (T3.S6) is never batched. It is admitted against every suggestion cap before
+// anything changes, the deletion of a selection it replaces included, then lands in one transaction (one op, one
+// record), or is refused whole with nothing changed (suggestions.md §5). Its undo and its redo are one step each.
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestRequest } from '@moss-multi/protocol/suggest';
 import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
-import { $getRoot, $getSelection, COMMAND_PRIORITY_EDITOR, REDO_COMMAND, type Klass, type LexicalNode } from 'lexical';
+import {
+  $getRoot, $getSelection, COMMAND_PRIORITY_EDITOR, COMMAND_PRIORITY_HIGH, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND, type Klass, type LexicalNode,
+} from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
 import { SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
-import { readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
+import { openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
 import { nodeRegistry } from '../../../../../../packages/sync/src/suggest/review.ts';
-import { seededBody, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
-import { $insertBlocks, pasteLarge, planPlainText } from '../../large-paste.ts';
+import { seededBody, select, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
+import { $insertBlocks, pasteLarge, planPlainText, registerWholePaste } from '../../large-paste.ts';
 import { refusalMessage } from '../../refusal.ts';
+import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
+import { registerSuggestRouting } from './routing.ts';
 
 beforeEach(() => {
-  // jsdom's Performance may lack User Timing; the paste marks its batches with it.
+  // jsdom's Performance may lack User Timing; the paste marks its steps with it.
   const perf = performance as unknown as Record<string, unknown>;
   if (typeof perf.mark !== 'function') perf.mark = () => undefined;
   if (typeof perf.measure !== 'function') perf.measure = () => undefined;
@@ -28,23 +32,55 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** A suggester's pane on F, with the body's undo (which holds a paste's batches in one step) and a reachable DocDO. */
+/**
+ * A suggester's pane on F: the body's undo, the routing, and a paste handler that lands every paste through pasteLarge,
+ * as the MarkdownEditor seam does a large one; a reachable DocDO.
+ */
 function suggesting() {
   const live = seededBody('Intro line stays.\n\nClosing line stays too.\n');
   let n = 0;
   const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}` });
   const outbox: SuggestRequest[] = [];
-  const fork = new SuggestFork(live, { me: SUGGESTER.id, name: SUGGESTER.name, send: (request) => outbox.push(request), now: () => 1_000 });
+  let requests = 0;
+  const fork = new SuggestFork(live, {
+    me: SUGGESTER.id, name: SUGGESTER.name, now: () => 1_000,
+    send: (request) => {
+      requests += 1;
+      outbox.push(request);
+    },
+  });
   const bound = bindEditor(fork.doc);
+  const { editor } = bound;
   // The pane's editor, unlike this headless one, takes root listeners; in jsdom it has no root element.
-  Object.assign(bound.editor, { registerRootListener: () => () => {}, getRootElement: () => null, getElementByKey: () => null });
+  Object.assign(editor, { registerRootListener: () => () => {}, getRootElement: () => null, getElementByKey: () => null });
   const undo = createBindingUndoManager(bound.binding);
-  (bound.editor as unknown as Record<symbol, unknown>)[Symbol.for('@lexical/yjs/UndoManager')] = undo;
-  // The collaboration plugin's redo, which a paste's sliced redo takes precedence over.
-  bound.editor.registerCommand(REDO_COMMAND, () => {
-    undo.redo();
-    return true;
-  }, COMMAND_PRIORITY_EDITOR);
+  (editor as unknown as Record<symbol, unknown>)[Symbol.for('@lexical/yjs/UndoManager')] = undo;
+  const nodes = [...editor._nodes.values()].map(({ klass }) => klass) as Klass<LexicalNode>[];
+  let clipboard = '';
+  const stops = [
+    publishBinding(editor, bound.binding),
+    // The collaboration plugin's undo and redo, which a paste's sliced redo and the routing take precedence over.
+    editor.registerCommand(UNDO_COMMAND, () => {
+      undo.undo();
+      return true;
+    }, COMMAND_PRIORITY_EDITOR),
+    editor.registerCommand(REDO_COMMAND, () => {
+      undo.redo();
+      return true;
+    }, COMMAND_PRIORITY_EDITOR),
+    // The seam: this handler lands every paste whole.
+    registerWholePaste(editor, () => true),
+    editor.registerCommand(PASTE_COMMAND, () => {
+      pasteLarge(editor, {
+        plan: planPlainText(nodes, clipboard),
+        nodes,
+        $restore: () => false,
+        $insert: (blocks) => $insertBlocks(blocks, $getSelection()!, (some, at) => at.insertNodes(some)),
+      });
+      return true;
+    }, COMMAND_PRIORITY_HIGH),
+    registerSuggestRouting(editor, fork),
+  ];
   const unsaved: string[] = [];
   fork.on((event) => {
     if (event.type === 'refused') unsaved.push(...event.unsaved);
@@ -56,27 +92,33 @@ function suggesting() {
     while (outbox.length) fork.receive(handleSuggest(ingest, who, outbox.shift()!));
   };
   pump();
-  bound.editor.update(() => $getRoot().getLastChildOrThrow().selectEnd(), { discrete: true });
-  const nodes = [...bound.editor._nodes.values()].map(({ klass }) => klass) as Klass<LexicalNode>[];
-  const paste = (lines: string[]) => pasteLarge(bound.editor, {
-    plan: planPlainText(nodes, lines.join('\n')),
-    nodes,
-    $restore: () => false,
-    $insert: (blocks) => $insertBlocks(blocks, $getSelection()!, (some, at) => at.insertNodes(some)),
-  });
+  editor.update(() => $getRoot().getLastChildOrThrow().selectEnd(), { discrete: true });
+  /** A real paste command of `lines`, as plain text, run to its end. */
+  const paste = (lines: string[]) => {
+    clipboard = lines.join('\n');
+    editor.dispatchCommand(PASTE_COMMAND, { clipboardData: null } as unknown as ClipboardEvent);
+  };
   return {
     fork,
     live,
     unsaved,
     paste,
     pump,
-    undo: () => {
-      undo.undo();
-      bound.editor.update(() => {}, { discrete: true });
-    },
-    redo: () => bound.editor.dispatchCommand(REDO_COMMAND, undefined),
-    text: () => bound.editor.getEditorState().read(() => $getRoot().getTextContent()),
+    /** Requests of any kind sent so far. */
+    requests: () => requests,
+    select: (prefix: string, anchor: number, focus: number) => editor.update(() => {
+      select(prefix, anchor, focus);
+    }, { discrete: true }),
+    selected: () => editor.getEditorState().read(() => $getSelection()?.getTextContent() ?? ''),
+    undo: () => editor.update(() => {
+      editor.dispatchCommand(UNDO_COMMAND, undefined);
+    }, { discrete: true }),
+    redo: () => editor.update(() => {
+      editor.dispatchCommand(REDO_COMMAND, undefined);
+    }, { discrete: true }),
+    text: () => editor.getEditorState().read(() => $getRoot().getTextContent()),
     dispose: () => {
+      for (const stop of stops) stop();
       undo.destroy();
       bound.dispose();
       fork.dispose();
@@ -84,20 +126,59 @@ function suggesting() {
   };
 }
 
-it('a paste refused after its first batch reached the DocDO offers back every pasted paragraph', { timeout: 120_000 }, () => {
+/** Bytes of ops record `id` holds. */
+const recordBytes = (pane: ReturnType<typeof suggesting>, id: string) => readRecord(pane.live, id)!.ops.reduce((sum, op) => sum + op.update.byteLength, 0);
+
+/** Runs timers until the refusal notice shows (it clears itself on a timer), then the rest. */
+function noticed(): string {
+  while (!refusalMessage() && vi.getTimerCount() > 0) vi.advanceTimersToNextTimer();
+  const message = refusalMessage();
+  vi.runAllTimers();
+  return message;
+}
+
+it('an admissible large paste lands in one op as one record, and its undo and its redo are one op each', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
-    // More than one batch's worth, under the record cap (a paragraph is some 300 bytes of ops); `<i>` marks each, the
-    // middle ones included (the first batch also places the last).
+    // Many batches' worth in Edit mode (a paragraph is some 300 bytes of ops), under the record cap.
     const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
     const before = pane.fork.sent;
     pane.paste(lines);
-    for (let tick = 0; pane.fork.sent === before && tick < 1_000; tick += 1) vi.advanceTimersToNextTimer();
-    expect(pane.fork.sent, 'the first batch reached the DocDO').toBeGreaterThan(before);
-    // The DocDO refuses the first op (record-cap, ops-cap: any reason) while the rest of the paste may be pending.
+    vi.runAllTimers();
+    expect(pane.fork.sent - before, 'the paste is one op').toBe(1);
+    pane.pump();
+    expect(pane.fork.closed, 'admitted').toBe(false);
+    const records = openRecords(pane.live, SUGGESTER.id);
+    expect(records.map((record) => record.ops.length), 'one record holds it').toEqual([1]);
+    expect(pane.text()).toContain('para <0>');
+    expect(pane.text()).toContain('para <299>');
+
+    pane.undo();
+    vi.runAllTimers();
+    expect(pane.fork.sent - before, 'one undo, one op').toBe(2);
+    expect(pane.text(), 'one undo takes all of it back').not.toMatch(/para <\d+>/);
+    pane.pump();
+    pane.redo();
+    vi.runAllTimers();
+    expect(pane.fork.sent - before, 'one redo, one op').toBe(3);
+    expect(pane.text(), 'one redo brings all of it back').toContain('para <0>');
+    expect(pane.text()).toContain('para <299>');
+    pane.pump();
+    expect(pane.fork.closed, 'nothing refused').toBe(false);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a refusal of the paste offers back every pasted paragraph', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    pane.paste(lines);
+    vi.runAllTimers();
+    // The DocDO refuses it (record-cap, ops-cap: any reason).
     pane.fork.receive({ t: 'suggest-refused', record: pane.fork.record, reason: 'record-cap' });
     vi.runAllTimers();
-    // Nothing was acked, so nothing was saved: every paragraph is offered back.
     const offered = pane.unsaved.join('\n');
     const lost = lines.filter((line) => !offered.includes(line));
     expect(lost.length, `paragraphs neither saved nor offered back, e.g. ${lost.slice(0, 3).join(', ')}`).toBe(0);
@@ -112,13 +193,10 @@ it('a paste past the suggestion record cap is refused whole, before any of it re
     // About 400 KB of text: past the 256 KiB of ops one suggestion holds, far under the note's cap.
     const lines = Array.from({ length: 10_000 }, (_, i) => `para <${i}> ${'x'.repeat(28)}`);
     const text = pane.text();
-    const before = pane.fork.sent;
+    const before = pane.requests();
     pane.paste(lines);
-    // The notice clears itself on a timer: read it once it shows.
-    while (!refusalMessage() && vi.getTimerCount() > 0) vi.advanceTimersToNextTimer();
-    expect(refusalMessage(), 'refused visibly').toMatch(/suggest/i);
-    vi.runAllTimers();
-    expect(pane.fork.sent, 'no op was sent').toBe(before);
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent').toBe(before);
     expect(pane.text(), 'F is unchanged').toBe(text);
     expect(pane.fork.closed, 'input stays open').toBe(false);
   } finally {
@@ -126,8 +204,43 @@ it('a paste past the suggestion record cap is refused whole, before any of it re
   }
 });
 
-/** Bytes of ops record `id` holds. */
-const recordBytes = (pane: ReturnType<typeof suggesting>, id: string) => readRecord(pane.live, id)!.ops.reduce((sum, op) => sum + op.update.byteLength, 0);
+it('a paste over a selection past the record cap is refused whole: nothing struck, nothing sent, the selection kept', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    pane.select('Intro line', 6, 10);
+    expect(pane.selected()).toBe('line');
+    const lines = Array.from({ length: 10_000 }, (_, i) => `para <${i}> ${'x'.repeat(28)}`);
+    const text = pane.text();
+    const before = pane.requests();
+    pane.paste(lines);
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent, no strike either').toBe(before);
+    expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    expect(pane.selected(), 'the selection is kept').toBe('line');
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('an admissible paste over a selection strikes it and lands, as one suggestion', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    pane.select('Intro line', 6, 10);
+    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    pane.paste(lines);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'admitted').toBe(false);
+    expect(pane.fork.struck().reduce((sum, span) => sum + span.len, 0), 'the selection is struck').toBe(4);
+    expect(pane.text()).toContain('para <0>');
+    expect(pane.text()).toContain('para <299>');
+    expect(openRecords(pane.live, SUGGESTER.id), 'one record holds the strike and the paste').toHaveLength(1);
+  } finally {
+    pane.dispose();
+  }
+});
 
 it('a paste that would take the open record it extends past the record cap is refused whole', { timeout: 120_000 }, () => {
   const pane = suggesting();
@@ -148,12 +261,10 @@ it('a paste that would take the open record it extends past the record cap is re
     expect(count * perLine, 'the second paste alone fits').toBeLessThan(cap * 0.85);
     const second = Array.from({ length: count }, (_, i) => `second <${i}> ${'x'.repeat(200)}`);
     const text = pane.text();
-    const before = pane.fork.sent;
+    const before = pane.requests();
     pane.paste(second);
-    while (!refusalMessage() && vi.getTimerCount() > 0) vi.advanceTimersToNextTimer();
-    expect(refusalMessage(), 'refused visibly').toMatch(/suggest/i);
-    vi.runAllTimers();
-    expect(pane.fork.sent, 'no op was sent').toBe(before);
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent').toBe(before);
     expect(pane.text(), 'F is unchanged').toBe(text);
     pane.pump();
     expect(pane.fork.closed, 'input stays open').toBe(false);
@@ -163,7 +274,7 @@ it('a paste that would take the open record it extends past the record cap is re
   }
 });
 
-it('a refusal during the redo of a batched paste offers back every redone paragraph', { timeout: 120_000 }, () => {
+it('a refusal of the redo of a paste offers back every redone paragraph', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
     const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
@@ -176,9 +287,9 @@ it('a refusal during the redo of a batched paste offers back every redone paragr
     expect(pane.text(), 'undone').not.toContain('para <0>');
     const before = pane.fork.sent;
     pane.redo();
-    for (let tick = 0; pane.fork.sent === before && tick < 1_000; tick += 1) vi.advanceTimersToNextTimer();
+    vi.runAllTimers();
     expect(pane.fork.sent, 'the redo reached the DocDO').toBeGreaterThan(before);
-    // The DocDO refuses the redo's first op (doc-cap, open-cap, the record closing: any reason).
+    // The DocDO refuses it (doc-cap, open-cap, the record closing: any reason).
     pane.fork.receive({ t: 'suggest-refused', record: pane.fork.record, reason: 'doc-cap' });
     vi.runAllTimers();
     const offered = pane.unsaved.join('\n');
