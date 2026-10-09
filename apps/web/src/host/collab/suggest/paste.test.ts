@@ -10,29 +10,27 @@ import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/sr
 import { SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { nodeRegistry } from '../../../../../../packages/sync/src/suggest/review.ts';
-import { deterministicIds, seededBody, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
+import { seededBody, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { $insertBlocks, pasteLarge, planPlainText } from '../../large-paste.ts';
 import { refusalMessage } from '../../refusal.ts';
 import { createBindingUndoManager } from '../undo.ts';
 
-let restore: () => void = () => {};
 beforeEach(() => {
-  restore = deterministicIds();
-  // jsdom's Performance has no User Timing; the paste marks its batches with it.
-  const perf = performance as Performance & Record<string, unknown>;
+  // jsdom's Performance may lack User Timing; the paste marks its batches with it.
+  const perf = performance as unknown as Record<string, unknown>;
   if (typeof perf.mark !== 'function') perf.mark = () => undefined;
   if (typeof perf.measure !== 'function') perf.measure = () => undefined;
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 });
 afterEach(() => {
   vi.useRealTimers();
-  restore();
 });
 
 /** A suggester's pane on F, with the body's undo (which holds a paste's batches in one step) and a reachable DocDO. */
 function suggesting() {
   const live = seededBody('Intro line stays.\n\nClosing line stays too.\n');
-  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => 'r1' });
+  let n = 0;
+  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}` });
   const outbox: SuggestRequest[] = [];
   const fork = new SuggestFork(live, { me: SUGGESTER.id, name: SUGGESTER.name, send: (request) => outbox.push(request), now: () => 1_000 });
   const bound = bindEditor(fork.doc);
