@@ -938,7 +938,7 @@ export class SuggestFork {
       const at = block ? index : index + 0.5;
       if (!every && (at < from - 1 || at > to + 1)) continue;
       see(item);
-      if (block && (every || (index >= from && index <= to))) walk(item.content.type as Y.AbstractType<unknown>);
+      if (block && (every || (index >= from && index <= to))) walk((item.content as Y.ContentType).type as Y.AbstractType<unknown>);
     }
     return found;
   }

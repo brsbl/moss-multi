@@ -42,11 +42,14 @@ function suggesting() {
   const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}` });
   const outbox: SuggestRequest[] = [];
   let requests = 0;
+  /** Requests that change a suggestion: every kind but a lease. */
+  let changes = 0;
   let clock = 1_000;
   const fork = new SuggestFork(live, {
     me: SUGGESTER.id, name: SUGGESTER.name, now: () => clock,
     send: (request) => {
       requests += 1;
+      if (request.t !== 'suggest-lease') changes += 1;
       outbox.push(request);
     },
   });
@@ -107,6 +110,7 @@ function suggesting() {
     pump,
     /** Requests of any kind sent so far. */
     requests: () => requests,
+    changes: () => changes,
     /** The fork's clock moves on `ms`. */
     idle: (ms: number) => {
       clock += ms;
@@ -323,10 +327,11 @@ it('a paste that builds on an older open record after its group rotated counts t
     const count = Math.ceil((cap * 1.05 - held) / perChar);
     expect(count * perChar, 'the second paste alone fits').toBeLessThan(cap * 0.85);
     const text = pane.text();
-    const before = pane.requests();
+    const before = pane.changes();
     pane.paste([`second ${'x'.repeat(count)}`]);
     expect(noticed(), 'refused visibly').toMatch(/suggest/i);
-    expect(pane.requests(), 'nothing was sent, no merge either').toBe(before);
+    // The new group may ask for its next spare lease; nothing it sends changes a suggestion.
+    expect(pane.changes(), 'nothing was sent, no merge either').toBe(before);
     expect(pane.text(), 'F is unchanged').toBe(text);
     pane.pump();
     expect(pane.fork.closed, 'input stays open').toBe(false);
