@@ -2,8 +2,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commentGaps, hasVersion, pendingBy, planNotes } from '../e2e/qa/demo.js';
-import { demoConfig, demoPrincipals, ensurePrincipal, NOTES, stepScript, STEPS, writeDemoRun } from './demo.mjs';
+import { changedSuggestions, commentGaps, hasVersion, panelProblems, pendingBy, planNotes, signatureProblems, verifiedShot } from '../e2e/qa/demo.js';
+import { commentPasses, demoConfig, demoPrincipals, ensurePrincipal, NOTES, stepScript, STEPS, THREADS, writeDemoRun } from './demo.mjs';
 
 const VERSION = { commit: 'c'.repeat(40), bundleHash: 'b'.repeat(64), clientHash: 'e'.repeat(64) };
 
@@ -25,6 +25,32 @@ describe('demoConfig', () => {
   it('refuses anything but an http(s) stack URL', () => {
     expect(() => demoConfig({ url: 'file:///etc/passwd' })).toThrow(/http/);
     expect(() => demoConfig({})).toThrow(/--url/);
+  });
+});
+
+describe('commentPasses', () => {
+  // Replays the comments step: a pass adds the person's roots, then their replies under roots that exist, then
+  // their reactions on messages that exist. Returns what is still missing after the passes.
+  const missingAfter = (passes, threads) => {
+    const have = new Set();
+    for (const me of passes) {
+      for (const t of threads) if (t.by === me) have.add(t.text);
+      for (const t of threads) for (const r of t.replies ?? []) if (r.by === me && have.has(t.text)) have.add(r.text);
+      for (const t of threads) {
+        const messages = [t.text, ...(t.replies ?? []).map((r) => r.text)].filter((text) => have.has(text));
+        for (const r of t.reactions ?? []) if (r.by === me && messages.some((text) => text.includes(r.on))) have.add(`${r.by}:${r.emoji}:${r.on}`);
+      }
+    }
+    return threads.flatMap((t) => [t.text, ...(t.replies ?? []).map((r) => r.text), ...(t.reactions ?? []).map((r) => `${r.by}:${r.emoji}:${r.on}`)]).filter((x) => !have.has(x));
+  };
+
+  it('lands every root, reply and reaction in one run: a reaction on a later reply gets a pass after it', () => {
+    expect(missingAfter(commentPasses(THREADS), THREADS)).toEqual([]);
+  });
+
+  it('adds no idle pass', () => {
+    const passes = commentPasses(THREADS);
+    for (let i = 0; i < passes.length; i += 1) expect(missingAfter(passes.toSpliced(i, 1), THREADS)).not.toEqual([]);
   });
 });
 
@@ -154,6 +180,109 @@ describe('versions and suggestions', () => {
     expect(pendingBy(open, 'Ben')).toBe(true);
     expect(pendingBy(open, 'Demo agent')).toBe(false);
     expect(pendingBy([{ id: 's1', author: { id: 'u2', name: 'Ben' }, status: 'rejected' }], 'Ben')).toBe(false);
+  });
+});
+
+describe('the signature frame', () => {
+  const want = { name: 'Ben Lindqvist', sentence: 'When three people open the same note at once', find: 'within a heartbeat', replace: 'in under a second' };
+  const good = {
+    docState: 'live',
+    connection: 'online',
+    binding: 'readonly',
+    text: `${want.sentence}, each of them should see the others' cursors arrive ${want.find}${want.replace}, so that`,
+    caretLabels: ['Ben Lindqvist'],
+    richBlocks: 3,
+  };
+  // The frame PR #10 first carried: the title over an empty body, the pill saying "Connecting…".
+  const blank = { docState: 'binding', connection: 'reconnecting', binding: null, text: '', caretLabels: [], richBlocks: 0 };
+
+  it('passes a frame with the live note, the sentence, both halves of the suggestion, the caret label and rich blocks', () => {
+    expect(signatureProblems(good, want)).toEqual([]);
+  });
+
+  it('refuses the blank "Connecting…" frame, naming what is missing', () => {
+    const problems = signatureProblems(blank, want).join('; ');
+    for (const word of ['binding', 'reconnecting', 'body', 'sentence', 'caret', 'rich']) expect(problems).toContain(word);
+  });
+
+  it('refuses a frame without the caret label or without the inserted words', () => {
+    expect(signatureProblems({ ...good, caretLabels: [] }, want).join()).toMatch(/caret/);
+    expect(signatureProblems({ ...good, text: good.text.replace(want.replace, '') }, want).join()).toMatch(/in under a second/);
+  });
+});
+
+describe('verifiedShot', () => {
+  const run = (frames, { attempts = 3, failPrepare = [] } = {}) => {
+    const log = [];
+    let n = 0;
+    let shots = 0;
+    const result = verifiedShot({
+      attempts,
+      prepare: async (attempt) => {
+        log.push(`prepare ${attempt}`);
+        if (failPrepare.includes(attempt)) throw new Error('caret never showed');
+      },
+      inspect: async () => frames[Math.min(n++, frames.length - 1)],
+      problems: (frame) => (frame === 'ok' ? [] : [frame]),
+      capture: async () => {
+        shots += 1;
+        log.push(`shot ${shots}`);
+        return `shot-${shots}.png`;
+      },
+    });
+    return { result, log };
+  };
+
+  it('returns the shot when the frame is right before and after it', async () => {
+    expect(await run(['ok', 'ok']).result).toBe('shot-1.png');
+  });
+
+  it('never returns a shot taken while the frame went blank; it retakes it', async () => {
+    const { result, log } = run(['ok', 'Connecting…', 'ok', 'ok']);
+    expect(await result).toBe('shot-2.png');
+    expect(log).toEqual(['prepare 1', 'shot 1', 'prepare 2', 'shot 2']);
+  });
+
+  it('does not shoot a frame that is wrong before the shot', async () => {
+    const { result, log } = run(['Connecting…', 'ok', 'ok']);
+    expect(await result).toBe('shot-1.png');
+    expect(log).toEqual(['prepare 1', 'prepare 2', 'shot 1']);
+  });
+
+  it('retries an attempt whose preparation fails', async () => {
+    expect(await run(['ok', 'ok'], { failPrepare: [1] }).result).toBe('shot-1.png');
+  });
+
+  it('fails, naming the problem, when no attempt gives the frame', async () => {
+    await expect(run(['Connecting…']).result).rejects.toThrow(/Connecting…/);
+  });
+});
+
+describe('panelProblems', () => {
+  const card = (rows = 1) => ({ loading: false, failed: null, rows });
+
+  it('passes the expected open cards, each showing its changes', () => {
+    expect(panelProblems([card(), card(2), card()], 3)).toEqual([]);
+  });
+
+  it('refuses loading, failed or empty cards and a missing card', () => {
+    expect(panelProblems([{ loading: true, failed: null, rows: 0 }, card(), card()], 3).join()).toMatch(/loading/);
+    expect(panelProblems([{ loading: false, failed: 'The server could not be reached. Try again.', rows: 0 }, card(), card()], 3).join()).toMatch(/could not be reached/);
+    expect(panelProblems([card(0), card(), card()], 3).join()).toMatch(/no change/);
+    expect(panelProblems([card(), card()], 3).join()).toMatch(/2 of 3/);
+  });
+});
+
+describe('changedSuggestions', () => {
+  const s = (id, createdAt, updatedAt = createdAt) => ({ id, author: { id: 'u2', name: 'Ben' }, status: 'open', createdAt, updatedAt });
+
+  it('finds nothing when the records are the same', () => {
+    expect(changedSuggestions([s('a', 1), s('b', 2)], [s('b', 2), s('a', 1)])).toEqual([]);
+  });
+
+  it('finds a record the signature keystroke re-made or touched', () => {
+    expect(changedSuggestions([s('a', 1), s('b', 2)], [s('a', 1), s('c', 9)])).toEqual(['b', 'c']);
+    expect(changedSuggestions([s('a', 1)], [s('a', 1, 5)])).toEqual(['a']);
   });
 });
 
