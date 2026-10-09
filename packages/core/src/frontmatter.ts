@@ -64,22 +64,29 @@ export function updateFrontmatter(doc: Y.Doc, before: Frontmatter, after: Frontm
   const keys = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])];
   const changed = keys.filter((key) => stable(before?.[key]) !== stable(after?.[key]));
   const desired = Object.keys(after ?? {}).filter((key) => after?.[key] !== undefined);
-  const retained = new Set(Object.keys(before ?? {}).filter((key) => desired.includes(key)));
+  const wanted = new Set(desired);
+  const retained = new Set(Object.keys(before ?? {}).filter((key) => wanted.has(key)));
   const reordered = JSON.stringify(Object.keys(before ?? {}).filter((key) => retained.has(key))) !==
     JSON.stringify(desired.filter((key) => retained.has(key)));
   if (!changed.length && !reordered) return false;
   doc.transact(() => {
+    const ordered = new Set(order.toArray());
+    const appended: string[] = [];
     for (const key of changed) {
       const value = after?.[key];
       if (value === undefined) map.delete(key);
       else {
         map.set(key, value);
-        if (!order.toArray().includes(key)) order.push([key]);
+        if (!ordered.has(key)) {
+          ordered.add(key);
+          appended.push(key);
+        }
       }
     }
+    if (appended.length) order.push(appended);
     if (reordered) {
       // Ordering conflicts cannot delete values. Concurrent order inserts are deduplicated on read.
-      const others = frontmatterKeys(doc).filter((key) => !desired.includes(key));
+      const others = frontmatterKeys(doc).filter((key) => !wanted.has(key));
       order.delete(0, order.length);
       order.push([...desired, ...others]);
     }
