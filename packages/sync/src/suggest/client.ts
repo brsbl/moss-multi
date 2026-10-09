@@ -12,7 +12,7 @@ import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
 import { registerFork } from './forks.ts';
-import { openRecords, readMeta } from './records.ts';
+import { openRecords, readMeta, readRecord, recordBytes } from './records.ts';
 import { bindCheck } from './review.ts';
 
 export { openRecords };
@@ -846,13 +846,32 @@ export class SuggestFork {
     for (const part of this.#parts.values()) if (part.record === from) part.record = to;
   }
 
-  #maybeRotate(): void {
+  /** Whether the next edit starts a new group: idle, or more than one block from the last. */
+  #rotates(): boolean {
     const active = this.#leases[0];
-    if (!active || !this.#used.has(active.client) || this.#leases.length < 2) return;
+    if (!active || !this.#used.has(active.client) || this.#leases.length < 2) return false;
     const idle = this.#now() - this.#lastEdit > GROUP_IDLE_MS;
     const away = this.#caretBlock >= 0 && this.#lastBlock >= 0 && Math.abs(this.#caretBlock - this.#lastBlock) > 1;
-    if (!idle && !away) return;
-    this.#rotate();
+    return idle || away;
+  }
+
+  #maybeRotate(): void {
+    if (this.#rotates()) this.#rotate();
+  }
+
+  /**
+   * The bytes the record the next edit writes already holds, as the record cap counts them: what the body shows of it,
+   * plus its ops still unanswered. An edit that would take it past the cap is refused there.
+   */
+  nextRecordBytes(): number {
+    const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
+    if (!lease) return 0;
+    const stored = readRecord(this.body, lease.record);
+    let bytes = stored ? recordBytes(stored) : 0;
+    for (const { request, op } of [...this.#inflight, ...this.#waiting]) {
+      if (op && request.t === 'suggest-ops' && request.record === lease.record) bytes += op.update.byteLength;
+    }
+    return bytes;
   }
 
   /** The next group: the spare lease becomes active, and a new spare is asked for. */

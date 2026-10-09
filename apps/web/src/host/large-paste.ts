@@ -784,8 +784,9 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
   }
-  // Some headroom: the batches' ops encode a little larger than the replay's one state.
-  if (fork && bytes > SUGGEST_LIMITS.recordOpsBytes * 0.9) {
+  // With what the record it extends already holds. Some headroom: the batches' ops encode a little larger than the
+  // replay's one state.
+  if (fork && fork.nextRecordBytes() + bytes > SUGGEST_LIMITS.recordOpsBytes * 0.9) {
     refuseInput(SUGGEST_PASTE_TOO_LARGE);
     return;
   }
@@ -895,6 +896,10 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   const stamp = undo?.redone?.at(-1)?.stamp;
   const max = typeof stamp === 'object' && stamp !== null ? pasted.get(stamp) : undefined;
   if (max === undefined || !undo?.redoInSlices) return false;
+  // Suggest mode redoes it in one transaction, one op the DocDO takes or refuses whole: a refusal between slices would
+  // close F, and the slices after it would be neither saved nor offered back.
+  const doc = noteDoc(editor);
+  if (doc && forkOf(doc)) return false;
   const slices = undo.redoInSlices(stamp);
   if (!slices) return false;
   const job = new PasteJob(editor, (each) => redoSlices(each, slices, max));
