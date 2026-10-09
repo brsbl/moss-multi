@@ -165,12 +165,10 @@ export class SqlLeases implements LeaseStore {
 
 export const SUGGEST_CAPS = {
   recordOpsBytes: SUGGEST_LIMITS.recordOpsBytes,
-  openPerPrincipal: 20,
-  /** All open records' ops, as a share of the state cap. */
-  openOpsShare: 0.25,
-  /** Spans per delete part, and items a part may name. */
-  partSpans: 1024,
-  partItems: 20_000,
+  openPerPrincipal: SUGGEST_LIMITS.openPerPrincipal,
+  openOpsShare: SUGGEST_LIMITS.openOpsShare,
+  partSpans: SUGGEST_LIMITS.partSpans,
+  partItems: SUGGEST_LIMITS.partItems,
 } as const;
 
 /** `sv`: each of the record's leases' acknowledged clock in `doc`, the doc the frame wrote. */

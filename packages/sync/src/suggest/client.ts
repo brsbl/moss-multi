@@ -7,12 +7,13 @@ import * as Y from 'yjs';
 import {
   BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, type Inserted, type RecordOp, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
+import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
 import { registerFork } from './forks.ts';
-import { openRecords, readMeta, readRecord, recordBytes } from './records.ts';
+import { openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds } from './records.ts';
 import { bindCheck } from './review.ts';
 
 export { openRecords };
@@ -452,6 +453,10 @@ export function touchedBlocks(doc: Y.Doc, ops: readonly RecordOp[], spans: reado
 
 let partSeq = 0;
 const partId = () => `p${Date.now().toString(36)}${(partSeq += 1).toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/** A delete part's bytes as the DocDO will store it, before it reads the quote (at most 1,024 characters). */
+const pendingPartBytes = (targets: readonly IdSpan[]): number =>
+  partBytes({ id: partId(), kind: 'delete', targets: [...targets], quote: '' }) + 2 * Math.min(1024, targets.reduce((sum, span) => sum + span.len, 0));
 /**
  * The fork F. `begin()` asks for leases; their reply fills F (bind the editor first, so it reconciles F like a first
  * sync) and starts forwarding. Replies arrive in request order through `receive`.
@@ -860,18 +865,37 @@ export class SuggestFork {
   }
 
   /**
-   * The bytes the record the next edit writes already holds, as the record cap counts them: what the body shows of it,
-   * plus its ops still unanswered. An edit that would take it past the cap is refused there.
+   * Whether an edit adding `bytes` of ops, and with `strike` a delete part of those targets, fits every cap the DocDO
+   * checks it against, counted as it counts them: the record the edit writes (what the body shows of it and what is
+   * still unanswered), all open records' ops, the author's open records, the part's spans. Null when it fits, else the
+   * refusal it would meet. Some headroom on the record: an edit's ops encode a little larger than a replay measures.
    */
-  nextRecordBytes(): number {
+  admit(bytes: number, strike?: readonly IdSpan[]): SuggestRefusal | null {
+    if (!this.#ready || this.#closed) return 'record-closed';
     const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
-    if (!lease) return 0;
-    const stored = readRecord(this.body, lease.record);
-    let bytes = stored ? recordBytes(stored) : 0;
-    for (const { request, op } of [...this.#inflight, ...this.#waiting]) {
-      if (op && request.t === 'suggest-ops' && request.record === lease.record) bytes += op.update.byteLength;
+    if (!lease) return 'lease';
+    let adds = bytes;
+    if (strike?.length) {
+      const items = strike.reduce((sum, span) => sum + span.len, 0);
+      if (strike.length > SUGGEST_LIMITS.partSpans || items > SUGGEST_LIMITS.partItems) return 'target';
+      adds += pendingPartBytes(strike);
     }
-    return bytes;
+    const pending = new Map<string, number>();
+    for (const { request, op } of [...this.#inflight, ...this.#waiting]) {
+      const add = request.t === 'suggest-ops' && op ? op.update.byteLength : request.t === 'suggest-delete' ? pendingPartBytes(request.part.targets) : 0;
+      if (add) pending.set(request.record, (pending.get(request.record) ?? 0) + add);
+    }
+    const stored = readRecord(this.body, lease.record);
+    if ((stored ? recordBytes(stored) : 0) + (pending.get(lease.record) ?? 0) + adds > SUGGEST_LIMITS.recordOpsBytes * 0.9) return 'record-cap';
+    let open = [...pending.values()].reduce((sum, add) => sum + add, 0);
+    for (const id of recordIds(this.body)) {
+      const record = readMeta(this.body, id)?.status === 'open' ? readRecord(this.body, id) : null;
+      if (record) open += recordBytes(record);
+    }
+    if (open + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.openOpsShare) return 'ops-cap';
+    const creates = !stored && !pending.has(lease.record);
+    if (creates && openRecords(this.body, this.options.me).length >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';
+    return null;
   }
 
   /** The next group: the spare lease becomes active, and a new spare is asked for. */

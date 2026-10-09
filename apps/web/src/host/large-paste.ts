@@ -7,12 +7,12 @@
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
+import type { IdSpan, SuggestRefusal } from '@moss-multi/protocol/suggest';
 import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
-import { forkOf } from '@moss-multi/sync/suggest/forks';
+import { forkOf, type ForkView } from '@moss-multi/sync/suggest/forks';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
@@ -766,17 +766,36 @@ function* rehearse(request: PasteRequest, max: number): Generator<void, { bytes:
   return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
 }
 
-const SUGGEST_PASTE_TOO_LARGE = 'This paste is too large for one suggestion, so none of it was added.';
-const SUGGEST_PASTE_CLOSED = 'Suggesting stopped before the paste went in, so none of it was added.';
+/** Suggest mode refuses a paste whole, with the cap it would pass. */
+const SUGGEST_PASTE_REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
+  default: 'This paste is too large for one suggestion, so none of it was added.',
+  'open-cap': 'You have too many open suggestions on this note, so none of the paste was added.',
+  'record-closed': 'Suggesting stopped before the paste went in, so none of it was added.',
+  lease: 'Suggesting stopped before the paste went in, so none of it was added.',
+};
+
+/** Suggest mode's routing of a selection a whole paste replaces (routing.ts). */
+export interface SuggestPasteRoute {
+  /** The body items the selection would strike, read without striking them. */
+  $targets(): IdSpan[];
+  /** Strikes the selection (the author's own text in it goes natively), the caret at its end. */
+  $route(): void;
+}
+
+const suggestRoutes = new WeakMap<LexicalEditor, SuggestPasteRoute>();
+
+export function registerSuggestPasteRoute(editor: LexicalEditor, route: SuggestPasteRoute): () => void {
+  suggestRoutes.set(editor, route);
+  return () => {
+    if (suggestRoutes.get(editor) === route) suggestRoutes.delete(editor);
+  };
+}
 
 /** Lands `request`: its scratch replay, then its batches or its refusal. */
 function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void> {
   const { editor } = job;
   const { plan } = request;
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
-  const doc = noteDoc(editor);
-  // Suggest mode: the paste is one suggestion's ops, under the DocDO's record cap.
-  const fork = doc ? forkOf(doc) : undefined;
 
   // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
   const { bytes, largestFrame } = yield* rehearse(request, max);
@@ -784,15 +803,12 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
   }
-  // With what the record it extends already holds. Some headroom: the batches' ops encode a little larger than the
-  // replay's one state.
-  if (fork && fork.nextRecordBytes() + bytes > SUGGEST_LIMITS.recordOpsBytes * 0.9) {
-    refuseInput(SUGGEST_PASTE_TOO_LARGE);
-    return;
-  }
   yield;
-  if (fork?.closed) {
-    refuseInput(SUGGEST_PASTE_CLOSED);
+  // Suggest mode: the paste is one suggestion's edit, never batched (landSuggested).
+  const doc = noteDoc(editor);
+  const fork = doc ? forkOf(doc) : undefined;
+  if (fork) {
+    landSuggested(editor, request, fork, bytes);
     return;
   }
 
@@ -821,9 +837,8 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   while (!placer.done) {
     job.liftDir(placer);
     batches += 1;
-    // Without a step to hold open (no collaborative undo), the rest goes in now. In Suggest mode too: a refusal
-    // closes F, and only ops already sent are offered back, so every batch is sent before any reply can arrive.
-    if (undo?.hold && !job.flushing && !fork) yield;
+    // Without a step to hold open (no collaborative undo), the rest goes in now.
+    if (undo?.hold && !job.flushing) yield;
     // Every later batch joins the paste's undo step (BodyUndo.hold), released once its update has committed.
     if (!editor._updating) settle();
     const release = undo?.hold?.();
@@ -842,6 +857,36 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     step.stamp = stamp;
     pasted.set(stamp, max);
   }
+}
+
+/**
+ * A paste in Suggest mode: admitted against every suggestion cap with the strike of the selection it replaces, before
+ * anything changes, then the strike and the whole paste in one update (one transaction, one op, one undo step), or
+ * refused whole with nothing changed, the selection kept. Batches would each be an op the DocDO could refuse alone.
+ */
+function landSuggested(editor: LexicalEditor, request: PasteRequest, fork: ForkView, bytes: number): void {
+  const route = suggestRoutes.get(editor);
+  const undo = collabUndo(editor);
+  const outcome: { refusal: SuggestRefusal | null } = { refusal: null };
+  // A pending update (a peer's) would take the paste into it, and an update so tagged never reaches the doc.
+  if (!editor._updating) editor.read(noop);
+  const live = editor.getEditorState()._selection;
+  undo?.stopCapturing();
+  editor.update(() => {
+    if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
+    // Inside the update: a flush from a command's update queues this one.
+    outcome.refusal = fork.admit(bytes, route?.$targets());
+    if (outcome.refusal) {
+      refuseInput(SUGGEST_PASTE_REFUSED[outcome.refusal] ?? SUGGEST_PASTE_REFUSED.default);
+      return;
+    }
+    route?.$route();
+    new Placer(request.plan, true).$first(Number.POSITIVE_INFINITY, request.$insert);
+  }, { discrete: true });
+  undo?.stopCapturing();
+  if (outcome.refusal || editor._updating) return;
+  void editor.getRootElement()?.offsetHeight;
+  runBatchGeometry(editor);
 }
 
 /** The steps of pastes that landed in batches, by the token each is stamped with, and the batch cap they paced with. */

@@ -319,7 +319,7 @@ export class DocDO extends YServer<SyncEnv> {
   #idleAt: number | null = null;
   readonly #idleChecked = new Map<string, number>();
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
-  readonly #refusals = new Map<string, { at: number; key: string | undefined }[]>();
+  readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
@@ -724,11 +724,7 @@ export class DocDO extends YServer<SyncEnv> {
     const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
     const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
     this.sendCustomMessage(connection, JSON.stringify(reply));
-    if (reply.t === 'suggest-refused') {
-      // A client stops at its first refusal, so its frames already sent for that record count with it, once.
-      const record = request?.t === 'suggest-merge' ? request.into : request && 'record' in request ? request.record : undefined;
-      this.#countRefusal(attachment.principalId, typeof record === 'string' ? `${connection.id}\u0000${record}` : undefined);
-    }
+    if (reply.t === 'suggest-refused') this.#countRefusal(attachment.principalId);
   }
 
   override onClose(connection: Connection): void {
@@ -1488,19 +1484,12 @@ export class DocDO extends YServer<SyncEnv> {
     return false;
   }
 
-  /**
-   * `SUGGEST_LIMITS.refusals.max` refusals a window: every socket of the principal closes 4429 a while. Refusals with
-   * the same `key` (a socket and the record its frames named) count once a window.
-   */
-  #countRefusal(principalId: string, key?: string): void {
+  /** `SUGGEST_LIMITS.refusals.max` refusals a window: every socket of the principal closes 4429 a while. */
+  #countRefusal(principalId: string): void {
     const now = Date.now();
     const { max, windowMs } = SUGGEST_LIMITS.refusals;
-    const recent = (this.#refusals.get(principalId) ?? []).filter((entry) => now - entry.at < windowMs);
-    if (key !== undefined && recent.some((entry) => entry.key === key)) {
-      this.#refusals.set(principalId, recent);
-      return;
-    }
-    recent.push({ at: now, key });
+    const recent = (this.#refusals.get(principalId) ?? []).filter((at) => now - at < windowMs);
+    recent.push(now);
     this.#refusals.set(principalId, recent);
     if (recent.length < max) return;
     this.#refusals.delete(principalId);

@@ -1,12 +1,14 @@
 // Each live fork by its doc F, dependency-free: what an editor bound to F writes is a suggestion, under the record caps.
+import type { IdSpan, SuggestRefusal } from '@moss-multi/protocol/suggest';
 import type * as Y from 'yjs';
 
 /** What an editor needs of the fork it writes into. */
 export interface ForkView {
-  /** Input closed: a refusal closed it, or the fork was disposed. */
-  readonly closed: boolean;
-  /** Bytes the record the next edit writes already holds. */
-  nextRecordBytes(): number;
+  /**
+   * Whether an edit adding `bytes` of ops, and striking `strike`, fits every suggestion cap: null, or the refusal it
+   * would meet.
+   */
+  admit(bytes: number, strike?: readonly IdSpan[]): SuggestRefusal | null;
 }
 
 const forks = new WeakMap<Y.Doc, ForkView>();
