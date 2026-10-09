@@ -1285,7 +1285,6 @@ export const serializeMetadata = (metadata: NoteMetadataFile, resolvedFolderPath
 };
 
 // ipc-handlers.ts:1161-1191, 2532-2545
-export const ALLOWED_COPY_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.mp4', '.webm', '.mov'];
 const FILENAME_UNICODE_WHITESPACE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
 
 export const getImageExtension = (mimeType: string): string => {

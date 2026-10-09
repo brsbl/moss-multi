@@ -12,7 +12,8 @@
     "./fanout": "./src/fanout.ts",
     "./access-epoch": "./src/access-epoch.ts",
     "./registers": "./src/registers.ts",
-    "./search": "./src/search-core.ts"
+    "./search": "./src/search-core.ts",
+    "./update-pieces": "./src/update-pieces.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"

@@ -15,6 +15,12 @@ export const CLI_CLIENT_ID = 'moss-multi-cli';
 // explicit and stored in D1. Only the loopback test-hook stack raises them; config.ts keeps hooks off staging.
 export const SIGN_IN_LIMIT = { window: 60, max: 10 };
 export const SIGN_UP_LIMIT = { window: 60, max: 10 };
+/** Sign-ups from one client address (an IPv6 /64 as one) per day, counted in D1 before better-auth. */
+export const SIGN_UP_ADDRESS_DAILY = { window: 24 * 60 * 60, max: 30 };
+/** Closed sign-up windows each sign-up deletes, at most, so pruning stays a bounded indexed delete. */
+export const SIGN_UP_PRUNE_BATCH = 100;
+/** Device-code requests per address (each writes a row). The CLI asks once per login and then polls the token path. */
+export const DEVICE_CODE_LIMIT = { window: 60, max: 10 };
 const HOOK_STACK_LIMIT = { window: 60, max: 10_000 };
 
 export type AuthEnv = Pick<
@@ -47,6 +53,7 @@ export function createAuth(env: AuthEnv) {
       customRules: {
         '/sign-in/*': hookStack ? HOOK_STACK_LIMIT : SIGN_IN_LIMIT,
         '/sign-up/*': hookStack ? HOOK_STACK_LIMIT : SIGN_UP_LIMIT,
+        '/device/code': hookStack ? HOOK_STACK_LIMIT : DEVICE_CODE_LIMIT,
       },
     },
     advanced: {
