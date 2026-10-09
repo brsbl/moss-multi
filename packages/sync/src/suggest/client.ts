@@ -882,8 +882,8 @@ export class SuggestFork {
     }
     const pending = new Map<string, number>();
     for (const { request, op } of [...this.#inflight, ...this.#waiting]) {
-      const add = request.t === 'suggest-ops' && op ? op.update.byteLength : request.t === 'suggest-delete' ? pendingPartBytes(request.part.targets) : 0;
-      if (add) pending.set(request.record, (pending.get(request.record) ?? 0) + add);
+      if (request.t === 'suggest-ops' && op) pending.set(request.record, (pending.get(request.record) ?? 0) + op.update.byteLength);
+      if (request.t === 'suggest-delete') pending.set(request.record, (pending.get(request.record) ?? 0) + pendingPartBytes(request.part.targets));
     }
     const stored = readRecord(this.body, lease.record);
     if ((stored ? recordBytes(stored) : 0) + (pending.get(lease.record) ?? 0) + adds > SUGGEST_LIMITS.recordOpsBytes * 0.9) return 'record-cap';

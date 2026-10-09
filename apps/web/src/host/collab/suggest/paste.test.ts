@@ -255,11 +255,13 @@ it('a paste that would take the open record it extends past the record cap is re
     const held = recordBytes(pane, record);
     expect(held, 'the first paste landed, a fair share of the cap').toBeGreaterThan(cap * 0.2);
     expect(held, 'under half the cap').toBeLessThan(cap * 0.5);
-    // The second, at the end of the first, fits the cap alone, not with what the record already holds.
+    // The second, in the same group (the block the first was pasted at), fits the cap alone, not with what the record
+    // already holds. Farther away it would start a record of its own.
     const perLine = held / first.length;
     const count = Math.ceil((cap * 1.05 - held) / perLine);
     expect(count * perLine, 'the second paste alone fits').toBeLessThan(cap * 0.85);
     const second = Array.from({ length: count }, (_, i) => `second <${i}> ${'x'.repeat(200)}`);
+    pane.select('Closing line stays too.', 23, 23);
     const text = pane.text();
     const before = pane.requests();
     pane.paste(second);
