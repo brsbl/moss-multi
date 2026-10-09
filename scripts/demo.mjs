@@ -272,21 +272,25 @@ export async function buildDemo(opts) {
       ids[note.key] = made.id;
       log(`${made.created ? 'built' : 'kept'} "${note.title}" ${baseUrl}/d/${made.id}`);
     }
-    await step('version', { docId: ids.launch, name: 'First outline' });
+    log(`version "First outline" ${(await step('version', { docId: ids.launch, name: 'First outline' })).created ? 'added' : 'kept'}`);
 
     const ben = principals.find((p) => p.label === 'ben');
     const shared = await step('share', { folderName: FOLDER, email: ben.email, access: 'Can suggest', linkAccess: 'Can view' });
     if (shared.invite) await step('accept', { invite: shared.invite });
     log(`folder shared with ${ben.email}; view link ${shared.link}`);
 
-    for (const me of commentPasses(THREADS)) await step('comments', { docId: ids.launch, me, mode: me === 'ben' ? 'suggest' : 'edit', threads: THREADS });
-    await step('suggest', { docId: ids.launch, find: SENTENCE.find, replace: SENTENCE.replace });
+    for (const me of commentPasses(THREADS)) {
+      const added = await step('comments', { docId: ids.launch, me, mode: me === 'ben' ? 'suggest' : 'edit', threads: THREADS });
+      log(`comments as ${me}: added ${added.roots} roots, ${added.replies} replies, ${added.reactions} reactions`);
+    }
+    const suggested = await step('suggest', { docId: ids.launch, find: SENTENCE.find, replace: SENTENCE.replace });
+    log(suggested.created ? "Ben's suggestion added" : "Ben's suggestion is already pending");
     if (!opts['skip-agent']) {
       const { suggestions } = await step('suggestions', { docId: ids.launch });
       if (pendingBy(suggestions, AGENT)) log('the agent suggestion is already pending');
       else log(await agentSuggests({ baseUrl, key: (await step('agentKey', { name: AGENT })).key, docId: ids.launch }));
     }
-    await step('version', { docId: ids.launch, name: 'Ready for review' });
+    log(`version "Ready for review" ${(await step('version', { docId: ids.launch, name: 'Ready for review' })).created ? 'added' : 'kept'}`);
 
     shots.push((await step('signature', { docId: ids.launch, sentence: SENTENCE.text, replace: SENTENCE.replace })).shot);
     shots.push(...(await step('everyNode', { docId: ids.every, htmlResult: 'Ran on click' })).shots);

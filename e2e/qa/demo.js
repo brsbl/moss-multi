@@ -500,7 +500,8 @@ export const STEPS = {
     await calm(page);
     await (await page.waitForSelector(`${paneOf(docId)} [${DOM.SUGGESTIONS_BUTTON_ATTR}]`, { visible: true })).click();
     await page.waitForSelector(`[${DOM.SUGGESTION_CARD_ATTR}]`, { visible: true, timeout: 15_000 });
-    await pause(500);
+    await until('the suggestion cards load their changes', () => page.$$eval(`[${DOM.SUGGESTION_CARD_ATTR}]`, (cards) => cards.every((c) => !c.textContent.includes('Loading changes'))), 20_000);
+    await pause(300);
     const shots = [await shot(page, 'suggestions')];
     await (await page.waitForSelector(`${paneOf(docId)} [${DOM.SUGGESTIONS_BUTTON_ATTR}]`, { visible: true })).click();
     await calm(page);
@@ -530,7 +531,10 @@ export const STEPS = {
   /** A signed-out visitor opens the folder link and lands on the demo folder. */
   async visitor({ link }) {
     const page = await person('visitor', { principal: null, path: new URL(link).pathname + new URL(link).search });
-    await pause(800);
+    // The link opens the folder's first note; the shot waits for it to load, not for a fixed pause.
+    const pane = `[${DOM.EDITOR_PANE_ATTR}][${DOM.DOC_STATE_ATTR}="live"]`;
+    await page.waitForSelector(`${pane} [${DOM.BODY_BINDING_ATTR}="live"], ${pane} [${DOM.BODY_BINDING_ATTR}="readonly"]`, { timeout: 20_000 });
+    await calm(page);
     return { shot: await shot(page, 'folder-link') };
   },
 };
