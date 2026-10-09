@@ -10,7 +10,7 @@ import {
 } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
-import { SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
+import { GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
 import { nodeRegistry } from '../../../../../../packages/sync/src/suggest/review.ts';
@@ -42,8 +42,9 @@ function suggesting() {
   const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}` });
   const outbox: SuggestRequest[] = [];
   let requests = 0;
+  let clock = 1_000;
   const fork = new SuggestFork(live, {
-    me: SUGGESTER.id, name: SUGGESTER.name, now: () => 1_000,
+    me: SUGGESTER.id, name: SUGGESTER.name, now: () => clock,
     send: (request) => {
       requests += 1;
       outbox.push(request);
@@ -106,6 +107,10 @@ function suggesting() {
     pump,
     /** Requests of any kind sent so far. */
     requests: () => requests,
+    /** The fork's clock moves on `ms`. */
+    idle: (ms: number) => {
+      clock += ms;
+    },
     select: (prefix: string, anchor: number, focus: number) => editor.update(() => {
       select(prefix, anchor, focus);
     }, { discrete: true }),
@@ -296,6 +301,84 @@ it('a refusal of the redo of a paste offers back every redone paragraph', { time
     const offered = pane.unsaved.join('\n');
     const lost = lines.filter((line) => !offered.includes(line));
     expect(lost.length, `paragraphs neither saved nor offered back, e.g. ${lost.slice(0, 3).join(', ')}`).toBe(0);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste that builds on an older open record after its group rotated counts that record, which it would merge: past the cap it is refused whole', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    const cap = SUGGEST_LIMITS.recordOpsBytes;
+    const first = [`first ${'x'.repeat(80_000)}`];
+    pane.paste(first);
+    vi.runAllTimers();
+    pane.pump();
+    const record = pane.fork.record!;
+    const held = recordBytes(pane, record);
+    // Past the idle gap the next edit starts a new group, under the spare lease; at the same caret it builds on the
+    // first paste's items, so its record merges the first one (client.ts #forward), and the merge is under the cap.
+    pane.idle(GROUP_IDLE_MS + 1_000);
+    const perChar = held / first[0].length;
+    const count = Math.ceil((cap * 1.05 - held) / perChar);
+    expect(count * perChar, 'the second paste alone fits').toBeLessThan(cap * 0.85);
+    const text = pane.text();
+    const before = pane.requests();
+    pane.paste([`second ${'x'.repeat(count)}`]);
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent, no merge either').toBe(before);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+    expect(openRecords(pane.live, SUGGESTER.id).map((open) => open.meta.id), 'the first record alone').toEqual([record]);
+    expect(recordBytes(pane, record), 'it holds the first paste only').toBe(held);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('an admissible paste that builds on an older open record after its group rotated lands, merged into one suggestion', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    pane.paste([`first ${'x'.repeat(50_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    pane.idle(GROUP_IDLE_MS + 1_000);
+    pane.paste([`second ${'y'.repeat(50_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'admitted, and the merge too').toBe(false);
+    expect(openRecords(pane.live, SUGGESTER.id), 'one suggestion holds both').toHaveLength(1);
+    expect(pane.text()).toContain('second yyy');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste over a selection of another author\'s text strikes it and lands in one step: one undo takes both back, one redo brings both back', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    pane.select('Intro line', 6, 10);
+    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    pane.paste(lines);
+    vi.runAllTimers();
+    pane.pump();
+    const struck = () => pane.fork.struck().reduce((sum, span) => sum + span.len, 0);
+    expect(struck(), 'the selection is struck').toBe(4);
+    expect(pane.text()).toContain('para <299>');
+
+    pane.undo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.text(), 'one undo takes the paste back').not.toMatch(/para <\d+>/);
+    expect(struck(), 'and the strike').toBe(0);
+
+    pane.redo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.text(), 'one redo brings the paste back').toContain('para <299>');
+    expect(struck(), 'and the strike').toBe(4);
+    expect(pane.fork.closed, 'nothing refused').toBe(false);
   } finally {
     pane.dispose();
   }
