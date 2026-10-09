@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 68% done** (92 of 136 planned tasks verified)
+**Overall: 71% done** (93 of 131 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 9 / 10 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -112,6 +112,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T3.S6b verified: a 30,000-item list pasted mid-note now reaches a collaborator and a fresh joiner whole, without the tab stalling or the socket reopening.
 - 2026-10-08 — T3.F verified: the media-revalidation tests now hold copies and duplicates at a fixed point and pass reliably, so a flaky run no longer blocks a PR.
 - 2026-10-08 — T3.F2 verified: typing a slash command and pressing Enter now always inserts what the typed query names, so `/media` inserts media even on a busy page instead of a row from the previous list.
+- 2026-10-08 — T4.R2 verified: comments now sit on the final M3, so a long comment or reply and a note created with a full comments sidecar fit under the request caps, and a large paste in a commented note lays out remote cursors once per batch instead of stalling.
 
 ## T1.1s identity audit
 
@@ -196,6 +197,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T4.S1 (Comment writes re-authorize their actor) checker P2 (downgraded from Codex P1): in `#commentWrite` the actor's D1 re-authorization reads run after `#validate` checks the open sockets, so a reader revoked during those reads whose kick was missed can still receive that one comment broadcast; the next tick closes the socket (the window pre-existed, as on the A§8 frame path).
 - T4.S1 (Comment writes re-authorize their actor) checker P2: recovering a deleted-meta doc with no hold awaits `#queue(#settle([]))` before the deadline-guarded authorization, and `#settle`'s D1 liveness read has no deadline, so a stalled read leaves the request waiting instead of returning 503 (availability only; nothing unauthorized lands).
 - T4.S1 (Comment writes re-authorize their actor) checker P2 (t/T4.S1 did not include the current origin/m4): resolved at integration by merging t/T4.S1 onto origin/m4 at 8e31ad7, keeping both adjacent BUILDPLAN entries.
+- T4.R2 (The full-sidecar note-creation test does not prove the note is created) checker P2: body-cap.test's note-creation case only asserts status != 413 against a DocDO stub with no create and a `{version, comments}` sidecar the importer does not take → body-cap test follow-up: send a valid near-limit sidecar to the real DocDO, require 201, read the note back.
+- T4.R2 (The implementer report overstates the red run and understates the reruns) checker P2: the red run had two cap regressions, not three (the comment-edit case failed its own setup and was dropped in 9bf300cf), and full-lane run 37882015067 needed attempt 3; neither changes the result.
 - T3.9 checker P2 (downgraded from Codex P1): paste over a selection during unmount saves the deletion without the image; `Session.unmountOnce` waits only for note writes, not for `putAsset` or `copyAsset`, so a host unmounting while an upload is pending saves the file with the selection removed and no image → editor follow-up.
 - T3.9 checker P2: the comment-color unit tests rely on a fake surface that keeps stored colors (`FakeSurface.load` copies stored `commentColors`), while the real path derives them in `hydrateComments` → editor test follow-up.
 - T3.9 checker P2: the key-order negative control in `pipeline.golden.test.ts` ('a wrong meta.json key order is caught') changes a value as well as key order → editor test follow-up.
