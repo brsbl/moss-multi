@@ -1,9 +1,11 @@
 // T8.D: the staging deploy pipeline's pure parts and its assertion script, against a fake Worker on loopback. The
 // build job runs the same assertion against the real production-mode smoke stack (ci.yml).
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import os from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -292,6 +294,12 @@ describe('deploy-staging.yml', () => {
     }
   });
 
+  it("runs the staging canary with the config's reporters", () => {
+    const run = WORKFLOW.jobs.canary.steps.find((step) => /playwright test/.test(step.run ?? '')).run;
+    expect(run).toMatch(/--project=canary/);
+    expect(run).not.toMatch(/--reporter|PLAYWRIGHT_/);
+  });
+
   it('uploads only the credential-free canary files', () => {
     const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
     expect(uploads).toHaveLength(1);
@@ -330,6 +338,84 @@ describe('canary recording', () => {
       vi.unstubAllEnvs();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // A failed authenticated request's error carries Playwright's call log, which lists the request's cookie header;
+  // the public run log must not print it. Runs the real config's canary project on a synthetic failure.
+  describe('the run log', () => {
+    const E2E = fileURLToPath(new URL('../../e2e/', import.meta.url));
+    const SESSION = 'better-auth.session_token=SYNTHETIC';
+    const runCanary = (baseUrl) => {
+      const dir = mkdtempSync(join(E2E, '.canary-log-'));
+      const config = `${dir}.config.ts`;
+      const message = `apiRequestContext.get: read ECONNRESET\nCall log:\n  - → GET ${baseUrl}/api/me\n    - cookie: ${SESSION}-CALLLOG`;
+      try {
+        writeFileSync(join(dir, 'state.json'), JSON.stringify({ baseUrl, expected: { commit: COMMIT, bundleHash: BUNDLE } }));
+        writeFileSync(
+          join(dir, 'leak.spec.ts'),
+          [
+            "import { test } from '@playwright/test';",
+            "test('a request fails with a session in its call log', () => {",
+            `  console.log(${JSON.stringify(`cookie: ${SESSION}-STDOUT`)});`,
+            `  console.error(${JSON.stringify(`cookie: ${SESSION}-STDERR`)});`,
+            `  throw new Error(${JSON.stringify(message)});`,
+            '});',
+            '',
+          ].join('\n'),
+        );
+        writeFileSync(
+          config,
+          [
+            "import base from './playwright.config.ts';",
+            "const canary = base.projects.find((project) => project.name === 'canary');",
+            `export default { ...base, testDir: ${JSON.stringify(dir)}, outputDir: ${JSON.stringify(join(dir, 'out'))}, projects: [{ name: 'canary', use: canary.use }] };`,
+            '',
+          ].join('\n'),
+        );
+        const cli = join(dirname(createRequire(join(E2E, 'package.json')).resolve('@playwright/test')), 'cli.js');
+        const env = { ...process.env, CI: 'true', STACK_STATE: join(dir, 'state.json') };
+        delete env.GITHUB_STEP_SUMMARY;
+        const run = spawnSync(process.execPath, [cli, 'test', '-c', config], { cwd: E2E, env, encoding: 'utf8', timeout: 90_000 });
+        return { status: run.status, output: `${run.stdout}${run.stderr}` };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(config, { force: true });
+      }
+    };
+
+    it('prints each result but no error text, call log or test output off loopback', () => {
+      const { status, output } = runCanary(URL_STAGING);
+      expect(status, output).toBe(1);
+      expect(output).toMatch(/a request fails with a session in its call log/);
+      expect(output).toMatch(/failed/);
+      expect(output).not.toMatch(/SYNTHETIC/);
+      expect(output).not.toContain(URL_STAGING);
+    }, 120_000);
+
+    it('keeps the full error on a loopback stack (the control)', () => {
+      const { status, output } = runCanary('http://127.0.0.1:8850');
+      expect(status, output).toBe(1);
+      expect(output).toMatch(/SYNTHETIC-CALLLOG/);
+    }, 120_000);
+
+    it('withholds a run-level error and test output off loopback', async () => {
+      const { default: CanaryReporter } = await import('./canary-reporter.mjs');
+      const lines = [];
+      const log = vi.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+      const error = vi.spyOn(console, 'error').mockImplementation((...args) => lines.push(args.join(' ')));
+      try {
+        const reporter = new CanaryReporter();
+        expect(reporter.printsToStdio()).toBe(true);
+        reporter.onError?.({ message: `cookie: ${SESSION}`, stack: `cookie: ${SESSION}` });
+        reporter.onStdOut?.(`cookie: ${SESSION}`);
+        reporter.onStdErr?.(`cookie: ${SESSION}`);
+      } finally {
+        log.mockRestore();
+        error.mockRestore();
+      }
+      expect(lines.join('\n')).not.toMatch(/SYNTHETIC/);
+      expect(lines.join('\n')).toMatch(/error/i);
+    });
   });
 
   it('summarizes results as title, status and duration only', () => {
