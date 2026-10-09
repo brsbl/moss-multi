@@ -246,8 +246,9 @@ it('a paste that would take the open record it extends past the record cap is re
   const pane = suggesting();
   try {
     const cap = SUGGEST_LIMITS.recordOpsBytes;
-    // The first paste lands as one record, well under the cap.
-    const first = Array.from({ length: 250 }, (_, i) => `first <${i}> ${'x'.repeat(200)}`);
+    // The first paste lands as one record, well under the cap: one line, so the caret stays in the block it was
+    // pasted into and the next edit continues the same group (a caret moved away starts a record of its own).
+    const first = [`first ${'x'.repeat(80_000)}`];
     pane.paste(first);
     vi.runAllTimers();
     pane.pump();
@@ -255,13 +256,11 @@ it('a paste that would take the open record it extends past the record cap is re
     const held = recordBytes(pane, record);
     expect(held, 'the first paste landed, a fair share of the cap').toBeGreaterThan(cap * 0.2);
     expect(held, 'under half the cap').toBeLessThan(cap * 0.5);
-    // The second, in the same group (the block the first was pasted at), fits the cap alone, not with what the record
-    // already holds. Farther away it would start a record of its own.
-    const perLine = held / first.length;
-    const count = Math.ceil((cap * 1.05 - held) / perLine);
-    expect(count * perLine, 'the second paste alone fits').toBeLessThan(cap * 0.85);
-    const second = Array.from({ length: count }, (_, i) => `second <${i}> ${'x'.repeat(200)}`);
-    pane.select('Closing line stays too.', 23, 23);
+    // The second, at the same caret, fits the cap alone, not with what the record already holds.
+    const perChar = held / first[0].length;
+    const count = Math.ceil((cap * 1.05 - held) / perChar);
+    expect(count * perChar, 'the second paste alone fits').toBeLessThan(cap * 0.85);
+    const second = [`second ${'x'.repeat(count)}`];
     const text = pane.text();
     const before = pane.requests();
     pane.paste(second);
