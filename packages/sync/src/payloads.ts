@@ -19,7 +19,7 @@ export const PAYLOAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const PAYLOAD_DOCS_HELD = 256;
 /** Per-payload compaction thresholds. */
 const COMPACT_ROWS = 100;
-const COMPACT_BYTES = 256 * 1024;
+export const COMPACT_BYTES = 256 * 1024;
 /** Rows cap at 2 MB; a larger state is stored as consecutive parts. */
 const PART_BYTES = 1.5 * 1024 * 1024;
 
