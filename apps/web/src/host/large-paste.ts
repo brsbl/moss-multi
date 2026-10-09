@@ -16,7 +16,7 @@ import { forkOf, type ForkView } from '@moss-multi/sync/suggest/forks';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
-  $isDecoratorNode, $isElementNode, $isNodeSelection, $isRangeSelection, $isTextNode, $parseSerializedNode, $setSelection,
+  $isDecoratorNode, $isElementNode, $isNodeSelection, $isRangeSelection, $isRootOrShadowRoot, $isTextNode, $parseSerializedNode, $setSelection,
   COMMAND_PRIORITY_CRITICAL, createEditor, REDO_COMMAND, UNDO_COMMAND, type BaseSelection, type ElementNode,
   type Klass, type LexicalEditor, type LexicalNode, type NodeKey, type PointType, type SerializedElementNode, type SerializedLexicalNode,
 } from 'lexical';
@@ -113,8 +113,10 @@ function gcBytes(update: Uint8Array): number {
  * tree names, so the payloads count as the larger of the DocDO's last word and what this tab holds.
  */
 function heldBytes(editor: LexicalEditor): number | null {
-  const doc = noteDoc(editor);
-  if (!doc) return null;
+  const bound = noteDoc(editor);
+  if (!bound) return null;
+  // In Suggest mode the editor writes the fork F; the DocDO counts the body it forks, whose session knows its payloads.
+  const doc = forkOf(bound)?.body ?? bound;
   let payloads = 0;
   for (const payload of payloadDocsFor(doc).docs.values()) payloads += Y.encodeStateAsUpdate(payload).byteLength;
   return gcBytes(Y.encodeStateAsUpdate(doc)) + Math.max(payloads, countedPayloadBytes(doc));
@@ -859,6 +861,36 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   }
 }
 
+const utf8 = new TextEncoder();
+/** A node's own properties as the binding writes them (its JSON, children apart), plus an item header. */
+const nodeBytes = (node: LexicalNode, text?: string): number => {
+  const json = JSON.stringify({ ...node.exportJSON(), ...(text === undefined ? {} : { text }) });
+  return utf8.encode(json).byteLength + 32;
+};
+const treeBytes = (node: LexicalNode): number =>
+  nodeBytes(node) + ($isElementNode(node) ? node.getChildren().reduce((sum, child) => sum + treeBytes(child), 0) : 0);
+
+/**
+ * What the paste re-creates under the suggester's client besides the clipboard: a split moves the rest of the block
+ * after the selection into a new element, and the binding writes it as new items, the same bytes again. Counted to the
+ * end of the selection's top-level block (its following siblings at every level), with the elements that hold it.
+ */
+function $splitBytes(selection: BaseSelection | null): number {
+  if (!$isRangeSelection(selection)) return 0;
+  const end = selection.isBackward() ? selection.anchor : selection.focus;
+  const node = end.getNode();
+  if ($isRootOrShadowRoot(node)) return 0;
+  let bytes = 0;
+  if ($isTextNode(node)) bytes += nodeBytes(node, node.getTextContent().slice(end.offset));
+  else if ($isElementNode(node)) bytes += nodeBytes(node) + node.getChildren().slice(end.offset).reduce((sum, child) => sum + treeBytes(child), 0);
+  // Up to the block that sits in the root (or a table cell): its siblings stay where they are.
+  for (let at: LexicalNode = node, parent = at.getParent(); parent && !$isRootOrShadowRoot(parent); at = parent, parent = at.getParent()) {
+    for (let next = at.getNextSibling(); next; next = next.getNextSibling()) bytes += treeBytes(next);
+    bytes += nodeBytes(parent);
+  }
+  return bytes;
+}
+
 /**
  * A paste in Suggest mode: admitted against every suggestion cap with the strike of the selection it replaces, before
  * anything changes, then the strike and the whole paste in one update (one transaction, one op, one undo step), or
@@ -878,7 +910,13 @@ function landSuggested(editor: LexicalEditor, request: PasteRequest, fork: ForkV
     // The blocks it spans: an older open record of the author's it builds on merges into its record.
     const selection = $getSelection();
     const tops = $isRangeSelection(selection) ? [selection.anchor, selection.focus].map((point) => point.getNode().getTopLevelElement()?.getIndexWithinParent() ?? -1) : [-1];
-    outcome.refusal = fork.admit(bytes, route?.$targets(), { from: Math.min(...tops), to: Math.max(...tops) });
+    const adds = bytes + $splitBytes(selection);
+    if (!fits(editor, adds, 0)) {
+      outcome.refusal = 'doc-cap';
+      refuseInput(WRITE_REFUSED['doc-cap']);
+      return;
+    }
+    outcome.refusal = fork.admit(adds, route?.$targets(), { from: Math.min(...tops), to: Math.max(...tops) });
     if (outcome.refusal) {
       refuseInput(SUGGEST_PASTE_REFUSED[outcome.refusal] ?? SUGGEST_PASTE_REFUSED.default);
       return;

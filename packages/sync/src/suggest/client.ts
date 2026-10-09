@@ -902,7 +902,9 @@ export class SuggestFork {
     }
     if (open + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.openOpsShare) return 'ops-cap';
     const creates = !stored && !pending.has(lease.record);
-    if (creates && openRecords(this.body, this.options.me).length >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';
+    // Records still being created count as open too.
+    const creating = [...pending.keys()].filter((id) => !readRecord(this.body, id)).length;
+    if (creates && openRecords(this.body, this.options.me).length + creating >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';
     return null;
   }
 

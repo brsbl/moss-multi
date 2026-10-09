@@ -4,6 +4,8 @@ import type * as Y from 'yjs';
 
 /** What an editor needs of the fork it writes into. */
 export interface ForkView {
+  /** The body doc B F forks: what the DocDO holds and counts against the note's cap. */
+  readonly body: Y.Doc;
   /**
    * Whether an edit adding `bytes` of ops, and striking `strike`, in top-level blocks `blocks`, fits every suggestion
    * cap: null, or the refusal it would meet.
