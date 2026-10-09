@@ -417,6 +417,62 @@ async function measurePayloadFrames(port) {
   }
 }
 
+// Table imports through the real DocDO's create: notes that spend the converter's work budget on table cells,
+// dense one-letter cells or one-cell rows padded under a wide header, to the markdown cap, each in a fresh doc after a
+// warm-up. Import, binding and admission together must stay within IMPORT_BUDGET_MS of workerd CPU, the note landing
+// whole or refused as doc-cap (413), never an error.
+const TABLE_MARKDOWN_BYTES = 2 * 1024 * 1024 - 1024;
+const tableHeader = (cells) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
+const TABLE_CASES = {
+  'dense one-letter cells, 64 a row': () => {
+    const row = `|${'a|'.repeat(64)}\n`;
+    return `${tableHeader(64)}${row.repeat(Math.floor((TABLE_MARKDOWN_BYTES - tableHeader(64).length) / row.length))}`;
+  },
+  'one-cell rows padded under a 4,096-column header': () =>
+    `${tableHeader(4_096)}${'|b|\n'.repeat(Math.floor((TABLE_MARKDOWN_BYTES - tableHeader(4_096).length) / 4))}`,
+};
+
+async function measureTableImports(port) {
+  const server = await startWorker('docdo', port);
+  const results = [];
+  try {
+    const warmup = await fetch(`${server.origin}/create?doc=table-warm`, { method: 'POST', body: `${tableHeader(8)}${`|${'a|'.repeat(8)}\n`.repeat(500)}` });
+    if (!warmup.ok) throw new Error(`warm-up create: HTTP ${warmup.status} ${await warmup.text()}`);
+    for (const [name, body] of Object.entries(TABLE_CASES)) {
+      const markdown = body();
+      const before = workerdStats(server.child.pid);
+      let response;
+      let text;
+      try {
+        response = await fetch(`${server.origin}/create?doc=table-${results.length}`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS * 3) });
+        text = await response.text();
+      } catch (error) {
+        results.push({ name, bytes: markdown.length, failed: failure(error) });
+        continue;
+      }
+      const cpuMs = workerdStats(server.child.pid).cpuMs - before.cpuMs;
+      const answer = (() => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      })();
+      const ok = response.status === 200 || (response.status === 413 && answer?.error === 'doc-cap');
+      results.push({ name, bytes: markdown.length, cpuMs, status: response.status, work: answer?.work, stateBytes: answer?.stateBytes, ...(ok ? {} : { failed: `HTTP ${response.status} ${text.slice(0, 200)}` }) });
+    }
+  } catch (error) {
+    results.push({ name: 'table imports', failed: String(error.message).split('\n')[0] });
+  } finally {
+    await stop(server.child);
+  }
+  return results;
+}
+
+function tableImportProblems(results) {
+  return results.flatMap((r) => (r.failed ? [`${r.name}: ${r.failed}`] : r.cpuMs > IMPORT_BUDGET_MS ? [`${r.name}: ${r.cpuMs} ms of workerd CPU`] : []));
+}
+
 // The search index (A§5.3): one global SearchDO indexes every doc and snippets every hit, so a body full of openers
 // with no closer (packages/sync/measure/search-cases.ts) must cost it linear work. Each case runs in a fresh worker; a
 // request past SEARCH_TIMEOUT_MS fails the case. The larger run must cost at most SEARCH_SCALING times the smaller.
@@ -861,6 +917,7 @@ async function main() {
   const ordinary = await measureOrdinary(port + 99);
   const multiline = await measureMultiline(port + 200);
   const entityTabs = await measureEntityTabs(port + 300);
+  const tables = await measureTableImports(port + 400);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -938,6 +995,11 @@ async function main() {
         : `| Lines repeated, ${r.name}: workerd CPU (import / export) | ${r.sizes.map((size) => `${kb(size.bytes)} ${size.importCpuMs} / ${size.exportCpuMs} ms`).join(', ')} (growth at most ${ADVERSARIAL_SCALING}x) |`,
     ),
     `| Entity tabs, one line of \`&#9;\` × ${ENTITY_TAB_COUNTS.join(' / ')}: workerd CPU (import / export) | ${entityTabs.sizes.map((size) => `${size.importCpuMs} / ${size.exportCpuMs} ms${size.cut ? ' (kept literal)' : ''}`).join(', ')}${entityTabs.failed ? `; FAILED: ${entityTabs.failed}` : ''} (line budget ${LINE_BUDGET_MS} ms, growth at most ${ADVERSARIAL_SCALING}x a doubling) |`,
+    ...tables.map((t) =>
+      t.failed
+        ? `| Table import through DocDO create, ${t.name} | FAILED: ${t.failed} |`
+        : `| Table import through DocDO create, ${t.name}, ${kb(t.bytes)}: workerd CPU, one run | ${t.cpuMs} ms${budget(t.cpuMs)}; HTTP ${t.status}${t.work === undefined ? '' : `; work ${Math.round(t.work / 1e6)}M`}${t.stateBytes ? `; state ${mb(t.stateBytes)}` : ''} |`,
+    ),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -989,6 +1051,11 @@ async function main() {
   const tabProblems = entityTabProblems(entityTabs);
   if (tabProblems.length > 0) {
     console.error(`measure-converter: entity-tab lines over budget or growing faster than linearly in workerd: ${tabProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const tableProblems = tableImportProblems(tables);
+  if (tableProblems.length > 0) {
+    console.error(`measure-converter: table imports through DocDO create failed or over the ${seconds(IMPORT_BUDGET_MS)} budget in workerd: ${tableProblems.join('; ')}`);
     process.exitCode = 1;
   }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);

@@ -2,7 +2,7 @@ import jsYaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { readField, writeField } from './doc-fields.ts';
-import { composeFrontmatter, frontmatterKeys, migrateFrontmatter, readFrontmatter, updateFrontmatter, writeFrontmatterKey } from './frontmatter.ts';
+import { composeFrontmatter, frontmatterKeys, importFrontmatter, migrateFrontmatter, readFrontmatter, updateFrontmatter, writeFrontmatterKey } from './frontmatter.ts';
 
 const LOCAL = 'frontmatter-local';
 const parse = (yaml: string) => jsYaml.load(yaml) as Record<string, unknown> | undefined;
@@ -161,5 +161,31 @@ describe('frontmatter scale', () => {
       expect(ms, `${name}: 10,000 keys took ${small[name].toFixed(0)} ms, 40,000 took ${ms.toFixed(0)} ms`).toBeLessThanOrEqual(7 * small[name] + 150);
     }
     expect(large['one-key update'], 'a one-key update on 40,000 keys stays cheap').toBeLessThan(500);
+  });
+});
+
+// YAML aliases share one parsed node, so a few hundred bytes can name an exponential or cyclic tree.
+const ALIAS_BOMB = ['l0: &l0 [1, 1, 1, 1]', ...Array.from({ length: 9 }, (_, i) => `l${i + 1}: &l${i + 1} [${Array(4).fill(`*l${i}`).join(', ')}]`)].join('\n');
+const SELF_ALIASES = ['self: &s [*s]', 'map: &m {k: *m}'];
+
+describe('alias expansion', () => {
+  it.each([['an exponential alias graph', ALIAS_BOMB], ...SELF_ALIASES.map((yaml) => [`a self-referencing anchor, ${yaml}`, yaml])])(
+    'refuses %s promptly and writes nothing', { timeout: 10_000 }, (_, yaml) => {
+      const doc = new Y.Doc();
+      writeFrontmatterKey(doc, 'kept', 'yes', LOCAL);
+      const before = Y.encodeStateAsUpdate(doc);
+      const started = Date.now();
+      expect(() => importFrontmatter(doc, `---\n${yaml}\n---\n`, 'import')).toThrow('Frontmatter expands past its budget');
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+      doc.destroy();
+    });
+
+  it('imports benign aliases and dates as before', () => {
+    const doc = new Y.Doc();
+    importFrontmatter(doc, '---\nbase: &b {x: 1, tags: [a, b]}\ncopy: *b\ndue: 2026-11-01\nat: 2026-11-01T10:30:00Z\nlist: [*b, *b]\n---\n', 'import');
+    const base = { x: 1, tags: ['a', 'b'] };
+    expect(readFrontmatter(doc)).toEqual({ base, copy: base, due: '2026-11-01', at: '2026-11-01T10:30:00.000Z', list: [base, base] });
+    doc.destroy();
   });
 });

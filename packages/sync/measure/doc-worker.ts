@@ -5,6 +5,7 @@ import * as Y from 'yjs';
 import { encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../src/doc-do.ts';
 import type { PayloadWork } from '../src/payloads.ts';
+import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 
 /** The DocDO, plus a method that reports its payload work (a getter is not an RPC method). */
 export class MeasuredDocDO extends DocDO {
@@ -36,11 +37,17 @@ export default {
     if (url.pathname === '/ping') return new Response('ok');
     const docId = url.searchParams.get('doc') ?? '';
     if (url.pathname === '/create') {
-      // The body is the note's markdown.
+      // The body is the note's markdown. A doc-cap refusal is a 413, as POST /api/docs answers it.
       const stub = await getServerByName(env.DocDO, docId);
-      await stub.create({ folderId: 'measure', ownerId: 'measure-owner', markdown: await request.text() });
+      const work = linearImportStats.spent;
+      try {
+        await stub.create({ folderId: 'measure', ownerId: 'measure-owner', markdown: await request.text() });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'doc-cap') return Response.json({ error: 'doc-cap', work: linearImportStats.spent - work }, { status: 413 });
+        throw error;
+      }
       const { state } = await stub.snapshotForDuplicate();
-      return Response.json({ ids: namedIds(state) });
+      return Response.json({ ids: namedIds(state), work: linearImportStats.spent - work, stateBytes: state.byteLength });
     }
     if (url.pathname === '/work') {
       const stub = await getServerByName(env.DocDO, docId);

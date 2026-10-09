@@ -203,6 +203,29 @@ describe('server writes', () => {
     await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown })).rejects.toThrow('doc-cap');
     expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
   });
+
+  // YAML aliases share one parsed node: 400 bytes naming 262,144 leaves, and anchors that name themselves.
+  const aliasBomb = ['l0: &l0 [1, 1, 1, 1]', ...Array.from({ length: 9 }, (_, i) => `l${i + 1}: &l${i + 1} [${Array(4).fill(`*l${i}`).join(', ')}]`)].join('\n');
+  it.each([['an exponential alias graph', aliasBomb], ['a self-referencing sequence', 'self: &s [*s]'], ['a self-referencing mapping', 'map: &m {k: *m}']])(
+    'refuses frontmatter of %s promptly as doc-cap and writes nothing', { timeout: 20_000 }, async (_, yaml) => {
+      const opened = await start(openDoc());
+      const before = Y.encodeStateAsUpdate(opened.dobj.document);
+      const started = clock();
+      await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: `---\n${yaml}\n---\n\nBody` })).rejects.toThrow('doc-cap');
+      expect(clock() - started).toBeLessThan(2_000);
+      expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+      expect(readFrontmatter(opened.dobj.document)).toBeNull();
+      // Nothing was recorded as created: an ordinary create still lands.
+      await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: 'Body' });
+      expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(importMarkdown('Body')));
+    });
+
+  it('imports benign aliases and dates in frontmatter unchanged', async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: '---\nbase: &b {x: 1, tags: [a, b]}\ncopy: *b\ndue: 2026-11-01\n---\nBody' });
+    const base = { x: 1, tags: ['a', 'b'] };
+    expect(readFrontmatter(opened.dobj.document)).toEqual({ base, copy: base, due: '2026-11-01' });
+  });
 });
 
 describe('frontmatter at scale', () => {
