@@ -85,9 +85,34 @@ export const THREADS = [
   },
 ];
 
-/** Who runs the comments step, in order. */
-export function commentPasses() {
-  return ['ada', 'ben', 'ada'];
+/**
+ * Who runs the comments step, in order. A pass adds the person's roots, then their replies under roots that exist,
+ * then their reactions on messages that exist, so a reaction on a later reply needs its own later pass.
+ */
+export function commentPasses(threads) {
+  const people = [...new Set(threads.flatMap((t) => [t.by, ...(t.replies ?? []).map((r) => r.by), ...(t.reactions ?? []).map((r) => r.by)]))];
+  const have = new Set();
+  const left = new Set(threads.flatMap((t) => [t, ...(t.replies ?? []), ...(t.reactions ?? [])]));
+  const passes = [];
+  for (let round = 0; left.size && round < 2 * threads.length + 2; round += 1) {
+    for (const me of people) {
+      let did = false;
+      const add = (item, text) => {
+        if (text) have.add(text);
+        left.delete(item);
+        did = true;
+      };
+      for (const t of threads) if (t.by === me && left.has(t)) add(t, t.text);
+      for (const t of threads) for (const r of t.replies ?? []) if (r.by === me && left.has(r) && have.has(t.text)) add(r, r.text);
+      for (const t of threads) {
+        const messages = [t.text, ...(t.replies ?? []).map((r) => r.text)].filter((text) => have.has(text));
+        for (const r of t.reactions ?? []) if (r.by === me && left.has(r) && messages.some((text) => text.includes(r.on))) add(r);
+      }
+      if (did) passes.push(me);
+    }
+  }
+  if (left.size) fail('some comment thread waits on a message nobody writes');
+  return passes;
 }
 
 // ---------- configuration and principals ----------
