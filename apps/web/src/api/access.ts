@@ -258,10 +258,18 @@ export async function accessibleFolders(db: Db, principal: Principal) {
     db.select().from(folders),
     ids.length ? db.select().from(folderMembers).where(inArray(folderMembers.principalId, ids)) : [],
   ]);
+  return foldFolderRoles(principal, rows, grants);
+}
+
+/** A folder row as discovery reads it. */
+interface FolderRow { id: string; parentId: string | null; deletedAt: number | null; kind: 'folder' | 'vault'; ownerUserId: string }
+
+/** Each live folder under a vault, with the principal's role from ownership and the grants on its chain. */
+export function foldFolderRoles<R extends FolderRow>(principal: Principal, rows: readonly R[], grants: readonly { folderId: string; role: Role }[]) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   return rows.flatMap((row) => {
     const chain: string[] = [];
-    let current: typeof row | undefined = row;
+    let current: R | undefined = row;
     while (current && chain.length < MAX_FOLDER_DEPTH && !chain.includes(current.id)) {
       if (current.deletedAt !== null) return [];
       chain.push(current.id);
@@ -287,6 +295,13 @@ export async function accessibleDocs(db: Db, principal: Principal, folders: Awai
     inJson(docs.id, grants.map((grant) => grant.docId)),
     inJson(docs.folderId, folderIds),
   )));
+  return foldDocRoles(principal, rows, grants, folders);
+}
+
+/** Each doc row with the principal's role from ownership, its own grants and its folder's discovered role. */
+export function foldDocRoles<R extends { id: string; folderId: string; ownerUserId: string }>(principal: Principal, rows: readonly R[],
+  grants: readonly { docId: string; role: Role }[], folders: readonly { id: string; role: Role }[]) {
+  const ownerId = actingUserId(principal);
   return rows.flatMap((row) => {
     const folderRole = folders.find((folder) => folder.id === row.folderId)?.role;
     const role = foldRole({ owner: ownerId === row.ownerUserId,
