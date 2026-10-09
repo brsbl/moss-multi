@@ -14,7 +14,8 @@
     "./registers": "./src/registers.ts",
     "./search": "./src/search-core.ts",
     "./suggest/client": "./src/suggest/client.ts",
-    "./suggest/records": "./src/suggest/records.ts"
+    "./suggest/records": "./src/suggest/records.ts",
+    "./update-pieces": "./src/update-pieces.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.converter.json"

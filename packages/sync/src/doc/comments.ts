@@ -9,10 +9,12 @@ import { decodeRelPos, encodeRelPos, findQuote, positionAt, project, type TextQu
 import { CommentsWriter, ENGINE_SKIPPED_ORIGINS, newCommentsClient, type GuardRefusal } from './comments-guard.ts';
 import type { DocStore } from './persistence.ts';
 import type { ImportedMarks } from '../server-doc.ts';
+import { COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
+
+/** A comment's text, in characters (413 past it). */
+export { COMMENT_TEXT_MAX };
 
 export const COMMENTS_CLIENT_META = 'commentsClient';
-/** A comment's text, in characters (413 past it). */
-export const COMMENT_TEXT_MAX = 10_000;
 /** Comment and reply records per doc. */
 export const COMMENTS_PER_DOC = 2_000;
 /** Quote-only searches one sidecar import runs; later position-less entries are dropped. */

@@ -1,14 +1,14 @@
 // ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.tsx @ 762abb777 (extracted)
 import { $createHorizontalRuleNode, $isHorizontalRuleNode, HorizontalRuleNode } from '@lexical/react/LexicalHorizontalRuleNode';
 import { $createTableCellNode, $createTableNode, $createTableRowNode, $isTableCellNode, $isTableNode, $isTableRowNode, TableCellHeaderStates, TableCellNode, TableNode, TableRowNode } from '@lexical/table';
-import { $convertFromMarkdownString, $convertToMarkdownString, CHECK_LIST, ELEMENT_TRANSFORMERS, type ElementTransformer, MULTILINE_ELEMENT_TRANSFORMERS, type MultilineElementTransformer, TEXT_FORMAT_TRANSFORMERS, TEXT_MATCH_TRANSFORMERS, type TextMatchTransformer, type Transformer } from '@lexical/markdown';
+import { $convertToMarkdownString, CHECK_LIST, ELEMENT_TRANSFORMERS, type ElementTransformer, MULTILINE_ELEMENT_TRANSFORMERS, type MultilineElementTransformer, TEXT_FORMAT_TRANSFORMERS, TEXT_MATCH_TRANSFORMERS, type TextMatchTransformer, type Transformer } from '@lexical/markdown';
 import { CodeHighlightNode, CodeNode } from '@lexical/code-core';
 import { $isMarkNode, MarkNode } from '@lexical/mark';
 import { HeadingNode, QuoteNode } from '@lexical/rich-text';
 import { $isListItemNode, ListItemNode, ListNode } from '@lexical/list';
 import { $createLinkNode, $isLinkNode, AutoLinkNode, LinkNode } from '@lexical/link';
 import { $findMatchingParent } from '@lexical/utils';
-import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isDecoratorNode, $isElementNode, $isLineBreakNode, $isParagraphNode, $isRangeSelection, $isRootNode, $isTextNode, $setSelection, type BaseSelection, IS_BOLD, IS_ITALIC, IS_STRIKETHROUGH, type LexicalNode, LineBreakNode, TextNode } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getEditor, $getRoot, $getSelection, $isDecoratorNode, $isElementNode, $isLineBreakNode, $isParagraphNode, $isRangeSelection, $isRootNode, $isTextNode, $setSelection, type BaseSelection, IS_BOLD, IS_ITALIC, IS_STRIKETHROUGH, type LexicalNode, LineBreakNode, TextNode } from 'lexical';
 import type { NoteLayoutMetadata } from '../../../common/noteTypes';
 import { MOSS_CANVAS_FENCE_NAME, buildMarkdownFence } from '../../../common/markdown-fences';
 import { $isCommentableDecorator } from '../utils/commentable-node';
@@ -34,12 +34,15 @@ import { $createHtmlBlockquoteNode, HtmlBlockquoteNode } from '../nodes/HtmlBloc
 import { $createTabGroupNode, $isTabGroupNode, TabGroupNode } from '../nodes/TabGroupNode';
 import { $createTabPanelNode, TabPanelNode } from '../nodes/TabPanelNode';
 import { $createColorCodeNode, $isColorCodeNode, ColorCodeNode } from '../nodes/ColorCodeNode';
-import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isAfterUnclosedBacktick, isInsideInlineCodeSpan, isInsideUnclosedDelimiter } from '../utils/color-codes';
-import { $isInsideColorSuppressedRawContext } from '../utils/colorPickerTriggers';
+import { COLOR_TRANSFORMER_IMPORT_REGEXP, COLOR_TRANSFORMER_REGEXP, isInsideUnclosedDelimiter } from '../utils/color-codes';
 import { $postImportNormalize, unescapeHtmlEntities } from './normalize';
 import { HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN, getSerifFontFamilyMarkdownStyleAttribute, highlightColorNameFromStyle, isSerifFontFamilyValue, markdownStyleAttributeHasSerifFontFamily, setTextNodeFontFamily, unescapeInlineMarkdownText, wrapSerifFontFamilyMarkdownSpan } from './text-style';
 // moss-multi seam: formula-ids, line-loss, import-selection (A§12; S-conv B9, §1.2; SP2)
 import { $rejectLine, $selectEndOutsideDocumentImport, importFormulaId } from './fixes';
+// moss-multi seam: linear-match (A§12; SP2)
+import { absorbedLength, chargeTablePadding, linearRegExp, mapTableRowCells, mergeWikiLinkCells, oddBackslashesBefore, recordAbsorbed, repairBacktickWrappedCells, TABLE_ABSORB_CHARS, tableMayWiden, withLinearRegExps } from './linear-match';
+// moss-multi seam: linear-import (A§12; SP2)
+import { $convertFromMarkdownString, $isInsideColorSuppressedRawContext, isAfterUnclosedBacktick, isInsideInlineCodeSpan } from './linear-import';
 
 // Custom transformer to preserve underlines in markdown
 const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
@@ -417,24 +420,30 @@ const SELF_REFERENTIAL_LINK_EMBED_PILL_TRANSFORMER: TextMatchTransformer = {
   type: 'text-match'
 };
 
+// moss-multi seam: linear-import (A§12; SP2): the same trim, counting each bracket once rather than per removed character
 const trimRawWebEmbedUrl = (value: string): string => {
-  let url = value.replace(/[.,;:!?]+$/, '');
-  while (/[)\]}>"']$/.test(url)) {
-    const trailing = url[url.length - 1];
+  let end = value.length;
+  while (end > 0 && '.,;:!?'.includes(value[end - 1])) end -= 1;
+  const counts = new Map<string, number>();
+  for (let i = 0; i < end; i += 1) {
+    if ('()[]{}<>"\''.includes(value[i])) counts.set(value[i], (counts.get(value[i]) ?? 0) + 1);
+  }
+  while (end > 0 && ')]}>"\''.includes(value[end - 1])) {
+    const trailing = value[end - 1];
     const opening =
       trailing === ')' ? '(' :
         trailing === ']' ? '[' :
           trailing === '}' ? '{' :
             trailing === '>' ? '<' :
               trailing;
-    const trailingCount = [...url].filter((char) => char === trailing).length;
-    const openingCount = [...url].filter((char) => char === opening).length;
-    if (opening !== trailing && trailingCount <= openingCount) {
+    const trailingCount = counts.get(trailing) ?? 0;
+    if (opening !== trailing && trailingCount <= (counts.get(opening) ?? 0)) {
       break;
     }
-    url = url.slice(0, -1);
+    counts.set(trailing, trailingCount - 1);
+    end -= 1;
   }
-  return url;
+  return value.slice(0, end);
 };
 
 const RAW_WEB_EMBED_URL_IMPORT_RE = /https?:\/\/[^\s<>{}|\\^[\]`]+/;
@@ -779,7 +788,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
 // and imports GFM tables back into Lexical TableNode structure.
 const TABLE_LEADING_PIPE_ROW_REG_EXP = /^\s*\|.*\|?\s*$/;
 
-const TABLE_DIVIDER_ROW_REG_EXP = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
+// moss-multi seam: linear-match (A§12; SP2)
+const TABLE_DIVIDER_ROW_REG_EXP = linearRegExp(/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/);
 
 const TABLE_ROW_REG_EXP = new RegExp(
   `(?:${TABLE_LEADING_PIPE_ROW_REG_EXP.source}|${TABLE_DIVIDER_ROW_REG_EXP.source})`
@@ -1185,14 +1195,12 @@ type TableParseState = {
   wikiLinkDepth: number;
   /** Number of backticks in the opening inline-code delimiter (0 = not in code). */
   inlineCodeBackticks: number;
+  backslashes?: { start: number; end: number }; // moss-multi seam: linear-match (A§12; SP2)
 };
 
-const isEscapedTableChar = (content: string, index: number): boolean => {
-  let backslashCount = 0;
-  for (let i = index - 1; i >= 0 && content[i] === '\\'; i--) {
-    backslashCount++;
-  }
-  return backslashCount % 2 === 1;
+const isEscapedTableChar = (content: string, index: number, state?: TableParseState): boolean => {
+  // moss-multi seam: linear-match (A§12; SP2): counted the backslashes back from index - 1 on every call
+  return oddBackslashesBefore(content, index, state ? (state.backslashes ??= { start: 0, end: 0 }) : undefined);
 };
 
 /**
@@ -1222,7 +1230,7 @@ const advanceTableParseState = (
   // --- Inline code tracking (highest priority — nothing is parsed inside code spans) ---
   // When already inside a code span, backslashes are literal (GFM spec) and
   // must not prevent a matching backtick run from closing the span.
-  if (char === '`' && (state.inlineCodeBackticks > 0 || !isEscapedTableChar(content, index))) {
+  if (char === '`' && (state.inlineCodeBackticks > 0 || !isEscapedTableChar(content, index, state))) { // moss-multi seam: linear-match (A§12; SP2)
     const runLen = backtickRunLength(content, index);
     if (state.inlineCodeBackticks === 0) {
       // Opening a code span
@@ -1243,7 +1251,7 @@ const advanceTableParseState = (
   }
 
   const nextChar = content[index + 1];
-  if (!nextChar || isEscapedTableChar(content, index)) {
+  if (!nextChar || isEscapedTableChar(content, index, state)) { // moss-multi seam: linear-match (A§12; SP2)
     return 0;
   }
 
@@ -1272,14 +1280,14 @@ const advanceTableParseState = (
 
 const isTableCellSeparator = (content: string, index: number, state: TableParseState): boolean =>
   content[index] === '|' &&
-  !isEscapedTableChar(content, index) &&
+  !isEscapedTableChar(content, index, state) && // moss-multi seam: linear-match (A§12; SP2)
   state.formulaDepth === 0 &&
   state.wikiLinkDepth === 0 &&
   state.inlineCodeBackticks === 0;
 
 const isTablePipeToEscape = (content: string, index: number, state: TableParseState): boolean =>
   content[index] === '|' &&
-  !isEscapedTableChar(content, index) &&
+  !isEscapedTableChar(content, index, state) && // moss-multi seam: linear-match (A§12; SP2)
   state.formulaDepth === 0;
 
 /**
@@ -1478,35 +1486,9 @@ const normalizeBrokenMultilineTableRow = (textContent: string): string | null =>
  * Example:
  * `[[Spec: In-line prompts | uuid]]` -> `[[Spec: In-line prompts|uuid]]`
  */
-const mergeBrokenWikiLinkCells = (cells: string[]): string[] => {
-  const healed: string[] = [];
-
-  for (let i = 0; i < cells.length; i++) {
-    const current = cells[i];
-
-    if (!hasUnclosedWikiLink(current)) {
-      healed.push(current);
-      continue;
-    }
-
-    let mergedCandidate = current;
-    let endIndex = i;
-    while (endIndex + 1 < cells.length && hasUnclosedWikiLink(mergedCandidate)) {
-      endIndex += 1;
-      mergedCandidate += `|${cells[endIndex]}`;
-    }
-
-    if (!hasUnclosedWikiLink(mergedCandidate)) {
-      healed.push(mergedCandidate);
-      i = endIndex;
-      continue;
-    }
-
-    healed.push(current);
-  }
-
-  return healed;
-};
+const mergeBrokenWikiLinkCells = (cells: string[]): string[] =>
+  // moss-multi seam: linear-match (A§12; SP2): a loop joining each cell with an unclosed [[ to the next cells until hasUnclosedWikiLink(join) is false, re-counting the whole join per cell
+  mergeWikiLinkCells(cells);
 
 /**
  * Repair a common AI-generated table-cell mistake:
@@ -1518,11 +1500,9 @@ const mergeBrokenWikiLinkCells = (cells: string[]): string[] => {
  * to plain text with valid inner inline-code spans instead:
  * Run `claude` in Terminal
  */
+// moss-multi seam: linear-match (A§12; SP2): rowContent.replace(/(^|\|\s*)`([^|\n]*\\`[^|\n]*\\`[^|\n]*)`(?=\s*\||$)/g, (_match, prefix, inner) => `${prefix}${inner.replace(/\\`/g, '`')}`)
 const repairMalformedSingleBacktickWrappedTableCells = (rowContent: string): string =>
-  rowContent.replace(
-    /(^|\|\s*)`([^|\n]*\\`[^|\n]*\\`[^|\n]*)`(?=\s*\||$)/g,
-    (_match, prefix: string, inner: string) => `${prefix}${inner.replace(/\\`/g, '`')}`
-  );
+  repairBacktickWrappedCells(rowContent);
 
 /** Escapes `|` as `\|` in cell content, except inside formulas. */
 const escapeTableCellPipes = (content: string): string => {
@@ -1563,7 +1543,8 @@ const mapToTableCells = (textContent: string): TableCellNode[] | null => {
 
   const rawCells = splitTableRow(rowContent);
   const healedCells = mergeBrokenWikiLinkCells(rawCells);
-  return healedCells.map((text) => $createTableCell(text));
+  // moss-multi seam: linear-match (A§12; SP2): healedCells.map((text) => $createTableCell(text)), for any number of cells
+  return mapTableRowCells(healedCells, (text) => $createTableCell(text));
 };
 
 const getSingleParagraphTextChild = (node: LexicalNode | null): TextNode | null => {
@@ -1632,6 +1613,7 @@ const absorbFollowingOptionalPipeTableRows = (table: TableNode, startSibling: Le
     if (cells == null) {
       break;
     }
+    if (!tableMayWiden(table.getChildrenSize(), getTableColumnsSize(table), cells.length)) break; // moss-multi seam: linear-match (A§12; SP2)
 
     const nextSibling = sibling.getNextSibling();
     appendTableRow(table, cells);
@@ -1696,6 +1678,7 @@ const GFM_TABLE_MULTILINE_TRANSFORMER: MultilineElementTransformer = {
       if (rowCells == null || rowCells.length < 2) {
         break;
       }
+      if (!tableMayWiden(table.getChildrenSize(), maxCells, rowCells.length)) break; // moss-multi seam: linear-match (A§12; SP2)
 
       maxCells = appendTableRow(table, rowCells);
       endLineIndex = lineIndex;
@@ -1723,12 +1706,14 @@ const tryAbsorbTableContinuationRow = (table: TableNode, continuationCell: Table
     return false;
   }
 
+  if (absorbedLength($getEditor(), lastCell.getKey()) >= TABLE_ABSORB_CHARS) return false; // moss-multi seam: linear-match (A§12; SP2)
   const lastCellMarkdown = $convertToMarkdownString(TABLE_TRANSFORMERS, lastCell).trim();
   if (!hasUnclosedWikiLink(lastCellMarkdown) && !hasUnclosedFormula(lastCellMarkdown)) {
     return false;
   }
 
   const mergedCellMarkdown = `${lastCellMarkdown}|${continuationText}`;
+  recordAbsorbed($getEditor(), lastCell.getKey(), mergedCellMarkdown.length); // moss-multi seam: linear-match (A§12; SP2)
   lastCell.clear();
   $convertFromMarkdownString(mergedCellMarkdown, TABLE_TRANSFORMERS, lastCell);
   return true;
@@ -1889,6 +1874,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
       }
     }
 
+    chargeTablePadding(rows.reduce((sum, cells) => sum + maxCells - cells.length, 0)); // moss-multi seam: linear-match (A§12; SP2)
     const table = $createTableNode();
     const normalizedManualColWidths = normalizeTableColumnWidths(manualColWidths, maxCells);
     if (normalizedManualColWidths) {
@@ -2615,7 +2601,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
   regExp: /^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)/i
 };
 
-export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
+// moss-multi seam: linear-match (A§12; SP2)
+export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = withLinearRegExps([
   // Custom element transformers for block-level content
   // Obsidian embed must come before standard image so ![[ref]] is matched first
   OBSIDIAN_EMBED_TRANSFORMER,
@@ -2661,7 +2648,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
   HIGHLIGHT_TRANSFORMER,
   UNDERLINE_TRANSFORMER,
   FONT_FAMILY_TRANSFORMER
-];
+]); // moss-multi seam: linear-match (A§12; SP2)
 
 // Initialize circular reference after MARKDOWN_EDITOR_TRANSFORMERS is defined
 TABLE_TRANSFORMERS = MARKDOWN_EDITOR_TRANSFORMERS;
