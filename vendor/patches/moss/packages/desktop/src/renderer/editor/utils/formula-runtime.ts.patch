@@ -1,15 +1,16 @@
 diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/packages/desktop/src/renderer/editor/utils/formula-runtime.ts
 --- a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts
 +++ b/packages/desktop/src/renderer/editor/utils/formula-runtime.ts
-@@ -5,8 +5,58 @@ export const FORMULA_NAME_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+@@ -5,8 +5,59 @@ export const FORMULA_NAME_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
  const FORMULA_REFERENCE_TOKEN_REGEX =
    /@\(([a-zA-Z][a-zA-Z0-9_-]*)#([0-9a-fA-F-]{36})#([0-9a-fA-F-]{36})\)/g;
  
 -const NUMERIC_LITERAL_REGEX =
 -  /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g;
-+// moss-multi seam: linear-numeric-literals. moss's /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g retried
-+// its leading \s* from every position of a blank run no number follows, quadratic in the run. This scan gives the
-+// regex's matches and groups in one pass, calling `replace` as String.prototype.replace calls its callback.
++// moss-multi seam: linear-numeric-literals (A§12; SP2)
++// moss's /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g retried its leading \s* from every position of a
++// blank run no number follows, quadratic in the run. This scan gives the regex's matches and groups in one pass,
++// calling `replace` as String.prototype.replace calls its callback.
 +const BLANK_REGEX = /\s/;
 +const isDigit = (char: string | undefined): boolean => char !== undefined && char >= '0' && char <= '9';
 +
@@ -62,7 +63,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/pac
  
  const FORMULA_PAYLOAD_REGEX = /\{\{([^{}\n]+)\}\}/g;
  
-@@ -113,9 +163,7 @@ function hasFormulaReferenceToken(expression: string): boolean {
+@@ -113,9 +164,7 @@ function hasFormulaReferenceToken(expression: string): boolean {
  }
  
  function hasNumericDraftSyntax(expression: string): boolean {
@@ -73,7 +74,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/pac
    return /^[\s+\-*/()]*$/.test(remainder);
  }
  
-@@ -511,9 +559,8 @@ function normalizeFormulaExpression(
+@@ -511,9 +560,8 @@ function normalizeFormulaExpression(
      }
    );
  

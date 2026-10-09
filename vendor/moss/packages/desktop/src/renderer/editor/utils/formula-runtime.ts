@@ -6,9 +6,10 @@ export const FORMULA_NAME_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const FORMULA_REFERENCE_TOKEN_REGEX =
   /@\(([a-zA-Z][a-zA-Z0-9_-]*)#([0-9a-fA-F-]{36})#([0-9a-fA-F-]{36})\)/g;
 
-// moss-multi seam: linear-numeric-literals. moss's /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g retried
-// its leading \s* from every position of a blank run no number follows, quadratic in the run. This scan gives the
-// regex's matches and groups in one pass, calling `replace` as String.prototype.replace calls its callback.
+// moss-multi seam: linear-numeric-literals (A§12; SP2)
+// moss's /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g retried its leading \s* from every position of a
+// blank run no number follows, quadratic in the run. This scan gives the regex's matches and groups in one pass,
+// calling `replace` as String.prototype.replace calls its callback.
 const BLANK_REGEX = /\s/;
 const isDigit = (char: string | undefined): boolean => char !== undefined && char >= '0' && char <= '9';
 
