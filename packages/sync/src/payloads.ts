@@ -19,7 +19,7 @@ export const PAYLOAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const PAYLOAD_DOCS_HELD = 256;
 /** Per-payload compaction thresholds. */
 const COMPACT_ROWS = 100;
-const COMPACT_BYTES = 256 * 1024;
+export const COMPACT_BYTES = 256 * 1024;
 /** Rows cap at 2 MB; a larger state is stored as consecutive parts. */
 const PART_BYTES = 1.5 * 1024 * 1024;
 
@@ -175,6 +175,9 @@ export class PayloadStore {
   readonly #sql: SqlStorage;
   readonly #now: () => number;
   #settling = false;
+  /** True while a client frame applies; `#due` holds the ids whose compaction waits for its purge. */
+  #deferring = false;
+  readonly #due = new Set<string>();
   /** Stored bytes of every payload, kept as they change. */
   #totalBytes = 0;
   /**
@@ -322,9 +325,34 @@ export class PayloadStore {
     return out;
   }
 
-  /** A write to a payload: a connection's frame (`origin` the connection) or the server's own. */
+  /** The server's own write to a payload. */
   write(id: string, update: Uint8Array, origin: unknown): void {
     Y.applyUpdate(this.doc(id), update, origin);
+  }
+
+  /**
+   * A client's frame. Nothing it carried may wait in the doc's pending queues, uncounted, to integrate under a later
+   * write: a parked struct or delete is dropped, as is whatever was left of a frame Yjs threw on, and false refuses the
+   * frame. Only then may the id compact, so its rows never hold parked structs.
+   */
+  applyFrame(id: string, update: Uint8Array, origin: unknown): boolean {
+    const doc = this.doc(id);
+    let threw = false;
+    this.#deferring = true;
+    try {
+      Y.applyUpdate(doc, update, origin);
+    } catch {
+      threw = true;
+    } finally {
+      this.#deferring = false;
+    }
+    const store = doc.store;
+    const unresolved = threw || store.pendingStructs !== null || store.pendingDs !== null;
+    store.pendingStructs = null;
+    store.pendingDs = null;
+    for (const due of this.#due) this.#compact(due);
+    this.#due.clear();
+    return !unresolved;
   }
 
   /**
@@ -429,15 +457,21 @@ export class PayloadStore {
       this.#meta.set(id, meta);
     }
     if (update.byteLength > PART_BYTES) {
-      this.#compact(id);
+      this.#compactWhenSafe(id);
       return;
     }
     this.#sql.exec('INSERT INTO payload_updates (reg_id, data, part) VALUES (?, ?, 0)', id, blob(update));
     meta.rows += 1;
     meta.rowBytes += update.byteLength;
     this.#resize(meta, meta.bytes + update.byteLength);
-    if (meta.rows > COMPACT_ROWS || meta.rowBytes > COMPACT_BYTES) this.#compact(id);
-    else this.#writeMeta(id, meta);
+    this.#writeMeta(id, meta);
+    if (meta.rows > COMPACT_ROWS || meta.rowBytes > COMPACT_BYTES) this.#compactWhenSafe(id);
+  }
+
+  /** Inside a client frame's apply, the compaction waits for applyFrame's purge: it would encode parked structs. */
+  #compactWhenSafe(id: string): void {
+    if (this.#deferring) this.#due.add(id);
+    else this.#compact(id);
   }
 
   /** Swaps an id's rows for its re-encoded state, in parts under the row cap. */
