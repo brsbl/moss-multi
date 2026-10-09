@@ -5,11 +5,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
 import { ALL, journeyMatch } from '../scripts/ci/journeys.mjs';
+import { RECORD_FAILURES, recordingFor } from '../scripts/deploy/canary-artifacts.mjs';
 
 const statePath = process.env.STACK_STATE;
 const stack = statePath && existsSync(statePath) ? (JSON.parse(readFileSync(statePath, 'utf8')) as { baseUrl: string }) : null;
 const group = process.env.E2E_GROUP;
 const journeys = group && group !== ALL ? { testMatch: journeyMatch(group) } : {};
+// No trace, screenshot or video against a non-loopback target: they would carry real session cookies.
+const recording = stack ? recordingFor(stack.baseUrl) : RECORD_FAILURES;
 
 export default defineConfig({
   testDir: '.',
@@ -36,9 +39,7 @@ export default defineConfig({
     locale: 'en-US',
     timezoneId: 'UTC',
     colorScheme: 'light',
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
-    video: 'off',
+    ...recording,
     actionTimeout: 10_000,
   },
   projects: [
@@ -55,7 +56,8 @@ export default defineConfig({
       testDir: './journeys',
       testMatch: /j0(?:0-shell|1-coedit|4-hibernation)\.spec\.ts$/,
       grep: /j00-shell\.spec|j01 setup|@staging/,
-      use: { browserName: 'chromium' },
+      // Fails closed: with no target, nothing is recorded.
+      use: { browserName: 'chromium', ...recordingFor(stack?.baseUrl) },
     },
     // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.
     { name: 'parity', testDir: './parity', use: { browserName: 'chromium' } },

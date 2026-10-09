@@ -180,6 +180,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T8.D checker P2 (request budget only partly counts and enforces requests): RequestBudget counts browser-context requests and sockets only, not Node fetch or APIRequestContext traffic (direct note creation, grants.ts invites, denial probes); Actors.principal charges a sign-in even for a cached pooled principal, sign-up and retries are not charged one by one, and the limit is checked only after each test.
 - T8.D checker P2 (canary creates new DocDOs each run): only principals are pooled; the canary journeys create about 12 new notes per run whose DocDO storage is never reclaimed, while A§21 recommends a fixed doc pool too; docs/METHOD.md records the growth but does not bound it.
+- Slop Cop PR #11: canary pool emails are public and squattable (derive identifiers from the secret or pre-provision).
+- Slop Cop PR #11: validate request_budget and idle_seconds in preflight, before any Cloudflare step.
 
 ### From T8.4's checker (a30e669, 2026-10-08)
 

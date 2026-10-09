@@ -16,8 +16,12 @@ export function presentGroups(journeys = readJourneys()) {
   return Object.keys(GROUPS).filter((group) => journeys.some((journey) => journey.group === group));
 }
 
-export function testedRunProblems({ run, jobs, groups }) {
+export function testedRunProblems({ run, jobs, groups, repository = run.repository?.full_name }) {
   const problems = [];
+  // Second to run-gate.mjs, which deploy-staging.yml runs before this commit is checked out.
+  if (!repository || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository) {
+    problems.push(`run's head repository is ${run.head_repository?.full_name ?? 'unknown'}, not ${repository ?? 'this repository'}`);
+  }
   if (run.path !== '.github/workflows/ci.yml') problems.push(`run is ${run.path}, not .github/workflows/ci.yml`);
   if (run.conclusion !== 'success') problems.push(`run concluded ${run.conclusion ?? run.status}`);
   if (!['push', 'workflow_dispatch'].includes(run.event)) problems.push(`run event ${run.event}: deploy a branch run (push or dispatch), whose build is its head commit`);
@@ -47,7 +51,8 @@ const readJobs = (text) => (text.trim().startsWith('[') ? JSON.parse(text) : tex
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [runPath, jobsPath] = process.argv.slice(2);
   const run = JSON.parse(readFileSync(runPath, 'utf8'));
-  const problems = testedRunProblems({ run, jobs: readJobs(readFileSync(jobsPath, 'utf8')), groups: presentGroups() });
+  const jobs = readJobs(readFileSync(jobsPath, 'utf8'));
+  const problems = testedRunProblems({ run, jobs, groups: presentGroups(), repository: process.env.GITHUB_REPOSITORY ?? '' });
   for (const problem of problems) console.error(`::error::run ${run.id}: ${problem}`);
   if (problems.length === 0) console.log(`run ${run.id} passed the full lane at ${run.head_sha}`);
   process.exitCode = problems.length > 0 ? 1 : 0;
