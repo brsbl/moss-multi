@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (107 of 130 planned tasks verified)
+**Overall: 82% done** (108 of 131 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 5 / 5 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 6 / 6 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -128,6 +128,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T8.D verified: the staging deploy pipeline exists and is validated by dry run: `env.staging`, a `deploy-staging.yml` that ships the exact tested `dist`, an `/api/version` check, test hooks answering 404 on staging, `.dev.vars` never uploaded, and a canary that uses a fixed pool of test principals under a request budget.
 - 2026-10-08 — T8.5p verified: `scripts/demo.mjs` builds a demo folder through the real UI on any stack (a launch plan and an every-node note with media, two test people's comment threads with replies and reactions, a peer's and an agent's pending suggestions, named versions and a view link), re-runs without duplicating, and captures the signature shot of a peer's caret and a suggestion beside rich blocks plus a short tour.
 - 2026-10-08 — T8.3a verified: `scripts/security/sweep.mjs` runs the adversarial security checklist (headers, header stripping, existence leaks, revocation, limits) against a production build in CI, an authorization matrix covers every `/api` route, request bodies are capped and app pages refuse foreign framing; docs/SECURITY.md records the results.
+- 2026-10-09 — T8.Ds verified: `deploy-staging.yml` now deploys only a green, same-repository branch CI run whose head is still on its branch, checked by `run-gate.mjs` before any checkout or secret, and the staging canary keeps no trace, screenshot or video, logs only test titles, statuses and durations, and uploads only `requests.json` and that summary.
 
 ## T1.1s identity audit
 
