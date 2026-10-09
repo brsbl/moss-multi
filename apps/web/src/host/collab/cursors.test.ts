@@ -25,7 +25,7 @@ function mounted() {
   const rootElement = document.createElement('div');
   rootElement.contentEditable = 'true';
   const container = document.createElement('div');
-  document.body.append(rootElement, container);
+  document.body.appendChild(rootElement); document.body.appendChild(container);
   const editor = createEditor({ namespace: 'cursors-test', onError: (error) => { throw error; } });
   editor.setRootElement(rootElement);
   const doc = new Y.Doc();
