@@ -67,9 +67,6 @@ export async function mintPrincipal(baseUrl: string, runToken: string, label: st
   const text = await response.text();
   if (!response.ok) throw new Error(`sign-up for ${email}: ${response.status} ${text.slice(0, 200)}`);
   const id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
-  // Sign-up opens a session: the first signIn takes it instead of signing in again.
-  const cookies = response.headers.getSetCookie().map((header) => parseSetCookie(header, baseUrl));
-  if (cookies.length > 0) spareSessions.set(`${baseUrl} ${email}`, cookies);
   return { label, name, email, password, id };
 }
 
@@ -93,9 +90,6 @@ async function pastAuthLimit(post: () => Promise<Response>): Promise<Response> {
   }
   return response;
 }
-
-/** The session each sign-up opened, until a signIn takes it. */
-const spareSessions = new Map<string, SessionCookie[]>();
 
 export function parseSetCookie(header: string, url: string): SessionCookie {
   const [pair, ...attributes] = header.split(';').map((part) => part.trim());
@@ -143,11 +137,6 @@ export async function signIn(baseUrl: string, principal: Principal): Promise<Ses
   assertTestEmail(principal.email);
   const pooled = principal.pooled ? pooledSessions.get(`${baseUrl} ${principal.email}`) : undefined;
   if (pooled) return pooled.map((cookie) => ({ ...cookie }));
-  const spare = principal.pooled ? undefined : spareSessions.get(`${baseUrl} ${principal.email}`);
-  if (spare) {
-    spareSessions.delete(`${baseUrl} ${principal.email}`);
-    return spare;
-  }
   const response = await pastAuthLimit(() => postSignIn(baseUrl, principal));
   if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
   const cookies = sessionCookies(response, baseUrl, principal.email);
