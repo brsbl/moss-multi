@@ -250,7 +250,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
           AND NOT EXISTS (SELECT 1 FROM up WHERE id = ?2)
           AND (SELECT count(*) FROM up) + (SELECT max(depth) FROM sub) <= ${MAX_FOLDER_DEPTH}
           AND ${managesFolder(2, 6)} AND ${editsFolder(1, 6)}`)
-        .bind(parentId, id, newName, vault, from, principal.id), reapDeadInvites(env.DB, Date.now())]))[0];
+        .bind(parentId, id, newName, vault, from, principal.id), reapDeadInvites(env.DB, Date.now(), { folderId: id })]))[0];
       let updated = await move(current.parentId as string);
       if (!changed(updated)) {
         const [now] = await db.select({ parentId: folders.parentId }).from(folders).where(eq(folders.id, id));
@@ -354,7 +354,7 @@ export async function trashFolder(request: Request, env: FoldersEnv, id: string,
           .bind(now, batch, id, principal.id),
         env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
           .bind(now, batch),
-        reapDeadInvites(env.DB, now),
+        reapDeadInvites(env.DB, now, { folderId: id }),
       ]);
     } catch (error) {
       console.error('folder trash write failed', error);
@@ -422,7 +422,7 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
         const [moved] = await env.DB.batch([env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
           UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)} AND folder_id = ?5
             AND ${managesDoc(3, 6)} AND ${editsFolder(1, 6)}`)
-          .bind(folderId, filename, docId, vault, from, principal.id), reapDeadInvites(env.DB, Date.now())]);
+          .bind(folderId, filename, docId, vault, from, principal.id), reapDeadInvites(env.DB, Date.now(), { docId })]);
         if (changed(moved)) break;
         const still = await resolveDocAccess(db, principal, docId);
         if (!still || !can(still.role, 'manage')) return ownerMoves('notes');

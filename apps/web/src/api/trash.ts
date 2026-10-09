@@ -85,7 +85,7 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
       [stamped] = await env.DB.batch([
         env.DB.prepare(`UPDATE "docs" SET deleted_at = ?1, trash_batch_id = ?2
           WHERE id = ?3 AND deleted_at IS NULL AND ${managesDoc(3, 4)}`).bind(now, batch, docId, principal.id),
-        reapDeadInvites(env.DB, now),
+        reapDeadInvites(env.DB, now, { docId }),
       ]);
     } catch (error) {
       console.error('trash write failed', error);
