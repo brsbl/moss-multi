@@ -69,8 +69,9 @@ function suggesting() {
 it('a paste refused after its first batch reached the DocDO offers back every pasted paragraph', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
-    // Many batches' worth (the first is 128 blocks); `<i>` marks each, the middle ones included.
-    const lines = Array.from({ length: 1_500 }, (_, i) => `para <${i}>`);
+    // More than one batch's worth, under the record cap (a paragraph is some 300 bytes of ops); `<i>` marks each, the
+    // middle ones included (the first batch also places the last).
+    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
     const before = pane.fork.sent;
     pane.paste(lines);
     for (let tick = 0; pane.fork.sent === before && tick < 1_000; tick += 1) vi.advanceTimersToNextTimer();
@@ -95,10 +96,12 @@ it('a paste past the suggestion record cap is refused whole, before any of it re
     const text = pane.text();
     const before = pane.fork.sent;
     pane.paste(lines);
+    // The notice clears itself on a timer: read it once it shows.
+    while (!refusalMessage() && vi.getTimerCount() > 0) vi.advanceTimersToNextTimer();
+    expect(refusalMessage(), 'refused visibly').toMatch(/suggest/i);
     vi.runAllTimers();
     expect(pane.fork.sent, 'no op was sent').toBe(before);
     expect(pane.text(), 'F is unchanged').toBe(text);
-    expect(refusalMessage(), 'refused visibly').toMatch(/suggest/i);
     expect(pane.fork.closed, 'input stays open').toBe(false);
   } finally {
     pane.dispose();
