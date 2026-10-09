@@ -9,6 +9,7 @@ import {
   $getRoot, $getSelection, COMMAND_PRIORITY_EDITOR, COMMAND_PRIORITY_HIGH, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND, type Klass, type LexicalNode,
 } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type * as Y from 'yjs';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
 import { GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
@@ -20,6 +21,13 @@ import { refusalMessage } from '../../refusal.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
 import { registerSuggestRouting } from './routing.ts';
+
+/** The payload bytes the DocDO last said it counts for a doc (doc-session.ts), withheld payloads included. */
+const counted = new WeakMap<Y.Doc, number>();
+vi.mock('../doc-session.ts', async (original) => ({
+  ...(await original<typeof import('../doc-session.ts')>()),
+  countedPayloadBytes: (doc: Y.Doc) => counted.get(doc) ?? 0,
+}));
 
 beforeEach(() => {
   // jsdom's Performance may lack User Timing; the paste marks its steps with it.
@@ -36,8 +44,8 @@ afterEach(() => {
  * A suggester's pane on F: the body's undo, the routing, and a paste handler that lands every paste through pasteLarge,
  * as the MarkdownEditor seam does a large one; a reachable DocDO.
  */
-function suggesting() {
-  const live = seededBody('Intro line stays.\n\nClosing line stays too.\n');
+function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n') {
+  const live = seededBody(markdown);
   let n = 0;
   const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}` });
   const outbox: SuggestRequest[] = [];
@@ -384,6 +392,63 @@ it('a paste over a selection of another author\'s text strikes it and lands in o
     expect(pane.text(), 'one redo brings the paste back').toContain('para <299>');
     expect(struck(), 'and the strike').toBe(4);
     expect(pane.fork.closed, 'nothing refused').toBe(false);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste inside a long paragraph counts the paragraph\'s rest, which the split re-creates under the suggester: past the cap with it, refused whole', { timeout: 120_000 }, () => {
+  const pane = suggesting(`Ada ${'q'.repeat(150_000)}\n\nSecond line.\n`);
+  try {
+    pane.select('Ada', 0, 3);
+    expect(pane.selected()).toBe('Ada');
+    const text = pane.text();
+    const before = pane.requests();
+    // About 120 KB: under the record cap alone, past it with the 150 KB of the paragraph's rest the split re-creates.
+    pane.paste([`One ${'a'.repeat(60_000)}`, `Two ${'b'.repeat(60_000)}`]);
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent, no strike either').toBe(before);
+    expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    expect(pane.selected(), 'the selection is kept').toBe('Ada');
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+    expect(openRecords(pane.live, SUGGESTER.id), 'no suggestion was made').toEqual([]);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste inside a long paragraph that fits with the paragraph\'s rest lands as one suggestion, the DocDO refusing nothing', { timeout: 120_000 }, () => {
+  const pane = suggesting(`Ada ${'q'.repeat(150_000)}\n\nSecond line.\n`);
+  try {
+    pane.select('Ada', 0, 3);
+    pane.paste([`One ${'a'.repeat(20_000)}`, `Two ${'b'.repeat(20_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'admitted, and stored').toBe(false);
+    expect(pane.text()).toContain('Two bbb');
+    expect(openRecords(pane.live, SUGGESTER.id), 'one suggestion holds the strike and the paste').toHaveLength(1);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste that fits the note beside the payloads the fork holds, but not beside those the DocDO counts for the body, is refused whole', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    // The DocDO counts withheld payloads (a deleted code block's text) against the note's cap; the body's session
+    // knows their bytes from its acks, the fork does not hold them.
+    counted.set(pane.live, STATE_CAP_BYTES - 20_000);
+    pane.select('Intro line', 6, 10);
+    const text = pane.text();
+    const before = pane.requests();
+    pane.paste(Array.from({ length: 300 }, (_, i) => `para <${i}>`));
+    expect(noticed(), 'refused visibly').not.toBe('');
+    expect(pane.requests(), 'nothing was sent, no strike either').toBe(before);
+    expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    expect(pane.selected(), 'the selection is kept').toBe('line');
   } finally {
     pane.dispose();
   }

@@ -115,3 +115,20 @@ test('j16-paste: a large paste in a new group that builds on the author\'s earli
   await expect(body).not.toContainText('Second tail');
   expect(await content(ada, docId, 'working'), 'the suggestions are unchanged').toBe(working);
 });
+
+test('j16-paste: a paste inside a long paragraph counts the paragraph\'s rest, which the split re-creates as the suggester\'s: past the cap with it, it is refused whole @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, `Ada ${'q'.repeat(150_000)}\n\nSecond line.`);
+  const working = await content(ada, docId, 'working');
+  await caret(ben, docId, 'Ada', 0, 3);
+  const before = await sent(ben, docId);
+  // About 120 KB: under the record cap alone, past it with the 150 KB after the selection.
+  await pastePlain(ben, docId, `One ${'a'.repeat(60_000)}\nTwo ${'b'.repeat(60_000)}`);
+  await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'refused visibly').toContainText('too large for one suggestion', { timeout: 60_000 });
+  await settled(ben, docId, 'the refused paste');
+  expect(await sent(ben, docId), 'nothing was sent').toBe(before);
+  expect(await painted(ben, 'suggest-delete'), 'nothing is struck').toEqual([]);
+  await expect(ui.body(ben, docId)).not.toContainText('One aaa');
+  expect(await ben.page.evaluate(() => window.getSelection()?.toString()), 'the selection is kept').toBe('Ada');
+  expect(await content(ada, docId, 'working'), 'no suggestion was made').toBe(working);
+});
