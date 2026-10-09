@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { commentGaps, hasVersion, pendingBy, planNotes } from '../e2e/qa/demo.js';
-import { demoConfig, demoPrincipals, ensurePrincipal, NOTES, stepScript, STEPS, writeDemoRun } from './demo.mjs';
+import { commentPasses, demoConfig, demoPrincipals, ensurePrincipal, NOTES, stepScript, STEPS, THREADS, writeDemoRun } from './demo.mjs';
 
 const VERSION = { commit: 'c'.repeat(40), bundleHash: 'b'.repeat(64), clientHash: 'e'.repeat(64) };
 
@@ -25,6 +25,32 @@ describe('demoConfig', () => {
   it('refuses anything but an http(s) stack URL', () => {
     expect(() => demoConfig({ url: 'file:///etc/passwd' })).toThrow(/http/);
     expect(() => demoConfig({})).toThrow(/--url/);
+  });
+});
+
+describe('commentPasses', () => {
+  // Replays the comments step: a pass adds the person's roots, then their replies under roots that exist, then
+  // their reactions on messages that exist. Returns what is still missing after the passes.
+  const missingAfter = (passes, threads) => {
+    const have = new Set();
+    for (const me of passes) {
+      for (const t of threads) if (t.by === me) have.add(t.text);
+      for (const t of threads) for (const r of t.replies ?? []) if (r.by === me && have.has(t.text)) have.add(r.text);
+      for (const t of threads) {
+        const messages = [t.text, ...(t.replies ?? []).map((r) => r.text)].filter((text) => have.has(text));
+        for (const r of t.reactions ?? []) if (r.by === me && messages.some((text) => text.includes(r.on))) have.add(`${r.by}:${r.emoji}:${r.on}`);
+      }
+    }
+    return threads.flatMap((t) => [t.text, ...(t.replies ?? []).map((r) => r.text), ...(t.reactions ?? []).map((r) => `${r.by}:${r.emoji}:${r.on}`)]).filter((x) => !have.has(x));
+  };
+
+  it('lands every root, reply and reaction in one run: a reaction on a later reply gets a pass after it', () => {
+    expect(missingAfter(commentPasses(THREADS), THREADS)).toEqual([]);
+  });
+
+  it('adds no idle pass', () => {
+    const passes = commentPasses(THREADS);
+    for (let i = 0; i < passes.length; i += 1) expect(missingAfter(passes.toSpliced(i, 1), THREADS)).not.toEqual([]);
   });
 });
 

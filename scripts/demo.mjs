@@ -85,6 +85,11 @@ export const THREADS = [
   },
 ];
 
+/** Who runs the comments step, in order. */
+export function commentPasses() {
+  return ['ada', 'ben', 'ada'];
+}
+
 // ---------- configuration and principals ----------
 
 /** The stack's base URL and the one demo run id for it: the same URL always maps to the same run. */
@@ -249,7 +254,7 @@ export async function buildDemo(opts) {
     if (shared.invite) await step('accept', { invite: shared.invite });
     log(`folder shared with ${ben.email}; view link ${shared.link}`);
 
-    for (const me of ['ada', 'ben', 'ada']) await step('comments', { docId: ids.launch, me, mode: me === 'ben' ? 'suggest' : 'edit', threads: THREADS });
+    for (const me of commentPasses(THREADS)) await step('comments', { docId: ids.launch, me, mode: me === 'ben' ? 'suggest' : 'edit', threads: THREADS });
     await step('suggest', { docId: ids.launch, find: SENTENCE.find, replace: SENTENCE.replace });
     if (!opts['skip-agent']) {
       const { suggestions } = await step('suggestions', { docId: ids.launch });
