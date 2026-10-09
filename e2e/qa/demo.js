@@ -40,6 +40,63 @@ export const hasVersion = (versions, name) => versions.some((v) => v.name === na
 const CLOSED = new Set(['accepted', 'rejected', 'withdrawn']);
 export const pendingBy = (suggestions, authorName) => suggestions.some((s) => s.author?.name === authorName && !CLOSED.has(s.status));
 
+/**
+ * What keeps a frame of Ada's window from being the signature, as `inspectSignature` reads it: [] when the note is
+ * live and bound, and the sentence, both halves of Ben's suggestion, his labelled caret and rich blocks are in view.
+ */
+export function signatureProblems(frame, { name, sentence, find, replace }) {
+  const problems = [];
+  if (frame.docState !== 'live') problems.push(`the note is ${frame.docState ?? 'missing'}, not live`);
+  if (frame.connection !== 'online') problems.push(`the connection is ${frame.connection ?? 'missing'}`);
+  if (!frame.binding) problems.push('the body is not bound');
+  for (const words of [sentence, find, replace]) if (!frame.text.includes(words)) problems.push(`the sentence's "${words}" is not in view`);
+  if (!frame.caretLabels.some((label) => label.includes(name))) problems.push(`${name}'s caret label is not in view`);
+  if (frame.richBlocks < 2) problems.push(`${frame.richBlocks} rich blocks in view, not 2`);
+  return problems;
+}
+
+/**
+ * A shot that shows what `problems` wants: the frame is checked before and after the capture, and an attempt whose
+ * preparation fails or whose frame is wrong either time is retaken. Fails with the last problems.
+ */
+export async function verifiedShot({ attempts = 3, prepare, inspect, problems, capture }) {
+  let last = [];
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await prepare(attempt);
+    } catch (error) {
+      last = [error.message];
+      continue;
+    }
+    last = problems(await inspect());
+    if (last.length) continue;
+    const path = await capture();
+    last = problems(await inspect());
+    if (!last.length) return path;
+  }
+  throw new Error(`no clean frame in ${attempts} tries: ${last.join('; ')}`);
+}
+
+/** What keeps the suggestions panel from showing `expected` open cards with their changes: [] when it does. */
+export function panelProblems(cards, expected) {
+  const problems = [];
+  if (cards.length !== expected) problems.push(`${cards.length} of ${expected} cards`);
+  cards.forEach((card, i) => {
+    if (card.loading) problems.push(`card ${i + 1} is loading`);
+    else if (card.failed) problems.push(`card ${i + 1}: ${card.failed}`);
+    else if (!card.rows) problems.push(`card ${i + 1} shows no change`);
+  });
+  return problems;
+}
+
+/** Ids of suggestions made, dropped or updated between two listings. */
+export function changedSuggestions(before, after) {
+  const key = (s) => `${s.status}:${s.createdAt}:${s.updatedAt}`;
+  const was = new Map(before.map((s) => [s.id, key(s)]));
+  const now = new Map(after.map((s) => [s.id, key(s)]));
+  return [...new Set([...was.keys(), ...now.keys()])].filter((id) => was.get(id) !== now.get(id)).sort();
+}
+
 // ---------- page helpers (named apart from the prelude's) ----------
 
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -210,6 +267,34 @@ async function center(page, id, { text, selector }) {
     target.scrollIntoView({ block: 'center' });
   }, { text: text ?? null, selector: selector ?? null });
   await pause(400);
+}
+
+/** Ada's window as the signature needs it: note state, connection, binding, and what is inside the editor's view. */
+function inspectSignature(page, docId) {
+  return page.evaluate(({ docId, DOM }) => {
+    const pane = document.querySelector(`[${DOM.EDITOR_PANE_ATTR}][${DOM.DOC_ID_ATTR}="${docId}"]`);
+    const body = pane?.querySelector(`[${DOM.BODY_BINDING_ATTR}]`);
+    const canvas = pane?.querySelector(`[${DOM.EDITOR_CANVAS_ATTR}]`) ?? pane;
+    const view = canvas?.getBoundingClientRect();
+    const inView = (el) => {
+      const r = el.getBoundingClientRect();
+      return view && r.width > 0 && r.height > 0 && r.bottom > view.top && r.top < view.bottom && r.top < innerHeight && r.bottom > 0;
+    };
+    const blocks = body ? [...body.children].filter(inView) : [];
+    const rich = blocks.filter((el) => el.matches('table, [data-lexical-decorator="true"]') || el.querySelector('table'));
+    const labels = [...document.querySelectorAll(`[${DOM.REMOTE_CARET_ATTR}]`)].flatMap((c) => {
+      const label = c.querySelector('[data-cursor-label]');
+      return label && getComputedStyle(label).display !== 'none' && getComputedStyle(label).visibility !== 'hidden' && inView(label) ? [label.textContent] : [];
+    });
+    return {
+      docState: pane?.getAttribute(DOM.DOC_STATE_ATTR) ?? null,
+      connection: (pane?.querySelector(`[${DOM.CONNECTION_ATTR}]`) ?? document.querySelector(`[${DOM.CONNECTION_ATTR}]`))?.getAttribute(DOM.CONNECTION_ATTR) ?? null,
+      binding: body?.getAttribute(DOM.BODY_BINDING_ATTR) || null,
+      text: blocks.map((el) => el.textContent).join('\n'),
+      caretLabels: labels,
+      richBlocks: rich.length,
+    };
+  }, { docId, DOM });
 }
 
 async function calm(page) {
@@ -442,28 +527,47 @@ export const STEPS = {
 
   /**
    * The signature shot: Ada's window at 2x with Ben's live caret and name label at the end of his suggestion in the
-   * long sentence, the rich blocks around it.
+   * long sentence, the rich blocks around it. The frame is checked before and after the capture and retaken if wrong.
    */
-  async signature({ docId, sentence, replace }) {
+  async signature({ docId, sentence, find, replace }) {
     // Ada reviews, so Ben's inserted words show beside the struck ones.
     const ada = await person('ada');
-    await openNote(ada, docId, 'review');
     const ben = await person('ben');
-    await openNote(ben, docId, 'suggest');
-    await calm(ada);
-    await center(ada, docId, { text: sentence });
-    await center(ben, docId, { text: sentence });
-    // A keystroke and its undo-by-Backspace at the end of his inserted words: his label shows, his suggestion stays.
-    await selectRendered(ben, docId, replace, replace.length, 0);
-    await ben.keyboard.type(' ');
-    await ben.keyboard.press('Backspace');
-    const caret = `[${DOM.REMOTE_CARET_ATTR}]`;
-    await until("Ben's labelled caret shows in Ada's window", () => ada.$$eval(caret, (all, name) => all.some((c) => {
-      const label = c.querySelector('[data-cursor-label]');
-      return label && label.textContent.includes(name) && getComputedStyle(label).visibility !== 'hidden' && label.getBoundingClientRect().width > 0;
-    }), P.ben.name), 5_000);
-    const path = await shot(ada, 'signature');
+    const listing = async () => (await read(ada, `/api/docs/${docId}/suggestions`)).suggestions;
+    const before = await listing();
+    const path = await verifiedShot({
+      prepare: async (attempt) => {
+        // A retry reloads both windows: a frame that went blank is a dropped or rebinding socket.
+        if (attempt > 1) await Promise.all([visit(ada, `/d/${docId}`), visit(ben, `/d/${docId}`)]);
+        await openNote(ada, docId, 'review');
+        await openNote(ben, docId, 'suggest');
+        await ada.bringToFront();
+        await calm(ada);
+        await center(ada, docId, { text: sentence });
+        await center(ben, docId, { text: sentence });
+        // His caret goes after his inserted words. A no-op update there every 400 ms marks him typing, so his label
+        // stays up through the capture without changing the text or his suggestion.
+        await selectRendered(ben, docId, replace, replace.length, 0);
+        await ben.$eval(bodyOf(docId), (element, needle) => {
+          const editor = element.__lexicalEditor;
+          const touch = () => editor.update(() => {
+            const node = [...editor.getEditorState()._nodeMap.values()].find((n) => n.getType() === 'text' && n.getTextContent().includes(needle));
+            if (!node) throw new Error(`no text node holds "${needle}"`);
+            node.getWritable();
+          }, { discrete: true });
+          touch();
+          clearInterval(window.mossDemoTyping);
+          window.mossDemoTyping = setInterval(touch, 400);
+        }, replace);
+        await until("Ben's labelled caret shows in Ada's window", async () => (await inspectSignature(ada, docId)).caretLabels.some((l) => l.includes(P.ben.name)), 5_000);
+      },
+      inspect: () => inspectSignature(ada, docId),
+      problems: (frame) => signatureProblems(frame, { name: P.ben.name, sentence, find, replace }),
+      capture: () => shot(ada, 'signature'),
+    }).finally(() => ben.evaluate(() => clearInterval(window.mossDemoTyping)).catch(() => {}));
     await settle(ben, docId);
+    const changed = changedSuggestions(before, await listing());
+    if (changed.length) throw new Error(`the signature step changed suggestions ${changed.join(', ')}`);
     return { shot: path };
   },
 
@@ -500,7 +604,13 @@ export const STEPS = {
     await calm(page);
     await (await page.waitForSelector(`${paneOf(docId)} [${DOM.SUGGESTIONS_BUTTON_ATTR}]`, { visible: true })).click();
     await page.waitForSelector(`[${DOM.SUGGESTION_CARD_ATTR}]`, { visible: true, timeout: 15_000 });
-    await until('the suggestion cards load their changes', () => page.$$eval(`[${DOM.SUGGESTION_CARD_ATTR}]`, (cards) => cards.every((c) => !c.textContent.includes('Loading changes'))), 20_000);
+    const open = (await read(page, `/api/docs/${docId}/suggestions`)).suggestions.length;
+    const cards = () => page.$$eval(`[${DOM.SUGGESTION_CARD_ATTR}]`, (all, { status, row, closed }) => all
+      .filter((c) => !closed.includes(c.getAttribute(status)))
+      .map((c) => ({ loading: c.textContent.includes('Loading changes'), failed: c.querySelector('[role="alert"]')?.textContent ?? null, rows: c.querySelectorAll(`[${row}]`).length })),
+    { status: DOM.SUGGESTION_STATUS_ATTR, row: DOM.SUGGESTION_ROW_ATTR, closed: [...CLOSED] });
+    await until('the open suggestion cards show their changes', async () => panelProblems(await cards(), open).length === 0, 20_000)
+      .catch(async (error) => { throw new Error(`${error.message}: ${panelProblems(await cards(), open).join('; ')}`); });
     await pause(300);
     const shots = [await shot(page, 'suggestions')];
     await (await page.waitForSelector(`${paneOf(docId)} [${DOM.SUGGESTIONS_BUTTON_ATTR}]`, { visible: true })).click();

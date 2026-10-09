@@ -292,7 +292,7 @@ export async function buildDemo(opts) {
     }
     log(`version "Ready for review" ${(await step('version', { docId: ids.launch, name: 'Ready for review' })).created ? 'added' : 'kept'}`);
 
-    shots.push((await step('signature', { docId: ids.launch, sentence: SENTENCE.text, replace: SENTENCE.replace })).shot);
+    shots.push((await step('signature', { docId: ids.launch, sentence: SENTENCE.text, find: SENTENCE.find, replace: SENTENCE.replace })).shot);
     shots.push(...(await step('everyNode', { docId: ids.every, htmlResult: 'Ran on click' })).shots);
     shots.push(...(await step('review', { docId: ids.launch, rootText: THREADS[0].text })).shots);
     shots.push((await step('history', { docId: ids.launch })).shot);
