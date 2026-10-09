@@ -33,13 +33,36 @@ env:
   WRANGLER_SEND_METRICS: 'false'
 
 jobs:
+  # The gate runs this workflow's own scripts (the dispatched commit) before anything from the CI run's commit is
+  # checked out or a secret is in reach, and only it emits the sha the later jobs check out (scripts/deploy/run-gate.mjs).
   preflight:
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    outputs:
+      sha: ${{ steps.gate.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
           sparse-checkout: scripts/deploy
+      - name: The CI run may deploy
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.ci_run_id }}
+        run: |
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then echo "::error::ci_run_id must be a run id (digits only)"; exit 1; fi
+          dir="$RUNNER_TEMP/gate"
+          mkdir -p "$dir"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$dir/run.json"
+          branch=$(node scripts/deploy/run-gate.mjs branch "$dir/run.json")
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" > "$dir/ref.json" 2> /dev/null || echo null > "$dir/ref.json"
+          head=$(jq -r .head_sha "$dir/run.json")
+          tip=$(jq -r '.object.sha? // ""' "$dir/ref.json")
+          echo null > "$dir/compare.json"
+          if [[ "$tip" =~ ^[0-9a-f]{40}$ ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/compare/$head...$tip" > "$dir/compare.json" 2> /dev/null || echo null > "$dir/compare.json"
+          fi
+          node scripts/deploy/run-gate.mjs sha "$dir/run.json" "$dir/ref.json" "$dir/compare.json" >> "$GITHUB_OUTPUT"
       - name: Every secret is configured
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -54,7 +77,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      sha: ${{ steps.run.outputs.sha }}
       commit: ${{ steps.provenance.outputs.commit }}
       bundleHash: ${{ steps.provenance.outputs.bundleHash }}
       clientHash: ${{ steps.provenance.outputs.clientHash }}
@@ -64,18 +86,15 @@ jobs:
       WRANGLER: apps/web/node_modules/wrangler/bin/wrangler.js
     steps:
       - name: Read the CI run
-        id: run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then echo "::error::ci_run_id must be a run id (digits only)"; exit 1; fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
           gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
-          echo "sha=$(jq -r .head_sha "$RUNNER_TEMP/run.json")" >> "$GITHUB_OUTPUT"
-      # The tested commit: its migrations match the bytes, and its scripts judge them.
+      # The gated commit: its migrations match the bytes, and its scripts judge them.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ steps.run.outputs.sha }}
+          ref: ${{ needs.preflight.outputs.sha }}
       - name: The run passed the full lane in both engines
         run: node scripts/deploy/tested-run.mjs "$RUNNER_TEMP/run.json" "$RUNNER_TEMP/jobs.ndjson"
       - uses: pnpm/action-setup@v6
@@ -99,7 +118,7 @@ jobs:
       - name: The bytes are the run's head commit
         env:
           COMMIT: ${{ steps.provenance.outputs.commit }}
-          SHA: ${{ steps.run.outputs.sha }}
+          SHA: ${{ needs.preflight.outputs.sha }}
         run: |
           if [ "$COMMIT" != "$SHA" ]; then echo "::error::web-dist was built from $COMMIT, the run's head is $SHA"; exit 1; fi
       - name: Upload guard
@@ -162,7 +181,7 @@ jobs:
   # j00-shell, the j01 setup legs and j04's @staging leg on staging (A§21, SP14): the fixed principal pool, this
   # run's request budget, and a wake after natural idle proven through the owner-only instance route.
   canary:
-    needs: deploy
+    needs: [preflight, deploy]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
@@ -174,7 +193,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.deploy.outputs.sha }}
+          ref: ${{ needs.preflight.outputs.sha }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
@@ -200,16 +219,23 @@ jobs:
           CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
           RUN_ID: staging-${{ github.run_id }}
         run: pnpm exec playwright test --project=canary
-      - name: Requests this run made
+      # The log and artifact are public: the config prints only titles, statuses and durations off loopback, and the
+      # artifact is the request count and each test's title, status and duration. Never a trace, report,
+      # error text or URL, which can carry the pooled sessions' cookies or bearer links.
+      - name: A credential-free summary
         if: always()
-        run: cat "$RUNNER_TEMP/canary/requests.json" || true
-      - name: Upload results, traces and screenshots
+        run: |
+          mkdir -p e2e/canary-artifacts
+          cp "$RUNNER_TEMP/canary/requests.json" e2e/canary-artifacts/requests.json || true
+          cat e2e/canary-artifacts/requests.json || true
+          node scripts/deploy/canary-artifacts.mjs summary e2e/test-results/results.json e2e/canary-artifacts/summary.json
+      - name: Upload the summary
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: staging-canary-${{ github.run_attempt }}
           path: |
-            e2e/test-results/
-            e2e/playwright-report/
+            e2e/canary-artifacts/requests.json
+            e2e/canary-artifacts/summary.json
           retention-days: 7
           if-no-files-found: ignore
