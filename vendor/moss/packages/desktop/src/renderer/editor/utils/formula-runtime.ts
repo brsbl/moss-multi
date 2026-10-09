@@ -6,8 +6,58 @@ export const FORMULA_NAME_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const FORMULA_REFERENCE_TOKEN_REGEX =
   /@\(([a-zA-Z][a-zA-Z0-9_-]*)#([0-9a-fA-F-]{36})#([0-9a-fA-F-]{36})\)/g;
 
-const NUMERIC_LITERAL_REGEX =
-  /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g;
+// moss-multi seam: linear-numeric-literals. moss's /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g retried
+// its leading \s* from every position of a blank run no number follows, quadratic in the run. This scan gives the
+// regex's matches and groups in one pass, calling `replace` as String.prototype.replace calls its callback.
+const BLANK_REGEX = /\s/;
+const isDigit = (char: string | undefined): boolean => char !== undefined && char >= '0' && char <= '9';
+
+function numberEndAt(text: string, start: number): number {
+  let end = start;
+  if (isDigit(text[end])) {
+    end += 1;
+    while (isDigit(text[end]) || text[end] === ',') end += 1;
+  } else if (!(text[end] === '.' && isDigit(text[end + 1]))) {
+    return -1;
+  }
+  if (text[end] === '.' && isDigit(text[end + 1])) {
+    end += 2;
+    while (isDigit(text[end])) end += 1;
+  }
+  return end;
+}
+
+export function replaceNumericLiterals(
+  text: string,
+  replace: (full: string, currency: string | undefined, rawNumber: string, unit: string, percent: string) => string
+): string {
+  let output = '';
+  let copied = 0;
+  let index = 0;
+  while (index < text.length) {
+    let cursor = index;
+    const currency = text[cursor] === '$' ? '$' : undefined;
+    if (currency) cursor += 1;
+    while (cursor < text.length && BLANK_REGEX.test(text[cursor])) cursor += 1;
+    const numberStart = cursor;
+    const numberEnd = numberEndAt(text, numberStart);
+    if (numberEnd < 0) {
+      // Every start inside this blank run reaches the same non-number, so none of them matches.
+      index = Math.max(cursor, index + 1);
+      continue;
+    }
+    cursor = numberEnd;
+    while (cursor < text.length && BLANK_REGEX.test(text[cursor])) cursor += 1;
+    const unit = 'kKmMbB'.includes(text[cursor] ?? '-') ? text[cursor] : '';
+    cursor += unit.length;
+    const percent = text[cursor] === '%' ? '%' : '';
+    cursor += percent.length;
+    output += text.slice(copied, index) + replace(text.slice(index, cursor), currency, text.slice(numberStart, numberEnd), unit, percent);
+    copied = cursor;
+    index = cursor;
+  }
+  return copied === 0 ? text : output + text.slice(copied);
+}
 
 const FORMULA_PAYLOAD_REGEX = /\{\{([^{}\n]+)\}\}/g;
 
@@ -114,9 +164,7 @@ function hasFormulaReferenceToken(expression: string): boolean {
 }
 
 function hasNumericDraftSyntax(expression: string): boolean {
-  NUMERIC_LITERAL_REGEX.lastIndex = 0;
-  const remainder = expression.replace(NUMERIC_LITERAL_REGEX, '');
-  NUMERIC_LITERAL_REGEX.lastIndex = 0;
+  const remainder = replaceNumericLiterals(expression, () => '');
   return /^[\s+\-*/()]*$/.test(remainder);
 }
 
@@ -512,9 +560,8 @@ function normalizeFormulaExpression(
     }
   );
 
-  NUMERIC_LITERAL_REGEX.lastIndex = 0;
-  const normalizedExpression = withResolvedReferences.replace(
-    NUMERIC_LITERAL_REGEX,
+  const normalizedExpression = replaceNumericLiterals(
+    withResolvedReferences,
     (_full, _currency: string | undefined, rawNumber: string, unit: string, percent: string) => {
       const parsed = Number(rawNumber.replace(/,/g, ''));
       if (!Number.isFinite(parsed)) {
