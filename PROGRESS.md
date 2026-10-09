@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 61% done** (84 of 137 planned tasks verified)
+**Overall: 62% done** (85 of 137 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 32 / 32 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 33 / 33 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -103,6 +103,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S9 verified: a formula with a long run of blank space before a number now imports, saves and feeds search in linear time, matching the same numbers moss does.
 - 2026-10-09 — T3.S8 verified: a peer that sends malformed cursor positions no longer breaks cursor painting for everyone; the server drops those positions and the other collaborators' cursors still show.
 - 2026-10-09 — T3.S11 verified: importing or pushing a note with tens of thousands of frontmatter keys now costs linear work, so it is admitted or refused at the cap in moments instead of a minute.
+- 2026-10-09 — T3.S12 verified: unfurling a link to a page full of unclosed meta, link or title tags now costs linear work, so the card preview returns in moments instead of tying up the server.
 
 ## T1.1s identity audit
 
