@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { otherPortOrigin } from './sweep.mjs';
+import { isLoopback, otherPortOrigin } from './sweep.mjs';
 
 describe('otherPortOrigin', () => {
   const cases = [
@@ -18,4 +18,13 @@ describe('otherPortOrigin', () => {
       expect(new URL(other).port).not.toBe('');
     });
   }
+});
+
+describe('isLoopback', () => {
+  it('is true only for a stack on this machine', () => {
+    expect(isLoopback('http://127.0.0.1:8787')).toBe(true);
+    expect(isLoopback('http://localhost:5173/')).toBe(true);
+    expect(isLoopback('http://[::1]:8787')).toBe(true);
+    expect(isLoopback('https://moss.example.invalid')).toBe(false);
+  });
 });

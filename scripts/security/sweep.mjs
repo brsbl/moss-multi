@@ -41,8 +41,27 @@ export const SSRF_URLS = [
   'https://localhost./',
 ];
 
+/** The app's own scheme and host on a different, non-default port: a same-site origin the gate must refuse. */
+export function otherPortOrigin(baseUrl) {
+  const url = new URL(baseUrl);
+  const fallback = url.protocol === 'https:' ? 443 : 80;
+  const current = url.port ? Number(url.port) : fallback;
+  let port = current === 65535 ? current - 1 : current + 1;
+  if (port === fallback) port += 1;
+  const app = url.origin;
+  url.port = String(port);
+  if (url.origin === app || !url.port) throw new Error(`no different-port origin for ${app}`);
+  return url.origin;
+}
+
+/** True for a stack on this machine; anything else is reached through Cloudflare's edge. */
+export function isLoopback(baseUrl) {
+  return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(baseUrl).hostname);
+}
+
 export function createSweep(baseUrl) {
   const base = new URL(baseUrl).origin;
+  const edge = !isLoopback(base);
   const results = [];
   const check = (area, name, ok, detail = '') => {
     results.push({ area, name, ok: Boolean(ok), detail });
@@ -77,7 +96,7 @@ export function createSweep(baseUrl) {
     if (response.status !== 200) throw new Error(`sign-up ${label}: ${response.status} ${response.text.slice(0, 200)}`);
     const cookie = response.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
     const token = response.headers.get('set-auth-token');
-    return { label, email, password, id: response.json.user.id, cookie, token, headers: { cookie } };
+    return { label, email, password, id: response.json.user.id, cookie, token, headers: { cookie }, setCookies: response.headers.getSetCookie() };
   }
 
   const bearer = (token) => ({ headers: { authorization: `Bearer ${token}` } });
@@ -160,17 +179,19 @@ export function createSweep(baseUrl) {
   /**
    * The status an oversized request gets, on a connection of its own (a server that answers before reading the body
    * closes it): with `body`, sent whole; without, it declares `length` bytes and sends none, so the refusal must
-   * come from the header.
+   * come from the header. Off loopback Cloudflare's edge holds a request until its whole body has arrived, so there
+   * the declared bytes are sent (spaces) and the Worker's answer to the whole body counts.
    */
   function oversized(method, path, headers, length, body) {
     const url = new URL(path, base);
     const client = url.protocol === 'https:' ? https : http;
+    if (!body && edge) body = Buffer.alloc(length, 0x20);
     return new Promise((done) => {
       const request = client.request(url, { method, agent: false, headers: { ...headers, 'content-length': String(length) } });
       const timer = setTimeout(() => {
         request.destroy();
         done('no answer');
-      }, 15_000);
+      }, edge ? 60_000 : 15_000);
       request.on('response', (response) => {
         clearTimeout(timer);
         response.resume();
@@ -218,6 +239,10 @@ export function createSweep(baseUrl) {
     const ada = await signUp('ada');
     const ben = await signUp('ben');
     const cy = await signUp('cy');
+    const session = ada.setCookies.find((c) => /^[^=]*session_token=/.test(c)) ?? '';
+    const flags = session.split(';').slice(1).map((f) => f.trim().toLowerCase());
+    check('headers', `the session cookie is HttpOnly, SameSite=Lax${base.startsWith('https:') ? ' and Secure' : ''}`,
+      flags.includes('httponly') && flags.includes('samesite=lax') && (!base.startsWith('https:') || flags.includes('secure')), flags.join('; '));
 
     // Ada's estate: a note with a comment and an SVG, a viewer link, a trashed note and an agent key.
     const created = await call('POST', '/api/docs', { headers: write(ada), body: { markdown: 'Sweep note body\n' } });
@@ -297,7 +322,7 @@ export function createSweep(baseUrl) {
 
     // ---- the origin gate (A§18)
     const gate = [];
-    for (const origin of [undefined, 'https://evil.example', 'null', base.replace(/:(\d+)$/, (_, p) => `:${Number(p) + 1}`)]) {
+    for (const origin of [undefined, 'https://evil.example', 'null', otherPortOrigin(base)]) {
       const response = await call('POST', '/api/docs', { headers: { cookie: ada.cookie, ...(origin ? { origin } : {}) }, body: {} });
       if (response.status !== 403) gate.push(`POST /api/docs with Origin ${origin}: ${response.status}`);
     }
@@ -384,17 +409,18 @@ export function createSweep(baseUrl) {
     if (!limits) return results;
 
     // ---- body caps: an oversized JSON body is refused 413 before it is read, signed in or not
-        const capped = [];
+    const capped = [];
+    const how = edge ? 'once the edge has the whole body' : 'from its Content-Length';
     for (const [path, headers] of [['/api/unfurl', {}], ['/api/unfurl', write(ada)], ['/api/feedback', write(ada)], [`/api/docs/${doc.id}/comments`, write(ada)], ['/api/auth/sign-in/email', { origin: base }]]) {
       const status = await oversized('POST', path, { ...headers, 'content-type': 'application/json' }, 64 * 1024 * 1024);
       if (status !== 413) capped.push(`${path}: ${status}`);
     }
-    check('limits', 'a 64 MiB JSON body is refused 413 from its Content-Length on /api and /api/auth', capped.length === 0, capped.join('; '));
+    check('limits', `a 64 MiB JSON body is refused 413 ${how} on /api and /api/auth`, capped.length === 0, capped.join('; '));
     const over = Buffer.from(JSON.stringify({ pad: 'x'.repeat(JSON_BODY_CAP) }));
     const streamed = await oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, over.byteLength, over);
     check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is a 413`, streamed === 413, `${streamed}`);
     const huge = await oversized('POST', `/api/docs/${doc.id}/assets?filename=big.png`, { ...write(ada), 'content-type': 'image/png' }, 10 * 1024 * 1024 + 1);
-    check('limits', 'an image over 10 MB is refused 413 from its Content-Length', huge === 413, `${huge}`);
+    check('limits', `an image over 10 MB is refused 413 ${how}`, huge === 413, `${huge}`);
 
     // ---- rate limits: each answers 429 past its window
     const until429 = async (max, send) => {
@@ -410,8 +436,11 @@ export function createSweep(baseUrl) {
     check('limits', 'comment operations are throttled 429 within 61 (the setup comment counts)', comments !== null && comments <= 61, `429 at ${comments}`);
     const renames = await until429(70, (i) => call('PATCH', `/api/docs/${doc.id}`, { headers: write(ada), body: { title: `Sweep ${i}` } }));
     check('limits', 'REST writes (renames) are throttled 429 within 61', renames !== null && renames <= 61, `429 at ${renames}`);
-    const signIns = await until429(15, () => call('POST', '/api/auth/sign-in/email', { headers: { origin: base }, body: { email: ada.email, password: 'wrong-password-123' } }));
-    check('limits', 'sign-in is throttled 429 within 11', signIns !== null && signIns <= 11, `429 at ${signIns}`);
+    // Off loopback each attempt claims a new client IP; the limit keys on the edge's cf-connecting-ip, so the window
+    // must still close. (The edge itself refuses a client-sent cf-connecting-ip with 403.)
+    const spoofed = (i) => (edge ? { 'x-forwarded-for': `198.51.100.${i}`, 'x-real-ip': `198.51.100.${i}` } : {});
+    const signIns = await until429(15, (i) => call('POST', '/api/auth/sign-in/email', { headers: { origin: base, ...spoofed(i) }, body: { email: ada.email, password: 'wrong-password-123' } }));
+    check('limits', `sign-in is throttled 429 within 11${edge ? ', whatever client IP each attempt claims' : ''}`, signIns !== null && signIns <= 11, `429 at ${signIns}`);
     const signUps = await until429(15, () => call('POST', '/api/auth/sign-up/email', { headers: { origin: base }, body: { email: 'not-an-email', password: 'x', name: 'x' } }));
     check('limits', 'sign-up is throttled 429 within 11 (the three sweep sign-ups count)', signUps !== null && signUps <= 11, `429 at ${signUps}`);
     return results;
