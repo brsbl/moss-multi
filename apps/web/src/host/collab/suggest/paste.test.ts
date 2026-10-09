@@ -34,6 +34,8 @@ function suggesting() {
   const outbox: SuggestRequest[] = [];
   const fork = new SuggestFork(live, { me: SUGGESTER.id, name: SUGGESTER.name, send: (request) => outbox.push(request), now: () => 1_000 });
   const bound = bindEditor(fork.doc);
+  // The pane's editor, unlike this headless one, takes root listeners; in jsdom it has no root element.
+  Object.assign(bound.editor, { registerRootListener: () => () => {}, getRootElement: () => null, getElementByKey: () => null });
   const undo = createBindingUndoManager(bound.binding);
   (bound.editor as unknown as Record<symbol, unknown>)[Symbol.for('@lexical/yjs/UndoManager')] = undo;
   const unsaved: string[] = [];
