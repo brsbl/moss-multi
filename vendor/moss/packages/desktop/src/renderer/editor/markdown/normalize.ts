@@ -525,15 +525,16 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
         const split = splitFormattingFromHighlightContent(
           content,
           (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`,
-          fullMatch.length // moss-multi seam: highlight-split budget
+          fullMatch.length - openComment.length - closeComment.length // moss-multi seam: highlight-split budget
         );
         if (!split) return fullMatch;
+        // moss-multi seam: highlight-split budget: markers go in as written (a `$&` or `$`` in a replacement string copied the opener or the split)
         return split.replace(
           /(<mark data-color="\w+"(?:\s+style="[^"]*")?>)/,
-          `${openComment}$1`
+          (opener) => `${openComment}${opener}`
         ).replace(
           /(<\/mark>)(?!.*<\/mark>)/,
-          `$1${closeComment}`
+          (closer) => `${closer}${closeComment}`
         );
       }
     );
@@ -547,14 +548,15 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
     normalized = normalized.replace(
       /(\{%c:[^%]+%\}|%%m:[^%]+:start%%)==([^=\n]+)==(\{%\/c%\}|%%m:[^%]+:end%%)/g,
       (fullMatch, openComment: string, content: string, closeComment: string) => {
-        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length); // moss-multi seam: highlight-split budget
+        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length - openComment.length - closeComment.length); // moss-multi seam: highlight-split budget
         if (!split) return fullMatch;
+        // moss-multi seam: highlight-split budget: markers go in as written
         return split.replace(
           /(==)/,
-          `${openComment}$1`
+          (opener) => `${openComment}${opener}`
         ).replace(
           /(==)(?!.*==)/,
-          `$1${closeComment}`
+          (closer) => `${closer}${closeComment}`
         );
       }
     );

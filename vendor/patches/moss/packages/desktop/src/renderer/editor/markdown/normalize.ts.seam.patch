@@ -103,17 +103,28 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packag
          ) ?? fullMatch
      );
  
-@@ -497,7 +523,8 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
+@@ -497,15 +523,17 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
        (fullMatch, openComment: string, colorName: string, styleAttribute: string, content: string, closeComment: string) => {
          const split = splitFormattingFromHighlightContent(
            content,
 -          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`
 +          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`,
-+          fullMatch.length // moss-multi seam: highlight-split budget
++          fullMatch.length - openComment.length - closeComment.length // moss-multi seam: highlight-split budget
          );
          if (!split) return fullMatch;
++        // moss-multi seam: highlight-split budget: markers go in as written (a `$&` or `$`` in a replacement string copied the opener or the split)
          return split.replace(
-@@ -513,13 +540,13 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
+           /(<mark data-color="\w+"(?:\s+style="[^"]*")?>)/,
+-          `${openComment}$1`
++          (opener) => `${openComment}${opener}`
+         ).replace(
+           /(<\/mark>)(?!.*<\/mark>)/,
+-          `$1${closeComment}`
++          (closer) => `${closer}${closeComment}`
+         );
+       }
+     );
+@@ -513,20 +541,21 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
      normalized = normalized.replace(
        /==([^=\n]+)==/g,
        (fullMatch, content: string) =>
@@ -125,11 +136,21 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packag
        /(\{%c:[^%]+%\}|%%m:[^%]+:start%%)==([^=\n]+)==(\{%\/c%\}|%%m:[^%]+:end%%)/g,
        (fullMatch, openComment: string, content: string, closeComment: string) => {
 -        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`);
-+        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length); // moss-multi seam: highlight-split budget
++        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length - openComment.length - closeComment.length); // moss-multi seam: highlight-split budget
          if (!split) return fullMatch;
++        // moss-multi seam: highlight-split budget: markers go in as written
          return split.replace(
            /(==)/,
-@@ -547,7 +574,9 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
+-          `${openComment}$1`
++          (opener) => `${openComment}${opener}`
+         ).replace(
+           /(==)(?!.*==)/,
+-          `$1${closeComment}`
++          (closer) => `${closer}${closeComment}`
+         );
+       }
+     );
+@@ -547,7 +576,9 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
   * Runs inside mapOutsideFencedCodeBlocks (which also excludes inline code spans).
   */
  export const recoverEscapedEmphasis = (md: string): string => {
@@ -139,7 +160,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packag
      let result = segment;
      // Link labels can pick up an extra real bold pair around escaped bold
      // delimiters after repeated comment/edit round-trips:
-@@ -568,16 +597,20 @@ export const recoverEscapedEmphasis = (md: string): string => {
+@@ -568,16 +599,20 @@ export const recoverEscapedEmphasis = (md: string): string => {
  // (/[ \t\n\r\f]/) does not recognize. These break emphasis flanking-delimiter
  // checks when adjacent to punctuation. CommonMark treats all Zs as whitespace.
  const UNICODE_SPACE_SEPARATOR_RE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
@@ -164,7 +185,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packag
    });
  };
  
-@@ -598,13 +631,12 @@ const normalizeFormattedEmbedPillTargetsInContent = (
+@@ -598,13 +633,12 @@ const normalizeFormattedEmbedPillTargetsInContent = (
    content: string,
    delimiter: string
  ): string | null => {
@@ -180,7 +201,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packag
      const [rawMatch, _legacyText, legacyUrl] = match;
      const start = match.index;
      const isLegacyPill = rawMatch.startsWith('?[');
-@@ -634,7 +666,9 @@ const normalizeFormattedEmbedPillTargetsInContent = (
+@@ -634,7 +668,9 @@ const normalizeFormattedEmbedPillTargetsInContent = (
  };
  
  export const normalizeFormattingAroundEmbedPillTargets = (md: string): string => {
@@ -190,7 +211,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packag
      const normalizeDelimiter = (value: string, delimiter: string): string => {
        const escapedDelimiter =
          delimiter === '*'
-@@ -646,7 +680,8 @@ export const normalizeFormattingAroundEmbedPillTargets = (md: string): string =>
+@@ -646,7 +682,8 @@ export const normalizeFormattingAroundEmbedPillTargets = (md: string): string =>
          `${escapedDelimiter}([^\\n]*?(?:https?:\\/\\/|\\?\\[)[^\\n]*?)${escapedDelimiter}`,
          'g'
        );
@@ -200,7 +221,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packag
          const normalized = normalizeFormattedEmbedPillTargetsInContent(content, delimiter);
          return normalized ?? fullMatch;
        });
-@@ -667,7 +702,8 @@ export const normalizeMarkdownForImport = (md: string): string => {
+@@ -667,7 +704,8 @@ export const normalizeMarkdownForImport = (md: string): string => {
    // spaces outside code blocks and inline code spans. Without this, Lexical's
    // emphasis parser rejects closing delimiters preceded by punctuation (e.g.
    // `)**`) when followed by NBSP, because NBSP fails the flanking check.
