@@ -56,6 +56,8 @@ export function parseFrontmatter(yaml: string): Frontmatter {
 
 /** Order-insensitive equality for nested values; top-level order is tracked separately. */
 const stable = (value: unknown): string => {
+  // JSON writes NaN, ±Infinity and null all as null; tag the numbers it cannot encode.
+  if (typeof value === 'number' && !Number.isFinite(value)) return `#${String(value)}`;
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
