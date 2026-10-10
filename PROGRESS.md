@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 49% done** (100 of 205 planned tasks verified)
+**Overall: 49% done** (101 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 48 / 48 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 49 / 49 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -119,6 +119,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S20 verified: when someone is demoted to view and then removed within a few seconds, the note now shows only 'Your access to this note has ended.' instead of a stale view-only notice beside it.
 - 2026-10-09 — T3.B25 verified: an anonymous link viewer's answer budget is now kept per link and address across reconnects, with open sockets per address capped, so reconnecting or opening parallel sockets no longer buys fresh full-note encodes.
 - 2026-10-10 — T3.B18 verified: exporting a selection now includes the unsaved draft of a focused HTML block or a code block inside a tab panel, and a selection that ends at the start of a list item stops at the item before, so a drag from a list into a code block exports exactly the lines selected.
+- 2026-10-10 — T3.B19 verified: a person on an invite meant for another email can sign out and get back to the invite only once the session has really ended (a failed sign-out says why and can be retried), a too-short password on sign-up names the actual minimum, and switching the login card's mode focuses the Name or Email field.
 
 ## T1.1s identity audit
 
@@ -491,3 +492,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B18 (Selection export across blocks) checker P2: `$atStartOf` (apps/web/src/host/selection.ts:223-230) checks only textContent and media selectors, so a prefix holding only a `<br>` (a paragraph or list item starting with a LineBreakNode) counts as 'at start' and the endWhole branch (:431-434) or `$endsAtItemStart` (:237, :264) can drop a block or item the user entered.
 - T3.B18 (Selection export across blocks) checker P2: `$lineIn` counts nested decorators by equal getCode/getRawHtml output (selection.ts:281-292), so an unfenced raw-HTML blockquote with the same text as a code block's draft shifts the ordinal, fenceIn returns null, and the selection widens to the whole tab group (contrived; degrades to the whole block).
 - T3.B18 (Selection export across blocks) checker P2: the mouse leg's red run 38025938059 failed on an earlier endpoint assumption before reaching the export assertion; the checker's local negative control (origin/m3 selection.ts) exported lines 12-22 against the expected 12-17, so the test can fail — process note only.
+- T3.B19 (Auth and sign-out flows) checker P2: B055 has no red-first proof in a real browser: in the pre-fix j07 run the Name-focus assertion fails first, so the 'at least 8' assertion is never reached; the message-mapping unit test (minimum of 12) does fail red-first and the checker's browser pass confirmed 'Use at least 8 characters.' end to end — evidence gap only.
+- T3.B19 (Auth and sign-out flows) checker P2: the full lane was green on the task head f173cf6e, not the m3 head; closed by integration CI on the merged m3 SHA.
