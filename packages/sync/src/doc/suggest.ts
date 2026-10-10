@@ -13,8 +13,8 @@ import {
 } from '@moss-multi/core/suggest/apply';
 import { payloadDocsFor } from '../payload-docs.ts';
 import {
-  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partBytes, partsOf, patchMeta, readMeta, readRecord, recordBytes, recordIds, suggestionsWriter,
-  writeSuggestions,
+  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partBytes, partsOf, patchMeta, readMeta, readRecord, recordBytes, recordIds, suggestionStateBytes,
+  suggestionsWriter, SUGGESTIONS_ORIGIN, writeSuggestions,
 } from '../suggest/records.ts';
 
 /** Who sends a suggest frame: the principal, its live role, and the connection (a server-minted nonce). */
@@ -55,6 +55,8 @@ export interface LeaseStore {
   expireConnection(connection: string): void;
   spend(record: string): void;
   rebind(from: string, into: string): void;
+  /** Every lease stored, for the retained-state share. */
+  count(): number;
 }
 
 export class MemoryLeases implements LeaseStore {
@@ -92,6 +94,10 @@ export class MemoryLeases implements LeaseStore {
 
   rebind(from: string, into: string): void {
     for (const lease of this.#byClient.values()) if (lease.record === from) lease.record = into;
+  }
+
+  count(): number {
+    return this.#byClient.size;
   }
 }
 
@@ -161,6 +167,10 @@ export class SqlLeases implements LeaseStore {
   rebind(from: string, into: string): void {
     this.sql.exec('UPDATE suggest_leases SET record_id = ? WHERE record_id = ?', into, from);
   }
+
+  count(): number {
+    return Number(this.sql.exec<Row>('SELECT COUNT(*) AS n FROM suggest_leases').toArray()[0]?.n ?? 0);
+  }
 }
 
 export const SUGGEST_CAPS = {
@@ -202,6 +212,8 @@ type Placed = Map<string, Map<number, { clock: number; len: number; at: Placemen
 const RESUME_MAX = 64;
 /** Item headers and keys a meta write adds, beyond the JSON itself. */
 const META_SLACK = 64;
+/** What one stored lease row is charged against the retained-state share. */
+const LEASE_BYTES = 128;
 const RECORD_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const FORK_ID = /^[A-Za-z0-9_-]{8,64}$/;
 const refused = (reason: SuggestRefusal): { ok: false; reason: SuggestRefusal } => ({ ok: false, reason });
@@ -224,6 +236,11 @@ export class SuggestIngest {
   readonly #next = new Map<string, string>();
   readonly #open = new Map<string, Set<string>>();
   #openBytes = 0;
+  /**
+   * All retained suggestion state, as the encoded doc holds it plus the stored leases: measured on wake, then every
+   * write to `suggestions` adds its update and a close takes off the ops it frees. Bounded by `stateShare`.
+   */
+  #retained = 0;
   /** Open records' placements; a record's entry goes when it closes. */
   readonly #placed = new Map<string, Placed>();
 
@@ -251,6 +268,19 @@ export class SuggestIngest {
       if (next) this.#next.set(id, next);
     }
     onRecordClosed(doc, (id, meta) => this.#closed(id, meta));
+    this.#retained = suggestionStateBytes(doc) + this.leases.count() * LEASE_BYTES;
+    // A write adds its update; what it deletes (a replaced meta, cleared ops and parts) leaves only a tombstone.
+    doc.on('afterTransaction', (txn: Y.Transaction) => {
+      if (txn.origin === SUGGESTIONS_ORIGIN) this.#retained -= deletedBytes(txn);
+    });
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === SUGGESTIONS_ORIGIN) this.#retained += update.byteLength;
+    });
+  }
+
+  /** Retained suggestion state, in bytes, as the share counts it. */
+  get retainedBytes(): number {
+    return this.#retained;
   }
 
   /**
@@ -274,7 +304,9 @@ export class SuggestIngest {
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now, fork: fork ?? lease.fork ?? null });
       grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: ownValue(lease.clocks, BODY_DOC) ?? 0, clocks: lease.clocks });
     }
-    const fresh = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
+    const wanted = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
+    // A lease row is retained state too: none is minted past the share.
+    const fresh = Math.max(0, Math.min(wanted, Math.floor((this.#share() - this.#retained) / LEASE_BYTES)));
     const writer = suggestionsWriter(this.doc)?.client;
     for (let i = 0; i < fresh; i += 1) {
       let client = 0;
@@ -282,8 +314,9 @@ export class SuggestIngest {
       const reserved = this.#mint();
       this.leases.put({ client, principal: who.id, connection: who.connection, reserved, record: null, clocks: {}, spent: false, expired: false, usedAt: now, fork });
       grants.push({ client, record: reserved, clock: 0, clocks: {} });
+      this.#retained += LEASE_BYTES;
     }
-    return grants.length ? { ok: true, leases: grants } : refused('lease-cap');
+    return grants.length ? { ok: true, leases: grants } : refused(fresh < wanted ? 'doc-cap' : 'lease-cap');
   }
 
   /** One fork transaction: a body update, or `{doc, update}` in the body or a payload doc of the fork. */
@@ -524,8 +557,17 @@ export class SuggestIngest {
     return JSON.stringify(meta).length * 2 + clients * 12 + 3 * META_SLACK + (target.continues ? this.#metaWrite(target.continues, 0) : 0);
   }
 
+  #share(): number {
+    return this.options.stateCap * SUGGEST_LIMITS.stateShare;
+  }
+
+  /**
+   * Suggestion growth of `bytes` would pass the share of retained suggestion state, or take the note into the reserve
+   * kept for body and payload edits.
+   */
   #overState(bytes: number): boolean {
-    return this.options.stateBytes !== undefined && this.options.stateBytes() + bytes > this.options.stateCap;
+    if (this.#retained + bytes > this.#share()) return true;
+    return this.options.stateBytes !== undefined && this.options.stateBytes() + bytes > this.options.stateCap * SUGGEST_LIMITS.reserveShare;
   }
 
   #caps(who: Suggester, target: Extract<Target, { ok: true }>, bytes: number, clients: number): SuggestRefusal | null {
@@ -678,6 +720,34 @@ export class SuggestIngest {
     }
     return quote.slice(0, 1024);
   }
+}
+
+/**
+ * The content bytes a transaction deleted from earlier writes, before Yjs collects them: O(items deleted). An item it
+ * both wrote and deleted never reached its update.
+ */
+function deletedBytes(txn: Y.Transaction): number {
+  let bytes = 0;
+  Y.iterateDeletedStructs(txn, txn.deleteSet, (struct) => {
+    if (struct instanceof Y.Item && struct.id.clock < (txn.beforeState.get(struct.id.client) ?? 0)) bytes += contentBytes(struct.content);
+  });
+  return bytes;
+}
+
+function contentBytes(content: Y.Item['content']): number {
+  if (content instanceof Y.ContentAny) return content.arr.reduce((sum: number, value: unknown) => sum + anyBytes(value), 0);
+  if (content instanceof Y.ContentString) return content.str.length;
+  if (content instanceof Y.ContentBinary) return content.content.byteLength;
+  return content.getLength();
+}
+
+/** Roughly what Yjs's writeAny spends on `value`. */
+function anyBytes(value: unknown): number {
+  if (typeof value === 'string') return value.length + 1;
+  if (value instanceof Uint8Array) return value.byteLength + 1;
+  if (Array.isArray(value)) return value.reduce((sum: number, item: unknown) => sum + anyBytes(item), 1);
+  if (value !== null && typeof value === 'object') return Object.entries(value).reduce((sum, [key, item]) => sum + key.length + 1 + anyBytes(item), 1);
+  return typeof value === 'number' ? 8 : 1;
 }
 
 /** The entry of a clock-sorted list holding `clock`, by binary search. */

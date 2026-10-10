@@ -170,6 +170,27 @@ export const partBytes = (part: DeletePart): number => part.id.length + part.quo
 export const recordBytes = (record: SuggestionRecord): number =>
   record.ops.reduce((sum, op) => sum + op.update.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0);
 
+/**
+ * The encoded bytes the doc holds for `suggestions`: every struct under S (open ops, closed records' metadata, the
+ * tombstones closes and merges leave). O(S structs + the delete set), so for a wake, not a frame. Without a bound
+ * writer (unit tests) the records' JSON stands in.
+ */
+export function suggestionStateBytes(doc: Y.Doc): number {
+  const writer = writers.get(doc);
+  if (!writer) {
+    let bytes = 0;
+    for (const id of recordIds(doc)) {
+      const record = readRecord(doc, id);
+      if (record) bytes += id.length + metaBytes(doc, id) + recordBytes(record) + 64;
+    }
+    return bytes;
+  }
+  const full = Y.encodeStateVector(doc);
+  const without = Y.decodeStateVector(full);
+  without.delete(writer.client);
+  return Y.encodeStateAsUpdate(doc, Y.encodeStateVector(without)).byteLength - Y.encodeStateAsUpdate(doc, full).byteLength;
+}
+
 export function recordIds(doc: Y.Doc): string[] {
   return [...doc.getMap(SUGGESTIONS).keys()];
 }

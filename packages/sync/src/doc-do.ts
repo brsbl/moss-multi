@@ -218,6 +218,8 @@ function send(connection: Connection, message: Uint8Array): void {
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
+/** A suggester's new records notify the bell at most once per this long. */
+const NOTICE_COALESCE_MS = 10 * 60_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -1085,9 +1087,15 @@ export class DocDO extends YServer<SyncEnv> {
     if (next !== null) this.#idleAt = Math.min(this.#idleAt ?? next, next);
   }
 
+  /** One bell notice per author and note per window, kept across wakes; the D1 row coalesces too (notifySuggestion). */
   #noticeSuggestion(record: string, author: string): void {
     const notify = (this.constructor as typeof DocDO).suggestionNotices(this.env);
     if (!notify) return;
+    const key = `suggest-noticed:${author}`;
+    const last = Number(this.#store?.meta(key));
+    const now = Date.now();
+    if (Number.isFinite(last) && last > 0 && now - last < NOTICE_COALESCE_MS) return;
+    this.#store?.setMeta(key, String(now));
     const sent = notify({ docId: this.name, author, record }).catch((error: unknown) => console.error('suggestion notice failed', error));
     try {
       this.ctx.waitUntil(sent);

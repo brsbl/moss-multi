@@ -76,39 +76,38 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
     const sam = await on(opened, SAM);
     const ed = await on(opened, ED);
-    let cycles = 0;
     let frames = 0;
-    let stopped: SuggestReply | null = null;
     const pace = async () => {
       frames += 1;
       if (frames % 100 === 0) await vi.advanceTimersByTimeAsync(SUGGEST_LIMITS.refusals.windowMs / 10);
     };
-    outer: for (let round = 0; round < 2_000; round += 1) {
-      const leased = await send(sam, { t: 'suggest-lease' });
-      if (leased.t !== 'suggest-leased') {
-        stopped = leased;
-        break;
-      }
-      for (const grant of leased.leases as LeaseGrant[]) {
-        const ops = await send(sam, { t: 'suggest-ops', record: grant.record, update: bytesToBase64(tiny(opened.dobj.document, grant.client, cycles % 3 === 2)) });
-        await pace();
-        if (ops.t !== 'suggest-ack') {
-          stopped = ops;
-          break outer;
-        }
-        expect(await send(sam, { t: 'suggest-withdraw', record: ops.record })).toMatchObject({ t: 'suggest-ack' });
-        await pace();
-        expect(readMeta(opened.dobj.document, ops.record)?.status).toBe('withdrawn');
-        cycles += 1;
-        if (cycles % 25 === 0) await opened.dobj.onSave();
-        // One eviction midway: the accounting is rebuilt from what the DO stores.
-        if (cycles === 60) {
-          opened = await start(wake(opened));
-          sam.opened = opened;
-          ed.opened = opened;
+    /** Lease, one tiny (or empty) op, withdraw, until a refusal; compacts every 25 cycles, `onCycle` after each. */
+    const loop = async (client: TestClient, onCycle: (cycles: number) => Promise<void> = async () => {}) => {
+      let cycles = 0;
+      for (let round = 0; round < 2_000; round += 1) {
+        const leased = await send(client, { t: 'suggest-lease' });
+        if (leased.t !== 'suggest-leased') return { cycles, stopped: leased };
+        for (const grant of leased.leases as LeaseGrant[]) {
+          const ops = await send(client, { t: 'suggest-ops', record: grant.record, update: bytesToBase64(tiny(opened.dobj.document, grant.client, cycles % 3 === 2)) });
+          await pace();
+          if (ops.t !== 'suggest-ack') return { cycles, stopped: ops };
+          expect(await send(client, { t: 'suggest-withdraw', record: ops.record })).toMatchObject({ t: 'suggest-ack' });
+          await pace();
+          expect(readMeta(opened.dobj.document, ops.record)?.status).toBe('withdrawn');
+          cycles += 1;
+          if (cycles % 25 === 0) await opened.dobj.onSave();
+          await onCycle(cycles);
         }
       }
-    }
+      return { cycles, stopped: null };
+    };
+    const { cycles, stopped } = await loop(sam, async (n) => {
+      // One eviction midway: the accounting is rebuilt from what the DO stores.
+      if (n !== 60) return;
+      opened = await start(wake(opened));
+      sam.opened = opened;
+      ed.opened = opened;
+    });
     expect(cycles, 'the loop crossed a compaction and a wake').toBeGreaterThan(60);
     expect(stopped, 'suggestion admission stopped').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
     expect(stateBytes(opened), 'stopped before the reserve').toBeLessThanOrEqual(CAP * SUGGEST_LIMITS.reserveShare);
@@ -129,18 +128,17 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     // The bell hears of the author once, however many records they opened.
     expect(notices.filter((notice) => notice.author === SAM.id).length, 'notices per author').toBeLessThanOrEqual(1);
 
-    // After another wake, nothing new is admitted: a fresh connection's leases or first op are refused.
+    // After another wake the accounting is rebuilt, not reset: a fresh connection is stopped again within a few cycles.
     opened = await start(wake(opened));
     sam.opened = opened;
+    ed.opened = opened;
     await sam.drop();
     const again = await on(opened, SAM);
-    const leased = await send(again, { t: 'suggest-lease' });
-    if (leased.t === 'suggest-leased') {
-      const [grant] = leased.leases;
-      expect(await send(again, { t: 'suggest-ops', record: grant.record, update: bytesToBase64(tiny(opened.dobj.document, grant.client, false)) })).toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
-    } else {
-      expect(leased).toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
-    }
+    const after = await loop(again);
+    expect(after.stopped, 'still stopped after the wake').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+    expect(after.cycles, 'at most a sliver more than before the wake').toBeLessThanOrEqual(Math.ceil(cycles / 10));
+    expect(stateBytes(opened), 'still short of the reserve').toBeLessThanOrEqual(CAP * SUGGEST_LIMITS.reserveShare);
+    expect(notices.filter((notice) => notice.author === SAM.id).length, 'notices per author, across the wakes').toBeLessThanOrEqual(1);
   });
 
   it('leases count too: reconnecting to mint fresh leases is refused before the share fills', { timeout: 120_000 }, async () => {

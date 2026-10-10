@@ -12,6 +12,7 @@ import {
   BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
   SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
+import type { SuggestRefusal } from '@moss-multi/protocol/suggest';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
@@ -132,6 +133,9 @@ function dropUndo(editor: LexicalEditor | null, clients: number[]): void {
 /** Whether `role` may stay in `mode`: Review for any reader, Edit for any role but a suggester, Suggest from suggester. */
 const allows = (mode: EditMode, role: Role | null): boolean =>
   role !== null && (mode === 'review' || (mode === 'edit' ? role !== 'suggester' : can(role, 'suggest')));
+
+/** Refusals that mean the note has no room for more suggestions (T5.S4): retrying in a new F would be refused too. */
+const NO_SUGGESTION_ROOM: ReadonlySet<SuggestRefusal> = new Set<SuggestRefusal>(['doc-cap', 'ops-cap']);
 
 class PaneBinding implements SuggestPane {
   #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };
@@ -280,14 +284,16 @@ class PaneBinding implements SuggestPane {
           this.#apply(session.state);
           this.#mountChanged();
         },
-        refused: (unsaved) => {
-          // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight.
+        refused: (unsaved, reason) => {
+          // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
+          // room for more suggestions stays closed (a new F would only be refused again) until the mode changes.
+          const full = NO_SUGGESTION_ROOM.has(reason);
           this.#inputClosed = true;
           this.#editor?.setEditable(false);
-          if (unsaved.length) offerUnsaved(this.docId, unsaved);
+          offerUnsaved(this.docId, unsaved, full);
           this.#apply(session.state);
           this.#mountChanged();
-          this.#remount();
+          if (!full) this.#remount();
         },
         rebuild: () => this.#remount(),
         closed: (event) => dropUndo(this.#editor, event.clients),
@@ -295,9 +301,7 @@ class PaneBinding implements SuggestPane {
       });
       mount.editor = this.#editor;
       // A pane letting go with suggestions unanswered leaves the mount delivering them (A§10.1).
-      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved) => {
-        if (unsaved.length) offerUnsaved(this.docId, unsaved);
-      }));
+      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason))));
       this.#mount = mount;
       return { doc: mount.doc, provider: mount.provider as unknown as Provider };
     }
