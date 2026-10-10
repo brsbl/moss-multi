@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 52% done** (104 of 200 planned tasks verified)
+**Overall: 52% done** (106 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 13 / 13 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 14 / 14 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -125,6 +125,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T5.S3 verified: Backspace or Delete in Suggest mode past a long struck run (20,000 characters) now answers quickly, reading each node once while still deleting whole graphemes and keeping own-versus-body routing.
 - 2026-10-09 — T5.S7 verified: a reviewer's suggestion card now shows a code block edit as its changed line before and after, keeps re-added text at a stretch's end as unchanged, and builds its rows quickly on large suggestions.
 - 2026-10-09 — T5.S4 verified: suggestions and leases now fit inside a bounded share of a note's room, so a busy suggester can no longer fill a note and lock editors out of body and payload edits.
+- 2026-10-10 — T5.S8 verified: the Suggestions panel fetches previews only for cards on screen, expanded or active (two at a time), reuses them when reopened on an unchanged note, and waits out a 429's Retry-After before asking again.
+- 2026-10-10 — T5.S12 verified: every refused suggestion frame now counts toward the refusal cooldown, a connection refused for lack of room gets cheap refusals for its growth frames for a while, and suggestion leases pay the write rate, so a suggester can no longer spin the server with refused frames.
 
 ## T1.1s identity audit
 
@@ -255,6 +257,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T5.S4 (Suggestion state share) checker P2 (downgraded from Codex P1): admission can overshoot the share or reserve by one frame's estimate error (24 B charged per delete target vs ~33 B encoded, ~8 KiB per 1,024-span part; lease clocks charged after admission); the running count corrects after the write.
 - T5.S4 (Suggestion state share) checker P2: after one room refusal Suggest input stays closed (server #noRoom clears only on a granted lease or ack, pane #noRoom only on mode change), so a role-locked suggester stays read-only after room is freed until reload.
 - T5.S4 (Suggestion state share) checker P2: the DocDO's 10-minute per-author notice throttle (suggest-noticed:<author>) drops a second record's notice once the reader has read the first; D1 coalescing alone already bounds rows per reader, note and author.
+- T5.S8 (Kept previews are not invalidated by deletion-only or code-block payload edits) checker P2: SuggestionsPanel.tsx keys the reopen cache on Y.encodeStateVector(body), which does not advance on deletes or cover payload Y.Docs, so reopening after such an edit shows stale rows with Accept enabled; the server's digest/hash check refuses with 'changed' and the card refreshes.
+- T5.S8 (An automatic refresh after Accept returns 'changed' also bypasses the 429 pause) checker P2: refresh() always sets entry.asked, which pump() lets through the pause; only an explicit Try again should bypass it (one extra request, only in that interleaving).
+- T5.S8 (The unit tests mount SuggestionList without the real cache key or a real Accept) checker P2: previews.test fakes IntersectionObserver and fetch and never passes 'opened'; a targeted e2e leg should make the checker's real-stack evidence (visible-card requests, no refetch on reopen, 429 recovery) permanent.
 - T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the 4 s periodic resync stays held back while peer sync frames keep arriving, with no time limit, so a lost step 1 answer on an open socket would delay the resync, awareness refresh and unacked resend until a lull → sync robustness follow-up: cap the hold-back.
 - T3.S6b (30,000-item list paste) checker P2 (inherited from T3.S6): e2e/lib/paste.ts sets the CI stall gate MAX_STALL_MS to 5 s while BUILDPLAN T3.S6 says 2 s → paste test follow-up: reconcile the stall bound.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.

@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
-import { bytesToBase64, CUSTOM_PREFIX, encodePayloadFrame, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
+import { WRITE_RATE } from '@moss-multi/protocol/limits';
+import { bytesToBase64, CLOSE, CUSTOM_PREFIX, encodePayloadFrame, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
+import { SuggestIngest } from '../../src/doc/suggest.ts';
 import { readMeta } from '../../src/suggest/records.ts';
 import { SEED, SUGGESTER } from '../../src/suggest/test-support.ts';
 import { connect, openDoc, start, wake, type Opened, type TestClient, type Who } from './do-harness.ts';
@@ -189,7 +191,7 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     expect(minted, 'leases are bounded by the share').toBeLessThanOrEqual(Math.floor((CAP * SUGGEST_LIMITS.stateShare) / 130));
   });
 
-  it('a burst of suggest frames in flight on a full note, and reloads, are refused for room without the refusal cooldown', { timeout: 60_000 }, async () => {
+  it('a burst of suggest frames in flight on a full note, and a reload, are refused for room without the refusal cooldown', { timeout: 60_000 }, async () => {
     const opened = await start(openDoc(undefined, SmallDoc as never));
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
     const sam = await on(opened, SAM);
@@ -214,17 +216,105 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     expect(sam.closed, 'the suggester stays connected').toBeNull();
     const replies = sam.events.slice(before).filter(isReply);
     expect(replies.map((reply) => reply.t === 'suggest-refused' && reply.reason), 'every frame refused for room').toEqual(Array(8).fill('doc-cap'));
-    // Reloads: each new socket's lease is refused for room, and none of it cools the suggester down.
-    for (let i = 0; i < 3; i += 1) {
-      const reload = await on(opened, SAM);
-      expect(await send(reload, { t: 'suggest-lease' }), `reload ${i}`).toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
-      expect(reload.closed, `reload ${i} stays connected`).toBeNull();
-    }
+    // A reload: the new socket's lease is refused for room and counted (T5.S12), short of the cooldown.
+    const reload = await on(opened, SAM);
+    expect(await send(reload, { t: 'suggest-lease' }), 'reload').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+    expect(reload.closed, 'the reload stays connected').toBeNull();
+    expect(sam.closed).toBeNull();
+    // The no-room state lasts one refusal window: then a lease reaches admission again, so freed room is found.
+    await vi.advanceTimersByTimeAsync(SUGGEST_LIMITS.refusals.windowMs);
+    const lease = vi.spyOn(SuggestIngest.prototype, 'lease');
+    expect(await send(sam, { t: 'suggest-lease' })).toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+    expect(lease).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
     expect(sam.closed).toBeNull();
     // The editor still writes.
     firstBlock(ed.doc).insert(0, 'Ada adds a line.');
     await ed.flush();
     expect(ed.events.filter((event) => event.t === 'write-refused')).toEqual([]);
     expect(firstBlock(opened.dobj.document).toString()).toContain('Ada adds a line.');
+  });
+});
+
+/** An insert of `n` characters under `client`, as a fork transaction's. */
+function sized(server: Y.Doc, client: number, n: number): string {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(server));
+  doc.clientID = client;
+  const sv = Y.encodeStateVector(doc);
+  firstBlock(doc).insert(0, 'z'.repeat(n));
+  const update = Y.encodeStateAsUpdate(doc, sv);
+  doc.destroy();
+  return bytesToBase64(update);
+}
+
+const frame = (request: unknown) => `${CUSTOM_PREFIX}${JSON.stringify(request)}`;
+
+describe('T5.S12 no suggest refusal escapes the cooldown except the cheap no-room short-circuit @p:mean-2', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('a burst of suggest-lease frames on a full note does no admission work and is charged to the write rate', { timeout: 60_000 }, async () => {
+    const opened = await start(openDoc(undefined, SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const ed = await on(opened, ED);
+    firstBlock(ed.doc).insert(0, 'f'.repeat(Math.ceil(CAP * (SUGGEST_LIMITS.reserveShare + 0.03))));
+    await ed.flush();
+    const sam = await on(opened, SAM);
+    const lease = vi.spyOn(SuggestIngest.prototype, 'lease');
+    for (let i = 0; i <= WRITE_RATE.max + 20; i += 1) await sam.deliver(frame({ t: 'suggest-lease' }));
+    await sam.pump();
+    expect(lease.mock.calls.length, 'lease admission runs a bounded number of times').toBeLessThanOrEqual(SUGGEST_LIMITS.refusals.max);
+    expect(sam.closed?.code, 'the burst trips the write rate').toBe(CLOSE.writeRate);
+  });
+
+  it('after a no-room refusal every growth frame short-circuits, and no-room refusals from admission are counted', { timeout: 60_000 }, async () => {
+    const opened = await start(openDoc(undefined, SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const big = Math.ceil(CAP * SUGGEST_LIMITS.openOpsShare) + 1024;
+    /** A fresh socket: a granted lease, then an op too large for the open-ops share. */
+    const overflow = async () => {
+      const client = await on(opened, SAM);
+      const leased = await send(client, { t: 'suggest-lease' });
+      expect(leased.t).toBe('suggest-leased');
+      const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+      expect(await send(client, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, big) })).toMatchObject({ t: 'suggest-refused', reason: 'ops-cap' });
+      return { client, grant };
+    };
+    const { client: sam, grant } = await overflow();
+    const spies = (['lease', 'ops', 'delete', 'undelete', 'merge'] as const).map((name) => vi.spyOn(SuggestIngest.prototype, name));
+    const before = sam.events.length;
+    const growth = [
+      { t: 'suggest-lease' },
+      { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, 1) },
+      { t: 'suggest-delete', record: grant.record, part: { id: 'd0', targets: [] } },
+      { t: 'suggest-undelete', record: grant.record, partId: 'd0' },
+      { t: 'suggest-merge', into: grant.record, from: 'older-record' },
+    ];
+    for (let i = 0; i < 4; i += 1) for (const request of growth) await sam.deliver(frame(request));
+    await sam.pump();
+    expect(spies.map((spy) => spy.mock.calls.length), 'no admission work in the no-room state').toEqual([0, 0, 0, 0, 0]);
+    expect(sam.events.slice(before).filter(isReply).map((reply) => reply.t === 'suggest-refused' && reply.reason)).toEqual(Array(growth.length * 4).fill('doc-cap'));
+    expect(sam.closed, 'short-circuited frames are not counted').toBeNull();
+    vi.restoreAllMocks();
+    // Each refusal admission returns is counted, room or not: the third in the window cools the principal down.
+    // The second socket closes, so its leases expire and the third is granted fresh ones.
+    await (await overflow()).client.drop();
+    const third = await on(opened, SAM);
+    const leased = await send(third, { t: 'suggest-lease' });
+    const lease = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+    await send(third, { t: 'suggest-ops', record: lease.record, update: sized(opened.dobj.document, lease.client, big) });
+    expect(third.closed?.code).toBe(CLOSE.connectionLimit);
+    expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
+  });
+
+  it('repeated malformed or forbidden frames still trip the cooldown', { timeout: 60_000 }, async () => {
+    const opened = await start(openDoc(undefined, SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    await sam.deliver(frame({ t: 'suggest-bogus' }));
+    await sam.deliver(frame({ t: 'suggest-withdraw', record: 'not-a-record' }));
+    await sam.deliver(frame({ t: 'suggest-ops', record: 'not-a-record', update: 7 }));
+    await sam.pump();
+    expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
   });
 });
