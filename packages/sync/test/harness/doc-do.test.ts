@@ -1,5 +1,6 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
+import * as decoding from 'lib0/decoding';
 import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
@@ -8,7 +9,7 @@ import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
 import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { serverWrite } from '../../src/server-doc.ts';
-import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
+import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, step1, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
 /** Wall time, taken before the fake timers replace the clock. */
@@ -702,5 +703,125 @@ describe('answers', () => {
     expect(Y.encodeStateVector(reader.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
     expect(blockTypes(reader.doc)).toEqual(blockTypes(opened.dobj.document));
     expect(reader.closed).toBeNull();
+  });
+
+  describe('the answer budget (T3.S14)', () => {
+    const BUDGET = { docs: 4, windowMs: 10_000 };
+    class Budgeted extends DocDO {
+      static override limits = { ...DocDO.limits, answerBudget: BUDGET };
+    }
+    /** The full-state answers a socket was sent since `from`: each ends in exactly one step 2. */
+    const answers = (client: TestClient, from: number) =>
+      client.socket.sent.slice(from).filter((frame) => typeof frame !== 'string' && frame[0] === 0 && frame[1] === 1).length;
+    const title = (doc: Y.Doc) => doc.getText('title').toString();
+
+    it('bounds the encodes a viewer\'s repeated step 1 frames draw while an editor keeps writing, then answers the latest one', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Budget');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-1' });
+      await viewer.hello();
+      expect(title(viewer.doc), 'a fresh connect converges').toBe('Budget');
+      const from = viewer.socket.sent.length;
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 256; i += 1) {
+        await viewer.deliver(empty);
+        if (i % 32 === 0) await typeTitle(editor, ` ${i}`);
+      }
+      // The budget, plus the one answer that may run it into debt.
+      expect(answers(viewer, from), 'repeated step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs + 1);
+      expect(editor.closed).toBeNull();
+      expect(title(opened.dobj.document), 'the editor kept writing').toContain(' 224');
+      expect(viewer.closed, 'an over-budget step 1 waits; the socket stays').toBeNull();
+      const before = answers(viewer, from);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer, from) - before, 'the waiting step 1s coalesce into one answer').toBe(1);
+      await viewer.pump();
+      expect(title(viewer.doc)).toBe(title(opened.dobj.document));
+    });
+
+    it('a reconnect past the budget and a resync still converge', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Start');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-2' });
+      await viewer.hello();
+      await typeTitle(editor, ' more');
+      // A resync on the same socket: a step 1 within the budget is answered at once.
+      await viewer.hello();
+      expect(title(viewer.doc), 'a resync converges').toBe('Start more');
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 64; i += 1) await viewer.deliver(empty);
+      await viewer.drop();
+      await typeTitle(editor, ' again');
+      // The same principal, budget spent, on a fresh doc: its step 1 waits for the budget, and is never dropped.
+      const back = await connect(opened, { role: 'viewer', id: 'viewer-2' });
+      await back.hello();
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await back.pump();
+      expect(back.closed).toBeNull();
+      expect(title(back.doc), 'the reconnect converges').toBe('Start more again');
+      expect(Y.encodeStateVector(back.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
+    });
+
+    it('anonymous link viewers each get their own budget, and their up-to-date resyncs cost little', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Shared by link');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1' } as const;
+      const viewers: TestClient[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const viewer = await connect(opened, anonymous);
+        await viewer.hello();
+        viewers.push(viewer);
+      }
+      // The client's 4 s heartbeat resync: a step 1 from a synced doc, whose answer is only the delete set.
+      for (let round = 0; round < 10; round += 1) for (const viewer of viewers) await viewer.hello();
+      for (const viewer of viewers) expect(answers(viewer, 0), 'every step 1 answered at once').toBe(11);
+      const stranger = await connect(opened, anonymous);
+      await stranger.hello();
+      expect(title(stranger.doc), 'a new stranger opens the note at once').toBe('Shared by link');
+    });
+
+    it('a signed-in reader\'s visible tabs resyncing up to date stay answered at once', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Tabs');
+      const tabs = [await connect(opened, { role: 'viewer', id: 'reader-tabs' }), await connect(opened, { role: 'viewer', id: 'reader-tabs' })];
+      for (const tab of tabs) await tab.hello();
+      for (let round = 0; round < 16; round += 1) for (const tab of tabs) await tab.hello();
+      for (const tab of tabs) expect(answers(tab, 0), 'every resync answered at once').toBe(17);
+      await typeTitle(editor, ' more');
+      await tabs[0].hello();
+      expect(title(tabs[0].doc)).toBe('Tabs more');
+    });
+
+    it('a waiting step 1 too large for the socket\'s allowance waits as a fixed-size request: answered whole, its vector not kept', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Kept small');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-big' });
+      await viewer.hello();
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 8; i += 1) await viewer.deliver(empty);
+      const from = viewer.socket.sent.length;
+      // Claims every clock the doc holds, padded with clients it has never seen: about 200 KB, under the frame cap.
+      const claim = Y.decodeStateVector(Y.encodeStateVector(opened.dobj.document));
+      for (let client = 1; client <= 30_000; client += 1) claim.set(2 ** 31 + client, 2 ** 20);
+      await viewer.deliver(syncFrame(0, Y.encodeStateVector(claim)));
+      expect(answers(viewer, from), 'over budget, it waits').toBe(0);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer, from)).toBe(1);
+      const fresh = new Y.Doc();
+      for (const frame of viewer.socket.sent.slice(from)) {
+        if (typeof frame === 'string' || frame[0] !== 0 || (frame[1] !== 1 && frame[1] !== 2)) continue;
+        const decoder = decoding.createDecoder(frame);
+        decoding.readVarUint(decoder);
+        decoding.readVarUint(decoder);
+        Y.applyUpdate(fresh, decoding.readVarUint8Array(decoder));
+      }
+      expect(title(fresh), 'the vector was not kept, so the answer is the whole state').toBe('Kept small');
+      expect(viewer.closed).toBeNull();
+    });
   });
 });

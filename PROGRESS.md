@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 48% done** (96 of 200 planned tasks verified)
+**Overall: 49% done** (98 of 200 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 44 / 44 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 46 / 46 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -115,6 +115,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S10 verified: importing a note whose highlight wraps many formatted runs, or carries a long style attribute, now keeps its output bounded (a highlight past the bound stays as written), and comment markers holding `$&` or `$`` are inserted as written instead of copying text.
 - 2026-10-09 — T3.B1 verified: importing a note whose frontmatter YAML aliases expand past a budget or cycle, or whose tables would overrun the converter's work budget, is now refused promptly as a 413 instead of stalling or failing with a 500, and lines too long to convert stay shielded whatever characters they contain.
 - 2026-10-09 — T3.B16 verified: table column and tab widths a person drags now survive reload and peer table insertions without a replaced table inheriting old widths, saved layout entries stay bounded, and typing or receiving unrelated edits no longer rescans the note or writes layout storage.
+- 2026-10-09 — T3.S14 verified: a flood of step 1s from viewers or anonymous link holders now draws on an answer budget charged by what each answer sends, so it can no longer make the server re-encode whole notes without limit, while a reconnect or resync past the budget is answered late, never dropped.
+- 2026-10-09 — T3.S20 verified: when someone is demoted to view and then removed within a few seconds, the note now shows only 'Your access to this note has ended.' instead of a stale view-only notice beside it.
 
 ## T1.1s identity audit
 
@@ -479,3 +481,7 @@ Local browser verification remains assigned to the independent checker under the
 - T3.S16 (Bounded backlinks) checker P2: the harness test measures returned rows and the query plan, not SQLite rowsRead: `search.test` (packages/sync/test/harness/search.test.ts:69) counts `cursor.toArray().length` after DISTINCT and the node:sqlite FakeState has no rowsRead counter, so the bound rests on the EXPLAIN QUERY PLAN assertions (links via links_src, driven by json_each, never scanned) → add a workerd test comparing a consumed cursor's rowsRead before and after adding 50,000 inaccessible sources.
 - T3.S18 (Non-finite property values are changes) checker P2: the finding's end-to-end push coverage is deferred because packages/sync/src/push.ts and the CLI arrive in m7; that push carries the fix is inferred from source (push.ts:258 calls importFrontmatter), not run → T7.2 red-first test.
 - T3.S18 (Non-finite property values are changes) checker P2: `stable()` still treats -0 and 0 as equal, and `same()` in apps/web/src/host/collab/frontmatter-binding.ts:29 still compares with JSON.stringify, so null, NaN and ±Infinity look equal when deciding whether an open property draft is held (no current UI path produces these values; Properties edits strings) → frontmatter follow-up: share the tagged equality with the binding and decide -0.
+- T3.S14 (Bounded full-state answers) checker P2: anonymous reconnects get a fresh answer budget each time: each anonymous socket's budget is deleted on close (packages/sync/src/doc-do.ts budgetKey/socketKey, onClose), so a link holder that keeps reconnecting is limited only by its connect rate, not ANSWER_BUDGET.
+- T3.S14 (Bounded full-state answers) checker P2: answer cost counts Yjs clocks, not bytes (missingShare, packages/sync/src/doc-do.ts:214-228), so a vector claiming every clock but a large ContentAny's gets a near-full answer at the 1/32 floor (about 256 large answers per burst instead of 8; still bounded by the 1/32 and 1/4096 floors).
+- T3.S14 (Bounded full-state answers) checker P2: the anonymous budget is keyed by the client-chosen connection.id (`_pk`), so two live sockets with the same `_pk` share a budget and either one closing deletes the other's; key it by the Connection object, as the waiting map and write-rate accounting do.
+- T3.S20 (One notice when access ends) checker P2: `DocSession.end()` always settles the view-only notice, and the refusal store (refusal.ts) is one tab-wide message matched on text, so note B ending within 4 s of note A's demotion in a split pane clears A's still-accurate notice (cosmetic) → refusal follow-up: scope the settle to the note that raised the notice.
