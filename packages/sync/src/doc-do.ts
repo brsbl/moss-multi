@@ -315,8 +315,12 @@ export class DocDO extends YServer<SyncEnv> {
   #pendingFlush: Promise<void> | null = null;
   /** Validations, admissions and frame batches run one at a time, in arrival order. */
   readonly #serial = serializer();
-  /** Each principal's answer budget in whole states, as of `at` (T3.S14). In memory: a wake starts full. */
+  /**
+   * Each principal's answer budget in whole states, as of `at` (T3.S14). A spent one is also in `answer_budgets`, read
+   * on a key's first use after a wake, so hibernating does not refill it (T3.B26).
+   */
   readonly #answerBudgets = new Map<string, { left: number; at: number }>();
+  #budgetTable = false;
   /** Each socket's step 1s waiting for its budget, the latest per target ('' the note, else a payload id), and their bytes. */
   readonly #waitingAnswers = new Map<Connection, { bytes: number; frames: Map<string, Uint8Array> }>();
   #answerTimer: ReturnType<typeof setTimeout> | undefined;
@@ -647,10 +651,29 @@ export class DocDO extends YServer<SyncEnv> {
     return count;
   }
 
+  /** The persisted spent budgets, created on first use. */
+  #budgetSql(): SqlStorage {
+    const sql = this.ctx.storage.sql;
+    if (!this.#budgetTable) {
+      sql.exec('CREATE TABLE IF NOT EXISTS answer_budgets (key TEXT PRIMARY KEY, remaining REAL NOT NULL, at INTEGER NOT NULL)');
+      this.#budgetTable = true;
+    }
+    return sql;
+  }
+
+  /** Writes a charged budget through, and drops every persisted one that has refilled. */
+  #persistBudget(key: string, budget: { left: number; at: number }): void {
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const sql = this.#budgetSql();
+    sql.exec('DELETE FROM answer_budgets WHERE remaining + (? - at) * ? * 1.0 / ? >= ?', budget.at, docs, windowMs, docs);
+    sql.exec('INSERT OR REPLACE INTO answer_budgets (key, remaining, at) VALUES (?, ?, ?)', key, budget.left, budget.at);
+  }
+
   /** A budget now, refilled since it was last read. */
   #budget(key: string, now: number): { left: number; at: number } {
     const { docs, windowMs } = this.#limits.answerBudget;
-    const held = this.#answerBudgets.get(key);
+    const held = this.#answerBudgets.get(key)
+      ?? this.#budgetSql().exec<{ left: number; at: number }>('SELECT remaining AS left, at FROM answer_budgets WHERE key = ?', key).toArray()[0];
     const budget = { left: held ? Math.min(docs, held.left + ((now - held.at) * docs) / windowMs) : docs, at: now };
     this.#answerBudgets.set(key, budget);
     return budget;
@@ -676,6 +699,7 @@ export class DocDO extends YServer<SyncEnv> {
     const total = (this.#store?.stateBytes ?? 0) + (this.#payloads?.totalBytes ?? 0);
     const share = total > 0 ? Math.min(1, bytes / total) : 0;
     budget.left -= Math.max(MIN_ANSWER_SHARE, share * Math.max(MIN_TARGET_SHARE, missingShare(doc(), vector)));
+    this.#persistBudget(budgetKey(attachment), budget);
     return true;
   }
 
