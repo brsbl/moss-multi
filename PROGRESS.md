@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 50% done** (102 of 205 planned tasks verified)
+**Overall: 50% done** (103 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 50 / 50 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 51 / 51 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -121,6 +121,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-10 — T3.B18 verified: exporting a selection now includes the unsaved draft of a focused HTML block or a code block inside a tab panel, and a selection that ends at the start of a list item stops at the item before, so a drag from a list into a code block exports exactly the lines selected.
 - 2026-10-10 — T3.B19 verified: a person on an invite meant for another email can sign out and get back to the invite only once the session has really ended (a failed sign-out says why and can be retried), a too-short password on sign-up names the actual minimum, and switching the login card's mode focuses the Name or Email field.
 - 2026-10-10 — T3.B23 verified: creating or renaming a note can no longer land its folder inside another note's folder, whether the names differ only by case folds like ß/ss, σ/ς or the Kelvin sign, or a sibling folder appears between listing and rename (a second collision reports the save as raced).
+- 2026-10-10 — T3.B21 verified: the converter measurement now gates search at the full 2 MB note size for every opener family, fails on any single slow search sample, checks that ordinary search still works after the adversarial bodies, and judges payload memory on settled growth after a warm-up, so its budget verdicts no longer hinge on one noisy sample.
 
 ## T1.1s identity audit
 
@@ -495,3 +496,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B18 (Selection export across blocks) checker P2: the mouse leg's red run 38025938059 failed on an earlier endpoint assumption before reaching the export assertion; the checker's local negative control (origin/m3 selection.ts) exported lines 12-22 against the expected 12-17, so the test can fail — process note only.
 - T3.B19 (Auth and sign-out flows) checker P2: B055 has no red-first proof in a real browser: in the pre-fix j07 run the Name-focus assertion fails first, so the 'at least 8' assertion is never reached; the message-mapping unit test (minimum of 12) does fail red-first and the checker's browser pass confirmed 'Use at least 8 characters.' end to end — evidence gap only.
 - T3.B19 (Auth and sign-out flows) checker P2: the full lane was green on the task head f173cf6e, not the m3 head; closed by integration CI on the merged m3 SHA.
+- T3.B21 (Converter measurement gates) checker P2: the warm-search recovery check in `searchBudgetProblems` (scripts/measure-converter.mjs) only compares the post-adversarial snippet with the baseline, so two equally empty, null or missing snippets pass; the worker checks the hit count but not the snippet → assert the known snippet for the warm fixture.
+- T3.B21 (Converter measurement gates) checker P2: the B337 near-boundary RSS samples in `measure-converter.test` are illustrative, not recorded from CI, and the sustained-growth control runs only at predicate level on made-up arrays (three unchanged remote SP2 runs at one SHA grew -9.2, 12.2 and 10.0 MB against the 64 MB budget) → add a remote control that allocates real memory through the sampler.
