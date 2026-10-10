@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 53% done** (108 of 204 planned tasks verified)
+**Overall: 53% done** (109 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 10 / 10 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 8 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -122,6 +122,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T3.F2 verified: typing a slash command and pressing Enter now always inserts what the typed query names, so `/media` inserts media even on a busy page instead of a row from the previous list.
 - 2026-10-08 — T4.R2 verified: comments now sit on the final M3, so a long comment or reply and a note created with a full comments sidecar fit under the request caps, and a large paste in a commented note lays out remote cursors once per batch instead of stalling.
 - 2026-10-09 — T5.R2 verified: suggestions now sit on the final M4, and a large paste in Suggest mode lands whole as one suggestion within every suggestion cap or is refused whole with the pasted blocks offered back, never half-applied.
+- 2026-10-09 — T5.S3 verified: Backspace or Delete in Suggest mode past a long struck run (20,000 characters) now answers quickly, reading each node once while still deleting whole graphemes and keeping own-versus-body routing.
 - 2026-10-07 — T6.1 verified: a note body and its payload docs can be reconciled to a target version in place, keeping the Yjs identity of untouched blocks so a peer's concurrent insert and comment anchors survive, and a result that would not export the target is refused.
 - 2026-10-07 — T6.2 verified: each note now keeps automatic versions (on last disconnect and on activity, deduplicated, large ones spilled to R2) and rate-limited named versions over REST, its history bounded by pruning rather than charging anyone, and a restore whose result fails verification is refused with 409.
 - 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
@@ -595,3 +596,5 @@ Local browser verification remains assigned to the independent checker under the
 - T5.3s checker P2 (lib0 readAny decodes a `__proto__` key in a forged Any object by changing that object's prototype; dependency): carried to the M5 Slop Cop; every consumer of decoded ContentAny must read own keys only.
 - T5.3s checker P2 (strike-then-join keeps the struck character after accept; pre-existing on m5): Lexical re-creates the joined text as new items, so the strike is lost from what the reviewer accepts.
 - T5.3s checker P2 (whole added or removed nodes drop enclosing map-field names from the visible card row).
+- T5.S3 (No long-run work test for forward Delete) checker P2: the instrumented tests cover only Backspace past a long struck run; forward Delete uses the same per-node cache in `$routeChar` (suggest/routing.ts) and was fast in the browser (99 ms over 20,002 struck units), but no CI test bounds its work.
+- T5.S3 (Struck runs over 100,000 characters still end at the loop guard; pre-existing) checker P2: `guard < 100_000` in `$routeChar` counts struck graphemes, so a longer run in one node falls through to the native handler and the server refuses the write visibly; the guard could count nodes or jump contiguous struck intervals.

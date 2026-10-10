@@ -14,12 +14,12 @@ import {
   $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, COMMAND_PRIORITY_CRITICAL,
   CONTROLLED_TEXT_INSERTION_COMMAND, CUT_COMMAND, DELETE_CHARACTER_COMMAND, DELETE_LINE_COMMAND, DELETE_WORD_COMMAND,
   INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, mergeRegister, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
-  type LexicalEditor, type LexicalNode, type RangeSelection, type TextNode,
+  type LexicalEditor, type LexicalNode, type NodeKey, type RangeSelection, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
 import { registerSuggestPasteRoute, takesWholePaste } from '../../large-paste.ts';
 import { bindingOf } from '../binding-registry.ts';
-import { charAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
+import { charsAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -618,16 +618,22 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       offset = $isTextNode(next) ? (backward ? next.getTextContentSize() : 0) : 0;
       return true;
     };
+    // The visited text node's ids and characters, read once: a struck run is walked a character at a time.
+    let seen: { key: NodeKey; ids: Y.ID[] | null; around: (at: number) => [number, number] } | null = null;
     for (let guard = 0; guard < 100_000; guard += 1) {
       if ($isTextNode(node)) {
         const text: TextNode = node;
-        const ids = textIds(binding, text.getKey());
+        if (seen?.key !== text.getKey()) {
+          const ids = textIds(binding, text.getKey());
+          const content = text.getTextContent();
+          seen = { key: text.getKey(), ids, around: ids && content.length === ids.length ? charsAround(content) : (at) => [at, at + 1] };
+        }
+        const { ids, around } = seen;
         if (!ids) return false;
         const at = backward ? offset - 1 : offset;
         if (at >= 0 && at < ids.length) {
           // A whole character: both halves of a surrogate pair, and a grapheme's combining marks.
-          const content = text.getTextContent();
-          const [from, to] = content.length === ids.length ? charAround(content, at) : [at, at + 1];
+          const [from, to] = around(at);
           const id = ids[at];
           if (fork.isStruck(id)) {
             offset = backward ? from : to;
