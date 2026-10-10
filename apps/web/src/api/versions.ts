@@ -10,7 +10,7 @@ import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
-import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { JSON_BODY_MAX_BYTES, NO_STORE, notFound, readJsonObject } from './respond.ts';
 
 export const VERSIONS_ROUTE = /^\/api\/docs\/([^/]+)\/versions(?:\/([^/]+)(\/restore)?)?$/;
 
@@ -39,6 +39,13 @@ const REFUSAL: Record<string, string> = {
 /** A restore's base as a client sends it (restore-base.ts), bounded; the DocDO decides whether it is usable. */
 const BASE_MAX_CHARS = 65_536;
 const BASE_MAX_PAYLOADS = 10_000;
+/** The characters a payload's vector averages at most in a base: 64 writing clients, each at 9 bytes, in base64. */
+const PAYLOAD_BASE_CHARS = 772;
+/**
+ * A restore body's cap (T6.R): the note's vector and BASE_MAX_PAYLOADS payload entries (an id of up to 64 characters,
+ * its vector, the JSON around them), over the default cap. A save names at most 80 characters, under the default.
+ */
+export const RESTORE_BODY_MAX_BYTES = JSON_BODY_MAX_BYTES + BASE_MAX_CHARS + BASE_MAX_PAYLOADS * (64 + PAYLOAD_BASE_CHARS + 8);
 function restoreBase(raw: unknown): { ok: true; base: unknown } | { ok: false } {
   if (raw === undefined) return { ok: true, base: undefined };
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false };
@@ -68,7 +75,7 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to see version history' }, 401, NO_STORE);
   // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
-  const body = method === 'POST' ? ((await readJsonObject(request)) ?? {}) : {};
+  const body = method === 'POST' ? ((await readJsonObject(request, action === 'restore' ? RESTORE_BODY_MAX_BYTES : undefined)) ?? {}) : {};
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, FLOOR[action])) return json({ error: 'forbidden', message: MESSAGE[action] }, 403, NO_STORE);

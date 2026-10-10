@@ -8,6 +8,7 @@ import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { COMMENT_BODY_MAX_BYTES } from './comments.ts';
 import { JSON_BODY_MAX_BYTES } from './respond.ts';
+import { RESTORE_BODY_MAX_BYTES } from './versions.ts';
 import { handleApi } from './router.ts';
 
 const DocDO = {
@@ -72,6 +73,8 @@ const ROUTES: Route[] = [
   { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/accept`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ previewHash: 'h'.repeat(64), digest: 'd'.repeat(64) }) },
   { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/reject`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}) },
   { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/withdraw`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}) },
+  { method: 'POST', path: () => `/api/docs/${docId}/versions`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Checkpoint' }) },
+  { method: 'POST', path: () => `/api/docs/${docId}/versions/v-cap/restore`, cap: RESTORE_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}) },
   { method: 'POST', path: () => '/api/unfurl', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ noteId: docId, url: 'http://127.0.0.1/' }) },
   { method: 'POST', path: () => '/api/feedback', cap: FEEDBACK_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ body: 'Lovely.' }) },
 ];
@@ -169,6 +172,7 @@ describe('JSON bodies are capped on every route that reads one', () => {
     for (let i = 0; i < 10_000; i += 1) payloads[i.toString(16).padStart(32, '0')] = vector(64);
     const sent = JSON.stringify({ base: { note: 'A'.repeat(65_536), payloads, age: 599_999 } });
     expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES * 100);
+    expect(sent.length, 'under the restore cap').toBeLessThanOrEqual(RESTORE_BODY_MAX_BYTES);
     const response = await comment('POST', `/api/docs/${docId}/versions/v-cap/restore`, sent);
     expect(response.status, await response.clone().text()).toBe(200);
   }, 60_000);
