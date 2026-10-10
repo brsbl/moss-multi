@@ -16,6 +16,7 @@ const DocDO = {
     setName: async () => undefined, recheck: async () => ({ closed: 0 }), renameTitle: async () => undefined,
     createComment: async () => ({ ok: true, id: 'c-cap', quote: null }),
     acceptSuggestion: async () => ({ ok: true }), rejectSuggestion: async () => ({ ok: true }), withdrawSuggestion: async () => ({ ok: true }),
+    saveVersion: async () => ({ ok: true, version: { id: 'v-cap' } }), restoreVersion: async () => ({ ok: true, restorePoint: 'p-cap', version: 'a-cap' }),
   }),
 };
 const PrincipalDO = {
@@ -23,7 +24,7 @@ const PrincipalDO = {
   get: () => ({
     setName: async () => undefined, publish: async () => undefined, takeCreateToken: async () => true,
     takeWriteToken: async () => true, takeUploadToken: async () => true, takeFetchToken: async () => true,
-    takeCommentToken: async () => true, takeReviewToken: async () => true,
+    takeCommentToken: async () => true, takeReviewToken: async () => true, takeVersionToken: async () => true,
   }),
 };
 
@@ -152,6 +153,29 @@ describe('JSON bodies are capped on every route that reads one', () => {
     const sent = JSON.stringify({ previewHash: 'h'.repeat(128), digest: 'd'.repeat(128) });
     const response = await comment('POST', `/api/docs/${docId}/suggestions/s-cap/accept`, sent);
     expect(response.status, await response.clone().text()).toBe(200);
+  }, 30_000);
+
+  // T6.R: a restore carries its base, the state vectors of the note and of every payload the restorer held (A§14). The
+  // route admits up to 10,000 payloads; a long-lived note's vectors name every session that wrote it, so an honest
+  // maximal base (the note's vector at its 65,536-character bound, 10,000 minted ids, each vector naming 64 clients
+  // with clocks in the millions) is far past T3.S7's 64 KiB default.
+  it('a restore takes the base of a note with the most payloads the route admits', async () => {
+    const vector = (clients: number) => {
+      const bytes: number[] = [clients];
+      for (let c = 0; c < clients; c += 1) bytes.push(0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x03);
+      return Buffer.from(bytes).toString('base64');
+    };
+    const payloads: Record<string, string> = {};
+    for (let i = 0; i < 10_000; i += 1) payloads[i.toString(16).padStart(32, '0')] = vector(64);
+    const sent = JSON.stringify({ base: { note: 'A'.repeat(65_536), payloads, age: 599_999 } });
+    expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES * 100);
+    const response = await comment('POST', `/api/docs/${docId}/versions/v-cap/restore`, sent);
+    expect(response.status, await response.clone().text()).toBe(200);
+  }, 60_000);
+
+  it('a named save takes the longest name, every character escaped', async () => {
+    const response = await comment('POST', `/api/docs/${docId}/versions`, JSON.stringify({ name: '\u0001'.repeat(80) }));
+    expect(response.status, await response.clone().text()).toBe(201);
   }, 30_000);
 
   it('note creation takes 2 MB of markdown, every byte escaped, with a full comments sidecar', async () => {
