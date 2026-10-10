@@ -10,6 +10,7 @@ import { asAppEnv } from './env.ts';
 import { BUILD } from './provenance.ts';
 import { mintNonce, withCsp } from './worker/csp.ts';
 import { docAccessCheck } from './worker/doc-access.ts';
+import { drainUnreadBody } from './worker/drain.ts';
 import { testHooksAllowed } from './worker/handlers.ts';
 import { workspaceSocket } from './worker/workspace.ts';
 import { authenticateParty } from './worker/party.ts';
@@ -37,7 +38,7 @@ export default createServerEntry({
     const refusal = refusalFor(appEnv);
     if (refusal) return refusal;
     try {
-      return await routeRequest(request, {
+      const response = await routeRequest(request, {
         handleWorkspaceSocket: (req) => workspaceSocket(req, appEnv, refuseSocket),
         handleAuth: (req) => handleAuthRoute(req, appEnv),
         handleApi: (req) => handleApi(req, appEnv),
@@ -52,6 +53,8 @@ export default createServerEntry({
           return withCsp(await startFetch(req, { context: { nonce } }), nonce, req.url);
         },
       });
+      await drainUnreadBody(request);
+      return response;
     } catch (error) {
       const { pathname } = new URL(request.url);
       waitUntil(Promise.resolve().then(() => console.error(`worker error: ${request.method} ${pathname}`, error)));
