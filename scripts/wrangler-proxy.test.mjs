@@ -10,6 +10,10 @@ const { ProxyWorker } = await import(pathToFileURL(PROXY).href);
 /** The patched ProxyWorker forwarding to a Worker at :9999, with `upstream` as its fetch. */
 function proxy(upstream) {
   const calls = [];
+  // workerd's Headers has getAll (Set-Cookie only); Node's has getSetCookie.
+  Headers.prototype.getAll = function getAll() {
+    return this.getSetCookie();
+  };
   vi.stubGlobal('fetch', async (url, request) => {
     calls.push({ url: String(url), method: request.method, body: request.body ? await request.text() : null });
     return upstream(calls.length);
@@ -24,6 +28,7 @@ const lost = () => Promise.reject(new TypeError('fetch failed'));
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete Headers.prototype.getAll;
 });
 
 describe('the patched wrangler ProxyWorker', () => {
