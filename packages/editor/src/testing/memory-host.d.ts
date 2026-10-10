@@ -17,7 +17,6 @@ export class MemoryVolume {
   exists(path: string): boolean;
   isFile(path: string): boolean;
   isDir(path: string): boolean;
-  spelling(path: string): string | null;
   mkdir(path: string): void;
   readBytes(path: string): Uint8Array;
   readFile(path: string): string;
@@ -36,9 +35,9 @@ export interface MemoryCall {
 }
 
 export class MemoryHost implements MossEditorBridge {
-  constructor(options?: { volume?: MemoryVolume; api?: 1; features?: MossEditorFeature[]; unsupported?: boolean });
+  constructor(options?: { volume?: MemoryVolume; api?: 2; features?: MossEditorFeature[]; unsupported?: boolean });
   readonly volume: MemoryVolume;
-  readonly api: 1;
+  readonly api: 2;
   readonly features: readonly MossEditorFeature[];
   calls: MemoryCall[];
   onApply: ((file: string, dir: string) => void | Promise<void>) | null;
@@ -48,6 +47,9 @@ export class MemoryHost implements MossEditorBridge {
   watch: MossEditorBridge['watch'];
   assets: MossAssetBridge;
   notify(): Promise<void>;
+  /** The user opened a note in the host outside an editor (a viewer); `copyFromNote` may copy out of opened notes only. */
+  open(noteId: string): void;
+  close(noteId: string): void;
 }
 
 export function seedNote(
