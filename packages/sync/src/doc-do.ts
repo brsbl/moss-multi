@@ -890,9 +890,9 @@ export class DocDO extends YServer<SyncEnv> {
   /**
    * Every comment write (A§8 pull validation, T2.5): in one serialized write the actor is re-resolved through the same
    * check whether or not it has a socket (a live session or key, at least commenter, a live doc), then the open sockets
-   * are validated, and the write runs right after with no await between, so a reader revoked while the actor was read
-   * is closed before it. A check that cannot answer refuses. With no access check installed (the Node harness), writes
-   * apply as frames do.
+   * are validated in one read that checks the actor again as a socket admitted at its epoch, and the write runs right
+   * after with no await between. A reader or actor revoked while the actor was read is refused with no kick needed.
+   * A check that cannot answer refuses. With no access check installed (the Node harness), writes apply as frames do.
    */
   async #commentWrite(actor: CommentActor | undefined, write: (store: DocStore, comments: DocComments) => CommentResult): Promise<CommentResult> {
     const store = await this.#ready();
@@ -913,11 +913,15 @@ export class DocDO extends YServer<SyncEnv> {
         let refused: CommentResult | null;
         try {
           const resolvedAt = Date.now();
-          refused = await this.#authorizeActor(check, store, actor, resolvedAt);
+          const authorized = await this.#authorizeActor(check, store, actor, resolvedAt);
+          refused = typeof authorized === 'string' ? null : authorized;
           if (!refused) {
-            await this.#validate(check);
+            const verdict = await this.#validate(check, undefined, { ...actor, role: 'commenter', epoch: authorized } as Attachment);
+            if (verdict === CLOSE.sessionEnded) refused = { ok: false, status: 401, error: 'unauthenticated' };
+            else if (verdict === CLOSE.deleted) refused = { ok: false, status: 404, error: 'trashed' };
+            else if (typeof verdict === 'number') refused = FORBIDDEN;
             // A kick that landed while the sockets were read outdates the actor's answer too.
-            if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) refused = FORBIDDEN;
+            else if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) refused = FORBIDDEN;
           }
         } catch (error) {
           console.error('DocDO could not re-authorize a comment write; refusing it', error);
@@ -931,8 +935,11 @@ export class DocDO extends YServer<SyncEnv> {
     });
   }
 
-  /** The actor's verdict now: null while it may comment, else the refusal. Throws when D1 cannot answer. */
-  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number): Promise<CommentResult | null> {
+  /**
+   * The actor's verdict now: the access epoch it was resolved at while it may comment, else the refusal. Throws when D1
+   * cannot answer.
+   */
+  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number): Promise<CommentResult | string> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
     if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
@@ -947,7 +954,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (!roleAtLeast(access.role, 'commenter')) return FORBIDDEN;
     // A kick persisted while D1 answered outdates what it said.
     if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return FORBIDDEN;
-    return null;
+    return stamp.key;
   }
 
   /**
@@ -1121,15 +1128,17 @@ export class DocDO extends YServer<SyncEnv> {
    * Pull validation (A§8): reads the doc's access epoch and the sockets' credentials, then closes every socket whose
    * session ended (4402) or key was revoked (4403), and re-resolves each socket admitted under an older epoch, closing
    * it on a lowered or lost role (4403) or a doc in Trash (4410). A socket that keeps its role takes the new epoch.
-   * Throws, closing nothing, when D1 cannot answer.
+   * Throws, closing nothing, when D1 cannot answer. `actor`, a comment writer, is judged in the same read as a socket
+   * would be and its verdict returned; with no socket open its own earlier read stands, and null is returned.
    */
-  async #validate(check: AccessCheck, only?: Connection[]): Promise<void> {
+  async #validate(check: AccessCheck, only?: Connection[], actor?: Attachment): Promise<number | Resolved | null> {
     const sockets = (only ?? [...this.#all()]).flatMap((connection) => {
       const attachment = attachmentOf(connection);
       return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
     });
-    if (sockets.length === 0) return;
-    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, sockets, race));
+    if (sockets.length === 0) return null;
+    const subjects = actor ? [...sockets, { attachment: actor }] : sockets;
+    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, subjects, race));
     for (const [i, { connection, attachment }] of sockets.entries()) {
       const verdict = verdicts[i];
       if (!isOpen(connection)) continue;
@@ -1145,6 +1154,7 @@ export class DocDO extends YServer<SyncEnv> {
       if (verdict === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
       connection.close(verdict, verdict === CLOSE.sessionEnded ? 'session ended' : verdict === CLOSE.deleted ? 'deleted' : 'revoked');
     }
+    return actor ? verdicts[sockets.length] ?? null : null;
   }
 
   /**

@@ -941,8 +941,8 @@ describe('a comment write leaves no await between its last socket check and the 
   });
 
   it.each([
-    ['its grant is removed', 403, () => { epoch = 'e2'; gone.add('ada'); }],
-    ['its session ends', 401, () => { ended.add('sess-ada'); }],
+    ['grant is removed', 403, () => { epoch = 'e2'; gone.add('ada'); }],
+    ['session ends', 401, () => { ended.add('sess-ada'); }],
   ] as const)('an actor whose %s after it resolved, its kick missed, is refused and nothing lands', async (_case, status, revoke) => {
     const opened = await opening();
     const ben = await connect(opened, who('ben', 'viewer'));
