@@ -28,29 +28,47 @@ function normalizeFrontmatterDates(value: unknown): unknown {
 }
 
 // moss-multi seam: frontmatter-aliases (A§10.4): YAML aliases share one parsed node, so a few bytes can name an
-// exponential or cyclic tree. Walk it as normalizeFrontmatterDates would, refusing a cycle or more nodes than the text
-// could hold without aliases (packages/core/src/frontmatter.ts holds the same bound).
+// exponential or cyclic tree, or many copies of one long string (js-yaml even joins aliases into a string inside load
+// when a flow sequence is a key). The load counts what each alias names as it reads it, and the result is walked once
+// more, each node 1 and each string or key its length: past 65,536 plus 4 per character of the YAML, or on a cycle,
+// the frontmatter is refused (packages/core/src/frontmatter.ts holds the same bound).
 export const FRONTMATTER_EXPANSION_ERROR = 'Frontmatter expands past its budget';
 
-function expandsWithinBudget(parsed: unknown, yamlLength: number): boolean {
-  let left = 65_536 + 2 * yamlLength;
+function spendExpansion(value: unknown, budget: { left: number }, refuseCycles: boolean): void {
   const path = new Set<object>();
-  const stack: { value: unknown; leave?: boolean }[] = [{ value: parsed }];
+  const stack: { value: unknown; leave?: boolean }[] = [{ value }];
   while (stack.length > 0) {
-    const { value, leave } = stack.pop()!;
+    const { value: next, leave } = stack.pop()!;
     if (leave) {
-      path.delete(value as object);
+      path.delete(next as object);
       continue;
     }
-    left -= 1;
-    if (left < 0) return false;
-    if (!value || typeof value !== 'object' || value instanceof Date) continue;
-    if (path.has(value)) return false;
-    path.add(value);
-    stack.push({ value, leave: true });
-    for (const entry of Object.values(value)) stack.push({ value: entry });
+    budget.left -= typeof next === 'string' ? 1 + next.length : 1;
+    if (budget.left < 0) throw new Error(FRONTMATTER_EXPANSION_ERROR);
+    if (!next || typeof next !== 'object' || next instanceof Date) continue;
+    if (path.has(next)) {
+      if (refuseCycles) throw new Error(FRONTMATTER_EXPANSION_ERROR);
+      continue;
+    }
+    path.add(next);
+    stack.push({ value: next, leave: true });
+    for (const [key, entry] of Object.entries(next)) {
+      budget.left -= key.length;
+      stack.push({ value: entry });
+    }
   }
-  return true;
+}
+
+function loadWithinBudget(yaml: string): unknown {
+  const aliases = { left: 65_536 + 4 * yaml.length };
+  const parsed = jsYaml.load(yaml, {
+    // An alias closes with no kind of its own and the node it names as its result.
+    listener: (event, state) => {
+      if (event === 'close' && (state.kind as string | null) === null && state.result !== null) spendExpansion(state.result, aliases, false);
+    },
+  });
+  spendExpansion(parsed, { left: 65_536 + 4 * yaml.length }, true);
+  return parsed;
 }
 
 export interface FrontmatterSplitResult {
@@ -71,10 +89,7 @@ export function splitFrontmatter(raw: string): FrontmatterSplitResult {
   const body = raw.slice(match[0].length);
 
   try {
-    const parsed = jsYaml.load(rawYaml);
-    if (!expandsWithinBudget(parsed, rawYaml.length)) {
-      return { data: null, body, hasFrontmatter: true, rawYaml, error: FRONTMATTER_EXPANSION_ERROR };
-    }
+    const parsed = loadWithinBudget(rawYaml);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return {
         data: normalizeFrontmatterDates(parsed) as Record<string, unknown>,
