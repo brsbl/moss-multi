@@ -379,6 +379,9 @@ importers:
       js-yaml:
         specifier: 4.3.0
         version: 4.3.0
+      lib0:
+        specifier: 0.2.119
+        version: 0.2.119
       yjs:
         specifier: 13.6.31
         version: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)

@@ -104,6 +104,36 @@ declare module '@moss/shared/state/note-atoms' {
   export function noteFrontmatterAtom(noteId: string): PrimitiveAtom<Record<string, unknown> | null>;
   export function frontmatterDirtySignalAtom(noteId: string): PrimitiveAtom<number>;
   export const noteIdsAtom: PrimitiveAtom<Set<string>>;
+  export function noteCommentsMapAtom(noteId: string): PrimitiveAtom<Record<string, object>>;
+  export function commentThreadFilterAtom(noteId: string): PrimitiveAtom<'open' | 'resolved' | 'all'>;
+}
+
+// moss's comment composer and selection-bar primitives, which the read-only comment tools reuse (T4.3).
+declare module '@moss-desktop/renderer/editor/components/CommentInputPopover' {
+  import type { JSX } from 'react';
+  export function CommentInputPopover(props: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    anchorRect: { x: number; y: number; width: number; height: number } | null;
+    anchorSide?: 'bottom' | 'top';
+    anchorAlign?: 'start' | 'end';
+    onCreate: (text: string, imageUrls?: string[]) => boolean;
+    noteId: string;
+    collisionBoundary?: Element | null;
+  }): JSX.Element;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/CommentPlugin' {
+  import type { PrimitiveAtom } from 'jotai';
+  export function commentInputStateAtom(noteId: string): PrimitiveAtom<{ open: boolean; anchorRect: { x: number; y: number; width: number; height: number } | null }>;
+}
+
+declare module '@moss-desktop/renderer/editor/components/SelectionToolbarPrimitives' {
+  import type { CSSProperties, ForwardRefExoticComponent, HTMLAttributes, JSX, RefAttributes } from 'react';
+  export const SELECTION_TOOLBAR_BUTTON_BASE_CLASS: string;
+  export const SELECTION_TOOLBAR_BUTTON_IDLE_CLASS: string;
+  export const SelectionToolbarShell: ForwardRefExoticComponent<HTMLAttributes<HTMLDivElement> & { style?: CSSProperties } & RefAttributes<HTMLDivElement>>;
+  export function SelectionToolbarInner(props: HTMLAttributes<HTMLDivElement>): JSX.Element;
 }
 
 // @lexical/react 0.48.0's collaboration plugin, vendored with moss-multi seams (A§10.2), through vite's alias.

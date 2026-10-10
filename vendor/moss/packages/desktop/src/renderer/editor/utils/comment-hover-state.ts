@@ -2,6 +2,8 @@
 import type { LexicalEditor } from 'lexical';
 
 import { forEachCommentElement } from '../plugins/CommentPlugin';
+// moss-multi seam: comments (comments.md §11)
+import { setHover } from '@moss-multi/host/comments/adapter';
 
 function escapeCommentId(commentId: string): string {
   return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
@@ -26,6 +28,7 @@ export function applyCommentHoverState(
   commentId: string,
   colorIndex: number
 ): void {
+  setHover(editor, commentId); // moss-multi seam: comments (comments.md §11): the underline is paint
   forEachCommentElement(editor, commentId, (el) => {
     if (el.classList.contains('comment-mark')) {
       el.classList.add('comment-underline-hover');
@@ -39,6 +42,7 @@ export function applyCommentHoverState(
 }
 
 export function clearCommentHoverState(editor: LexicalEditor): void {
+  setHover(editor, null); // moss-multi seam: comments
   const root = editor.getRootElement();
   root?.querySelectorAll('.comment-underline-hover').forEach((el) => {
     el.classList.remove('comment-underline-hover');

@@ -21,7 +21,7 @@ import {
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
 import { countedPayloadBytes, WRITE_REFUSED } from './collab/doc-session.ts';
-import { markLanding } from './collab/landing.ts';
+import { markLanding, runBatchGeometry } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
 import { refuseInput } from './refusal.ts';
@@ -783,7 +783,10 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   undo?.stopCapturing();
   const placer = new Placer(plan, true);
   // Laid out after each batch, in it: laid out later, several batches' list items would go at once (MAX_BATCH).
-  const layout = () => void editor.getRootElement()?.offsetHeight;
+  const layout = () => {
+    void editor.getRootElement()?.offsetHeight;
+    runBatchGeometry(editor);
+  };
   // Paced afresh: the live editor also renders and lays out each batch.
   const pacing = new Pacer('moss-paste-batch', max);
   const first = pacing.budget;
@@ -835,7 +838,10 @@ const REDO_SLICE_BYTES = 8 * 1024 * 1024;
 function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<void, void> {
   const { editor } = job;
   const pacing = new Pacer('moss-paste-redo', max);
-  const layout = () => void editor.getRootElement()?.offsetHeight;
+  const layout = () => {
+    void editor.getRootElement()?.offsetHeight;
+    runBatchGeometry(editor);
+  };
   // Commits the binding's update for a slice in this task, so its time and layout count in the slice's.
   const settle = () => {
     if (!editor._updating) editor.read(noop);

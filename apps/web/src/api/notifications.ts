@@ -2,7 +2,8 @@
 // PrincipalDO, and re-checked against the reader's live access whenever they are read, so a notice about an item they
 // can no longer open is left out, title and all (L§1.6 D-G6). An email is never an authority (PRODUCT ruling 19), so
 // nothing tells an account about an invite before it holds the link: the invite events are an inviter hearing that
-// their invite was accepted, and share notices left from before the ruling.
+// their invite was accepted, and share notices left from before the ruling. Comment notices (T4.4) are a mention and
+// a reply to the reader's thread, written by comments.ts.
 import { inArray, sql } from 'drizzle-orm';
 import type { Principal } from '../auth/principal.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
@@ -13,6 +14,9 @@ import { membershipAccess } from './access.ts';
 import { notify, type InvitesEnv } from './invites.ts';
 import { NO_STORE, readJsonObject, unauthenticated } from './respond.ts';
 
+const TYPES = ['share-invite', 'invite-accepted', 'mention', 'comment-reply'] as const;
+type NoticeType = (typeof TYPES)[number];
+
 /** How many of the newest notices the bell shows. */
 export const NOTICE_LIMIT = 50;
 
@@ -20,7 +24,7 @@ type Reader = Extract<Principal, { type: 'user' }>;
 
 export interface Notice {
   id: string;
-  type: 'share-invite' | 'invite-accepted';
+  type: NoticeType;
   read: boolean;
   createdAt: number;
   /** Who acted: the sharer, or the person who accepted an invite. */
@@ -28,6 +32,8 @@ export interface Notice {
   target: { type: 'doc' | 'folder'; id: string; title: string; kind: 'doc' | 'folder' | 'vault' };
   /** An accepted invite sent to another address than the one it was accepted with. */
   invitedEmail?: string;
+  /** The comment a mention or reply notice is about. */
+  commentId?: string;
 }
 
 interface Row {
@@ -43,6 +49,7 @@ interface Payload {
   targetId: string;
   by: string;
   invitedEmail?: string;
+  commentId?: string;
 }
 
 function parsePayload(text: string): Payload | null {
@@ -54,6 +61,7 @@ function parsePayload(text: string): Payload | null {
       targetId: value.targetId,
       by: value.by,
       ...(typeof value.invitedEmail === 'string' ? { invitedEmail: value.invitedEmail } : {}),
+      ...(typeof value.commentId === 'string' ? { commentId: value.commentId } : {}),
     };
   } catch {
     return null;
@@ -63,7 +71,7 @@ function parsePayload(text: string): Payload | null {
 async function listNotices(d1: D1Database, reader: Reader): Promise<Notice[]> {
   const db = createDb(d1);
   const rows = await db.all<Row>(sql`SELECT id, type, payload_json AS payload, created_at AS createdAt, read_at AS readAt
-    FROM notifications WHERE user_id = ${reader.id} AND type IN ('share-invite', 'invite-accepted')
+    FROM notifications WHERE user_id = ${reader.id} AND type IN (SELECT value FROM json_each(${JSON.stringify(TYPES)}))
     ORDER BY created_at DESC, rowid DESC LIMIT ${NOTICE_LIMIT}`);
   const parsed = rows.flatMap((row) => {
     const payload = parsePayload(row.payload);
@@ -92,6 +100,7 @@ async function listNotices(d1: D1Database, reader: Reader): Promise<Notice[]> {
         : { type: 'folder', id: payload.targetId, title: target.name, kind: target.kind },
     };
     if (payload.invitedEmail && actor && payload.invitedEmail !== actor.email.toLowerCase()) notice.invitedEmail = payload.invitedEmail;
+    if (payload.commentId) notice.commentId = payload.commentId;
     return notice;
   });
 }

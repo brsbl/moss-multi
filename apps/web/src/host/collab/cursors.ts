@@ -4,6 +4,7 @@ import { createAbsolutePositionFromRelativePosition, createRelativePositionFromJ
 import { isRelativePositionJSON } from '@moss-multi/protocol/sync';
 import type YProvider from 'y-partyserver/provider';
 import { avatarInk } from '../../../../../packages/ui/src/FacePile.tsx';
+import { setBatchGeometry } from './landing.ts';
 import type { PresenceUser } from './presence.ts';
 
 /**
@@ -59,14 +60,22 @@ export function cursorController(editor: LexicalEditor) {
       }
     }
   };
+  // Cursor geometry reads layout, so it runs once the task that changed awareness is done, once for any number of
+  // changes, or in a large paste's batch right after the batch's own layout (setBatchGeometry). Inside the editor
+  // update (each batch changes the selection and the typing clock) it laid the whole note out per change.
+  const flush = () => {
+    if (!queued) return;
+    queued = false;
+    paint();
+  };
   const queue = () => {
     if (queued || stopped) return;
     queued = true;
-    queueMicrotask(() => { queued = false; paint(); });
+    queueMicrotask(flush);
   };
   const sync: SyncCursorPositionsFn = (next, source) => {
     binding = next as Binding; provider = source;
-    syncCursorPositions(next, source, options); queue();
+    queue();
   };
   const start = (source: YProvider) => {
     stopped = false;
@@ -79,9 +88,10 @@ export function cursorController(editor: LexicalEditor) {
       }
       queue();
     });
+    const stopGeometry = setBatchGeometry(editor, flush);
     const timer = setInterval(queue, 250);
     window.addEventListener('resize', queue);
-    return () => { stopped = true; clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', queue); };
+    return () => { stopped = true; stopGeometry(); clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', queue); };
   };
   return { sync, start };
 }

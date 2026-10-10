@@ -39,6 +39,11 @@ export class AckLedger {
     pending.writes.push({ update, ends: Y.parseUpdateMeta(update).to });
   }
 
+  /** The unacknowledged writes of the note or payload `id`, one update per local transaction, in order: what a replay sends (replay.ts). */
+  pending(id: string = NOTE): readonly Uint8Array[] {
+    return this.#pending.get(id)?.writes.map((write) => write.update) ?? [];
+  }
+
   /** Replay only unacknowledged writes if a channel recovers without reconnecting. */
   pendingUpdate(id: string = NOTE): Uint8Array | null {
     const writes = this.#pending.get(id)?.writes;

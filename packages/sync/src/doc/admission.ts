@@ -118,10 +118,14 @@ export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
 
 /**
  * The classifier's verdict, the deletes the frame carries (its ack names them, A§5.1 Acks), and whether the frame
- * needs a clock the doc lacks (`missing`).
+ * needs a clock the doc lacks (`missing`). `decoded` lets the caller share one decode with gate 2b.
  */
-export function classifySync(doc: Y.Doc, update: Uint8Array): { changes: boolean; missing: boolean; deletes: DeleteSet } {
-  const { structs, ds } = Y.decodeUpdate(update);
+export function classifySync(
+  doc: Y.Doc,
+  update: Uint8Array,
+  decoded = Y.decodeUpdate(update),
+): { changes: boolean; missing: boolean; deletes: DeleteSet } {
+  const { structs, ds } = decoded;
   return { changes: changes(doc, structs, ds), missing: missing(doc, structs, ds), deletes: ds };
 }
 

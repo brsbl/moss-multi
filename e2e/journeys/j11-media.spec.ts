@@ -195,8 +195,9 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   await caretAfterFirstLine(ada, docId);
   await ada.page.keyboard.press('Enter');
   await ada.page.keyboard.type('/media');
-  await expect(ada.page.locator('button[data-index]').filter({ hasText: 'Media' })).toHaveCount(1);
-  await ada.page.keyboard.press('Enter');
+  // Click the item, as j00 and j14 do: Enter takes whichever item is selected, and while the menu is still filtering
+  // that can be another (a formula once landed instead, so "From computer" never appeared).
+  await ada.page.locator('button[data-index]').filter({ hasText: /^Media/ }).first().click();
   const chooser = ada.page.waitForEvent('filechooser', { timeout: BIND_TIMEOUT });
   await ada.page.getByRole('option', { name: /From computer/ }).click();
   await (await chooser).setFiles(MEDIA.map((file) => ({ name: file.name, mimeType: file.type, buffer: bytes(file.name) })));
