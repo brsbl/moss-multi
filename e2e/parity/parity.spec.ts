@@ -244,15 +244,15 @@ async function openThreadFromList(page: Page, detach: boolean): Promise<void> {
  */
 async function expectCommentPaint(page: Page, theme: Theme): Promise<void> {
   const box = await page.evaluate(() => {
-    let found: { x: number; y: number; width: number; height: number } | null = null;
+    const found: { x: number; y: number; width: number; height: number }[] = [];
     CSS.highlights.forEach((highlight, name) => {
       if (!/^moss-comment-\d+$/.test(name)) return;
       highlight.forEach((range) => {
         const rect = (range as Range).getClientRects()[0];
-        if (!found && rect && rect.width > 4 && rect.height > 4) found = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        if (rect && rect.width > 4 && rect.height > 4) found.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
       });
     });
-    return found;
+    return found[0] ?? null;
   });
   expect(box, `${theme}: the comment highlight holds a range`).not.toBeNull();
   // The interior: off the box's edges, where moss's padding and rounding differ by design.

@@ -17,6 +17,7 @@ import { getThemeById } from '../plugins/code-block/themes';
 import { highlightCodeToHtml } from '../utils/code-highlighting';
 // moss-multi seam: read-only-decorators (T2.3): a read-only or terminal editor offers no code-block edit
 import { useIsEditorEditable } from '../components/media-primitives';
+import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
 import {
   BLOCK_HEADER_CLASSNAME,
   BLOCK_SURFACE_CLASSNAME,
@@ -56,6 +57,7 @@ function CodeBlockComponent({
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
   const editable = useIsEditorEditable(); // moss-multi seam: read-only-decorators (T2.3)
+  const canAddComment = useBlockCanComment(editor, editable); // moss-multi seam: comments (T4.B3)
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey) || resumeField(editor, nodeKey));
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -371,8 +373,8 @@ function CodeBlockComponent({
                 onDropdownOpenChange={setIsDropdownOpen}
                 readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
               />
-              {/* moss-multi seam: read-only-decorators (T4.3): a read-only body offers no block comment */}
-              {!editable ? null : (
+              {/* moss-multi seam: comments (T4.B3): Add comment follows the comment capability, so a commenter has it */}
+              {!canAddComment ? null : (
               <button
                 type="button"
                 onClick={(e) => {

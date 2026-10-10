@@ -1,16 +1,17 @@
 diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.tsx b/packages/desktop/src/renderer/editor/components/media-primitives.tsx
 --- a/packages/desktop/src/renderer/editor/components/media-primitives.tsx
 +++ b/packages/desktop/src/renderer/editor/components/media-primitives.tsx
-@@ -9,6 +9,8 @@ import {
+@@ -9,6 +9,9 @@ import {
  } from 'lexical';
  import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
  import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 +// moss-multi seam: capabilities (T2.6): a block's writing controls follow the editor's editability, live.
 +import { useBlockCanEdit } from '@moss-multi/host/capabilities';
++import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
  export {
    GapCursor,
    BlockNodeShell,
-@@ -182,9 +184,11 @@ type MediaNodeHeaderProps = {
+@@ -182,9 +185,11 @@ type MediaNodeHeaderProps = {
   */
  export function useMediaNodeActions(nodeKey: NodeKey): {
    handleDelete: () => void;
@@ -23,7 +24,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
  
    const handleDelete = useCallback(() => {
      // Re-guard: Lexical applies editor.update() even when not editable, so a
-@@ -214,7 +218,8 @@ export function useMediaNodeActions(nodeKey: NodeKey): {
+@@ -214,7 +219,8 @@ export function useMediaNodeActions(nodeKey: NodeKey): {
      [editor, nodeKey]
    );
  
@@ -33,7 +34,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
  }
  
  // ---------------------------------------------------------------------------
-@@ -383,6 +388,11 @@ export function MediaNodeHeader({
+@@ -383,6 +389,12 @@ export function MediaNodeHeader({
    children,
  }: MediaNodeHeaderProps): JSX.Element {
    const [editor] = useLexicalComposerContext();
@@ -42,19 +43,24 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
 +  const editorEditable = useIsEditorEditable();
 +  editable = editable && editorEditable;
 +  const canEdit = useBlockCanEdit() && editable; // moss-multi seam: capabilities (T2.6)
++  const canAddComment = useBlockCanComment(editor, canEdit); // moss-multi seam: comments (T4.B3): a commenter has it
  
    return (
      <div
-@@ -392,7 +402,7 @@ export function MediaNodeHeader({
+@@ -392,25 +404,25 @@ export function MediaNodeHeader({
      >
        <div className="flex items-center gap-1">
          {children}
 -        {editable && (
-+        {canEdit && (
++        {canAddComment && (
            <MediaHeaderButton
              icon={StickyNote}
              title="Add comment"
-@@ -403,14 +413,14 @@ export function MediaNodeHeader({
+             onClick={() => {
+               // Re-guard: opening the comment popover mutates; no-op read-only.
+-              if (!editor.isEditable()) return;
++              if (!canAddComment) return; // moss-multi seam: comments (T4.B3)
+               editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
              }}
            />
          )}

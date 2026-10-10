@@ -7,7 +7,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
  import { EDITOR_UPDATE_TAGS } from '../utils/editorUpdateTags';
 +// moss-multi seam: comments (comments.md §12): anchors, hits and writes go through the adapter
 +// on a bound note only; an unbound editor (file-backed) keeps moss's own path below each seam
-+import { anchorTarget, bound, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive, useCanComment } from '@moss-multi/host/comments/adapter';
++import { anchorTarget, bound, commentsOnDecorator, detachedRect, mutate, setActive, trackCommentHover, useCanComment } from '@moss-multi/host/comments/adapter';
 +import { hidden } from '@moss-multi/host/affordances';
  
  interface CommentUIWrapperProps {
@@ -44,17 +44,18 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const anchor = findCommentHoverAnchor(event.target);
      if (!anchor) return;
  
-@@ -250,7 +258,35 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -250,7 +258,36 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      hoveredEditorCommentIdRef.current = comment.id;
    }, [editor, getHoveredRootComment]);
  
-+  // moss-multi seam: comments (comments.md §11): a bound note's highlight has no element, so the pointer is hit-tested
-+  const handleBoundCommentMouseMove = useCallback((event: MouseEvent) => {
++  // moss-multi seam: comments (comments.md §11): a bound note's highlight has no element, so the pointer is hit-tested,
++  // once per animation frame at its latest position (trackCommentHover)
++  const handleBoundCommentHit = useCallback((ids: string[]) => {
 +    if (!bound(editor)) return;
 +    {
 +      const liveCommentsMap = store.get(noteCommentsMapAtom(noteId));
 +      const hit = getNewestRootComment(
-+        commentsAtPoint(editor, event.clientX, event.clientY)
++        ids
 +          .map((id) => liveCommentsMap[id])
 +          .filter((comment): comment is NoteComment => Boolean(comment))
 +      );
@@ -80,7 +81,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const anchor = findCommentHoverAnchor(event.target);
      if (!anchor) return;
      const related = event.relatedTarget;
-@@ -261,6 +297,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -261,6 +298,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
    }, [editor]);
  
    const findInlineCommentAnchor = useCallback((commentId: string) => {
@@ -88,7 +89,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      let anchor: { element: HTMLElement; nodeKey: string } | null = null;
  
      editor.read(() => {
-@@ -354,7 +391,12 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -354,7 +392,12 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
        }
  
        const inlineAnchor = findInlineCommentAnchor(comment.id);
@@ -102,7 +103,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
        const hiddenTabPanel = inlineAnchor.element.closest('[data-tab-panel]:not([data-active])');
        if (hiddenTabPanel) {
          if (!revealRequested.tab && !revealTabContainingNode(inlineAnchor.nodeKey)) return;
-@@ -454,7 +496,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -454,7 +497,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
        }
  
        const commentsMap = store.get(noteCommentsMapAtom(noteId));
@@ -111,22 +112,31 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
          .map((id) => commentsMap[id])
          .filter((c): c is NoteComment => !!c)
          .filter((comment) => isCommentVisibleForStatus(commentsMap, comment.id, commentThreadFilter));
-@@ -487,11 +529,13 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -485,13 +528,21 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+   }, [editor, handleDecoratorCommentClick]);
+ 
    useEffect(() => {
-     return editor.registerRootListener((rootElement, previousRootElement) => {
+-    return editor.registerRootListener((rootElement, previousRootElement) => {
++    let untrack = () => {}; // moss-multi seam: comments
++    const unregister = editor.registerRootListener((rootElement, previousRootElement) => {
        previousRootElement?.removeEventListener('mouseover', handleEditorCommentMouseOver);
-+      previousRootElement?.removeEventListener('mousemove', handleBoundCommentMouseMove); // moss-multi seam: comments
++      untrack(); // moss-multi seam: comments
++      untrack = () => {};
        previousRootElement?.removeEventListener('mouseout', handleEditorCommentMouseOut);
        rootElement?.addEventListener('mouseover', handleEditorCommentMouseOver);
-+      rootElement?.addEventListener('mousemove', handleBoundCommentMouseMove); // moss-multi seam: comments
++      if (rootElement) untrack = trackCommentHover(editor, rootElement, handleBoundCommentHit); // moss-multi seam: comments
        rootElement?.addEventListener('mouseout', handleEditorCommentMouseOut);
      });
 -  }, [editor, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
-+  }, [editor, handleBoundCommentMouseMove, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
++    return () => {
++      unregister();
++      untrack(); // moss-multi seam: comments: no hit-test fires after unmount
++    };
++  }, [editor, handleBoundCommentHit, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
  
    useEffect(() => {
      const handleOpenThread = (event: Event) => {
-@@ -531,8 +575,31 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -531,8 +582,31 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      }
    }, [activeCommentState.comment, commentThreadFilter, getNewestRootComment, handlePopoverOpenChange]);
  
@@ -158,7 +168,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const existingComment = currentMap[commentId];
      if (!existingComment) return;
-@@ -562,12 +629,27 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -562,12 +636,27 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      if (store.get(activeCommentAtom(noteId)).comment?.id === commentId) {
        setActiveComment(prev => ({ ...prev, comment: updatedComment }));
      }
@@ -187,7 +197,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const deletion = applyCommentDeletion(currentMap, commentId, scope);
      if (!deletion.changed) return;
  
-@@ -591,6 +673,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -591,6 +680,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
      const trimmed = text.trim();
      const normalizedImageUrls = imageUrls?.filter((url) => url.trim().length > 0) ?? [];
      if (!trimmed && normalizedImageUrls.length === 0) return false;
@@ -195,7 +205,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const parent = currentMap[parentId];
      if (!parent) return false;
-@@ -616,6 +699,11 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -616,6 +706,11 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
    }, [noteId, store]);
  
    const handleSetThreadResolved = useCallback((rootId: string, resolved: boolean) => {
@@ -207,7 +217,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentUIWrapper.ts
      const currentMap = store.get(noteCommentsMapAtom(noteId));
      const result = setCommentSubtreeResolvedState(currentMap, rootId, {
        resolved,
-@@ -758,10 +846,10 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
+@@ -758,10 +853,10 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
              collisionBoundary={editor.getRootElement()?.closest('.canvas-scroll') ?? null}
              onUpdate={handleUpdate}
              onDelete={handleDelete}

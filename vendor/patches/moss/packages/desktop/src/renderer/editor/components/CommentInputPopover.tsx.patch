@@ -1,15 +1,59 @@
 diff --git a/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx b/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx
 --- a/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx
 +++ b/packages/desktop/src/renderer/editor/components/CommentInputPopover.tsx
-@@ -26,6 +26,7 @@ import {
+@@ -26,6 +26,8 @@ import {
  import { imagesApi } from '../../api/electron';
  import { acquireCommentUiOpenFlag } from '../utils/comment-ui-open-flag';
  import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
 +import { MentionScope } from '@moss-multi/host/comments/mentions'; // moss-multi seam: comments (comments.md §12)
++import { submitted, useNoteBound } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments
  
  export interface CommentInputPopoverProps {
    /** Whether the popover is open */
-@@ -241,6 +242,7 @@ export function CommentInputPopover({
+@@ -62,6 +64,9 @@ export function CommentInputPopover({
+   const [imageUrls, setImageUrls] = useState<string[]>([]);
+   const focusLockReleaseRef = useRef<(() => void) | null>(null);
+   const lightboxDismissGuardRef = useRef(false);
++  // moss-multi seam: comments: a bound submit settles later; each open or close starts a new composer session
++  const shared = useNoteBound(noteId);
++  const openGenerationRef = useRef(0);
+   const resolvedCollisionBoundary = useMemo(
+     () => resolveCanvasCollisionBoundary(collisionBoundary, anchorRect),
+     [anchorRect, collisionBoundary]
+@@ -114,6 +119,7 @@ export function CommentInputPopover({
+ 
+   // Draft save/restore keyed on open state
+   useEffect(() => {
++    openGenerationRef.current += 1; // moss-multi seam: comments
+     if (open) {
+       // Restore draft if exists and <24h old; prune expired
+       const inputState = store.get(commentInputStateAtom(noteId));
+@@ -214,6 +220,24 @@ export function CommentInputPopover({
+     const created = onCreate(trimmedText, imageUrls.length > 0 ? imageUrls : undefined);
+     if (!created) return;
+ 
++    // moss-multi seam: comments (comments.md §4): on a bound note the composer keeps its text until the server takes the
++    // comment, so a refused or lost write stays here and a resubmit retries it; a success clears only this draft.
++    const answer = shared ? submitted(noteId, 'root') : null;
++    if (answer) {
++      const key = getDraftKey(store.get(commentInputStateAtom(noteId)));
++      const generation = openGenerationRef.current;
++      void answer.then((result) => {
++        if (!result.ok) return;
++        const drafts = new Map(store.get(commentDraftAtom));
++        if (key && drafts.delete(key)) store.set(commentDraftAtom, drafts);
++        if (openGenerationRef.current !== generation) return;
++        setImageUrls([]);
++        setText('');
++        onOpenChange(false);
++      });
++      return;
++    }
++
+     // Clear matching draft before closing
+     clearMatchingDraft();
+ 
+@@ -241,6 +265,7 @@ export function CommentInputPopover({
    );
  
    return (
@@ -17,7 +61,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentInputPopover
      <Popover.Root open={isVisible} onOpenChange={handleRootOpenChange}>
        <Popover.Anchor virtualRef={virtualRef} />
        <Popover.Portal>
-@@ -306,6 +308,7 @@ export function CommentInputPopover({
+@@ -306,6 +331,7 @@ export function CommentInputPopover({
          </Popover.Content>
        </Popover.Portal>
      </Popover.Root>

@@ -11,7 +11,7 @@ import * as Y from 'yjs';
 import { fromBase64 } from '../../packages/core/src/tree-anchor.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { BODY_BINDING_ATTR, DOC_STATE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
-import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
+import { openDocClient } from '../lib/doc-client.ts';
 import { grantDoc, type GrantRole } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -508,7 +508,7 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
     await expect(composer, `${type}: the comment is sent`).toBeHidden({ timeout: PEER_TIMEOUT });
     texts.push(text);
   }
-  const cookie = cookieHeader(await ada.context.cookies());
+  const cookie = (await ada.context.cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
   await expect.poll(() => storedAnchors(stack.baseUrl, id, cookie, texts), { message: 'each comment is stored as a block anchor on its node', timeout: PEER_TIMEOUT })
     .toEqual(BLOCK_TYPES.map((type) => ({ text: `On the ${type}`, kind: 'block', type })).sort((a, b) => a.text.localeCompare(b.text)));
   await expect(gutter(ada), 'the owner sees a thread on each block').toHaveCount(BLOCK_TYPES.length, { timeout: PEER_TIMEOUT });

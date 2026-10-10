@@ -11,16 +11,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  // moss-multi seam: converter-split (A§12; S-conv §2.3)
  import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
  import { EDITOR_CHROME_COLORS } from '../colors';
-@@ -13,6 +16,8 @@ import {
+@@ -13,6 +16,9 @@ import {
    BLOCK_SURFACE_CLASSNAME,
    BlockNodeShell
  } from '../components/block-node-primitives';
 +// moss-multi seam: read-only-decorators (T3.8)
 +import { useIsEditorEditable } from '../components/media-primitives';
++import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
  import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
  import {
    registerDecoratorDraftFlusher,
-@@ -956,8 +961,11 @@ function SketchWrapper({
+@@ -956,8 +962,11 @@ function SketchWrapper({
  
    // Check if grid is empty to auto-enter edit mode
    const isInitialEmpty = initialGrid.every((v) => !v);
@@ -33,16 +34,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
    const [grid, setGrid] = useState<boolean[]>(initialGrid);
    const [labels, setLabels] = useState<TextLabel[]>(initialLabels);
    const [undoStack, setUndoStack] = useState<SketchSnapshot[]>([]);
-@@ -977,6 +985,8 @@ function SketchWrapper({
+@@ -977,6 +986,9 @@ function SketchWrapper({
    redoRef.current = redoStack;
  
    const isGridEmpty = grid.every((v) => !v);
 +  // moss-multi seam: read-only-decorators (T3.8): a read-only canvas offers no Draw, Duplicate, comment or gap.
 +  const editable = useIsEditorEditable() && payloadWritable;
++  const canAddComment = useBlockCanComment(editor, editable); // moss-multi seam: comments (T4.B3)
  
    const handleEditClick = useCallback((e: React.MouseEvent) => {
      e.preventDefault();
-@@ -1005,11 +1015,29 @@ function SketchWrapper({
+@@ -1005,11 +1017,29 @@ function SketchWrapper({
      [isSelected, setSelected, clearSelection]
    );
  
@@ -75,7 +77,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
    );
  
    const handleDone = useCallback(() => {
-@@ -1052,6 +1080,7 @@ function SketchWrapper({
+@@ -1052,6 +1082,7 @@ function SketchWrapper({
    }, [editor._key, handleDone, isEditing, nodeKey]);
  
    const handleCancel = useCallback(() => {
@@ -83,7 +85,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      const baselineGrid = editBaselineGridRef.current;
      const baselineLabels = editBaselineLabelsRef.current;
      setGrid(baselineGrid);
-@@ -1060,7 +1089,7 @@ function SketchWrapper({
+@@ -1060,7 +1091,7 @@ function SketchWrapper({
      labelsRef.current = baselineLabels;
      setUndoStack([]);
      setRedoStack([]);
@@ -92,7 +94,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      setIsEditing(false);
    }, [persistSketchDraft]);
  
-@@ -1070,40 +1099,44 @@ function SketchWrapper({
+@@ -1070,40 +1101,44 @@ function SketchWrapper({
    // depend on the toolbar Done path.
    // Undo/redo is grid-only — labels are not part of the undo history.
    const handleGridChange = useCallback((newGrid: boolean[]) => {
@@ -141,7 +143,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      },
      [persistSketchDraft]
    );
-@@ -1166,11 +1199,11 @@ function SketchWrapper({
+@@ -1166,11 +1201,11 @@ function SketchWrapper({
        selected={isSelected}
        beforeLabel="Insert paragraph before canvas"
        afterLabel="Insert paragraph after canvas"
@@ -155,25 +157,30 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
      >
        <div
          className={`outline-none transition-colors ${BLOCK_SURFACE_CLASSNAME}`}
-@@ -1288,7 +1321,7 @@ function SketchWrapper({
+@@ -1288,9 +1323,11 @@ function SketchWrapper({
                    </Tooltip>
                  </div>
                </TooltipProvider>
 -            ) : (
-+            ) : !editable ? null /* moss-multi seam: read-only-decorators (T3.8) */ : (
++            ) : !editable && !canAddComment ? null /* moss-multi seam: read-only-decorators (T3.8) */ : (
                <TooltipProvider delayDuration={200}>
                  <div className="flex items-center gap-1">
-                   <Tooltip>
-@@ -1317,6 +1350,8 @@ function SketchWrapper({
-                     </TooltipTrigger>
-                     <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
-                   </Tooltip>
-+                  {/* moss-multi seam: read-only-decorators (T4.3): a read-only body offers no block comment */}
-+                  {!editable ? null : (
++                  {/* moss-multi seam: read-only-decorators (T3.8): a read-only body offers no Duplicate or Draw */}
++                  {!editable ? null : (<>
                    <Tooltip>
                      <TooltipTrigger asChild>
                        <button
-@@ -1332,6 +1367,7 @@ function SketchWrapper({
+@@ -1317,6 +1354,9 @@ function SketchWrapper({
+                     </TooltipTrigger>
+                     <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
+                   </Tooltip>
++                  </>)}
++                  {/* moss-multi seam: comments (T4.B3): Add comment follows the comment capability, so a commenter has it */}
++                  {!canAddComment ? null : (
+                   <Tooltip>
+                     <TooltipTrigger asChild>
+                       <button
+@@ -1332,6 +1372,7 @@ function SketchWrapper({
                      </TooltipTrigger>
                      <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                    </Tooltip>
@@ -181,7 +188,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
                  </div>
                </TooltipProvider>
              )}
-@@ -1360,7 +1396,8 @@ export function commitSketchDraftToNode(
+@@ -1360,7 +1401,8 @@ export function commitSketchDraftToNode(
    editor: LexicalEditor,
    nodeKey: NodeKey,
    grid: boolean[],
@@ -191,7 +198,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
  ): void {
    // Commit synchronously: note-switch cleanup saves immediately after flushing
    // decorator drafts. A non-discrete update can defer dirty notification until
-@@ -1369,8 +1406,8 @@ export function commitSketchDraftToNode(
+@@ -1369,8 +1411,8 @@ export function commitSketchDraftToNode(
      () => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isSketchNode(node)) {
@@ -202,7 +209,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/SketchNode.view.tsx b/pa
        }
      },
      { discrete: true }
-@@ -1379,5 +1416,5 @@ export function commitSketchDraftToNode(
+@@ -1379,5 +1421,5 @@ export function commitSketchDraftToNode(
  
  // moss-multi seam: node-views (A§12)
  registerNodeView(SketchNode.getType(), function decorate(this: SketchNode): JSX.Element {

@@ -28,6 +28,7 @@ import { imagesApi } from '../../api/electron';
 import { acquireCommentUiOpenFlag } from '../utils/comment-ui-open-flag';
 import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
 import { MentionScope } from '@moss-multi/host/comments/mentions'; // moss-multi seam: comments (comments.md §12)
+import { submitted, useNoteBound } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments
 
 export interface CommentInputPopoverProps {
   /** Whether the popover is open */
@@ -64,6 +65,9 @@ export function CommentInputPopover({
   const [imageUrls, setImageUrls] = useState<string[]>([]);
   const focusLockReleaseRef = useRef<(() => void) | null>(null);
   const lightboxDismissGuardRef = useRef(false);
+  // moss-multi seam: comments: a bound submit settles later; each open or close starts a new composer session
+  const shared = useNoteBound(noteId);
+  const openGenerationRef = useRef(0);
   const resolvedCollisionBoundary = useMemo(
     () => resolveCanvasCollisionBoundary(collisionBoundary, anchorRect),
     [anchorRect, collisionBoundary]
@@ -116,6 +120,7 @@ export function CommentInputPopover({
 
   // Draft save/restore keyed on open state
   useEffect(() => {
+    openGenerationRef.current += 1; // moss-multi seam: comments
     if (open) {
       // Restore draft if exists and <24h old; prune expired
       const inputState = store.get(commentInputStateAtom(noteId));
@@ -215,6 +220,24 @@ export function CommentInputPopover({
     if (!trimmedText && imageUrls.length === 0) return;
     const created = onCreate(trimmedText, imageUrls.length > 0 ? imageUrls : undefined);
     if (!created) return;
+
+    // moss-multi seam: comments (comments.md §4): on a bound note the composer keeps its text until the server takes the
+    // comment, so a refused or lost write stays here and a resubmit retries it; a success clears only this draft.
+    const answer = shared ? submitted(noteId, 'root') : null;
+    if (answer) {
+      const key = getDraftKey(store.get(commentInputStateAtom(noteId)));
+      const generation = openGenerationRef.current;
+      void answer.then((result) => {
+        if (!result.ok) return;
+        const drafts = new Map(store.get(commentDraftAtom));
+        if (key && drafts.delete(key)) store.set(commentDraftAtom, drafts);
+        if (openGenerationRef.current !== generation) return;
+        setImageUrls([]);
+        setText('');
+        onOpenChange(false);
+      });
+      return;
+    }
 
     // Clear matching draft before closing
     clearMatchingDraft();

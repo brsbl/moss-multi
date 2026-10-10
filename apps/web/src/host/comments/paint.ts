@@ -28,10 +28,11 @@ export interface Painted {
 const supported = (): boolean => typeof CSS !== 'undefined' && 'highlights' in CSS && typeof Highlight !== 'undefined';
 
 class Painter {
-  painted = new Map<string, Painted>();
   hover: string | null = null;
   active: string | null = null;
   #frame: number | null = null;
+  #painted = new Map<string, Painted>();
+  #boxes: [string, DOMRect[]][] | null = null;
   readonly model: CommentsModel;
 
   constructor(readonly editor: LexicalEditor, readonly binding: Binding) {
@@ -40,6 +41,26 @@ class Painter {
 
   get docId(): string {
     return this.binding.id;
+  }
+
+  get painted(): Map<string, Painted> {
+    return this.#painted;
+  }
+
+  set painted(next: Map<string, Painted>) {
+    this.#painted = next;
+    this.#boxes = null;
+  }
+
+  /** Layout moved (a scroll, a resize): the cached boxes are stale. */
+  invalidate = (): void => {
+    this.#boxes = null;
+  };
+
+  /** Each painted root's boxes in viewport coordinates, measured once per paint, scroll or resize. */
+  boxes(): [string, DOMRect[]][] {
+    this.#boxes ??= [...this.#painted].map(([id, entry]) => [id, entry.block ? [entry.block.getBoundingClientRect()] : entry.ranges.flatMap((range) => [...range.getClientRects()])]);
+    return this.#boxes;
   }
 
   schedule = (): void => {
@@ -138,8 +159,37 @@ function domPoint(editor: LexicalEditor, key: string, offset: number, end: boole
 
 const painters = new Map<LexicalEditor, Painter>();
 
-/** Rebuilds every named highlight from every pane's painted ranges. */
+const ACTIVE_BLOCK = 'comment-highlight-active';
+const HOVER_BLOCK = 'comment-decorator-hover';
+/** Decorator wrappers the last refresh gave moss's classes to (a block may hold several comments). */
+let decorated = new Set<HTMLElement>();
+
+/**
+ * Sets moss's active and hover classes once per decorator wrapper, from all of its painted comments in every pane,
+ * and clears them from wrappers no comment paints any more (filtered out, deleted, or their painter unbound).
+ */
+function refreshBlocks(): void {
+  const blocks = new Map<HTMLElement, { active: boolean; hover: boolean }>();
+  for (const painter of painters.values()) {
+    for (const [id, entry] of painter.painted) {
+      if (!entry.block) continue;
+      const state = blocks.get(entry.block) ?? { active: false, hover: false };
+      state.active ||= painter.active === id;
+      state.hover ||= painter.hover === id;
+      blocks.set(entry.block, state);
+    }
+  }
+  for (const element of decorated) if (!blocks.has(element)) element.classList.remove(ACTIVE_BLOCK, HOVER_BLOCK);
+  for (const [element, state] of blocks) {
+    element.classList.toggle(ACTIVE_BLOCK, state.active);
+    element.classList.toggle(HOVER_BLOCK, state.hover);
+  }
+  decorated = new Set(blocks.keys());
+}
+
+/** Rebuilds every named highlight from every pane's painted ranges, and the decorators' classes. */
 function refreshHighlights(): void {
+  refreshBlocks();
   if (!supported()) return;
   const sets = new Map<string, Range[]>();
   const add = (name: string, ranges: Range[]) => {
@@ -152,8 +202,6 @@ function refreshHighlights(): void {
       add(`moss-comment-${entry.color}`, entry.ranges);
       if (painter.hover === id) add(`moss-comment-hover-${entry.color}`, entry.ranges);
       if (painter.active === id) add(`moss-comment-active-${entry.color}`, entry.ranges);
-      entry.block?.classList.toggle('comment-highlight-active', painter.active === id);
-      entry.block?.classList.toggle('comment-decorator-hover', painter.hover === id);
     }
   }
   for (const [name, ranges] of sets) {
@@ -181,6 +229,7 @@ export function bindCommentPaint(editor: LexicalEditor, binding: Binding): () =>
     }),
     painter.model.subscribe(painter.schedule),
     getDefaultStore().sub(commentThreadFilterAtom(binding.id), painter.schedule),
+    watchLayout(editor, painter.invalidate),
   ];
   painter.schedule();
   return () => {
@@ -191,6 +240,26 @@ export function bindCommentPaint(editor: LexicalEditor, binding: Binding): () =>
       refreshHighlights();
       notifyPaint(editor);
     }
+  };
+}
+
+/** Calls `moved` when layout may have moved the editor's text in the viewport: any scroll, a resize, a root resize. */
+function watchLayout(editor: LexicalEditor, moved: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  window.addEventListener('scroll', moved, { capture: true, passive: true });
+  window.addEventListener('resize', moved);
+  const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(moved);
+  const unroot = observer
+    ? editor.registerRootListener((root) => {
+      observer.disconnect();
+      if (root) observer.observe(root);
+    })
+    : () => {};
+  return () => {
+    window.removeEventListener('scroll', moved, { capture: true });
+    window.removeEventListener('resize', moved);
+    unroot();
+    observer?.disconnect();
   };
 }
 
@@ -232,6 +301,9 @@ export function markShared(editor: LexicalEditor, docId: string): () => void {
 /** Whether a pane binds `editor` to a shared doc; false for the file-backed editor bundle. */
 export const isShared = (editor: LexicalEditor): boolean => shared.has(editor);
 
+/** The shared doc a pane binds `editor` to, or null. */
+export const sharedDocOf = (editor: LexicalEditor): string | null => shared.get(editor) ?? null;
+
 /** Whether some editor in this tab is bound to the shared doc `docId`. */
 export function noteBound(docId: string): boolean {
   for (const id of shared.values()) if (id === docId) return true;
@@ -267,20 +339,42 @@ export function setHover(editor: LexicalEditor, id: string | null): void {
 
 const contains = (rect: DOMRect, x: number, y: number) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 
-/** The comments painted under the viewport point (x, y) in `editor`, by hit-testing their ranges' boxes. */
+/**
+ * The comments painted under the viewport point (x, y) in `editor`, by hit-testing their ranges' boxes (cached until
+ * the next paint, scroll or resize).
+ */
 export function commentsAtPoint(editor: LexicalEditor, x: number, y: number): string[] {
   const painter = painters.get(editor);
   if (!painter) return [];
-  const hits: string[] = [];
-  for (const [id, entry] of painter.painted) {
-    if (entry.block ? contains(entry.block.getBoundingClientRect(), x, y) : entry.ranges.some((range) => [...range.getClientRects()].some((rect) => contains(rect, x, y)))) hits.push(id);
-  }
-  return hits;
+  return painter.boxes().filter(([, rects]) => rects.some((rect) => contains(rect, x, y))).map(([id]) => id);
 }
 
-/** Tests-first stub (T4.B3): hit-tests every pointer move. */
+/**
+ * Hit-tests the latest pointer position over `root` at most once per animation frame and hands `onHit` the comments
+ * under it. Returns the stop, which also drops a frame already queued.
+ */
 export function trackCommentHover(editor: LexicalEditor, root: HTMLElement, onHit: (ids: string[]) => void): () => void {
-  const move = (event: MouseEvent) => onHit(commentsAtPoint(editor, event.clientX, event.clientY));
+  let frame: number | null = null;
+  let x = 0;
+  let y = 0;
+  const move = (event: MouseEvent) => {
+    x = event.clientX;
+    y = event.clientY;
+    frame ??= requestAnimationFrame(() => {
+      frame = null;
+      onHit(commentsAtPoint(editor, x, y));
+    });
+  };
+  // A pointer that left the body ends its hover (the caller's mouseout); a frame queued before must not bring it back.
+  const leave = () => {
+    if (frame !== null) cancelAnimationFrame(frame);
+    frame = null;
+  };
   root.addEventListener('mousemove', move);
-  return () => root.removeEventListener('mousemove', move);
+  root.addEventListener('mouseleave', leave);
+  return () => {
+    root.removeEventListener('mousemove', move);
+    root.removeEventListener('mouseleave', leave);
+    leave();
+  };
 }

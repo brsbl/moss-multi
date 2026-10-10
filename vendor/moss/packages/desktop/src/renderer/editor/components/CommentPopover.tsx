@@ -57,7 +57,7 @@ import { dispatchCommentThreadPlaced } from '../utils/comment-entry-point';
 import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
 // moss-multi seam: comments (comments.md §12): on a bound note edit and delete are the author's, reactions and
 // @people are the web's; a file-backed note keeps moss's own
-import { isMine, useCanComment, useNoteBound } from '@moss-multi/host/comments/adapter';
+import { isMine, submitted, useCanComment, useNoteBound } from '@moss-multi/host/comments/adapter';
 import { CommentReactions, QuickReactions } from '@moss-multi/host/comments/Reactions';
 import { MentionScope } from '@moss-multi/host/comments/mentions';
 
@@ -514,6 +514,8 @@ export function CommentPopover({
   const [editText, setEditText] = useState('');
   const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
   const [replyText, setReplyText] = useState('');
+  const replyTextRef = useRef(replyText); // moss-multi seam: comments: the reply box's text when a bound submit settles
+  replyTextRef.current = replyText;
   const [replyImageUrls, setReplyImageUrls] = useState<string[]>([]);
   const [replyResetSignal, setReplyResetSignal] = useState(0);
   const [editFooterHost, setEditFooterHost] = useState<HTMLDivElement | null>(null);
@@ -744,10 +746,19 @@ export function CommentPopover({
       const hasContent = trimmedText.length > 0 || editImageUrls.length > 0;
       if (hasContent && (trimmedText !== target.text || urlsChanged)) {
         onUpdate(target.id, trimmedText, urlsChanged ? editImageUrls : undefined);
+        // moss-multi seam: comments (comments.md §12): on a bound note edit mode holds the text until the server takes
+        // it, so a refused or lost save stays open to retry
+        const answer = shared ? submitted(noteId, `edit:${target.id}`) : null;
+        if (answer) {
+          void answer.then((result) => {
+            if (result.ok) setEditingId((current) => (current === target.id ? null : current));
+          });
+          return;
+        }
       }
       setEditingId(null);
     },
-    [editText, editImageUrls, onUpdate]
+    [editText, editImageUrls, noteId, onUpdate, shared]
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -846,11 +857,20 @@ export function CommentPopover({
         replyImageUrls.length > 0 ? replyImageUrls : undefined
       );
       if (!created) return;
+      // moss-multi seam: comments (comments.md §12): on a bound note the reply box keeps its text until the server takes
+      // the reply, so a refused or lost write stays here and a resubmit retries it under the same id
+      const answer = shared ? submitted(noteId, `reply:${root.id}`) : null;
+      if (answer) {
+        void answer.then((result) => {
+          if (result.ok && replyTextRef.current.trim() === text) resetReplyComposer();
+        });
+        return;
+      }
       // Force-clear the still-mounted composer (the anti-echo guard would
       // otherwise keep the just-typed text) and keep focus for the next comment.
       resetReplyComposer();
     },
-    [onReply, replyText, replyImageUrls, resetReplyComposer, root.id]
+    [noteId, onReply, replyText, replyImageUrls, resetReplyComposer, root.id, shared]
   );
 
   const handleDeleteConfirm = useCallback(() => {
