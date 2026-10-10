@@ -236,15 +236,15 @@ async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Princip
 const KICK_FAILED = 'The change is saved, but some open windows haven’t closed yet. Try again.';
 
 /**
- * Closes `principalIds` (with their agents) on every doc the target reaches, after the change committed. A DocDO that
- * does not acknowledge answers 503 so the owner retries; a retry kicks again.
+ * Closes `principalIds` (with their live agents) on every doc the target reaches, after the change committed, and
+ * tells each of them to re-read their sidebar. A DocDO that does not acknowledge answers 503 so the owner retries; a
+ * retry kicks again.
  */
-async function kickFrom(
-  db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number, notified = principalIds,
-): Promise<Response | null> {
+async function kickFrom(db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number): Promise<Response | null> {
   if (!env.DocDO) return refuse(503, 'unavailable', KICK_FAILED);
+  const notified = await withAgents(db, principalIds);
   try {
-    await kick({ DB: db, DocDO: env.DocDO }, await docsOf(db, target), { principalIds: await withAgents(db, principalIds) }, at);
+    await kick({ DB: db, DocDO: env.DocDO }, await docsOf(db, target), { principalIds: notified }, at);
   } catch (error) {
     if (!(error instanceof KickFailed)) throw error;
     return refuse(503, 'unavailable', KICK_FAILED);

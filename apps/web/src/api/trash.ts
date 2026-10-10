@@ -134,13 +134,15 @@ const cannotReturn = () => refuse(403, 'forbidden',
 const EDIT_ROLES = GRANT_ROLES.filter((role) => roleAtLeast(role, 'editor')).map((role) => `'${role}'`).join(', ');
 
 /**
- * The restore write (?1 destination, ?2 filename, ?3 doc, ?4 user, ?5 vault, ?6 the note's creator's acting user). It
- * lands only while the caller still manages the note, the destination is still live in its vault, a relocation still
- * goes to a folder the caller can edit, and the creator is under LIVE_NOTE_CAP, so a folder trash, a revocation or a
- * create that commits first wins. The note counts against whoever made it, as a create does.
+ * The restore write (?1 destination, ?2 filename, ?3 doc, ?4 user, ?5 vault, ?6 the note's creator's acting user, ?7-?9
+ * the folder, batch and trash time it read). It lands only on the trash it read, while the caller still manages the
+ * note, the destination is still live in its vault, a relocation still goes to a folder the caller can edit, and the
+ * creator is under LIVE_NOTE_CAP, so a folder trash, a revocation, a create or another restore and re-trash that
+ * commits first wins. The note counts against whoever made it, as a create does.
  */
 const RESTORE = `UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, folder_id = ?1, filename = ?2
-  WHERE id = ?3 AND deleted_at IS NOT NULL AND ${managesDoc(3, 4)} AND ${liveNotesBy(6)} < ${LIVE_NOTE_CAP}
+  WHERE id = ?3 AND deleted_at IS NOT NULL AND folder_id = ?7 AND trash_batch_id IS ?8 AND deleted_at = ?9
+    AND ${managesDoc(3, 4)} AND ${liveNotesBy(6)} < ${LIVE_NOTE_CAP}
     AND EXISTS (WITH RECURSIVE ${upFrom(1)} SELECT 1 WHERE ${liveIn(5)}
       AND ("docs".folder_id = ?1 OR EXISTS (SELECT 1 FROM folders f WHERE f.id = ?1 AND f.owner_user_id = ?4)
         OR EXISTS (SELECT 1 FROM folder_members m JOIN up ON m.folder_id = up.id WHERE m.principal_id = ?4 AND m.role IN (${EDIT_ROLES}))))`;
@@ -150,6 +152,9 @@ const RESTORE_ATTEMPTS = 5;
 /** The user a note's creator acts for: an agent's owner, else the creator. */
 const CREATOR_OF = `SELECT COALESCE((SELECT a.owner_user_id FROM agents a WHERE a.id = d.created_by), d.created_by) AS creator
   FROM docs d WHERE d.id = ?1`;
+
+const trashedAgain = () => refuse(409, 'trashed-again',
+  'This note was restored and moved to Trash again while you were restoring it. Restore it again to bring it back.');
 
 const restoreCap = (own: boolean) => refuse(409, 'note-cap', own
   ? `You have ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, the limit. Move some to Trash to restore this one.`
@@ -168,10 +173,15 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
   if (!access || !can(access.role, 'manage') || principal.type !== 'user') return notFound();
   if (access.deleted) {
     const creator = (await env.DB.prepare(CREATOR_OF).bind(docId).first<{ creator: string }>())?.creator ?? principal.id;
+    // The trash this request restores: once another restore ends it, a later trash is not this request's to undo.
+    let episode: { batch: string | null; at: number } | null = null;
     for (let attempt = 1; ; attempt += 1) {
-      const [doc] = await db.select({ folderId: docs.folderId, filename: docs.filename, deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
+      const [doc] = await db.select({ folderId: docs.folderId, filename: docs.filename, deletedAt: docs.deletedAt, batch: docs.trashBatchId })
+        .from(docs).where(eq(docs.id, docId));
       if (!doc) return notFound();
       if (doc.deletedAt === null) break;
+      episode ??= { batch: doc.batch, at: doc.deletedAt };
+      if (doc.batch !== episode.batch || doc.deletedAt !== episode.at) return trashedAgain();
       const home = await homeFor(db, doc.folderId);
       if (!home) return notFound();
       if (home.folderId !== doc.folderId) {
@@ -184,7 +194,8 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
       const filename = occupied.has(doc.filename) ? availableFilename(doc.filename.replace(/\.md$/, ''), occupied) : doc.filename;
       let restored: D1Result | null = null;
       try {
-        restored = await env.DB.prepare(RESTORE).bind(home.folderId, filename, docId, principal.id, home.vaultId, creator).run();
+        restored = await env.DB.prepare(RESTORE)
+          .bind(home.folderId, filename, docId, principal.id, home.vaultId, creator, doc.folderId, doc.batch, doc.deletedAt).run();
       } catch (error) {
         if (!isUnique(error) || attempt >= RESTORE_ATTEMPTS) {
           console.error('restore write failed', error);
