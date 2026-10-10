@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 49% done** (101 of 205 planned tasks verified)
+**Overall: 50% done** (102 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 49 / 49 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 50 / 50 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -120,6 +120,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.B25 verified: an anonymous link viewer's answer budget is now kept per link and address across reconnects, with open sockets per address capped, so reconnecting or opening parallel sockets no longer buys fresh full-note encodes.
 - 2026-10-10 — T3.B18 verified: exporting a selection now includes the unsaved draft of a focused HTML block or a code block inside a tab panel, and a selection that ends at the start of a list item stops at the item before, so a drag from a list into a code block exports exactly the lines selected.
 - 2026-10-10 — T3.B19 verified: a person on an invite meant for another email can sign out and get back to the invite only once the session has really ended (a failed sign-out says why and can be retried), a too-short password on sign-up names the actual minimum, and switching the login card's mode focuses the Name or Email field.
+- 2026-10-10 — T3.B23 verified: creating or renaming a note can no longer land its folder inside another note's folder, whether the names differ only by case folds like ß/ss, σ/ς or the Kelvin sign, or a sibling folder appears between listing and rename (a second collision reports the save as raced).
 
 ## T1.1s identity audit
 
