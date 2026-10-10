@@ -18,7 +18,7 @@ const hunk = (text: string): Hunk => ({
 it('rows are built once per preview hash, whatever else the card re-renders for @p:mean-2 @p:R17', () => {
   const seen: ReviewRow[][] = [];
   let bump = () => {};
-  let show = (_preview: { hash: string; hunks: Hunk[] }) => {};
+  let show: (preview: { hash: string; hunks: Hunk[] }) => void = () => {};
   function Card({ initial }: { initial: { hash: string; hunks: Hunk[] } }) {
     const [, setTick] = useState(0);
     const [preview, setPreview] = useState(initial);
