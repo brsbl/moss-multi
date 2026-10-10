@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 54% done** (86 of 160 planned tasks verified)
+**Overall: 54% done** (87 of 160 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 34 / 34 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 35 / 35 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -105,6 +105,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S11 verified: importing or pushing a note with tens of thousands of frontmatter keys now costs linear work, so it is admitted or refused at the cap in moments instead of a minute.
 - 2026-10-09 — T3.S12 verified: unfurling a link to a page full of unclosed meta, link or title tags now costs linear work, so the card preview returns in moments instead of tying up the server.
 - 2026-10-09 — T3.S13 verified: a forged payload frame that Yjs would park is now refused and purged, so compaction and restarts never persist parked state in a note's payloads.
+- 2026-10-09 — T3.S15 verified: finding shared notes and folders and re-checking the bell's notices now take linear reads and a fixed handful of queries, however many grants or notices a person has.
 
 ## T1.1s identity audit
 
