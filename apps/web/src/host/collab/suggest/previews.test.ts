@@ -96,14 +96,14 @@ let roots: Root[] = [];
 afterEach(() => {
   for (const root of roots) act(() => root.unmount());
   roots = [];
-  document.body.innerHTML = '';
+  document.body.replaceChildren();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 async function render(docId: string, records: SuggestionRecord[]): Promise<Root> {
   const host = document.createElement('div');
-  document.body.append(host);
+  document.body.appendChild(host);
   const root = createRoot(host);
   roots.push(root);
   await act(async () => root.render(createElement(SuggestionList, { docId, open: records, reviewed: [], me: 'me', role: 'editor', active: null })));

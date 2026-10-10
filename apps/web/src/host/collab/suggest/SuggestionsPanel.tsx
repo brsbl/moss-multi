@@ -4,18 +4,19 @@
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { Button } from '@moss/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
-import { BODY_DOC, recordDigest, type Hunk, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import { BODY_DOC, recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
 import { Check, GitPullRequestArrow, X } from 'lucide-react';
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
+import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
 import { usePreviewRows } from './rows.ts';
 
@@ -90,8 +91,6 @@ export function suggestedText(record: SuggestionRecord): string {
   return parts.join('').trim();
 }
 
-type Preview = { state: 'loading' } | { state: 'ready'; hunks: Hunk[]; hash: string; digest: string } | { state: 'failed'; reason: string };
-
 const REASONS: Record<string, string> = {
   outdated: 'The text it changes was edited since, so it can no longer be applied.',
   broken: 'It cannot be shown in the note.',
@@ -116,44 +115,34 @@ async function call(url: string, body?: unknown): Promise<{ ok: boolean; status:
   return { ok: response.ok, status: response.status, json, retryAfter: response.headers.get('retry-after') };
 }
 
-/** The record's preview, fetched again when its ops change or `refresh` is called (the body moved under it). */
-function usePreview(docId: string, record: SuggestionRecord, enabled: boolean): [Preview, () => void] {
-  const recordKey = useMemo(() => recordDigest(record), [record]);
-  const [round, setRound] = useState(0);
-  const digest = `${recordKey}:${round}`;
-  const [preview, setPreview] = useState<{ digest: string; value: Preview }>({ digest: '', value: { state: 'loading' } });
-  useEffect(() => {
-    if (!enabled) return;
-    let live = true;
-    // Debounced, so an author still typing costs one preview per pause.
-    const timer = setTimeout(() => {
-      void call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(record.meta.id)}/preview`).then(
-        ({ ok, json }) => {
-          if (!live) return;
-          const shown = json.preview as { hunks: Hunk[]; hash: string; digest: string } | undefined;
-          setPreview({ digest, value: ok && shown ? { state: 'ready', ...shown } : { state: 'failed', reason: String(json.error ?? 'unavailable') } });
-        },
-        () => live && setPreview({ digest, value: { state: 'failed', reason: 'unavailable' } }),
-      );
-    }, 250);
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [docId, record.meta.id, digest, enabled]);
-  return [preview.digest === digest ? preview.value : { state: 'loading' }, () => setRound((r) => r + 1)];
-}
+// One loader for every panel: the preview budget is the reader's, across notes.
+const previews = createPreviewLoader((docId, id) => call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(id)}/preview`));
 
 const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
 
-function SuggestionCard({ docId, record, me, role, active }: { docId: string; record: SuggestionRecord; me: string | null; role: Role | null; active: boolean }): ReactNode {
+function SuggestionCard({ docId, record, me, role, active, root, opened }: {
+  docId: string;
+  record: SuggestionRecord;
+  me: string | null;
+  role: Role | null;
+  active: boolean;
+  root: Element | null;
+  opened: string;
+}): ReactNode {
   const { meta } = record;
   const open = meta.status === 'open';
-  const [preview, refresh] = usePreview(docId, record, open);
+  const [onScreenRef, onScreen] = useOnScreen(root);
+  const [expanded, setExpanded] = useState(false);
+  const digest = useMemo(() => `${recordDigest(record)}@${opened}`, [record, opened]);
+  // Fetched again when its ops change or on refresh (the body moved under it); only while the card can be seen.
+  const [preview, refresh] = useLoadedPreview(previews, docId, meta.id, digest, open && (onScreen || active || expanded));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const cardRef = useCallback((element: HTMLDivElement | null) => {
+    onScreenRef(element);
+    if (active) element?.scrollIntoView({ block: 'nearest' });
+  }, [active, onScreenRef]);
   const own = me !== null && meta.author === me;
   const reviewer = roleAtLeast(role, 'editor');
   const outdated = (meta.outdated?.length ?? 0) > 0 || (preview.state === 'failed' && preview.reason === 'outdated');
@@ -187,9 +176,7 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
     <div
       {...{ [SUGGESTION_CARD_ATTR]: '', [SUGGESTION_ID_ATTR]: meta.id, [SUGGESTION_STATUS_ATTR]: meta.status }}
       {...(active ? { [SUGGESTION_ACTIVE_ATTR]: '' } : {})}
-      ref={(element) => {
-        if (active) element?.scrollIntoView({ block: 'nearest' });
-      }}
+      ref={cardRef}
       className={`rounded-lg border p-2.5 transition-colors ${active ? 'border-accent-brand shadow-sm' : 'border-border-subtle'} ${open ? '' : 'opacity-70'}`}
     >
       <div className="mb-1 flex flex-wrap items-center gap-1.5">
@@ -277,16 +264,19 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
 }
 
 /** The panel's cards: the open ones newest first, then the latest reviewed. */
-export function SuggestionList({ docId, open, reviewed, me, role, active }: {
+export function SuggestionList({ docId, open, reviewed, me, role, active, opened = '' }: {
   docId: string;
   open: SuggestionRecord[];
   reviewed: SuggestionRecord[];
   me: string | null;
   role: Role;
   active: string | null;
+  opened?: string;
 }): ReactNode {
+  // The scroll box the cards' visibility is measured in.
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
   return (
-    <div className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto p-2">
+    <div ref={setRoot} className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto p-2">
       {open.length === 0 && reviewed.length === 0 ? (
         <div className="px-3 py-6 text-center">
           <p className="text-xs text-ink-default">No suggestions</p>
@@ -296,11 +286,11 @@ export function SuggestionList({ docId, open, reviewed, me, role, active }: {
         </div>
       ) : null}
       {open.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} />
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} />
       ))}
       {reviewed.length ? <p className="mt-1 px-1 text-micro font-medium uppercase tracking-wide text-ink-faint">Reviewed</p> : null}
       {reviewed.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} />
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} />
       ))}
     </div>
   );
@@ -309,12 +299,15 @@ export function SuggestionList({ docId, open, reviewed, me, role, active }: {
 /** In the top bar: the count of open suggestions, opening the panel of cards. */
 export function SuggestionsButton({ docId, source }: { docId: string; source: SuggestionsSource }): ReactNode {
   const records = useRecords(source);
+  const body = useSyncExternalStore(source.subscribeMount, () => source.body, () => null);
   const role = useDocRole(docId);
   const auth = useAuthState();
   useSyncExternalStore(subscribePanels, () => panelVersion, () => 0);
   const me = auth.status === 'signed-in' ? auth.user.id : null;
   const isOpen = openPanels.has(docId);
   const active = openPanels.get(docId) ?? null;
+  // The note as it stood when the panel opened: a preview kept from an earlier opening is reused only if it has not moved.
+  const opened = useMemo(() => (isOpen && body ? Y.encodeStateVector(body).join('.') : ''), [isOpen, body]);
   const open = records.filter((record) => record.meta.status === 'open').sort((a, b) => b.meta.createdAt - a.meta.createdAt);
   const reviewed = records
     .filter((record) => record.meta.status !== 'open')
@@ -341,7 +334,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
           <span className="text-xs font-medium text-ink-default">Suggestions</span>
           {open.length ? <span className="text-micro text-ink-faint">{open.length} open</span> : null}
         </div>
-        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} />
+        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
