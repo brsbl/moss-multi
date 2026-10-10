@@ -10,7 +10,7 @@ import { createConverterEditor } from '@moss-multi/sync/converter';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { bindRegisters } from '@moss-multi/sync/registers';
 import { isOwnOrigin, syncUnderOrigin } from './origins.ts';
-import { createBindingUndoManager } from './undo.ts';
+import { copyBookkeeping, createBindingUndoManager } from './undo.ts';
 
 const noop = () => {};
 const provider = {
@@ -366,4 +366,28 @@ describe('Cmd+Z undoes only your own edits and never removes a peer\'s character
       }
     } finally { dispose(); }
   });
+});
+
+describe('a large undo of peer-authored lines keeps its authorship bookkeeping O(K log K) @p:col-3', () => {
+  // Ada deletes K lines a peer wrote; undo restores them as her copies, redo deletes those again, undo restores them.
+  const work = async (lines: number) => {
+    const { ada, ben, dispose } = await pair(() => {
+      for (let i = 0; i < lines; i++) $getRoot().append($createParagraphNode().append($createTextNode(`Line ${i}.`)));
+    });
+    try {
+      const full = ada.text();
+      ada.step(() => { for (const line of $getRoot().getChildren().slice(1)) line.remove(); });
+      copyBookkeeping.work = 0;
+      ada.undo.undo(); ada.undo.redo(); ada.undo.undo();
+      const spent = copyBookkeeping.work;
+      await expectBoth(ada, ben, text => expect(text).toBe(full));
+      return spent;
+    } finally { dispose(); }
+  };
+  it('restoring, deleting and restoring 2,000 lines stays within K log K', async () => {
+    for (const lines of [500, 2_000]) {
+      const items = lines * 3; // each line is a paragraph, its text node's property map and its characters
+      expect(await work(lines), `${lines} lines`).toBeLessThanOrEqual(8 * items * Math.log2(items));
+    }
+  }, 120_000);
 });

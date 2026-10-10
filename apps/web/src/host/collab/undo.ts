@@ -11,6 +11,8 @@ import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payloa
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
+/** Copy-list entries read, written or compared; tests hold a large undo to O(K log K). */
+export const copyBookkeeping = { work: 0 };
 type StackItem = UndoManager['undoStack'][number];
 
 /** The plugin drives it as it would the root UndoManager: undo, redo, clear, the stacks' lengths and their events. */
@@ -50,6 +52,7 @@ function createRootUndoManager(binding: Binding): UndoManager {
     const found: { clock: number; len: number; author: number }[] = [];
     let at = clock;
     for (const copy of known) {
+      copyBookkeeping.work++;
       const from = Math.max(at, copy.clock); const to = Math.min(clock + len, copy.clock + copy.len);
       if (from >= to) continue;
       if (from > at) found.push({ clock: at, len: from - at, author: client });
@@ -93,7 +96,10 @@ function createRootUndoManager(binding: Binding): UndoManager {
         if (part.author !== redone.client) found.push([redone.client, { ...part, clock: redone.clock + part.clock - original.id.clock }]);
       }
     });
-    for (const [client, copy] of found) copies.set(client, [...copies.get(client) ?? [], copy].sort((a, b) => a.clock - b.clock));
+    for (const [client, copy] of found) {
+      const list = [...copies.get(client) ?? [], copy]; copyBookkeeping.work += list.length;
+      copies.set(client, list.sort((a, b) => { copyBookkeeping.work++; return a.clock - b.clock; }));
+    }
   };
   // The containers a step created, as they are now: undoing a delete replaced some of them with restored copies.
   const createdBy = (step: StackItem) => {
