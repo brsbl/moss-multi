@@ -129,9 +129,11 @@ async function killGroup(pgid) {
 
 // A live leader must name this run's state dir. A dead leader whose group still has members is ours:
 // a pgid cannot be reused while its group exists.
+const namesPersistDir = (command, persistDir) => command.includes(`--persist-to ${persistDir}`);
+
 function ownsGroup(run, list = processes()) {
   const leader = list.find((p) => p.pid === run.state.pgid);
-  if (leader) return leader.pgid === run.state.pgid && leader.command.includes(`--persist-to ${run.state.persistDir}`);
+  if (leader) return leader.pgid === run.state.pgid && namesPersistDir(leader.command, run.state.persistDir);
   return groupMembers(run.state.pgid, list).length > 0;
 }
 
@@ -413,11 +415,12 @@ function ttlSeconds(text) {
 
 /**
  * Why a process group attributed to `runDir` should be reaped, or null to keep it. A group is ours only while
- * its leader names the run's state dir; a leaderless group is an orphan. Not ours: `{ ours: false }`.
+ * its leader names the run's recorded state dir (default storage or --state-dir); a leaderless group is an orphan.
+ * Not ours: `{ ours: false }`.
  */
 export function judgeGroup({ pgid, runDir, state, list, maxAge, now = Date.now() }) {
   const leader = list.find((p) => p.pid === pgid);
-  if (leader && !leader.command.includes(`${runDir}/state`)) return { ours: false, why: null };
+  if (leader && !namesPersistDir(leader.command, state?.persistDir ?? join(runDir, 'state'))) return { ours: false, why: null };
   const age = state?.startedAt ? (now - Date.parse(state.startedAt)) / 1000 : (leader?.age ?? 0);
   let why = null;
   if (!state) why = 'state.json missing';
