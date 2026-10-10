@@ -25,7 +25,7 @@ import { d1Projections, Projections, type ProjectionTarget } from './doc/project
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
 import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
 import {
-  acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
+  acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, IDLE_BATCH, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
 } from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
@@ -174,6 +174,11 @@ function holdsOf(store: DocStore): Map<string, number> {
   return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, number>) : []);
 }
 
+/** The `updatedAt` each open record's idle check last ran at. */
+function readIdleChecked(raw: string | null): Map<string, number> {
+  return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, number>) : []);
+}
+
 /** A socket the DO may still send to and read from. */
 const isOpen = (connection: Connection) => connection.readyState === undefined || connection.readyState === 1;
 
@@ -319,10 +324,10 @@ export class DocDO extends YServer<SyncEnv> {
   #ingest: SuggestIngest | null = null;
   /**
    * When the next idle check of open records is due (§4.7: an idle record with nothing to show is rejected by the
-   * system), and the `updatedAt` each record was last checked at. In memory: a wake checks on the next record change.
+   * system), and the `updatedAt` each open record was last checked at, kept in storage (`idle-checked`) across wakes.
    */
   #idleAt: number | null = null;
-  readonly #idleChecked = new Map<string, number>();
+  #idleChecked = new Map<string, number>();
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
@@ -400,8 +405,14 @@ export class DocDO extends YServer<SyncEnv> {
       this.#idleAt = Date.now() + EMPTY_IDLE_MS;
       void this.#schedule(holdsOf(store)).catch((error: unknown) => console.error('DocDO could not schedule the idle check', error));
     });
-    // A wake forgets when the idle check was due, so any open record gets one at the next alarm.
-    if (recordIds(this.document).some((id) => readMeta(this.document, id)?.status === 'open')) this.#idleAt = Date.now();
+    // A wake forgets when the idle check was due, so an open record not checked since its last change gets one at the
+    // next alarm.
+    this.#idleChecked = readIdleChecked(store.meta('idle-checked'));
+    const unchecked = (id: string) => {
+      const meta = readMeta(this.document, id);
+      return meta?.status === 'open' && this.#idleChecked.get(id) !== meta.updatedAt;
+    };
+    if (recordIds(this.document).some(unchecked)) this.#idleAt = Date.now();
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
     // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
@@ -1103,20 +1114,40 @@ export class DocDO extends YServer<SyncEnv> {
     });
   }
 
-  /** Each open record idle since its last check gets its preview, which rejects an empty one; the rest come due later. */
+  /**
+   * Each open record idle since its last check gets its preview, which rejects an empty one, at most IDLE_BATCH per
+   * alarm: past that the check re-arms at once, so frames run between batches. The rest come due later.
+   */
   #checkIdle(now: number): void {
     let next: number | null = null;
+    let previews = 0;
+    const open = new Set<string>();
     for (const id of recordIds(this.document)) {
       const meta = readMeta(this.document, id);
-      if (!meta || meta.status !== 'open' || this.#idleChecked.get(id) === meta.updatedAt) continue;
+      if (!meta || meta.status !== 'open') continue;
+      open.add(id);
+      if (this.#idleChecked.get(id) === meta.updatedAt) continue;
       const due = meta.updatedAt + EMPTY_IDLE_MS;
       if (due > now) {
         next = Math.min(next ?? due, due);
         continue;
       }
+      if (previews === IDLE_BATCH) {
+        next = now;
+        continue;
+      }
+      previews += 1;
       this.#idleChecked.set(id, meta.updatedAt);
       reviewPreview(this.document, id, { now });
     }
+    // Only open records keep an entry; a preview may have just closed one.
+    let pruned = false;
+    for (const id of this.#idleChecked.keys()) {
+      if (open.has(id) && readMeta(this.document, id)?.status === 'open') continue;
+      this.#idleChecked.delete(id);
+      pruned = true;
+    }
+    if (previews > 0 || pruned) this.#store?.setMeta('idle-checked', JSON.stringify(Object.fromEntries(this.#idleChecked)));
     if (next !== null) this.#idleAt = Math.min(this.#idleAt ?? next, next);
   }
 
