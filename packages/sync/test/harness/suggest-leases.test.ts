@@ -1,6 +1,6 @@
 // T5.S5 (whole-repo Slop Cop P2): unbound lease reservations stay bounded per principal. Leasing, sending nothing
-// and reconnecting, across wakes, resumes the principal's dormant reservations instead of minting rows without end,
-// and live() reads only live rows through a partial covering index.
+// and reconnecting, across wakes, retires the principal's oldest dormant reservations instead of keeping rows without
+// end; an issued id is never handed out again, and live() reads only live rows through a partial covering index.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -60,37 +60,59 @@ function tiny(server: Y.Doc, client: number): Uint8Array {
 }
 
 describe('T5.S5 unbound lease reservations are bounded per principal @p:mean-2', () => {
-  it('lease, close and wake in a loop: the row count stays bounded, and a reused lease still writes', { timeout: 120_000 }, async () => {
+  it('lease, close and wake in a loop: the row count stays bounded, no id is issued twice, and a fresh lease writes', { timeout: 120_000 }, async () => {
     let opened = await start(openDoc());
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
     const seen = new Set<number>();
+    const records = new Set<string>();
+    let issued = 0;
     for (let i = 0; i < 60; i += 1) {
       const sam = await on(opened, SAM);
-      for (const grant of await lease(sam)) seen.add(grant.client);
+      for (const grant of await lease(sam)) {
+        seen.add(grant.client);
+        records.add(grant.record);
+        issued += 1;
+      }
       await sam.drop();
       if (i % 15 === 14) opened = await start(wake(opened));
     }
     expect(rows(opened, SUGGESTER.id), 'rows retained for one principal').toBeLessThanOrEqual(BOUND);
-    expect(seen.size, 'client ids handed out').toBeLessThanOrEqual(BOUND);
+    expect(seen.size, 'every client id handed out is new').toBe(issued);
+    expect(records.size, 'every reserved record id handed out is new').toBe(issued);
 
-    // A resumed reservation writes as a fresh one does.
     const sam = await on(opened, SAM);
     const [grant] = await lease(sam);
-    expect(grant.clock).toBe(0);
+    expect(seen.has(grant.client)).toBe(false);
     expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: bytesToBase64(tiny(opened.dobj.document, grant.client)) })).toMatchObject({ t: 'suggest-ack', record: grant.record });
   });
 
-  it('a fork asking afresh gets its own dormant reservations back before any new row', async () => {
+  it('a retired reservation is refused on resume, never handed to the fork that asks next', async () => {
     const opened = await start(openDoc());
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
-    const fork = 'fork-t5s5-aaaa';
     const first = await on(opened, SAM);
-    const before = (await lease(first, { fork })).map((grant) => grant.client).sort();
+    const mine = (await lease(first, { fork: 'fork-t5s5-first' })).map((grant) => grant.client);
     await first.drop();
-    const again = await on(opened, SAM);
-    const after = (await lease(again, { fork })).map((grant) => grant.client).sort();
-    expect(after).toEqual(before);
-    expect(rows(opened, SUGGESTER.id)).toBe(before.length);
+    const others: number[] = [];
+    for (let i = 0; i < BOUND; i += 1) {
+      const other = await on(opened, SAM);
+      for (const grant of await lease(other, { fork: `fork-t5s5-other-${i}` })) others.push(grant.client);
+      await other.drop();
+    }
+    expect(others.filter((client) => mine.includes(client)), 'no other fork receives the first fork\'s ids').toEqual([]);
+    expect(rows(opened, SUGGESTER.id)).toBeLessThanOrEqual(BOUND);
+    const back = await on(opened, SAM);
+    expect(await send(back, { t: 'suggest-lease', resume: mine, fork: 'fork-t5s5-first' })).toMatchObject({ t: 'suggest-refused', reason: 'lease' });
+  });
+
+  it('a live fork asking afresh after idling never gets back a lease it still holds', async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const fork = 'fork-t5s5-idle';
+    const sam = await on(opened, SAM);
+    const held = (await lease(sam, { fork })).map((grant) => grant.client);
+    vi.setSystemTime(Date.now() + SUGGEST_LIMITS.leaseIdleMs + 60_000);
+    const fresh = (await lease(sam, { fork })).map((grant) => grant.client);
+    expect(fresh.filter((client) => held.includes(client))).toEqual([]);
   });
 
   it('live() reads a partial covering index of live rows only', async () => {
