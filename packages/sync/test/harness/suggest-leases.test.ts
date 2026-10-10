@@ -94,6 +94,7 @@ describe('T5.S5 unbound lease reservations are bounded per principal @p:mean-2',
     await first.drop();
     const others: number[] = [];
     for (let i = 0; i < BOUND; i += 1) {
+      vi.setSystemTime(Date.now() + 1_000);
       const other = await on(opened, SAM);
       for (const grant of await lease(other, { fork: `fork-t5s5-other-${i}` })) others.push(grant.client);
       await other.drop();

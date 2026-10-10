@@ -54,8 +54,9 @@ export interface LeaseStore {
   live(principal: string, since: number): number;
   /** Leases of `principal` that hold no record yet, live or not: its retained reservations. */
   unbound(principal: string): number;
-  /** `principal`'s least recently used reservation that is expired or idle since `since`, of `fork` when given. */
-  dormant(principal: string, since: number, fork?: string): Lease | undefined;
+  /** `principal`'s reservation to retire first: closed before idle (idle since `since`), least recently used first. */
+  retirable(principal: string, since: number): Lease | undefined;
+  remove(client: number): void;
   expireConnection(connection: string): void;
   spend(record: string): void;
   rebind(from: string, into: string): void;
@@ -98,14 +99,20 @@ export class MemoryLeases implements LeaseStore {
     return count;
   }
 
-  dormant(principal: string, since: number, fork?: string): Lease | undefined {
+  retirable(principal: string, since: number): Lease | undefined {
     let found: Lease | undefined;
     for (const lease of this.#byClient.values()) {
       if (lease.principal !== principal || lease.record !== null || (!lease.expired && lease.usedAt >= since)) continue;
-      if (fork !== undefined && lease.fork !== fork) continue;
-      if (!found || lease.usedAt < found.usedAt) found = lease;
+      if (!found || (lease.expired && !found.expired) || (lease.expired === found.expired && lease.usedAt < found.usedAt)) found = lease;
     }
     return found && { ...found, clocks: { ...found.clocks } };
+  }
+
+  remove(client: number): void {
+    const lease = this.#byClient.get(client);
+    if (!lease) return;
+    this.#byClient.delete(client);
+    this.#byReserved.delete(lease.reserved);
   }
 
   expireConnection(connection: string): void {
@@ -192,11 +199,15 @@ export class SqlLeases implements LeaseStore {
     return Number(this.sql.exec<Row>('SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL', principal).toArray()[0]?.n ?? 0);
   }
 
-  dormant(principal: string, since: number, fork?: string): Lease | undefined {
-    const where = 'principal_id = ? AND record_id IS NULL AND (expired = 1 OR used_at < ?)';
-    return fork === undefined
-      ? this.#one(`SELECT * FROM suggest_leases WHERE ${where} ORDER BY used_at LIMIT 1`, principal, since)
-      : this.#one(`SELECT * FROM suggest_leases WHERE ${where} AND fork_id = ? ORDER BY used_at LIMIT 1`, principal, since, fork);
+  retirable(principal: string, since: number): Lease | undefined {
+    return this.#one(
+      'SELECT * FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND (expired = 1 OR used_at < ?) ORDER BY expired DESC, used_at LIMIT 1',
+      principal, since,
+    );
+  }
+
+  remove(client: number): void {
+    this.sql.exec('DELETE FROM suggest_leases WHERE client_id = ?', client);
   }
 
   expireConnection(connection: string): void {
@@ -252,8 +263,8 @@ export interface IngestOptions {
 type Placed = Map<string, Map<number, { clock: number; len: number; at: Placement }[]>>;
 
 /**
- * Unbound reservations one principal retains, live or dormant: past it, fresh leases resume its dormant ones instead
- * of minting rows. A few windows' worth beyond the live cap.
+ * Unbound reservations one principal retains, live or dormant: past it, a fresh lease first retires its oldest dormant
+ * one. A few windows' worth beyond the live cap.
  */
 export const RESERVED_MAX = 4 * SUGGEST_LIMITS.liveLeases;
 /** Leases one resume may name: a principal's open records may hold more than the unused-lease cap. */
@@ -370,21 +381,17 @@ export class SuggestIngest {
     }
     const wanted = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
     // A lease row is retained state too: none is minted past the share, or into the reserve kept for edits.
-    let room = Math.floor(this.#room() / leaseBytes({ clocks: {} }));
+    const fresh = Math.max(0, Math.min(wanted, Math.floor(this.#room() / leaseBytes({ clocks: {} }))));
     const writer = suggestionsWriter(this.doc)?.client;
-    for (let i = 0; i < wanted; i += 1) {
-      // A dormant reservation is resumed rather than a row minted: this fork's own first (one whose grant it never
-      // heard), any of the principal's once it holds `RESERVED_MAX`. It holds no record and no acknowledged clock, so
-      // only its connection changes; its ids never pass to another principal.
-      const reuse = (fork !== null ? this.leases.dormant(who.id, since, fork) : undefined)
-        ?? (this.leases.unbound(who.id) >= RESERVED_MAX ? this.leases.dormant(who.id, since) : undefined);
-      if (reuse) {
-        this.leases.put({ ...reuse, connection: who.connection, expired: false, usedAt: now, fork });
-        grants.push({ client: reuse.client, record: reuse.reserved, clock: ownValue(reuse.clocks, BODY_DOC) ?? 0, clocks: reuse.clocks });
-        continue;
+    for (let i = 0; i < fresh; i += 1) {
+      // At `RESERVED_MAX` the oldest dormant reservation is deleted, never reissued: a fork may hold edits under it the
+      // server never saw, so its resume is refused and the text offered back. New grants draw fresh random ids.
+      while (this.leases.unbound(who.id) >= RESERVED_MAX) {
+        const retired = this.leases.retirable(who.id, since);
+        if (!retired) break;
+        this.leases.remove(retired.client);
+        this.#retained = Math.max(0, this.#retained - leaseBytes(retired));
       }
-      if (room <= 0) break;
-      room -= 1;
       let client = 0;
       while (client === 0 || client === writer || this.doc.store.clients.has(client) || this.leases.get(client)) client = crypto.getRandomValues(new Uint32Array(1))[0];
       const reserved = this.#mint();
@@ -392,7 +399,7 @@ export class SuggestIngest {
       grants.push({ client, record: reserved, clock: 0, clocks: {} });
       this.#retained += leaseBytes({ clocks: {} });
     }
-    return grants.length ? { ok: true, leases: grants } : refused(wanted > 0 ? 'doc-cap' : 'lease-cap');
+    return grants.length ? { ok: true, leases: grants } : refused(fresh < wanted ? 'doc-cap' : 'lease-cap');
   }
 
   /** One fork transaction: a body update, or `{doc, update}` in the body or a payload doc of the fork. */
