@@ -106,6 +106,16 @@ class Walk {
     if (this.#used > this.limit) throw new OverBudget();
   }
 
+  /** Spends `count` structs an earlier walk in this frame already visited: this walk's budget, not new visits. */
+  charge(count: number): void {
+    this.#used += count;
+    if (this.#used > this.limit) throw new OverBudget();
+  }
+
+  get used(): number {
+    return this.#used;
+  }
+
   /** Admits `count` tokens before they are materialized, or fails the walk when they would pass its allowance. */
   emit(count: number): void {
     if (this.#tokens + count > this.tokenLimit) throw new OverBudget();
@@ -518,6 +528,12 @@ interface Gap {
   same?: boolean;
 }
 
+/** From a gap item, where a walk in one direction gets next (null: the doc's edge) and the structs it spends on the way. */
+interface Step {
+  to: Y.Item | null;
+  cost: number;
+}
+
 /** A lost place computed once per frame for every comment whose deleted members are the same. */
 interface Place {
   segs: Seg[];
@@ -569,6 +585,9 @@ export class AnchorEngine {
   /** Null: the gap passed its budget, so every comment touching it fails safe without reading it again. */
   readonly #gaps = new Map<Y.Item, Gap | null>();
   readonly #places = new Map<string, Place | null>();
+  /** Gap walks, left (0) and right (1): each item's next step as first measured, and a jump to where a walk got. */
+  readonly #steps: [Map<Y.Item, Step>, Map<Y.Item, Step>] = [new Map(), new Map()];
+  readonly #jumps: [Map<Y.Item, Step>, Map<Y.Item, Step>] = [new Map(), new Map()];
 
   constructor(readonly doc: Y.Doc) {}
 
@@ -671,6 +690,7 @@ export class AnchorEngine {
       this.#walks.clear();
       this.#gaps.clear();
       this.#places.clear();
+      for (const memo of [...this.#steps, ...this.#jumps]) memo.clear();
     }
   }
 
@@ -823,18 +843,10 @@ export class AnchorEngine {
     if (cached === null) throw new OverBudget();
     // A struct walk that runs out depends on where it starts, so only this comment fails; another comment in the same
     // gap may start closer to its ends and still find it.
-    const left: Y.Item[] = [];
-    const right: Y.Item[] = [];
-    const leftWalk = new Walk(WALK_BUDGET, this.stats);
-    for (let at = prev(unit.item, leftWalk); at && !view.survivor(at); at = prev(at, leftWalk)) {
-      leftWalk.tick();
-      left.push(at);
-    }
-    const rightWalk = new Walk(WALK_BUDGET, this.stats);
-    for (let at = next(unit.item); at && !view.survivor(at); at = next(at)) {
-      rightWalk.tick();
-      right.push(at);
-    }
+    this.#reach(view, unit.item, 0);
+    this.#reach(view, unit.item, 1);
+    const left = this.#between(view, unit.item, 0);
+    const right = this.#between(view, unit.item, 1);
     // The whole gap is found: running out of tokens is a property of the gap, so every item in it shares the failure.
     try {
       const gap: Gap = { deleted: [], inserted: [], starts: new Map() };
@@ -854,6 +866,53 @@ export class AnchorEngine {
       if (error instanceof OverBudget) for (const item of [...left, unit.item, ...right]) this.#gaps.set(item, null);
       throw error;
     }
+  }
+
+  /**
+   * Walks from `from` (left: 0, right: 1) to the nearest survivor within WALK_BUDGET, or throws OverBudget. Steps an
+   * earlier walk in this frame measured are charged to this walk's budget without being visited again, and every item
+   * this walk passes then jumps to where it got, so comments sharing a wide gap walk each struct about once.
+   */
+  #reach(view: View, from: Y.Item, dir: 0 | 1): void {
+    const walk = new Walk(WALK_BUDGET, this.stats);
+    const steps = this.#steps[dir];
+    const jumps = this.#jumps[dir];
+    // Each item passed, with the budget spent on arriving at it.
+    const passed: [Y.Item, number][] = [];
+    let end: [Y.Item | null, number] | null = null;
+    try {
+      for (let at = from; ; ) {
+        passed.push([at, walk.used]);
+        const known = jumps.get(at) ?? steps.get(at);
+        let to: Y.Item | null;
+        if (known) {
+          walk.charge(known.cost);
+          to = known.to;
+        } else {
+          const before = walk.used;
+          to = dir ? next(at) : prev(at, walk);
+          const inGap = !!to && !view.survivor(to);
+          steps.set(at, { to, cost: walk.used - before + (inGap ? 1 : 0) });
+          if (inGap) walk.tick();
+        }
+        if (!to || view.survivor(to)) {
+          end = [to, walk.used];
+          return;
+        }
+        at = to;
+      }
+    } finally {
+      const [to, used] = end ?? passed[passed.length - 1];
+      for (const [item, at] of passed) if (item !== to) jumps.set(item, { to, cost: used - at });
+    }
+  }
+
+  /** The gap items between `from` and the survivor a completed `#reach` found, nearest first. */
+  #between(view: View, from: Y.Item, dir: 0 | 1): Y.Item[] {
+    const steps = this.#steps[dir];
+    const out: Y.Item[] = [];
+    for (let at = steps.get(from)!.to; at && !view.survivor(at); at = steps.get(at)!.to) out.push(at);
+    return out;
   }
 
   /** §5.3: orphan with the place the text was lost from, or reattach at once if the frame already restored it. */

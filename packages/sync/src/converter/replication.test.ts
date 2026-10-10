@@ -77,12 +77,23 @@ function wireKeys(type: Y.XmlText | Y.XmlElement, found = new Map<string, Set<st
   return found;
 }
 
+type Commentable = LexicalNode & { getCommentIds(): string[]; setCommentIds(ids: string[]): void };
+function $clearDecoratorComments(node: LexicalNode): void {
+  const commentable = node as Partial<Commentable>;
+  if (commentable.getCommentIds && commentable.setCommentIds && commentable.getCommentIds().length) commentable.setCommentIds([]);
+  if ($isElementNode(node)) for (const child of node.getChildren()) $clearDecoratorComments(child);
+}
+
 describe('L4 every family replicates through the binding @p:tech-1 @p:col-1 @p:note-2', () => {
   it.each(FIXTURES.filter(f => !f.name.startsWith('scale')).map(f => [f.name, f] as const))('%s: A → Y.Doc → B keeps the tree, the export and the wire', async (name, { markdown, options }) => {
     const a = client();
     let b: Peer | undefined;
     try {
-      a.editor.update(() => $importNoteBody(markdown, options), { discrete: true });
+      a.editor.update(() => {
+        $importNoteBody(markdown, options);
+        // A decorator's comment ids stay local (EXCLUDED_FIELDS); the server's import clears them the same way.
+        $clearDecoratorComments($getRoot());
+      }, { discrete: true });
       await settle();
       b = client(a.doc);
       await settle();
