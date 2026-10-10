@@ -3,11 +3,11 @@
 // keep its per-viewer fields off the wire.
 import { createHeadlessEditor } from '@lexical/headless';
 import { $createTableNodeWithDimensions, TableCellNode, TableNode, TableRowNode } from '@lexical/table';
-import { createBinding, syncLexicalUpdateToYjs, type ExcludedProperties, type Provider } from '@lexical/yjs';
-import { $getRoot, type Klass, type LexicalNode } from 'lexical';
+import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type ExcludedProperties, type Provider } from '@lexical/yjs';
+import { $copyNode, $getRoot, $isDecoratorNode, $isElementNode, type Klass, type LexicalNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { createConverterEditor } from './converter/index.ts';
+import { $importNoteBody, createConverterEditor } from './converter/index.ts';
 import { buildExcludedProperties, EXCLUDED_FIELDS, excludedPropertiesFor } from './excluded-properties.ts';
 
 /** The same node type from another module instance: same `getType()`, another constructor. */
@@ -77,5 +77,116 @@ describe('excluded properties', () => {
       expect(klass, `${type} is registered`).toBeDefined();
       expect(excluded.get(klass as Klass<LexicalNode>), type).toEqual(new Set(fields));
     }
+  });
+});
+
+/** Every decorator type moss lets a comment sit on (a `__commentIds` field on the class). */
+const COMMENTABLE = ['code-block', 'html-block', 'formula', 'chart', 'sketch', 'image', 'video', 'web-embed', 'embed-pill', 'file-link'];
+const DECORATORS = [
+  '```js\nconst x = 1;\n```',
+  '```moss-html\n<p>Hello</p>\n```',
+  'A formula {{2+3|5}}, a link [[Launch Plan]] and a pill https://example.com/a here.',
+  '```moss-chart\n{"type":"bar","data":[{"label":"A","value":1}]}\n```',
+  '```moss-canvas\n[moss:grid:v2]\n....####....\n```',
+  '![An image](https://images.example.com/remote.jpg)',
+  '![A clip](assets/clip.mp4)',
+  '![Example site](https://example.com)',
+].join('\n\n');
+
+type Commentable = LexicalNode & { getCommentIds(): string[]; setCommentIds(ids: string[]): void };
+function $commentables(node: LexicalNode = $getRoot(), out: Commentable[] = []): Commentable[] {
+  const commentable = node as unknown as Partial<Commentable>;
+  if ($isDecoratorNode(node) && typeof commentable.setCommentIds === 'function') out.push(commentable as Commentable);
+  if ($isElementNode(node)) for (const child of node.getChildren()) $commentables(child, out);
+  return out;
+}
+
+/** A moss editor bound to `doc` through V1 with `excluded`, and every update the binding writes. */
+function bound(doc: Y.Doc, excluded: (editor: ReturnType<typeof createConverterEditor>) => ExcludedProperties) {
+  const editor = createConverterEditor();
+  const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excluded(editor));
+  const updates: Uint8Array[] = [];
+  doc.on('update', (update: Uint8Array, origin: unknown) => {
+    if (origin === binding) updates.push(update);
+  });
+  editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
+    syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
+  });
+  binding.root.getSharedType().observeDeep((events, transaction) => {
+    if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, () => {});
+  });
+  return { editor, updates };
+}
+
+/** The attributes of every element and text type under `type`, decorators (XmlElements) included. */
+function everyAttributes(type: Y.XmlText | Y.XmlElement, found: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  const children = type instanceof Y.XmlText ? (type.toDelta() as { insert: unknown }[]).map((op) => op.insert) : type.toArray();
+  for (const child of children) {
+    if (!(child instanceof Y.XmlText || child instanceof Y.XmlElement)) continue;
+    found.push(child.getAttributes());
+    everyAttributes(child, found);
+  }
+  return found;
+}
+
+/** The property keys the updates write, and the node types they create. */
+function written(updates: Uint8Array[]): { keys: Set<string>; types: Set<string> } {
+  const keys = new Set<string>();
+  const types = new Set<string>();
+  for (const update of updates) {
+    for (const struct of Y.decodeUpdate(update).structs) {
+      if (!(struct instanceof Y.Item) || struct.parentSub === null) continue;
+      keys.add(struct.parentSub);
+      if (struct.parentSub === '__type' && struct.content instanceof Y.ContentAny) types.add(String(struct.content.getContent()[0]));
+    }
+  }
+  return { keys, types };
+}
+
+/** Create every commentable decorator, comment on each, then copy each (a clone with its ids) in place. */
+function createCommentAndCopy(editor: ReturnType<typeof createConverterEditor>): void {
+  editor.update(() => $importNoteBody(DECORATORS), { discrete: true });
+  editor.update(() => {
+    for (const node of $commentables()) node.setCommentIds(['c1']);
+  }, { discrete: true });
+  editor.update(() => {
+    for (const node of $commentables()) node.insertAfter($copyNode(node));
+  }, { discrete: true });
+}
+
+describe('decorator comment ids stay off the wire (comments.md §11)', () => {
+  it('create, comment and copy every commentable decorator through the real binding: no __commentIds is written', () => {
+    const doc = new Y.Doc();
+    const { editor, updates } = bound(doc, excludedPropertiesFor);
+    createCommentAndCopy(editor);
+    const { keys, types } = written(updates);
+    for (const type of COMMENTABLE) expect(types, `positive control: a ${type} reached the doc`).toContain(type);
+    expect(editor.getEditorState().read(() => $commentables().length), 'each one and its copy').toBe(2 * COMMENTABLE.length);
+    expect(editor.getEditorState().read(() => $commentables().every((node) => node.getCommentIds().length === 1)), 'the ids stay local').toBe(true);
+    expect(keys.has('__type'), 'positive control: the scan reads properties').toBe(true);
+    expect([...keys], 'no update writes a decorator comment id').not.toContain('__commentIds');
+    for (const type of COMMENTABLE) expect(EXCLUDED_FIELDS[type], type).toContain('__commentIds');
+  });
+
+  it('hydrates an old doc whose decorators carry __commentIds, and later edits leave the field as it was', () => {
+    // An old doc: written by a binding that replicated comment ids.
+    const old = new Y.Doc();
+    const writer = bound(old, () => new Map());
+    createCommentAndCopy(writer.editor);
+    expect(written(writer.updates).keys, 'positive control: the old wire carried the ids').toContain('__commentIds');
+    const doc = new Y.Doc();
+    const { editor, updates } = bound(doc, excludedPropertiesFor);
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(old));
+    editor.update(() => {}, { discrete: true });
+    const hydrated = editor.getEditorState().read(() => $commentables().map((node) => [node.getType(), node.getCommentIds()] as const));
+    expect(new Set(hydrated.map(([type]) => type))).toEqual(new Set(COMMENTABLE));
+    expect(hydrated.every(([, ids]) => ids.length === 0), 'a stored id is not read back into the tree').toBe(true);
+    editor.update(() => {
+      for (const node of $commentables()) node.setCommentIds(['c2']);
+    }, { discrete: true });
+    expect(written(updates).keys).not.toContain('__commentIds');
+    const stored = everyAttributes(doc.get('root', Y.XmlText)).filter((attributes) => COMMENTABLE.includes(String(attributes.__type)));
+    expect(stored.length).toBe(2 * COMMENTABLE.length);
+    for (const attributes of stored) expect(attributes.__commentIds, String(attributes.__type)).toEqual(['c1']);
   });
 });

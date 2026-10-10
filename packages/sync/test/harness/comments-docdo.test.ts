@@ -9,11 +9,11 @@ import fc from 'fast-check';
 import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
-import { anchorText, encodePosition, liveUnits, type Anchor } from '@moss-multi/core/anchor-frame';
+import { AnchorEngine, anchorText, encodePosition, liveUnits, WALK_BUDGET, type Anchor, type FrameStats, type Unit } from '@moss-multi/core/anchor-frame';
 import { BLOCK_CHAR } from '@moss-multi/core/tree-anchor';
 import { CLOSE, encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO, type Resolved, type SocketIdentity } from '../../src/doc-do.ts';
-import { COMMENT_STATE_SHARE, MAX_IMPORT_SEARCHES } from '../../src/doc/comments.ts';
+import { COMMENT_STATE_SHARE, DocComments, MAX_IMPORT_SEARCHES } from '../../src/doc/comments.ts';
 import { COMPACT_MAX_ROWS, STATE_CHUNK_BYTES } from '../../src/doc/persistence.ts';
 import { bindLexical, connect, counts, openDoc, start, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
 import { forged, gcStruct, raw, skipStruct } from './raw-frames.ts';
@@ -451,6 +451,162 @@ describe('T4.1 anchors persist in the frame turn and indexes rebuild at onStart 
     expect(anchor.status).toBe('anchored');
     expect(anchorText(woken.dobj.document, anchor)).toBe('quick brown');
     history.destroy();
+  });
+});
+
+/** The counters of every anchor frame that runs during `act`. */
+async function framesDuring(act: () => Promise<void>): Promise<FrameStats[]> {
+  const original = AnchorEngine.prototype.frame;
+  const seen: FrameStats[] = [];
+  const spy = vi.spyOn(AnchorEngine.prototype, 'frame').mockImplementation(function (this: AnchorEngine, txn: Y.Transaction) {
+    try {
+      return original.call(this, txn);
+    } finally {
+      seen.push({ ...this.stats });
+    }
+  });
+  try {
+    await act();
+  } finally {
+    spy.mockRestore();
+  }
+  return seen;
+}
+
+/** A paragraph's live characters as units, read from its items (`writers`: only theirs). */
+function unitsOf(paragraph: Y.XmlText, writers?: number[]): Unit[] {
+  const units: Unit[] = [];
+  for (let item = paragraph._start; item; item = item.right) {
+    if (!(item.content instanceof Y.ContentString) || item.deleted || (writers && !writers.includes(item.id.client))) continue;
+    for (let off = 0; off < item.length; off += 1) units.push({ item, off });
+  }
+  return units;
+}
+
+async function commentOn(opened: Opened, id: string, units: Unit[], a: number, b: number): Promise<void> {
+  const anchor = { kind: 'text' as const, start: encodePosition(units[a], 0), end: encodePosition(units[b], -1) };
+  expect(await opened.dobj.createComment({ author: 'ada', id, text: id, anchor })).toMatchObject({ ok: true });
+}
+
+const anchorsOf = (opened: Opened, ids: string[]) => Object.fromEntries(ids.map((id) => [id, anchorOf(opened, id)]));
+
+/**
+ * Sends `edit` from an editor as one frame, then restarts the DocDO and checks each anchor woke as the frame left it.
+ * `skipPersist` is the negative control: the frame's anchor changes are never flushed, so the stored records are stale.
+ */
+async function frameThenWake(opened: Opened, ids: string[], edit: (doc: Y.Doc) => void, skipPersist = false) {
+  const client = await editorOn(opened);
+  const history = new Y.UndoManager(client.doc.get('root', Y.XmlText), { trackedOrigins: new Set(['local']), captureTimeout: 0 });
+  onTestFinished(() => history.destroy());
+  const dropped = skipPersist ? vi.spyOn(DocComments.prototype, 'flush').mockImplementation(() => {}) : null;
+  client.doc.transact(() => edit(client.doc), 'local');
+  await client.flush();
+  dropped?.mockRestore();
+  expect(client.closed).toBeNull();
+  const framed = anchorsOf(opened, ids);
+  const woken = await start(wake(opened));
+  expect(anchorsOf(woken, ids), 'each anchor woke with its status and identity').toEqual(framed);
+  return { woken, framed, client, history };
+}
+
+const LONG = 100_000;
+const FRAGMENTS = WALK_BUDGET + 904;
+
+/** Four short comments on one long text item; one delete-only frame deletes it, so each detaches at the token budget. */
+async function longItemDeleted(skipPersist = false) {
+  const opened = await start(openDoc());
+  await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: `Head.\n\n${'x'.repeat(LONG)}\n\nTail.` });
+  const units = unitsOf(paragraphOf(opened.dobj.document, 1));
+  expect(units).toHaveLength(LONG);
+  expect(new Set(units.map(({ item }) => item)).size, 'one text item').toBe(1);
+  const ids = ['c0', 'c1', 'c2', 'c3'];
+  const spans = [[10, 20], [15, 25], [LONG - 20, LONG - 10], [LONG / 2, LONG / 2 + 10]];
+  for (const [n, [a, b]] of spans.entries()) await commentOn(opened, ids[n], units, a, b);
+  return { ids, ...(await frameThenWake(opened, ids, (doc) => paragraphOf(doc, 1).delete(1, LONG), skipPersist)) };
+}
+
+describe('T4.2 over-budget anchors persist through a DocDO restart @p:tech-3 @p:R18', () => {
+  it('a long deleted item: its comments detach in the frame, wake detached, and its undo after the restart does no anchor work', async () => {
+    const { ids, woken, framed, client, history } = await longItemDeleted();
+    for (const id of ids) expect(framed[id]?.status, id).toBe('orphaned');
+    const again = await editorOn(woken, 'editor', client.doc);
+    const frames = await framesDuring(async () => {
+      history.undo();
+      await again.flush();
+    });
+    expect(again.closed).toBeNull();
+    expect(frames.length, 'the undo reached the engine').toBeGreaterThan(0);
+    for (const stats of frames) expect(stats.structs, 'bounded work').toBeLessThanOrEqual(8);
+    expect(anchorsOf(woken, ids), 'no detached comment jumps onto the restored text').toEqual(framed);
+  });
+
+  it('negative control: a frame whose anchor changes are not persisted wakes with stale anchors', async () => {
+    const { framed } = await longItemDeleted(true);
+    expect(framed.c0?.status, 'the restart lost the detach').toBe('anchored');
+  });
+
+  it('a long restore candidate: orphans wake with their lost place, and a forged long item inside it is refused at its length', async () => {
+    const words = Array.from({ length: 5 }, (_, n) => `w000${n}`);
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: `Head.\n\n${words.join(' ')}.\n\nTail.` });
+    const units = unitsOf(paragraphOf(opened.dobj.document, 1));
+    const text = units.map(({ item, off }) => (item.content as Y.ContentString).str[off]).join('');
+    for (const word of words) await commentOn(opened, word, units, text.indexOf(word), text.indexOf(word) + 4);
+    const { woken, framed } = await frameThenWake(opened, words, (doc) => paragraphOf(doc, 1).delete(1, paragraphOf(doc, 1).length - 1));
+    for (const word of words) expect(framed[word]?.lost, word).toBeDefined();
+    const lost = framed.w0000!.lost!;
+    const [mc, mk] = lost.members[0];
+    const left = lost.segs[0].left!;
+    const forger = await editorOn(woken);
+    const candidate = raw([forged(Y.createID(4242, 0), { origin: Y.createID(left[0], left[1]), right: Y.createID(mc, mk) }, new Y.ContentString('q'.repeat(LONG)))]);
+    const frames = await framesDuring(async () => {
+      await forger.deliver(syncFrame(2, candidate));
+      await forger.pump();
+    });
+    expect(forger.closed).toBeNull();
+    expect(frames.length).toBeGreaterThan(0);
+    for (const stats of frames) expect(stats.tokens, 'never read past the lost passage').toBeLessThanOrEqual(256);
+    expect(anchorsOf(woken, words), 'every orphan stays as it was').toEqual(framed);
+  });
+
+  it('a fragmented gap: the comment near its edge detaches, the one in its middle re-mints, and both wake that way', async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: 'Head.\n\nX\n\nTail.' });
+    const writers = [2_000_001, 2_000_002];
+    const letter = (n: number) => String.fromCharCode(97 + (n % 26));
+    const builder = copyOf(opened.dobj.document);
+    for (let k = 0; k < FRAGMENTS; k += 1) {
+      builder.clientID = writers[k % 2];
+      builder.transact(() => paragraphOf(builder, 1).insert(paragraphOf(builder, 1).length, letter(k)));
+    }
+    const writer = await editorOn(opened);
+    await writer.deliver(syncFrame(2, diff(builder, opened.dobj.document)));
+    await writer.pump();
+    expect(writer.closed).toBeNull();
+    const units = unitsOf(paragraphOf(opened.dobj.document, 1), writers);
+    expect(units).toHaveLength(FRAGMENTS);
+    const text = Array.from({ length: FRAGMENTS }, (_, n) => letter(n)).join('');
+    const half = Math.floor(FRAGMENTS / 2);
+    await commentOn(opened, 'edge', units, 10, 20);
+    await commentOn(opened, 'middle', units, half, half + 10);
+    const minted = anchorOf(opened, 'middle')!;
+    const { woken, framed } = await frameThenWake(opened, ['edge', 'middle'], (doc) => {
+      paragraphOf(doc, 1).delete(2, FRAGMENTS);
+      paragraphOf(doc, 1).insert(2, text);
+    });
+    expect(framed.edge?.status, 'its walk ran out').toBe('orphaned');
+    expect(framed.middle?.status).toBe('anchored');
+    expect(framed.middle?.start, 're-minted onto the new text').not.toBe(minted.start);
+    expect(anchorText(woken.dobj.document, framed.middle!)).toBe(text.slice(half, half + 11));
+    const typist = await editorOn(woken);
+    const frames = await framesDuring(async () => {
+      const tail = paragraphOf(typist.doc, 2);
+      typist.doc.transact(() => tail.insert(tail.length, '!'));
+      await typist.flush();
+    });
+    expect(frames.length).toBeGreaterThan(0);
+    for (const stats of frames) expect(stats.structs, 'bounded work').toBeLessThanOrEqual(8);
+    expect(anchorsOf(woken, ['edge', 'middle'])).toEqual(framed);
   });
 });
 
