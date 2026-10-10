@@ -198,13 +198,20 @@ const CAP = 512 * 1024;
 const UNCLOSED: [string, string][] = [['meta', '<meta '], ['link', '<LINK '], ['title without >', '<title '], ['title without </title>', '<title>']];
 const hostile = (opener: string, bytes: number) => opener.repeat(Math.ceil(bytes / opener.length)).slice(0, bytes);
 
-/** Times `run` on pages doubling to the cap: each costs at most about three times the half-size one, the cap `budgetMs`. */
+/**
+ * Times `run` on pages doubling to the cap: each costs at most about three times the half-size one, the cap `budgetMs`.
+ * Each size keeps the fastest of three runs, so a GC pause or a busy runner in one run does not read as superlinear.
+ */
 async function expectLinear(opener: string, run: (body: string, size: number) => Promise<void> | void, budgetMs: number, slackMs: number) {
   const time = async (size: number) => {
     const body = hostile(opener, size);
-    const startedAt = performance.now();
-    await run(body, size);
-    return performance.now() - startedAt;
+    let fastest = Infinity;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const startedAt = performance.now();
+      await run(body, size);
+      fastest = Math.min(fastest, performance.now() - startedAt);
+    }
+    return fastest;
   };
   await time(1024); // warm up
   let previous = await time(2048);
