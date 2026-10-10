@@ -218,6 +218,8 @@ function send(connection: Connection, message: Uint8Array): void {
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
+/** A suggester's new records notify the bell at most once per this long. */
+const NOTICE_COALESCE_MS = 10 * 60_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -321,6 +323,8 @@ export class DocDO extends YServer<SyncEnv> {
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
+  /** Connections whose last suggest refusal was for want of room (`doc-cap`, `ops-cap`), until a grant or an ack. */
+  readonly #noRoom = new Set<string>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -384,6 +388,7 @@ export class DocDO extends YServer<SyncEnv> {
         if (!continues) this.#noticeSuggestion(record, author);
       },
     });
+    store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
       if (this.#idleAt !== null) return;
       this.#idleAt = Date.now() + EMPTY_IDLE_MS;
@@ -721,10 +726,24 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.writeRate, 'write rate');
       return;
     }
+    // A refusal for want of room (`doc-cap`, `ops-cap`) is the note's state, not abuse: it never counts toward the
+    // cooldown, so a fast typist or a reload on a full note stays connected. After one, the growth frames the client
+    // had in flight are refused alike in O(1); a granted lease or an ack ends that.
+    if (this.#noRoom.has(connection.id) && (request?.t === 'suggest-ops' || request?.t === 'suggest-delete' || request?.t === 'suggest-merge')) {
+      const record = request.t === 'suggest-merge' ? request.into : request.record;
+      const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
+      this.sendCustomMessage(connection, JSON.stringify(reply));
+      return;
+    }
     const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
     const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
     this.sendCustomMessage(connection, JSON.stringify(reply));
-    if (reply.t === 'suggest-refused') this.#countRefusal(attachment.principalId);
+    if (reply.t !== 'suggest-refused') {
+      this.#noRoom.delete(connection.id);
+      return;
+    }
+    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') this.#noRoom.add(connection.id);
+    else this.#countRefusal(attachment.principalId);
   }
 
   override onClose(connection: Connection): void {
@@ -733,6 +752,7 @@ export class DocDO extends YServer<SyncEnv> {
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
+    this.#noRoom.delete(connection.id);
     this.#acks.cancel(connection);
   }
 
@@ -1085,9 +1105,15 @@ export class DocDO extends YServer<SyncEnv> {
     if (next !== null) this.#idleAt = Math.min(this.#idleAt ?? next, next);
   }
 
+  /** One bell notice per author and note per window, kept across wakes; the D1 row coalesces too (notifySuggestion). */
   #noticeSuggestion(record: string, author: string): void {
     const notify = (this.constructor as typeof DocDO).suggestionNotices(this.env);
     if (!notify) return;
+    const key = `suggest-noticed:${author}`;
+    const last = Number(this.#store?.meta(key));
+    const now = Date.now();
+    if (Number.isFinite(last) && last > 0 && now - last < NOTICE_COALESCE_MS) return;
+    this.#store?.setMeta(key, String(now));
     const sent = notify({ docId: this.name, author, record }).catch((error: unknown) => console.error('suggestion notice failed', error));
     try {
       this.ctx.waitUntil(sent);

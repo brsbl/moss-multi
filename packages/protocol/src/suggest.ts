@@ -77,6 +77,10 @@ export const SUGGEST_LIMITS = {
   openPerPrincipal: 20,
   /** All open records' ops, as a share of the state cap. */
   openOpsShare: 0.25,
+  /** All retained suggestion state (open ops, closed records' metadata and overhead, leases), as a share of the state cap. */
+  stateShare: 0.4,
+  /** Suggestion growth stops before the note passes this share of the state cap: the rest is kept for body and payload edits. */
+  reserveShare: 0.8,
   /** Spans one delete part may name, and items. */
   partSpans: 1024,
   partItems: 20_000,
