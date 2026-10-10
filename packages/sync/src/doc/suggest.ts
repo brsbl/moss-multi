@@ -248,6 +248,8 @@ export class SuggestIngest {
    * Yjs provably frees, so the count never falls below what is held. Bounded by `stateShare`.
    */
   #retained = 0;
+  /** A write to `suggestions` since the last measure: only those can leave the running count above what is held. */
+  #drifted = false;
   /** Open records' placements; a record's entry goes when it closes. */
   readonly #placed = new Map<string, Placed>();
 
@@ -281,7 +283,9 @@ export class SuggestIngest {
       if (txn.origin === SUGGESTIONS_ORIGIN) this.#retained = Math.max(0, this.#retained - freedBytes(txn));
     });
     doc.on('update', (update: Uint8Array, origin: unknown) => {
-      if (origin === SUGGESTIONS_ORIGIN) this.#retained += update.byteLength;
+      if (origin !== SUGGESTIONS_ORIGIN) return;
+      this.#retained += update.byteLength;
+      this.#drifted = true;
     });
   }
 
@@ -290,9 +294,15 @@ export class SuggestIngest {
     return this.#retained;
   }
 
-  /** Measures the retained state afresh: O(S structs + stored leases), so for a wake or a compaction, not a frame. */
+  /** Measures the retained state afresh: O(the doc's structs + stored leases), so for a wake, not a frame. */
   remeasure(): void {
     this.#retained = suggestionStateBytes(this.doc) + this.leases.storedBytes();
+    this.#drifted = false;
+  }
+
+  /** The doc was compacted: measured afresh only if `suggestions` was written since, so body edits pay nothing. */
+  compacted(): void {
+    if (this.#drifted) this.remeasure();
   }
 
   /**

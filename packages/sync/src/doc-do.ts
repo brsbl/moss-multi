@@ -388,7 +388,7 @@ export class DocDO extends YServer<SyncEnv> {
         if (!continues) this.#noticeSuggestion(record, author);
       },
     });
-    store.onCompacted = () => this.#ingest?.remeasure();
+    store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
       if (this.#idleAt !== null) return;
       this.#idleAt = Date.now() + EMPTY_IDLE_MS;
