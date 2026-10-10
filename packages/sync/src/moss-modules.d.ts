@@ -20,6 +20,7 @@ declare module '@moss-desktop/renderer/editor/markdown/transformers' {
 }
 
 declare module '@moss-desktop/common/markdown-layers' {
+  export const FRONTMATTER_EXPANSION_ERROR: string;
   export function splitFrontmatter(raw: string): { body: string; hasFrontmatter: boolean; error?: string };
 }
 
@@ -40,4 +41,12 @@ declare module '@moss-desktop/renderer/editor/utils/formula-runtime' {
 
 declare module '@moss-desktop/common/utils' {
   export function stripWikiLinks(text: string): string;
+}
+
+declare module '@moss-desktop/renderer/editor/markdown/linear-import' {
+  /** Lines kept literal at a budget, and the work charged, over all imports (measure/doc-worker.ts reports them). */
+  export const linearImportStats: { cut: number; spent: number; peakLineShare: number; peakImportShare: number };
+  /** What an import under refusingSpentImports throws once its work budget is spent. */
+  export const IMPORT_BUDGET_SPENT: string;
+  export function refusingSpentImports<T>(run: () => T): T;
 }
