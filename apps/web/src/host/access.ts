@@ -98,9 +98,14 @@ export async function askFolderAccess(folderId: string, fetcher: typeof fetch = 
 /** Waits between failed asks: 1 s, 2 s, 4 s, 8 s, then every 15 s. */
 const RETRY_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
 
+/** The role this tab knows on the doc, as React state, without asking the server; null while it is unknown. */
+export function useKnownRole(docId: string | null): Role | null {
+  return useSyncExternalStore(subscribe, () => (docId ? knownRole(docId) : null), () => null);
+}
+
 /** The caller's role on the doc, asking the server when the tab does not know it yet; null until it is known. */
 export function useDocRole(docId: string | null): Role | null {
-  const role = useSyncExternalStore(subscribe, () => (docId ? knownRole(docId) : null), () => null);
+  const role = useKnownRole(docId);
   useEffect(() => {
     if (!docId || knownRole(docId)) return;
     let stopped = false;

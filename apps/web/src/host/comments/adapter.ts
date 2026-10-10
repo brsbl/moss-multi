@@ -6,7 +6,7 @@
 import { can } from '@moss-multi/protocol/roles';
 import { $getSelection, $isRangeSelection, type LexicalEditor } from 'lexical';
 import { useSyncExternalStore } from 'react';
-import { knownRole, useDocRole } from '../access.ts';
+import { knownRole, useDocRole, useKnownRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
 import { createComment, deleteComment, draftOf, editComment, reactTo, replyTo, resolveThread, type Completion, type DraftSlot } from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
@@ -131,20 +131,23 @@ export function canComment(noteId: string): boolean {
 }
 
 /** canComment as React state: a role change or a terminal note re-renders the thread without its write controls. */
-export function useCanComment(noteId: string | null): boolean {
+export function useCanComment(noteId: string): boolean {
   const role = useDocRole(noteId);
   const terminal = useTerminal(noteId);
-  return noteId !== null && role !== null && can(role, 'comment') && terminal === null;
+  return role !== null && can(role, 'comment') && terminal === null;
 }
 
 /**
  * Whether a block header offers Add comment. On a bound note it is canComment, so a commenter comments on blocks in a
- * read-only body; an unbound editor (the file-backed bundle, the viewer) keeps moss's gate, `editable`.
+ * read-only body; an unbound editor (the file-backed bundle, the viewer) keeps moss's gate, `editable`. It reads the
+ * role the pane already holds and never asks the server, so a role this tab forgot (an unknown one) stays forgotten.
  */
 export function useBlockCanComment(editor: LexicalEditor, editable: boolean): boolean {
   const docId = useSyncExternalStore(subscribeAnyPaint, () => sharedDocOf(editor), () => null);
-  const commentable = useCanComment(docId);
-  return docId === null ? editable : commentable;
+  const role = useKnownRole(docId);
+  const terminal = useTerminal(docId);
+  if (docId === null) return editable;
+  return role !== null && can(role, 'comment') && terminal === null;
 }
 
 /** Whether this tab's principal wrote `comment` (moss's NoteComment as projected, which carries `author`). */
