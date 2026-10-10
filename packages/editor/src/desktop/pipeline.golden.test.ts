@@ -233,6 +233,10 @@ const snapshotOf = (state: RendererState): RendererSnapshot => ({
   },
 });
 
+/** What the goldens compare: every file under /Moss by path. */
+const compared = (volume: MemoryVolume) =>
+  Object.fromEntries(Object.entries(volume.snapshot('/Moss')).map(([path, text]) => [path, path.endsWith('.json') ? JSON.parse(text) : text]));
+
 async function editorRead(host: MemoryHost) {
   const disk = await host.read(ID);
   if (disk.kind !== 'note') throw new Error(`read: ${disk.kind}`);
@@ -278,7 +282,7 @@ describe('the editor writes what Moss desktop writes', () => {
 
       // Every path is compared with its spelling, on both volumes: API 2's host keeps a same-file markdown entry's
       // spelling, as desktop's rename of a temp over the path does on APFS.
-      expect(editorVolume.snapshot('/Moss')).toEqual(desktopVolume.snapshot('/Moss'));
+      expect(compared(editorVolume)).toEqual(compared(desktopVolume));
     });
   }
 });
@@ -297,7 +301,7 @@ describe('the fixture host follows API 2 on a case-insensitive volume', () => {
 });
 
 describe('golden fixtures prove something', () => {
-  it('a wrong meta.json key order is caught (negative control)', async () => {
+  it('a meta.json that differs only in key order is caught (negative control)', async () => {
     const scenario = SCENARIOS[0];
     const desktopVolume = seedVolume(scenario);
     const desktop = createDesktopSave(desktopVolume);
@@ -305,10 +309,21 @@ describe('golden fixtures prove something', () => {
     await desktop.save(ID, record, scenario.edit(record), NOW);
     const editorVolume = seedVolume(scenario);
     const host = new MemoryHost({ volume: editorVolume });
-    const plan = planSave(await editorRead(host), snapshotOf(scenario.edit(record)), { now: NOW + 1 });
+    const plan = planSave(await editorRead(host), snapshotOf(scenario.edit(record)), { now: NOW });
     if (plan.kind !== 'write') throw new Error('expected a write');
     await host.write(ID, plan.write);
-    expect(editorVolume.snapshot('/Moss')).not.toEqual(desktopVolume.snapshot('/Moss'));
+    // The same save at the same time matches, so the reorder below is the only difference.
+    expect(compared(editorVolume)).toEqual(compared(desktopVolume));
+    const path = '/Moss/Notes/Projects/Plan/meta.json';
+    const bytes = editorVolume.readFile(path);
+    const parsed = JSON.parse(bytes) as Record<string, unknown>;
+    const tail = bytes.endsWith('\n') ? '\n' : '';
+    expect(JSON.stringify(parsed, null, 2) + tail).toBe(bytes);
+    const reordered = JSON.stringify(Object.fromEntries(Object.entries(parsed).reverse()), null, 2) + tail;
+    expect(JSON.parse(reordered)).toEqual(parsed);
+    expect(reordered).not.toBe(bytes);
+    editorVolume.silently(() => editorVolume.writeFile(path, reordered));
+    expect(compared(editorVolume)).not.toEqual(compared(desktopVolume));
   });
 
   it('every write the editor plans sends meta.json last and only changed sidecars', async () => {
