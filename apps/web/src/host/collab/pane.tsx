@@ -151,6 +151,8 @@ class PaneBinding implements SuggestPane {
   #mountReady = true;
   /** Suggest input closed by a refusal until F is rebuilt. */
   #inputClosed = false;
+  /** The DocDO refused for want of room for suggestions (T5.S4): Suggest input stays closed until the mode changes. */
+  #noRoom = false;
   #reviewFallback = false;
   /** A remount is waiting for acks or underway: a mode switch, a rebuilt F or C. */
   #switching = false;
@@ -234,6 +236,7 @@ class PaneBinding implements SuggestPane {
     const target = modeFor(this.docId, this.#role);
     if (target === this.#target) return;
     this.#target = target;
+    this.#noRoom = false;
     if (!this.#session && !this.#switching) {
       this.#mode = target;
       this.set({ mode: target });
@@ -272,7 +275,7 @@ class PaneBinding implements SuggestPane {
    */
   mountFor(session: DocSession): { doc: Doc; provider: Provider } {
     this.#mount = null;
-    this.#inputClosed = false;
+    this.#inputClosed = this.#noRoom;
     this.#mountReady = this.#mode === 'edit';
     if (this.#mode === 'edit') return { doc: session.doc, provider: session.provider as unknown as Provider };
     if (this.#mode === 'suggest') {
@@ -286,14 +289,17 @@ class PaneBinding implements SuggestPane {
         },
         refused: (unsaved, reason) => {
           // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
-          // room for more suggestions stays closed (a new F would only be refused again) until the mode changes.
+          // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
+          // that F (its lease) rebuilds nothing more.
           const full = NO_SUGGESTION_ROOM.has(reason);
+          const again = full && this.#noRoom;
+          if (full) this.#noRoom = true;
           this.#inputClosed = true;
           this.#editor?.setEditable(false);
           offerUnsaved(this.docId, unsaved, full);
           this.#apply(session.state);
           this.#mountChanged();
-          if (!full) this.#remount();
+          if (!again) this.#remount();
         },
         rebuild: () => this.#remount(),
         closed: (event) => dropUndo(this.#editor, event.clients),
