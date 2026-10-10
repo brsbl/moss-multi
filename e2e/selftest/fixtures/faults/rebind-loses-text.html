@@ -1,0 +1,19 @@
+<!-- Invariant 7: after typing, the body rebinds (unbound and empty for 1.5 s) and comes back live without the typed text. -->
+<script>
+  const body = document.querySelector('[data-body-binding]');
+  let timer = 0;
+  body.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      body.setAttribute('contenteditable', 'false');
+      body.setAttribute('data-body-binding', 'unbound');
+      body.querySelector('p').textContent = '';
+      document.documentElement.setAttribute('data-unbound', 'true');
+      setTimeout(() => {
+        body.querySelector('p').textContent = 'Hello';
+        body.setAttribute('data-body-binding', 'live');
+        body.setAttribute('contenteditable', 'true');
+      }, 1500);
+    }, 200);
+  });
+</script>

@@ -29,6 +29,9 @@ const CASES: Case[] = [
   { fixture: 'dropped-keystroke', invariant: 7 },
   { fixture: 'reordered', invariant: 7 },
   { fixture: 'duplicated', invariant: 7, act: (page) => page.locator('html[data-echoed]').waitFor({ state: 'attached' }) },
+  // A field still binding is waited for, never skipped: one that never binds fails, and so does a rebind that loses text.
+  { fixture: 'stuck-unbound', invariant: 7, act: (page) => page.locator('html[data-unbound]').waitFor({ state: 'attached' }) },
+  { fixture: 'rebind-loses-text', invariant: 7, act: (page) => page.locator('html[data-unbound]').waitFor({ state: 'attached' }) },
   { fixture: 'editable-unbound', invariant: 9 },
 ];
 
@@ -57,6 +60,13 @@ for (const c of CASES) {
     expect(findings.filter((f) => f.invariant !== c.invariant), `only invariant ${c.invariant} may flag ${c.fixture}`).toEqual([]);
   });
 }
+
+test('invariant 7 waits for a rebinding field and then reads its text', async ({ actors, server }) => {
+  const actor = await actors.anonymous(`${server.url}/rebind-keeps-text.html`, { label: 'rebind' });
+  await exercise(actor);
+  await actor.page.locator('html[data-unbound]').waitFor({ state: 'attached' });
+  expect(await actors.findings()).toEqual([]);
+});
 
 test('a declared 4xx is not a finding', async ({ actors, server }) => {
   const actor = await actors.anonymous(`${server.url}/http-error.html`, { label: 'declared' });

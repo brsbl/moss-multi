@@ -1,0 +1,13 @@
+<!-- Invariant 7: after typing, the body starts a rebind that never completes; it stays unbound, so its text never counts. -->
+<script>
+  const body = document.querySelector('[data-body-binding]');
+  let timer = 0;
+  body.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      body.setAttribute('contenteditable', 'false');
+      body.setAttribute('data-body-binding', 'unbound');
+      document.documentElement.setAttribute('data-unbound', 'true');
+    }, 200);
+  });
+</script>

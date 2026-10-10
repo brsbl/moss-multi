@@ -511,6 +511,16 @@ describe('canary recording', () => {
       expect(failureTrace({ errors: [timedOut] })).toEqual(['kind timeout, expect']);
     });
 
+    it('prints a field still unbound and numeric expected and received values, never text values', async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const unbound = { message: 'invariants: 1 finding(s)\n  invariant 7 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321 body: still unbound after 15 s', stack: '' };
+      expect(failureTrace({ errors: [unbound] })).toEqual(['invariant 7 [ben] body still unbound']);
+      const late = { message: 'Error: within 1 s of the demotion\n\nexpect(received).toBeLessThan(expected)\n\nExpected: < 1000\nReceived:   1234', stack: '' };
+      expect(failureTrace({ errors: [late] })).toEqual(['kind expect', 'expected < 1000, received 1234']);
+      const text = { message: `expect(received).toBe(expected)\n\nExpected: "${SESSION}"\nReceived: "SYNTHETIC text"`, stack: '' };
+      expect(failureTrace({ errors: [text] })).toEqual(['kind expect']);
+    });
+
     it('withholds a run-level error and test output off loopback', async () => {
       const { default: CanaryReporter } = await import('./canary-reporter.mjs');
       const lines = [];

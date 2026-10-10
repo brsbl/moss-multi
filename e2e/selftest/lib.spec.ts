@@ -1,7 +1,14 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
 // the sever, the reach sweep and the UI verbs.
+import { execFile } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { request } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
+import { RequestBudget } from '../lib/budget.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
 import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
@@ -70,6 +77,40 @@ test.describe('principals (invariant 8)', () => {
     expect(parseSetCookie('better-auth.session_token=abc.def; Path=/; HttpOnly; SameSite=Lax', 'http://127.0.0.1:8850')).toEqual({
       name: 'better-auth.session_token', value: 'abc.def', url: 'http://127.0.0.1:8850', httpOnly: true, secure: false, sameSite: 'Lax',
     });
+  });
+});
+
+test.describe('request budget', () => {
+  // Every request a shard sends the Worker counts: Node's fetch (setup's sign-ups and sign-ins with their retries, a
+  // leg's own pushes), Playwright API contexts, and child processes such as the CLI. Others and /assets/ do not.
+  test('counts Node fetch, API request contexts and child processes, and only the Worker', async ({ server }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'budget-'));
+    const budget = new RequestBudget(join(dir, 'requests.json'), 4, server.url);
+    try {
+      budget.watchNode();
+      await (await fetch(`${server.url}/api/version`)).text();
+      await (await fetch(`${server.url}/assets/app.js`)).text();
+      expect(budget.count, 'Node fetch to the Worker, not /assets/').toBe(1);
+
+      const api = await request.newContext({ baseURL: server.url });
+      budget.watchApi(api);
+      await api.get('/api/version');
+      await api.post('/missing', { data: {} });
+      await api.dispose();
+      expect(budget.count, 'API request context, relative URLs included').toBe(3);
+
+      const child = "await fetch(process.argv[1] + '/api/version'); await fetch(process.argv[1] + '/assets/x.js');";
+      await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child, server.url], { env: { PATH: process.env.PATH ?? '', ...budget.childEnv() } });
+      expect(budget.count, "a child process's fetch").toBe(4);
+      expect(budget.exceeded).toBe(false);
+      await (await fetch(`${server.url}/api/version`)).text();
+      expect(budget.exceeded, 'past the budget').toBe(true);
+      expect(() => budget.assert('selftest')).toThrow(/5 Worker requests passed this run's budget of 4/);
+      expect(new RequestBudget(join(dir, 'requests.json'), 4, server.url).count, 'a restarted worker keeps counting').toBe(5);
+    } finally {
+      budget.unwatchNode();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
