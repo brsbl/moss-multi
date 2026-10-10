@@ -29,6 +29,13 @@ export const MAX_CONNECTIONS = 50;
 /** Writes per connection per window; the overflow frame is not applied and the socket closes 4420. */
 export const WRITE_RATE = { max: 300, windowMs: 5_000 } as const;
 
+/**
+ * Full-state answers (a step 1 for the note or a payload) per principal per doc, or per anonymous socket (T3.S14):
+ * `docs` whole states' worth at once, refilled over `windowMs`; each answer costs the share of the stored state it
+ * sends. Past it a socket's latest step 1 per target waits for the refill, so a reconnect is late, never unanswered.
+ */
+export const ANSWER_BUDGET = { docs: 8, windowMs: 20_000 } as const;
+
 export const AWARENESS_MAX_BYTES = 8 * 1024;
 
 /** Display names in a socket's attachment. */
