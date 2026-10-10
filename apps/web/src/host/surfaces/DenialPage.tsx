@@ -4,7 +4,8 @@
 // primitives barrel).
 import { useEffect, useState, type ReactNode } from 'react';
 import { setAppState } from '../app-state.ts';
-import { LOGIN_PATH, SIGN_OUT_PATH } from '../auth-state.ts';
+import { auth } from '../auth.ts';
+import { LOGIN_PATH } from '../auth-state.ts';
 import { leaveTo } from '../navigation.ts';
 
 const ACTION =
@@ -52,17 +53,21 @@ export function InviteClosed(): ReactNode {
 
 /**
  * A live invite followed by a signed-in account whose email is not the invite's (PRODUCT ruling 19): it names no email,
- * and offers to sign out and come back here as the right account.
+ * and offers to sign out and come back here as the right account. It leaves only once the session has ended; a
+ * refused or unreachable sign-out stays here, says so, and can be tried again.
  */
 export function InviteForAnotherEmail(): ReactNode {
   useEffect(() => setAppState('ready'), []);
   const [leaving, setLeaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   async function switchAccount(): Promise<void> {
     setLeaving(true);
+    setError(null);
     const here = `${window.location.pathname}${window.location.search}`;
-    await fetch(SIGN_OUT_PATH, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' })
-      .catch(() => undefined);
-    leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(here)}`);
+    const outcome = await auth.signOut(`${LOGIN_PATH}?next=${encodeURIComponent(here)}`);
+    if (outcome.ok) return; // the page is leaving
+    setError(outcome.message);
+    setLeaving(false);
   }
   return (
     <main className="flex h-full min-h-screen w-full items-center justify-center bg-surface-panel px-6">
@@ -77,6 +82,11 @@ export function InviteForAnotherEmail(): ReactNode {
             Go to your notes
           </button>
         </div>
+        {error !== null && (
+          <p role="alert" className="m-0 mt-2 rounded-md border border-accent-terracotta/40 bg-surface-danger-soft px-3 py-2 text-xs text-ink-default">
+            {error}
+          </p>
+        )}
       </div>
     </main>
   );

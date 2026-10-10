@@ -45,7 +45,7 @@ beforeEach(async () => {
   h.lookups = [{ kind: 'signed-in', user: ADA }];
   await auth.resolve();
   container = document.createElement('div');
-  document.body.append(container);
+  document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => root.render(createElement(InviteForAnotherEmail)));
 });
