@@ -1,8 +1,9 @@
 // Every route that reads a JSON body caps it (T3.S7; A§18): a body that declares more than its route's cap is refused
 // with 413 before a byte is read, and one that streams past the cap without declaring a length is refused as it passes
-// it, never buffered further. Uploads stream with their own bounds (assets.test.ts).
+// it, never buffered further. Uploads stream with their own bounds (assets.test.ts); the largest note creation runs
+// through the real DocDO in body-cap.harness.test.ts.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { CREATE_BODY_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { handleAuthRoute } from '../auth/route.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
@@ -142,15 +143,6 @@ describe('JSON bodies are capped on every route that reads one', () => {
     const response = await comment('POST', `/api/docs/${docId}/comments`, sent);
     expect(response.status, await response.clone().text()).toBe(201);
   }, 30_000);
-
-  it('note creation takes 2 MB of markdown, every byte escaped, with a full comments sidecar', async () => {
-    const markdown = '\u0001'.repeat(MARKDOWN_CAP_BYTES - 1024);
-    const comments = { version: 1, comments: { c1: { text: '\u0001'.repeat(Math.floor((MARKDOWN_CAP_BYTES - 1024) / 6)) } } };
-    const sent = JSON.stringify({ title: 'Imported', markdown, comments });
-    expect(sent.length, 'longer than a body of markdown alone').toBeGreaterThan(MARKDOWN_CAP_BYTES * 6 + 64 * 1024);
-    const status = await send(ROUTES[0]!, sent).then((r) => r.status, () => 500);
-    expect(status).not.toBe(413);
-  }, 60_000);
 });
 
 describe('auth bodies are capped before better-auth reads them', () => {
