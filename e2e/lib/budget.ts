@@ -11,8 +11,7 @@ import type { APIRequestContext, BrowserContext } from '@playwright/test';
 const CHILD_PRELOAD = new URL('./budget-child.mjs', import.meta.url);
 
 /** The budget Node's own fetch charges, if any (one per Playwright worker). */
-let nodeBudget: RequestBudget | null = null;
-let nodeFetchWrapped = false;
+const node: { budget: RequestBudget | null; wrapped: boolean } = { budget: null, wrapped: false };
 
 const urlOf = (input: unknown): string | null => {
   if (typeof input === 'string') return input;
@@ -88,20 +87,20 @@ export class RequestBudget {
 
   /** Counts every request this process's global fetch sends to the Worker. */
   watchNode(): void {
-    nodeBudget = this;
-    if (nodeFetchWrapped) return;
-    nodeFetchWrapped = true;
+    node.budget = this;
+    if (node.wrapped) return;
+    node.wrapped = true;
     const send = globalThis.fetch;
     globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const url = urlOf(input);
-      if (url && nodeBudget) nodeBudget.charge(url);
+      if (url && node.budget) node.budget.charge(url);
       return send(input, init);
     }) as typeof fetch;
   }
 
   /** Stops charging this process's fetch to this budget. */
   unwatchNode(): void {
-    if (nodeBudget === this) nodeBudget = null;
+    if (node.budget === this) node.budget = null;
   }
 
   /** The environment a child process (the CLI) needs for its requests to count. */
@@ -121,5 +120,5 @@ export class RequestBudget {
 
 /** The environment a child process (the CLI) needs for its requests to count against the running budget, if any. */
 export function childBudgetEnv(): Record<string, string> {
-  return nodeBudget?.childEnv() ?? {};
+  return node.budget?.childEnv() ?? {};
 }

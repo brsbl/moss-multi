@@ -313,7 +313,7 @@ describe('deploy-staging.yml', () => {
     const input = WORKFLOW.on.workflow_dispatch.inputs.suite;
     expect(input).toMatchObject({ type: 'choice', default: 'canary' });
     expect(input.options).toEqual(['canary', 'full']);
-    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => j.steps.some((step) => /--project=staging-/.test(step.run ?? ''))) ?? [];
+    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => j.steps.some((step) => /--project="?staging-/.test(step.run ?? ''))) ?? [];
     expect(name, 'a job runs the staging projects').toBeTruthy();
     expect(job.if).toMatch(/inputs\.suite == 'full'/);
     expect(needsOf(name)).toEqual(expect.arrayContaining(['preflight', 'deploy', 'canary']));
@@ -321,7 +321,11 @@ describe('deploy-staging.yml', () => {
     expect(job.strategy['fail-fast']).toBe(false);
     const run = job.steps.find((step) => /playwright test/.test(step.run ?? '')).run;
     expect(run).toMatch(/--project=staging-"?\$\{?BROWSER/);
-    expect(run).not.toMatch(/--reporter|PLAYWRIGHT_|--grep/);
+    expect(run).not.toMatch(/--reporter|PLAYWRIGHT_/);
+    // The only narrowing is the suite_grep input, empty by default, for re-checking a staging-only failure.
+    expect(run.match(/--grep\b.*/g)).toEqual(['--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi']);
+    expect(WORKFLOW.on.workflow_dispatch.inputs.suite_grep).toMatchObject({ type: 'string', default: '' });
+    expect(job.steps.find((step) => /playwright test/.test(step.run ?? '')).env.GREP).toBe('${{ inputs.suite_grep }}');
     // Per-run principals, never the pool secret, and this run's own budget.
     const state = job.steps.find((step) => /canary-state\.mjs/.test(step.run ?? ''));
     expect(state.run).toMatch(/--principals per-run/);

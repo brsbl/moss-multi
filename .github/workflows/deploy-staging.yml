@@ -311,7 +311,7 @@ jobs:
           MOSS_MULTI_NO_OPEN: '1'
           GREP: ${{ inputs.suite_grep }}
         run: |
-          args=(--project="staging-$BROWSER" --shard="$SHARD/8")
+          args=(--project=staging-"$BROWSER" --shard="$SHARD/8")
           if [ -n "$GREP" ]; then args+=(--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi
           pnpm exec playwright test "${args[@]}"
       - name: A credential-free summary
