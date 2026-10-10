@@ -292,10 +292,87 @@ export async function accessibleFolders(db: Db, principal: Principal) {
     owner || ids.length ? discoveryRows(db, owner, ids) : [],
     ids.length ? db.select().from(folderMembers).where(inArray(folderMembers.principalId, ids)) : [],
   ]);
+  return foldFolderRoles(principal, rows, grants);
+}
+
+export interface MembershipAccess {
+  role: Role;
+  ownerUserId: string;
+  /** The doc's title or the folder's name. */
+  name: string;
+  kind: 'doc' | 'folder' | 'vault';
+}
+
+/**
+ * members.ts's accessTo for many targets in five statements, however many there are: each live target the principal
+ * reaches through ownership or a grant (a link alone is not membership), keyed `type:id`. Read fresh on every call.
+ */
+export async function membershipAccess(db: Db, principal: Principal, targets: readonly { type: 'doc' | 'folder'; id: string }[]) {
+  const access = new Map<string, MembershipAccess>();
+  if (targets.length === 0) return access;
+  const idsOf = (type: 'doc' | 'folder') => [...new Set(targets.filter((target) => target.type === type).map((target) => target.id))];
+  const [docRows, folderRows] = await Promise.all([
+    db.select({ id: docs.id, ownerUserId: docs.ownerUserId, folderId: docs.folderId, title: docs.title }).from(docs)
+      .where(and(inJson(docs.id, idsOf('doc')), isNull(docs.deletedAt))),
+    db.select({ id: folders.id, ownerUserId: folders.ownerUserId, name: folders.name, kind: folders.kind }).from(folders)
+      .where(and(inJson(folders.id, idsOf('folder')), isNull(folders.deletedAt))),
+  ]);
+  const starts = [...new Set([...docRows.map((doc) => doc.folderId), ...folderRows.map((folder) => folder.id)])];
+  // Every start's folderChain at once.
+  const links = await db.all<{ start: string; id: string }>(sql`
+    WITH RECURSIVE chain(start, id, parent_id, depth) AS (
+      SELECT id, id, parent_id, 1 FROM folders WHERE id IN (SELECT value FROM json_each(${JSON.stringify(starts)}))
+      UNION ALL
+      SELECT chain.start, folders.id, folders.parent_id, chain.depth + 1 FROM folders JOIN chain ON folders.id = chain.parent_id
+      WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    )
+    SELECT start, id FROM chain`);
+  const chains = new Map<string, Set<string>>();
+  for (const link of links) chains.set(link.start, (chains.get(link.start) ?? new Set()).add(link.id));
+  const holders = grantees(principal);
+  const [docGrants, folderGrants] = await Promise.all([
+    db.select({ docId: docMembers.docId, role: docMembers.role }).from(docMembers)
+      .where(and(inJson(docMembers.docId, docRows.map((doc) => doc.id)), inJson(docMembers.principalId, holders))),
+    db.select({ folderId: folderMembers.folderId, role: folderMembers.role }).from(folderMembers)
+      .where(and(inJson(folderMembers.folderId, [...new Set(links.map((link) => link.id))]), inJson(folderMembers.principalId, holders))),
+  ]);
+  const onDoc = rolesBy(docGrants, (grant) => grant.docId);
+  const onFolder = rolesBy(folderGrants, (grant) => grant.folderId);
+  const fold = (ownerUserId: string, grants: Role[]) => foldRole({ owner: actingUserId(principal) === ownerUserId, grants, link: null,
+    anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' });
+  const chainRoles = (folderId: string) => [...(chains.get(folderId) ?? [])].flatMap((id) => onFolder.get(id) ?? []);
+  for (const doc of docRows) {
+    const role = fold(doc.ownerUserId, [...(onDoc.get(doc.id) ?? []), ...chainRoles(doc.folderId)]);
+    if (role) access.set(`doc:${doc.id}`, { role, ownerUserId: doc.ownerUserId, name: doc.title, kind: 'doc' });
+  }
+  for (const folder of folderRows) {
+    const role = fold(folder.ownerUserId, chainRoles(folder.id));
+    if (role) access.set(`folder:${folder.id}`, { role, ownerUserId: folder.ownerUserId, name: folder.name, kind: folder.kind });
+  }
+  return access;
+}
+
+/** Grant roles grouped by the id `on` reads, in one pass. */
+function rolesBy<G extends { role: Role }>(grants: readonly G[], on: (grant: G) => string): Map<string, Role[]> {
+  const byId = new Map<string, Role[]>();
+  for (const grant of grants) {
+    const roles = byId.get(on(grant));
+    if (roles) roles.push(grant.role);
+    else byId.set(on(grant), [grant.role]);
+  }
+  return byId;
+}
+
+/** A folder row as discovery reads it. */
+interface FolderRow { id: string; parentId: string | null; deletedAt: number | null; kind: 'folder' | 'vault'; ownerUserId: string }
+
+/** Each live folder under a vault, with the principal's role from ownership and the grants on its chain. */
+export function foldFolderRoles<R extends FolderRow>(principal: Principal, rows: readonly R[], grants: readonly { folderId: string; role: Role }[]) {
   const byId = new Map(rows.map((row) => [row.id, row]));
+  const grantsOn = rolesBy(grants, (grant) => grant.folderId);
   return rows.flatMap((row) => {
     const chain: string[] = [];
-    let current: typeof row | undefined = row;
+    let current: R | undefined = row;
     while (current && chain.length < MAX_FOLDER_DEPTH && !chain.includes(current.id)) {
       if (current.deletedAt !== null) return [];
       chain.push(current.id);
@@ -304,7 +381,7 @@ export async function accessibleFolders(db: Db, principal: Principal) {
     const root = byId.get(chain[chain.length - 1]);
     if (root?.kind !== 'vault') return [];
     const role = foldRole({ owner: actingUserId(principal) === row.ownerUserId,
-      grants: grants.filter((grant) => chain.includes(grant.folderId)).map((grant) => grant.role), link: null,
+      grants: chain.flatMap((id) => grantsOn.get(id) ?? []), link: null,
       anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' });
     return role ? [{ ...row, role, vaultId: root.id }] : [];
   });
@@ -326,10 +403,19 @@ export async function accessibleDocs(db: Db, principal: Principal, folders: Awai
     inJson(docs.id, grants.map((grant) => grant.docId)),
     inJson(docs.folderId, folderIds),
   )));
+  return foldDocRoles(principal, rows, grants, folders);
+}
+
+/** Each doc row with the principal's role from ownership, its own grants and its folder's discovered role. */
+export function foldDocRoles<R extends { id: string; folderId: string; ownerUserId: string }>(principal: Principal, rows: readonly R[],
+  grants: readonly { docId: string; role: Role }[], folders: readonly { id: string; role: Role }[]) {
+  const ownerId = actingUserId(principal);
+  const grantsOn = rolesBy(grants, (grant) => grant.docId);
+  const folderRoles = new Map(folders.map((folder) => [folder.id, folder.role]));
   return rows.flatMap((row) => {
-    const folderRole = folders.find((folder) => folder.id === row.folderId)?.role;
+    const folderRole = folderRoles.get(row.folderId);
     const role = foldRole({ owner: ownerId === row.ownerUserId,
-      grants: [...grants.filter((grant) => grant.docId === row.id).map((grant) => grant.role), ...(folderRole ? [folderRole] : [])],
+      grants: [...(grantsOn.get(row.id) ?? []), ...(folderRole ? [folderRole] : [])],
       link: null, anonymous: principal.type === 'anonymous', agent: principal.type === 'agent' });
     return role ? [{ ...row, role }] : [];
   });
