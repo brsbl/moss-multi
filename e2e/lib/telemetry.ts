@@ -12,6 +12,8 @@ export interface SocketEntry {
   url: string; docId: string; epoch: number; openedAt: number; closedAt: number | null; error: string | null;
   /** The close event's code, when the page saw it (not on a routed page). */
   code?: number | null;
+  /** The page document that opened it, when the page reported it (not on a routed page). */
+  document?: string | null;
 }
 export interface StampEntry { url: string; status: number | null; meta: string | null; client: string | null; at: number }
 

@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deployedProblems, hookProblems } from './assert-deployed.mjs';
 import { canarySummary, recordingFor } from './canary-artifacts.mjs';
 import { canaryState } from './canary-state.mjs';
+import { growthProblems, GROWTH_CAP, PER_FULL_RUN, readGrowth } from './growth.mjs';
 import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
 import { gateProblems, runProblems } from './run-gate.mjs';
@@ -339,9 +340,12 @@ describe('the staging suite @p:R15', () => {
     const scan = scanJourneys();
     expect(scan.flatMap((spec) => spec.problems)).toEqual([]);
     const local = Object.fromEntries(scan.filter((spec) => spec.localOnly.length > 0).map((spec) => [spec.file, spec.localOnly.length]));
-    for (const file of ['j00-roundtrip.spec.ts', 'j01-registers.spec.ts', 'j02-title.spec.ts', 'j03-connection.spec.ts', 'j04-hibernation.spec.ts', 'j09-revoke-live.spec.ts']) {
+    for (const file of ['j00-roundtrip.spec.ts', 'j01-registers.spec.ts', 'j02-title.spec.ts', 'j03-connection.spec.ts', 'j04-hibernation.spec.ts']) {
       expect(local[file], file).toBeGreaterThan(0);
     }
+    // A hook read alone is not local: the owner-only instance route answers it on staging, so j09's cold wake and
+    // j04's warm creator run there.
+    expect(local['j09-revoke-live.spec.ts'], 'j09 cold runs on staging').toBeUndefined();
     // The wake on staging is j04's owner-route leg, which stays in the suite.
     expect(readFileSync(fileURLToPath(new URL('../../e2e/journeys/j04-hibernation.spec.ts', import.meta.url)), 'utf8')).toMatch(/owner-only route @staging/);
   });
@@ -359,13 +363,18 @@ describe('the staging suite @p:R15', () => {
       '  // local-only: resets the DO through the hook.',
       "  test(`loop ${s === 2 ? ' @local-only' : ''}`, async ({ stack }) => { if (s === 2) await stack.resetDoc('d'); });",
       '}',
+      '// local-only: reads the DO through the loopback hook.',
+      "test('hook read @local-only', async ({ stack }) => { await stack.docInstance('d'); });",
+      '// local-only: serves a page on another port of the stack host.',
+      "test('other origin @local-only', async ({ stack }) => { await servePage(host); });",
     ].join('\n');
     const problems = localOnlyProblems(spec, 'x.spec.ts');
-    expect(problems).toHaveLength(4);
+    expect(problems).toHaveLength(5);
     expect(problems[0]).toMatch(/x\.spec\.ts:1 uses a test hook/);
     expect(problems[1]).toMatch(/:2 uses a restart or reset lever/);
     expect(problems[2]).toMatch(/:3 uses induce\(\) with the hook probe/);
     expect(problems[3]).toMatch(/:4 is @local-only with no/);
+    expect(problems[4]).toMatch(/:13 is @local-only but uses no local-only lever/);
   });
 
   it('runs every journey but the @local-only legs in each engine on staging, recording nothing', async () => {
@@ -678,5 +687,34 @@ describe('the deployed-build assertion', () => {
     } finally {
       options.hooks = false;
     }
+  });
+});
+
+describe('staging growth (A§21) @p:R15', () => {
+  // `wrangler d1 execute --json` for the count query deploy-staging.yml runs before a full suite.
+  const counted = (docs, users, bytes) => JSON.stringify([{ results: [{ docs, users }], success: true, meta: { size_after: bytes } }]);
+
+  it('reads the counts and the database size', () => {
+    expect(readGrowth(counted(4252, 6958, 18_710_528))).toEqual({ docs: 4252, users: 6958, d1Bytes: 18_710_528 });
+    expect(() => readGrowth('[]')).toThrow(/count/);
+    expect(() => readGrowth(counted('x', 1, 1))).toThrow(/count/);
+  });
+
+  it('refuses a full suite that would carry staging past its cap, and says what the owner decides', () => {
+    expect(growthProblems({ docs: 4252, users: 6958, d1Bytes: 18_710_528 })).toEqual([]);
+    const near = growthProblems({ docs: GROWTH_CAP.docs - PER_FULL_RUN.docs + 1, users: 0, d1Bytes: 0 });
+    expect(near).toHaveLength(1);
+    expect(near[0]).toMatch(/docs/);
+    expect(near[0]).toMatch(/owner/);
+    expect(growthProblems({ docs: 0, users: GROWTH_CAP.users, d1Bytes: GROWTH_CAP.d1Bytes })).toHaveLength(2);
+  });
+
+  it('checks the cap before a full-suite deploy, and never for the canary', () => {
+    const steps = WORKFLOW.jobs.deploy.steps;
+    const check = steps.findIndex((step) => /growth\.mjs/.test(step.run ?? ''));
+    expect(check, 'a growth check step').toBeGreaterThan(-1);
+    expect(steps[check].if).toMatch(/inputs\.suite == 'full'/);
+    expect(check).toBeLessThan(steps.findIndex((step) => /WRANGLER" deploy/.test(step.run ?? '')));
+    expect(steps[check].run).toMatch(/d1 execute moss-multi-staging --remote --json/);
   });
 });

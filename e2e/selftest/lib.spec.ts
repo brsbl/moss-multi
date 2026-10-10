@@ -8,9 +8,12 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { request } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
+import { recordsScreens } from '../lib/actors.ts';
 import { RequestBudget } from '../lib/budget.ts';
+import { probeSocket } from '../lib/doc-client.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
 import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
@@ -103,14 +106,37 @@ test.describe('request budget', () => {
       await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child, server.url], { env: { PATH: process.env.PATH ?? '', ...budget.childEnv() } });
       expect(budget.count, "a child process's fetch").toBe(4);
       expect(budget.exceeded).toBe(false);
-      await (await fetch(`${server.url}/api/version`)).text();
-      expect(budget.exceeded, 'past the budget').toBe(true);
+      // A raw ws socket from Node (a protocol-level doc client), refused at the upgrade here: its handshake reached
+      // the Worker.
+      expect((await probeSocket(`${server.url}/refused`, 'd', null)).opened).toBe(false);
+      expect(budget.exceeded, 'a Node ws socket counts, and passes the budget').toBe(true);
       expect(() => budget.assert('selftest')).toThrow(/5 Worker requests passed this run's budget of 4/);
       expect(new RequestBudget(join(dir, 'requests.json'), 4, server.url).count, 'a restarted worker keeps counting').toBe(5);
     } finally {
       budget.unwatchNode();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+test.describe('doc sockets (invariant 3)', () => {
+  const socket = (openedAt: number, closedAt: number | null, document?: string | null) =>
+    ({ url: `ws://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error: null, document });
+  test('two opens in one document fail, whichever epoch the navigation event gave them', () => {
+    expect(socketProblems([socket(0, 10, 'doc-a'), socket(20, null, 'doc-a')], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 10), socket(20, null)], new Map())).not.toEqual([]);
+  });
+  test("a socket the previous document opened as it unloaded is that document's, not the next one's", () => {
+    // WebKit can deliver the old document's socket after the new navigation's response, at the new epoch.
+    expect(socketProblems([socket(0, 0, 'doc-a'), socket(39, null, 'doc-b')], new Map())).toEqual([]);
+  });
+});
+
+test.describe('recording off loopback (T8.Ds)', () => {
+  test('screenshots are taken against a loopback stack or a fixture page only', () => {
+    expect(recordsScreens(null)).toBe(true);
+    expect(recordsScreens({ baseUrl: 'http://127.0.0.1:8850' })).toBe(true);
+    expect(recordsScreens({ baseUrl: 'https://moss-multi-staging.example.workers.dev' })).toBe(false);
   });
 });
 

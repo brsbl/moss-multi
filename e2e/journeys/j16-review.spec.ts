@@ -164,6 +164,44 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   expect(await content(ada, docId), 'the note is byte-identical').toBe(before);
 });
 
+test("j16-review: a withdraw sent while the card's preview is still on the way leaves no refused preview behind @p:R16", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  ben.expectReconnects(1, docId);
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"]`)).not.toHaveCount(0, { timeout: BIND_TIMEOUT });
+
+  // Staging's latency, made certain: the card's preview reaches the server only after the withdraw has closed the
+  // record. Its answer would then be a 409 for a suggestion that is no longer open.
+  const PREVIEW = /\/suggestions\/[^/]+\/preview$/;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let caught = () => {};
+  const intercepted = new Promise<void>((resolve) => { caught = resolve; });
+  await ben.page.route(PREVIEW, async (route) => {
+    caught();
+    await held;
+    await route.continue().catch(() => undefined);
+  });
+  // The held preview ends either refused by the page (aborted) or answered by the server.
+  const ended = new Promise<void>((resolve) => {
+    const end = (url: string) => { if (PREVIEW.test(url)) resolve(); };
+    ben.page.on('requestfailed', (request) => end(request.url()));
+    ben.page.on('response', (response) => end(response.url()));
+  });
+  const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await intercepted;
+  await own.getByRole('button', { name: 'Withdraw' }).click();
+  await expect(cards(ben, 'withdrawn')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  release();
+  await Promise.race([ended, ben.page.waitForTimeout(5_000)]);
+  await ben.page.unroute(PREVIEW);
+  await closePanel(ben);
+  await expect(ui.body(ben, docId), "it leaves the author's window").not.toContainText('plus', { timeout: BIND_TIMEOUT });
+});
+
 test("j16-review: a struck delete opens its card from the owner's body, and the card lists what it deletes @p:mean-2 @p:R17", async ({ actors }) => {
   const { ada, ben, docId } = await sharedNote(actors);
   await openIn(ben, docId, 'suggest');

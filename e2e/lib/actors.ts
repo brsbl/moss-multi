@@ -78,6 +78,11 @@ export class Actor implements ActorView {
   }
 }
 
+/** Whether a test may capture screenshots against `stack`. */
+export function recordsScreens(_stack: Pick<Stack, 'baseUrl'> | null): boolean {
+  return true;
+}
+
 // Per worker process, so every principal minted in a run has its own email.
 let minted = 0;
 
