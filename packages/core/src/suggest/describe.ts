@@ -535,8 +535,8 @@ function payloadUnits(value: unknown): Unit[] {
     const [client, clock] = pair[0].split(':').map(Number);
     const part = typeof text === 'string' ? text.slice(at, at + len) : Array.isArray(text) ? text[n] : undefined;
     at += len;
-    if (typeof part === 'string') for (let i = 0; i < part.length; i++) out.push({ id: `${client}:${clock + i}`, ch: part[i] });
     describeStats.units += typeof part === 'string' ? part.length : 1;
+    if (typeof part === 'string') for (let i = 0; i < part.length; i++) out.push({ id: `${client}:${clock + i}`, ch: part[i] });
     else out.push({ id: pair[0], node: part });
   });
   // Text past what the id runs cover (never so in Yjs, but hashed as such) is still read.
