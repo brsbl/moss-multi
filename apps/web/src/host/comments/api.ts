@@ -119,3 +119,17 @@ export async function reactTo(docId: string, id: string, emoji: string, on: bool
   const result = await post(`${commentPath(docId, id)}/reactions`, { emoji, on });
   if (!result.ok) refuseInput(REFUSED[result.error ?? ''] ?? "That reaction couldn't be saved. Try again.");
 }
+
+/** The server's answer to a bound composer's submit. */
+export type Completion = { ok: true } | { ok: false; error: string };
+/** Where a bound composer's draft lives in a doc: the new-comment composer, a thread's reply box, or a comment's edit. */
+export type DraftSlot = 'root' | `reply:${string}` | `edit:${string}`;
+/** A bound composer's submit, kept until the server takes it. */
+export interface Draft { id: string; text: string; anchor?: Minted; parentId?: string; failed?: string; done: Promise<Completion> }
+
+/** Tests-first stub (T4.B3): no draft is kept yet. */
+export function draftOf(docId: string, slot: DraftSlot): Draft | undefined {
+  void docId;
+  void slot;
+  return undefined;
+}

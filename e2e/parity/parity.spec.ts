@@ -237,6 +237,49 @@ async function openThreadFromList(page: Page, detach: boolean): Promise<void> {
   await expect(commentPopover(page), 'the list opens the thread').toBeVisible();
 }
 
+/**
+ * The candidate's comment highlight paints a background: inside the commented range's first line box, most pixels
+ * change when the highlight is taken away. The dark theme masks the commented line (deviation 30), so without this a
+ * lost dark highlight would pass while `CSS.highlights` and the gutter stay.
+ */
+async function expectCommentPaint(page: Page, theme: Theme): Promise<void> {
+  const box = await page.evaluate(() => {
+    let found: { x: number; y: number; width: number; height: number } | null = null;
+    CSS.highlights.forEach((highlight, name) => {
+      if (!/^moss-comment-\d+$/.test(name)) return;
+      highlight.forEach((range) => {
+        const rect = (range as Range).getClientRects()[0];
+        if (!found && rect && rect.width > 4 && rect.height > 4) found = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      });
+    });
+    return found;
+  });
+  expect(box, `${theme}: the comment highlight holds a range`).not.toBeNull();
+  // The interior: off the box's edges, where moss's padding and rounding differ by design.
+  const clip = { x: box!.x + 2, y: box!.y + 2, width: box!.width - 4, height: box!.height - 4 };
+  const shot = async () => PNG.sync.read(await page.screenshot({ clip, animations: 'disabled', caret: 'hide' }));
+  const painted = await shot();
+  await page.evaluate(() => {
+    const held: [string, Highlight][] = [];
+    CSS.highlights.forEach((highlight, name) => {
+      if (/^moss-comment-/.test(name)) held.push([name, highlight]);
+    });
+    for (const [name] of held) CSS.highlights.delete(name);
+    (window as unknown as { heldHighlights: typeof held }).heldHighlights = held;
+  });
+  const bare = await shot();
+  await page.evaluate(() => {
+    for (const [name, highlight] of (window as unknown as { heldHighlights: [string, Highlight][] }).heldHighlights) CSS.highlights.set(name, highlight);
+  });
+  let changed = 0;
+  for (let i = 0; i < painted.data.length; i += 4) {
+    const delta = Math.abs(painted.data[i] - bare.data[i]) + Math.abs(painted.data[i + 1] - bare.data[i + 1]) + Math.abs(painted.data[i + 2] - bare.data[i + 2]);
+    if (delta > 12) changed += 1;
+  }
+  const share = changed / (painted.width * painted.height);
+  expect(share, `${theme}: the highlight paints its background inside the commented range`).toBeGreaterThan(0.5);
+}
+
 async function prepare(page: Page, target: Target, side: 'oracle' | 'candidate'): Promise<void> {
   if (target.prepare === 'trash-open-note') await trashOpenNote(page);
   if (target.prepare === 'comment-gutter') await showCommentGutter(page);
@@ -332,6 +375,7 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
       await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
     }
     await prepare(page, target, 'candidate');
+    if (target.prepare === 'comment-gutter') await expectCommentPaint(page, theme);
     await audit(page, theme, 'candidate', bare(target) ? target.crop : CROP);
     const masks = await maskRects(page, target.crop ?? CROP, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])]);
     return { png: await capture(page, target), masks };

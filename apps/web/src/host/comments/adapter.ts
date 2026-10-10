@@ -8,7 +8,7 @@ import { $getSelection, $isRangeSelection, type LexicalEditor } from 'lexical';
 import { useSyncExternalStore } from 'react';
 import { knownRole, useDocRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
-import { createComment, deleteComment, editComment, reactTo, replyTo, resolveThread } from './api.ts';
+import { createComment, deleteComment, editComment, reactTo, replyTo, resolveThread, type Completion, type DraftSlot } from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
 import { commentsAtPoint, isShared, noteBound, painterOf, setActive, setHover, subscribeAnyPaint, subscribePaint } from './paint.ts';
 import { myPrincipalId } from './people.ts';
@@ -169,4 +169,11 @@ export function mutate(editor: LexicalEditor, op: CommentMutation): boolean {
 /** Adds or removes this tab's reaction on a comment of `noteId`. */
 export function react(noteId: string, commentId: string, emoji: string, on: boolean): void {
   if (canComment(noteId)) void reactTo(noteId, commentId, emoji, on);
+}
+
+/** Tests-first stub (T4.B3): composers get no answer yet. */
+export function submitted(noteId: string, slot: DraftSlot): Promise<Completion> | null {
+  void noteId;
+  void slot;
+  return null;
 }

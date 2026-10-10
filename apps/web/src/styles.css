@@ -42,3 +42,7 @@
 ::highlight(moss-comment-active-4) { text-decoration-color: var(--highlight-chalk-grey); }
 [data-theme="dark"] ::highlight(moss-comment-hover-0),
 [data-theme="dark"] ::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
+/* Tests-first mutation (T4.B3, B269): the dark highlight loses its background; the next commit removes this. */
+[data-theme="dark"] ::highlight(moss-comment-0),
+[data-theme="dark"] ::highlight(moss-comment-3),
+[data-theme="dark"] ::highlight(moss-comment-4) { background-color: transparent; }

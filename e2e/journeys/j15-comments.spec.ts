@@ -2,10 +2,16 @@
 // and presses Cmd+Shift+A, writes the comment, and keeps typing; the highlight is CSS Custom Highlight paint derived
 // from the server's anchor record, so the peer sees it, bold across it never blinks it, and delete then Cmd+Z brings
 // it back. Threads open from the gutter, take replies and resolve; a commenter comments without editing; a detached
-// thread is listed with its quote. No marker reaches the DOM.
+// thread is listed with its quote. No marker reaches the DOM. A commenter also comments on blocks (code, chart, canvas,
+// image) from their headers; a viewer and a trashed note are offered none.
+import { readFileSync } from 'node:fs';
+import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
+import * as Y from 'yjs';
+import { fromBase64 } from '../../packages/core/src/tree-anchor.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { BODY_BINDING_ATTR, DOC_STATE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
+import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
 import { grantDoc, type GrantRole } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -419,4 +425,108 @@ test('j15-comments: the gutter opens the thread; a reply arrives live, attribute
   await expect(listed, 'with its quote, marked detached').toContainText('lazy dog');
   await expect(listed).toContainText(/detached/i);
   await actors.checkpoint('detached');
+});
+
+const BLOCK_TYPES = ['code-block', 'chart', 'sketch', 'image'] as const;
+const BLOCKS_SEED = [
+  'Blocks to comment on.',
+  '```js\nconst answer = 42;\n```',
+  '```moss-chart\n{"type":"bar","title":"Concurrent","data":[{"label":"Mon","value":3},{"label":"Tue","value":5}]}\n```',
+  '```moss-canvas\n[moss:grid:v2]\n#\n```',
+  '![A test card](assets/pattern.png)',
+].join('\n\n');
+
+/** Each commentable block's wrapper in this actor's body, by node type. */
+async function blocksByType(actor: Actor, id: string): Promise<[string, Locator][]> {
+  const keys = await ui.body(actor, id).evaluate((element, types) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const nodes = [...editor.getEditorState()._nodeMap.values()];
+    return types.map((type) => [type, nodes.find((node) => node.getType() === type)?.getKey() ?? ''] as const);
+  }, [...BLOCK_TYPES]);
+  return keys.map(([type, key]) => {
+    expect(key, `${actor.label}: the note renders a ${type}`).not.toBe('');
+    return [type, ui.body(actor, id).locator(`[data-block-decorator-key="${key}"]`).first()];
+  });
+}
+
+const blockCommentButton = (block: Locator) => block.locator('button:has([class*="lucide-sticky-note"])');
+
+/** The comments whose text is in `texts`, as the server stores them: each anchor's kind and the node type it names. */
+async function storedAnchors(baseUrl: string, docId: string, cookie: string, texts: string[]): Promise<{ text: string; kind: unknown; type: unknown }[]> {
+  const client = await openDocClient(baseUrl, docId, cookie);
+  try {
+    await client.synced;
+    const comments = client.doc.getMap('comments');
+    const out: { text: string; kind: unknown; type: unknown }[] = [];
+    for (const [key, value] of comments) {
+      const text = (value as { text?: string } | null)?.text;
+      if (!key.startsWith('c:') || !text || !texts.includes(text)) continue;
+      const anchor = comments.get(`a:${key.slice(2)}`) as { kind: string; start: string } | undefined;
+      const position = anchor ? Y.decodeRelativePosition(fromBase64(anchor.start)).item : null;
+      const item = position ? Y.getItem(client.doc.store, position) : null;
+      const type = item instanceof Y.Item && item.content instanceof Y.ContentType ? (item.content.type as Y.XmlElement).getAttribute('__type') : null;
+      out.push({ text, kind: anchor?.kind, type });
+    }
+    return out.sort((a, b) => a.text.localeCompare(b.text));
+  } finally {
+    client.close();
+  }
+}
+
+test('j15-comments: a commenter comments on code, chart, canvas and image blocks; a viewer and a trashed note offer no block composer @p:mean-1 @p:ppl-2', async ({ actors, stack }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.session(adaPrincipal);
+  const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { markdown: BLOCKS_SEED } });
+  expect(created.status()).toBe(201);
+  const { doc: { id } } = await created.json() as { doc: { id: string } };
+  const uploaded = await ada.context.request.post(`/api/docs/${id}/assets?filename=pattern.png`, {
+    headers: { origin: stack.baseUrl, 'content-type': 'image/png' }, data: readFileSync(new URL('../fixtures/media/pattern.png', import.meta.url)),
+  });
+  expect(uploaded.status(), 'the image is uploaded').toBe(201);
+  await ada.goto(`/d/${id}`);
+  await ui.waitLive(ada, id);
+  await ada.observeEditor(id);
+  const note: Note = { id, ada, adaPrincipal };
+  const { actor: cara } = await peer(actors, note, 'cara', 'commenter');
+  const { actor: vic } = await peer(actors, note, 'vic', 'viewer');
+  const before = await bodyText(ada, id);
+
+  const texts: string[] = [];
+  for (const [type, block] of await blocksByType(cara, id)) {
+    await block.scrollIntoViewIfNeeded();
+    await block.hover();
+    const button = blockCommentButton(block);
+    await expect(button, `${type}: the commenter is offered Add comment`).toHaveCount(1);
+    await expect(block.getByRole('button', { name: /^(Edit|Draw|Delete|Fullscreen)$/ }), `${type}: but no body edit`).toHaveCount(0);
+    await button.click();
+    const composer = cara.page.getByRole('dialog', { name: 'Add comment' });
+    await expect(composer, `${type}: the block composer opens`).toBeVisible();
+    await expect(composer.getByRole('textbox').first()).toBeFocused();
+    const text = `On the ${type}`;
+    await cara.page.keyboard.type(text);
+    await cara.page.keyboard.press(SUBMIT);
+    await expect(composer, `${type}: the comment is sent`).toBeHidden({ timeout: PEER_TIMEOUT });
+    texts.push(text);
+  }
+  const cookie = cookieHeader(await ada.context.cookies());
+  await expect.poll(() => storedAnchors(stack.baseUrl, id, cookie, texts), { message: 'each comment is stored as a block anchor on its node', timeout: PEER_TIMEOUT })
+    .toEqual(BLOCK_TYPES.map((type) => ({ text: `On the ${type}`, kind: 'block', type })).sort((a, b) => a.text.localeCompare(b.text)));
+  await expect(gutter(ada), 'the owner sees a thread on each block').toHaveCount(BLOCK_TYPES.length, { timeout: PEER_TIMEOUT });
+  expect(await bodyText(ada, id), 'the body is unchanged').toBe(before);
+
+  for (const [type, block] of await blocksByType(vic, id)) {
+    await block.scrollIntoViewIfNeeded();
+    await block.hover();
+    await expect(blockCommentButton(block), `${type}: a viewer gets no block comment`).toHaveCount(0);
+  }
+
+  const trashed = await ada.context.request.delete(`/api/docs/${id}`, { headers: { origin: stack.baseUrl } });
+  expect(trashed.status()).toBe(200);
+  await expect(ui.pane(cara, id), 'the note goes terminal in place').toHaveAttribute(DOC_STATE_ATTR, 'terminal', { timeout: PEER_TIMEOUT });
+  for (const [type, block] of await blocksByType(cara, id)) {
+    await block.scrollIntoViewIfNeeded();
+    await block.hover();
+    await expect(blockCommentButton(block), `${type}: a trashed note offers no block comment`).toHaveCount(0);
+  }
+  await expect(cara.page.getByRole('dialog', { name: 'Add comment' }), 'no composer is open').toHaveCount(0);
 });

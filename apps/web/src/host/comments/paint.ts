@@ -277,3 +277,10 @@ export function commentsAtPoint(editor: LexicalEditor, x: number, y: number): st
   }
   return hits;
 }
+
+/** Tests-first stub (T4.B3): hit-tests every pointer move. */
+export function trackCommentHover(editor: LexicalEditor, root: HTMLElement, onHit: (ids: string[]) => void): () => void {
+  const move = (event: MouseEvent) => onHit(commentsAtPoint(editor, event.clientX, event.clientY));
+  root.addEventListener('mousemove', move);
+  return () => root.removeEventListener('mousemove', move);
+}
