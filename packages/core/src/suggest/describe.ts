@@ -106,6 +106,9 @@ const sub = (path: string, key: string) => bounded(`${path} ${keyLabel(key)}`);
 /** The fields a nested row sits in, as a reader names them, bounded as a path is. */
 const within = (fields: string, key: string) => bounded(fields ? `${fields} › ${keyLabel(fieldName(key))}` : keyLabel(fieldName(key)));
 
+/** Work counters: `calls` per describeHunks, `units` per sequence unit built. */
+export const describeStats = { calls: 0, units: 0 };
+
 /** One unit of a sequence: a character with its own id, or any other item. */
 type Unit = { id: string; ch: string } | { id: string; node: unknown };
 
@@ -122,6 +125,7 @@ function units(seq: unknown[] | undefined): Unit[] {
     if (typeof entry.s === 'string') {
       const [client, clock] = id.split(':').map(Number);
       for (let i = 0; i < entry.s.length; i++) out.push({ id: `${client}:${clock + i}`, ch: entry.s[i] });
+      describeStats.units += entry.s.length;
     } else {
       out.push({ id, node: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'id')) });
     }
@@ -532,6 +536,7 @@ function payloadUnits(value: unknown): Unit[] {
     const part = typeof text === 'string' ? text.slice(at, at + len) : Array.isArray(text) ? text[n] : undefined;
     at += len;
     if (typeof part === 'string') for (let i = 0; i < part.length; i++) out.push({ id: `${client}:${clock + i}`, ch: part[i] });
+    describeStats.units += typeof part === 'string' ? part.length : 1;
     else out.push({ id: pair[0], node: part });
   });
   // Text past what the id runs cover (never so in Yjs, but hashed as such) is still read.
@@ -583,6 +588,7 @@ function readingOrder(hunks: readonly Hunk[]): Hunk[] {
 
 /** Every row a card shows for `hunks`, in reading order: each hunk yields at least one, and nothing is folded away. */
 export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
+  describeStats.calls += 1;
   const out: ReviewRow[] = [];
   const read = new Reader();
   for (const hunk of readingOrder(hunks)) {
@@ -598,6 +604,11 @@ export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
     for (const row of rows.out) out.push(row);
   }
   return out;
+}
+
+/** A preview's rows. */
+export function describePreview(preview: { hash: string; hunks: readonly Hunk[] }): ReviewRow[] {
+  return describeHunks(preview.hunks);
 }
 
 /** A piece of a row's text as drawn: plain text, or a run of whitespace (`space`, its exact characters) drawn as glyphs. */

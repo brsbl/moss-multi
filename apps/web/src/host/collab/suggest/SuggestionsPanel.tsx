@@ -5,7 +5,6 @@
 import { Button } from '@moss/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { BODY_DOC, recordDigest, type Hunk, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
-import { describeHunks } from '@moss-multi/core/suggest/describe';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '@moss-multi/protocol/dom-contract';
@@ -18,6 +17,7 @@ import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { RowText } from './RowText.tsx';
+import { usePreviewRows } from './rows.ts';
 
 /** Reviewed cards listed under the open ones (glyphdown's cap). */
 const REVIEWED_SHOWN = 20;
@@ -158,7 +158,7 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
   const reviewer = roleAtLeast(role, 'editor');
   const outdated = (meta.outdated?.length ?? 0) > 0 || (preview.state === 'failed' && preview.reason === 'outdated');
   const broken = !!meta.broken || (preview.state === 'failed' && preview.reason === 'broken');
-  const rows = preview.state === 'ready' ? describeHunks(preview.hunks) : [];
+  const rows = usePreviewRows(preview.state === 'ready' ? preview : null);
   // A preview that failed for any other reason is said, with a retry: Accept needs a preview.
   const failed = preview.state === 'failed' && !outdated && !broken ? reasonText(preview.reason) : null;
   const allShown = expanded || rows.length <= ROWS_SHOWN;
