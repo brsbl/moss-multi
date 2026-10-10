@@ -385,9 +385,14 @@ describe('a large undo of peer-authored lines keeps its authorship bookkeeping O
     } finally { dispose(); }
   };
   it('restoring, deleting and restoring 2,000 lines stays within K log K', async () => {
+    // Each line is a paragraph, its text node's property map and its characters; undo looks each up a few times.
+    const spent = new Map<number, number>();
     for (const lines of [500, 2_000]) {
-      const items = lines * 3; // each line is a paragraph, its text node's property map and its characters
-      expect(await work(lines), `${lines} lines`).toBeLessThanOrEqual(8 * items * Math.log2(items));
+      const items = lines * 3;
+      spent.set(lines, await work(lines));
+      expect(spent.get(lines), `${lines} lines`).toBeLessThanOrEqual(16 * items * Math.log2(items));
     }
+    // Four times the lines: about 4.8 times the work at K log K, 16 times when quadratic.
+    expect(spent.get(2_000)! / spent.get(500)!, 'growth from 500 to 2,000 lines').toBeLessThan(6);
   }, 120_000);
 });
