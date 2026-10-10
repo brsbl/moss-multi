@@ -110,15 +110,28 @@ export const liveAndManaged = (type: 'doc' | 'folder', id: Arg, user: Arg) => ty
   ? `EXISTS (SELECT 1 FROM docs WHERE id = ${arg(id)} AND deleted_at IS NULL) AND ${managesDoc(id, user)}`
   : `EXISTS (SELECT 1 FROM folders WHERE id = ${arg(id)} AND deleted_at IS NULL) AND ${managesFolder(id, user)}`;
 
+/** The invites a write can kill: those on a folder's subtree (its docs included), on one doc, or sent by one inviter. */
+export type ReapScope = { folderId: string } | { docId: string } | { inviter: string };
+
 /**
- * Withdraws, at ?1, every open invite that has died (A§8): its target is gone or in Trash, or its inviter no longer
- * manages it. Each write that trashes, deletes or moves something, or takes a grant away, runs this in its own batch,
- * so a death is recorded where it happens and a restore or a regained grant never brings an invite back.
+ * Withdraws, at ?1, every open invite in `scope` that has died (A§8): its target is gone or in Trash, or its inviter
+ * no longer manages it. Each write that trashes, deletes or moves something, or takes a grant away, runs this in its
+ * own batch over what it touched, so a death is recorded where it happens and a restore or a regained grant never
+ * brings an invite back. A subtree is read inside the statement, so a folder or note added to it just before is in it.
  */
-export const reapDeadInvites = (db: D1Database, now: number): D1PreparedStatement => db.prepare(`UPDATE invites SET revoked_at = ?1
-  WHERE accepted_at IS NULL AND revoked_at IS NULL AND NOT (CASE target_type
+export function reapDeadInvites(db: D1Database, now: number, scope: ReapScope): D1PreparedStatement {
+  const [cte, scoped, id] = 'folderId' in scope
+    ? [`WITH RECURSIVE sub(id, depth) AS (
+        SELECT id, 1 FROM folders WHERE id = ?2
+        UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id WHERE s.depth <= ${MAX_FOLDER_DEPTH}
+      ) `, `((target_type = 'folder' AND target_id IN (SELECT id FROM sub))
+        OR (target_type = 'doc' AND target_id IN (SELECT d.id FROM docs d JOIN sub ON d.folder_id = sub.id)))`, scope.folderId]
+    : 'docId' in scope ? ['', `target_type = 'doc' AND target_id = ?2`, scope.docId] : ['', 'invited_by = ?2', scope.inviter];
+  return db.prepare(`${cte}UPDATE invites SET revoked_at = ?1
+  WHERE ${scoped} AND accepted_at IS NULL AND revoked_at IS NULL AND NOT (CASE target_type
     WHEN 'doc' THEN (${liveAndManaged('doc', 'invites.target_id', 'invites.invited_by')})
-    ELSE (${liveAndManaged('folder', 'invites.target_id', 'invites.invited_by')}) END)`).bind(now);
+    ELSE (${liveAndManaged('folder', 'invites.target_id', 'invites.invited_by')}) END)`).bind(now, id);
+}
 
 /** Whether user `userId` manages the live doc or folder `id` now (liveAndManaged, read on its own). */
 export async function managesLive(db: D1Database, type: 'doc' | 'folder', id: string, userId: string): Promise<boolean> {
@@ -251,11 +264,32 @@ export async function resolveFolderAccess(db: Db, principal: Principal, folderId
   return { role, ownerUserId: folder.ownerUserId, kind: folder.kind, name: folder.name, deleted: folder.deletedAt !== null, linkOnly };
 }
 
+/**
+ * The folders discovery folds for a principal: those its acting user owns, those it is granted and their descendants
+ * a grant reaches (MAX_FOLDER_DEPTH levels with the granted one), and every ancestor of those within the same bound,
+ * which the vault-root and deleted-ancestor checks walk. Nothing from a vault the principal has no part in.
+ */
+function discoveryRows(db: Db, owner: string | null, ids: string[]) {
+  return db.select().from(folders).where(sql`${folders.id} IN (
+    WITH RECURSIVE down(id, depth) AS (
+      SELECT folder_id, 1 FROM folder_members WHERE principal_id IN (SELECT value FROM json_each(${JSON.stringify(ids)}))
+      UNION SELECT f.id, down.depth + 1 FROM folders f JOIN down ON f.parent_id = down.id WHERE down.depth < ${MAX_FOLDER_DEPTH}
+    ), scoped(id) AS (
+      SELECT id FROM folders WHERE owner_user_id = ${owner}
+      UNION SELECT id FROM down
+    ), up(id, parent_id, depth) AS (
+      SELECT f.id, f.parent_id, 1 FROM folders f JOIN scoped ON f.id = scoped.id
+      UNION SELECT f.id, f.parent_id, up.depth + 1 FROM folders f JOIN up ON f.id = up.parent_id WHERE up.depth < ${MAX_FOLDER_DEPTH}
+    )
+    SELECT id FROM up)`);
+}
+
 /** Batched folder closure for discovery; the same MAX fold and depth bound as individual reads. */
 export async function accessibleFolders(db: Db, principal: Principal) {
   const ids = grantees(principal);
+  const owner = actingUserId(principal);
   const [rows, grants] = await Promise.all([
-    db.select().from(folders),
+    owner || ids.length ? discoveryRows(db, owner, ids) : [],
     ids.length ? db.select().from(folderMembers).where(inArray(folderMembers.principalId, ids)) : [],
   ]);
   return foldFolderRoles(principal, rows, grants);
@@ -353,13 +387,18 @@ export function foldFolderRoles<R extends FolderRow>(principal: Principal, rows:
   });
 }
 
-/** The discovery closure for lists, search and backlinks (A§8). Link grants do not imply discovery. */
-export async function accessibleDocs(db: Db, principal: Principal, folders: Awaited<ReturnType<typeof accessibleFolders>>) {
+/**
+ * The discovery closure for lists, search and backlinks (A§8), or just the docs `only` names among it, which is all
+ * that is read then. Link grants do not imply discovery.
+ */
+export async function accessibleDocs(db: Db, principal: Principal, folders: Awaited<ReturnType<typeof accessibleFolders>>,
+  only: readonly string[] | null = null) {
   const ids = grantees(principal);
-  const grants = ids.length ? await db.select().from(docMembers).where(inArray(docMembers.principalId, ids)) : [];
+  const grants = ids.length ? await db.select().from(docMembers)
+    .where(and(inArray(docMembers.principalId, ids), only ? inJson(docMembers.docId, only) : undefined)) : [];
   const folderIds = folders.map((folder) => folder.id);
   const ownerId = actingUserId(principal);
-  const rows = await db.select().from(docs).where(and(isNull(docs.deletedAt), or(
+  const rows = await db.select().from(docs).where(and(isNull(docs.deletedAt), only ? inJson(docs.id, only) : undefined, or(
     ownerId ? eq(docs.ownerUserId, ownerId) : sql`0`,
     inJson(docs.id, grants.map((grant) => grant.docId)),
     inJson(docs.folderId, folderIds),
