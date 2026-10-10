@@ -22,7 +22,7 @@ import { HorizontalRulePlugin } from '@lexical/react/LexicalHorizontalRulePlugin
 import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
 import { AutoLinkPlugin, createLinkMatcherWithRegExp } from '@lexical/react/LexicalAutoLinkPlugin';
 import { $insertGeneratedNodes } from '@lexical/clipboard';
-import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
+import { $convertToMarkdownString } from '@lexical/markdown';
 import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode, $isParagraphNode, $isTextNode, TextNode } from 'lexical';
 import { CodeNode } from '@lexical/code';
 import { $isHeadingNode, $isQuoteNode, $createHeadingNode, type HeadingTagType } from '@lexical/rich-text';
@@ -116,7 +116,7 @@ import { TabExitPlugin } from './plugins/TabExitPlugin';
 import { TabSelectionScopePlugin } from './plugins/TabSelectionScopePlugin';
 import { CollapsibleHeadingPlugin } from './plugins/CollapsibleHeadingPlugin';
 import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
-import { SafePastePlugin } from './plugins/SafePastePlugin';
+import { SafePastePlugin, shouldForcePlainTextPaste } from './plugins/SafePastePlugin';
 import { MediaDropPlugin } from './plugins/MediaDropPlugin';
 import { ExternalImagePastePlugin } from './plugins/ExternalImagePastePlugin';
 import { VideoPastePlugin } from './plugins/VideoPastePlugin';
@@ -142,7 +142,7 @@ import {
 } from './components/SelectionToolbarPrimitives';
 import './MarkdownEditor.css';
 // moss-multi seam: hide-registry (A§9)
-import { $importNoteBody } from './markdown/pipeline';
+import { $importNoteBody, prepareNoteMarkdown } from './markdown/pipeline';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: comments (comments.md §4, §12)
 import { stashCommentSelection } from '@moss-multi/host/comments/adapter';
@@ -151,8 +151,16 @@ import { CommentOnlyTools } from '@moss-multi/host/comments/CommentOnlyTools';
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
 // moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
 import { TRASH_COPY } from '@moss-multi/host/retention';
+// moss-multi seam: linear-autolink: EMAIL_REGEX's and SCHEMELESS_URL_REGEX's matches in linear time
+import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
+// moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole in batches, or is refused whole
+import { createEditor } from 'lexical';
+import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, planPlainText, registerWholePaste, type PastePlan } from '@moss-multi/host/large-paste';
+import { $withDocumentImport } from './markdown/fixes';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
-import { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, normalizeMarkdownForImport, unescapeHtmlEntities } from './markdown/normalize';
+import { $convertMossCustomCodeNodes, $postImportNormalize, unescapeHtmlEntities } from './markdown/normalize';
+// moss-multi seam: linear-import (A§12; SP2)
+import { $convertFromMarkdownString } from './markdown/linear-import';
 import { EDITOR_FONT_FAMILY_LABELS, type EditorSelectionFontFamily, HIGHLIGHT_COLOR_VARIABLES, HIGHLIGHT_YELLOW_VALUE, HIGHLIGHT_YELLOW_VAR, MARKDOWN_EDITOR_HTML_IMPORT, SERIF_FONT_FAMILY_STYLE, SERIF_FONT_FAMILY_VALUE, SERIF_OPTICAL_FONT_SIZE_ADJUST, STYLE_FONT_FAMILY_PROPERTY, STYLE_FONT_SIZE_ADJUST_PROPERTY, selectionFontFamilyFromStyleValue } from './markdown/text-style';
 import { $normalizeSelectionTableCells, $tryCreateWebEmbedFromBangLinkSelection, MARKDOWN_EDITOR_NODES, MARKDOWN_EDITOR_TRANSFORMERS, extractTableRowContent, getTopLevelElementOrNull, isTableDividerRow, serializeNoteLayoutMetadataForComparison, splitTableRow } from './markdown/transformers';
 export { $convertMossCustomCodeNodes, $postImportNormalize, escapeHtmlEntities, mapOutsideFencedCodeBlocksOnly, normalizeFormattingAroundEmbedPillTargets, normalizeHighlightFormattingBoundaries, normalizeMarkdownForImport, normalizeRichTextInsideHighlightsForImport, recoverEscapedEmphasis, stripFormattingAroundIsolatedWikiLinks, unescapeHtmlEntities } from './markdown/normalize';
@@ -406,13 +414,14 @@ const SCHEMELESS_URL_REGEX =
   /(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z][a-zA-Z0-9-]{1,23}(?::\d{1,5})?(?:[/?#][^\s<>{}|\\^[\]`]*)?/g;
 
 const matchSchemelessUrl = (text: string) => {
-  for (const match of text.matchAll(SCHEMELESS_URL_REGEX)) {
-    const url = normalizeWebBrowserUrl(match[0]);
-    if (url && !normalizeEmbeddableWebUrl(match[0])) {
+  // moss-multi seam: linear-autolink
+  for (const match of schemelessUrlMatches(text)) {
+    const url = normalizeWebBrowserUrl(match.text);
+    if (url && !normalizeEmbeddableWebUrl(match.text)) {
       return {
         index: match.index,
-        length: match[0].length,
-        text: match[0],
+        length: match.text.length,
+        text: match.text,
         url
       };
     }
@@ -429,7 +438,11 @@ export const AUTOLINK_MATCHERS = [
     const match = AUTOLINK_URL_MATCHER(text);
     return match && normalizeEmbeddableWebUrl(match.text) ? null : match;
   },
-  createLinkMatcherWithRegExp(EMAIL_REGEX, (text) => `mailto:${text}`),
+  // moss-multi seam: linear-autolink
+  (text: string) => {
+    const match = findEmail(text);
+    return match && { index: match.index, length: match.text.length, text: match.text, url: `mailto:${match.text}` };
+  },
   matchSchemelessUrl
 ];
 
@@ -870,8 +883,9 @@ const convertMarkdownPasteToNodes = (markdown: string): LexicalNode[] => {
   const root = $getRoot();
   const savedChildren = root.getChildren();
 
+  // moss-multi seam: linear-import (A§12; SP2): escapeHtmlEntities(normalizeMarkdownForImport(markdown)), as the DocDO prepares it
   $convertFromMarkdownString(
-    escapeHtmlEntities(normalizeMarkdownForImport(markdown)),
+    prepareNoteMarkdown(markdown),
     MARKDOWN_EDITOR_TRANSFORMERS
   );
   $postImportNormalize();
@@ -1025,6 +1039,69 @@ const insertMarkdownFromPaste = (editor: LexicalEditor, markdown: string): boole
   return true;
 };
 
+// moss-multi seam: whole-paste (T3.S6): the paste parsed off the live editor, as the units it lands in.
+const parseMarkdownPastePlan = (markdown: string, wholeNote: boolean): PastePlan => {
+  const parser = createEditor({
+    namespace: 'moss-multi-paste',
+    nodes: MARKDOWN_EDITOR_NODES,
+    onError: (error) => {
+      throw error;
+    }
+  });
+  parser.update(
+    () => {
+      if (wholeNote) {
+        $importNoteBody(markdown, { comments: {} });
+        return;
+      }
+      // No caret moves while parsing: with a selection, every block placed pays getIndexWithinParent().
+      $withDocumentImport(() => {
+        // moss-multi seam: linear-import (A§12; SP2): escapeHtmlEntities(normalizeMarkdownForImport(markdown)), as the DocDO prepares it
+        $convertFromMarkdownString(prepareNoteMarkdown(markdown), MARKDOWN_EDITOR_TRANSFORMERS);
+        $postImportNormalize();
+      });
+    },
+    { discrete: true }
+  );
+  const state = parser.getEditorState();
+  const json = state.toJSON().root.children;
+  return state.read(() => $planPaste($getRoot().getChildren(), json));
+};
+
+const isEmptyNote = (): boolean => {
+  const root = $getRoot();
+  const only = root.getFirstChild();
+  return root.getChildrenSize() === 1 && $isParagraphNode(only) && only.isEmpty();
+};
+
+// moss-multi seam: whole-paste (T3.S6): the whole paste lands, in batches, or none of it does; never text chunks.
+const insertLargePaste = (editor: LexicalEditor, plan: (wholeNote: boolean) => PastePlan): boolean => {
+  const savedSelection = captureSelectionForPaste(editor);
+  if (!savedSelection) {
+    return false;
+  }
+  const wholeNote = editor.getEditorState().read(isEmptyNote);
+  pasteLarge(editor, {
+    plan: plan(wholeNote),
+    nodes: MARKDOWN_EDITOR_NODES,
+    $restore: () => restoreSelectionForPaste(savedSelection),
+    $insert: (nodes) => {
+      if (wholeNote && isEmptyNote()) {
+        $replaceEmptyNote(nodes);
+        return;
+      }
+      const selection = $getSelection();
+      if (selection) {
+        $insertBlocks(nodes, selection, (some, at) => $insertGeneratedNodes(editor, some, at));
+      }
+    }
+  });
+  return true;
+};
+
+const insertLargeMarkdownPaste = (editor: LexicalEditor, rawMarkdown: string): boolean =>
+  insertLargePaste(editor, (wholeNote) => parseMarkdownPastePlan(normalizeClipboardLineEndings(rawMarkdown), wholeNote));
+
 const insertPlainTextFromPaste = (editor: LexicalEditor, text: string): boolean => {
   let canInsert = false;
 
@@ -1090,6 +1167,31 @@ const $insertFileLinkInline = (editor: LexicalEditor, payload: MossNoteLinkClipb
     paragraphNode.append(fileLinkNode);
     $getRoot().append(paragraphNode);
   });
+};
+
+// moss-multi seam: whole-paste (T3.S6): whether the paste handlers (SafePaste's, then this file's) land `event` through
+// pasteLarge, by the same tests in the same order. Suggest mode's routing then strikes a selection only inside the
+// paste's own landing, once the paste is admitted whole.
+const takesWholePaste = (event: unknown): boolean => {
+  const clipboardData = (event as Partial<ClipboardEvent> | null)?.clipboardData;
+  if (!clipboardData) return false;
+  const htmlPayload = clipboardData.getData('text/html') ?? '';
+  const plainTextPayload = clipboardData.getData('text/plain') ?? '';
+  if (shouldForcePlainTextPaste(htmlPayload, plainTextPayload)) return false;
+  if (parseMossNoteLinkClipboardPayload(clipboardData.getData(MOSS_NOTE_LINK_CLIPBOARD_MIME) ?? '') ?? parseMossNoteLinkPayloadFromHtml(htmlPayload)) {
+    return false;
+  }
+  if (MOSS_ASSET_URL_IN_HTML_RE.test(htmlPayload)) return false;
+  const lexicalPayload = clipboardData.getData(LEXICAL_CLIPBOARD_MIME) ?? '';
+  const markdownPayload = clipboardData.getData('text/markdown') ?? '';
+  if (shouldDeferToRichClipboardPaste(htmlPayload, lexicalPayload, markdownPayload)) return false;
+  const hasExplicitMarkdownPayload = markdownPayload.trim().length > 0;
+  const pastedMarkdownCandidate = hasExplicitMarkdownPayload ? markdownPayload : plainTextPayload;
+  if (parseWikiLinkFromPlainText(pastedMarkdownCandidate)) return false;
+  const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
+  const imports = hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate);
+  if ((forcedPlainText || !imports) && shouldChunkMarkdownPaste(forcedPlainText ? pastedMarkdownCandidate : plainTextPayload)) return true;
+  return !forcedPlainText && imports && shouldChunkMarkdownPaste(pastedMarkdownCandidate);
 };
 
 export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => void) => {
@@ -1165,7 +1267,21 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
         return true;
       }
 
-      if (shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate)) {
+      // moss-multi seam: whole-paste (T3.S6): a large plain-text paste lands whole in batches, as Lexical's own paste
+      // would place it (forced: as insertRawText would), or is refused whole.
+      const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
+      const plainText = forcedPlainText ? pastedMarkdownCandidate : plainTextPayload;
+      if (
+        (forcedPlainText || !(hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate))) &&
+        shouldChunkMarkdownPaste(plainText) &&
+        insertLargePaste(editor, () => planPlainText(MARKDOWN_EDITOR_NODES, normalizeClipboardLineEndings(plainText), forcedPlainText))
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
+
+      if (forcedPlainText) {
         const handled = insertPlainTextFromPaste(editor, pastedMarkdownCandidate);
         if (!handled) {
           return false;
@@ -1179,40 +1295,10 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
       if (hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate)) {
         event.preventDefault();
         event.stopPropagation();
-        if (!hasExplicitMarkdownPayload && shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
-          const savedSelection = captureSelectionForPaste(editor);
-          if (!savedSelection) {
-            return false;
-          }
-
-          const jobId = ++activeChunkedPasteJobId;
-          const chunks = splitLargeMarkdownPaste(pastedMarkdownCandidate);
-          let chunkIndex = 0;
-
-          const runNextChunk = () => {
-            if (jobId !== activeChunkedPasteJobId) {
-              return;
-            }
-
-            const chunk = chunks[chunkIndex];
-            if (typeof chunk !== 'string') {
-              return;
-            }
-
-            insertMarkdownChunk(
-              editor,
-              chunk,
-              chunkIndex === 0 ? savedSelection : undefined
-            );
-
-            chunkIndex += 1;
-            if (chunkIndex < chunks.length) {
-              window.setTimeout(runNextChunk, 0);
-            }
-          };
-
-          window.setTimeout(runNextChunk, 0);
-          return true;
+        // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole, in batches, never in
+        // text chunks, so nothing is dropped and one undo removes it.
+        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
+          return insertLargeMarkdownPaste(editor, pastedMarkdownCandidate);
         }
         return insertMarkdownFromPaste(editor, pastedMarkdownCandidate);
       }
@@ -1239,9 +1325,13 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
     COMMAND_PRIORITY_HIGH
   );
 
+  // moss-multi seam: whole-paste (T3.S6)
+  const stopWholePaste = registerWholePaste(editor, takesWholePaste);
+
   return () => {
     activeChunkedPasteJobId += 1;
     unregister();
+    stopWholePaste();
   };
 };
 
@@ -3927,9 +4017,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           bodyForEditor = bodyForEditor.slice(h1Match[0].length).replace(/^\n+/, '');
         }
 
-        const normalizedBody = normalizeMarkdownForImport(bodyForEditor);
-
-        $convertFromMarkdownString(escapeHtmlEntities(normalizedBody), MARKDOWN_EDITOR_TRANSFORMERS);
+        // moss-multi seam: linear-import (A§12; SP2): escapeHtmlEntities(normalizeMarkdownForImport(bodyForEditor)), as the DocDO prepares it
+        $convertFromMarkdownString(prepareNoteMarkdown(bodyForEditor), MARKDOWN_EDITOR_TRANSFORMERS);
         $postImportNormalize(commentMetadata, undefined, { layoutMetadata });
         editor.getRootElement()?.scrollTo({ top: 0 });
       };
@@ -4211,8 +4300,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     // Strip leading H1 from body — it lives in the dedicated title field
     const h1Result = extractLeadingH1(strippedContent);
 
-    const normalizedBody = normalizeMarkdownForImport(h1Result.body);
-
     const scrollContainer = options?.scrollContainer;
     const savedScrollTop = scrollContainer?.scrollTop ?? 0;
 
@@ -4238,7 +4325,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         }
         const root = $getRoot();
         root.clear();
-        $convertFromMarkdownString(escapeHtmlEntities(normalizedBody), MARKDOWN_EDITOR_TRANSFORMERS);
+        // moss-multi seam: linear-import (A§12; SP2): escapeHtmlEntities(normalizeMarkdownForImport(h1Result.body)), as the DocDO prepares it
+        $convertFromMarkdownString(prepareNoteMarkdown(h1Result.body), MARKDOWN_EDITOR_TRANSFORMERS);
         $postImportNormalize(commentMetadata, undefined, {
           layoutMetadata: options?.layoutMetadata
         });

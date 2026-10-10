@@ -1,13 +1,31 @@
 // Pure helpers for the search index (A§5.3; ported from glyphdown's search-core.ts). Engine-agnostic: the FTS5 path
 // uses buildFtsMatch and bm25, the LIKE fallback scoreEntry, and both snippet through makeSnippet. No I/O.
-import { stripWikiLinks } from '@moss-desktop/common/utils';
 import { slug } from '@moss-multi/core/filenames';
 
 /** The one index's name (A§5.3): SearchDO('global'). */
 export const SEARCH_DO_NAME = 'global';
 
-/** `[[Target]]`, `[[Target|noteId]]`, `[[Target#Heading]]`; never an embed (`![[img.png]]`) or a same-note `[[#H]]`. */
-export const WIKI_LINK_RE = /(?<!!)\[\[([^\]]+)\]\]/g;
+/**
+ * The inside of each `[[Target]]`, `[[Target|noteId]]`, `[[Target#Heading]]`, never an embed (`![[img.png]]`): what
+ * `/(?<!!)\[\[([^\]]+)\]\]/g` captures, scanned in linear time, since a run of `[` with no `]` makes that regex quadratic.
+ */
+function* wikiLinkContents(body: string): Generator<string> {
+  let close = -1;
+  for (let i = body.indexOf('[['); i !== -1; ) {
+    if (i > 0 && body[i - 1] === '!') {
+      i = body.indexOf('[[', i + 1);
+      continue;
+    }
+    if (close < i + 2) close = body.indexOf(']', i + 2);
+    if (close === -1) return;
+    if (close > i + 2 && body[close + 1] === ']') {
+      yield body.slice(i + 2, close);
+      i = body.indexOf('[[', close + 2);
+    } else {
+      i = body.indexOf('[[', i + 1);
+    }
+  }
+}
 
 /** moss's resolved-link suffix (markdown/transformers.ts at the pin): a UUID after the last pipe names the note. */
 const NOTE_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -27,8 +45,8 @@ export const wikiKey = (raw: string): string => slug(raw);
  */
 export function extractWikiLinks(body: string): string[] {
   const out = new Set<string>();
-  for (const match of body.matchAll(WIKI_LINK_RE)) {
-    const content = match[1].trim();
+  for (const inside of wikiLinkContents(body)) {
+    const content = inside.trim();
     const pipe = content.lastIndexOf('|');
     const primary = pipe >= 0 ? content.slice(0, pipe) : content;
     const suffix = pipe >= 0 ? content.slice(pipe + 1).trim() : '';
@@ -51,18 +69,54 @@ export function buildFtsMatch(query: string): string | null {
   return tokens.length === 0 ? null : tokens.map((token) => `"${token}"*`).join(' ');
 }
 
-/** moss's snippet cleaning (ipc-handlers notes:search at the pin): structure out, inline markdown kept for NoteCard. */
+/**
+ * moss's snippet cleaning (ipc-handlers notes:search at the pin): structure out, inline markdown kept for NoteCard.
+ * Comments, tags and links are scanned in linear time; moss's regexes are quadratic on openers with no closer.
+ */
 export function cleanForSnippet(body: string): string {
-  return body
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+  return unwrapLinks(removeSpans(removeSpans(body, '<!--', '-->'), '<', '>'))
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^>\s?/gm, '')
     .replace(/---+/g, '')
     .replace(/~~([^~]+)~~/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** `text.replace(/<open>[\s\S]*?<close>/g, '')` in linear time; `<[^>]*>` is the same scan, as `>` ends it. */
+function removeSpans(text: string, open: string, close: string): string {
+  let out = '';
+  let from = 0;
+  for (let i = text.indexOf(open); i !== -1; ) {
+    const end = text.indexOf(close, i + open.length);
+    // No close after this opener means none after any later one.
+    if (end === -1) break;
+    out += text.slice(from, i);
+    from = end + close.length;
+    i = text.indexOf(open, from);
+  }
+  return out + text.slice(from);
+}
+
+/** `text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')` in linear time. */
+function unwrapLinks(text: string): string {
+  let out = '';
+  let from = 0;
+  let close = -1;
+  for (let i = text.indexOf('['); i !== -1; ) {
+    if (close < i + 1) close = text.indexOf(']', i + 1);
+    if (close === -1) break;
+    if (text[close + 1] === '(') {
+      const end = text.indexOf(')', close + 2);
+      if (end === -1) break;
+      out += text.slice(from, i) + text.slice(i + 1, close);
+      from = end + 1;
+      i = text.indexOf('[', from);
+    } else {
+      i = text.indexOf('[', i + 1);
+    }
+  }
+  return out + text.slice(from);
 }
 
 /**
@@ -119,6 +173,37 @@ function occurrences(haystack: string, needle: string): number {
 export interface HeadingInfo {
   level: 1 | 2 | 3 | 4;
   text: string;
+}
+
+/**
+ * moss's stripWikiLinks (common/utils at the pin), `[[target|alias]]` to `target`, in linear time: its regex
+ * `/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g` is quadratic on a run of `[` with no `]`.
+ */
+function stripWikiLinks(text: string): string {
+  let out = '';
+  let from = 0;
+  let close = -1;
+  // The first `|` from the current opener on: -2 before the first look, -1 once none is left.
+  let pipe = -2;
+  for (let i = text.indexOf('[['); i !== -1; ) {
+    if (close < i + 2) close = text.indexOf(']', i + 2);
+    if (close === -1) break;
+    if (pipe !== -1 && pipe < i + 2) pipe = text.indexOf('|', i + 2);
+    const stop = pipe !== -1 && pipe < close ? pipe : close;
+    let end = -1;
+    if (stop > i + 2) {
+      if (stop === close) end = text[close + 1] === ']' ? close + 2 : -1;
+      else end = close > stop + 1 && text[close + 1] === ']' ? close + 2 : -1;
+    }
+    if (end === -1) {
+      i = text.indexOf('[[', i + 1);
+      continue;
+    }
+    out += text.slice(from, i) + text.slice(i + 2, stop);
+    from = end;
+    i = text.indexOf('[[', from);
+  }
+  return out + text.slice(from);
 }
 
 /** moss's getHeadings (note-store at the pin): h1–h4 outside fenced code, wiki-link syntax stripped. */

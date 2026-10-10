@@ -18,7 +18,7 @@ export function editorReleaseRecord(pkg, manifest, tarball, bytes) {
   if (manifest.name !== pkg.name || manifest.version !== pkg.version) {
     throw new Error(`editor.json is ${manifest.name}@${manifest.version}, the package ${pkg.name}@${pkg.version}: rebuild`);
   }
-  if (manifest.api !== 1) throw new Error(`editor.json declares API ${manifest.api}; this release line is API 1`);
+  if (manifest.api !== 2) throw new Error(`editor.json declares API ${manifest.api}; this release line is API 2`);
   if (manifest.source.dirty) throw new Error('editor.json was built from a dirty tree');
   for (const file of [manifest.entry, manifest.css, manifest.hostEntry, manifest.htmlFrame?.file]) {
     if (!manifest.files[file]) throw new Error(`editor.json lists no ${file}`);

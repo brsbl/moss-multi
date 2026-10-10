@@ -6,7 +6,7 @@ import type { AuthEnv } from '../auth/auth.ts';
 import { sha256Hex, type Principal } from '../auth/principal.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { NO_STORE } from './respond.ts';
+import { collectCapped, joinChunks, NO_STORE } from './respond.ts';
 import { createDohResolver, type RemoteFetch } from './ssrf.ts';
 
 export type RemoteFetchEnv = AuthEnv & Partial<Pick<AppEnv, 'PrincipalDO'>>;
@@ -46,25 +46,8 @@ export async function readCapped(response: Response, cap: number): Promise<Uint8
   }
   if (!response.body) return new Uint8Array(0);
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > cap) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
+  const read = await collectCapped(reader, cap, () => reader.cancel());
+  return read === 'too-large' ? null : joinChunks(read);
 }
 
 /** The first `cap` bytes of the body, the rest discarded: enough of a page to read its head. */

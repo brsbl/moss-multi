@@ -164,6 +164,12 @@ export function readRecord(doc: Y.Doc, id: string): SuggestionRecord | null {
   };
 }
 
+export const partBytes = (part: DeletePart): number => part.id.length + part.quote.length * 2 + part.targets.length * 24 + 16;
+
+/** The bytes of ops and parts a record holds, as the record cap counts them. */
+export const recordBytes = (record: SuggestionRecord): number =>
+  record.ops.reduce((sum, op) => sum + op.update.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0);
+
 export function recordIds(doc: Y.Doc): string[] {
   return [...doc.getMap(SUGGESTIONS).keys()];
 }

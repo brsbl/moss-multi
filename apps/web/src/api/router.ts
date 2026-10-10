@@ -11,6 +11,7 @@ import { feedback } from './feedback.ts';
 import { handleFolderRoutes } from './folders.ts';
 import { handleInvites } from './invites.ts';
 import { handleNotifications } from './notifications.ts';
+import { BodyTooLarge, tooLarge } from './respond.ts';
 import { handleSearchRoutes } from './search.ts';
 import { handleVaults } from './vault-routes.ts';
 import { handleTrash } from './trash.ts';
@@ -36,6 +37,16 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   if (needsAppOrigin(request) && crossOriginCookie(request, await resolvePrincipal(request, env), env)) {
     return json({ error: 'forbidden', message: 'Cross-origin request refused' }, 403, NO_STORE);
   }
+  try {
+    return await route(request, env);
+  } catch (error) {
+    // A JSON body over its cap (readJsonObject), refused before it is buffered.
+    if (error instanceof BodyTooLarge) return tooLarge();
+    throw error;
+  }
+}
+
+async function route(request: Request, env: ApiEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === '/api/me') return me(request, env);
   if (pathname === '/api/workspace') return workspace(request, env);

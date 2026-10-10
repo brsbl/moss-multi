@@ -161,8 +161,8 @@ describe('moss-editor-host.js is one self-contained module', () => {
   });
 
   it('exports the API version and identity', () => {
-    expect(typed.MOSS_EDITOR_API).toBe(1);
-    expect(typed.MOSS_EDITOR_INFO).toEqual({ api: 1, version: '0.2.0', features: ['selection-1', 'share-with-agent-1'] });
+    expect(typed.MOSS_EDITOR_API).toBe(2);
+    expect(typed.MOSS_EDITOR_INFO).toEqual({ api: 2, version: '0.3.0', features: ['selection-1', 'share-with-agent-1'] });
     expect(typed.MOSS_NOTE_FILES.notesRoot).toBe('Notes');
   });
 });

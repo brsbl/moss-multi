@@ -7,22 +7,13 @@ import { Input } from '@moss/shared/components/ui/input';
 import { KeyRound, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useAuthState } from '../auth.ts';
+import { UNREACHABLE } from '../auth-state.ts';
+import { call } from './ShareDialog.tsx';
 
 interface Agent {
   id: string;
   name: string;
   createdAt: number;
-}
-
-const UNREACHABLE = 'Couldn’t reach the server. Check your connection and try again.';
-
-async function call<T>(path: string, init: RequestInit = {}): Promise<{ ok: boolean; body: (T & { message?: string }) | null }> {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    ...init,
-    headers: { accept: 'application/json', ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
-  });
-  return { ok: response.ok, body: (await response.json().catch(() => null)) as (T & { message?: string }) | null };
 }
 
 /** A read-only value with a Copy button; the field is selectable, since a browser may refuse the clipboard. */
