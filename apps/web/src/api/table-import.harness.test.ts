@@ -16,13 +16,29 @@ class TableDocDO extends DocDO {
   static override searchFeed = () => null;
 }
 
+// DO RPC hands the Worker a thrown DocCapError as an Error whose message carries the class name (measure-converter.mjs
+// sees `Error: DocCapError: doc-cap` in workerd); the stub here rethrows the same way.
+const overRpc = (error: unknown) => (error instanceof Error && error.name !== 'Error' ? new Error(`${error.name}: ${error.message}`) : error);
+
 const opened = new Map<string, DocDO>();
 const docNs = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => {
     let dobj = opened.get(id.name);
     if (!dobj) opened.set(id.name, (dobj = openDoc(new Backing(id.name), TableDocDO as never).dobj));
-    return dobj;
+    return new Proxy(dobj, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target) as unknown;
+        if (typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          try {
+            return await (value as (...a: unknown[]) => unknown).apply(target, args);
+          } catch (error) {
+            throw overRpc(error);
+          }
+        };
+      },
+    });
   },
 };
 

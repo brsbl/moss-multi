@@ -27,9 +27,9 @@ function normalizeFrontmatterDates(value: unknown): unknown {
   return normalized;
 }
 
-// moss-multi seam: YAML aliases share one parsed node, so a few bytes can name an exponential or cyclic tree. Walk it
-// as normalizeFrontmatterDates would, refusing a cycle or more nodes than the text could hold without aliases
-// (packages/core/src/frontmatter.ts holds the same bound).
+// moss-multi seam: frontmatter-aliases (A§10.4): YAML aliases share one parsed node, so a few bytes can name an
+// exponential or cyclic tree. Walk it as normalizeFrontmatterDates would, refusing a cycle or more nodes than the text
+// could hold without aliases (packages/core/src/frontmatter.ts holds the same bound).
 export const FRONTMATTER_EXPANSION_ERROR = 'Frontmatter expands past its budget';
 
 function expandsWithinBudget(parsed: unknown, yamlLength: number): boolean {

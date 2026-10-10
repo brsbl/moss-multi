@@ -417,25 +417,30 @@ async function measurePayloadFrames(port) {
   }
 }
 
-// Table imports through the real DocDO's create: notes that spend the converter's work budget on table cells, dense
-// one-letter cells or one-cell rows padded under a wide header, at 512 KB and at the markdown cap, each in a fresh
-// worker after a warm-up. Import, binding and admission together must stay within IMPORT_BUDGET_MS of workerd CPU, the
-// note landing whole or refused as doc-cap (413), never an error.
-const TABLE_SIZES = [512 * 1024, 2 * 1024 * 1024 - 1024];
+// Table imports: notes that spend the converter's work budget on table cells (dense one-letter cells, narrow rows each
+// padded to a wide header's columns, one-cell rows after a table) from 128 KB to the markdown cap, each through the
+// converter alone and through the real DocDO's create, in fresh workers after a warm-up. The create (import, binding
+// and admission) must stay within IMPORT_BUDGET_MS of workerd CPU, the note landing whole or refused as doc-cap (413),
+// never an error.
+const TABLE_SIZES = [128 * 1024, 512 * 1024, 2 * 1024 * 1024 - 1024];
+const TABLE_TIMEOUT_MS = 60_000;
 const tableHeader = (cells) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
 const tableRows = (cells, row, bytes) => `${tableHeader(cells)}${row.repeat(Math.floor((bytes - tableHeader(cells).length) / row.length))}`;
 const TABLE_CASES = {
   'dense one-letter cells, 64 a row': (bytes) => tableRows(64, `|${'a|'.repeat(64)}\n`, bytes),
-  'one-cell rows padded under a 4,096-column header': (bytes) => tableRows(4_096, '|b|\n', bytes),
+  'two-cell rows padded to a 4,096-column header': (bytes) => tableRows(4_096, '| b | c |\n', bytes),
+  'one-cell rows after a table': (bytes) => tableRows(2, '|b|\n', bytes),
 };
 
-async function measureTableImport(port, name, markdown) {
-  const server = await startWorker('docdo', port);
+/** One request in a fresh worker after a warm-up: its workerd CPU and answer, or why it failed. */
+async function tableRequest(port, worker, path, markdown) {
+  const server = await startWorker(worker, port);
+  let before = null;
   try {
-    const warmup = await fetch(`${server.origin}/create?doc=table-warm`, { method: 'POST', body: tableRows(8, `|${'a|'.repeat(8)}\n`, 8 * 1024) });
-    if (!warmup.ok) throw new Error(`warm-up create: HTTP ${warmup.status} ${await warmup.text()}`);
-    const before = workerdStats(server.child.pid);
-    const response = await fetch(`${server.origin}/create?doc=table`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS * 3) });
+    const warm = await fetch(`${server.origin}${path}warm`, { method: 'POST', body: tableRows(8, `|${'a|'.repeat(8)}\n`, 8 * 1024) });
+    if (!warm.ok) throw new Error(`warm-up: HTTP ${warm.status} ${await warm.text()}`);
+    before = workerdStats(server.child.pid);
+    const response = await fetch(`${server.origin}${path}note`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) });
     const text = await response.text();
     const cpuMs = workerdStats(server.child.pid).cpuMs - before.cpuMs;
     let answer = null;
@@ -445,9 +450,10 @@ async function measureTableImport(port, name, markdown) {
       // reported below
     }
     const ok = response.status === 200 || (response.status === 413 && answer?.error === 'doc-cap');
-    return { name, bytes: markdown.length, cpuMs, status: response.status, work: answer?.work, stateBytes: answer?.stateBytes, ...(ok ? {} : { failed: `HTTP ${response.status} ${text.slice(0, 200)}` }) };
+    return { cpuMs, status: response.status, answer, ...(ok ? {} : { failed: `HTTP ${response.status} ${text.slice(0, 160)}` }) };
   } catch (error) {
-    return { name, bytes: markdown.length, failed: failure(error) };
+    const timedOut = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError';
+    return { cpuMs: before ? workerdStats(server.child.pid).cpuMs - before.cpuMs : undefined, failed: timedOut ? `ran past ${TABLE_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0] };
   } finally {
     await stop(server.child);
   }
@@ -457,8 +463,11 @@ async function measureTableImports(port) {
   const results = [];
   for (const [name, body] of Object.entries(TABLE_CASES)) {
     for (const bytes of TABLE_SIZES) {
-      results.push(await measureTableImport(port, name, body(bytes)));
-      port += 1;
+      const markdown = body(bytes);
+      const converter = await tableRequest(port, 'converter', '/import?', markdown);
+      const create = await tableRequest(port + 1, 'docdo', '/create?doc=', markdown);
+      port += 2;
+      results.push({ name, bytes: markdown.length, converter, create, cpuMs: create.cpuMs ?? Infinity, ...(create.failed ? { failed: create.failed } : {}) });
     }
   }
   return results;
@@ -990,11 +999,10 @@ async function main() {
         : `| Lines repeated, ${r.name}: workerd CPU (import / export) | ${r.sizes.map((size) => `${kb(size.bytes)} ${size.importCpuMs} / ${size.exportCpuMs} ms`).join(', ')} (growth at most ${ADVERSARIAL_SCALING}x) |`,
     ),
     `| Entity tabs, one line of \`&#9;\` × ${ENTITY_TAB_COUNTS.join(' / ')}: workerd CPU (import / export) | ${entityTabs.sizes.map((size) => `${size.importCpuMs} / ${size.exportCpuMs} ms${size.cut ? ' (kept literal)' : ''}`).join(', ')}${entityTabs.failed ? `; FAILED: ${entityTabs.failed}` : ''} (line budget ${LINE_BUDGET_MS} ms, growth at most ${ADVERSARIAL_SCALING}x a doubling) |`,
-    ...tables.map((t) =>
-      t.failed
-        ? `| Table import through DocDO create, ${t.name} | FAILED: ${t.failed} |`
-        : `| Table import through DocDO create, ${t.name}, ${kb(t.bytes)}: workerd CPU, one run | ${t.cpuMs} ms${budget(t.cpuMs)}; HTTP ${t.status}${t.work === undefined ? '' : `; work ${Math.round(t.work / 1e6)}M`}${t.stateBytes ? `; state ${mb(t.stateBytes)}` : ''} |`,
-    ),
+    ...tables.map((t) => {
+      const part = (r) => `${r.cpuMs ?? '?'} ms${r.status ? `, HTTP ${r.status}` : ''}${r.answer?.work === undefined ? '' : `, work ${Math.round(r.answer.work / 1e6)}M`}${r.answer?.cut ? `, ${r.answer.cut} cut` : ''}${r.answer?.blocks ? `, ${r.answer.blocks} blocks` : ''}${r.answer?.stateBytes ? `, state ${mb(r.answer.stateBytes)}` : ''}${r.failed ? `, FAILED: ${r.failed}` : ''}`;
+      return `| Table import, ${t.name}, ${kb(t.bytes)}: workerd CPU, converter / DocDO create | ${part(t.converter)} / ${part(t.create)}${budget(t.cpuMs)} |`;
+    }),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',

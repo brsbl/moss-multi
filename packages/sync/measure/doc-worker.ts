@@ -2,7 +2,7 @@
 // over real sockets. Test-only: it sets the trusted principal headers itself from the query string.
 import { getServerByName, routePartykitRequest } from 'partyserver';
 import * as Y from 'yjs';
-import { encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
+import { encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../src/doc-do.ts';
 import type { PayloadWork } from '../src/payloads.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
@@ -43,7 +43,7 @@ export default {
       try {
         await stub.create({ folderId: 'measure', ownerId: 'measure-owner', markdown: await request.text() });
       } catch (error) {
-        if (error instanceof Error && error.message === 'doc-cap') return Response.json({ error: 'doc-cap', work: linearImportStats.spent - work }, { status: 413 });
+        if (isDocCapError(error)) return Response.json({ error: 'doc-cap', work: linearImportStats.spent - work }, { status: 413 });
         throw error;
       }
       const { state } = await stub.snapshotForDuplicate();
