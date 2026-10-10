@@ -514,11 +514,9 @@ export function CommentPopover({
   const [editText, setEditText] = useState('');
   const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
   const [replyText, setReplyText] = useState('');
-  // moss-multi seam: comments: the reply box's text and thread when a bound submit settles
+  // moss-multi seam: comments: the reply box's text when a bound submit settles
   const replyTextRef = useRef(replyText);
   replyTextRef.current = replyText;
-  const replyRootRef = useRef(root.id);
-  replyRootRef.current = root.id;
   const [replyImageUrls, setReplyImageUrls] = useState<string[]>([]);
   const [replyResetSignal, setReplyResetSignal] = useState(0);
   const [editFooterHost, setEditFooterHost] = useState<HTMLDivElement | null>(null);
@@ -549,6 +547,8 @@ export function CommentPopover({
 
   // Derive the thread: root + chronological child comments (flattened subtree).
   const root = useMemo(() => resolveThreadRoot(comment, commentsMap), [comment, commentsMap]);
+  const replyRootRef = useRef(root.id); // moss-multi seam: comments: the thread when a bound reply settles
+  replyRootRef.current = root.id;
   const replies = useMemo(() => {
     return collectCommentSubtreeIds(commentsMap, root.id)
       .filter(id => id !== root.id)
