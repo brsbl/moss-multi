@@ -124,9 +124,9 @@ export function remountSince({ names, docId, mark, generation }) {
 }
 
 /**
- * Invariant 7 input: the title and body text of every pane showing the doc.
+ * Invariant 7 input: the title and body text of every pane showing the doc, with each field's binding state.
  * @param {{ names: Names, docId: string }} arg
- * @returns {{ title: string, body: string }[]}
+ * @returns {{ title: string, body: string, titleBinding: string | null, bodyBinding: string | null }[]}
  */
 export function fieldTexts({ names, docId }) {
   return [...document.querySelectorAll(`[${names.pane}][${names.docId}="${docId}"]`)].map((pane) => {

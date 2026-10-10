@@ -75,7 +75,7 @@ test('j16-suggest-server: a forged raw frame from a suggester deleting original 
   sever.inject(syncUpdate(forged));
 
   await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal shows in the band').toContainText(/can.t edit this note|can view this note/, { timeout: BIND_TIMEOUT });
-  await ui.waitOpen(ben, docId, 'readonly');
+  await ui.waitBodyLive(ben, docId);
   await expect(ui.body(ben, docId), 'his window keeps the text').toContainText(ORIGINAL);
   await expect(ui.body(ada, docId), "the owner's window never loses it").toContainText(ORIGINAL);
   const exported = await (await ada.context.request.get(`/api/docs/${docId}/content`)).text();
