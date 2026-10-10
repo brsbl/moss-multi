@@ -57,6 +57,8 @@ export interface DocLimits {
   accessDeadlineMs: number;
   /** Full-state answers per principal: `docs` whole states at once, refilled over `windowMs` (T3.S14). */
   answerBudget: { docs: number; windowMs: number };
+  /** The bytes of step 1s one socket may have waiting for that budget; past it one waits without its vector. */
+  waitingAnswerBytesPerConnection: number;
 }
 
 export interface CreateDocInput {
@@ -186,8 +188,43 @@ function send(connection: Connection, message: Uint8Array): void {
  * reads the doc starts with ready(), so a stub that outlives an eviction never reads an empty doc.
  */
 
+/** A state vector naming no client: the whole doc is missing. */
+const EMPTY_VECTOR = Y.encodeStateVector(new Map());
+
+/** The budget a step 1 draws on: its principal's, or for an anonymous link viewer its socket's (T3.S14). */
+function budgetKey(connection: Connection, attachment: Attachment): string {
+  return attachment.kind === 'anonymous' ? socketKey(connection) : attachment.principalId;
+}
+
+function socketKey(connection: Connection): string {
+  return `\u0000socket:${connection.id}`;
+}
+
+/** A sync step 1's state vector, a view into `message`. */
+function stateVectorOf(message: ArrayBuffer | ArrayBufferView): Uint8Array {
+  const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+  const decoder = decoding.createDecoder(bytes);
+  decoding.readVarUint(decoder);
+  decoding.readVarUint(decoder);
+  return decoding.readVarUint8Array(decoder);
+}
+
+/** The share of `doc`'s clocks `vector` lacks: 1 for a fresh client, 0 for one up to date. */
+function missingShare(doc: Y.Doc, vector: Uint8Array): number {
+  const theirs = Y.decodeStateVector(vector);
+  let total = 0;
+  let missing = 0;
+  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(doc))) {
+    total += clock;
+    missing += Math.max(0, clock - (theirs.get(client) ?? 0));
+  }
+  return total > 0 ? missing / total : 0;
+}
+
 /** The least share of a whole state an answer costs, so tiny answers are bounded in number too. */
-const MIN_ANSWER_SHARE = 1 / 256;
+const MIN_ANSWER_SHARE = 1 / 4096;
+/** The least share of its target an answer costs: every encode walks the target's whole delete set. */
+const MIN_TARGET_SHARE = 1 / 32;
 /** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
@@ -208,6 +245,7 @@ export class DocDO extends YServer<SyncEnv> {
     inboxBytes: 8 * 1024 * 1024,
     accessDeadlineMs: ACCESS_DEADLINE_MS,
     answerBudget: ANSWER_BUDGET,
+    waitingAnswerBytesPerConnection: 128 * 1024,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
@@ -276,8 +314,8 @@ export class DocDO extends YServer<SyncEnv> {
   readonly #serial = serializer();
   /** Each principal's answer budget in whole states, as of `at` (T3.S14). In memory: a wake starts full. */
   readonly #answerBudgets = new Map<string, { left: number; at: number }>();
-  /** Each socket's step 1s waiting for its principal's budget: the latest per doc ('' the note, else a payload id). */
-  readonly #waitingAnswers = new Map<Connection, Map<string, WSMessage>>();
+  /** Each socket's step 1s waiting for its budget, the latest per target ('' the note, else a payload id), and their bytes. */
+  readonly #waitingAnswers = new Map<Connection, { bytes: number; frames: Map<string, Uint8Array> }>();
   #answerTimer: ReturnType<typeof setTimeout> | undefined;
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
@@ -540,7 +578,8 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     if (frame.kind === 'step1') {
-      if (this.#mayAnswer(connection, attachment, '', store.stateBytes, message)) this.#answer(connection, message);
+      const vector = stateVectorOf(message);
+      if (this.#mayAnswer(connection, attachment, '', store.stateBytes, vector, () => this.document)) this.#answer(connection, vector);
       return;
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
@@ -567,12 +606,8 @@ export class DocDO extends YServer<SyncEnv> {
    * the provider reads as synced only once all of it has landed. y-partyserver sent it as one frame, and a peer behind
    * a large paste was sent megabytes it read as silence until they arrived (T3.S6b).
    */
-  #answer(connection: Connection, message: ArrayBuffer | ArrayBufferView): void {
-    const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
-    const decoder = decoding.createDecoder(bytes);
-    decoding.readVarUint(decoder);
-    decoding.readVarUint(decoder);
-    const update = Y.encodeStateAsUpdate(this.document, decoding.readVarUint8Array(decoder));
+  #answer(connection: Connection, vector: Uint8Array): void {
+    const update = Y.encodeStateAsUpdate(this.document, vector);
     const pieces = update.byteLength > ANSWER_PIECE_BYTES ? splitUpdate(update, ANSWER_PIECE_BYTES).map((piece) => piece.update) : [update];
     for (const [index, piece] of pieces.entries()) send(connection, encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece));
   }
@@ -588,68 +623,121 @@ export class DocDO extends YServer<SyncEnv> {
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
     this.#waitingAnswers.delete(connection);
+    this.#answerBudgets.delete(socketKey(connection));
     // A full budget is the same as none.
     const now = Date.now();
-    for (const principal of [...this.#answerBudgets.keys()]) {
-      if (this.#budget(principal, now).left >= this.#limits.answerBudget.docs) this.#answerBudgets.delete(principal);
+    for (const key of [...this.#answerBudgets.keys()]) {
+      if (this.#budget(key, now).left >= this.#limits.answerBudget.docs) this.#answerBudgets.delete(key);
     }
   }
 
-  /** A principal's answer budget now, refilled since it was last read. */
-  #budget(principal: string, now: number): { left: number; at: number } {
+  /** A budget now, refilled since it was last read. */
+  #budget(key: string, now: number): { left: number; at: number } {
     const { docs, windowMs } = this.#limits.answerBudget;
-    const held = this.#answerBudgets.get(principal);
+    const held = this.#answerBudgets.get(key);
     const budget = { left: held ? Math.min(docs, held.left + ((now - held.at) * docs) / windowMs) : docs, at: now };
-    this.#answerBudgets.set(principal, budget);
+    this.#answerBudgets.set(key, budget);
     return budget;
   }
 
   /**
-   * Whether a step 1 for `target` ('' the note, else a payload id) is answered now, checked before any encode: each
-   * answer costs its share (`bytes`) of the stored state, and one is answered while the principal's budget is above
-   * zero. Otherwise the frame waits as the socket's latest step 1 for `target`, replacing any older one, and is
-   * answered once the budget refills, so an honest reconnect or resync is late, never unanswered (T3.S14).
+   * Whether a step 1 for `target` ('' the note, else a payload id; its doc and stored `bytes`) is answered now, checked
+   * before any encode. A signed-in principal has one budget across its sockets; each anonymous socket has its own,
+   * since every link viewer shares the id 'anonymous'. An answer costs the share of the stored state it sends, from the
+   * clocks `vector` lacks, and at least MIN_TARGET_SHARE of its target, so a synced client's resync costs little and a
+   * fresh one a whole target. It is answered while the budget is above zero; otherwise it waits as the socket's latest
+   * step 1 for `target` and is answered once the budget refills, so an honest reconnect or resync is late, never
+   * unanswered (T3.S14).
    */
-  #mayAnswer(connection: Connection, attachment: Attachment, target: string, bytes: number, message: WSMessage): boolean {
-    const budget = this.#budget(attachment.principalId, Date.now());
-    const waiting = this.#waitingAnswers.get(connection);
+  #mayAnswer(connection: Connection, attachment: Attachment, target: string, bytes: number, vector: Uint8Array, doc: () => Y.Doc): boolean {
+    const budget = this.#budget(budgetKey(connection, attachment), Date.now());
     if (budget.left <= 0) {
-      if (waiting) waiting.set(target, message);
-      else this.#waitingAnswers.set(connection, new Map([[target, message]]));
-      this.#scheduleAnswers();
+      this.#wait(connection, target, vector);
       return false;
     }
     // This answer covers any older step 1 for the same target.
-    waiting?.delete(target);
-    if (waiting?.size === 0) this.#waitingAnswers.delete(connection);
+    this.#unwait(connection, target);
     const total = (this.#store?.stateBytes ?? 0) + (this.#payloads?.totalBytes ?? 0);
-    budget.left -= Math.max(MIN_ANSWER_SHARE, total > 0 ? Math.min(1, bytes / total) : 0);
+    const share = total > 0 ? Math.min(1, bytes / total) : 0;
+    budget.left -= Math.max(MIN_ANSWER_SHARE, share * Math.max(MIN_TARGET_SHARE, missingShare(doc(), vector)));
     return true;
   }
 
-  /** Re-handles the waiting step 1s when the first waiting principal's budget is above zero again. */
+  /**
+   * Keeps `vector` as the socket's waiting step 1 for `target`. A socket's waiting vectors are bounded (A§8 waiting
+   * frames): one past the allowance waits as an empty vector, which the refill answers with the whole target.
+   */
+  #wait(connection: Connection, target: string, vector: Uint8Array): void {
+    this.#unwait(connection, target);
+    const waiting = this.#waitingAnswers.get(connection) ?? { bytes: 0, frames: new Map<string, Uint8Array>() };
+    const allowance = this.#limits.waitingAnswerBytesPerConnection;
+    // A copy: the vector is a view into the whole frame.
+    const kept = waiting.bytes + vector.byteLength + target.length <= allowance ? vector.slice() : EMPTY_VECTOR;
+    const bytes = kept.byteLength + target.length;
+    if (waiting.bytes + bytes > allowance) {
+      // Only a socket with thousands of payloads waiting gets here; it reconnects and asks again.
+      this.#waitingAnswers.delete(connection);
+      connection.close(TRY_AGAIN, 'answers full');
+      return;
+    }
+    waiting.bytes += bytes;
+    waiting.frames.set(target, kept);
+    this.#waitingAnswers.set(connection, waiting);
+    this.#scheduleAnswers();
+  }
+
+  #unwait(connection: Connection, target: string): void {
+    const waiting = this.#waitingAnswers.get(connection);
+    const held = waiting?.frames.get(target);
+    if (!waiting || !held) return;
+    waiting.frames.delete(target);
+    waiting.bytes -= held.byteLength + target.length;
+    if (waiting.frames.size === 0) this.#waitingAnswers.delete(connection);
+  }
+
+  /** Re-handles the waiting step 1s when the first waiting budget is above zero again. */
   #scheduleAnswers(): void {
     if (this.#answerTimer !== undefined) return;
     const { docs, windowMs } = this.#limits.answerBudget;
     const now = Date.now();
     let due = Infinity;
     for (const connection of this.#waitingAnswers.keys()) {
-      const principal = attachmentOf(connection)?.principalId;
-      if (principal !== undefined) due = Math.min(due, Math.max(0, (-this.#budget(principal, now).left * windowMs) / docs));
+      const attachment = attachmentOf(connection);
+      if (attachment) due = Math.min(due, Math.max(0, (-this.#budget(budgetKey(connection, attachment), now).left * windowMs) / docs));
     }
     if (due === Infinity) return;
     this.#answerTimer = setTimeout(() => {
       this.#answerTimer = undefined;
-      const waiting = [...this.#waitingAnswers];
+      const batch = [...this.#waitingAnswers].flatMap(([connection, { frames }]) =>
+        [...frames].map(([target, vector]) => [connection, target ? encodePayloadFrame(target, PAYLOAD_STEP1, vector) : encodeSyncFrame(0, vector)] as const));
       this.#waitingAnswers.clear();
-      // Through the same validation and gates as a new frame; one still over budget waits again.
-      for (const [connection, messages] of waiting) {
-        if (!isOpen(connection)) continue;
-        for (const message of messages.values()) {
-          void Promise.resolve(this.onMessage(connection, message)).catch((error) => console.error('DocDO waiting step 1 failed', error));
-        }
-      }
+      void this.#serial(() => this.#replayAnswers(batch)).catch((error) => console.error('DocDO waiting step 1s failed', error));
     }, Math.ceil(due) + 1);
+  }
+
+  /**
+   * The waiting step 1s through the same validation and gates as a new frame, but not the inbox: they are bounded
+   * above, and replaying them through it would close a socket with many waiting. One still over budget waits again.
+   */
+  async #replayAnswers(batch: (readonly [Connection, Uint8Array])[]): Promise<void> {
+    const check = this.#accessCheck();
+    if (check) {
+      try {
+        await this.#validate(check);
+      } catch (error) {
+        console.error('DocDO could not validate access; refusing waiting step 1s', error);
+        for (const [connection] of batch) connection.close(TRY_AGAIN, 'unvalidated');
+        return;
+      }
+    }
+    for (const [connection, frame] of batch) {
+      if (!isOpen(connection)) continue;
+      try {
+        this.#handle(connection, frame);
+      } catch (error) {
+        console.error('DocDO waiting step 1 failed', error);
+      }
+    }
   }
 
   /**
@@ -1064,7 +1152,7 @@ export class DocDO extends YServer<SyncEnv> {
     try {
       if (step === PAYLOAD_STEP1) {
         if (!payloads.served(id)) return;
-        if (!this.#mayAnswer(connection, attachment, id, payloads.bytesOf(id), encodePayloadFrame(id, PAYLOAD_STEP1, data))) return;
+        if (!this.#mayAnswer(connection, attachment, id, payloads.bytesOf(id), data, () => payloads.doc(id))) return;
         send(connection, encodePayloadFrame(id, PAYLOAD_STEP2, Y.encodeStateAsUpdate(payloads.doc(id), data)));
         payloads.addReaders(id, [attachment.principalId]);
         return;
