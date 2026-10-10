@@ -325,6 +325,14 @@ function refusalRows(opened: Opened): { principal_id: string; refusals: string }
   return exists ? opened.backing.query<{ principal_id: string; refusals: string }>('SELECT principal_id, refusals FROM suggest_refusals ORDER BY principal_id') : [];
 }
 
+/** A wake that keeps the fake clock: the harness's wake clears timers, which resets the clock to its start. */
+async function rewake(opened: Opened): Promise<Opened> {
+  const now = Date.now();
+  const next = wake(opened);
+  vi.setSystemTime(now);
+  return start(next);
+}
+
 describe('T5.S13 suggest refusal counts, cooldowns and the no-room window survive hibernation @p:mean-2', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -341,12 +349,12 @@ describe('T5.S13 suggest refusal counts, cooldowns and the no-room window surviv
     const sam = await on(opened, SAM);
     for (let i = 0; i < SUGGEST_LIMITS.refusals.max; i += 1) await refuse(sam);
     expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
-    opened = await start(wake(opened));
+    opened = await rewake(opened);
     const back = await connect(opened, SAM);
     expect(back.closed?.code, 'refused before the deadline').toBe(CLOSE.connectionLimit);
     // Once the cooldown ends the principal is admitted again, across another wake.
     await vi.advanceTimersByTimeAsync(SUGGEST_LIMITS.cooldownMs);
-    opened = await start(wake(opened));
+    opened = await rewake(opened);
     const later = await on(opened, SAM);
     expect(later.closed).toBeNull();
   });
@@ -356,11 +364,11 @@ describe('T5.S13 suggest refusal counts, cooldowns and the no-room window surviv
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
     const sam = await on(opened, SAM);
     await refuse(sam);
-    opened = await start(wake(opened));
+    opened = await rewake(opened);
     sam.opened = opened;
     await refuse(sam);
     expect(sam.closed).toBeNull();
-    opened = await start(wake(opened));
+    opened = await rewake(opened);
     sam.opened = opened;
     await refuse(sam);
     expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
@@ -396,7 +404,7 @@ describe('T5.S13 suggest refusal counts, cooldowns and the no-room window surviv
       expect(leased.t).toBe('suggest-leased');
       const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
       expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, 4) })).toMatchObject({ t: 'suggest-ack' });
-      opened = await start(wake(opened));
+      opened = await rewake(opened);
       sam.opened = opened;
     }
     expect(sam.closed).toBeNull();
@@ -411,7 +419,7 @@ describe('T5.S13 suggest refusal counts, cooldowns and the no-room window surviv
     const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
     const big = Math.ceil(CAP * SUGGEST_LIMITS.openOpsShare) + 1024;
     expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, big) })).toMatchObject({ t: 'suggest-refused', reason: 'ops-cap' });
-    opened = await start(wake(opened));
+    opened = await rewake(opened);
     sam.opened = opened;
     const spies = (['lease', 'merge'] as const).map((name) => vi.spyOn(SuggestIngest.prototype, name));
     const before = sam.events.length;
