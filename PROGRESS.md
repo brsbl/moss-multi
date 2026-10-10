@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 52% done** (106 of 205 planned tasks verified)
+**Overall: 52% done** (107 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 14 / 14 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 15 / 15 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -127,6 +127,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T5.S4 verified: suggestions and leases now fit inside a bounded share of a note's room, so a busy suggester can no longer fill a note and lock editors out of body and payload edits.
 - 2026-10-10 — T5.S8 verified: the Suggestions panel fetches previews only for cards on screen, expanded or active (two at a time), reuses them when reopened on an unchanged note, and waits out a 429's Retry-After before asking again.
 - 2026-10-10 — T5.S12 verified: every refused suggestion frame now counts toward the refusal cooldown, a connection refused for lack of room gets cheap refusals for its growth frames for a while, and suggestion leases pay the write rate, so a suggester can no longer spin the server with refused frames.
+- 2026-10-10 — T5.S5 verified: a person who opens and closes the same note many times keeps only a bounded set of suggestion reservations, so the note's suggestion room no longer fills with stale ones; a retired reservation is never reissued, and a revived window's unsent suggestion text is offered back.
 
 ## T1.1s identity audit
 
@@ -261,6 +262,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T5.S8 (An automatic refresh after Accept returns 'changed' also bypasses the 429 pause) checker P2: refresh() always sets entry.asked, which pump() lets through the pause; only an explicit Try again should bypass it (one extra request, only in that interleaving).
 - T5.S8 (The unit tests mount SuggestionList without the real cache key or a real Accept) checker P2: previews.test fakes IntersectionObserver and fetch and never passes 'opened'; a targeted e2e leg should make the checker's real-stack evidence (visible-card requests, no refetch on reopen, 429 recovery) permanent.
 - T5.S7 (The old line in a code-change note hides invisible characters) checker P2: a payload replacement row shows the old line only in row.note (JSON.stringify of otherSide.around, packages/core/src/suggest/describe.ts:700), which SuggestionsPanel.tsx:212 renders as plain text rather than through RowText, so a removed U+200B in the old line gets no marker (replacing a+U+200B+b with c looks like replacing ab with c).
+- T5.S5 (A retired client ID can be reissued if a random draw happens to match it) checker P2 (downgraded from Codex P1): SqlLeases.remove and MemoryLeases.remove delete the only server record of a retired 32-bit client ID and the allocator (packages/sync suggest.ts:396) checks only the doc store, current leases and the writer, so a later draw can match a retired ID (chance per mint = retired IDs on the note / 2^32) → lease follow-up: keep a retired-ID tombstone the allocator rejects.
+- T5.S5 (Retirement never runs if an old note's reservations already fill the share) checker P2: `fresh` is computed from #room() before the retirement loop, so a note persisted before T5.S5 whose dormant reservations fill the suggestion share gets 'doc-cap' on every lease request → lease follow-up: retire excess dormant reservations before the room check, or once on wake.
+- T5.S5 (A window with nothing unsaved is closed if its spare reservations were retired) checker P2: after a socket close marks window A's leases expired and the same principal opens the note ~8 more times, A's reservations are retired; on reconnect the server refuses resume with 'lease' and #halt closes the suggest fork even with no text to offer back → lease follow-up: a clean window takes fresh leases instead.
 - T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the 4 s periodic resync stays held back while peer sync frames keep arriving, with no time limit, so a lost step 1 answer on an open socket would delay the resync, awareness refresh and unacked resend until a lull → sync robustness follow-up: cap the hold-back.
 - T3.S6b (30,000-item list paste) checker P2 (inherited from T3.S6): e2e/lib/paste.ts sets the CI stall gate MAX_STALL_MS to 5 s while BUILDPLAN T3.S6 says 2 s → paste test follow-up: reconcile the stall bound.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.

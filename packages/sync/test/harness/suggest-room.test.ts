@@ -143,13 +143,14 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     expect(notices.filter((notice) => notice.author === SAM.id).length, 'notices per author, across the wakes').toBeLessThanOrEqual(1);
   });
 
-  it('leases count too: reconnecting to mint fresh leases is refused before the share fills', { timeout: 120_000 }, async () => {
+  it('leases count too: fresh suggesters minting leases are refused before the share fills', { timeout: 120_000 }, async () => {
     const opened = await start(openDoc(undefined, SmallDoc as never));
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
     let refused: SuggestReply | null = null;
     let minted = 0;
     for (let i = 0; i < 4_000 && !refused; i += 1) {
-      const sam = await on(opened, SAM);
+      // One principal's reservations are bounded (T5.S5): each round is a new suggester, so every lease is a new row.
+      const sam = await on(opened, { ...SAM, id: `sam-${i}@example.invalid` });
       const reply = await send(sam, { t: 'suggest-lease' });
       if (reply.t === 'suggest-leased') minted += reply.leases.length;
       else refused = reply;
@@ -180,7 +181,7 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     let refused: SuggestReply | null = null;
     let minted = 0;
     for (let i = 0; i < 4_000 && !refused; i += 1) {
-      const again = await on(opened, SAM);
+      const again = await on(opened, { ...SAM, id: `sam-${i}@example.invalid` });
       const reply = await send(again, { t: 'suggest-lease' });
       if (reply.t === 'suggest-leased') minted += reply.leases.length;
       else refused = reply;
