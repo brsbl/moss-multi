@@ -20,7 +20,7 @@ import * as Y from 'yjs';
 import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
 import { charsAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
-import { $admitPaste, clipboardBound } from './paste.ts';
+import { $admitPaste, $ownedBytes, admitStep, clipboardBound, type UndoStep } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -704,6 +704,37 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   };
 
   const P = COMMAND_PRIORITY_CRITICAL;
+  const root = doc.get('root', Y.XmlText);
+  /**
+   * An undo or a redo is admitted before it changes anything (paste.ts admitStep): what the binding's step it replays
+   * restores, and a strike it takes back (the struck text a rewrite removed comes back as copies) or puts again.
+   * Refused, it shows why and leaves the history as it was.
+   */
+  const refusesStep = (kind: 'undo' | 'redo'): boolean => {
+    const undo = manager();
+    if (!undo) return false;
+    const stack = (kind === 'undo' ? undo.undoStack : undo.redoStack) as unknown as readonly (UndoStep | Y.UndoManager['undoStack'][number])[];
+    const last = (kind === 'undo' ? undone : redone).at(-1);
+    const expected = last ? last.depth + (last.native ? 1 : 0) : -1;
+    const strike = last && stack.length <= expected ? last : null;
+    const native = !strike || (strike.native && stack.length === expected);
+    let extra = 0;
+    let targets: IdSpan[] = [];
+    if (strike && kind === 'undo') {
+      for (const run of strike.runs) {
+        let gone = 0;
+        for (let i = 0; i < run.len; i += 1) if (removed(Y.createID(run.id.client, run.id.clock + i))) gone += 1;
+        if (gone) extra += gone * 5 + 64;
+      }
+    }
+    if (strike && kind === 'redo') targets = standing(strike.targets);
+    const steps: UndoStep[] = native
+      ? stack.map((step) => ('entries' in step ? step : { entries: [{ manager: undo, item: step }] }))
+      : [];
+    const notice = admitStep(fork, kind, root, steps, extra, targets);
+    if (notice) refuseInput(notice);
+    return notice !== null;
+  };
   return mergeRegister(
     () => watch(null),
     () => doc.off('beforeTransaction', settle),
@@ -739,7 +770,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       const bound = clipboardBound(data);
       const selection = $getSelection();
       const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
-      const notice = $admitPaste(fork, bound, range ? toSpans(range.body) : []);
+      const notice = $admitPaste(fork, bound, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0);
       if (notice) {
         event.preventDefault();
         refuseInput(notice);
@@ -768,6 +799,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     // Undo takes back the latest strike when no later step of his came after it; with own text it removed, the
     // binding's undo of that removal runs in the same keystroke.
     editor.registerCommand(UNDO_COMMAND, () => {
+      if (refusesStep('undo')) return true;
       const undo = manager();
       const last = undone.at(-1);
       if (!last || !undo) return false;
@@ -782,6 +814,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       return !native;
     }, P),
     editor.registerCommand(REDO_COMMAND, () => {
+      if (refusesStep('redo')) return true;
       const undo = manager();
       const last = redone.at(-1);
       if (!last || !undo) return false;
