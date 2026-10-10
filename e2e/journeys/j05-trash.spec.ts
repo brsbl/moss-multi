@@ -365,6 +365,8 @@ test('j05-trash: a restore the server refuses shows the server’s sentence, and
   const note = await send('post', '/api/docs', { folderId, title: 'Folder plan' });
   expect(note.status(), 'declared setup: the note').toBe(201);
   const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
+  // Ada's open shell follows the new note and may read its backlinks after the trash lands (the bridge then drops it).
+  ada.expectHttp(404, `/api/docs/${docId}/backlinks`);
   expect((await send('delete', `/api/folders/${folderId}`)).status(), 'declared setup: the folder goes to Trash').toBe(200);
 
   // Restoring would put the note at the top of Ada's Home, where Ben can't add notes: moss shows why, not "Try again".

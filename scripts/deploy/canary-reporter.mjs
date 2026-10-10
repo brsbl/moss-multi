@@ -34,13 +34,32 @@ export function failureTrace(result) {
       return match ? [`${match[1]}:${match[2]}`] : [];
     });
     if (frames.length > 0) lines.push(`at ${[...new Set(frames)].slice(0, 4).join(' < ')}`);
-    const kinds = KINDS.filter(([, pattern]) => pattern.test(error.message ?? '')).map(([kind]) => kind);
+    const plain = (error.message ?? '').replace(ANSI, '');
+    const kinds = KINDS.filter(([, pattern]) => pattern.test(plain)).map(([kind]) => kind);
     if (kinds.length > 0) lines.push(`kind ${kinds.join(', ')}`);
     const values = numericValues(error.message ?? '');
     if (values) lines.push(values);
     lines.push(...findingFacts(error.message ?? ''));
+    lines.push(...inductionFacts(error.message ?? ''));
   }
   return lines;
+}
+
+/**
+ * A failed wake proof's problems (e2e/lib/hibernate.ts inductionProblems) as fixed facts with their millisecond
+ * counts; never an instance id or a timestamp.
+ * @param {string} message
+ */
+export function inductionFacts(message) {
+  message = message.replace(ANSI, '');
+  const facts = [];
+  if (/\binstance \S{1,80} still serves the doc/.test(message)) facts.push('induction: the same instance serves the doc');
+  if (/\binstance constructed at \d{1,16}, not after the baseline's/.test(message)) facts.push('induction: not constructed after the baseline');
+  const before = /\binstance constructed (\d{1,9}) ms before the decisive action/.exec(message);
+  if (before) facts.push(`induction: constructed ${before[1]} ms before the decisive action`);
+  const after = /\binstance constructed (\d{1,9}) ms after the decisive action ended/.exec(message);
+  if (after) facts.push(`induction: constructed ${after[1]} ms after the decisive action ended`);
+  return facts;
 }
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, 'g');

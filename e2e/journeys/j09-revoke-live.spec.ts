@@ -10,6 +10,7 @@ import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR,
   TERMINAL_REASON_ATTR, paneSelector,
 } from '../lib/contract.ts';
+import { ACCESS_DEADLINE_MS, ACCESS_TICK_MS } from '../../packages/protocol/src/limits.ts';
 import { grantDoc } from '../lib/grants.ts';
 import { idleWake, inductionProblems } from '../lib/hibernate.ts';
 import { visibility } from '../lib/idle.ts';
@@ -234,7 +235,9 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
   const baseline = await Promise.all(holders.map((h) => probe(h.docId)));
   // Every window goes quiet: a visible tab's resync keeps its DO awake.
   for (const holder of holders) await visibility(holder.actor, true);
-  await new Promise((resolve) => setTimeout(resolve, idleMs));
+  // A holder's last frame arms the access tick, whose alarm wakes the DO and validates once more: the idle counts
+  // from the end of that validation, not from the last frame.
+  await new Promise((resolve) => setTimeout(resolve, ACCESS_TICK_MS + ACCESS_DEADLINE_MS + idleMs));
 
   const decisiveAt = Date.now();
   expect((await ada.context.request.delete(`/api/docs/${docId}/links/${docToken}`, { headers })).status()).toBe(200);

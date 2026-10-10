@@ -176,6 +176,9 @@ test('j15-social: a non-author sees no Edit or Delete, and a raw delete or edit 
 
   await expect(thread(ben).getByRole('button', { name: 'Delete thread' }), "Ben cannot delete Ada's thread").toHaveCount(0);
   await message(ben, 'Only Ada may change this').getByRole('button', { name: /^Comment actions for / }).click();
+  // The menu is open before anything is read or Escape is pressed: an Escape that arrives before it belongs to the
+  // thread, and the missing items below would pass on a menu not yet there.
+  await expect(ben.page.getByRole('menu'), 'the actions menu opens').toBeVisible();
   await expect(ben.page.getByRole('menuitem', { name: /^Edit / }), 'no Edit for a non-author').toHaveCount(0);
   await expect(ben.page.getByRole('menuitem', { name: /^Delete / }), 'no Delete for a non-author').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
