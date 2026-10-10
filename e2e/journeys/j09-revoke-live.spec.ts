@@ -154,17 +154,12 @@ test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only 
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
   await expect(refusal, 'the demotion alone says the note is view-only').toHaveText(VIEW_ONLY, { timeout: LIVE_TIMEOUT });
   const shownAt = Date.now();
-  await ui.waitOpen(ben, docId, 'readonly');
-  await ui.body(ben, docId).click({ force: true });
-  await ben.page.keyboard.type('blocked');
-
+  // Removed at once: the view-only notice would otherwise still show for its 4 s.
   await chooseAccess(dialog, benPrincipal.name, 'Remove access');
   await expect(ui.pane(ben, docId), 'the note ends for him').toHaveAttribute(TERMINAL_REASON_ATTR, 'revoked', { timeout: LIVE_TIMEOUT });
-  const endedAt = Date.now();
+  expect(Date.now() - shownAt, 'ended while the view-only notice would still show').toBeLessThan(3_000);
+  await expect(refusal, 'and no longer says he can view it').not.toHaveText(VIEW_ONLY, { timeout: 500 });
   await expect(ui.pane(ben, docId).locator(`[${CONNECTION_BANNER_ATTR}="revoked"]`)).toHaveText(/Your access to this note has ended\./);
-  await expect(refusal, 'and no longer says he can view it').not.toHaveText(VIEW_ONLY, { timeout: 1_000 });
-  expect(Date.now() - shownAt, 'checked while the view-only notice would still show').toBeLessThan(3_800);
-  expect(endedAt - shownAt).toBeLessThan(3_000);
   await actors.checkpoint('demoted-then-removed');
 });
 
