@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 70% done** (100 of 143 planned tasks verified)
+**Overall: 51% done** (101 of 200 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 10 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 10 / 10 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -121,6 +121,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T3.F verified: the media-revalidation tests now hold copies and duplicates at a fixed point and pass reliably, so a flaky run no longer blocks a PR.
 - 2026-10-08 — T3.F2 verified: typing a slash command and pressing Enter now always inserts what the typed query names, so `/media` inserts media even on a busy page instead of a row from the previous list.
 - 2026-10-08 — T4.R2 verified: comments now sit on the final M3, so a long comment or reply and a note created with a full comments sidecar fit under the request caps, and a large paste in a commented note lays out remote cursors once per batch instead of stalling.
+- 2026-10-09 — T5.R2 verified: suggestions now sit on the final M4, and a large paste in Suggest mode lands whole as one suggestion within every suggestion cap or is refused whole with the pasted blocks offered back, never half-applied.
 
 ## T1.1s identity audit
 
