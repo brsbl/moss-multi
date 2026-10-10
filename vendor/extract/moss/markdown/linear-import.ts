@@ -237,9 +237,22 @@ let longLines: LongLines | null = null;
 // Lines of the import running with more than LINEAR_IMPORT_LIMITS.tabs tabs, and the literal text each gets back.
 let heldTabs: [TextNode, string][] = [];
 
-// Control characters moss's normalization and Lexical's block transformers leave alone; the first one the markdown
-// lacks marks its long lines (none: they import as they are).
+// Control characters moss's normalization and Lexical's block transformers leave alone. The marker is a run of the one
+// whose longest run in the markdown is shortest, one longer than that run, so no text of the markdown reads as one.
 const MARKERS = ['\u0001', '\u0002', '\u0003', '\u0004', '\u0005', '\u0006', '\u0007', '\u000e', '\u000f'];
+
+function markerFor(markdown: string): string {
+  const longest = new Map(MARKERS.map((char) => [char.charCodeAt(0), 0]));
+  let run = 0;
+  for (let i = 0; i < markdown.length; i += 1) {
+    const code = markdown.charCodeAt(i);
+    if (code > 0x0f) continue;
+    run = i > 0 && markdown.charCodeAt(i - 1) === code ? run + 1 : 1;
+    if (run > (longest.get(code) ?? Infinity)) longest.set(code, run);
+  }
+  const [code, length] = [...longest].reduce((a, b) => (b[1] < a[1] ? b : a));
+  return String.fromCharCode(code).repeat(length + 1);
+}
 
 function markLongLines(markdown: string): LongLines | null {
   const limit = LINEAR_IMPORT_LIMITS.lineChars;
@@ -251,8 +264,8 @@ function markLongLines(markdown: string): LongLines | null {
     if (end - start > limit) ranges.push([start, end]);
     start = end + 1;
   }
-  const marker = ranges.length > 0 ? MARKERS.find((char) => !markdown.includes(char)) : undefined;
-  if (marker === undefined) return null;
+  if (ranges.length === 0) return null;
+  const marker = markerFor(markdown);
   let marked = '';
   let cursor = 0;
   ranges.forEach(([start, end], i) => {
@@ -302,9 +315,10 @@ function restoredSplit(lines: string[]): string[] {
 // What the import running, if any, has left of its budget for work past its lines' own (`left`) and for all work.
 let importBudget: { left: number; work: number } | null = null;
 
-// A table cell: moss imports its markdown as a note of its own and makes the cell, paragraph and text nodes, about
-// 25 µs of workerd CPU in all; its line's LINE_COST and its text's work are charged as any line's are.
-const TABLE_CELL_COST = 21_000;
+// A table cell: moss imports its markdown as a note of its own and makes the cell, paragraph and text nodes, which the
+// DocDO's import then binds to Yjs and admits, about 60 µs of workerd CPU in all; its line's LINE_COST and its text's
+// work are charged as any line's are.
+const TABLE_CELL_COST = 63_000;
 
 // Whether the import running can pay for a table row's cells; it pays for them if so.
 setTableCellCharge((cells) => {

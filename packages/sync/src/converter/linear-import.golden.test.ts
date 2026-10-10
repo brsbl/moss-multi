@@ -276,7 +276,7 @@ describe('linear inline import @p:tech-4', () => {
 
     it('shields a long line holding every control character a marker could use, as it shields one without them', () => {
       const controls = '\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u000e\u000f';
-      const line = (fill: string) => `# **b** [a](b) \`c\` ~~d~~ ${fill} ${'x'.repeat(LINEAR_IMPORT_LIMITS.lineChars)}`;
+      const line = (fill: string) => `# **b** [a](b) \`c\` ~~d~~ ${fill}\u00a0${'x'.repeat(LINEAR_IMPORT_LIMITS.lineChars)}`;
       const run = (text: string) => {
         const [cut, spent] = [linearImportStats.cut, linearImportStats.spent];
         const editor = importMarkdown(`Before **it**.\n\n${text}\n\nAfter **it**.`);

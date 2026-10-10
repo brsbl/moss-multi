@@ -417,54 +417,49 @@ async function measurePayloadFrames(port) {
   }
 }
 
-// Table imports through the real DocDO's create: notes that spend the converter's work budget on table cells,
-// dense one-letter cells or one-cell rows padded under a wide header, to the markdown cap, each in a fresh doc after a
-// warm-up. Import, binding and admission together must stay within IMPORT_BUDGET_MS of workerd CPU, the note landing
-// whole or refused as doc-cap (413), never an error.
-const TABLE_MARKDOWN_BYTES = 2 * 1024 * 1024 - 1024;
+// Table imports through the real DocDO's create: notes that spend the converter's work budget on table cells, dense
+// one-letter cells or one-cell rows padded under a wide header, at 512 KB and at the markdown cap, each in a fresh
+// worker after a warm-up. Import, binding and admission together must stay within IMPORT_BUDGET_MS of workerd CPU, the
+// note landing whole or refused as doc-cap (413), never an error.
+const TABLE_SIZES = [512 * 1024, 2 * 1024 * 1024 - 1024];
 const tableHeader = (cells) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
+const tableRows = (cells, row, bytes) => `${tableHeader(cells)}${row.repeat(Math.floor((bytes - tableHeader(cells).length) / row.length))}`;
 const TABLE_CASES = {
-  'dense one-letter cells, 64 a row': () => {
-    const row = `|${'a|'.repeat(64)}\n`;
-    return `${tableHeader(64)}${row.repeat(Math.floor((TABLE_MARKDOWN_BYTES - tableHeader(64).length) / row.length))}`;
-  },
-  'one-cell rows padded under a 4,096-column header': () =>
-    `${tableHeader(4_096)}${'|b|\n'.repeat(Math.floor((TABLE_MARKDOWN_BYTES - tableHeader(4_096).length) / 4))}`,
+  'dense one-letter cells, 64 a row': (bytes) => tableRows(64, `|${'a|'.repeat(64)}\n`, bytes),
+  'one-cell rows padded under a 4,096-column header': (bytes) => tableRows(4_096, '|b|\n', bytes),
 };
 
-async function measureTableImports(port) {
+async function measureTableImport(port, name, markdown) {
   const server = await startWorker('docdo', port);
-  const results = [];
   try {
-    const warmup = await fetch(`${server.origin}/create?doc=table-warm`, { method: 'POST', body: `${tableHeader(8)}${`|${'a|'.repeat(8)}\n`.repeat(500)}` });
+    const warmup = await fetch(`${server.origin}/create?doc=table-warm`, { method: 'POST', body: tableRows(8, `|${'a|'.repeat(8)}\n`, 8 * 1024) });
     if (!warmup.ok) throw new Error(`warm-up create: HTTP ${warmup.status} ${await warmup.text()}`);
-    for (const [name, body] of Object.entries(TABLE_CASES)) {
-      const markdown = body();
-      const before = workerdStats(server.child.pid);
-      let response;
-      let text;
-      try {
-        response = await fetch(`${server.origin}/create?doc=table-${results.length}`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS * 3) });
-        text = await response.text();
-      } catch (error) {
-        results.push({ name, bytes: markdown.length, failed: failure(error) });
-        continue;
-      }
-      const cpuMs = workerdStats(server.child.pid).cpuMs - before.cpuMs;
-      const answer = (() => {
-        try {
-          return JSON.parse(text);
-        } catch {
-          return null;
-        }
-      })();
-      const ok = response.status === 200 || (response.status === 413 && answer?.error === 'doc-cap');
-      results.push({ name, bytes: markdown.length, cpuMs, status: response.status, work: answer?.work, stateBytes: answer?.stateBytes, ...(ok ? {} : { failed: `HTTP ${response.status} ${text.slice(0, 200)}` }) });
+    const before = workerdStats(server.child.pid);
+    const response = await fetch(`${server.origin}/create?doc=table`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(ADVERSARIAL_TIMEOUT_MS * 3) });
+    const text = await response.text();
+    const cpuMs = workerdStats(server.child.pid).cpuMs - before.cpuMs;
+    let answer = null;
+    try {
+      answer = JSON.parse(text);
+    } catch {
+      // reported below
     }
+    const ok = response.status === 200 || (response.status === 413 && answer?.error === 'doc-cap');
+    return { name, bytes: markdown.length, cpuMs, status: response.status, work: answer?.work, stateBytes: answer?.stateBytes, ...(ok ? {} : { failed: `HTTP ${response.status} ${text.slice(0, 200)}` }) };
   } catch (error) {
-    results.push({ name: 'table imports', failed: String(error.message).split('\n')[0] });
+    return { name, bytes: markdown.length, failed: failure(error) };
   } finally {
     await stop(server.child);
+  }
+}
+
+async function measureTableImports(port) {
+  const results = [];
+  for (const [name, body] of Object.entries(TABLE_CASES)) {
+    for (const bytes of TABLE_SIZES) {
+      results.push(await measureTableImport(port, name, body(bytes)));
+      port += 1;
+    }
   }
   return results;
 }

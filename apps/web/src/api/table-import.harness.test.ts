@@ -1,8 +1,7 @@
 // A markdown import that spends the converter's work budget on table cells (A§12; SP2), through POST /api/docs into
 // the real DocDO in the Node harness: it lands whole or is a JSON 413 doc-cap with no row left behind, never a 500.
-// scripts/measure-converter.mjs holds the same notes to SP2's CPU budget in workerd.
+// scripts/measure-converter.mjs holds the same notes, at the markdown cap, to SP2's CPU budget in workerd.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { exportMarkdown, importMarkdown } from '../../../../packages/sync/src/converter/index.ts';
 import { DocDO } from '../../../../packages/sync/src/doc-do.ts';
 import { Backing, openDoc } from '../../../../packages/sync/test/harness/do-harness.ts';
@@ -43,26 +42,25 @@ const create = (markdown: string) => handleApi(new Request(`${BASE}/api/docs`, {
 }), env);
 const rows = async () => (await d1.db.prepare('SELECT COUNT(*) AS n FROM docs WHERE owner_user_id = ?1').bind(ada.id).first<{ n: number }>())?.n ?? 0;
 
-/** Table rows of `cells` one-letter cells under a header as wide, to just under the markdown cap. */
-function denseTable(cells: number): string {
-  const header = `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
+const header = (cells: number) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
+
+/** `bytes` of rows of `cells` one-letter cells under a header as wide: 256K cells at 512 KB, past the cell budget. */
+function denseTable(cells: number, bytes: number): string {
   const row = `|${'a|'.repeat(cells)}\n`;
-  return `${header}${row.repeat(Math.floor((MARKDOWN_CAP_BYTES - 1024 - header.length) / row.length))}`;
+  return `${header(cells)}${row.repeat(Math.floor(bytes / row.length))}`;
 }
 
-/** One-cell rows under a header of `cells` columns, each padded to the header's width, to just under the cap. */
-function paddedTable(cells: number): string {
-  const header = `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
-  return `${header}${'|b|\n'.repeat(Math.floor((MARKDOWN_CAP_BYTES - 1024 - header.length) / 4))}`;
-}
+/** `count` one-cell rows under a header of `cells` columns, each padded to the header's width. */
+const paddedTable = (cells: number, count: number) => `${header(cells)}${'|b|\n'.repeat(count)}`;
 
 describe('table imports past the work budget', () => {
-  it.each([['dense cells', denseTable(64)], ['narrow rows padded under a wide header', paddedTable(4_096)]])(
-    '%s: lands whole or is a JSON 413 doc-cap with no row, never a 500', { timeout: 300_000 }, async (_, markdown) => {
+  it.each([['dense cells', denseTable(64, 512 * 1024)], ['narrow rows padded under a wide header', paddedTable(4_096, 20_000)]])(
+    '%s: lands whole or is a JSON 413 doc-cap with no row, never a 500', { timeout: 120_000 }, async (_, markdown) => {
       const before = await rows();
+      const started = performance.now();
       const response = await create(markdown);
       const text = await response.clone().text();
-      expect([201, 413], text.slice(0, 500)).toContain(response.status);
+      expect([201, 413], `${Math.round(performance.now() - started)} ms: ${text.slice(0, 500)}`).toContain(response.status);
       if (response.status === 413) {
         expect(response.headers.get('content-type')).toContain('application/json');
         expect(JSON.parse(text)).toEqual({ error: 'doc-cap' });

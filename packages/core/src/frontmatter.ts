@@ -16,12 +16,37 @@ function normalizeDates(value: unknown): unknown {
   return value;
 }
 
+/**
+ * YAML aliases share one parsed node, so a few bytes can name an exponential or cyclic tree. Walks it as the copy below
+ * would, refusing a cycle or more nodes than the text could hold without aliases (as markdown-layers.ts's split does).
+ */
+function assertFrontmatterExpansion(parsed: unknown, yamlLength: number): void {
+  let left = 65_536 + 2 * yamlLength;
+  const path = new Set<object>();
+  const stack: { value: unknown; leave?: boolean }[] = [{ value: parsed }];
+  while (stack.length > 0) {
+    const { value, leave } = stack.pop()!;
+    if (leave) {
+      path.delete(value as object);
+      continue;
+    }
+    left -= 1;
+    if (left < 0) throw new Error('Frontmatter expands past its budget');
+    if (!value || typeof value !== 'object' || value instanceof Date) continue;
+    if (path.has(value)) throw new Error('Frontmatter expands past its budget');
+    path.add(value);
+    stack.push({ value, leave: true });
+    for (const entry of Object.values(value)) stack.push({ value: entry });
+  }
+}
+
 /** Accept both the old fenced storage format and YAML from a file's frontmatter block. */
 function loadFrontmatter(yaml: string): Frontmatter {
   const fenced = /^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/.exec(yaml);
   const parsed: unknown = jsYaml.load(fenced ? fenced[1] ?? '' : yaml, { json: true });
   if (parsed == null) return null;
   if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Frontmatter must be a YAML mapping');
+  assertFrontmatterExpansion(parsed, yaml.length);
   return normalizeDates(parsed) as Frontmatter;
 }
 

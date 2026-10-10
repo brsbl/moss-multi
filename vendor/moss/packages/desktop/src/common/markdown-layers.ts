@@ -27,6 +27,32 @@ function normalizeFrontmatterDates(value: unknown): unknown {
   return normalized;
 }
 
+// moss-multi seam: YAML aliases share one parsed node, so a few bytes can name an exponential or cyclic tree. Walk it
+// as normalizeFrontmatterDates would, refusing a cycle or more nodes than the text could hold without aliases
+// (packages/core/src/frontmatter.ts holds the same bound).
+export const FRONTMATTER_EXPANSION_ERROR = 'Frontmatter expands past its budget';
+
+function expandsWithinBudget(parsed: unknown, yamlLength: number): boolean {
+  let left = 65_536 + 2 * yamlLength;
+  const path = new Set<object>();
+  const stack: { value: unknown; leave?: boolean }[] = [{ value: parsed }];
+  while (stack.length > 0) {
+    const { value, leave } = stack.pop()!;
+    if (leave) {
+      path.delete(value as object);
+      continue;
+    }
+    left -= 1;
+    if (left < 0) return false;
+    if (!value || typeof value !== 'object' || value instanceof Date) continue;
+    if (path.has(value)) return false;
+    path.add(value);
+    stack.push({ value, leave: true });
+    for (const entry of Object.values(value)) stack.push({ value: entry });
+  }
+  return true;
+}
+
 export interface FrontmatterSplitResult {
   data: Record<string, unknown> | null;
   body: string;
@@ -46,6 +72,9 @@ export function splitFrontmatter(raw: string): FrontmatterSplitResult {
 
   try {
     const parsed = jsYaml.load(rawYaml);
+    if (!expandsWithinBudget(parsed, rawYaml.length)) {
+      return { data: null, body, hasFrontmatter: true, rawYaml, error: FRONTMATTER_EXPANSION_ERROR };
+    }
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return {
         data: normalizeFrontmatterDates(parsed) as Record<string, unknown>,
