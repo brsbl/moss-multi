@@ -494,9 +494,9 @@ describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
     expect(bodyState(opened.dobj.document)).toBe(body);
   });
 
-  it('suggest frames count toward the write rate (4420)', async () => {
+  it('suggest frames, the lease included, count toward the write rate (4420)', async () => {
     const original = DocDO.limits;
-    DocDO.limits = { ...original, writeRate: { max: 3, windowMs: 5_000 } };
+    DocDO.limits = { ...original, writeRate: { max: 4, windowMs: 5_000 } };
     try {
       const opened = await seeded();
       const sam = await on(opened, SAM);
