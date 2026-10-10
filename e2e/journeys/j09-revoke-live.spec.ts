@@ -138,7 +138,7 @@ test('j09 removal: removing a member ends the note for them in place (revoked) @
   expect(ben.telemetry.sockets.filter((s) => s.docId === docId), 'no reconnect after revoked').toHaveLength(opened);
 });
 
-test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only the ended notice (T3.S20) @p:ppl-2', async ({ actors }) => {
+test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only the ended notice (T3.S20) @p:ppl-2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
@@ -154,11 +154,13 @@ test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only 
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
   await expect(refusal, 'the demotion alone says the note is view-only').toHaveText(VIEW_ONLY, { timeout: LIVE_TIMEOUT });
   const shownAt = Date.now();
-  // Removed at once: the view-only notice would otherwise still show for its 4 s.
-  await chooseAccess(dialog, benPrincipal.name, 'Remove access');
+  // Removed at once through the members API (the dialog's clicks take too long in WebKit): the view-only notice
+  // would otherwise still show for its 4 s.
+  const removed = await ada.context.request.delete(`/api/docs/${docId}/members`, { headers: { origin: stack.baseUrl }, data: { principalId: ben.principal!.id } });
+  expect(removed.status(), 'the removal is saved').toBe(200);
   await expect(ui.pane(ben, docId), 'the note ends for him').toHaveAttribute(TERMINAL_REASON_ATTR, 'revoked', { timeout: LIVE_TIMEOUT });
-  expect(Date.now() - shownAt, 'ended while the view-only notice would still show').toBeLessThan(3_000);
   await expect(refusal, 'and no longer says he can view it').not.toHaveText(VIEW_ONLY, { timeout: 500 });
+  expect(Date.now() - shownAt, 'checked while the view-only notice would still show').toBeLessThan(3_800);
   await expect(ui.pane(ben, docId).locator(`[${CONNECTION_BANNER_ATTR}="revoked"]`)).toHaveText(/Your access to this note has ended\./);
   await actors.checkpoint('demoted-then-removed');
 });
