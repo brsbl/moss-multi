@@ -157,4 +157,67 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     expect(refused, 'lease minting stopped').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
     expect(minted, 'leases are bounded by the share').toBeLessThan(4_000);
   });
+
+  it('delete and undelete cycles of 1,024 one-character spans do not reopen the share: lease minting still stops at it', { timeout: 120_000 }, async () => {
+    const opened = await start(openDoc(undefined, SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const ed = await on(opened, ED);
+    const from = Y.getState(ed.doc.store, ed.doc.clientID);
+    firstBlock(ed.doc).insert(0, 'y'.repeat(1100));
+    await ed.flush();
+    const targets = Array.from({ length: SUGGEST_LIMITS.partSpans }, (_, i) => ({ client: ed.doc.clientID, clock: from + i, len: 1 }));
+    const sam = await on(opened, SAM);
+    const leased = await send(sam, { t: 'suggest-lease' });
+    expect(leased.t).toBe('suggest-leased');
+    const record = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0].record;
+    for (let i = 0; i < 12; i += 1) {
+      expect(await send(sam, { t: 'suggest-delete', record, part: { id: `d${i}`, targets } }), `delete ${i}`).toMatchObject({ t: 'suggest-ack' });
+      expect(await send(sam, { t: 'suggest-undelete', record, partId: `d${i}` }), `undelete ${i}`).toMatchObject({ t: 'suggest-ack' });
+      await opened.dobj.onSave();
+    }
+    let refused: SuggestReply | null = null;
+    let minted = 0;
+    for (let i = 0; i < 4_000 && !refused; i += 1) {
+      const again = await on(opened, SAM);
+      const reply = await send(again, { t: 'suggest-lease' });
+      if (reply.t === 'suggest-leased') minted += reply.leases.length;
+      else refused = reply;
+      await again.drop();
+    }
+    expect(refused, 'lease minting stopped').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+    // A lease row is charged at least 130 bytes against a share of 0.4 of the cap.
+    expect(minted, 'leases are bounded by the share').toBeLessThanOrEqual(Math.floor((CAP * SUGGEST_LIMITS.stateShare) / 130));
+  });
+
+  it('a burst of suggest frames in flight on a full note is refused for room without the refusal cooldown', { timeout: 60_000 }, async () => {
+    const opened = await start(openDoc(undefined, SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    const leased = await send(sam, { t: 'suggest-lease' });
+    expect(leased.t).toBe('suggest-leased');
+    const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+    // Editors fill the note past the reserve kept for them.
+    const ed = await on(opened, ED);
+    firstBlock(ed.doc).insert(0, 'f'.repeat(Math.ceil(CAP * (SUGGEST_LIMITS.reserveShare + 0.03))));
+    await ed.flush();
+    expect(ed.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+    // Fast typing: three keystrokes in flight, each an op and the merge into the active record that follows it.
+    const before = sam.events.length;
+    for (let i = 0; i < 3; i += 1) {
+      await sam.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'suggest-ops', record: grant.record, update: bytesToBase64(tiny(opened.dobj.document, grant.client, false)) })}`);
+      await sam.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'suggest-merge', into: grant.record, from: 'older-record' })}`);
+    }
+    // The rebuilt fork asks for a lease, twice (the mode toggled).
+    await sam.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'suggest-lease' })}`);
+    await sam.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'suggest-lease' })}`);
+    await sam.pump();
+    expect(sam.closed, 'the suggester stays connected').toBeNull();
+    const replies = sam.events.slice(before).filter(isReply);
+    expect(replies.map((reply) => reply.t === 'suggest-refused' && reply.reason), 'every frame refused for room').toEqual(Array(8).fill('doc-cap'));
+    // The editor still writes.
+    firstBlock(ed.doc).insert(0, 'Ada adds a line.');
+    await ed.flush();
+    expect(ed.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+    expect(firstBlock(opened.dobj.document).toString()).toContain('Ada adds a line.');
+  });
 });
