@@ -103,6 +103,6 @@ describe('T5.S5 unbound lease reservations are bounded per principal @p:mean-2',
     ).map((row) => row.detail).join('\n');
     expect(plan).toContain('USING COVERING INDEX suggest_leases_live');
     const index = opened.backing.query<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'suggest_leases_live'")[0]?.sql ?? '';
-    expect(index.replace(/\s+/g, ' ')).toMatch(/\(principal_id, used_at\) WHERE record_id IS NULL AND expired = 0/);
+    expect(index.replace(/\s+/g, ' ')).toMatch(/\(principal_id, used_at[^)]*\) WHERE record_id IS NULL AND expired = 0/);
   });
 });

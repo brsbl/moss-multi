@@ -139,8 +139,9 @@ export class SqlLeases implements LeaseStore {
       connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, clocks TEXT NOT NULL,
       spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL, fork_id TEXT)`);
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_principal ON suggest_leases (principal_id, spent, expired)');
-    // live() and the reservation reads touch only unbound rows (live ones for live()), never a principal's history.
-    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_live ON suggest_leases (principal_id, used_at) WHERE record_id IS NULL AND expired = 0');
+    // live() and the reservation reads touch only unbound rows (live ones for live()), never a principal's history;
+    // SQLite counts a partial index as covering only when it holds every column the query names.
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_live ON suggest_leases (principal_id, used_at, record_id, expired) WHERE record_id IS NULL AND expired = 0');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_unbound ON suggest_leases (principal_id, used_at) WHERE record_id IS NULL');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_record ON suggest_leases (record_id)');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_connection ON suggest_leases (connection_id)');
