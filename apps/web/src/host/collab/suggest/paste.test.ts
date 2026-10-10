@@ -172,8 +172,8 @@ function noticed(): string {
 it('an admissible large paste lands in one op as one record, and its undo and its redo are one op each', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
-    // Many batches' worth in Edit mode (a paragraph is some 300 bytes of ops), under the record cap.
-    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    // Many batches' worth in Edit mode (a paragraph is some 300 bytes of ops), under the record cap with its redo.
+    const lines = Array.from({ length: 150 }, (_, i) => `para <${i}>`);
     const before = pane.fork.sent;
     pane.paste(lines);
     vi.runAllTimers();
@@ -183,7 +183,7 @@ it('an admissible large paste lands in one op as one record, and its undo and it
     const records = openRecords(pane.live, SUGGESTER.id);
     expect(records.map((record) => record.ops.length), 'one record holds it').toEqual([1]);
     expect(pane.text()).toContain('para <0>');
-    expect(pane.text()).toContain('para <299>');
+    expect(pane.text()).toContain('para <149>');
 
     pane.undo();
     vi.runAllTimers();
@@ -194,7 +194,7 @@ it('an admissible large paste lands in one op as one record, and its undo and it
     vi.runAllTimers();
     expect(pane.fork.sent - before, 'one redo, one op').toBe(3);
     expect(pane.text(), 'one redo brings all of it back').toContain('para <0>');
-    expect(pane.text()).toContain('para <299>');
+    expect(pane.text()).toContain('para <149>');
     pane.pump();
     expect(pane.fork.closed, 'nothing refused').toBe(false);
   } finally {
@@ -205,7 +205,7 @@ it('an admissible large paste lands in one op as one record, and its undo and it
 it('a refusal of the paste offers back every pasted paragraph', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
-    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    const lines = Array.from({ length: 150 }, (_, i) => `para <${i}>`);
     pane.paste(lines);
     vi.runAllTimers();
     // The DocDO refuses it (record-cap, ops-cap: any reason).
@@ -260,14 +260,14 @@ it('an admissible paste over a selection strikes it and lands, as one suggestion
   const pane = suggesting();
   try {
     pane.select('Intro line', 6, 10);
-    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    const lines = Array.from({ length: 150 }, (_, i) => `para <${i}>`);
     pane.paste(lines);
     vi.runAllTimers();
     pane.pump();
     expect(pane.fork.closed, 'admitted').toBe(false);
     expect(pane.struck(), 'the selection is struck').toBe(4);
     expect(pane.text()).toContain('para <0>');
-    expect(pane.text()).toContain('para <299>');
+    expect(pane.text()).toContain('para <149>');
     expect(openRecords(pane.live, SUGGESTER.id), 'one record holds the strike and the paste').toHaveLength(1);
   } finally {
     pane.dispose();
@@ -310,7 +310,7 @@ it('a paste that would take the open record it extends past the record cap is re
 it('a refusal of the redo of a paste offers back every redone paragraph', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
-    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    const lines = Array.from({ length: 150 }, (_, i) => `para <${i}>`);
     pane.paste(lines);
     vi.runAllTimers();
     pane.pump();
@@ -387,12 +387,12 @@ it('a paste over a selection of another author\'s text strikes it and lands in o
   const pane = suggesting();
   try {
     pane.select('Intro line', 6, 10);
-    const lines = Array.from({ length: 300 }, (_, i) => `para <${i}>`);
+    const lines = Array.from({ length: 150 }, (_, i) => `para <${i}>`);
     pane.paste(lines);
     vi.runAllTimers();
     pane.pump();
     expect(pane.struck(), 'the selection is struck').toBe(4);
-    expect(pane.text()).toContain('para <299>');
+    expect(pane.text()).toContain('para <149>');
 
     pane.undo();
     vi.runAllTimers();
@@ -403,7 +403,7 @@ it('a paste over a selection of another author\'s text strikes it and lands in o
     pane.redo();
     vi.runAllTimers();
     pane.pump();
-    expect(pane.text(), 'one redo brings the paste back').toContain('para <299>');
+    expect(pane.text(), 'one redo brings the paste back').toContain('para <149>');
     expect(pane.struck(), 'and the strike').toBe(4);
     expect(pane.fork.closed, 'nothing refused').toBe(false);
   } finally {
@@ -532,7 +532,7 @@ it('a paste that fits the note beside the payloads the fork holds, but not besid
     pane.select('Intro line', 6, 10);
     const text = pane.text();
     const before = pane.requests();
-    pane.paste(Array.from({ length: 300 }, (_, i) => `para <${i}>`));
+    pane.paste(Array.from({ length: 150 }, (_, i) => `para <${i}>`));
     expect(noticed(), 'refused visibly').not.toBe('');
     expect(pane.requests(), 'nothing was sent, no strike either').toBe(before);
     expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
