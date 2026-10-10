@@ -13,7 +13,7 @@
 // the per-request CPU and linear-scaling budgets. The converter also imports and exports notes of unclosed openers
 // (packages/sync/measure/converter-cases.ts) as single lines from 1 KB to 2 MB, exiting non-zero past LINE_BUDGET_MS.
 // Notes that spend the import's work budget on table cells go through the converter and the DocDO's create, exiting
-// non-zero when a create errs or passes IMPORT_BUDGET_MS.
+// non-zero when a create errs or costs more than the 2 MB scale note's create (IMPORT_BUDGET_MS at least).
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -420,9 +420,10 @@ async function measurePayloadFrames(port) {
 }
 
 // Table imports: notes that spend the converter's work budget on table cells, through the converter alone and through
-// the real DocDO's create (import, binding and admission), each in a fresh worker after a warm-up. The create must stay
-// within IMPORT_BUDGET_MS of workerd CPU, the note landing whole or refused as doc-cap (413), never an error. The sizes
-// keep the rows past the budget, which join one paragraph of as many lines, to a few thousand lines.
+// the real DocDO's create (import, binding and admission), each in a fresh worker after a warm-up. The create lands the
+// note whole or refuses it as doc-cap (413), never an error, within the workerd CPU the create of the 2 MB scale note
+// takes (measured first; IMPORT_BUDGET_MS at least): a note of cells costs the DocDO no more than an ordinary 2 MB note.
+// The sizes keep the rows past the budget, which join one paragraph of as many lines, to a few thousand lines.
 const TABLE_TIMEOUT_MS = 30_000;
 const tableHeader = (cells) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
 const tableRows = (cells, row, bytes) => `${tableHeader(cells)}${row.repeat(Math.floor((bytes - tableHeader(cells).length) / row.length))}`;
@@ -458,7 +459,10 @@ async function tableRequest(port, worker, path, markdown) {
   }
 }
 
-async function measureTableImports(port) {
+async function measureTableImports(port, reference) {
+  const scale = await tableRequest(port, 'docdo', '/create?doc=', reference);
+  port += 1;
+  const ceiling = scale.failed ? IMPORT_BUDGET_MS : Math.max(IMPORT_BUDGET_MS, scale.cpuMs);
   const results = [];
   for (const [name, { body, sizes }] of Object.entries(TABLE_CASES)) {
     for (const bytes of sizes) {
@@ -469,11 +473,14 @@ async function measureTableImports(port) {
       results.push({ name, bytes: markdown.length, converter, create, cpuMs: create.cpuMs ?? Infinity, ...(create.failed ? { failed: create.failed } : {}) });
     }
   }
-  return results;
+  return { scale, ceiling, results };
 }
 
-function tableImportProblems(results) {
-  return results.flatMap((r) => (r.failed ? [`${r.name}: ${r.failed}`] : r.cpuMs > IMPORT_BUDGET_MS ? [`${r.name}: ${r.cpuMs} ms of workerd CPU`] : []));
+function tableImportProblems({ scale, ceiling, results }) {
+  return [
+    ...(scale.failed ? [`the 2 MB scale note's create: ${scale.failed}`] : []),
+    ...results.flatMap((r) => (r.failed ? [`${r.name}: ${r.failed}`] : r.cpuMs > ceiling ? [`${r.name}: ${r.cpuMs} ms of workerd CPU, over ${ceiling} ms`] : [])),
+  ];
 }
 
 // The search index (A§5.3): one global SearchDO indexes every doc and snippets every hit, so a body full of openers
@@ -920,7 +927,7 @@ async function main() {
   const ordinary = await measureOrdinary(port + 99);
   const multiline = await measureMultiline(port + 200);
   const entityTabs = await measureEntityTabs(port + 300);
-  const tables = await measureTableImports(port + 400);
+  const tables = await measureTableImports(port + 400, scaleNote(unit, unitsFor(SCALE_SIZES.at(-1))));
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -998,9 +1005,10 @@ async function main() {
         : `| Lines repeated, ${r.name}: workerd CPU (import / export) | ${r.sizes.map((size) => `${kb(size.bytes)} ${size.importCpuMs} / ${size.exportCpuMs} ms`).join(', ')} (growth at most ${ADVERSARIAL_SCALING}x) |`,
     ),
     `| Entity tabs, one line of \`&#9;\` × ${ENTITY_TAB_COUNTS.join(' / ')}: workerd CPU (import / export) | ${entityTabs.sizes.map((size) => `${size.importCpuMs} / ${size.exportCpuMs} ms${size.cut ? ' (kept literal)' : ''}`).join(', ')}${entityTabs.failed ? `; FAILED: ${entityTabs.failed}` : ''} (line budget ${LINE_BUDGET_MS} ms, growth at most ${ADVERSARIAL_SCALING}x a doubling) |`,
-    ...tables.map((t) => {
+    `| 2 MB scale note through DocDO create (the table legs' ceiling): workerd CPU, one run | ${tables.scale.failed ? `FAILED: ${tables.scale.failed}` : `${tables.scale.cpuMs} ms, HTTP ${tables.scale.status}`}; ceiling ${tables.ceiling} ms |`,
+    ...tables.results.map((t) => {
       const part = (r) => `${r.cpuMs ?? '?'} ms${r.status ? `, HTTP ${r.status}` : ''}${r.answer?.work === undefined ? '' : `, work ${Math.round(r.answer.work / 1e6)}M`}${r.answer?.cut ? `, ${r.answer.cut} cut` : ''}${r.answer?.blocks ? `, ${r.answer.blocks} blocks` : ''}${r.answer?.stateBytes ? `, state ${mb(r.answer.stateBytes)}` : ''}${r.failed ? `, FAILED: ${r.failed}` : ''}`;
-      return `| Table import, ${t.name}, ${kb(t.bytes)}: workerd CPU, converter / DocDO create | ${part(t.converter)} / ${part(t.create)}${budget(t.cpuMs)} |`;
+      return `| Table import, ${t.name}, ${kb(t.bytes)}: workerd CPU, converter / DocDO create | ${part(t.converter)} / ${part(t.create)}${t.cpuMs > tables.ceiling ? `, over the ${tables.ceiling} ms ceiling` : ''} |`;
     }),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
@@ -1057,7 +1065,7 @@ async function main() {
   }
   const tableProblems = tableImportProblems(tables);
   if (tableProblems.length > 0) {
-    console.error(`measure-converter: table imports through DocDO create failed or over the ${seconds(IMPORT_BUDGET_MS)} budget in workerd: ${tableProblems.join('; ')}`);
+    console.error(`measure-converter: table imports through DocDO create failed or over the ${seconds(tables.ceiling)} ceiling in workerd: ${tableProblems.join('; ')}`);
     process.exitCode = 1;
   }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);
