@@ -34,7 +34,7 @@ export const WRITE_RATE = { max: 300, windowMs: 5_000 } as const;
  * at once, refilled over `windowMs`; each answer costs its share of the stored state. Past it a socket's latest step 1
  * per doc waits for the refill and replaces any it already has waiting, so a reconnect is late, never unanswered.
  */
-export const ANSWER_BUDGET = { docs: 4, windowMs: 10_000 } as const;
+export const ANSWER_BUDGET = { docs: 8, windowMs: 20_000 } as const;
 
 export const AWARENESS_MAX_BYTES = 8 * 1024;
 
