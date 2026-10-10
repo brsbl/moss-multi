@@ -50,6 +50,10 @@ on:
         description: 'Delay every loopback packet by this many ms (tc netem), so a rehearsal meets staging-like round trips; 0 is none'
         type: number
         default: 0
+      latency_jitter_ms:
+        description: 'With latency_ms: vary each delay by up to this many ms'
+        type: number
+        default: 0
 
 permissions:
   contents: read
@@ -332,9 +336,10 @@ jobs:
         if: github.event.inputs.latency_ms && github.event.inputs.latency_ms != '0'
         env:
           LATENCY: ${{ github.event.inputs.latency_ms }}
+          JITTER: ${{ github.event.inputs.latency_jitter_ms || '0' }}
         run: |
           command -v tc > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends iproute2 > /dev/null)
-          tc qdisc add dev lo root netem delay "${LATENCY}ms"
+          tc qdisc add dev lo root netem delay "${LATENCY}ms" "${JITTER}ms"
           tc qdisc show dev lo
       - name: The staging suite's state (per-run principals, a request budget)
         if: env.STAGING_SUITE == '1'
