@@ -282,6 +282,25 @@ describe('T5.1 the refusal copy-back @p:mean-2 @p:tech-7 @p:R17', () => {
   });
 });
 
+describe('T5.S4 a note with no room for suggestions @p:mean-2', () => {
+  it('a first lease refused for want of room still fills F, read-only, and sends nothing', () => {
+    const live = seededBody();
+    const full = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), stateBytes: () => STATE_CAP_BYTES });
+    const link = wire(live, 'c1', full);
+    const { fork, events, dispose } = mount(live, link);
+    try {
+      expect(link.replies[0], 'the lease is refused for room').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+      expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(['refused', 'ready']));
+      expect(fork.closed, 'input stays closed').toBe(true);
+      expect(fork.ready, 'F is filled').toBe(true);
+      expect(exported(fork.doc), 'F holds the body').toBe(exported(live));
+      expect(fork.sent).toBe(0);
+    } finally {
+      dispose();
+    }
+  });
+});
+
 describe('T5.1 copy-back, reconnect and undelete @p:mean-2 @p:tech-7 @p:R17', () => {
   const refusalsOf = (events: ForkEvent[]) => events.filter((event): event is Extract<ForkEvent, { type: 'refused' }> => event.type === 'refused');
   const catchUp = (body: Y.Doc, live: Y.Doc) => Y.applyUpdate(body, Y.encodeStateAsUpdate(live, Y.encodeStateVector(body)));

@@ -797,11 +797,12 @@ export class SuggestFork {
 
   /**
    * F: B, then the author's valid open records, then forwarding starts. Payloads those records edit are copied from B
-   * first; while one is still arriving, F waits for it.
+   * first; while one is still arriving, F waits for it. A fork closed before its first lease fills F all the same, to
+   * show read-only.
    */
   #start(): void {
     const active = this.#leases[0];
-    if (!active || this.#ready || this.#disposed) return;
+    if ((!active && !this.#closed) || this.#ready || this.#disposed) return;
     const own = openRecords(this.body, this.options.me);
     let named: Map<string, unknown> | null = null;
     const missing = own.flatMap(payloadIdsOf).filter((id) => {
@@ -814,7 +815,7 @@ export class SuggestFork {
     }
     this.#stopArrivals?.();
     this.#stopArrivals = null;
-    this.#setClient(active.client);
+    if (active) this.#setClient(active.client);
     Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(this.body), SHIM_BODY_APPLY);
     const built = new Composite(this.body, { author: this.options.me, check: this.options.check }).build();
     destroyView(built);
@@ -1213,5 +1214,7 @@ export class SuggestFork {
     const blocks = touchedBlocks(this.doc, ops, spans);
     const unsaved = this.options.exportBlocks?.(blocks) ?? blocks.map((block) => blockText(this.doc, block));
     this.#emit({ type: 'refused', reason, unsaved: unsaved.filter((text) => text.trim().length > 0) });
+    // Refused before its first lease (a note with no room): F still shows the note, read-only.
+    if (!this.#ready) this.#start();
   }
 }

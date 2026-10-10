@@ -12,6 +12,7 @@ import {
   BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
   SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
+import type { SuggestRefusal } from '@moss-multi/protocol/suggest';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
@@ -133,6 +134,9 @@ function dropUndo(editor: LexicalEditor | null, clients: number[]): void {
 const allows = (mode: EditMode, role: Role | null): boolean =>
   role !== null && (mode === 'review' || (mode === 'edit' ? role !== 'suggester' : can(role, 'suggest')));
 
+/** Refusals that mean the note has no room for more suggestions (T5.S4): retrying in a new F would be refused too. */
+const NO_SUGGESTION_ROOM: ReadonlySet<SuggestRefusal> = new Set<SuggestRefusal>(['doc-cap', 'ops-cap']);
+
 class PaneBinding implements SuggestPane {
   #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };
   readonly #listeners = new Set<() => void>();
@@ -147,6 +151,8 @@ class PaneBinding implements SuggestPane {
   #mountReady = true;
   /** Suggest input closed by a refusal until F is rebuilt. */
   #inputClosed = false;
+  /** The DocDO refused for want of room for suggestions (T5.S4): Suggest input stays closed until the mode changes. */
+  #noRoom = false;
   #reviewFallback = false;
   /** A remount is waiting for acks or underway: a mode switch, a rebuilt F or C. */
   #switching = false;
@@ -230,6 +236,7 @@ class PaneBinding implements SuggestPane {
     const target = modeFor(this.docId, this.#role);
     if (target === this.#target) return;
     this.#target = target;
+    this.#noRoom = false;
     if (!this.#session && !this.#switching) {
       this.#mode = target;
       this.set({ mode: target });
@@ -268,7 +275,7 @@ class PaneBinding implements SuggestPane {
    */
   mountFor(session: DocSession): { doc: Doc; provider: Provider } {
     this.#mount = null;
-    this.#inputClosed = false;
+    this.#inputClosed = this.#noRoom;
     this.#mountReady = this.#mode === 'edit';
     if (this.#mode === 'edit') return { doc: session.doc, provider: session.provider as unknown as Provider };
     if (this.#mode === 'suggest') {
@@ -280,14 +287,19 @@ class PaneBinding implements SuggestPane {
           this.#apply(session.state);
           this.#mountChanged();
         },
-        refused: (unsaved) => {
-          // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight.
+        refused: (unsaved, reason) => {
+          // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
+          // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
+          // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more.
+          const full = NO_SUGGESTION_ROOM.has(reason);
+          const again = full && (this.#noRoom || !this.#mountReady);
+          if (full) this.#noRoom = true;
           this.#inputClosed = true;
           this.#editor?.setEditable(false);
-          if (unsaved.length) offerUnsaved(this.docId, unsaved);
+          offerUnsaved(this.docId, unsaved, full);
           this.#apply(session.state);
           this.#mountChanged();
-          this.#remount();
+          if (!again) this.#remount();
         },
         rebuild: () => this.#remount(),
         closed: (event) => dropUndo(this.#editor, event.clients),
@@ -295,9 +307,7 @@ class PaneBinding implements SuggestPane {
       });
       mount.editor = this.#editor;
       // A pane letting go with suggestions unanswered leaves the mount delivering them (A§10.1).
-      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved) => {
-        if (unsaved.length) offerUnsaved(this.docId, unsaved);
-      }));
+      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason))));
       this.#mount = mount;
       return { doc: mount.doc, provider: mount.provider as unknown as Provider };
     }

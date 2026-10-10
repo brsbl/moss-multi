@@ -124,7 +124,8 @@ export function clientAddress(request: Request): string {
 /**
  * The bell's rows for a new live suggestion (PRODUCT: the inbox notifies on suggestion): one `suggestion` row for the
  * doc's owner and each person granted editor or owner on it, a folder above it or its vault, each re-checked against
- * their live access, never the author and never an agent. A failure here loses only the notices, never the suggestion.
+ * their live access, never the author and never an agent, coalesced per author and note while unread. A failure here
+ * loses only the notices, never the suggestion.
  */
 export async function notifySuggestion(env: Pick<InvitesEnv, 'DB' | 'PrincipalDO'>, notice: { docId: string; author: string; record: string }): Promise<void> {
   try {
@@ -150,8 +151,15 @@ export async function notifySuggestion(env: Pick<InvitesEnv, 'DB' | 'PrincipalDO
     if (!recipients.length) return;
     const payload = JSON.stringify({ targetType: 'doc', targetId: notice.docId, by: notice.author, suggestionId: notice.record });
     const now = Date.now();
-    await env.DB.batch(recipients.map((id) => env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
-      VALUES (?1, ?2, 'suggestion', ?3, ?4)`).bind(crypto.randomUUID(), id, payload, now)));
+    // One unread row per reader, note and author: a later record of the author's refreshes it rather than adding one.
+    const same = `user_id = ?1 AND type = 'suggestion' AND read_at IS NULL
+      AND json_extract(payload_json, '$.targetId') = ?2 AND json_extract(payload_json, '$.by') = ?3`;
+    await env.DB.batch(recipients.flatMap((id) => [
+      env.DB.prepare(`UPDATE notifications SET payload_json = ?4, created_at = ?5 WHERE ${same}`).bind(id, notice.docId, notice.author, payload, now),
+      env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
+        SELECT ?6, ?1, 'suggestion', ?4, ?5 WHERE NOT EXISTS (SELECT 1 FROM notifications WHERE ${same})`)
+        .bind(id, notice.docId, notice.author, payload, now, crypto.randomUUID()),
+    ]));
     for (const id of recipients) notify(env as InvitesEnv, id, 'notifications');
   } catch (error) {
     console.error('suggestion notifications failed', error);

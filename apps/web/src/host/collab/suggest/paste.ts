@@ -2,7 +2,7 @@
 // large paste's batches (large-paste.ts). Before it is dispatched (routing.ts) it is admitted whole against every
 // suggest limit by a bound no paste of the clipboard exceeds, or refused with nothing changed and the selection kept.
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import type { IdSpan, SuggestRefusal } from '@moss-multi/protocol/suggest';
+import { SUGGEST_LIMITS, type IdSpan, type SuggestRefusal } from '@moss-multi/protocol/suggest';
 import { isPayloadType } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
 import { pendingPartBytes } from '@moss-multi/sync/suggest/client';
@@ -139,13 +139,13 @@ const REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
  * (the redo re-creates the paste), the rest of the block it lands in once for the paste and once more, as restored
  * copies (stepBytes), for each of its undo and its redo, the strike twice (the redo strikes again), and the own text once (the undo restores it). It
  * counts them against the record cap with what the record it lands in already holds (client.ts admit, which finds
- * that record as the DocDO does), the open records' ops, the open-suggestion cap, and the note's cap with the payloads
- * the DocDO counts for the body. Every undo and redo is admitted again on its own (admitStep).
+ * that record as the DocDO does), the open records' ops, the open-suggestion cap, and the share of the note's cap
+ * suggestions may fill (the rest is kept for edits) with the payloads the DocDO counts for the body. Every undo and redo is admitted again on its own (admitStep).
  */
 export function $admitPaste(fork: ForkView, bound: number, targets: IdSpan[], owned = 0): string | null {
   const selection = $getSelection();
   const adds = 2 * bound + (1 + 2 * PER_BYTE) * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0) + owned;
-  if (noteBytes(fork.body) + adds > STATE_CAP_BYTES * 0.97) return WRITE_REFUSED['doc-cap'];
+  if (noteBytes(fork.body) + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return WRITE_REFUSED['doc-cap'];
   // The blocks it spans: an older open record of the author's it builds on merges into its record.
   const tops = $isRangeSelection(selection)
     ? [selection.anchor, selection.focus].map((point) => point.getNode().getTopLevelElement()?.getIndexWithinParent() ?? -1)
@@ -275,7 +275,7 @@ export function admitStep(
   const adds = stepBytes(steps) + extra;
   if (adds === 0 && targets.length === 0) return null;
   const strike = targets.length ? pendingPartBytes(targets) : 0;
-  if (noteBytes(fork.body) + adds + strike > STATE_CAP_BYTES * 0.97) return stepRefused(kind, 'doc-cap');
+  if (noteBytes(fork.body) + adds + strike > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return stepRefused(kind, 'doc-cap');
   const refusal = fork.admit(adds, targets, stepBlocks(root, steps));
   return refusal ? stepRefused(kind, refusal) : null;
 }

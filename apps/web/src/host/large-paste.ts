@@ -127,12 +127,13 @@ export function noteBytes(doc: Y.Doc): number {
 const FRAME_SLACK = 64;
 
 /**
- * Below the cap with a little headroom for what the estimate leaves out; every frame within the frame cap. The figures
- * are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart from a bug.
+ * Below `share` of the cap (a little headroom for what the estimate leaves out; a suggestion stops at the reserve kept
+ * for edits); every frame within the frame cap. The figures are a User Timing mark (`moss-paste-admission`), so a
+ * refusal can be told apart from a bug.
  */
-function fits(editor: LexicalEditor, bytes: number, largestFrame: number): boolean {
+function fits(editor: LexicalEditor, bytes: number, largestFrame: number, share = 0.97): boolean {
   const held = heldBytes(editor);
-  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= STATE_CAP_BYTES * 0.97);
+  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= STATE_CAP_BYTES * share);
   performance.mark('moss-paste-admission', { detail: { adds: bytes, held, largestFrame, fit } });
   return fit;
 }
