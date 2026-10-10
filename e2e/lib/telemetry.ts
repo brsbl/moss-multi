@@ -58,8 +58,9 @@ export class Telemetry {
             // instanceof as they are.
             const Native = WebSocket;
             window.WebSocket = new Proxy(Native, {
-              construct(target, args: ConstructorParameters<typeof WebSocket>) {
-                const socket = Reflect.construct(target, args) as WebSocket;
+              construct(target, args: ConstructorParameters<typeof WebSocket>, newTarget: (new (...a: ConstructorParameters<typeof WebSocket>) => WebSocket)) {
+                // newTarget keeps a subclass of this class (a journey's recorder) its own methods.
+                const socket = Reflect.construct(target, args, newTarget) as WebSocket;
                 try {
                   if (new URL(socket.url).pathname.startsWith(path)) {
                     socket.addEventListener('close', (event) => {
