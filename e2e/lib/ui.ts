@@ -98,9 +98,15 @@ export async function waitOpen(actor: Actor, docId: string, binding: 'live' | 'r
   await expect(body(actor, docId), `${actor.label}: the body binds ${binding}`).toHaveAttribute(BODY_BINDING_ATTR, binding, { timeout: BIND_TIMEOUT });
 }
 
-/** The server acknowledged every local write. */
+/**
+ * The server acknowledged every local write. Polled as an attribute read, not a locator assertion: each failed poll of
+ * one renders the element's whole accessibility tree in the page, which held the tab for seconds in a note of 40,000
+ * paragraphs while its acks came in (T3.S6).
+ */
 export async function waitAcked(actor: Actor, docId: string, timeout = 10_000): Promise<void> {
-  await expect(pane(actor, docId), `${actor.label}: the DocDO acks every edit`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout });
+  await expect.poll(() => pane(actor, docId).getAttribute(SYNC_UNACKED_ATTR, { timeout: 5_000 }).catch(() => null), {
+    message: `${actor.label}: the DocDO acks every edit`, timeout, intervals: [100, 250, 500, 1_000],
+  }).toBe('0');
 }
 
 /** This document's doc sockets for the note. */
@@ -188,12 +194,13 @@ export const pathOf = (url: string): string => {
   return `${parsed.pathname}${parsed.search}`;
 };
 
-/** Adds `email` at `access` in an open Share dialog (note, folder or vault); the dialog stays open. */
-export async function shareInDialog(dialog: Locator, email: string, access: Access): Promise<void> {
-  await dialog.getByLabel('Email', { exact: true }).fill(email);
+/** Adds `email` (or an agent id, T3.6) at `access` in an open Share dialog (note, folder or vault); the dialog stays
+ * open. */
+export async function shareInDialog(dialog: Locator, email: string, access: Access, confirmation = `Shared with ${email}.`): Promise<void> {
+  await dialog.getByLabel('Email or agent ID', { exact: true }).fill(email);
   await dialog.getByRole('radiogroup', { name: 'Access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
   await dialog.getByRole('button', { name: 'Share', exact: true }).click();
-  await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(`Shared with ${email}.`);
+  await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(confirmation);
 }
 
 /** Shares the note with `person` at `access` through the dialog, then waits for their row (by email: it stays a

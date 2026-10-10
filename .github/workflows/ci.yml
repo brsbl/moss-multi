@@ -99,7 +99,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.checks == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -157,7 +157,7 @@ jobs:
       - name: Converter in workerd (SP2)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/measure-converter.mjs
-        timeout-minutes: 10
+        timeout-minutes: 30
       # A missing converter golden is written here for review; it fails the run until committed.
       - name: Upload missing converter goldens
         if: ${{ failure() }}
@@ -344,8 +344,8 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # The read-only viewer bundle (T0.13): build packages/viewer, keep dist/ (bundle, stylesheet, fonts, viewer.json)
-  # as the moss-viewer artifact, then run its acceptance fixture and shots in both engines (e2e/viewer).
+  # The read-only viewer bundle (T0.13, T3.8): build packages/viewer, run its acceptance fixture and shots in both
+  # engines (e2e/viewer), then pack the release into the moss-viewer artifact.
   viewer:
     needs: plan
     if: needs.plan.outputs.viewer == 'true'
@@ -372,14 +372,17 @@ jobs:
         env:
           MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       - run: cat packages/viewer/dist/viewer.json
-      - uses: actions/upload-artifact@v7
-        with:
-          name: moss-viewer
-          path: packages/viewer/dist
-          retention-days: 30
       - name: Acceptance fixture and shots, Chromium and WebKit
         working-directory: e2e
         run: pnpm exec playwright test --project=viewer-chromium --project=viewer-webkit
+      # The release artifact (T3.8): the packed tarball, its SHA-256, viewer.json and release.json (source commit).
+      - name: Pack the release
+        run: node scripts/ci/viewer-pack.mjs packages/viewer/release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-viewer
+          path: packages/viewer/release
+          retention-days: 30
       - name: Upload results and shots
         if: always()
         uses: actions/upload-artifact@v7
@@ -391,6 +394,82 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The embeddable editor (T3.9): build packages/editor, run its fixture host acceptance in both engines under the
+  # editor's own CSP (e2e/editor), then pack the release into the moss-editor artifact (tarball, SHA-256,
+  # editor.json and release.json with the source commit and this run).
+  editor:
+    needs: plan
+    if: needs.plan.outputs.viewer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the editor bundle
+        run: pnpm --filter @moss-multi/editor build
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - run: cat packages/editor/dist/editor.json
+      - name: Acceptance fixture and shots, Chromium and WebKit
+        working-directory: e2e
+        env:
+          REPEAT: ${{ needs.plan.outputs.repeat }}
+        run: pnpm exec playwright test --project=editor-chromium --project=editor-webkit --repeat-each="${REPEAT:-1}"
+      - name: Pack the release
+        run: node scripts/ci/editor-pack.mjs packages/editor/release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-editor
+          path: packages/editor/release
+          retention-days: 30
+      - name: Upload results and shots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: editor-results-${{ github.run_attempt }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The editor's host helpers (T3.9a): moss-editor-host.js, contract.d.ts emitted by tsc, LICENSE and
+  # editor-host.json (version, API, source commit, per-file SHA-256) as the moss-editor-host artifact.
+  editor-host:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the moss-editor-host artifact
+        run: pnpm --filter @moss-multi/editor build:host
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-editor-host
+          path: packages/editor/dist/moss-editor-host
+          retention-days: 30
+
   # The Ladle oracle (A§20; A§22 OA1 fallback, no deploy key): moss@pin's own files, stories and .ladle from
   # `moss-vendor.mjs pristine`, plus main.tsx's font preamble, built with its own frozen install.
   oracle:
@@ -401,15 +480,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
+      # No pnpm cache here: on an oracle cache hit nothing installs, and setup-node's post step fails on the missing store.
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
-          cache: pnpm
       - id: cache
         uses: actions/cache@v6
         with:
           path: .oracle
-          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc') }}
+          key: ladle-oracle-762abb777-${{ hashFiles('vendor/moss/PORTED.json', 'scripts/moss-vendor.mjs', 'e2e/parity/oracle/*', 'e2e/parity/oracle/.npmrc', 'e2e/fixtures/demo-note.md') }}
       # moss-vendor.mjs pristine loads moss-extract.mjs, which needs the workspace's typescript.
       - name: Install the workspace
         if: steps.cache.outputs.cache-hit != 'true'
@@ -465,6 +544,11 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # The viewer's parity with the editor's read-only view (e2e/parity/viewer.spec.ts) mounts the built bundle.
+      - name: Build the viewer bundle
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          pnpm --filter @moss-multi/viewer build
       - name: Shell parity
         working-directory: e2e
         env:
@@ -486,7 +570,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

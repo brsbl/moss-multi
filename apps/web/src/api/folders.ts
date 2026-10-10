@@ -10,6 +10,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { filenameFor } from '@moss-multi/core/filenames';
+import { DAY_MS, FOLDER_CREATE_DAILY } from '@moss-multi/protocol/limits';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
 import type { DocDO } from '@moss-multi/sync';
@@ -23,13 +24,13 @@ import { docs, folders } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import {
-  editsFolder, folderChain, managesDoc, managesFolder, MAX_FOLDER_DEPTH, reapDeadInvites, resolveDocAccess, resolveFolderAccess,
+  actingAs, actingUserId, editsFolder, folderChain, managesDoc, managesFolder, MAX_FOLDER_DEPTH, reapDeadInvites, resolveDocAccess, resolveFolderAccess,
   type FolderAccess,
 } from './access.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers } from './members.ts';
-import { changed, NO_STORE, notFound, readJsonObject, refuse, signedIn, unauthenticated } from './respond.ts';
+import { changed, NO_STORE, notFound, overDailyBound, readJsonObject, refuse, signedIn, unauthenticated } from './respond.ts';
 
 export type FoldersEnv = AuthEnv & Pick<AppEnv, 'DocDO'> & Partial<Pick<AppEnv, 'PrincipalDO'>>;
 
@@ -39,7 +40,7 @@ export const FOLDER_NAME_MAX = 100;
 export const folderNotFound = () =>
   refuse(404, 'not-found', 'That folder is no longer available, or you don’t have access to it.');
 
-const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
+export const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
 
 /** The trimmed name, or the sentence that says what is wrong with it. */
 function folderName(value: unknown): { name: string } | { problem: string } {
@@ -112,12 +113,15 @@ export const liveIn = (vault: number) =>
 /** The vault a folder is in (the last of its chain). */
 export const vaultOf = async (db: Db, folderId: string) => (await folderChain(db, folderId)).at(-1);
 
-/** The live folders under `id`, `id` first, each with its depth below `id` (1 for `id`). */
-async function subtree(db: D1Database, id: string): Promise<{ id: string; depth: number }[]> {
+/**
+ * The live folders under `id`, `id` first, each with its depth below `id` (1 for `id`); with `trashed`, the trashed
+ * ones too, which a move carries along and which must stay within the depth bound (the media quota counts them there).
+ */
+async function subtree(db: D1Database, id: string, trashed = false): Promise<{ id: string; depth: number }[]> {
   const rows = await db.prepare(`WITH RECURSIVE sub(id, depth) AS (
     SELECT id, 1 FROM folders WHERE id = ?1
     UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
-      WHERE f.deleted_at IS NULL AND s.depth <= ?2
+      WHERE ${trashed ? '' : 'f.deleted_at IS NULL AND '}s.depth <= ?2
   ) SELECT id, depth FROM sub`).bind(id, MAX_FOLDER_DEPTH).all<{ id: string; depth: number }>();
   return rows.results;
 }
@@ -135,6 +139,19 @@ const folderRecord = async (db: Db, id: string) => {
   return row;
 };
 
+/**
+ * Folders and vaults acting user ?{user} or their agents made, in any vault, in the day before ?{now}, as a SQL value
+ * (through `folders_created_by_idx`). Charged to the creator, so a collaborator never spends a vault owner's day.
+ */
+export const foldersToday = (user: number, now: number) =>
+  `(SELECT count(*) FROM folders WHERE created_by IN ${actingAs(user)} AND created_at > ?${now} - ${DAY_MS})`;
+
+export const outOfFolders = async (d1: D1Database, user: string, now: number) =>
+  ((await d1.prepare(`SELECT ${foldersToday(1, 2)} AS n`).bind(user, now).first<{ n: number }>())?.n ?? 0) >= FOLDER_CREATE_DAILY;
+
+export const tooManyFolders = () =>
+  overDailyBound(`You can add ${FOLDER_CREATE_DAILY.toLocaleString('en-US')} folders and vaults a day. Try again later.`);
+
 async function createFolder(request: Request, env: FoldersEnv): Promise<Response> {
   const principal = await signedIn(request, env);
   if (!principal) return unauthenticated();
@@ -149,14 +166,19 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
   const chain = await folderChain(db, body.parentId as string);
   if (chain.length >= MAX_FOLDER_DEPTH) return tooDeep();
   const id = crypto.randomUUID();
+  const now = Date.now();
+  const userId = actingUserId(principal) ?? principal.id;
   try {
     const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
       INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at)
       SELECT ?2, ?3, ?4, ?5, 'folder', ?1, ?6
-      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH}`)
-      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, Date.now(), chain.at(-1)).run();
-    // The parent was trashed or nested deeper in the meantime.
-    if (!changed(inserted)) return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
+      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH} AND ${foldersToday(8, 6)} < ${FOLDER_CREATE_DAILY}`)
+      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, now, chain.at(-1), userId).run();
+    // The day's folders ran out, or the parent was trashed or nested deeper in the meantime.
+    if (!changed(inserted)) {
+      if (await outOfFolders(env.DB, userId, now)) return tooManyFolders();
+      return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
+    }
   } catch (error) {
     if (isUnique(error)) return exists(named.name);
     throw error;
@@ -197,7 +219,7 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
     }
     const moved = await subtree(env.DB, id);
     if (moved.some((row) => row.id === body.parentId)) return refuse(409, 'cycle', 'A folder can’t move inside itself.');
-    const height = Math.max(...moved.map((row) => row.depth));
+    const height = Math.max(...(await subtree(env.DB, id, true)).map((row) => row.depth));
     if ((await folderChain(db, body.parentId as string)).length + height > MAX_FOLDER_DEPTH) return tooDeep();
     parentId = body.parentId as string;
     // Whoever loses sight of the subtree hears about it too.
@@ -213,21 +235,22 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
     if (!moving) {
       if (newName !== null) await db.update(folders).set({ name: newName }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
     } else {
-      // The target's live ancestry, the cycle check and the depth bound hold at the moment of the write, the parent is
-      // still the one `reach` was read under, and the caller still manages the folder and may edit the destination.
-      // Whoever managed the subtree only through its old ancestors loses manage, and their open invites die (A§8).
+      // The target's live ancestry, the cycle check and the depth bound (trashed descendants included) hold at the
+      // moment of the write, the parent is still the one `reach` was read under, and the caller still manages the
+      // folder and may edit the destination. Whoever managed the subtree only through its old ancestors loses manage,
+      // and their open invites die (A§8).
       const move = async (from: string) => (await env.DB.batch([env.DB.prepare(`WITH RECURSIVE ${upFrom(1)},
         sub(id, depth) AS (
           SELECT id, 1 FROM folders WHERE id = ?2
           UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
-            WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
+            WHERE s.depth <= ${MAX_FOLDER_DEPTH}
         )
         UPDATE folders SET name = coalesce(?3, name), parent_id = ?1
         WHERE id = ?2 AND deleted_at IS NULL AND ${liveIn(4)} AND parent_id = ?5
           AND NOT EXISTS (SELECT 1 FROM up WHERE id = ?2)
           AND (SELECT count(*) FROM up) + (SELECT max(depth) FROM sub) <= ${MAX_FOLDER_DEPTH}
           AND ${managesFolder(2, 6)} AND ${editsFolder(1, 6)}`)
-        .bind(parentId, id, newName, vault, from, principal.id), reapDeadInvites(env.DB, Date.now())]))[0];
+        .bind(parentId, id, newName, vault, from, principal.id), reapDeadInvites(env.DB, Date.now(), { folderId: id })]))[0];
       let updated = await move(current.parentId as string);
       if (!changed(updated)) {
         const [now] = await db.select({ parentId: folders.parentId }).from(folders).where(eq(folders.id, id));
@@ -289,13 +312,14 @@ async function release(env: FoldersEnv, held: string[], batch: string): Promise<
   }
 }
 
-async function trashFolder(request: Request, env: FoldersEnv, id: string): Promise<Response> {
+/** DELETE /api/folders/:id, and DELETE /api/vaults/:id with `kind` vault: the subtree goes to Trash as one batch. */
+export async function trashFolder(request: Request, env: FoldersEnv, id: string, kind: 'folder' | 'vault' = 'folder'): Promise<Response> {
   const principal = await signedIn(request, env);
   if (!principal) return unauthenticated();
   const db = createDb(env.DB);
   const folder = await resolveFolderAccess(db, principal, id);
   if (!folder) return folderNotFound();
-  if (folder.kind === 'vault') return refuse(409, 'vault', 'A vault can’t be moved to Trash from here.');
+  if (folder.kind !== kind) return kind === 'vault' ? folderNotFound() : refuse(409, 'vault', 'A vault can’t be moved to Trash from here.');
   const [row] = await db.select({ batch: folders.trashBatchId }).from(folders).where(eq(folders.id, id));
   // A retry by the owner re-closes the batch's docs; anyone else, or a folder trashed inside a larger batch, gets 404.
   if (folder.deleted && (folder.role !== 'owner' || !row?.batch)) return folderNotFound();
@@ -330,7 +354,7 @@ async function trashFolder(request: Request, env: FoldersEnv, id: string): Promi
           .bind(now, batch, id, principal.id),
         env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
           .bind(now, batch),
-        reapDeadInvites(env.DB, now),
+        reapDeadInvites(env.DB, now, { folderId: id }),
       ]);
     } catch (error) {
       console.error('folder trash write failed', error);
@@ -398,7 +422,7 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
         const [moved] = await env.DB.batch([env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
           UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)} AND folder_id = ?5
             AND ${managesDoc(3, 6)} AND ${editsFolder(1, 6)}`)
-          .bind(folderId, filename, docId, vault, from, principal.id), reapDeadInvites(env.DB, Date.now())]);
+          .bind(folderId, filename, docId, vault, from, principal.id), reapDeadInvites(env.DB, Date.now(), { docId })]);
         if (changed(moved)) break;
         const still = await resolveDocAccess(db, principal, docId);
         if (!still || !can(still.role, 'manage')) return ownerMoves('notes');

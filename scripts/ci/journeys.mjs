@@ -16,16 +16,32 @@ export const ALL = 'all';
 export const GROUPS = {
   // Chrome, auth and invites.
   shell: ['j00-shell', 'j07', 'j10', 'j19'],
-  // Sharing and live access changes.
-  share: ['j08', 'j09'],
+  // Sharing.
+  share: ['j08'],
+  // Live access changes: demotion, removal, link revocation, sign-out.
+  access: ['j09'],
   // Server import against UI paste, and the protocol round trip.
   import: ['j00-import', 'j00-roundtrip'],
   // Persistence and co-editing; also any new j01 journey until it is placed.
   editing: ['j00-persist', 'j01'],
   // Sharing a note, presence and undo between peers.
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
-  // Code, HTML and formula fields across joins, moves and removals.
-  registers: ['j01-registers'],
+  // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
+  registers: ['j01-registers', 'j01-autolink'],
+  // Large markdown pastes, up to 2 MB, each landing whole for a peer.
+  paste: ['j01-paste'],
+  // Pastes of very many short blocks, into an empty note and between two paragraphs.
+  pasteblocks: ['j01-paste-blocks'],
+  // One large list or nested list pasted: about 10 MB of state in one block, in batches and frames under the cap.
+  pastelist: ['j01-paste-list'],
+  // One 5,000-row table pasted.
+  pastetable: ['j01-paste-table'],
+  // Pastes just past the size cap, with and without payloads, refused whole.
+  pastecap: ['j01-paste-cap'],
+  // A paste past the cap only with the deleted blocks' payloads the server still counts, refused whole.
+  pasteheld: ['j01-paste-held'],
+  // A peer's edits while a large paste is checked, its redo after a peer's new block, and a check list's order.
+  pasterace: ['j01-paste-race', 'j01-paste-check'],
   // Titles and properties.
   title: ['j02'],
   // A doc's connection: drops, stalls, limits, hibernation.
@@ -35,7 +51,7 @@ export const GROUPS = {
   // Media, embeds and the demo note.
   media: ['j11', 'j14'],
   // Comments, suggestions, history, agents.
-  meaning: ['j15', 'j16', 'j17', 'j18'],
+  meaning: ['j08-agents', 'j15', 'j16', 'j17', 'j18'],
 };
 
 /**

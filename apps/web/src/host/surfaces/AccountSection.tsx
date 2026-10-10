@@ -16,7 +16,7 @@ export function AccountSection(): ReactNode {
   }
 
   return (
-    <div className="space-y-2">
+    <div data-collab-chrome="" className="space-y-2">
       <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Account</span>
       <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
         <div className="flex items-center justify-between gap-2">

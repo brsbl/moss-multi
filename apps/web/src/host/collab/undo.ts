@@ -11,6 +11,8 @@ import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payloa
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
+/** Copy-list entries read, written or compared; tests hold a large undo to O(K log K). */
+export const copyBookkeeping = { work: 0 };
 type StackItem = UndoManager['undoStack'][number];
 
 /** The plugin drives it as it would the root UndoManager: undo, redo, clear, the stacks' lengths and their events. */
@@ -42,14 +44,24 @@ function createRootUndoManager(binding: Binding): UndoManager {
     if (!trackedOrigins.has(transaction.origin)) return;
     transaction.afterState.forEach((clock, client) => { if ((transaction.beforeState.get(client) ?? 0) < clock) own.add(client); });
   };
-  // Restored copies: id ranges of this client's items whose characters another client wrote.
-  const copies = new Map<number, { clock: number; len: number; author: number }[]>();
+  // Restored copies: id ranges of this client's items whose characters another client wrote, sorted by clock.
+  type Copy = { clock: number; len: number; author: number };
+  const copies = new Map<number, Copy[]>();
   const authorsOf = (client: number, clock: number, len: number) => {
     const known = copies.get(client);
     if (!known) return [{ clock, len, author: client }];
-    const found: { clock: number; len: number; author: number }[] = [];
+    // The first copy ending after `clock`.
+    let low = 0; let high = known.length;
+    while (low < high) {
+      copyBookkeeping.work++;
+      const mid = (low + high) >>> 1;
+      if (known[mid]!.clock + known[mid]!.len <= clock) low = mid + 1; else high = mid;
+    }
+    const found: Copy[] = [];
     let at = clock;
-    for (const copy of known) {
+    for (let i = low; i < known.length && known[i]!.clock < clock + len; i++) {
+      copyBookkeeping.work++;
+      const copy = known[i]!;
       const from = Math.max(at, copy.clock); const to = Math.min(clock + len, copy.clock + copy.len);
       if (from >= to) continue;
       if (from > at) found.push({ clock: at, len: from - at, author: client });
@@ -85,15 +97,35 @@ function createRootUndoManager(binding: Binding): UndoManager {
   });
   // Each deleted item a step restored points (`redone`) at its copy; the copy keeps the original's author.
   const rememberCopies = (step: StackItem) => {
-    const found: [number, { clock: number; len: number; author: number }][] = [];
+    const found = new Map<number, Copy[]>();
     eachItem(step.deletions, original => {
       const { redone } = original;
       if (!redone) return;
       for (const part of authorsOf(original.id.client, original.id.clock, original.length)) {
-        if (part.author !== redone.client) found.push([redone.client, { ...part, clock: redone.clock + part.clock - original.id.clock }]);
+        if (part.author === redone.client) continue;
+        let group = found.get(redone.client);
+        if (!group) found.set(redone.client, group = []);
+        group.push({ ...part, clock: redone.clock + part.clock - original.id.clock });
       }
     });
-    for (const [client, copy] of found) copies.set(client, [...copies.get(client) ?? [], copy].sort((a, b) => a.clock - b.clock));
+    for (const [client, group] of found) {
+      group.sort((a, b) => { copyBookkeeping.work++; return a.clock - b.clock; });
+      const known = copies.get(client);
+      if (!known) { copies.set(client, group); continue; }
+      const last = known.at(-1)!;
+      // Copies take fresh clocks, so a step's copies usually follow the earlier ones; otherwise merge the two.
+      if (last.clock + last.len <= group[0]!.clock) {
+        for (const copy of group) { copyBookkeeping.work++; known.push(copy); }
+        continue;
+      }
+      const merged: Copy[] = [];
+      let i = 0; let j = 0;
+      while (i < known.length || j < group.length) {
+        copyBookkeeping.work++;
+        merged.push(j >= group.length || (i < known.length && known[i]!.clock <= group[j]!.clock) ? known[i++]! : group[j++]!);
+      }
+      copies.set(client, merged);
+    }
   };
   // The containers a step created, as they are now: undoing a delete replaced some of them with restored copies.
   const createdBy = (step: StackItem) => {

@@ -17,6 +17,8 @@ export interface Attachment {
   role: Role;
   sessionId: string | null;
   shareToken: string | null;
+  /** The client address bucket the Worker saw at upgrade, for an anonymous socket; null when unknown. */
+  address?: string | null;
   presenceAllowed?: boolean;
   /** When the Worker resolved `role` (epoch ms); 0 when unknown, which any principal revocation outdates. */
   resolvedAt?: number;
@@ -40,6 +42,7 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     role,
     sessionId: headers.get(TRUSTED.session) || null,
     shareToken: headers.get(TRUSTED.share) || null,
+    address: headers.get(TRUSTED.address) || null,
     presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
     resolvedAt: Number(headers.get(TRUSTED.resolvedAt)) || 0,
     epoch: headers.get(TRUSTED.epoch) ?? '',

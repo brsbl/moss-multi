@@ -21,12 +21,79 @@ export async function signedIn(request: Request, env: AuthEnv): Promise<Principa
   return principal && principal.type !== 'anonymous' ? principal : null;
 }
 
-export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
+/** 429 for a daily bound on rows a route adds (A§18). */
+export const overDailyBound = (message: string) => refuse(429, 'rate-limited', message, { 'retry-after': '3600' });
+
+export function parseJsonObject(text: string): Record<string, unknown> | null {
   try {
-    const text = await request.text();
     const body: unknown = text ? JSON.parse(text) : {};
     return typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
   } catch {
     return null;
   }
+}
+
+/** The cap on a JSON request body, far above the largest any route but note creation and feedback takes. */
+export const JSON_BODY_MAX_BYTES = 64 * 1024;
+
+/** Thrown by readJsonObject for a body over its cap; handleApi answers it with 413 `too-large`. */
+export class BodyTooLarge extends Error {}
+
+export const tooLarge = () => refuse(413, 'too-large', 'That request is too large.');
+
+/**
+ * The body as a JSON object, or null when it is not one. A body that declares or runs past `max` bytes throws
+ * BodyTooLarge without being buffered beyond the cap.
+ */
+export async function readJsonObject(request: Request, max = JSON_BODY_MAX_BYTES): Promise<Record<string, unknown> | null> {
+  const text = await readCapped(request, max);
+  if (text === 'too-large') throw new BodyTooLarge();
+  return text === null ? null : parseJsonObject(text);
+}
+
+/**
+ * The body as text, refused as `too-large` when it declares or runs past `max` bytes, so an oversized body is never
+ * buffered; null when it cannot be read.
+ */
+export async function readCapped(request: Request, max: number): Promise<string | 'too-large' | null> {
+  if (Number(request.headers.get('content-length') ?? 0) > max) return 'too-large';
+  const reader = request.body?.getReader();
+  if (!reader) return '';
+  let read: Collected | 'too-large';
+  try {
+    read = await collectCapped(reader, max, () => reader.cancel().catch(() => undefined));
+  } catch {
+    return null;
+  }
+  return read === 'too-large' ? read : new TextDecoder().decode(joinChunks(read));
+}
+
+type Collected = { chunks: Uint8Array[]; size: number };
+
+/** The chunks a reader yields, or 'too-large' once they run past `max` bytes, after `cancel` has run. */
+export async function collectCapped(reader: ReadableStreamDefaultReader<Uint8Array>, max: number,
+  cancel: () => Promise<unknown>): Promise<Collected | 'too-large'> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return { chunks, size };
+    size += value.byteLength;
+    if (size > max) {
+      await cancel();
+      return 'too-large';
+    }
+    chunks.push(value);
+  }
+}
+
+/** The collected chunks as one array. */
+export function joinChunks({ chunks, size }: Collected): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }

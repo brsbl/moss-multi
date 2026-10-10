@@ -113,6 +113,15 @@ describe('the auth store (the single auth-state writer)', () => {
     expect(deps.leave).toHaveBeenCalledWith('/login');
   });
 
+  it('leaves for a given destination after sign-out, keeping /login as the default', async () => {
+    const { auth, deps } = store([{ kind: 'signed-in', user: ADA }], () => Response.json({ success: true }));
+    await auth.resolve();
+    const back = `/login?next=${encodeURIComponent('/invite/abc')}`;
+    await expect(auth.signOut(back)).resolves.toEqual({ ok: true });
+    expect(auth.get().status).toBe('signed-out');
+    expect(deps.leave).toHaveBeenCalledWith(back);
+  });
+
   it('keeps the session when sign-out is refused', async () => {
     const { auth, deps } = store([{ kind: 'signed-in', user: ADA }], () => new Response('{}', { status: 500 }));
     await auth.resolve();
@@ -143,6 +152,19 @@ describe('the auth store (the single auth-state writer)', () => {
     expect(await auth.signIn({ email: 'ada@example.invalid', password: 'nope' })).toEqual({ ok: false, message: 'That email and password don’t match an account.' });
     expect(refusalMessage(null, 422)).toMatch(/already exists/);
     expect(refusalMessage({ code: 'SOMETHING_NEW' }, 500)).toBe('Something went wrong. Try again.');
+    // The day-long sign-up limit never tells the person to wait a moment.
+    expect(refusalMessage({ code: 'TOO_MANY_SIGN_UPS' }, 429)).toMatch(/today/);
+    expect(refusalMessage({ code: 'TOO_MANY_SIGN_UPS' }, 429)).not.toMatch(/moment/);
+  });
+
+  it('names the active password minimum when a password is too short', async () => {
+    expect(refusalMessage({ code: 'PASSWORD_TOO_SHORT' }, 400, { minPasswordLength: 12 })).toBe('That password is too short. Use at least 12 characters.');
+    expect(refusalMessage({ code: 'PASSWORD_TOO_SHORT' }, 400), 'with no known minimum it still asks for a longer one').toMatch(/too short/);
+    const { auth } = store([], () => Response.json({ code: 'PASSWORD_TOO_SHORT', message: 'Password too short' }, { status: 400 }));
+    expect(await auth.signUp({ email: 'ada@example.invalid', password: 'abc' }, { minPasswordLength: 12 })).toEqual({
+      ok: false,
+      message: 'That password is too short. Use at least 12 characters.',
+    });
   });
 
   it('signs a new account in, deriving a name from the email when none is given', async () => {

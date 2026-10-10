@@ -49,3 +49,15 @@ export async function grant(owner: Actor, target: InviteTarget, member: Principa
 export async function grantDoc(owner: Actor, docId: string, member: Principal, role: GrantRole = 'editor'): Promise<void> {
   await grant(owner, { docId }, member, role);
 }
+
+/** `owner` makes a live share link on the doc at `role` through `POST /api/docs/:id/links`, and returns its token. */
+export async function linkDoc(owner: Actor, docId: string, role: GrantRole = 'viewer'): Promise<string> {
+  const origin = new URL(owner.page.url()).origin;
+  const response = await owner.context.request.post(`${origin}/api/docs/${encodeURIComponent(docId)}/links`, {
+    headers: { origin, 'content-type': 'application/json' },
+    data: { role },
+    timeout: 15_000,
+  });
+  if (!response.ok()) throw new Error(`${owner.label} linking ${docId} at ${role}: ${response.status()} ${(await response.text()).slice(0, 200)}`);
+  return ((await response.json()) as { link: { token: string } }).link.token;
+}

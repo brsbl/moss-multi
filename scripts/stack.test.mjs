@@ -56,6 +56,35 @@ describe('judgeGroup', () => {
   });
 });
 
+// Reaping keeps live stacks whichever storage they use and removes dead ones of both kinds.
+describe('judgeGroup storage', () => {
+  const SHM = '/dev/shm/moss-stack/r1';
+  const stacks = {
+    'default storage': { persistDir: `${RUN}/state`, command: WRANGLER },
+    '--state-dir': { persistDir: SHM, command: `/usr/bin/node /repo/apps/web/node_modules/wrangler/bin/wrangler.js dev --persist-to ${SHM} --port 8850` },
+  };
+  const workerd = { pid: 101, pgid: 100, age: 3600, command: '/x/workerd serve --binary -' };
+
+  it.each(Object.entries(stacks))('keeps a live %s stack', (_, { persistDir, command }) => {
+    const list = [{ pid: 100, pgid: 100, age: 3600, command }, workerd];
+    expect(judgeGroup({ pgid: 100, runDir: RUN, state: { ...running, persistDir }, list, maxAge: 4 * 3600, now: NOW })).toEqual({ ours: true, why: null });
+  });
+
+  it.each(Object.entries(stacks))('removes a dead %s stack', (_, { persistDir, command }) => {
+    const leader = { pid: 100, pgid: 100, age: 3600, command };
+    const state = { ...running, persistDir };
+    const judge = (s, list) => judgeGroup({ pgid: 100, runDir: RUN, state: s, list, maxAge: 4 * 3600, now: NOW });
+    expect(judge(state, [workerd])).toEqual({ ours: true, why: 'leader dead' });
+    expect(judge({ ...state, status: 'stopped' }, [leader, workerd])).toEqual({ ours: true, why: 'run stopped' });
+  });
+
+  it('never claims a --state-dir group recorded for another run', () => {
+    const list = [{ pid: 100, pgid: 100, age: 3600, command: stacks['--state-dir'].command }, workerd];
+    const state = { ...running, persistDir: '/dev/shm/moss-stack/r2' };
+    expect(judgeGroup({ pgid: 100, runDir: RUN, state, list, maxAge: 4 * 3600, now: NOW })).toEqual({ ours: false, why: null });
+  });
+});
+
 describe('parseArgs', () => {
   it('reads flags with values, inline values and booleans', () => {
     expect(parseArgs(['start', '--run-id', 'r1', '--port=8851', '--hooks', '--json'])).toEqual({

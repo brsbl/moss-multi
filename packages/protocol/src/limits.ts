@@ -12,10 +12,33 @@ export const STATE_RATIO = 10.5;
 /** Every entry point checks the encoded doc state against this, so a doc under 2 MB of markdown stays typeable. */
 export const STATE_CAP_BYTES = Math.round(MARKDOWN_CAP_BYTES * STATE_RATIO * 1.25);
 
+/**
+ * The largest frame a client sends on a doc socket (T3.S6). Larger updates go as pieces; a paste that would need a
+ * larger piece (one block's text past it) is refused whole. The DocDO closes a socket with 2 MiB waiting (1013).
+ */
+export const CLIENT_FRAME_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The DocDO answers a step 1 in frames of about this many bytes (T3.S6b): a frame of megabytes reads as silence on the
+ * client for as long as it takes to arrive, and its heartbeat closes a silent socket after 12 s.
+ */
+export const ANSWER_PIECE_BYTES = 256 * 1024;
+
 export const MAX_CONNECTIONS = 50;
 
 /** Writes per connection per window; the overflow frame is not applied and the socket closes 4420. */
 export const WRITE_RATE = { max: 300, windowMs: 5_000 } as const;
+
+/**
+ * Full-state answers (a step 1 for the note or a payload) per principal per doc, or per share link and client address
+ * for anonymous viewers (T3.S14, T3.B25): `docs` whole states' worth at once, refilled over `windowMs`; each answer
+ * costs the share of the stored state it sends. Past it a socket's latest step 1 per target waits for the refill, so a
+ * reconnect is late, never unanswered, and never refills it.
+ */
+export const ANSWER_BUDGET = { docs: 8, windowMs: 20_000 } as const;
+
+/** Open anonymous sockets per doc from one share link and client address; past it a socket closes 4429 (T3.B25). */
+export const ANONYMOUS_SOCKETS_PER_ADDRESS = 8;
 
 export const AWARENESS_MAX_BYTES = 8 * 1024;
 
@@ -27,6 +50,51 @@ export const ACK_COALESCE_MS = 250;
 
 /** REST writes (a rename now, a push later) per principal per window, counted by its PrincipalDO (A§5.2); 429 past it. */
 export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/**
+ * Notes minted (created, imported or duplicated) per acting user per window, counted by their PrincipalDO before any
+ * row or DocDO (A§5.2, A§18); an agent key counts against its owner. 429 past it. The heaviest journey mints well under
+ * ten a minute per principal, and a person filing notes by hand far fewer.
+ */
+export const DOC_CREATE_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/**
+ * Notes minted per acting user per day, on the same PrincipalDO, counting only the ones granted; 429 past it. A person
+ * importing a large vault at the minute rate takes about half an hour for 2,000, which no journey or seed comes near.
+ */
+export const DAY_MS = 24 * 60 * 60 * 1000;
+export const DOC_CREATE_DAILY = { max: 2_000, windowMs: DAY_MS } as const;
+
+/** The largest `POST /api/docs` body: 2 MB of markdown even if JSON escapes every byte (`\u00XX`), plus the fields. */
+export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
+
+/**
+ * Live (untrashed) notes one acting user has created, wherever they are and their agents' included; a create or
+ * duplicate past it is 409 (A§18). Charged to the creator, never the vault, so a collaborator cannot fill an owner's.
+ */
+export const LIVE_NOTE_CAP = 10_000;
+
+/** Folders and vaults one acting user (with their agents) creates per day, in any vault; 429 past it (A§18). */
+export const FOLDER_CREATE_DAILY = 1_000;
+
+/** Agent keys one person mints per day, revoked ones included; 429 past it (A§18). */
+export const AGENT_KEY_DAILY = 50;
+
+/** Share links one person makes per day, over every target, revoked ones included; 429 past it (A§18). */
+export const SHARE_LINK_DAILY = 50;
+
+/** Feedback messages one person sends per day; 429 past it (A§18). */
+export const FEEDBACK_DAILY = 20;
+
+/** Media uploads (and cross-note copies) per identity per window, counted by a PrincipalDO (A§16); 429 past it. A
+ * signed-in holder of a link is also counted under the link and their IP, whichever account they use. */
+export const UPLOAD_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/** Uploaded media bytes a vault can hold, summed over the assets uploaded into its folders; 413 past it. */
+export const VAULT_MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
+export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
 
 /**
  * How long a PrincipalDO remembers an ended session and a session's doc sockets (A§5.2): better-auth's default session

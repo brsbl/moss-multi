@@ -1,17 +1,22 @@
 // Decorator payload docs (A§10.10; docs/design/registers.md), Yjs-level with no Lexical: each code, HTML or formula
-// block's text is a Y.Text in its own Y.Doc keyed by the block's `__regId`, held beside the note's doc. This module
-// holds them (PayloadDocs), carries them over a doc socket (PayloadSync) and gives the body one Cmd+Z stack across the
-// note's undo manager and each payload's (BodyUndo).
+// block's text is a Y.Text in its own Y.Doc keyed by the block's `__regId` (a chart's or sketch's fields a Y.Map),
+// held beside the note's doc. This module holds them (PayloadDocs), carries them over a doc socket (PayloadSync) and
+// gives the body one Cmd+Z stack across the note's undo manager and each payload's (BodyUndo).
 import { Observable } from 'lib0/observable';
 import * as Y from 'yjs';
+import { MAP_REGISTERS } from './map-codecs.ts';
+import { RedoSlices } from './redo-slices.ts';
 import {
   decodePayloadFrame, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE,
 } from '@moss-multi/protocol/sync';
 
-/** The register fields, by node type (A§10.10). */
+/** The register fields, by node type (A§10.10): text payloads, one Y.Text each. */
 export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
 };
+
+/** Whether nodes of `type` keep their payload in a payload doc: a text payload, or a compound one (T3.3, map-codecs.ts). */
+export const isPayloadType = (type: string): boolean => Object.hasOwn(REGISTER_FIELDS, type) || Object.hasOwn(MAP_REGISTERS, type);
 
 /** A payload id: 128 random bits, since knowing an id is what lets an element name its payload. */
 export function newPayloadId(): string {
@@ -26,6 +31,19 @@ export const PAYLOAD_TEXT = 'payload';
 export const PAYLOAD_LOADED = Symbol('moss-multi:payload-loaded');
 
 export const payloadText = (doc: Y.Doc): Y.Text => doc.getText(PAYLOAD_TEXT);
+
+/** A compound payload's one shared type. */
+export const PAYLOAD_MAP = 'payload-map';
+
+export const payloadMap = (doc: Y.Doc): Y.Map<unknown> => doc.getMap(PAYLOAD_MAP);
+
+/** Writes a payload's first value into an empty doc: text, or a compound payload's encoded keys. */
+export function seedPayload(doc: Y.Doc, value: string | ReadonlyMap<string, unknown>, origin: unknown): void {
+  doc.transact(() => {
+    if (typeof value === 'string') payloadText(doc).insert(0, value);
+    else for (const [key, entry] of value) payloadMap(doc).set(key, entry);
+  }, origin);
+}
 
 /** `fresh`: minted here this moment, so no one else has anything of it to ask for. */
 type HoldListener = (id: string, doc: Y.Doc, fresh: boolean) => void;
@@ -224,6 +242,8 @@ export class BodyUndo extends Observable<StackEvent> {
   #replayed: Step['entries'] = [];
   /** When the last tracked edit landed, in any doc. */
   #lastChange = 0;
+  /** Open holds: while any is, every tracked edit joins the last step. */
+  #holds = 0;
 
   constructor(
     readonly root: Y.UndoManager,
@@ -236,7 +256,7 @@ export class BodyUndo extends Observable<StackEvent> {
 
   /** Payload managers track this origin. */
   trackPayload(doc: Y.Doc, origin: unknown, captureTimeout: number): Y.UndoManager {
-    const manager = new Y.UndoManager(payloadText(doc), { trackedOrigins: new Set([origin]), captureTimeout });
+    const manager = new Y.UndoManager([payloadText(doc), payloadMap(doc)], { trackedOrigins: new Set([origin]), captureTimeout });
     this.track(manager);
     return manager;
   }
@@ -260,7 +280,7 @@ export class BodyUndo extends Observable<StackEvent> {
     const stamp = this.stamp();
     const last = this.undone.at(-1);
     this.redone.length = 0;
-    if (last && ((stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
+    if (last && (this.#holds > 0 || (stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
       last.entries.push({ manager, item });
       last.stamp = stamp;
     } else {
@@ -269,6 +289,22 @@ export class BodyUndo extends Observable<StackEvent> {
     }
     this.#lastChange = now;
     for (const other of this.managers) if (other !== manager && other.redoStack.length) other.clear(false, true);
+  }
+
+  /**
+   * Until the returned release runs, every tracked edit joins the last step, however long after it lands: a large
+   * paste lands in batches, one undo step (T3.S6). The note's manager also joins the edit to its last stack item, as
+   * if within its capture window, unless capturing stopped: redoing a step of hundreds of items held the tab.
+   */
+  hold(): () => void {
+    this.#holds += 1;
+    if (this.root.lastChange > 0) this.root.lastChange = Date.now();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#holds -= 1;
+    };
   }
 
   get undoStack(): readonly Step[] {
@@ -293,6 +329,72 @@ export class BodyUndo extends Observable<StackEvent> {
 
   redo(): unknown {
     return this.#step(this.redone, this.undone, 'redo');
+  }
+
+  /**
+   * Redoes the top step in slices when it is `stamp`'s (T3.S6): `next` redoes the next slice of its note's stack item
+   * (its payload items whole, in order), and `finish`, once `done`, makes the slices one step again. Each slice is a
+   * Yjs redo, so the steps after it in the redo chain still follow what it restores. Null when the top step is not.
+   */
+  redoInSlices(stamp: unknown): SlicedRedo | null {
+    const step = this.redone.at(-1);
+    if (!step || step.stamp !== stamp) return null;
+    this.redone.pop();
+    this.stopCapturing();
+    const queue = step.entries.map(({ manager, item }) => {
+      if (manager !== this.root) return { manager, item, slices: null };
+      const at = manager.redoStack.lastIndexOf(item);
+      if (at >= 0) manager.redoStack.splice(at, 1);
+      return { manager, item, slices: at >= 0 ? new RedoSlices(manager, item) : null };
+    });
+    const replayed: Step['entries'] = [];
+    const replay = (manager: Y.UndoManager, item: StackItem) => {
+      this.#replaying = true;
+      this.#replayed = [];
+      try {
+        replayOnly(manager, 'redo', item);
+      } finally {
+        replayed.push(...this.#replayed);
+        this.#replaying = false;
+        this.#replayed = [];
+      }
+    };
+    const advance = (blocks: number, bytes: number): number | null => {
+      while (queue.length) {
+        const head = queue[0];
+        if (!head.slices) {
+          queue.shift();
+          // A note item no longer on its stack (a peer emptied it) replays nothing, as #step would.
+          if (head.manager !== this.root) replay(head.manager, head.item);
+          continue;
+        }
+        const slice = head.slices.next(blocks, bytes);
+        if (head.slices.done) queue.shift();
+        if (!slice) continue;
+        head.manager.redoStack.push(slice.item);
+        replay(head.manager, slice.item);
+        return slice.blocks;
+      }
+      return null;
+    };
+    let finished = false;
+    return {
+      get done() {
+        return queue.length === 0;
+      },
+      next: (blocks, bytes) => advance(blocks, bytes) ?? 0,
+      finish: () => {
+        if (finished) return;
+        finished = true;
+        while (advance(Infinity, Infinity) !== null) {
+          // the rest at once
+        }
+        if (replayed.length === 0) return;
+        const entries = mergeReplayed(replayed);
+        this.undone.push({ entries, stamp: step.stamp });
+        this.emit('stack-item-added', [{ type: 'undo', stackItem: entries.at(-1)!.item }, this]);
+      },
+    };
   }
 
   stopCapturing(): void {
@@ -338,6 +440,43 @@ export class BodyUndo extends Observable<StackEvent> {
       this.#replayed = [];
     }
   }
+}
+
+/** A step redone a slice at a time (BodyUndo.redoInSlices). */
+export interface SlicedRedo {
+  readonly done: boolean;
+  /** Redoes the next slice, up to `blocks` blocks and about `bytes` bytes; returns the blocks it redid. */
+  next(blocks: number, bytes: number): number;
+  /** Redoes whatever is left at once, and makes the slices one undo step. */
+  finish(): void;
+}
+
+/**
+ * The stack items a sliced redo added, one per slice, merged into one per manager, as one Yjs transaction would have
+ * made them: undo then deletes the whole paste in one transaction. Items not on top of their stack stay apart.
+ */
+function mergeReplayed(entries: Step['entries']): Step['entries'] {
+  const byManager = new Map<Y.UndoManager, StackItem[]>();
+  for (const { manager, item } of entries) {
+    const items = byManager.get(manager);
+    if (items) items.push(item);
+    else byManager.set(manager, [item]);
+  }
+  const merged: Step['entries'] = [];
+  for (const [manager, items] of byManager) {
+    const stack = manager.undoStack;
+    const top = stack.slice(-items.length);
+    if (items.length < 2 || top.length !== items.length || top.some((item, i) => item !== items[i])) {
+      merged.push(...items.map((item) => ({ manager, item })));
+      continue;
+    }
+    const Item = items[0].constructor as new (deletions: StackItem['deletions'], insertions: StackItem['insertions']) => StackItem;
+    const one = new Item(Y.mergeDeleteSets(items.map((item) => item.deletions)), Y.mergeDeleteSets(items.map((item) => item.insertions)));
+    items[0].meta.forEach((value, key) => one.meta.set(key, value));
+    stack.splice(stack.length - items.length, items.length, one);
+    merged.push({ manager, item: one });
+  }
+  return merged;
 }
 
 /**

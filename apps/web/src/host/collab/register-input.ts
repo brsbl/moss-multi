@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { COLLABORATION_TAG, REDO_COMMAND, UNDO_COMMAND, type Klass, type LexicalEditor, type LexicalNode } from 'lexical';
 import * as Y from 'yjs';
-import { onRegisterChange, payloadTextOf, registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/sync/registers';
+import { mapRegisterWritable, onRegisterChange, payloadTextOf, registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/sync/registers';
 import { payloadText } from '@moss-multi/sync/payload-docs';
 import { applyOps, diffText, mapOffset, rebaseOps } from '@moss-multi/core/text-diff';
 import { refuseInput } from '../refusal.ts';
@@ -52,6 +52,17 @@ function useRegisterState(editor: LexicalEditor, key: string): { id: string | un
 export function useRegisterWritable(editor: LexicalEditor, key: string): boolean {
   const { ready } = useRegisterState(editor, key);
   return !registerDoc(editor) || ready;
+}
+
+/** Whether a chart's or canvas's controls may write: off a bound note, a new block, or once its payload arrived. */
+export function useMapRegisterWritable(editor: LexicalEditor, key: string): boolean {
+  const subscribe = useCallback((notify: () => void) => {
+    const stopUpdates = editor.registerUpdateListener(notify);
+    const stopChanges = onRegisterChange(editor, notify);
+    return () => { stopUpdates(); stopChanges(); };
+  }, [editor]);
+  const read = () => mapRegisterWritable(editor, key);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /**
