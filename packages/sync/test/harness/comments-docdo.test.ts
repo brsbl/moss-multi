@@ -1002,3 +1002,184 @@ describe('a comment RPC validates every socket before its write reaches them (AÂ
     expect(ada.socket.sent.length, 'the socket that kept access hears the write').toBeGreaterThan(adaBefore);
   });
 });
+
+/** Yields microtasks until `ready()` holds, failing past `limit`. */
+async function until(ready: () => boolean, limit = 2_000): Promise<void> {
+  for (let i = 0; i < limit && !ready(); i += 1) await Promise.resolve();
+  expect(ready()).toBe(true);
+}
+
+describe('a comment write leaves no await between its last socket check and the write (AÂ§8) @p:ppl-2 @p:mean-1', () => {
+  let epoch = 'e1';
+  const gone = new Set<string>();
+  /** The principal whose next resolve is held until `resume` runs. */
+  let pause: string | null = null;
+  let resume: (() => void) | null = null;
+  /** Sessions D1 no longer has; and, when set, the session whose next stamp read is held until `release` runs. */
+  const ended = new Set<string>();
+  let holdStamp: string | null = null;
+  let release: (() => void) | null = null;
+  class PausedDocDO extends DocDO {
+    static override access = () => ({
+      stamp: async (_docId: string, sessions: string[], agents: string[]) => {
+        if (holdStamp !== null && sessions.includes(holdStamp)) {
+          holdStamp = null;
+          await new Promise<void>((go) => { release = go; });
+        }
+        return { key: epoch, sessions: new Set(sessions.filter((s) => !ended.has(s))), agents: new Set(agents) };
+      },
+      resolve: async (_docId: string, socket: SocketIdentity): Promise<Resolved | null> => {
+        if (pause === socket.principalId) {
+          pause = null;
+          await new Promise<void>((go) => { resume = go; });
+        }
+        return gone.has(socket.principalId) ? null : { role: 'owner', presence: true };
+      },
+    });
+  }
+  const who = (id: string, role: string) => ({ headers: {
+    [TRUSTED.principal]: encodePartyPrincipal({ id, kind: 'user', name: id }),
+    [TRUSTED.role]: role, [TRUSTED.session]: `sess-${id}`, [TRUSTED.resolvedAt]: String(Date.now()), [TRUSTED.epoch]: 'e1',
+  } });
+  const ADA: SocketIdentity = { kind: 'user', principalId: 'ada', sessionId: 'sess-ada', shareToken: null };
+  const opening = async () => {
+    const opened = await start(openDoc(undefined, PausedDocDO as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'ada', author: 'ada', markdown: SEED, comments: SIDECAR } as never);
+    return opened;
+  };
+  beforeEach(() => {
+    epoch = 'e1';
+    gone.clear();
+    pause = null;
+    resume = null;
+    ended.clear();
+    holdStamp = null;
+    release = null;
+  });
+
+  it('a reader revoked in D1 while the actor resolves, its kick missed, closes 4403 and receives nothing of the write', async () => {
+    const opened = await opening();
+    const ada = await connect(opened, who('ada', 'owner'));
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ada.hello();
+    await ben.hello();
+    const adaBefore = ada.socket.sent.length;
+    const benBefore = ben.socket.sent.length;
+    pause = 'ada';
+    const write = opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'after the revoke', parentId: 'c1' });
+    await until(() => resume !== null);
+    // Ben's grant ends in D1 while the actor is read; no recheck reaches the DocDO.
+    epoch = 'e2';
+    gone.add('ben');
+    resume!();
+    expect(await write).toMatchObject({ ok: true });
+    expect(ben.closed?.code, 'checked again after the actor resolved').toBe(CLOSE.revoked);
+    expect(ben.socket.sent.length, 'no frame of the write reached the revoked socket').toBe(benBefore);
+    expect(ada.closed).toBeNull();
+    expect(ada.socket.sent.length, 'the socket that kept access hears the write').toBeGreaterThan(adaBefore);
+  });
+
+  it('an actor revoked and kicked while the sockets are validated is refused, and nothing lands', async () => {
+    const opened = await opening();
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ben.hello();
+    // Ben's socket is re-resolved under the new epoch; the actor's revocation commits and its kick lands meanwhile.
+    epoch = 'e2';
+    pause = 'ben';
+    const write = opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'kicked meanwhile', parentId: 'c1' });
+    await until(() => resume !== null);
+    gone.add('ada');
+    await opened.dobj.recheck({ principalIds: ['ada'] });
+    resume!();
+    expect(await write).toMatchObject({ ok: false });
+    expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
+    expect(ben.closed, 'the kept socket stays').toBeNull();
+  });
+
+  it.each([
+    ['grant is removed', 403, () => { epoch = 'e2'; gone.add('ada'); }],
+    ['session ends', 401, () => { ended.add('sess-ada'); }],
+  ] as const)('an actor whose %s after it resolved, its kick missed, is refused and nothing lands', async (_case, status, revoke) => {
+    const opened = await opening();
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ben.hello();
+    const benBefore = ben.socket.sent.length;
+    // The socket check's stamp read is held: the actor has resolved, and its access ends in D1 with no recheck sent.
+    holdStamp = 'sess-ben';
+    const write = opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'after my revoke', parentId: 'c1' });
+    await until(() => release !== null);
+    revoke();
+    release!();
+    expect(await write).toMatchObject({ ok: false, status });
+    expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
+    expect(ben.socket.sent.length, 'no frame of a write reached the reader').toBe(benBefore);
+  });
+
+  it.each([
+    // D1 bumps the epoch in the same statement as a grant removal (access-epoch.ts).
+    ['grant is removed', 403, () => { epoch = 'e3'; gone.add('ada'); }],
+    ['session ends', 401, () => { ended.add('sess-ada'); }],
+  ] as const)('an actor whose %s while another socket is re-resolved, its kick missed, is refused and nothing lands', async (_case, status, revoke) => {
+    const opened = await opening();
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ben.hello();
+    const benBefore = ben.socket.sent.length;
+    // The actor resolves at e2 and passes the socket check at once; Ben, admitted at e1, is re-resolved and held.
+    epoch = 'e2';
+    pause = 'ben';
+    const write = opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'after my revoke', parentId: 'c1' });
+    await until(() => resume !== null);
+    revoke();
+    resume!();
+    expect(await write).toMatchObject({ ok: false, status });
+    expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
+    expect(ben.closed, 'the kept socket stays').toBeNull();
+    expect(ben.socket.sent.length, 'no frame of a write reached the reader').toBe(benBefore);
+  });
+});
+
+describe('a comment write on a doc closed without a hold confirms it is live within the deadline @p:mean-1', () => {
+  const limits = { ...DocDO.limits, accessDeadlineMs: 2_000 };
+  /** D1's liveness answer; `hang` holds each read until the test answers it late. */
+  let answer: 'live' | 'deleted' | 'hang' = 'live';
+  let late: ((deleted: boolean) => void) | null = null;
+  class LiveDocDO extends DocDO {
+    static override limits = limits;
+    static override liveness = () => () => {
+      if (answer === 'hang') return new Promise<boolean>((resolve) => { late = resolve; });
+      return Promise.resolve(answer === 'deleted');
+    };
+  }
+  const deletedMeta = (opened: Opened) => opened.backing.query<{ value: string }>("SELECT value FROM meta WHERE key = 'deleted'")[0]?.value;
+  beforeEach(() => {
+    answer = 'live';
+    late = null;
+  });
+
+  it('a liveness read that never answers is a 503 at the deadline that lands nothing and frees the queue; a late answer changes nothing', async () => {
+    const opened = await start(openDoc(undefined, LiveDocDO as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'ada', author: 'ada', markdown: SEED, comments: SIDECAR } as never);
+    // Trashed and settled: closed, with no hold left.
+    await opened.dobj.trash('hold-1');
+    answer = 'deleted';
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    expect(deletedMeta(opened)).toBe('1');
+    // The restore committed in D1, but its settle never arrived, and D1 now stalls.
+    answer = 'hang';
+    let result: unknown = null;
+    void opened.dobj.createComment({ author: 'ada', id: 'r9', text: 'stalled', parentId: 'c1' }).then((value) => { result = value; });
+    await until(() => late !== null);
+    await vi.advanceTimersByTimeAsync(limits.accessDeadlineMs);
+    expect(result, 'answered at the deadline').toEqual({ ok: false, status: 503, error: 'unconfirmed' });
+    expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
+    // The late answer is ignored: the doc stays closed until a read that answers in time.
+    late!(false);
+    for (let i = 0; i < 100; i += 1) await Promise.resolve();
+    expect(deletedMeta(opened)).toBe('1');
+    // The queue is free: the next write settles from D1 and lands.
+    answer = 'live';
+    expect(await opened.dobj.createComment({ author: 'ada', id: 'r10', text: 'restored', parentId: 'c1' })).toMatchObject({ ok: true });
+    expect(deletedMeta(opened)).toBe('0');
+    expect(json(opened)['c:r10']).toMatchObject({ text: 'restored' });
+  });
+});
