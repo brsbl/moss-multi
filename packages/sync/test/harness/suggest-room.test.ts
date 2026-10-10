@@ -412,6 +412,23 @@ describe('T5.S13 suggest refusal counts, cooldowns and the no-room window surviv
     expect(refusalRows(opened)).toEqual([]);
   });
 
+  it('an honest frame after the first does no refusal storage read or write and no attachment write', { timeout: 60_000 }, async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    const leased = await send(sam, { t: 'suggest-lease' });
+    const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+    expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, 4) })).toMatchObject({ t: 'suggest-ack' });
+    const queries = vi.spyOn(opened.backing, 'query');
+    const proto = (globalThis as unknown as { WebSocket: { prototype: { serializeAttachment(value: unknown): void } } }).WebSocket.prototype;
+    const attachments = vi.spyOn(proto, 'serializeAttachment');
+    for (let i = 0; i < 10; i += 1) {
+      expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, 4) })).toMatchObject({ t: 'suggest-ack' });
+    }
+    expect(queries.mock.calls.filter(([sql]) => sql.includes('suggest_refusals')), 'no refusal-state SQL').toEqual([]);
+    expect(attachments.mock.calls.length, 'no attachment write').toBe(0);
+  });
+
   it('a wake keeps a connection in its no-room window: growth frames still short-circuit uncounted', { timeout: 60_000 }, async () => {
     let opened = await start(openDoc(undefined, SmallDoc as never));
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
