@@ -72,12 +72,13 @@ export async function mintPrincipal(baseUrl: string, runToken: string, label: st
 
 /**
  * Sign-up and sign-in are limited per address off the hook stack (auth.ts): staging and the canary rehearsal. Setup
- * paces itself under the limit (auth-pace.ts); a 429 that still comes waits out the window, at most three times.
+ * paces itself under the limit (auth-pace.ts); a 429 that still comes (another job sharing the address) waits out the
+ * window, at most six times.
  */
 async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Promise<Response> {
   await authHeadroom(kind, RESERVE);
   let response = await post();
-  for (let attempt = 0; attempt < 3 && response.status === 429; attempt += 1) {
+  for (let attempt = 0; attempt < 6 && response.status === 429; attempt += 1) {
     const waitMs = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65) * 1000 + 500;
     extendTimeout(waitMs);
     await new Promise((done) => setTimeout(done, waitMs));

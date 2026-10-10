@@ -139,7 +139,8 @@ export async function typedFindings(actors: ActorView[], typed: Typed[]): Promis
       for (const pane of panes) {
         for (const field of ['title', 'body'] as const) {
           const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
-          if (entries.length === 0) continue;
+          // A field still binding shows no doc text yet; a peer that opened late is checked once it is bound.
+          if (entries.length === 0 || (field === 'title' ? pane.titleBinding : pane.bodyBinding) === 'unbound') continue;
           findings.push(...typedProblems(pane[field], entries).map((detail) => finding(7, actor.label)(`${docId} ${field}: ${detail}`)));
         }
       }

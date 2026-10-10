@@ -16,7 +16,8 @@ const KINDS = [
   ['expect', /\bexpect\(/],
   ['request', /\bapiRequestContext\.|fetch failed|socket hang up|ECONNRESET/],
   ['navigation', /\bpage\.goto:|net::ERR_/],
-  ['auth', /\bsign-(?:in|up) for |: 429 /],
+  ['auth limit', /: 429 /],
+  ['auth', /\bsign-(?:in|up) for /],
   ['infrastructure', /\bInfraBlocked\b|^infrastructure/i],
 ];
 

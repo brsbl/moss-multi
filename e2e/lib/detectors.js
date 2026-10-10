@@ -133,6 +133,12 @@ export function fieldTexts({ names, docId }) {
     const title = pane.querySelector(`[${names.titleBinding}]`);
     // The bound root carries the binding attribute; moss also marks its editor wrapper `data-lexical-editor`.
     const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
-    return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '' };
+    return {
+      title: title ? (title.textContent ?? '') : '',
+      body: body ? (body.textContent ?? '') : '',
+      // `unbound` while a field binds or rebinds: what it shows is not the doc's text yet (A§19).
+      titleBinding: title?.getAttribute(names.titleBinding) ?? null,
+      bodyBinding: body?.getAttribute(names.bodyBinding) ?? null,
+    };
   });
 }
