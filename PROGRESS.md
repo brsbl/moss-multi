@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 54% done** (111 of 205 planned tasks verified)
+**Overall: 55% done** (112 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 46 / 46 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 11 / 11 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 12 / 12 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -131,6 +131,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S14 verified: a flood of step 1s from viewers or anonymous link holders now draws on an answer budget charged by what each answer sends, so it can no longer make the server re-encode whole notes without limit, while a reconnect or resync past the budget is answered late, never dropped.
 - 2026-10-09 — T3.S20 verified: when someone is demoted to view and then removed within a few seconds, the note now shows only 'Your access to this note has ended.' instead of a stale view-only notice beside it.
 - 2026-10-09 — T4.S5 verified: a large plain paste now lands whole, as one undo step, even when cursor geometry throws or a viewer peer sends malformed cursor positions mid-paste.
+- 2026-10-10 — T4.B2 verified: comment ids on decorators are never read back from an old doc, long gap walks in one frame stay inside their step budget, and comment anchors survive a DocDO restart, including the comments guard journey in WebKit.
 
 ## T1.1s identity audit
 
