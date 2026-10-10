@@ -4,8 +4,8 @@
 // for 60 s. Split view never shows one note in both panes, so the tab never asks for a second session (A§10.1).
 // Copy markdown and Note stats read the body as it is now, after local and remote edits. Keys typed while "+ Note" is
 // still opening are refused visibly; edits typed while the socket is down outlive a note switch; the link popover's
-// highlight never enters the doc; and a pasted or dropped image is refused visibly until
-// uploads land (M3). The title binds in j02 (T1.4).
+// highlight never enters the doc; and a pasted or dropped image the server refuses is refused visibly, never dropped
+// silently (T3.1). The title binds in j02 (T1.4).
 import type { Locator, Page, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
@@ -473,7 +473,7 @@ const PNG = [
   13, 73, 68, 65, 84, 120, 156, 99, 248, 15, 4, 0, 9, 251, 3, 253, 167, 98, 133, 112, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 
-test('j00-persist: a pasted image or video, or a dropped image, is refused visibly until uploads land, and the body is unchanged @p:tech-7', async ({ actors }) => {
+test('j00-persist: a pasted image or video, or a dropped image, that the server refuses is refused visibly, and the body is unchanged @p:tech-7', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -482,6 +482,12 @@ test('j00-persist: a pasted image or video, or a dropped image, is refused visib
   const text = 'An image would go here';
   await ui.typeBody(ada, docId, text);
   await ui.waitAcked(ada, docId);
+  // The server refuses every upload with its own sentence (an over-cap file, say).
+  const REFUSED = 'That file is larger than this note accepts.';
+  const uploads = /\/api\/docs\/[^/]+\/assets$/;
+  ada.expectHttp(413, uploads);
+  await ada.page.route((url) => uploads.test(url.pathname), (route) =>
+    route.fulfill({ status: 413, contentType: 'application/json', body: JSON.stringify({ error: 'too-large', message: REFUSED }) }));
 
   // A screenshot paste, then a copied video file (a browser File has no Electron `path`).
   for (const file of [{ name: 'screenshot.png', type: 'image/png' }, { name: 'clip.mp4', type: 'video/mp4' }]) {
@@ -493,7 +499,7 @@ test('j00-persist: a pasted image or video, or a dropped image, is refused visib
       return event.defaultPrevented;
     }, { bytes: PNG, ...file });
     expect(pasted, `the editor takes the pasted ${file.type}`).toBe(true);
-    await expect(refusal(ada.page), `a pasted ${file.type} is refused visibly`).toContainText(/upload/i);
+    await expect(refusal(ada.page), `a pasted ${file.type} is refused visibly`).toContainText(REFUSED);
     await expect(refusal(ada.page), 'the notice clears on its own').toHaveText('', { timeout: 10_000 });
   }
 
@@ -511,7 +517,7 @@ test('j00-persist: a pasted image or video, or a dropped image, is refused visib
   }, { bytes: PNG, x: box.x + 20, y: box.y + box.height / 2 });
   expect(dropped, 'the editor takes the dropped image').toBe(true);
   // The paste's notice has cleared, so this one is the drop's own.
-  await expect(refusal(ada.page), 'a dropped image is refused visibly').toContainText(/upload/i);
+  await expect(refusal(ada.page), 'a dropped image is refused visibly').toContainText(REFUSED);
 
   await ui.waitAcked(ada, docId);
   expect(await ui.body(ada, docId).locator('img, video, [data-lexical-decorator]').count(), 'no media node lands').toBe(0);

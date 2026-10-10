@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
+import { encodeSyncFrame } from '@moss-multi/protocol/sync';
 
 const sockets: FakeSocket[] = [];
 class FakeSocket extends EventTarget {
@@ -47,6 +48,45 @@ it('detaches a half-open socket without its close event and ignores its late clo
   expect(session.state.connection).toBe('online');
   expect(session.doc.getText('title').toString()).toBe('kept');
   expect(hasUnacked()).toBe(true);
+});
+it('keeps the socket while a busy main thread holds the heartbeat back, then detaches once it is idle and still silent', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  // A collaborator's large paste applied here: every 1 s tick runs about 2.5 s late, and no frame is read for 30 s.
+  for (let i = 0; i < 12; i += 1) {
+    vi.setSystemTime(Date.now() + 1_500);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(socket.closes, 'a busy tab is not a silent socket').not.toContain(4408);
+  await vi.advanceTimersByTimeAsync(13_500);
+  expect(socket.closes, 'idle and still silent: half-open').toContain(4408);
+});
+it('sends no step 1 while the last is unanswered and frames still arrive, and keeps the 4 s step 1 once answered or silent', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const step1s = () => socket.sent.filter((frame) => frame instanceof Uint8Array && frame[0] === 0 && frame[1] === 0).length;
+  let n = 0;
+  const receive = (step: number) => {
+    const peer = new Y.Doc();
+    peer.getText('peer').insert(0, `${n++}`);
+    socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(step, Y.encodeStateAsUpdate(peer)).slice().buffer }));
+    // lib0 read Date.now before the fake clock replaced it: stamp the frame on the fake clock, as the provider would.
+    session.provider.wsLastMessageReceived = Date.now();
+  };
+  expect(step1s(), 'the step 1 on open').toBe(1);
+  // A peer behind a large paste: its pieces arrive about once a second, and the answer is queued behind them.
+  for (let i = 0; i < 10; i += 1) {
+    receive(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(step1s(), 'no second step 1 while its answer is on its way').toBe(1);
+  receive(1);
+  for (let i = 0; i < 5; i += 1) {
+    receive(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(step1s(), 'answered: the 4 s step 1 resumes').toBe(2);
+  await vi.advanceTimersByTimeAsync(9_000);
+  expect(step1s(), 'nothing arriving: the step 1 keeps frames flowing').toBeGreaterThanOrEqual(3);
+  expect(socket.closes).toEqual([]);
 });
 it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4429, 'conn-limit']] as const)(
   'stops reconnecting synchronously on %s', async (code, reason) => {
@@ -99,6 +139,25 @@ it('a demotion requests a fresh read-only binding', async () => {
   await vi.advanceTimersByTimeAsync(300);
   expect(session.state).toMatchObject({ canWrite: false, resync: true });
   expect(sockets).toHaveLength(1);
+});
+it('a demotion alone keeps the view-only notice; a removal right after it leaves only the ended notice (T3.S20)', async () => {
+  const { refusalMessage } = await import('../refusal.ts');
+  const VIEW_ONLY = 'You can view this note but can no longer edit it.';
+  const access = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'viewer' }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(4403);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(refusalMessage(), 'the demotion says the note is view-only').toBe(VIEW_ONLY);
+  // The pane rebinds read-only, then the owner removes him within the notice's 4 s.
+  session.dispose();
+  session = new DocSession('doc', false);
+  await session.provider.connect();
+  access.mockResolvedValue(new Response('{}', { status: 404 }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(4403);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(terminalOf('doc')).toBe('revoked');
+  expect(refusalMessage(), 'the ended note no longer says it can be viewed').not.toBe(VIEW_ONLY);
 });
 it('a refused write requests a fresh binding without retrying the rejected state', async () => {
   latest().open(); session.provider.synced = true;

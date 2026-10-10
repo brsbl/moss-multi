@@ -1,15 +1,19 @@
 // The register binding (A§10.10; docs/design/registers.md rules 1, 2 and 9): a code, HTML or formula node's payload is
-// the Y.Text of its own payload doc, keyed by the node's `__regId`; the node's own field is a render cache that never
-// rides the wire. Getters read the payload doc, setters write minimal diffs to it, and only the client (or server
+// the Y.Text of its own payload doc, keyed by the node's `__regId` (a chart's or sketch's, the doc's per-key Y.Map);
+// the node's own fields are a render cache that never ride the wire. Getters read the payload doc, setters write minimal diffs to it, and only the client (or server
 // mirror) that mints an id writes its payload's first text, in the update that creates its element.
 import {
-  $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
+  $getEditor, $getNodeByKey, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
 } from 'lexical';
 import * as Y from 'yjs';
 import { diffAtCaret, diffText, rebaseOps, SERVER_CELL_BUDGET } from '@moss-multi/core/text-diff';
-import { newPayloadId, payloadDocsFor, payloadText, REGISTER_FIELDS, type PayloadDocs } from './payload-docs.ts';
+import { fieldsOf, MAP_REGISTERS, sameValue, type Fields } from './map-codecs.ts';
+import {
+  isPayloadType, newPayloadId, payloadDocsFor, payloadMap, payloadText, REGISTER_FIELDS, seedPayload, type PayloadDocs,
+} from './payload-docs.ts';
 
 export { REGISTER_FIELDS };
+export { MAP_REGISTERS, moveEntries, rebaseMapEntries, RegisterDraft, sameValue } from './map-codecs.ts';
 export const REGISTER_LOCAL_ORIGIN = Symbol('moss-multi:register-local');
 /** The minter's first text: outside every undo manager, so undoing a creation withholds the payload. */
 export const REGISTER_MINT = Symbol('moss-multi:register-mint');
@@ -57,6 +61,9 @@ function payload(text: Y.Text): string {
 /** The note doc an editor's registers are bound to; views treat it as "this note is shared". */
 export const registerDoc = (editor: LexicalEditor): Y.Doc | undefined => registries.get(editor)?.root;
 
+/** The payload docs an editor's registers read and write. */
+export const registerPayloads = (editor: LexicalEditor): PayloadDocs | undefined => registries.get(editor)?.host;
+
 /** The payload text behind node `key`, held on demand; undefined for an unbound editor or a node with no id yet. */
 export function payloadTextOf(editor: LexicalEditor, key: NodeKey): Y.Text | undefined {
   const registry = registries.get(editor);
@@ -103,6 +110,63 @@ export function writeRegister(node: LexicalNode, next: string): boolean {
   return true;
 }
 
+/** Node `node`'s compound payload doc while its value is there to read or edit; undefined otherwise. */
+function heldMap(node: LexicalNode, registry: Registry | undefined): Y.Map<unknown> | undefined {
+  const id = (node as RegisterNode).__regId;
+  if (!registry || !id || registry.pending.has(id) || !MAP_REGISTERS[node.getType()]) return undefined;
+  const map = payloadMap(registry.host.hold(id));
+  // Not arrived yet: the node's cache stands in, and nothing writes against an empty base.
+  return map.size ? map : undefined;
+}
+
+/** The node's compound payload from its payload doc, or undefined when it has none (unbound, new, or not arrived). */
+export function readMapRegister(node: LexicalNode): Fields | undefined {
+  const map = heldMap(node, nodeRegistries.get(node) ?? currentRegistry());
+  return map ? MAP_REGISTERS[node.getType()].decode(map) : undefined;
+}
+
+/**
+ * Writes the keys `next` changes. With `base` (the value the caller derived `next` from), a key the caller left as
+ * it was keeps whatever a peer wrote meanwhile; without it the payload's current value is the base. False when the
+ * caller should write the node's cache instead (unbound, or a new node whose first value is not written yet).
+ */
+export function writeMapRegister(node: LexicalNode, next: Fields, base?: Fields): boolean {
+  const registry = currentRegistry();
+  const id = (node as RegisterNode).__regId;
+  const codec = MAP_REGISTERS[node.getType()];
+  if (!registry || !codec || !id || registry.pending.has(id)) return false;
+  // A viewer's write would leave the client and get its socket closed as revoked; its controls are inert instead.
+  if (!$getEditor().isEditable()) return true;
+  const register = heldMap(node, registry);
+  // A payload that has not arrived is read-only, as a text field is.
+  if (!register) return true;
+  const current = codec.decode(register);
+  const before = codec.encode(base ?? Object.fromEntries(Object.keys(next).map(field => [field, current[field]])), register);
+  const after = codec.encode(next, before);
+  const implied = codec.implied?.(register);
+  register.doc!.transact(() => {
+    for (const [key, value] of after) {
+      if (before.has(key) && sameValue(before.get(key), value) && !implied?.has(key)) continue;
+      if (!register.has(key) || !sameValue(register.get(key), value)) register.set(key, value);
+    }
+    for (const key of before.keys()) if (!after.has(key) && register.has(key)) register.delete(key);
+  }, REGISTER_LOCAL_ORIGIN);
+  return true;
+}
+
+/** The compound payload's raw entries, copied, or undefined when the node has none. */
+export function readMapEntries(node: LexicalNode): Map<string, unknown> | undefined {
+  const map = heldMap(node, nodeRegistries.get(node) ?? currentRegistry());
+  return map ? new Map(map.entries()) : undefined;
+}
+
+/** A node's payload value as its first write carries it: its text, or its compound fields' encoded keys. */
+export function seedOf(node: LexicalNode): string | Map<string, unknown> {
+  const fields = node as RegisterNode;
+  const codec = MAP_REGISTERS[node.getType()];
+  return codec ? codec.encode(fieldsOf(fields, codec)) : String(fields[REGISTER_FIELDS[node.getType()]] ?? '');
+}
+
 /** Gives a node a new id whose first text this editor writes when the update commits (rule 2). */
 function $mint(registry: Registry, node: RegisterNode, id: string = newPayloadId()): void {
   (node.getWritable() as RegisterNode).__regId = id;
@@ -116,14 +180,14 @@ function $mint(registry: Registry, node: RegisterNode, id: string = newPayloadId
  */
 export function $assignRegisterIds(): void {
   const registry = currentRegistry();
-  const walk = (node: LexicalNode) => {
-    if (REGISTER_FIELDS[node.getType()]) {
-      if (registry) $mint(registry, node as RegisterNode);
-      else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
-    }
-    if ($isElementNode(node)) for (const child of node.getChildren()) walk(child);
+  const assign = (node: LexicalNode) => {
+    if (registry) $mint(registry, node as RegisterNode);
+    else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
   };
-  walk($getRoot());
+  // Every node the update holds, rather than a walk of the tree: an import makes millions, and the walk looked each
+  // one up by key. A payload node counts only in the tree; ids are random, so the order is immaterial.
+  const nodes = $getEditor()._pendingEditorState!._nodeMap;
+  for (const node of nodes.values()) if (isPayloadType(node.__type) && node.isAttached()) assign(node);
 }
 
 /**
@@ -135,6 +199,18 @@ export function registerState(editor: LexicalEditor, key: NodeKey): { id: string
   const id = (editor.getEditorState()._nodeMap.get(key) as RegisterNode | undefined)?.__regId;
   if (!registry || !id) return undefined;
   return { id, ready: !registry.pending.has(id) && registry.host.get(id) !== undefined && !registry.host.awaiting(id) };
+}
+
+/**
+ * Whether node `key`'s compound payload (chart, sketch) may take an edit: unbound, new (its first value is still the
+ * node's), or arrived. Until then a write has nothing to land on, so the view offers no control that writes.
+ */
+export function mapRegisterWritable(editor: LexicalEditor, key: NodeKey): boolean {
+  const registry = registries.get(editor);
+  const id = (editor.getEditorState()._nodeMap.get(key) as RegisterNode | undefined)?.__regId;
+  if (!registry || !id || registry.pending.has(id)) return true;
+  const doc = registry.host.get(id);
+  return !!doc && !registry.host.awaiting(id) && payloadMap(doc).size > 0;
 }
 
 /** Calls `listener` when a payload is held, written first or arrives; editor updates are the caller's to watch. */
@@ -162,15 +238,27 @@ export function writeRegisterEdit(editor: LexicalEditor, key: NodeKey, before: s
   return text.toString();
 }
 
+/** Copies a held payload doc's value into node `target`'s excluded render cache, writing only what differs. */
+function $copyPayload(target: RegisterNode, doc: Y.Doc): void {
+  const field = REGISTER_FIELDS[target.getType()];
+  if (field) {
+    const value = payload(payloadText(doc));
+    if (target[field] !== value) (target.getWritable() as RegisterNode)[field] = value;
+    return;
+  }
+  const codec = MAP_REGISTERS[target.getType()];
+  const map = payloadMap(doc);
+  if (!codec || !map.size) return;
+  const decoded = codec.decode(map);
+  for (const name of codec.fields) if (!sameValue(target[name], decoded[name])) (target.getWritable() as RegisterNode)[name] = decoded[name];
+}
+
 /** Copy the payload into one node's excluded render cache. Never writes to the shared tree. */
 function $refreshNode(registry: Registry, node: LexicalNode | null): void {
-  const field = node && REGISTER_FIELDS[node.getType()];
-  if (!node || !field) return;
+  if (!node || !isPayloadType(node.getType())) return;
   const target = node as RegisterNode;
   const doc = registry.pending.has(target.__regId) ? undefined : registry.host.get(target.__regId);
-  if (!doc) return;
-  const value = payload(payloadText(doc));
-  if (target[field] !== value) (target.getWritable() as RegisterNode)[field] = value;
+  if (doc) $copyPayload(target, doc);
 }
 
 export interface BindRegistersOptions {
@@ -194,24 +282,22 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
     for (const other of registry.keysById.get(id) ?? []) if (other !== key && $getNodeByKey(other)?.isAttached()) return true;
     return false;
   };
-  for (const [type, field] of Object.entries(REGISTER_FIELDS)) {
+  for (const type of [...Object.keys(REGISTER_FIELDS), ...Object.keys(MAP_REGISTERS)]) {
     const klass = editor._nodes.get(type)?.klass;
     if (!klass) continue;
     stops.push(editor.registerNodeTransform(klass, (value) => {
       const node = value as RegisterNode;
       const id = node.__regId;
       if (!id || $isCopy(node.getKey(), id)) {
-        // A copy starts from its source's current text, not a render cache that may lag it.
+        // A copy starts from its source's current value, not a render cache that may lag it.
         const source = id && !registry.pending.has(id) ? host.get(id) : undefined;
-        if (source) (node.getWritable() as RegisterNode)[field] = payload(payloadText(source));
+        if (source) $copyPayload(node, source);
         $mint(registry, node);
         return;
       }
       if (registry.pending.has(id)) return;
       const held = host.get(id);
-      if (!held) return;
-      const shared = payload(payloadText(held));
-      if (node[field] !== shared) (node.getWritable() as RegisterNode)[field] = shared;
+      if (held) $copyPayload(node, held);
     }));
   }
   // Refreshes stay proportional to what changed: the nodes an update touched and the payloads whose text moved.
@@ -220,7 +306,7 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   const dirtyIds = new Set<string>();
   const index = (key: NodeKey, state: EditorState) => {
     const node = state._nodeMap.get(key) as RegisterNode | undefined;
-    const id = node && REGISTER_FIELDS[node.getType()] && node.__regId ? node.__regId : undefined;
+    const id = node && isPayloadType(node.getType()) && node.__regId ? node.__regId : undefined;
     const previous = idByKey.get(key);
     if (previous !== id) {
       if (previous !== undefined) {
@@ -262,13 +348,15 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   // Each payload's own observer marks only its id (rule 9); the V1 observer is untouched.
   const watch = (id: string, held: Y.Doc) => {
     const text = payloadText(held);
-    const observer = (_event: Y.YTextEvent, transaction: Y.Transaction) => {
+    const map = payloadMap(held);
+    const observer = (_event: unknown, transaction: Y.Transaction) => {
       if (transaction.origin === REGISTER_MINT) return;
       dirtyIds.add(id);
       refresh();
     };
     text.observe(observer);
-    stops.push(() => text.unobserve(observer));
+    map.observe(observer);
+    stops.push(() => { text.unobserve(observer); map.unobserve(observer); });
   };
   for (const [id, held] of host.docs) watch(id, held);
   stops.push(host.onHold(watch));
@@ -287,9 +375,9 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
         registry.pending.delete(id);
         const node = $getNodeByKey(key) as RegisterNode | null;
         if (!node || node.__regId !== id || !node.isAttached()) continue;
-        const text = String(node[REGISTER_FIELDS[node.getType()]] ?? '');
+        const seed = seedOf(node);
         const held = host.hold(id, true);
-        if (text) held.transact(() => payloadText(held).insert(0, text), REGISTER_MINT);
+        if (typeof seed !== 'string' || seed) seedPayload(held, seed, REGISTER_MINT);
       }
     }, { editor });
     notify();

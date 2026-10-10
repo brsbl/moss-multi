@@ -226,7 +226,8 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await switcher.click();
   const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
   await expect(shared).toBeVisible();
-  await expect(ben.page.getByRole('menuitem', { name: /New vault|Rename|Delete/ })).toHaveCount(0);
+  // Ben’s own Home is active, so "Share vault…" and "New vault" are his; its rename and trash sit beside the switcher.
+  await expect(ben.page.getByRole('menuitem', { name: /Rename|Delete|Trash/ })).toHaveCount(0);
   await shared.click();
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();

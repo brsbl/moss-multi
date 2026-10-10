@@ -1,15 +1,17 @@
 import { getServerByName, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
+import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
-import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
-  bytesToBase64, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
+  bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
   type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
@@ -22,10 +24,19 @@ import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
-import { payloadText } from './payload-docs.ts';
+import { seedPayload } from './payload-docs.ts';
 import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
+import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { writeTitle } from './server-title.ts';
+import { splitUpdate } from './update-pieces.ts';
+
+/** How long after a wake the doc re-feeds search. */
+const WAKE_FEED_MS = 1_000;
+/** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
+const PAYLOAD_FEED_MS = 2_000;
+/** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
+const SEARCH_FEED_VERSION = '2';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
@@ -45,6 +56,12 @@ export interface DocLimits {
   inboxBytes: number;
   /** How long a validation waits for D1 before failing closed (L§4.7). */
   accessDeadlineMs: number;
+  /** Full-state answers per principal: `docs` whole states at once, refilled over `windowMs` (T3.S14). */
+  answerBudget: { docs: number; windowMs: number };
+  /** Open anonymous sockets from one share link and client address (T3.B25). */
+  anonymousSocketsPerAddress: number;
+  /** The bytes of step 1s one socket may have waiting for that budget; past it one waits without its vector. */
+  waitingAnswerBytesPerConnection: number;
 }
 
 export interface CreateDocInput {
@@ -116,6 +133,11 @@ export class DocCapError extends Error {
   }
 }
 
+/** Where the DocDO feeds its title and body (A§5.3): the SearchDO in the Worker, a fake in the harness. */
+export interface SearchFeed {
+  index(entry: IndexEntry): Promise<{ linksChanged: boolean }>;
+}
+
 /** When a socket reaches DOC_SOCKET_MAX_MS from its admission here. */
 const agesAt = (attachment: Attachment) => (attachment.admittedAt ?? 0) + DOC_SOCKET_MAX_MS;
 const aged = (attachment: Attachment, now: number) => agesAt(attachment) <= now;
@@ -168,6 +190,47 @@ function send(connection: Connection, message: Uint8Array): void {
  * socket and sets the trusted headers; this class persists, seeds, gates writes and answers RPCs. Every RPC that
  * reads the doc starts with ready(), so a stub that outlives an eviction never reads an empty doc.
  */
+
+/** A state vector naming no client: the whole doc is missing. */
+const EMPTY_VECTOR = Y.encodeStateVector(new Map());
+
+/**
+ * The budget a step 1 draws on: its principal's, or for an anonymous link viewer its link's at its client address, so
+ * reconnecting or opening sockets in parallel does not multiply it (T3.S14, T3.B25).
+ */
+function budgetKey(attachment: Attachment): string {
+  return attachment.kind === 'anonymous' ? `\u0000link:${attachment.shareToken ?? ''}\u0000${attachment.address ?? ''}` : attachment.principalId;
+}
+
+/** A sync step 1's state vector, a view into `message`. */
+function stateVectorOf(message: ArrayBuffer | ArrayBufferView): Uint8Array {
+  const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+  const decoder = decoding.createDecoder(bytes);
+  decoding.readVarUint(decoder);
+  decoding.readVarUint(decoder);
+  return decoding.readVarUint8Array(decoder);
+}
+
+/** The share of `doc`'s clocks `vector` lacks: 1 for a fresh client, 0 for one up to date. */
+function missingShare(doc: Y.Doc, vector: Uint8Array): number {
+  const theirs = Y.decodeStateVector(vector);
+  let total = 0;
+  let missing = 0;
+  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(doc))) {
+    total += clock;
+    missing += Math.max(0, clock - (theirs.get(client) ?? 0));
+  }
+  return total > 0 ? missing / total : 0;
+}
+
+/** The least share of a whole state an answer costs, so tiny answers are bounded in number too. */
+const MIN_ANSWER_SHARE = 1 / 4096;
+/** The least share of its target an answer costs: every encode walks the target's whole delete set. */
+const MIN_TARGET_SHARE = 1 / 32;
+/** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
+const SLOW_FRAME_MS = 1_000;
+/** A slow save waits for this long without a client write. */
+const WRITE_PAUSE_MS = 2_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -183,6 +246,9 @@ export class DocDO extends YServer<SyncEnv> {
     inboxBytesPerConnection: 2 * 1024 * 1024,
     inboxBytes: 8 * 1024 * 1024,
     accessDeadlineMs: ACCESS_DEADLINE_MS,
+    answerBudget: ANSWER_BUDGET,
+    anonymousSocketsPerAddress: ANONYMOUS_SOCKETS_PER_ADDRESS,
+    waitingAnswerBytesPerConnection: 128 * 1024,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
@@ -203,6 +269,11 @@ export class DocDO extends YServer<SyncEnv> {
    */
   static access: (env: SyncEnv) => AccessCheck | null = () => null;
 
+  /** Where search feeds land; null leaves the doc unindexed. */
+  static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
+    index: async (entry) => (await getServerByName(env.SearchDO, SEARCH_DO_NAME)).index(entry),
+  } : null);
+
   readonly instanceId = crypto.randomUUID();
   /** Payload work since the last reset, which the harness reads to bound it (A§10.10). */
   get payloadWork(): PayloadWork {
@@ -214,6 +285,18 @@ export class DocDO extends YServer<SyncEnv> {
   #payloads: PayloadStore | null = null;
   #exported: string | null = null;
   #projections: Projections | null = null;
+  /** The title and body this instance last fed to search. */
+  #fed: string | null = null;
+  /** Doc edits since load; a feed marks the doc fed only if none landed while it ran. */
+  #edits = 0;
+  /** When the last client write landed, how long the last save took, and a save waiting for the writes to pause. */
+  #lastWriteAt = 0;
+  #saveMs = 0;
+  #quietSave: ReturnType<typeof setTimeout> | undefined;
+  /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
+  #searchStale = false;
+  /** A feed queued by a payload edit; payload docs do not trigger the note's debounced save. */
+  #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
   readonly #acks = new AckCoalescer<Connection>((connection, deletes, payloads) => this.#ack(connection, deletes, payloads), ACK_COALESCE_MS);
@@ -232,6 +315,11 @@ export class DocDO extends YServer<SyncEnv> {
   #pendingFlush: Promise<void> | null = null;
   /** Validations, admissions and frame batches run one at a time, in arrival order. */
   readonly #serial = serializer();
+  /** Each principal's answer budget in whole states, as of `at` (T3.S14). In memory: a wake starts full. */
+  readonly #answerBudgets = new Map<string, { left: number; at: number }>();
+  /** Each socket's step 1s waiting for its budget, the latest per target ('' the note, else a payload id), and their bytes. */
+  readonly #waitingAnswers = new Map<Connection, { bytes: number; frames: Map<string, Uint8Array> }>();
+  #answerTimer: ReturnType<typeof setTimeout> | undefined;
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
 
@@ -243,7 +331,14 @@ export class DocDO extends YServer<SyncEnv> {
       broadcast: (id, update, origin) => this.#broadcastPayload(id, update, origin),
       persisted: (_id, _update, origin) => {
         this.#exported = null;
-        if (isConnection(origin)) this.#projections?.touch();
+        this.#edited(store);
+        if (isConnection(origin)) {
+          this.#projections?.touch();
+          if (!this.#payloadFeed) this.#payloadFeed = setTimeout(() => {
+            this.#payloadFeed = null;
+            void this.#feedSearch();
+          }, PAYLOAD_FEED_MS);
+        }
       },
       principalOf: (origin) => (isConnection(origin) ? (attachmentOf(origin)?.principalId ?? '') : null),
     });
@@ -252,10 +347,8 @@ export class DocDO extends YServer<SyncEnv> {
     this.#payloads = payloads;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
     migrateFrontmatter(this.document, 'frontmatter-migration');
-    const migrated = migratePayloads(this.document, (id, text) => {
-      if (payloads.has(id)) return;
-      const doc = payloads.doc(id);
-      doc.transact(() => payloadText(doc).insert(0, text), JANITOR);
+    const migrated = migratePayloads(this.document, (id, value) => {
+      if (!payloads.has(id)) seedPayload(payloads.doc(id), value, JANITOR);
     });
     // The migrated text leaves the note's rows too.
     if (migrated) store.compact(this.document);
@@ -270,11 +363,27 @@ export class DocDO extends YServer<SyncEnv> {
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) this.#project(new Projections(this.name, target));
+    // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
+    // shape; once onStart has served the waiting frames. A doc being created is fed by the save its content triggers.
+    this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
+    if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
   }
 
-  /** Debounced by y-partyserver (2 s, at most 10 s). */
+  /**
+   * Debounced by y-partyserver (2 s, at most 10 s). On a large note its compaction and search export take seconds, and
+   * at most every 10 s while a large paste streams in they held the DO, with the writes it was applying, past a peer's
+   * 12 s silence limit (T3.S6): a save that took over a second waits until the writes pause.
+   */
   override async onSave(): Promise<void> {
+    clearTimeout(this.#quietSave);
+    if (this.#saveMs > SLOW_FRAME_MS && Date.now() - this.#lastWriteAt < WRITE_PAUSE_MS) {
+      this.#quietSave = setTimeout(() => void this.onSave(), WRITE_PAUSE_MS);
+      return;
+    }
+    const started = Date.now();
     if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
+    await this.#feedSearch();
+    this.#saveMs = Date.now() - started;
   }
 
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
@@ -302,6 +411,10 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(code ?? CLOSE.noPrincipal, 'refused');
       return;
     }
+    if (attachment.kind === 'anonymous' && this.#anonymousSockets(budgetKey(attachment)) >= this.#limits.anonymousSocketsPerAddress) {
+      connection.close(CLOSE.connectionLimit, 'refused');
+      return;
+    }
     const check = this.#accessCheck();
     // Pending until validated: no broadcast reaches it and none of its frames apply before then (A§8).
     attach(connection, { ...attachment, admittedAt: Date.now(), pending: check !== null });
@@ -323,6 +436,9 @@ export class DocDO extends YServer<SyncEnv> {
     encoding.writeVarUint(encoder, 0);
     writeSyncStep1(encoder, this.document);
     connection.send(encoding.toUint8Array(encoder));
+    // The payload bytes the cap counts, withheld ones too (a client holds only the payloads its tree names); none: 0.
+    const payloadBytes = this.#payloads?.totalBytes ?? 0;
+    if (payloadBytes > 0) this.sendCustomMessage(connection, JSON.stringify({ t: 'usage', pb: payloadBytes } satisfies ServerEvent));
     if (attachment.presenceAllowed && this.document.awareness.getStates().size) {
       connection.send(awarenessFrame(this.document.awareness, [...this.document.awareness.getStates().keys()]));
     }
@@ -468,6 +584,11 @@ export class DocDO extends YServer<SyncEnv> {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
     }
+    if (frame.kind === 'step1') {
+      const vector = stateVectorOf(message);
+      if (this.#mayAnswer(connection, attachment, '', store.stateBytes, vector, () => this.document)) this.#answer(connection, vector);
+      return;
+    }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     if (frame.kind === 'sync') {
       const { changes, missing, deletes } = classifySync(this.document, frame.update);
@@ -487,6 +608,17 @@ export class DocDO extends YServer<SyncEnv> {
     }
   }
 
+  /**
+   * A step 1's answer in frames of at most about ANSWER_PIECE_BYTES, whole blocks each: updates, then the step 2, so
+   * the provider reads as synced only once all of it has landed. y-partyserver sent it as one frame, and a peer behind
+   * a large paste was sent megabytes it read as silence until they arrived (T3.S6b).
+   */
+  #answer(connection: Connection, vector: Uint8Array): void {
+    const update = Y.encodeStateAsUpdate(this.document, vector);
+    const pieces = update.byteLength > ANSWER_PIECE_BYTES ? splitUpdate(update, ANSWER_PIECE_BYTES).map((piece) => piece.update) : [update];
+    for (const [index, piece] of pieces.entries()) send(connection, encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece));
+  }
+
   /** Defense in depth: below editor, y-partyserver never applies a step 2 or update, inert or not. */
   override isReadOnly(connection: Connection): boolean {
     return !roleAtLeast(attachmentOf(connection)?.role, 'editor');
@@ -497,11 +629,137 @@ export class DocDO extends YServer<SyncEnv> {
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
+    this.#waitingAnswers.delete(connection);
+    // A full budget is the same as none; a spent one stays until it refills, so reconnecting does not refill it.
+    const now = Date.now();
+    for (const key of [...this.#answerBudgets.keys()]) {
+      if (this.#budget(key, now).left >= this.#limits.answerBudget.docs) this.#answerBudgets.delete(key);
+    }
+  }
+
+  /** Open admitted anonymous sockets drawing on the budget `key`. */
+  #anonymousSockets(key: string): number {
+    let count = 0;
+    for (const connection of this.#all()) {
+      const attachment = attachmentOf(connection);
+      if (attachment?.kind === 'anonymous' && isOpen(connection) && budgetKey(attachment) === key) count += 1;
+    }
+    return count;
+  }
+
+  /** A budget now, refilled since it was last read. */
+  #budget(key: string, now: number): { left: number; at: number } {
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const held = this.#answerBudgets.get(key);
+    const budget = { left: held ? Math.min(docs, held.left + ((now - held.at) * docs) / windowMs) : docs, at: now };
+    this.#answerBudgets.set(key, budget);
+    return budget;
+  }
+
+  /**
+   * Whether a step 1 for `target` ('' the note, else a payload id; its doc and stored `bytes`) is answered now, checked
+   * before any encode. A signed-in principal has one budget across its sockets; anonymous sockets, which all share the
+   * id 'anonymous', have one per share link and client address, kept across reconnects (T3.B25). An answer costs the
+   * share of the stored state it sends, from the clocks `vector` lacks, and at least MIN_TARGET_SHARE of its target, so
+   * a synced client's resync costs little and a fresh one a whole target. It is answered while the budget is above
+   * zero; otherwise it waits as the socket's latest step 1 for `target` and is answered once the budget refills, so an
+   * honest reconnect or resync is late, never unanswered (T3.S14).
+   */
+  #mayAnswer(connection: Connection, attachment: Attachment, target: string, bytes: number, vector: Uint8Array, doc: () => Y.Doc): boolean {
+    const budget = this.#budget(budgetKey(attachment), Date.now());
+    if (budget.left <= 0) {
+      this.#wait(connection, target, vector);
+      return false;
+    }
+    // This answer covers any older step 1 for the same target.
+    this.#unwait(connection, target);
+    const total = (this.#store?.stateBytes ?? 0) + (this.#payloads?.totalBytes ?? 0);
+    const share = total > 0 ? Math.min(1, bytes / total) : 0;
+    budget.left -= Math.max(MIN_ANSWER_SHARE, share * Math.max(MIN_TARGET_SHARE, missingShare(doc(), vector)));
+    return true;
+  }
+
+  /**
+   * Keeps `vector` as the socket's waiting step 1 for `target`. A socket's waiting vectors are bounded (A§8 waiting
+   * frames): one past the allowance waits as an empty vector, which the refill answers with the whole target.
+   */
+  #wait(connection: Connection, target: string, vector: Uint8Array): void {
+    this.#unwait(connection, target);
+    const waiting = this.#waitingAnswers.get(connection) ?? { bytes: 0, frames: new Map<string, Uint8Array>() };
+    const allowance = this.#limits.waitingAnswerBytesPerConnection;
+    // A copy: the vector is a view into the whole frame.
+    const kept = waiting.bytes + vector.byteLength + target.length <= allowance ? vector.slice() : EMPTY_VECTOR;
+    const bytes = kept.byteLength + target.length;
+    if (waiting.bytes + bytes > allowance) {
+      // Only a socket with thousands of payloads waiting gets here; it reconnects and asks again.
+      this.#waitingAnswers.delete(connection);
+      connection.close(TRY_AGAIN, 'answers full');
+      return;
+    }
+    waiting.bytes += bytes;
+    waiting.frames.set(target, kept);
+    this.#waitingAnswers.set(connection, waiting);
+    this.#scheduleAnswers();
+  }
+
+  #unwait(connection: Connection, target: string): void {
+    const waiting = this.#waitingAnswers.get(connection);
+    const held = waiting?.frames.get(target);
+    if (!waiting || !held) return;
+    waiting.frames.delete(target);
+    waiting.bytes -= held.byteLength + target.length;
+    if (waiting.frames.size === 0) this.#waitingAnswers.delete(connection);
+  }
+
+  /** Re-handles the waiting step 1s when the first waiting budget is above zero again. */
+  #scheduleAnswers(): void {
+    if (this.#answerTimer !== undefined) return;
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const now = Date.now();
+    let due = Infinity;
+    for (const connection of this.#waitingAnswers.keys()) {
+      const attachment = attachmentOf(connection);
+      if (attachment) due = Math.min(due, Math.max(0, (-this.#budget(budgetKey(attachment), now).left * windowMs) / docs));
+    }
+    if (due === Infinity) return;
+    this.#answerTimer = setTimeout(() => {
+      this.#answerTimer = undefined;
+      const batch = [...this.#waitingAnswers].flatMap(([connection, { frames }]) =>
+        [...frames].map(([target, vector]) => [connection, target ? encodePayloadFrame(target, PAYLOAD_STEP1, vector) : encodeSyncFrame(0, vector)] as const));
+      this.#waitingAnswers.clear();
+      void this.#serial(() => this.#replayAnswers(batch)).catch((error) => console.error('DocDO waiting step 1s failed', error));
+    }, Math.ceil(due) + 1);
+  }
+
+  /**
+   * The waiting step 1s through the same validation and gates as a new frame, but not the inbox: they are bounded
+   * above, and replaying them through it would close a socket with many waiting. One still over budget waits again.
+   */
+  async #replayAnswers(batch: (readonly [Connection, Uint8Array])[]): Promise<void> {
+    const check = this.#accessCheck();
+    if (check) {
+      try {
+        await this.#validate(check);
+      } catch (error) {
+        console.error('DocDO could not validate access; refusing waiting step 1s', error);
+        for (const [connection] of batch) connection.close(TRY_AGAIN, 'unvalidated');
+        return;
+      }
+    }
+    for (const [connection, frame] of batch) {
+      if (!isOpen(connection)) continue;
+      try {
+        this.#handle(connection, frame);
+      } catch (error) {
+        console.error('DocDO waiting step 1 failed', error);
+      }
+    }
   }
 
   /**
    * Records the doc's folder and owner and writes its starting content: the seed, or an imported body. Idempotent:
-   * a repeated create changes nothing. Throws DocCapError for a body past the state cap.
+   * a repeated create changes nothing. Throws DocCapError for a body past the state cap or the converter's work budget,
+   * or frontmatter past its expansion budget.
    */
   async create(input: CreateDocInput): Promise<void> {
     const store = await this.#ready();
@@ -509,9 +767,17 @@ export class DocDO extends YServer<SyncEnv> {
     if (store.meta('created') !== null) return;
     if (input.markdown) {
       const parts = splitFrontmatter(input.markdown);
+      // Frontmatter whose aliases name far more than its text holds is refused whole, as a body past the cap is.
+      if (parts.error === FRONTMATTER_EXPANSION_ERROR) throw new DocCapError();
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
-      importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads), frontmatter);
+      try {
+        importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads), frontmatter);
+      } catch (error) {
+        // Markdown that spends the converter's whole work budget is refused whole too.
+        if (error instanceof Error && (error.message === IMPORT_BUDGET_SPENT || error.message === FRONTMATTER_EXPANSION_ERROR)) throw new DocCapError();
+        throw error;
+      }
     }
     const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
@@ -659,6 +925,13 @@ export class DocDO extends YServer<SyncEnv> {
     return this.#exported;
   }
 
+  /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
+  async reindex(): Promise<void> {
+    await this.#ready();
+    this.#fed = null;
+    await this.#feedSearch();
+  }
+
   /** Called through a raw stub and never runs onStart, so it reads nothing from the doc (A§19). */
   probeInstance(): { instanceId: string; constructedAt: number } {
     return { instanceId: this.instanceId, constructedAt: this.constructedAt };
@@ -803,6 +1076,34 @@ export class DocDO extends YServer<SyncEnv> {
     return this.#store;
   }
 
+  /**
+   * The title from Y.Text and the body as the converter exports it, never the tree's `toString()` (L§4.14). When the
+   * doc's wiki links change, its readers hear a meta event so open backlinks refresh (A§11).
+   */
+  async #feedSearch(): Promise<void> {
+    const feed = (this.constructor as typeof DocDO).searchFeed(this.env);
+    if (!feed) return;
+    try {
+      // Never through ready(): called from onLoad's timer and onSave, the doc is already loaded.
+      this.#exported ??= exportDocMarkdown(this.document, this.name);
+      const markdown = this.#exported;
+      const entry: IndexEntry = { docId: this.name, title: this.document.getText('title').toString(), body: splitFrontmatter(markdown).body };
+      const signature = `${entry.title}\u0000${entry.body}`;
+      const edits = this.#edits;
+      if (signature !== this.#fed) {
+        const { linksChanged } = await feed.index(entry);
+        this.#fed = signature;
+        if (linksChanged && this.env?.DB && this.env.PrincipalDO) await publishMeta(this.env, [this.name]);
+      }
+      if (this.#searchStale && edits === this.#edits) {
+        this.#store?.setMeta('search-fed', SEARCH_FEED_VERSION);
+        this.#searchStale = false;
+      }
+    } catch (error) {
+      console.error(`search feed for ${this.name} failed`, error);
+    }
+  }
+
   #seed(store: DocStore): void {
     if (store.meta('seeded') !== null) return;
     if (rootIsEmpty(this.document)) seedEmptyParagraph(this.document);
@@ -813,9 +1114,20 @@ export class DocDO extends YServer<SyncEnv> {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
     store.record(update, this.document);
+    this.#edited(store);
     if (isConnection(origin)) {
+      this.#lastWriteAt = Date.now();
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
+    }
+  }
+
+  /** An edit to the note or a payload: the search index may lack it until the next feed. */
+  #edited(store: DocStore): void {
+    this.#edits += 1;
+    if (!this.#searchStale) {
+      store.setMeta('search-fed', '');
+      this.#searchStale = true;
     }
   }
 
@@ -865,6 +1177,7 @@ export class DocDO extends YServer<SyncEnv> {
     try {
       if (step === PAYLOAD_STEP1) {
         if (!payloads.served(id)) return;
+        if (!this.#mayAnswer(connection, attachment, id, payloads.bytesOf(id), data, () => payloads.doc(id))) return;
         send(connection, encodePayloadFrame(id, PAYLOAD_STEP2, Y.encodeStateAsUpdate(payloads.doc(id), data)));
         payloads.addReaders(id, [attachment.principalId]);
         return;
@@ -894,9 +1207,11 @@ export class DocDO extends YServer<SyncEnv> {
       };
       if (this.#refused(connection, attachment, overCap, missing)) return;
       payloads.addReaders(id, [attachment.principalId]);
-      const doc = payloads.doc(id);
-      Y.applyUpdate(doc, data, connection);
-      this.#acks.schedule(connection, deletes, id, coverage(doc, data));
+      if (!payloads.applyFrame(id, data, connection)) {
+        this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+        return;
+      }
+      this.#acks.schedule(connection, deletes, id, coverage(payloads.doc(id), data));
     } catch {
       // A frame that does not decode is dropped like an unknown one.
     }
@@ -961,6 +1276,8 @@ export class DocDO extends YServer<SyncEnv> {
       sv: bytesToBase64(Y.encodeStateVector(this.document)),
       ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(deletes, new Map()))),
     };
+    const payloadBytes = this.#payloads?.totalBytes ?? 0;
+    if (payloadBytes > 0) event.pb = payloadBytes;
     if (payloads.size) {
       const acked: Record<string, PayloadAck> = {};
       for (const [id, covered] of payloads) {

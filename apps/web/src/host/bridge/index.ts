@@ -9,6 +9,11 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
+import { onNativeMenuCommand } from '../media/image-menu.ts';
+import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
+import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
+import { waitForAllAcked } from '../collab/unacked.ts';
+import { setWikiCandidates } from '../wiki-links.ts';
 import { registerDocOpener } from '../navigation.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
@@ -23,6 +28,26 @@ export interface NoteMetadata {
   trashedAt: number | null;
   pinned?: boolean;
   pinnedAt?: number | null;
+  /** Backlinks (A§15), on a doc whose backlinks this tab has read. */
+  incomingLinks?: NoteLink[];
+}
+
+/** moss's NoteLink: one row of LinksSection. */
+export interface NoteLink {
+  noteId: string;
+  title: string;
+  folderPath?: string;
+  updatedAt?: number;
+}
+
+/** moss's NoteSearchResult. */
+export interface NoteSearchResult {
+  id: string;
+  title: string;
+  folderPath?: string;
+  updatedAt?: number;
+  snippet?: string;
+  matchType: 'title' | 'content';
 }
 
 /** A doc as the API returns it (A§6): timestamps in epoch ms, and the caller's role where the API says it. */
@@ -34,6 +59,8 @@ export interface ApiDoc {
   role?: string;
   folderPath?: string;
   surfaced?: boolean;
+  /** The projected `<slug>.md` (A§5.1); wiki links resolve against its stem (A§15). */
+  filename?: string;
   /** The owner's trashed notes only (A§11), in epoch ms. */
   trashedAt?: number | null;
 }
@@ -51,13 +78,25 @@ export interface WorkspaceListing {
   docs: ApiDoc[];
 }
 
+type SessionStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
 /** The browser behind the bridge; injected in unit tests. */
 export interface BrowserHooks {
   origin: string;
+  /** A new tab with no opener. */
   open(url: string): void;
+  /** A new tab that keeps this one as its opener; false when the browser blocked it. */
+  openWindow(url: string): boolean;
+  /** Saves `body` through the browser's downloads. */
+  download(filename: string, body: Blob): void;
+  /** This tab's session storage, and its opener's when an opener of this origin exists. */
+  session: SessionStore | null;
+  openerSession(): Pick<Storage, 'getItem'> | null;
   replacePath(path: string): void;
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
+  /** The file chooser behind "/media → From computer"; `[]` when dismissed. */
+  chooseFiles(accept: string): Promise<File[]>;
 }
 
 export interface BridgeOptions {
@@ -100,8 +139,21 @@ const THEME_KEY = 'moss_theme';
 const PINS_KEY = 'moss-multi:pins';
 const NOTE_INTELLIGENCE_KEY = 'moss-multi:note-intelligence';
 const VAULT_KEY = 'moss-multi:active-vault';
+/** Notes whose backlinks this tab keeps current: the ones it opened most recently. */
+const BACKLINK_WATCH = 4;
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
+/** The one PDF export session a tab holds: the next Save as PDF replaces it, so session storage never accumulates. */
+const PDF_SESSION_KEY = 'moss-multi:pdf-export';
+/** How long Save as Markdown waits for unacked edits before refusing. */
+export const EXPORT_ACK_WAIT_MS = 8_000;
+
+/** moss's save-dialog file name (main/ipc-handlers.ts sanitizeFilename): no path separators or reserved characters. */
+export function markdownFileName(title: string): string {
+  const name = Array.from(title.normalize('NFKC').trim(), (char) => (char < ' ' || '<>:"/\\|?*'.includes(char) ? '-' : char))
+    .join('').replace(/^\.+/, '');
+  return `${name || UNTITLED}.md`;
+}
 
 type Method<R> = (...args: unknown[]) => Promise<R>;
 
@@ -115,7 +167,6 @@ const nothing: Method<null> = async () => null;
 const refuse = (what: string): Method<never> => async () => {
   throw new Error(`moss-multi: ${what}`);
 };
-const later = (what: string, milestone: number) => refuse(`${what} is not available on the web until M${milestone}`);
 const unavailable = (what: string) => refuse(`${what} is not available on the web`);
 
 /** What moss shows when the server refused a folder change without saying why: always a sentence. */
@@ -185,12 +236,17 @@ function writeJson(storage: BridgeOptions['storage'], key: string, value: unknow
   else storage?.setItem(key, JSON.stringify(value));
 }
 
-const inertBrowser: BrowserHooks = {
+export const inertBrowser: BrowserHooks = {
   origin: 'http://localhost',
   open: noop,
+  openWindow: () => false,
+  download: noop,
+  session: null,
+  openerSession: () => null,
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
+  chooseFiles: async () => [],
 };
 
 export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard, reopenDocs }: BridgeOptions) {
@@ -312,6 +368,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
+        rereadBacklinks();
         // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
         // restore, which remounts its pane with a fresh session.
         for (const id of pushed) reopenIds.delete(id);
@@ -340,6 +397,54 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       }, 1000);
     });
   };
+  // Backlinks (A§15) for the notes this tab opened most recently, carried on their records as moss's incomingLinks
+  // and re-read whenever the workspace channel says a doc changed (a DocDO announces a change to its links).
+  const backlinks = new Map<string, NoteLink[]>();
+  const watched: string[] = [];
+  const readBacklinks = async (id: string) => {
+    try {
+      const response = await request(`/api/docs/${encodeURIComponent(id)}/backlinks`);
+      if (!response.ok) {
+        if (response.status === 404) unwatch(id);
+        return;
+      }
+      const answer = await response.json() as { backlinks?: ApiDoc[] };
+      if (!Array.isArray(answer.backlinks)) return;
+      const links = answer.backlinks.map((row): NoteLink => {
+        const live = liveTitle(row.id);
+        return { noteId: row.id, title: live === null ? toNoteMetadata(row).title : displayTitle(live),
+          folderPath: known.get(row.id)?.folderPath ?? ROOT_FOLDER, updatedAt: seconds(row.updatedAt) };
+      });
+      if (JSON.stringify(links) === JSON.stringify(backlinks.get(id) ?? [])) {
+        if (!backlinks.has(id)) backlinks.set(id, links);
+        return;
+      }
+      backlinks.set(id, links);
+      // A metadata-only change: moss re-reads this note's record, which now carries the links.
+      diskListeners.forEach((listener) => listener([id], []));
+    } catch { /* The next workspace event or note switch reads them again. */ }
+  };
+  const unwatch = (id: string) => {
+    const at = watched.indexOf(id);
+    if (at !== -1) watched.splice(at, 1);
+  };
+  /** After the listing caught up with a workspace event: a watched note that left it (trashed, unshared) is dropped. */
+  const rereadBacklinks = () => {
+    for (const id of [...watched]) {
+      if (inListing(id)) void readBacklinks(id);
+      else unwatch(id);
+    }
+  };
+  // Only live listed notes: moss records links for them, and a trashed or unshared one would 404.
+  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
+  const watchBacklinks = (id: string) => {
+    if (!inListing(id)) return;
+    const at = watched.indexOf(id);
+    if (at !== -1) watched.splice(at, 1);
+    watched.unshift(id);
+    watched.splice(BACKLINK_WATCH);
+    void readBacklinks(id);
+  };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
@@ -355,9 +460,40 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   const withLocal = (listed: NoteMetadata): NoteMetadata => {
     // A doc this tab binds is named by its live Y.Text title, never by a listing read before a rename (A§9).
     const live = liveTitle(listed.id);
-    const note = live === null ? listed : { ...listed, title: displayTitle(live) };
+    let note = live === null ? listed : { ...listed, title: displayTitle(live) };
+    const links = backlinks.get(note.id);
+    if (links) note = { ...note, incomingLinks: links };
     const pinnedAt = pins()[note.id];
     return pinnedAt ? { ...note, pinned: true, pinnedAt } : note;
+  };
+  /** moss's notes:search: title matches over the listing first, then the index's hits across every doc the caller can discover. */
+  const search = async ({ query, limit = 20, excludeNoteId, searchTrashed }: { query: string; limit?: number; excludeNoteId?: string; searchTrashed?: boolean }) => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    if (searchTrashed) {
+      // The Trash view searches only the owner's trashed notes, by title; the index holds live docs.
+      return (await notes())
+        .filter((note) => note.trashedAt != null && note.title.toLowerCase().includes(needle))
+        .slice(0, limit)
+        .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' as const }));
+    }
+    const listed = (await notes()).filter((note) => note.id !== excludeNoteId && note.trashedAt == null);
+    const rank = (title: string) => (title === needle ? 0 : title.startsWith(needle) ? 1 : 2);
+    const titled: NoteSearchResult[] = listed
+      .filter((note) => note.title.toLowerCase().includes(needle))
+      .sort((a, b) => rank(a.title.toLowerCase()) - rank(b.title.toLowerCase()) || b.updatedAt - a.updatedAt)
+      .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' }));
+    const response = await request(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`);
+    if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
+    const { results } = await response.json() as { results: (ApiDoc & { snippet: string })[] };
+    const seen = new Set(titled.map((hit) => hit.id));
+    const indexed: NoteSearchResult[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
+      const listedNote = listed.find((note) => note.id === hit.id);
+      const title = listedNote?.title ?? toNoteMetadata(hit).title;
+      return { id: hit.id, title, folderPath: listedNote?.folderPath ?? ROOT_FOLDER, updatedAt: listedNote?.updatedAt ?? seconds(hit.updatedAt),
+        ...(title.toLowerCase().includes(needle) ? { matchType: 'title' as const } : { snippet: hit.snippet, matchType: 'content' as const }) };
+    });
+    return [...titled, ...indexed].slice(0, limit);
   };
   const notes = () => {
     const first = !workspaceSnapshot;
@@ -384,6 +520,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   };
   const docUrl = (id: string) => new URL(withShare(`/d/${encodeURIComponent(id)}`), browser.origin).href;
+  /** moss's preview window id: any number for an opened tab, null when the browser blocked it. */
+  const pdfTab = (sessionId: string): number | null =>
+    browser.openWindow(`/pdf-export?pdfExportSessionId=${encodeURIComponent(sessionId)}`) ? 1 : null;
 
   // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
   const idForPath = (path: string): string | null => {
@@ -508,6 +647,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
       getById: async (id: string) => {
         const note = await byId(id);
+        if (note && note.trashedAt == null) watchBacklinks(id);
         if (note?.trashedAt != null) {
           // The owner's Trash view reads a trashed note on its one read path, read-only (A§8).
           const response = await request(`/api/trash/${encodeURIComponent(id)}`);
@@ -520,7 +660,12 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       getContent: async (id: string) => ((await byId(id)) ? { id, content: '', version: 1 } : undefined),
       getFrontmatterSuggestions: async () => ({}),
-      getHeadings: empty,
+      getHeadings: async (id: string) => {
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/headings`);
+        if (!response.ok) return [];
+        const { headings } = await response.json() as { headings?: { level: 1 | 2 | 3 | 4; text: string }[] };
+        return Array.isArray(headings) ? headings : [];
+      },
       create: async (title: string, folderPath: string = ROOT_FOLDER) => {
         // moss creates in the active folder; before the first listing the server picks the caller's Home.
         const target = folderPath !== ROOT_FOLDER || workspaceSnapshot ? await folderId(folderPath) : null;
@@ -591,15 +736,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const note = restored();
         return note ? record(withLocal(note)) : undefined;
       },
-      search: async ({ query, limit, searchTrashed }: { query: string; limit?: number; searchTrashed?: boolean }) => {
-        // Title matches over the listing until search lands in M3; the Trash view searches only trashed notes.
-        const needle = query.trim().toLowerCase();
-        if (!needle) return [];
-        return (await notes())
-          .filter((note) => (note.trashedAt != null) === Boolean(searchTrashed) && note.title.toLowerCase().includes(needle))
-          .slice(0, limit ?? 50)
-          .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' as const }));
-      },
+      search,
       getFilesystemPath: async (id: string) => docUrl(id),
       setOpenFileWatchTargets: none,
       copyLinkToClipboard: async (id: string, input: { noteTitle?: string } = {}) => {
@@ -613,12 +750,38 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         }
       },
       showInFinder: none,
-      getPdfExportSession: nothing,
-      createPdfExportSession: nothing,
-      openPdfExportPreview: nothing,
-      openPdfExportRenderSurface: nothing,
+      // Save as PDF is browser print (R4): the session reaches the /pdf-export tab through session storage, which a tab
+      // opened with an opener copies; that tab prints once moss's PdfExportApp is ready (host/pdf-print.ts).
+      getPdfExportSession: async (sessionId: string) => {
+        for (const store of [browser.session, browser.openerSession()]) {
+          const held = readJson<{ id: string; payload: unknown }>(store as BridgeOptions['storage'], PDF_SESSION_KEY);
+          if (held?.id === sessionId) return held.payload;
+        }
+        return null;
+      },
+      createPdfExportSession: async (noteId: string, input: Record<string, unknown> = {}) => {
+        // PdfExportApp renders the serialized state and never reads renderedHtml, the largest field.
+        const payload: Record<string, unknown> = { noteId, ...input };
+        delete payload.renderedHtml;
+        const id = crypto.randomUUID();
+        writeJson(browser.session, PDF_SESSION_KEY, { id, payload });
+        return id;
+      },
+      openPdfExportPreview: async (sessionId: string) => pdfTab(sessionId),
+      openPdfExportRenderSurface: async (sessionId: string) => pdfTab(sessionId),
       exportPdf: unavailable('Exporting a PDF file'),
-      exportMarkdown: async () => ({ canceled: true }),
+      // Save as Markdown downloads the server's export (A§12, one converter): content extensions stay and no comment
+      // or layout marker is in it. moss's client-side markdown is not used. The server only has what it acked, so the
+      // export waits for this tab's edits to be acked and refuses rather than download a file that misses them (A§10.6).
+      exportMarkdown: async (id: string, input: { title?: string; markdown?: string } = {}) => {
+        if (!(await waitForAllAcked(EXPORT_ACK_WAIT_MS))) {
+          throw new Error('Your latest edits haven’t synced yet, so the export would miss them. Try again once they sync.');
+        }
+        const response = await request(`/api/docs/${encodeURIComponent(id)}/content`, { headers: { accept: 'text/markdown' } });
+        if (!response.ok) throw new Error('The note couldn’t export right now. Try again.');
+        browser.download(markdownFileName(input.title ?? ''), new Blob([await response.arrayBuffer()], { type: 'text/markdown' }));
+        return { canceled: false };
+      },
       onExternalFileOpen: silent,
       onInternalFileOpen: (callback?: Listener<[string]>) => {
         const open = (id: string) => {
@@ -704,14 +867,12 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     checkpoints: { getAll: empty },
     files: { search: empty, listDirectory: empty, open: empty },
     images: {
-      save: later('Uploading media', 3),
-      pick: later('Uploading media', 3),
-      persistUrl: later('Saving a remote image', 3),
+      ...createImagesApi({ request, chooseFiles: (accept) => browser.chooseFiles(accept) }),
       copyFromPath: unavailable('Copying a local file'),
-      copyFromNoteAsset: later('Copying media between notes', 3),
     },
+    // No screenshots: an HTML block's preview is its live sandboxed frame (host/html-frame.ts).
     htmlPreview: { ensure: nothing, onMaterialized: silent, onFailed: silent },
-    webEmbedPreview: { ensure: nothing, subscribe: silent },
+    webEmbedPreview: createWebEmbedPreviewApi(request),
     videoThumbnail: { ensure: nothing, onMaterialized: silent },
     system: {
       showEmojiPanel: none,
@@ -719,15 +880,17 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       getGlobalShortcut: async () => ({ quickCapture: '', enabled: false }),
       setGlobalShortcut: async () => false,
       setGlobalShortcutEnabled: none,
+      // The image context menu offers Edit Alt Text… on any image in an editable note (deviation 5; ImageContextMenu).
       setImageAltTextMenuEnabled: none,
       // Open in New Window is a browser tab (R4).
       createWindow: async (input: { noteId?: string | null } = {}) => {
-        browser.open(input.noteId ? docUrl(input.noteId) : new URL('/', browser.origin).href);
+        browser.open(input.noteId ? docUrl(input.noteId) : new URL(withShare('/'), browser.origin).href);
         return { action: 'created' as const, windowId: -1 };
       },
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       setFocusedNoteId: async (id: string | null) => {
+        if (id && known.get(id)?.trashedAt == null) watchBacklinks(id);
         // A trashed note has no address: a fresh load of it is the one 404 (A§8).
         if (id && known.get(id)?.trashedAt == null && docIdFromPath(pathname()) !== id) {
           browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
@@ -738,7 +901,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       moveWindowDrag: none,
       endWindowDrag: none,
       onGlobalShortcutActivated: silent,
-      onNativeMenuCommand: silent,
+      onNativeMenuCommand,
       waitForReady: async () => {
         await notes().catch(() => undefined);
       },
@@ -796,11 +959,38 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
+function sessionStorageOrNull(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function windowBrowser(): BrowserHooks {
   return {
     origin: window.location.origin,
     open: (url) => {
       window.open(url, '_blank', 'noopener');
+    },
+    openWindow: (url) => window.open(url, '_blank') !== null,
+    download: (filename, body) => {
+      const href = URL.createObjectURL(body);
+      const link = Object.assign(document.createElement('a'), { href, download: filename });
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60_000);
+    },
+    session: sessionStorageOrNull(),
+    openerSession: () => {
+      try {
+        const opener = window.opener as Window | null;
+        return opener && opener.location.origin === window.location.origin ? opener.sessionStorage : null;
+      } catch {
+        return null; // an opener on another origin
+      }
     },
     // Moss keeps its own back and forward (A§9 navigation), so the address changes without the router: TanStack wraps
     // window.history.replaceState, and the route change it reports would remount moss's whole App.
@@ -815,6 +1005,7 @@ function windowBrowser(): BrowserHooks {
         new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) }),
       ]);
     },
+    chooseFiles: chooseFilesInBrowser,
   };
 }
 
@@ -871,6 +1062,8 @@ export function installBridge(
     }),
   });
   installedBridge = bridge;
+  // A trashed note is no wiki-link target (A§15).
+  setWikiCandidates(() => (bridge[WORKSPACE].getSnapshot()?.docs ?? []).filter((doc) => doc.trashedAt == null));
   (window as unknown as { electronAPI: Bridge }).electronAPI = bridge;
   return bridge;
 }

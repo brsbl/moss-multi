@@ -81,6 +81,8 @@ export interface Who {
   role?: string;
   session?: string | null;
   share?: string | null;
+  /** The client address bucket the Worker saw at upgrade. */
+  address?: string;
   /** When the Worker resolved the role (the trusted header); defaults to now. */
   resolvedAt?: number;
   /** The Worker's trusted headers as authenticateParty set them; replaces every field above. */
@@ -102,6 +104,7 @@ export async function connect(opened: Opened, who: Who = {}, doc?: Y.Doc, pk?: s
   headers.set(TRUSTED.role, who.role ?? 'editor');
   if (who.session !== null) headers.set(TRUSTED.session, who.session ?? `session-${connections}`);
   if (who.share) headers.set(TRUSTED.share, who.share);
+  if (who.address) headers.set(TRUSTED.address, who.address);
   headers.set(TRUSTED.resolvedAt, String(who.resolvedAt ?? Date.now()));
   if (who.headers) {
     for (const name of [...headers.keys()]) if (name !== 'upgrade') headers.delete(name);

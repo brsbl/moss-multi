@@ -1,16 +1,19 @@
 // The DocDO core in the Node harness (BUILDPLAN T0.7; A§5.1): replay, chunking, compaction identity, the seed,
 // admission, the write classifier with loud refusal, acks, limits and the RPC guard.
+import * as decoding from 'lib0/decoding';
 import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
-import { readFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
+import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { serverWrite } from '../../src/server-doc.ts';
-import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
+import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, step1, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
+/** Wall time, taken before the fake timers replace the clock. */
+const clock = performance.now.bind(performance);
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -200,6 +203,96 @@ describe('server writes', () => {
     const markdown = `---\nlarge: ${'x'.repeat(5_000)}\n---\n\nSmall body`;
     await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown })).rejects.toThrow('doc-cap');
     expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+  });
+
+  // YAML aliases share one parsed node: 400 bytes naming 262,144 leaves, and anchors that name themselves.
+  const aliasBomb = ['l0: &l0 [1, 1, 1, 1]', ...Array.from({ length: 9 }, (_, i) => `l${i + 1}: &l${i + 1} [${Array(4).fill(`*l${i}`).join(', ')}]`)].join('\n');
+  // 98 KB naming 8,192 copies of one 64 KB string (512 MB), as a value and as a flow-sequence key js-yaml joins in load.
+  const longString = `blob: &b ${'x'.repeat(65_536)}`;
+  const aliases = Array(8_192).fill('*b').join(', ');
+  it.each([
+    ['an exponential alias graph', aliasBomb],
+    ['a self-referencing sequence', 'self: &s [*s]'],
+    ['a self-referencing mapping', 'map: &m {k: *m}'],
+    ['8,192 aliases of one 64 KB string', `${longString}\ncopies: [${aliases}]`],
+    ['a flow-sequence key of 8,192 aliases of one 64 KB string', `${longString}\n? [${aliases}]\n: v`],
+  ])(
+    'refuses frontmatter of %s promptly as doc-cap and writes nothing', { timeout: 20_000 }, async (_, yaml) => {
+      const opened = await start(openDoc());
+      const before = Y.encodeStateAsUpdate(opened.dobj.document);
+      const started = clock();
+      await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: `---\n${yaml}\n---\n\nBody` })).rejects.toThrow('doc-cap');
+      expect(clock() - started).toBeLessThan(2_000);
+      expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+      expect(readFrontmatter(opened.dobj.document)).toBeNull();
+      // Nothing was recorded as created: an ordinary create still lands.
+      await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: 'Body' });
+      expect(await opened.dobj.exportMarkdown()).toBe(exportMarkdown(importMarkdown('Body')));
+    });
+
+  it('imports benign aliases and dates in frontmatter unchanged', async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: '---\nbase: &b {x: 1, tags: [a, b]}\ncopy: *b\ndue: 2026-11-01\n---\nBody' });
+    const base = { x: 1, tags: ['a', 'b'] };
+    expect(readFrontmatter(opened.dobj.document)).toEqual({ base, copy: base, due: '2026-11-01' });
+  });
+});
+
+describe('frontmatter at scale', () => {
+  // A server import or an editor's push of many flat keys is admitted or refused in time linear in the keys: for
+  // 4x the keys, well under the 16x a quadratic step would cost.
+  const flat = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${String(i).padStart(6, '0')}`, 0]));
+  const capped = (bytes: number) => class extends DocDO {
+    static override limits = { ...DocDO.limits, stateCapBytes: bytes };
+  };
+  /** The encoded state of `count` flat keys alone; a cap a little above it fits them, a little below refuses them. */
+  function stateOf(count: number): number {
+    const doc = new Y.Doc();
+    updateFrontmatter(doc, null, flat(count), 'measure');
+    const bytes = Y.encodeStateAsUpdate(doc).byteLength;
+    doc.destroy();
+    return bytes;
+  }
+
+  async function imported(count: number, cap: number): Promise<{ ms: number; refused: boolean }> {
+    const opened = await start(openDoc(new Backing(), capped(cap) as never));
+    const markdown = `---\n${Object.keys(flat(count)).map((key) => `${key}: 0`).join('\n')}\n---\n\nBody`;
+    let refused = false;
+    const started = clock();
+    try {
+      await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown });
+    } catch (error) {
+      expect(String(error)).toContain('doc-cap');
+      refused = true;
+    }
+    const ms = clock() - started;
+    expect(Object.keys(readFrontmatter(opened.dobj.document) ?? {})).toHaveLength(refused ? 0 : count);
+    return { ms, refused };
+  }
+
+  async function pushed(count: number, cap: number): Promise<{ ms: number; refused: boolean }> {
+    const opened = openDoc(new Backing(), capped(cap) as never);
+    const editor = await editorOn(opened);
+    const started = clock();
+    updateFrontmatter(editor.doc, readFrontmatter(editor.doc), flat(count), 'test');
+    await editor.flush();
+    const ms = clock() - started;
+    const refused = editor.events.some((event) => event.t === 'write-refused' && event.reason === 'doc-cap');
+    expect(Object.keys(readFrontmatter(opened.dobj.document) ?? {})).toHaveLength(refused ? 0 : count);
+    return { ms, refused };
+  }
+
+  it.each([
+    ['imports', imported, 1.25, false],
+    ['refuses an import of', imported, 0.9, true],
+    ['admits a push of', pushed, 1.25, false],
+    ['refuses a push of', pushed, 0.9, true],
+  ] as const)('%s tens of thousands of flat keys near the state cap in time linear in the keys', { timeout: 600_000 }, async (_, run, factor, refused) => {
+    await run(2_000, Math.round(stateOf(2_000) * factor));
+    const small = await run(8_000, Math.round(stateOf(8_000) * factor));
+    const large = await run(32_000, Math.round(stateOf(32_000) * factor));
+    expect([small.refused, large.refused]).toEqual([refused, refused]);
+    expect(large.ms, `8,000 keys took ${small.ms.toFixed(0)} ms, 32,000 took ${large.ms.toFixed(0)} ms`).toBeLessThanOrEqual(7 * small.ms + 250);
   });
 });
 
@@ -581,5 +674,231 @@ describe('RPC', () => {
     const live = await connect(woken, { role: 'editor' });
     await live.hello();
     expect(live.closed, 'the trash never committed, so the doc reopens').toBeNull();
+  });
+});
+
+describe('answers', () => {
+  it('answers a step 1 far behind in frames under 256 KiB of whole blocks, updates first and the step 2 last', async () => {
+    const opened = await start(openDoc());
+    const writer = await connect(opened, { role: 'editor' });
+    const lexical = bindLexical(writer.doc);
+    await writer.hello();
+    for (let batch = 0; batch < 4; batch += 1) {
+      lexical.editor.update(() => {
+        for (let i = 0; i < 600; i += 1) $getRoot().append($createParagraphNode().append($createTextNode(`${batch}.${i} ${'x'.repeat(440)}`)));
+      }, { discrete: true });
+      await writer.flush();
+    }
+    expect(Y.encodeStateAsUpdate(opened.dobj.document).byteLength, 'the doc is several answer pieces').toBeGreaterThan(1024 * 1024);
+    expect(blockTypes(opened.dobj.document).length).toBeGreaterThan(2_400);
+
+    const reader = await connect(opened, { role: 'viewer' });
+    const from = reader.socket.sent.length;
+    await reader.hello();
+    const answer = reader.socket.sent.slice(from).filter((frame): frame is Uint8Array => typeof frame !== 'string' && frame[0] === 0 && frame[1] !== 0);
+    expect(answer.length, 'the answer is several frames').toBeGreaterThan(4);
+    // A piece ends at the first block boundary past its budget, so it may run a block over.
+    expect(Math.max(...answer.map((frame) => frame.byteLength)), 'none is past the piece size by more than a block').toBeLessThanOrEqual(260 * 1024);
+    expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
+    expect(Y.encodeStateVector(reader.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
+    expect(blockTypes(reader.doc)).toEqual(blockTypes(opened.dobj.document));
+    expect(reader.closed).toBeNull();
+  });
+
+  describe('the answer budget (T3.S14)', () => {
+    const BUDGET = { docs: 4, windowMs: 10_000 };
+    class Budgeted extends DocDO {
+      static override limits = { ...DocDO.limits, answerBudget: BUDGET };
+    }
+    const CAP = 3;
+    class Capped extends DocDO {
+      static override limits = { ...DocDO.limits, answerBudget: BUDGET, anonymousSocketsPerAddress: CAP };
+    }
+    /** The full-state answers a socket was sent since `from`: each ends in exactly one step 2. */
+    const answers = (client: TestClient, from: number) =>
+      client.socket.sent.slice(from).filter((frame) => typeof frame !== 'string' && frame[0] === 0 && frame[1] === 1).length;
+    const title = (doc: Y.Doc) => doc.getText('title').toString();
+
+    it('bounds the encodes a viewer\'s repeated step 1 frames draw while an editor keeps writing, then answers the latest one', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Budget');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-1' });
+      await viewer.hello();
+      expect(title(viewer.doc), 'a fresh connect converges').toBe('Budget');
+      const from = viewer.socket.sent.length;
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 256; i += 1) {
+        await viewer.deliver(empty);
+        if (i % 32 === 0) await typeTitle(editor, ` ${i}`);
+      }
+      // The budget, plus the one answer that may run it into debt.
+      expect(answers(viewer, from), 'repeated step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs + 1);
+      expect(editor.closed).toBeNull();
+      expect(title(opened.dobj.document), 'the editor kept writing').toContain(' 224');
+      expect(viewer.closed, 'an over-budget step 1 waits; the socket stays').toBeNull();
+      const before = answers(viewer, from);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer, from) - before, 'the waiting step 1s coalesce into one answer').toBe(1);
+      await viewer.pump();
+      expect(title(viewer.doc)).toBe(title(opened.dobj.document));
+    });
+
+    it('a reconnect past the budget and a resync still converge', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Start');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-2' });
+      await viewer.hello();
+      await typeTitle(editor, ' more');
+      // A resync on the same socket: a step 1 within the budget is answered at once.
+      await viewer.hello();
+      expect(title(viewer.doc), 'a resync converges').toBe('Start more');
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 64; i += 1) await viewer.deliver(empty);
+      await viewer.drop();
+      await typeTitle(editor, ' again');
+      // The same principal, budget spent, on a fresh doc: its step 1 waits for the budget, and is never dropped.
+      const back = await connect(opened, { role: 'viewer', id: 'viewer-2' });
+      await back.hello();
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await back.pump();
+      expect(back.closed).toBeNull();
+      expect(title(back.doc), 'the reconnect converges').toBe('Start more again');
+      expect(Y.encodeStateVector(back.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
+    });
+
+    it('anonymous link viewers at different addresses each get their own budget, and their up-to-date resyncs cost little', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Shared by link');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1' } as const;
+      const viewers: TestClient[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const viewer = await connect(opened, { ...anonymous, address: `198.51.100.${i + 1}` });
+        await viewer.hello();
+        viewers.push(viewer);
+      }
+      // The client's 4 s heartbeat resync: a step 1 from a synced doc, whose answer is only the delete set.
+      for (let round = 0; round < 10; round += 1) for (const viewer of viewers) await viewer.hello();
+      for (const viewer of viewers) expect(answers(viewer, 0), 'every step 1 answered at once').toBe(11);
+      const stranger = await connect(opened, { ...anonymous, address: '203.0.113.9' });
+      await stranger.hello();
+      expect(title(stranger.doc), 'a new stranger opens the note at once').toBe('Shared by link');
+    });
+
+    it('an anonymous viewer reconnecting within the window draws a bounded number of encodes, then converges (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Reconnect');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '198.51.100.7' } as const;
+      let encodes = 0;
+      for (let i = 0; i < 24; i += 1) {
+        const viewer = await connect(opened, anonymous);
+        await viewer.hello();
+        encodes += answers(viewer, 0);
+        await viewer.drop();
+      }
+      // The budget, plus the one answer that may run it into debt.
+      expect(encodes, 'reconnecting does not refill the budget').toBeLessThanOrEqual(BUDGET.docs + 1);
+      // An honest viewer's first sync is late, never unanswered, and a resync on it converges.
+      const honest = await connect(opened, anonymous);
+      await honest.hello();
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await honest.pump();
+      expect(honest.closed).toBeNull();
+      expect(title(honest.doc), 'the first sync converges').toBe('Reconnect');
+      await typeTitle(editor, ' again');
+      await honest.hello();
+      expect(title(honest.doc), 'a resync converges').toBe('Reconnect again');
+    });
+
+    it('parallel anonymous sockets from one address share one budget, and their number is capped (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Capped as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Parallel');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '2001:db8:1:2::/64' } as const;
+      const sockets: TestClient[] = [];
+      for (let i = 0; i < CAP; i += 1) sockets.push(await connect(opened, anonymous));
+      for (const socket of sockets) expect(socket.closed).toBeNull();
+      const extra = await connect(opened, anonymous);
+      expect(extra.closed?.code, 'past the cap a socket from that link and address is refused').toBe(CLOSE.connectionLimit);
+      const empty = step1(new Y.Doc());
+      for (let round = 0; round < 4; round += 1) for (const socket of sockets) await socket.deliver(empty);
+      const encodes = sockets.reduce((sum, socket) => sum + answers(socket, 0), 0);
+      expect(encodes, 'one budget across the sockets').toBeLessThanOrEqual(BUDGET.docs + 1);
+      // Another address, and the same address on another link, have budgets and sockets of their own.
+      for (const other of [{ ...anonymous, address: '203.0.113.5' }, { ...anonymous, share: 'tok-2' }]) {
+        const viewer = await connect(opened, other);
+        expect(viewer.closed).toBeNull();
+        await viewer.hello();
+        expect(title(viewer.doc), 'answered at once').toBe('Parallel');
+      }
+      // A closed socket frees its place; the budget it spent stays spent.
+      await sockets[0].drop();
+      const next = await connect(opened, anonymous);
+      expect(next.closed).toBeNull();
+      await next.hello();
+      expect(answers(next, 0), 'still over budget, it waits').toBe(0);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await next.pump();
+      expect(title(next.doc)).toBe('Parallel');
+    });
+
+    it('signed-in readers keep one budget across sockets, uncapped by address (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Capped as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Members');
+      const tabs: TestClient[] = [];
+      for (let i = 0; i < CAP + 2; i += 1) tabs.push(await connect(opened, { role: 'viewer', id: 'reader-many', address: '198.51.100.8' }));
+      for (const tab of tabs) expect(tab.closed).toBeNull();
+      const empty = step1(new Y.Doc());
+      for (const tab of tabs) await tab.deliver(empty);
+      expect(tabs.reduce((sum, tab) => sum + answers(tab, 0), 0), 'one principal, one budget').toBeLessThanOrEqual(BUDGET.docs + 1);
+      const other = await connect(opened, { role: 'viewer', id: 'reader-other', address: '198.51.100.8' });
+      await other.hello();
+      expect(title(other.doc), 'another principal at that address is answered at once').toBe('Members');
+    });
+
+    it('a signed-in reader\'s visible tabs resyncing up to date stay answered at once', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Tabs');
+      const tabs = [await connect(opened, { role: 'viewer', id: 'reader-tabs' }), await connect(opened, { role: 'viewer', id: 'reader-tabs' })];
+      for (const tab of tabs) await tab.hello();
+      for (let round = 0; round < 16; round += 1) for (const tab of tabs) await tab.hello();
+      for (const tab of tabs) expect(answers(tab, 0), 'every resync answered at once').toBe(17);
+      await typeTitle(editor, ' more');
+      await tabs[0].hello();
+      expect(title(tabs[0].doc)).toBe('Tabs more');
+    });
+
+    it('a waiting step 1 too large for the socket\'s allowance waits as a fixed-size request: answered whole, its vector not kept', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Kept small');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-big' });
+      await viewer.hello();
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 8; i += 1) await viewer.deliver(empty);
+      const from = viewer.socket.sent.length;
+      // Claims every clock the doc holds, padded with clients it has never seen: about 200 KB, under the frame cap.
+      const claim = Y.decodeStateVector(Y.encodeStateVector(opened.dobj.document));
+      for (let client = 1; client <= 30_000; client += 1) claim.set(2 ** 31 + client, 2 ** 20);
+      await viewer.deliver(syncFrame(0, Y.encodeStateVector(claim)));
+      expect(answers(viewer, from), 'over budget, it waits').toBe(0);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer, from)).toBe(1);
+      const fresh = new Y.Doc();
+      for (const frame of viewer.socket.sent.slice(from)) {
+        if (typeof frame === 'string' || frame[0] !== 0 || (frame[1] !== 1 && frame[1] !== 2)) continue;
+        const decoder = decoding.createDecoder(frame);
+        decoding.readVarUint(decoder);
+        decoding.readVarUint(decoder);
+        Y.applyUpdate(fresh, decoding.readVarUint8Array(decoder));
+      }
+      expect(title(fresh), 'the vector was not kept, so the answer is the whole state').toBe('Kept small');
+      expect(viewer.closed).toBeNull();
+    });
   });
 });
