@@ -169,6 +169,20 @@ function noticed(): string {
   return message;
 }
 
+/** Whether a fresh pane admits a paste of `line` at its last paragraph's end: the paste fits every cap alone. */
+function admittedAlone(line: string): boolean {
+  const pane = suggesting();
+  try {
+    pane.paste([line]);
+    const notice = refusalMessage();
+    vi.runAllTimers();
+    pane.pump();
+    return !notice && !pane.fork.closed && openRecords(pane.live, SUGGESTER.id).length === 1;
+  } finally {
+    pane.dispose();
+  }
+}
+
 it('an admissible large paste lands in one op as one record, and its undo and its redo are one op each', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
@@ -280,19 +294,16 @@ it('a paste that would take the open record it extends past the record cap is re
     const cap = SUGGEST_LIMITS.recordOpsBytes;
     // The first paste lands as one record, well under the cap: one line, so the caret stays in the block it was
     // pasted into and the next edit continues the same group (a caret moved away starts a record of its own).
-    const first = [`first ${'x'.repeat(80_000)}`];
-    pane.paste(first);
+    pane.paste([`first ${'x'.repeat(90_000)}`]);
     vi.runAllTimers();
     pane.pump();
     const record = pane.fork.record!;
     const held = recordBytes(pane, record);
-    expect(held, 'the first paste landed, a fair share of the cap').toBeGreaterThan(cap * 0.2);
+    expect(held, 'the first paste landed, a fair share of the cap').toBeGreaterThan(cap * 0.3);
     expect(held, 'under half the cap').toBeLessThan(cap * 0.5);
-    // The second, at the same caret, fits the cap alone, not with what the record already holds.
-    const perChar = held / first[0].length;
-    const count = Math.ceil((cap * 1.05 - held) / perChar);
-    expect(count * perChar, 'the second paste alone fits').toBeLessThan(cap * 0.85);
-    const second = [`second ${'x'.repeat(count)}`];
+    // The second, at the same caret, fits every cap alone (a fresh pane admits it), not with what the record holds.
+    const second = [`second ${'x'.repeat(70_000)}`];
+    expect(admittedAlone(second[0]), 'the second paste alone fits').toBe(true);
     const text = pane.text();
     const before = pane.requests();
     pane.paste(second);
@@ -337,21 +348,21 @@ it('a paste that builds on an older open record after its group rotated counts t
   const pane = suggesting();
   try {
     const cap = SUGGEST_LIMITS.recordOpsBytes;
-    const first = [`first ${'x'.repeat(80_000)}`];
-    pane.paste(first);
+    pane.paste([`first ${'x'.repeat(90_000)}`]);
     vi.runAllTimers();
     pane.pump();
     const record = pane.fork.record!;
     const held = recordBytes(pane, record);
+    expect(held, 'the first paste landed, a fair share of the cap').toBeGreaterThan(cap * 0.3);
     // Past the idle gap the next edit starts a new group, under the spare lease; at the same caret it builds on the
-    // first paste's items, so its record merges the first one (client.ts #forward), and the merge is under the cap.
+    // first paste's items, so its record merges the first one (client.ts #forward). Alone the second paste fits every
+    // cap (a fresh pane admits it); merged with the first it does not.
     pane.idle(GROUP_IDLE_MS + 1_000);
-    const perChar = held / first[0].length;
-    const count = Math.ceil((cap * 1.05 - held) / perChar);
-    expect(count * perChar, 'the second paste alone fits').toBeLessThan(cap * 0.85);
+    const second = `second ${'x'.repeat(70_000)}`;
+    expect(admittedAlone(second), 'the second paste alone fits').toBe(true);
     const text = pane.text();
     const before = pane.changes();
-    pane.paste([`second ${'x'.repeat(count)}`]);
+    pane.paste([second]);
     expect(noticed(), 'refused visibly').toMatch(/suggest/i);
     // The new group may ask for its next spare lease; nothing it sends changes a suggestion.
     expect(pane.changes(), 'nothing was sent, no merge either').toBe(before);
@@ -627,6 +638,93 @@ it('a paste at a collapsed caret is its own undo step: typing just before or aft
     vi.runAllTimers();
     expect(pane.text(), 'the second undo takes the paste, not the typing before it').toContain('Z');
     expect(pane.text()).not.toContain('pasted words');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a short paste replacing the suggester\'s own large suggestion counts what its undo restores: refused whole, or its undo is stored in one step', { timeout: 120_000 }, () => {
+  const pane = suggesting('Ada original line.\n\nSecond line.\n');
+  try {
+    // One suggestion of some 140 KB, in two admitted pastes at the same caret.
+    pane.paste([`Tail ${'f'.repeat(90_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    pane.paste([`More ${'g'.repeat(50_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'both pastes are stored').toBe(false);
+    expect(openRecords(pane.live, SUGGESTER.id), 'as one suggestion').toHaveLength(1);
+    // Lexical's paste removes his own selected text natively; its undo restores it as new copies in the record.
+    pane.select('Second line.', 12, 12 + 5 + 90_000 + 5 + 50_000);
+    expect(pane.selected()).toMatch(/^Tail f+More g+$/);
+    const text = pane.text();
+    const before = pane.requests();
+    pane.paste(['x']);
+    const notice = refusalMessage();
+    if (notice) {
+      expect(notice, 'refused visibly').toMatch(/suggest/i);
+      expect(pane.requests(), 'nothing was sent').toBe(before);
+      expect(pane.text(), 'F is unchanged').toBe(text);
+      expect(pane.selected(), 'the selection is kept').toMatch(/^Tail f+More g+$/);
+      vi.runAllTimers();
+      pane.pump();
+      expect(pane.fork.closed, 'input stays open').toBe(false);
+      return;
+    }
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the paste is stored').toBe(false);
+    const sent = pane.fork.sent;
+    pane.undo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the undo is stored').toBe(false);
+    expect(pane.fork.sent - sent, 'one undo, one op').toBe(1);
+    expect(pane.text(), 'one undo takes the paste back').toBe(text);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('every further undo and redo of a near-cap paste is admitted before it changes anything: stored, or refused with the note and the history unchanged', { timeout: 120_000 }, () => {
+  const pane = suggesting('Ada original line.\n\nSecond line.\n');
+  try {
+    pane.paste([`Tail ${'f'.repeat(90_000)}`]);
+    expect(refusalMessage(), 'the paste is admitted').toBe('');
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the paste is stored').toBe(false);
+    // A record's ops only grow: each redo re-creates the paste beside the ops it already holds.
+    let refused = '';
+    for (let cycle = 1; cycle <= 3 && !refused; cycle += 1) {
+      for (const action of ['undo', 'redo'] as const) {
+        const text = pane.text();
+        const before = pane.changes();
+        const sent = pane.fork.sent;
+        pane[action]();
+        refused = refusalMessage();
+        if (refused) {
+          expect(refused, `${cycle} ${action}: refused visibly`).toMatch(/suggestion/i);
+          expect(pane.changes(), `${cycle} ${action}: nothing was sent`).toBe(before);
+          expect(pane.text(), `${cycle} ${action}: F is unchanged`).toBe(text);
+          vi.runAllTimers();
+          pane.pump();
+          expect(pane.fork.closed, `${cycle} ${action}: input stays open`).toBe(false);
+          // The history is kept: the same step is refused again, still with nothing changed.
+          pane[action]();
+          expect(refusalMessage(), `${cycle} ${action}: refused again`).toBe(refused);
+          expect(pane.text(), `${cycle} ${action}: F is still unchanged`).toBe(text);
+          vi.runAllTimers();
+          break;
+        }
+        vi.runAllTimers();
+        pane.pump();
+        expect(pane.fork.closed, `${cycle} ${action}: stored`).toBe(false);
+        expect(pane.fork.sent - sent, `${cycle} ${action}: one op`).toBe(1);
+      }
+    }
+    expect(refused, 'a redo past the record cap is refused, not stored').not.toBe('');
   } finally {
     pane.dispose();
   }

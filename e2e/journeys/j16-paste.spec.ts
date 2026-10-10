@@ -95,20 +95,21 @@ test('j16-paste: a large paste in a new group that builds on the author\'s earli
   actors.solo('the owner only seeds the note; one suggester pastes');
   const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.\n\nThird line.\n\nFourth line.');
   const body = ui.body(ben, docId);
-  // About 80 KB as one suggestion, in the last block (its redo would make it some 160 KB, under the cap).
+  // About 85 KB as one suggestion, a new last block (its redo would make it some 170 KB, under the cap).
   await caret(ben, docId, 'Fourth line.', 12);
-  await pastePlain(ben, docId, `Fourth tail ${'f'.repeat(80_000)}`);
+  await pastePlain(ben, docId, `\nFourth tail ${'f'.repeat(85_000)}`);
   await settled(ben, docId, 'the first paste');
   // An edit three blocks away starts a new group.
   await caret(ben, docId, 'Ada original line.', 0);
   await ben.page.keyboard.type('Z');
   await settled(ben, docId, 'the typing');
   const working = await content(ada, docId, 'working');
-  // Back inside the first paste, three blocks away again: a new group whose paste builds on the first suggestion and
-  // so merges it. Alone it fits the cap; with the first one it does not.
-  await caret(ben, docId, 'Fourth tail', 12);
+  // At the end of the block before the first paste, three blocks away again: a new group whose paste builds on the
+  // first suggestion and so merges it. Alone it fits every cap, with nothing after it in its block (the next leg
+  // admits a paste of this size); with the first one it does not.
+  await caret(ben, docId, 'Fourth line.', 12);
   const before = await sent(ben, docId);
-  await pastePlain(ben, docId, `Second tail ${'g'.repeat(80_000)}`);
+  await pastePlain(ben, docId, `Second tail ${'g'.repeat(70_000)}`);
   await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'refused visibly').toContainText('too large for one suggestion', { timeout: 60_000 });
   await settled(ben, docId, 'the refused paste');
   expect(await sent(ben, docId), 'nothing was sent').toBe(before);
@@ -183,7 +184,7 @@ const pasteRich = (actor: Actor, docId: string, html: string, plain: string) =>
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
   }, [html, plain] as const);
 
-test('j16-paste: an admitted paste near the record cap at a paragraph end is stored with its one undo and its one redo, or refused whole @p:mean-2 @p:R17', async ({ actors }) => {
+test('j16-paste: an admitted paste near the record cap at a paragraph end is stored with its one undo and its one redo; every further undo and redo is stored or refused with nothing changed @p:mean-2 @p:R17', async ({ actors }) => {
   actors.solo('the owner only seeds the note; one suggester pastes');
   const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
   const body = ui.body(ben, docId);
@@ -191,16 +192,11 @@ test('j16-paste: an admitted paste near the record cap at a paragraph end is sto
   const working = await content(ada, docId, 'working');
   await caret(ben, docId, 'Second line.', 12);
   const before = await sent(ben, docId);
-  // About 140 KB: the redo re-creates it beside the paste's own op, in the same record.
-  await pastePlain(ben, docId, `Tail ${'f'.repeat(140_000)}`);
-  await expect.poll(async () => ((await refusal.textContent()) ?? '').includes('too large for one suggestion') || (await sent(ben, docId)) > before, { timeout: 60_000 }).toBe(true);
-  if ((await sent(ben, docId)) === before) {
-    await settled(ben, docId, 'the refused paste');
-    await expect(body).not.toContainText('Tail fff');
-    expect(await content(ada, docId, 'working'), 'no suggestion was made').toBe(working);
-    return;
-  }
+  // About 90 KB, admitted with its one undo and its one redo: the redo re-creates it beside the paste's own op.
+  await pastePlain(ben, docId, `Tail ${'f'.repeat(90_000)}`);
   await settled(ben, docId, 'the paste');
+  expect(await sent(ben, docId) - before, 'the paste is one frame').toBe(1);
+  await expect.poll(() => content(ada, docId, 'working'), { message: 'the paste is one pending suggestion' }).not.toBe(working);
   await ben.page.keyboard.press(`${mod}+z`);
   await settled(ben, docId, 'the undo');
   expect(await sent(ben, docId) - before, 'the undo is one frame').toBe(2);
@@ -210,6 +206,62 @@ test('j16-paste: an admitted paste near the record cap at a paragraph end is sto
   expect(await sent(ben, docId) - before, 'the redo is one frame').toBe(3);
   await expect(body, 'one redo brings the paste back').toContainText('Tail fff');
   await expect.poll(() => content(ada, docId, 'working'), { message: 'the redone paste is one pending suggestion' }).toContain('Tail fff');
+  await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
+
+  // Each redo adds the paste to the record again: one past the cap is refused before it changes anything.
+  let refused = false;
+  for (let cycle = 2; cycle <= 3 && !refused; cycle += 1) {
+    for (const [keys, has] of [[`${mod}+z`, false], [`${mod}+Shift+z`, true]] as const) {
+      const frames = await sent(ben, docId);
+      await expect(refusal).toHaveText('', { timeout: 10_000 });
+      await ben.page.keyboard.press(keys);
+      await expect.poll(async () => ((await refusal.textContent()) ?? '').includes('too large') || (await sent(ben, docId)) > frames, { timeout: 60_000 }).toBe(true);
+      await settled(ben, docId, `${keys} in cycle ${cycle}`);
+      if ((await sent(ben, docId)) === frames) {
+        refused = true;
+        if (has) await expect(body, 'a refused redo changes nothing').not.toContainText('Tail fff');
+        else await expect(body, 'a refused undo changes nothing').toContainText('Tail fff');
+        break;
+      }
+      expect(await sent(ben, docId) - frames, `${keys} in cycle ${cycle} is one frame`).toBe(1);
+      if (has) await expect(body).toContainText('Tail fff');
+      else await expect(body).not.toContainText('Tail fff');
+    }
+  }
+  expect(refused, 'a redo past the record cap is refused').toBe(true);
+  await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
+});
+
+test('j16-paste: a short paste replacing the suggester\'s own large suggestion is refused whole, or its undo is one stored step @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
+  const body = ui.body(ben, docId);
+  const refusal = ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
+  await caret(ben, docId, 'Second line.', 12);
+  // One suggestion of some 140 KB, in two admitted pastes at the same caret.
+  await pastePlain(ben, docId, `Tail ${'f'.repeat(90_000)}`);
+  await settled(ben, docId, 'the first paste');
+  await pastePlain(ben, docId, `More ${'g'.repeat(50_000)}`);
+  await settled(ben, docId, 'the second paste');
+  await expect(body).toContainText('More ggg');
+  await expect(ben.page.getByText(FORK_CLOSED), 'both are stored').toHaveCount(0);
+  const working = await content(ada, docId, 'working');
+  // Lexical's paste removes his own selected text natively; its undo restores it as new copies in the record.
+  await caret(ben, docId, 'Tail fff', 0, 5 + 90_000 + 5 + 50_000);
+  const before = await sent(ben, docId);
+  await pastePlain(ben, docId, 'x');
+  await expect.poll(async () => ((await refusal.textContent()) ?? '').includes('too large') || (await sent(ben, docId)) > before, { timeout: 60_000 }).toBe(true);
+  if ((await sent(ben, docId)) === before) {
+    await settled(ben, docId, 'the refused paste');
+    await expect(body, 'nothing changed').toContainText('More ggg');
+    expect(await content(ada, docId, 'working'), 'the suggestion is unchanged').toBe(working);
+    return;
+  }
+  await settled(ben, docId, 'the paste');
+  await ben.page.keyboard.press(`${mod}+z`);
+  await settled(ben, docId, 'the undo');
+  expect(await sent(ben, docId) - before, 'the undo is one frame').toBe(2);
+  await expect(body, 'one undo takes the paste back').toContainText('More ggg');
   await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
 });
 
