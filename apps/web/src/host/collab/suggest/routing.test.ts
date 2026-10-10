@@ -10,7 +10,7 @@ import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { IdSpan, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
-  $createRangeSelection, $getRoot, $setSelection, type RangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
+  $createRangeSelection, $getRoot, $setSelection, type RangeSelection, COMMAND_PRIORITY_EDITOR, COMMAND_PRIORITY_HIGH, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
   $createTextNode, $isElementNode, $isParagraphNode, $isTextNode, $parseSerializedNode, TextNode, type LexicalEditor, type LexicalNode,
   type SerializedLexicalNode,
 } from 'lexical';
@@ -1003,12 +1003,22 @@ describe('Backspace past a long struck run is linear and strikes the whole graph
     const size = 5_000;
     const line = `ab\u{1F600}${filler(size)} tail.`;
     const pane = suggesting(`Intro line stays.\n\n${line}\n`);
+    // The native Backspace the routing hands over to, and where it gets the caret: the harness editor has no DOM window.
+    const native: number[] = [];
+    const stop = pane.editor.registerCommand(DELETE_CHARACTER_COMMAND, () => {
+      const selection = $getSelection() as RangeSelection;
+      native.push(selection.anchor.offset);
+      (selection.anchor.getNode() as TextNode).spliceText(selection.anchor.offset - 1, 1, '', true);
+      return true;
+    }, COMMAND_PRIORITY_HIGH);
     try {
       const steps = strikeThenBackspace(pane, '\u{1F600}', size, 'Q');
       expect(steps).toBeLessThanOrEqual(40 * line.length);
+      expect(native, "handed over just after the own 'Q'").toEqual([5]);
       expect(pane.text(), 'the own character is gone, the body stays').toBe(`Intro line stays.\n\n${line}`);
       expect(struckLength(pane), 'nothing more struck').toBe(size);
     } finally {
+      stop();
       pane.dispose();
     }
   });
