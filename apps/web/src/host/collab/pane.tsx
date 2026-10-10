@@ -290,9 +290,9 @@ class PaneBinding implements SuggestPane {
         refused: (unsaved, reason) => {
           // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
           // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
-          // that F (its lease) rebuilds nothing more.
+          // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more.
           const full = NO_SUGGESTION_ROOM.has(reason);
-          const again = full && this.#noRoom;
+          const again = full && (this.#noRoom || !this.#mountReady);
           if (full) this.#noRoom = true;
           this.#inputClosed = true;
           this.#editor?.setEditable(false);

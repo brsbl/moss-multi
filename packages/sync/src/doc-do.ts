@@ -323,6 +323,8 @@ export class DocDO extends YServer<SyncEnv> {
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
+  /** Connections whose last suggest refusal was for want of room (`doc-cap`, `ops-cap`), until a grant or an ack. */
+  readonly #noRoom = new Set<string>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -386,6 +388,7 @@ export class DocDO extends YServer<SyncEnv> {
         if (!continues) this.#noticeSuggestion(record, author);
       },
     });
+    store.onCompacted = () => this.#ingest?.remeasure();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
       if (this.#idleAt !== null) return;
       this.#idleAt = Date.now() + EMPTY_IDLE_MS;
@@ -723,10 +726,27 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.writeRate, 'write rate');
       return;
     }
+    // After a no-room refusal, the growth frames the client had in flight are refused alike and not counted, so a fast
+    // typist on a full note is not cooled down; a granted lease or an ack ends it.
+    const full = this.#noRoom.has(connection.id);
+    if (full && (request?.t === 'suggest-ops' || request?.t === 'suggest-delete' || request?.t === 'suggest-merge')) {
+      const record = request.t === 'suggest-merge' ? request.into : request.record;
+      const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
+      this.sendCustomMessage(connection, JSON.stringify(reply));
+      return;
+    }
     const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
     const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
     this.sendCustomMessage(connection, JSON.stringify(reply));
-    if (reply.t === 'suggest-refused') this.#countRefusal(attachment.principalId);
+    if (reply.t !== 'suggest-refused') {
+      this.#noRoom.delete(connection.id);
+      return;
+    }
+    const noRoom = reply.reason === 'doc-cap' || reply.reason === 'ops-cap';
+    // The first no-room refusal counts, like any refusal; later ones on the connection wait on room, not abuse.
+    if (noRoom && full) return;
+    if (noRoom) this.#noRoom.add(connection.id);
+    this.#countRefusal(attachment.principalId);
   }
 
   override onClose(connection: Connection): void {
@@ -735,6 +755,7 @@ export class DocDO extends YServer<SyncEnv> {
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
+    this.#noRoom.delete(connection.id);
     this.#acks.cancel(connection);
   }
 

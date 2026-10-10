@@ -39,6 +39,8 @@ export class DocStore {
   #oversized = false;
   /** The encoded doc state: exact at load and at each compaction, plus each update's bytes in between. */
   stateBytes = 0;
+  /** Runs after each compaction, which re-encodes the doc anyway: the suggestion share is measured afresh there. */
+  onCompacted: (() => void) | null = null;
   readonly revoked: Revoked = { token: new Map(), session: new Map(), principal: new Map() };
 
   constructor(private readonly storage: DurableObjectStorage) {
@@ -124,6 +126,7 @@ export class DocStore {
     this.bytes = 0;
     this.#oversized = false;
     this.stateBytes = state.byteLength;
+    this.onCompacted?.();
   }
 
   meta(key: string): string | null {
