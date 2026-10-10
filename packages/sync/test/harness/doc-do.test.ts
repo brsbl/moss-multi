@@ -914,7 +914,7 @@ describe('answers', () => {
       await typeTitle(editor, 'Bounded');
       const empty = step1(new Y.Doc());
       const KEYS = 6;
-      const start = Date.now();
+      const t0 = Date.now();
       for (let round = 0; round < 5; round += 1) {
         const clients: TestClient[] = [editor];
         for (let i = 0; i < KEYS; i += 1) {
@@ -928,7 +928,7 @@ describe('answers', () => {
         expect(budgetRows(opened.backing), 'only budgets spent since they last refilled').toBeLessThanOrEqual(KEYS + 1);
         opened = await hibernate(opened, clients);
         // Every budget refills, with debt to spare. A harness wake resets the fake clock, so set it forward.
-        vi.setSystemTime(start + (round + 1) * 3 * BUDGET.windowMs);
+        vi.setSystemTime(t0 + (round + 1) * 3 * BUDGET.windowMs);
       }
     });
 
