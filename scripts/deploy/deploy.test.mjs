@@ -527,13 +527,13 @@ describe('canary recording', () => {
         'invariants: 3 finding(s)',
         `  invariant 1 [ada] console error: Failed to load resource: the server responded with a status of 404 () (${URL_STAGING}/api/docs/x/backlinks)`,
         `  invariant 1 [ben] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/parties/doc-d-o/x?token=SECRET' failed`,
-        '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; lived 12 ms, open)',
+        '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; lived 12 ms (1006), open)',
       ].join('\n'), stack: '' };
       const facts = failureTrace({ errors: [kinds] });
       expect(facts).toEqual([
         'invariant 1 [ada] console error (load 404)',
         'invariant 1 [ben] console error (websocket)',
-        'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; lived 12 ms, open)',
+        'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; lived 12 ms (1006), open)',
       ]);
       expect(facts.join('\n')).not.toMatch(/SECRET|workers\.dev|backlinks/);
     });

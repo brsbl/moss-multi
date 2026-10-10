@@ -91,7 +91,7 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
     if (group.length > allowed) {
       // How each socket ended, for a log that may not print the census: a socket error is a handshake or network failure.
-      const lived = group.map((s) => (s.closedAt === null ? 'open' : `${s.closedAt - s.openedAt} ms`)).join(', ');
+      const lived = group.map((s) => (s.closedAt === null ? 'open' : `${s.closedAt - s.openedAt} ms${s.code ? ` (${s.code})` : ''}`)).join(', ');
       problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${group.filter((s) => s.error).length} errored; lived ${lived})`);
     }
     const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);

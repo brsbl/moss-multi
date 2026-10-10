@@ -90,7 +90,7 @@ export function findingFacts(message) {
     } else if (n === '3') {
       const sockets = /\b(\d{1,6}) socket opens in one document, (\d{1,6}) allowed/.exec(detail);
       if (sockets) fact = `${sockets[1]} socket opens, ${sockets[2]} allowed`;
-      const ended = /\((\d{1,6}) errored; lived ((?:\d{1,9} ms|open)(?:, (?:\d{1,9} ms|open)){0,20})\)/.exec(detail);
+      const ended = /\((\d{1,6}) errored; lived ((?:\d{1,9} ms(?: \(\d{4}\))?|open)(?:, (?:\d{1,9} ms(?: \(\d{4}\))?|open)){0,20})\)/.exec(detail);
       if (sockets && ended) fact += ` (${ended[1]} errored; lived ${ended[2]})`;
     } else if (n === '7') {
       const field = / (title|body): /.exec(detail)?.[1] ?? '';
