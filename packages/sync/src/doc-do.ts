@@ -726,10 +726,10 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.writeRate, 'write rate');
       return;
     }
-    // After a no-room refusal, the growth frames the client had in flight are refused alike and not counted, so a fast
-    // typist on a full note is not cooled down; a granted lease or an ack ends it.
-    const full = this.#noRoom.has(connection.id);
-    if (full && (request?.t === 'suggest-ops' || request?.t === 'suggest-delete' || request?.t === 'suggest-merge')) {
+    // A refusal for want of room (`doc-cap`, `ops-cap`) is the note's state, not abuse: it never counts toward the
+    // cooldown, so a fast typist or a reload on a full note stays connected. After one, the growth frames the client
+    // had in flight are refused alike in O(1); a granted lease or an ack ends that.
+    if (this.#noRoom.has(connection.id) && (request?.t === 'suggest-ops' || request?.t === 'suggest-delete' || request?.t === 'suggest-merge')) {
       const record = request.t === 'suggest-merge' ? request.into : request.record;
       const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
       this.sendCustomMessage(connection, JSON.stringify(reply));
@@ -742,11 +742,8 @@ export class DocDO extends YServer<SyncEnv> {
       this.#noRoom.delete(connection.id);
       return;
     }
-    const noRoom = reply.reason === 'doc-cap' || reply.reason === 'ops-cap';
-    // The first no-room refusal counts, like any refusal; later ones on the connection wait on room, not abuse.
-    if (noRoom && full) return;
-    if (noRoom) this.#noRoom.add(connection.id);
-    this.#countRefusal(attachment.principalId);
+    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') this.#noRoom.add(connection.id);
+    else this.#countRefusal(attachment.principalId);
   }
 
   override onClose(connection: Connection): void {
