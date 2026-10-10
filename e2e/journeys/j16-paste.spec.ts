@@ -171,6 +171,9 @@ test('j16-paste: a paste inside a 150 KB paragraph either lands as one suggestio
   await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'and the strike' }).toEqual(['MID']);
 });
 
+/** The notice of a suggestion the DocDO closed after a refused frame. */
+const FORK_CLOSED = 'This suggestion was closed while you typed';
+
 /** A real clipboard paste of HTML with its plain-text flavor, as from a browser page. */
 const pasteRich = (actor: Actor, docId: string, html: string, plain: string) =>
   ui.body(actor, docId).evaluate((element, [h, p]) => {
@@ -207,6 +210,7 @@ test('j16-paste: an admitted paste near the record cap at a paragraph end is sto
   expect(await sent(ben, docId) - before, 'the redo is one frame').toBe(3);
   await expect(body, 'one redo brings the paste back').toContainText('Tail fff');
   await expect.poll(() => content(ada, docId, 'working'), { message: 'the redone paste is one pending suggestion' }).toContain('Tail fff');
+  await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
 });
 
 test('j16-paste: a rich paste whose kept link attributes take it past the record cap is stored whole or refused whole, never refused after it changed the note @p:mean-2 @p:R17', async ({ actors }) => {
@@ -214,12 +218,15 @@ test('j16-paste: a rich paste whose kept link attributes take it past the record
   const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
   const body = ui.body(ben, docId);
   const refusal = ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
-  const working = await content(ada, docId, 'working');
   await caret(ben, docId, 'Second line.', 12);
+  // About 90 KB as one suggestion, admitted with its redo; the rich paste goes on at its end, into the same record.
+  await pastePlain(ben, docId, `Tail ${'f'.repeat(90_000)}`);
+  await settled(ben, docId, 'the first paste');
+  const working = await content(ada, docId, 'working');
   const before = await sent(ben, docId);
-  // The link's title, about 100 KB, becomes a property of its node; its text is 15 KB.
-  const plain = `Linked ${'k'.repeat(15_000)}`;
-  await pasteRich(ben, docId, `<p><a href="https://example.invalid/" title="${'T'.repeat(100_000)}">${plain}</a></p>`, plain);
+  // The link's title, 170 KB, becomes a property of its node; its text is 25 KB, under the record cap beside the first.
+  const plain = `Linked ${'k'.repeat(25_000)}`;
+  await pasteRich(ben, docId, `<p><a href="https://example.invalid/" title="${'T'.repeat(170_000)}">${plain}</a></p>`, plain);
   await expect.poll(async () => ((await refusal.textContent()) ?? '').includes('too large for one suggestion') || (await sent(ben, docId)) > before, { timeout: 60_000 }).toBe(true);
   if ((await sent(ben, docId)) === before) {
     await settled(ben, docId, 'the refused paste');
@@ -229,4 +236,5 @@ test('j16-paste: a rich paste whose kept link attributes take it past the record
   }
   await settled(ben, docId, 'the paste');
   await expect.poll(() => content(ada, docId, 'working'), { message: 'the paste is one pending suggestion' }).toContain('Linked kkk');
+  await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
 });
