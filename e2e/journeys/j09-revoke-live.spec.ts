@@ -138,6 +138,36 @@ test('j09 removal: removing a member ends the note for them in place (revoked) @
   expect(ben.telemetry.sockets.filter((s) => s.docId === docId), 'no reconnect after revoked').toHaveLength(opened);
 });
 
+test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only the ended notice (T3.S20) @p:ppl-2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'editor');
+  const ben = await openRecorded(actors, benPrincipal, `/d/${docId}`);
+  await ui.waitOpen(ben, docId, 'live');
+  await actors.requireDistinct(2);
+  ben.expectReconnects(1, docId);
+  ben.expectHttp(404, ACCESS_ASK);
+  const refusal = ui.pane(ben, docId).locator('[data-input-refusal]');
+
+  const dialog = await ui.openShare(ada, docId);
+  await chooseAccess(dialog, benPrincipal.name, 'Can view');
+  await expect(refusal, 'the demotion alone says the note is view-only').toHaveText(VIEW_ONLY, { timeout: LIVE_TIMEOUT });
+  const shownAt = Date.now();
+  await ui.waitOpen(ben, docId, 'readonly');
+  await ui.body(ben, docId).click({ force: true });
+  await ben.page.keyboard.type('blocked');
+
+  await chooseAccess(dialog, benPrincipal.name, 'Remove access');
+  await expect(ui.pane(ben, docId), 'the note ends for him').toHaveAttribute(TERMINAL_REASON_ATTR, 'revoked', { timeout: LIVE_TIMEOUT });
+  const endedAt = Date.now();
+  await expect(ui.pane(ben, docId).locator(`[${CONNECTION_BANNER_ATTR}="revoked"]`)).toHaveText(/Your access to this note has ended\./);
+  await expect(refusal, 'and no longer says he can view it').not.toHaveText(VIEW_ONLY, { timeout: 1_000 });
+  expect(Date.now() - shownAt, 'checked while the view-only notice would still show').toBeLessThan(3_800);
+  expect(endedAt - shownAt).toBeLessThan(3_000);
+  await actors.checkpoint('demoted-then-removed');
+});
+
 test('j09 link: revoking a link closes everyone who opened the note through it, signed in or not @p:ppl-2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
