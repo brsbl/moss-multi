@@ -112,15 +112,22 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
   pump();
   editor.update(() => $getRoot().getLastChildOrThrow().selectEnd(), { discrete: true });
   /** A real paste command of `lines`, as plain text, committed at once (the browser commits it in a microtask). */
-  const paste = (lines: string[]) => editor.update(() => {
-    editor.dispatchCommand(PASTE_COMMAND, { clipboardData: plainClipboard(lines.join('\n')), preventDefault: () => {} } as unknown as ClipboardEvent);
+  const pasteData = (clipboardData: DataTransfer) => editor.update(() => {
+    editor.dispatchCommand(PASTE_COMMAND, { clipboardData, preventDefault: () => {} } as unknown as ClipboardEvent);
   }, { discrete: true });
+  const paste = (lines: string[]) => pasteData(plainClipboard(lines.join('\n')));
   return {
     fork,
     live,
     ingest,
     unsaved,
     paste,
+    pasteData,
+    /** Typing `text` at the caret, one keystroke's update. */
+    type: (text: string) => editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) selection.insertText(text);
+    }, { discrete: true }),
     pump,
     /** Requests of any kind sent so far. */
     requests: () => requests,
@@ -531,6 +538,95 @@ it('a paste that fits the note beside the payloads the fork holds, but not besid
     expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
     expect(pane.text(), 'F is unchanged').toBe(text);
     expect(pane.selected(), 'the selection is kept').toBe('line');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('an admitted paste near the record cap at a paragraph end is stored with its one undo and its one redo, or refused whole', { timeout: 120_000 }, () => {
+  // A record's ops only grow: the redo re-creates the paste under new clocks, beside the paste's own op.
+  let landed = 0;
+  for (const size of [140_000, 90_000]) {
+    const pane = suggesting('Ada original line.\n\nSecond line.\n');
+    try {
+      const text = pane.text();
+      const before = pane.requests();
+      pane.paste([`Tail ${'f'.repeat(size)}`]);
+      const notice = refusalMessage();
+      if (notice) {
+        expect(notice, `${size}: refused visibly`).toMatch(/suggest/i);
+        expect(pane.requests(), `${size}: nothing was sent`).toBe(before);
+        expect(pane.text(), `${size}: F is unchanged`).toBe(text);
+        vi.runAllTimers();
+        pane.pump();
+        expect(pane.fork.closed, `${size}: input stays open`).toBe(false);
+        continue;
+      }
+      vi.runAllTimers();
+      pane.pump();
+      expect(pane.fork.closed, `${size}: the paste is stored`).toBe(false);
+      const sent = pane.fork.sent;
+      pane.undo();
+      vi.runAllTimers();
+      pane.pump();
+      expect(pane.fork.closed, `${size}: the undo is stored`).toBe(false);
+      expect(pane.fork.sent - sent, `${size}: one undo, one op`).toBe(1);
+      expect(pane.text(), `${size}: one undo takes the paste back`).toBe(text);
+      pane.redo();
+      vi.runAllTimers();
+      pane.pump();
+      expect(pane.fork.closed, `${size}: the redo is stored`).toBe(false);
+      expect(pane.fork.sent - sent, `${size}: one redo, one op`).toBe(2);
+      expect(pane.text(), `${size}: one redo brings the paste back`).toContain('Tail fff');
+      landed += 1;
+    } finally {
+      pane.dispose();
+    }
+  }
+  expect(landed, 'a paste well under the cap is admitted').toBeGreaterThan(0);
+});
+
+it('a rich paste whose kept attributes take it past the record cap is refused whole, though its text alone fits', { timeout: 120_000 }, () => {
+  const pane = suggesting('Ada original line.\n\nSecond line.\n');
+  try {
+    // A link's href and title become its node's properties in the fork: about 100 KB here, besides 15 KB of text.
+    const plain = 'k'.repeat(15_000);
+    const html = `<p><a href="https://example.invalid/" title="${'T'.repeat(100_000)}">${plain}</a></p>`;
+    const clipboard = {
+      types: ['text/html', 'text/plain'],
+      getData: (type: string) => (type === 'text/html' ? html : type === 'text/plain' ? plain : ''),
+    } as unknown as DataTransfer;
+    const text = pane.text();
+    const before = pane.requests();
+    pane.pasteData(clipboard);
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent').toBe(before);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste at a collapsed caret is its own undo step: typing just before or after it is not taken back with it', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    pane.type('Z');
+    pane.paste(['pasted words']);
+    vi.runAllTimers();
+    pane.type('Y');
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.text()).toContain('Zpasted wordsY');
+    pane.undo();
+    vi.runAllTimers();
+    expect(pane.text(), 'the first undo takes the typing after the paste').toContain('Zpasted words');
+    expect(pane.text()).not.toContain('Y');
+    pane.undo();
+    vi.runAllTimers();
+    expect(pane.text(), 'the second undo takes the paste, not the typing before it').toContain('Z');
+    expect(pane.text()).not.toContain('pasted words');
   } finally {
     pane.dispose();
   }
