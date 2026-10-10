@@ -16,8 +16,10 @@ export const ALL = 'all';
 export const GROUPS = {
   // Chrome, auth and invites.
   shell: ['j00-shell', 'j07', 'j10', 'j19'],
-  // Sharing and live access changes.
-  share: ['j08', 'j09'],
+  // Sharing.
+  share: ['j08'],
+  // Live access changes: demotion, removal, link revocation, sign-out.
+  access: ['j09'],
   // Server import against UI paste, and the protocol round trip.
   import: ['j00-import', 'j00-roundtrip'],
   // Persistence and co-editing; also any new j01 journey until it is placed.

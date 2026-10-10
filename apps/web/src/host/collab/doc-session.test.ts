@@ -145,6 +145,25 @@ it('a demotion requests a fresh read-only binding', async () => {
   expect(session.state).toMatchObject({ canWrite: false, resync: true });
   expect(sockets).toHaveLength(1);
 });
+it('a demotion alone keeps the view-only notice; a removal right after it leaves only the ended notice (T3.S20)', async () => {
+  const { refusalMessage } = await import('../refusal.ts');
+  const VIEW_ONLY = 'You can view this note but can no longer edit it.';
+  const access = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'viewer' }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(4403);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(refusalMessage(), 'the demotion says the note is view-only').toBe(VIEW_ONLY);
+  // The pane rebinds read-only, then the owner removes him within the notice's 4 s.
+  session.dispose();
+  session = new DocSession('doc', false);
+  await session.provider.connect();
+  access.mockResolvedValue(new Response('{}', { status: 404 }));
+  latest().open(); session.provider.synced = true;
+  latest().ended(4403);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(terminalOf('doc')).toBe('revoked');
+  expect(refusalMessage(), 'the ended note no longer says it can be viewed').not.toBe(VIEW_ONLY);
+});
 it('a refused write requests a fresh binding without retrying the rejected state', async () => {
   latest().open(); session.provider.synced = true;
   latest().ended(4409);

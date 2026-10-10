@@ -12,7 +12,7 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
 import { leaveTo } from '../navigation.ts';
-import { refuseInput } from '../refusal.ts';
+import { refuseInput, settleRefusal } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
 import { ownUpdate, readStep1, Replay } from './replay.ts';
 import {
@@ -448,6 +448,8 @@ export class DocSession {
     this.#pagePresence = null;
     this.provider.shouldConnect = false;
     setTerminal(this.docId, reason);
+    // A demotion's notice no longer holds once the note has ended (its banner says why).
+    settleRefusal(VIEW_ONLY, 0);
     if (this.#lingering && reason !== 'conn-limit') {
       this.dispose();
       return;
