@@ -547,6 +547,33 @@ describe('canary recording', () => {
       expect(facts.join('\n')).not.toMatch(/SECRET|workers\.dev|backlinks/);
     });
 
+    it("prints a failed wake proof's induction problems as fixed facts, never the instance ids", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const esc = String.fromCharCode(27);
+      const message = [
+        'Error: the revocation met a woken DO',
+        '',
+        `${esc}[2mexpect(${esc}[22m${esc}[31mreceived${esc}[39m${esc}[2m).${esc}[22mtoEqual${esc}[2m(${esc}[22m${esc}[32mexpected${esc}[39m${esc}[2m)${esc}[22m`,
+        '+ Array [',
+        `+   "instance 9f8e7d6c-SYNTHETIC still serves the doc",`,
+        '+   "instance constructed at 1760000000000, not after the baseline\'s 1760000000000",',
+        '+   "instance constructed 31234 ms before the decisive action, so something else woke it",',
+        '+   "instance constructed 4321 ms after the decisive action ended, so something else woke it",',
+        '+ ]',
+      ].join('\n');
+      const lines = failureTrace({ errors: [{ message, stack: '' }] });
+      expect(lines).toEqual([
+        'kind expect',
+        'induction: the same instance serves the doc',
+        'induction: not constructed after the baseline',
+        'induction: constructed 31234 ms before the decisive action',
+        'induction: constructed 4321 ms after the decisive action ended',
+      ]);
+      expect(lines.join('\n')).not.toMatch(/SYNTHETIC|9f8e7d6c|1760000000000/);
+      const induced = { message: 'Error: hibernation not induced (idle): instance abc still serves the doc', stack: '' };
+      expect(failureTrace({ errors: [induced] })).toEqual(['induction: the same instance serves the doc']);
+    });
+
     it('withholds a run-level error and test output off loopback', async () => {
       const { default: CanaryReporter } = await import('./canary-reporter.mjs');
       const lines = [];
