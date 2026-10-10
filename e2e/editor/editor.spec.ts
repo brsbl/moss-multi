@@ -1203,7 +1203,7 @@ test.describe('selection across blocks', () => {
     expect(seen.errors).toEqual([]);
   });
 
-  test('a real mouse drag from a list into a code block reads the code the engine selected', async ({ page }) => {
+  test('a real mouse drag from a list into a code block exports only what the engine selected, in both engines', async ({ page }) => {
     const seen = await open(page);
     await mountSelectionNote(page);
     const at = (which: 'start' | 'end') =>
@@ -1232,25 +1232,34 @@ test.describe('selection across blocks', () => {
     await page.mouse.move(to.x, to.y, { steps: 12 });
     await page.mouse.up();
     await frames(page);
-    // Where the engine put the selection: its start, and how much of the code it reaches.
+    // What both engines make: the selection stops at the code block's edge (contenteditable=false), none of its code in
+    // it, where a programmatic range ending in the code (the case above) stays in Chromium.
     const made = await body(page).evaluate((root) => {
       const range = document.getSelection()!.getRangeAt(0);
-      const code = root.querySelector('.moss-codeblock-code')!;
-      const lines = [...code.querySelectorAll('.moss-codeblock-line')];
-      const line = lines.findIndex((candidate) => candidate.contains(range.endContainer));
-      let reached: string | null = null;
-      if (line >= 0) {
-        const before = document.createRange();
-        before.setStart(lines[line]!, 0);
-        before.setEnd(range.endContainer, range.endOffset);
-        reached = [...lines.slice(0, line).map((entry) => entry.textContent ?? ''), before.toString()].join('\n');
-      }
-      return { start: (range.startContainer.textContent ?? '').slice(range.startOffset), reached, page: document.getSelection()!.toString() };
+      const block = [...root.children].find((child) => child.querySelector('.moss-codeblock-code'))!;
+      const before = document.createRange();
+      before.setStart(block, 0);
+      before.setEnd(range.endContainer, range.endOffset);
+      return {
+        start: (range.startContainer.textContent ?? '').slice(range.startOffset),
+        atCodeStart: block.contains(range.endContainer) && before.toString() === '',
+        page: document.getSelection()!.toString(),
+      };
     });
-    const selection = (await page.evaluate(() => window.editorFixture.selection())) as MossSelection;
     expect(made.start, `the drag starts at "Third item" (${JSON.stringify(made)})`).toBe('Third item');
-    expect(made.reached, `the drag ends inside the code (${JSON.stringify(made)})`).toBe('def sow(crop');
-    expect(selection).toEqual(SELECTION_CASES.find((entry) => entry.name === 'from a list into a code block')!.expected);
+    expect(made.atCodeStart, `the drag ends at the code block's start (${JSON.stringify(made)})`).toBe(true);
+    const selection = (await page.evaluate(() => window.editorFixture.selection())) as MossSelection;
+    // None of the code is selected, so none of it is exported.
+    expect(selection).toEqual({
+      text: 'Third item\nCrop\tWeeks\nBeans\t8\nPeas\t10',
+      markdown: '- Third item\n\n| Crop | Weeks |\n| --- | --- |\n| Beans | 8 |\n| Peas | 10 |',
+      lines: { start: 12, end: 17 },
+      headings: ['Planting'],
+      blocks: [
+        { type: 'list', line: 9, heading: 'Planting' },
+        { type: 'table', line: 14, heading: 'Planting' },
+      ],
+    });
     expectLinesIn(await savedSelectionNote(page), selection);
     expect(seen.errors).toEqual([]);
   });
