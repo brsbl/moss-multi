@@ -23,6 +23,7 @@ const DocDO = {
     trash: async () => { calls.push(['trash', id.name]); },
     settle: async () => { calls.push(['settle', id.name]); return {}; },
     exportMarkdown: async () => { calls.push(['export', id.name]); return `Body of ${id.name}\n`; },
+    recheck: async () => ({ closed: 0 }),
   }),
 };
 
@@ -331,5 +332,36 @@ describe('a revocation that lands while a trash or restore is under way wins', (
     expect(response).toEqual(await bytes(await call(ben, 'POST', `/api/docs/${crypto.randomUUID()}/restore`)));
     expect(await deletedAt(doc)).not.toBeNull();
     expect(calls, 'the note never reopens').toEqual([]);
+  });
+});
+
+describe('a restore lands only on the trash it read', () => {
+  const row = (doc: string) => d1.db.prepare('SELECT folder_id, trash_batch_id, deleted_at FROM docs WHERE id = ?').bind(doc)
+    .first<{ folder_id: string; trash_batch_id: string | null; deleted_at: number | null }>();
+
+  it('a restore paused after its read, while another manager restores, moves and trashes the note again, undoes nothing', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const first = await insertFolder(d1.db, ada, vault);
+    const second = await insertFolder(d1.db, ada, vault);
+    const doc = await insertDoc(d1.db, ada, { folderId: first });
+    await insertGrant(d1.db, { folderId: vault }, ben, 'owner');
+    expect((await call(ada, 'DELETE', `/api/docs/${doc}`)).status).toBe(200);
+    before = { sql: /UPDATE "docs" SET deleted_at = NULL/i, run: async () => {
+      expect((await call(ben, 'POST', `/api/docs/${doc}/restore`)).status, 'the other restore').toBe(200);
+      expect((await call(ben, 'PATCH', `/api/docs/${doc}`, { folderId: second })).status, 'the move').toBe(200);
+      expect((await call(ben, 'DELETE', `/api/docs/${doc}`)).status, 'the second trash').toBe(200);
+    } };
+    const stale = await call(ada, 'POST', `/api/docs/${doc}/restore`);
+    const after = await row(doc);
+    expect(after?.deleted_at, 'the second trash stands').not.toBeNull();
+    expect(after?.trash_batch_id, 'its batch stands').not.toBeNull();
+    expect(after?.folder_id, 'the note is not moved back').toBe(second);
+    await expectSentence(stale, 409);
+  });
+
+  it('a legacy trashed note with no batch still restores', async () => {
+    const doc = await insertDoc(d1.db, ada, { deleted: true });
+    expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
+    expect(await deletedAt(doc)).toBeNull();
   });
 });
