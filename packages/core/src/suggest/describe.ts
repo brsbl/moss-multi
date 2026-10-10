@@ -106,115 +106,253 @@ const sub = (path: string, key: string) => bounded(`${path} ${keyLabel(key)}`);
 /** The fields a nested row sits in, as a reader names them, bounded as a path is. */
 const within = (fields: string, key: string) => bounded(fields ? `${fields} › ${keyLabel(fieldName(key))}` : keyLabel(fieldName(key)));
 
-/** One unit of a sequence: a character with its own id, or any other item. */
-type Unit = { id: string; ch: string } | { id: string; node: unknown };
+/** Work counters: `calls` per describeHunks, `units` per sequence piece built. */
+export const describeStats = { calls: 0, units: 0 };
 
-const isChar = (unit: Unit): unit is { id: string; ch: string } => 'ch' in unit;
+type Owner = { id: string; node: Node };
 
-function units(seq: unknown[] | undefined): Unit[] {
-  const out: Unit[] = [];
+/**
+ * A run of a sequence: characters whose ids are consecutive clocks of one client (`s`), or one other item (`node`).
+ * A character run carries its text node (the last map before it, Lexical's V1 binding) and its offset in the text.
+ */
+interface Piece {
+  /** The item id's client; an id that is not `client:clock` is a client of its own. */
+  client: string;
+  clock: number;
+  len: number;
+  id: string;
+  s?: string;
+  node?: unknown;
+  owner: Owner | null;
+  at: number;
+}
+
+type CharPiece = Piece & { s: string };
+const isChar = (p: Piece): p is CharPiece => typeof p.s === 'string';
+
+const OPAQUE = '\u0000';
+
+function piece(fields: Omit<Piece, 'client' | 'clock'> & { client?: string; clock?: number }): Piece {
+  describeStats.units += 1;
+  let { client, clock } = fields;
+  if (client === undefined || clock === undefined) {
+    const match = /^(\d+):(\d+)$/.exec(fields.id);
+    const parsed = match ? Number(match[2]) : NaN;
+    if (match && Number.isSafeInteger(parsed)) [client, clock] = [String(Number(match[1])), parsed];
+    else [client, clock] = [OPAQUE + fields.id, 0];
+  }
+  return { ...fields, client, clock };
+}
+
+const idText = (client: string, clock: number) => (client.startsWith(OPAQUE) ? (clock ? `${client.slice(1)}#${clock}` : client.slice(1)) : `${client}:${clock}`);
+
+/** Characters `from` to `to` of a character piece. */
+function slice(p: Piece, from: number, to: number): Piece {
+  if (from === 0 && to === p.len) return p;
+  const clock = p.clock + from;
+  return piece({ ...p, clock, id: idText(p.client, clock), len: to - from, s: p.s!.slice(from, to), at: p.at + from });
+}
+
+/** A sequence as pieces, each character run with its text node. */
+function pieces(seq: unknown[] | undefined): Piece[] {
+  const out: Piece[] = [];
+  let owner: Owner | null = null;
+  let at = 0;
   for (const entry of seq ?? []) {
     if (!isObject(entry)) {
-      out.push({ id: '?', node: entry });
+      out.push(piece({ id: '?', len: 1, node: entry, owner: null, at }));
+      owner = null;
       continue;
     }
     const id = typeof entry.id === 'string' ? entry.id : '?';
     if (typeof entry.s === 'string') {
-      const [client, clock] = id.split(':').map(Number);
-      for (let i = 0; i < entry.s.length; i++) out.push({ id: `${client}:${clock + i}`, ch: entry.s[i] });
+      if (entry.s.length) out.push(piece({ id, len: entry.s.length, s: entry.s, owner, at }));
+      at += entry.s.length;
     } else {
-      out.push({ id, node: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'id')) });
+      const node = Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'id'));
+      out.push(piece({ id, len: 1, node, owner: null, at }));
+      owner = isNode(node) && node.type === 'Map' ? { id, node } : null;
     }
   }
   return out;
 }
 
 /** Ids as runs: `client:clock+length`. */
-function idRuns(ids: readonly string[]): string {
+function idRuns(list: readonly Piece[]): string {
   const runs: string[] = [];
   let start = '';
-  let client = NaN;
+  let client = '';
   let next = NaN;
   let len = 0;
   const flush = () => {
     if (len) runs.push(len === 1 ? start : `${start}+${len}`);
   };
-  for (const id of ids) {
-    const [c, k] = id.split(':').map(Number);
-    if (c === client && k === next) {
-      len += 1;
-      next += 1;
+  for (const p of list) {
+    if (p.client === client && p.clock === next && !client.startsWith(OPAQUE)) {
+      len += p.len;
+      next += p.len;
       continue;
     }
     flush();
-    start = id;
-    client = c;
-    next = k + 1;
-    len = 1;
+    start = p.id;
+    client = p.client;
+    next = p.clock + p.len;
+    len = p.len;
   }
   flush();
   return runs.join(',');
 }
 
-type Step = { op: 'keep'; b: Unit; a: Unit } | { op: 'delete'; b: Unit } | { op: 'insert'; a: Unit };
+/** Each client's id intervals, sorted and merged: `[start, end, start, end, …]`. */
+function intervals(list: readonly Piece[]): Map<string, number[]> {
+  const by = new Map<string, [number, number][]>();
+  for (const p of list) {
+    const spans = by.get(p.client);
+    if (spans) spans.push([p.clock, p.clock + p.len]);
+    else by.set(p.client, [[p.clock, p.clock + p.len]]);
+  }
+  const out = new Map<string, number[]>();
+  for (const [client, spans] of by) {
+    spans.sort((x, y) => x[0] - y[0]);
+    const flat: number[] = [];
+    for (const [s, e] of spans) {
+      if (flat.length && s <= flat[flat.length - 1]) flat[flat.length - 1] = Math.max(flat[flat.length - 1], e);
+      else flat.push(s, e);
+    }
+    out.set(client, flat);
+  }
+  return out;
+}
 
-/** Two sequences aligned by item identity: an item in both is kept, one only before is removed, one only after added. */
-function align(b: readonly Unit[], a: readonly Unit[]): Step[] {
-  const inA = new Set(a.map((unit) => unit.id));
-  const inB = new Set(b.map((unit) => unit.id));
+/** `list` cut where its ids enter or leave `other`'s, each part marked present in `other` or not. */
+function presence(list: readonly Piece[], other: Map<string, number[]>): { p: Piece; present: boolean }[] {
+  const out: { p: Piece; present: boolean }[] = [];
+  for (const p of list) {
+    const flat = other.get(p.client);
+    if (!flat) {
+      out.push({ p, present: false });
+      continue;
+    }
+    const end = p.clock + p.len;
+    const count = flat.length / 2;
+    // The first interval ending after the piece starts.
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (flat[2 * mid + 1] <= p.clock) lo = mid + 1;
+      else hi = mid;
+    }
+    let pos = p.clock;
+    for (let k = lo; pos < end; k++) {
+      const s = k < count ? Math.min(flat[2 * k], end) : end;
+      const e = k < count ? Math.min(flat[2 * k + 1], end) : end;
+      if (s > pos) {
+        out.push({ p: slice(p, pos - p.clock, s - p.clock), present: false });
+        pos = s;
+      }
+      if (e > pos) {
+        out.push({ p: slice(p, pos - p.clock, e - p.clock), present: true });
+        pos = e;
+      }
+    }
+  }
+  return out;
+}
+
+type Step = { op: 'keep'; b: Piece; a: Piece } | { op: 'delete'; b: Piece } | { op: 'insert'; a: Piece };
+
+/**
+ * Two sequences aligned by item identity, a run at a time: an item in both is kept, one only before is removed, one
+ * only after added.
+ */
+function align(before: readonly Piece[], after: readonly Piece[]): Step[] {
+  const b = presence(before, intervals(after));
+  const a = presence(after, intervals(before));
   const steps: Step[] = [];
   let i = 0;
   let j = 0;
+  // How far into b[i] and a[j] the walk is.
+  let bi = 0;
+  let aj = 0;
+  const del = (to: number) => {
+    steps.push({ op: 'delete', b: slice(b[i].p, bi, to) });
+    if (to === b[i].p.len) [i, bi] = [i + 1, 0];
+    else bi = to;
+  };
+  const ins = (to: number) => {
+    steps.push({ op: 'insert', a: slice(a[j].p, aj, to) });
+    if (to === a[j].p.len) [j, aj] = [j + 1, 0];
+    else aj = to;
+  };
   while (i < b.length || j < a.length) {
-    if (i < b.length && (j >= a.length || !inA.has(b[i].id))) steps.push({ op: 'delete', b: b[i++] });
-    else if (j < a.length && (i >= b.length || !inB.has(a[j].id))) steps.push({ op: 'insert', a: a[j++] });
-    else if (b[i].id === a[j].id) {
-      // One id holding two different characters (never so in Yjs, but hashed as such) is removed and added.
-      const x = b[i];
-      const y = a[j];
-      if (isChar(x) !== isChar(y) || (isChar(x) && isChar(y) && x.ch !== y.ch)) steps.push({ op: 'delete', b: b[i++] }, { op: 'insert', a: a[j++] });
-      else steps.push({ op: 'keep', b: b[i++], a: a[j++] });
+    if (i < b.length && (j >= a.length || !b[i].present)) {
+      del(b[i].p.len);
+      continue;
     }
-    // Out of order (Yjs never moves an item): shown as removed here and added where it now sits.
-    else steps.push({ op: 'delete', b: b[i++] });
+    if (j < a.length && (i >= b.length || !a[j].present)) {
+      ins(a[j].p.len);
+      continue;
+    }
+    const x = b[i].p;
+    const y = a[j].p;
+    const xStart = x.clock + bi;
+    const yStart = y.clock + aj;
+    if (x.client !== y.client || xStart !== yStart) {
+      // Out of order (Yjs never moves an item): removed here, up to where the next added item starts.
+      del(x.client === y.client && yStart > xStart && yStart < x.clock + x.len ? yStart - x.clock : x.len);
+      continue;
+    }
+    if (isChar(x) !== isChar(y)) {
+      del(bi + 1);
+      ins(aj + 1);
+      continue;
+    }
+    const n = Math.min(x.len - bi, y.len - aj);
+    let same = n;
+    if (isChar(x) && x.s.slice(bi, bi + n) !== y.s!.slice(aj, aj + n)) {
+      same = 0;
+      while (x.s.charCodeAt(bi + same) === y.s!.charCodeAt(aj + same)) same += 1;
+    }
+    if (same) {
+      steps.push({ op: 'keep', b: slice(x, bi, bi + same), a: slice(y, aj, aj + same) });
+      if (bi + same === x.len) [i, bi] = [i + 1, 0];
+      else bi += same;
+      if (aj + same === y.len) [j, aj] = [j + 1, 0];
+      else aj += same;
+      continue;
+    }
+    // One id holding two different characters (never so in Yjs, but hashed as such) is removed and added.
+    let differ = 1;
+    while (differ < n && x.s!.charCodeAt(bi + differ) !== y.s!.charCodeAt(aj + differ)) differ += 1;
+    del(bi + differ);
+    ins(aj + differ);
   }
   return steps;
 }
 
-/** Consecutive removed or added units of `steps` from `i`, and where the run ends. */
-function runAt(steps: readonly Step[], i: number): { op: 'delete' | 'insert'; run: Unit[]; end: number } {
+/** Consecutive removed or added pieces of `steps` from `i`, and where the run ends. */
+function runAt(steps: readonly Step[], i: number): { op: 'delete' | 'insert'; run: Piece[]; end: number } {
   const op = steps[i].op as 'delete' | 'insert';
-  const run: Unit[] = [];
+  const run: Piece[] = [];
   let end = i;
   for (; end < steps.length && steps[end].op === op; end++) {
-    const step = steps[end] as { op: 'delete'; b: Unit } | { op: 'insert'; a: Unit };
+    const step = steps[end] as { op: 'delete'; b: Piece } | { op: 'insert'; a: Piece };
     run.push('b' in step ? step.b : step.a);
   }
   return { op, run, end };
 }
 
-type Owner = { id: string; node: Node };
-
-/** Each character's text node: the last map before it in its sequence (Lexical's V1 binding). */
-function owners(list: readonly Unit[]): Map<string, Owner> {
-  const out = new Map<string, Owner>();
-  let owner: Owner | null = null;
-  for (const unit of list) {
-    if (isChar(unit)) {
-      if (owner) out.set(unit.id, owner);
-    } else owner = isNode(unit.node) && unit.node.type === 'Map' ? { id: unit.id, node: unit.node } : null;
-  }
-  return out;
-}
-
 /** Each text node's characters, by the id of its map. */
-function ownedText(list: readonly Unit[], ownerOf: Map<string, Owner>): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const unit of list) {
-    const owner = isChar(unit) ? ownerOf.get(unit.id) : undefined;
-    if (owner && isChar(unit)) out.set(owner.id, (out.get(owner.id) ?? '') + unit.ch);
+function ownedText(list: readonly Piece[]): Map<string, string> {
+  const parts = new Map<string, string[]>();
+  for (const p of list) {
+    if (!isChar(p) || !p.owner) continue;
+    const held = parts.get(p.owner.id);
+    if (held) held.push(p.s);
+    else parts.set(p.owner.id, [p.s]);
   }
-  return out;
+  return new Map([...parts].map(([id, held]) => [id, held.join('')]));
 }
 
 /**
@@ -361,8 +499,7 @@ class Rows {
       this.push(kind, path, this.read.textOf(value) || `[${clip(type)}]`, [`${verb} ${type}`, ...own].join('; '), shallow(value));
     }
     if (Array.isArray(value.seq)) {
-      const list = units(value.seq);
-      this.sequence(kind, path, list, [], true, owners(list));
+      this.sequence(kind, path, pieces(value.seq), [], true);
     }
     this.fields(kind, path, value);
   }
@@ -375,10 +512,10 @@ class Rows {
   }
 
   /**
-   * Units all added or all removed: runs of characters by text node, and every other item. A text node's map whose
+   * Pieces all added or all removed: runs of characters by text node, and every other item. A text node's map whose
    * characters follow it is said by their row. `quiet` leaves out what has nothing to add to an enclosing row.
    */
-  sequence(kind: 'insert' | 'delete', path: string, list: readonly Unit[], chain: readonly string[], quiet: boolean, ownerOf: Map<string, Owner>): void {
+  sequence(kind: 'insert' | 'delete', path: string, list: readonly Piece[], chain: readonly string[], quiet: boolean): void {
     for (let i = 0; i < list.length; ) {
       const unit = list[i];
       const map: Owner | null = !isChar(unit) && isNode(unit.node) && unit.node.type === 'Map' ? { id: unit.id, node: unit.node } : null;
@@ -387,16 +524,16 @@ class Rows {
         i += 1;
         continue;
       }
-      const owner = map ?? ownerOf.get(unit.id) ?? null;
+      const owner = map ?? unit.owner;
       // The map, when it is in this run, and the characters of its text node that follow it.
-      const run: Unit[] = [];
+      const run: Piece[] = [];
       if (map) run.push(list[i++]);
       for (; i < list.length; i++) {
         const next = list[i];
-        if (!isChar(next) || ownerOf.get(next.id)?.id !== owner?.id) break;
+        if (!isChar(next) || next.owner?.id !== owner?.id) break;
         run.push(next);
       }
-      const text = run.map((u) => (isChar(u) ? u.ch : '')).join('');
+      const text = run.map((p) => p.s ?? '').join('');
       if (map && !text) {
         this.whole(kind, sub(path, map.id), map.node, quiet);
         continue;
@@ -407,7 +544,7 @@ class Rows {
       const fields = !owner ? [] : map ? this.read.carried(owner.node) : this.read.context(owner.node);
       const note = [...chain, ...(lexical === 'text' ? [] : [map ? lexical : clip(lexical)]), ...fields];
       if (!quiet || note.length > 0) {
-        this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run.map((u) => u.id)), node: map ? shallow(map.node) : (owner?.id ?? null) });
+        this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run), node: map ? shallow(map.node) : (owner?.id ?? null) });
       }
       if (map) this.fields(kind, sub(path, map.id), map.node);
     }
@@ -435,12 +572,9 @@ class Rows {
     if (this.read.same(b.seq, a.seq)) return;
     // Runs inside a link say so, with the link's fields clipped; the link's own changes have their own rows.
     const inner = this.read.isInline(a) ? [clip([type, ...this.read.carried(a)].join('; '))] : [];
-    const bu = units(b.seq);
-    const au = units(a.seq);
-    const ownB = owners(bu);
-    const ownA = owners(au);
-    const texts = ownedText(au, ownA);
-    const steps = align(bu, au);
+    const au = pieces(a.seq);
+    const texts = ownedText(au);
+    const steps = align(pieces(b.seq), au);
     for (let i = 0; i < steps.length; ) {
       const step = steps[i];
       if (step.op === 'keep') {
@@ -449,7 +583,7 @@ class Rows {
         continue;
       }
       const { op, run, end } = runAt(steps, i);
-      this.sequence(op, path, run, inner, false, op === 'delete' ? ownB : ownA);
+      this.sequence(op, path, run, inner, false);
       i = end;
     }
   }
@@ -486,20 +620,47 @@ class Rows {
     }
   }
 
-  /** A payload's two versions: its text aligned by identity, then its fields. */
+  /**
+   * A payload's two versions: its text aligned by identity, each changed stretch of lines one row reading the lines
+   * after and before, then its fields.
+   */
   payload(before: unknown, after: unknown): void {
-    const steps = align(payloadUnits(before), payloadUnits(after));
-    for (let i = 0; i < steps.length; ) {
-      if (steps[i].op === 'keep') {
-        i += 1;
+    const was = payloadPieces(before);
+    const now = payloadPieces(after);
+    const lines = { b: new LineCounter(was.text), a: new LineCounter(now.text) };
+    let group: Changed | null = null;
+    let bPos = 0;
+    let aPos = 0;
+    const flush = () => {
+      if (group) this.lines(group, lines);
+      group = null;
+    };
+    for (const step of align(was.pieces, now.pieces)) {
+      if (step.op === 'keep') {
+        if (!isChar(step.b) || !isChar(step.a)) continue;
+        // A kept line break ends a stretch.
+        if (group && (step.b.s.includes('\n') || step.a.s.includes('\n'))) flush();
+        bPos = step.b.at + step.b.len;
+        aPos = step.a.at + step.a.len;
         continue;
       }
-      const { op, run, end } = runAt(steps, i);
-      i = end;
-      for (const unit of run) if (!isChar(unit)) this.push(op, `text ${unit.id}`, show(unit.node), 'block content', unit.node);
-      const chars = run.filter(isChar);
-      if (chars.length) this.push(op, 'text', chars.map((u) => u.ch).join(''), 'block content', { ids: idRuns(chars.map((u) => u.id)) });
+      const p = step.op === 'delete' ? step.b : step.a;
+      if (!isChar(p)) {
+        this.push(step.op, `text ${p.id}`, show(p.node), 'block content', p.node);
+        continue;
+      }
+      group ??= { removed: [], added: [], b: [bPos, bPos], a: [aPos, aPos] };
+      if (step.op === 'delete') {
+        group.removed.push(p);
+        bPos = p.at + p.len;
+      } else {
+        group.added.push(p);
+        aPos = p.at + p.len;
+      }
+      group.b[1] = bPos;
+      group.a[1] = aPos;
     }
+    flush();
     // Anything else the value holds is compared whole.
     const rest = (value: unknown) =>
       isObject(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'text' && key !== 'ids' && key !== 'map')) : (value ?? {});
@@ -508,35 +669,136 @@ class Rows {
     }
     this.keys('map', 'Block content', isObject(before) ? before.map : undefined, isObject(after) ? after.map : undefined);
   }
+
+  /** One changed stretch of a payload's text: the lines after it, and the lines before it in the note. */
+  lines(group: Changed, lines: { b: LineCounter; a: LineCounter }): void {
+    const kind = group.removed.length && group.added.length ? 'change' : group.added.length ? 'insert' : 'delete';
+    // Text removed and added again at the stretch's end (an edit written from the caret) reads as unchanged.
+    const lastRemoved = group.removed.at(-1);
+    const lastAdded = group.added.at(-1);
+    if (lastRemoved && lastAdded && lastRemoved.at + lastRemoved.len === group.b[1] && lastAdded.at + lastAdded.len === group.a[1]) {
+      const most = Math.min(trailing(group.removed), trailing(group.added));
+      let same = 0;
+      while (same < most && lines.b.text.charCodeAt(group.b[1] - 1 - same) === lines.a.text.charCodeAt(group.a[1] - 1 - same)) same += 1;
+      if (same > 0 && isLowSurrogate(lines.b.text, group.b[1] - same)) same -= 1;
+      group.b[1] -= same;
+      group.a[1] -= same;
+    }
+    // A removal reads the old lines and what they are now; anything else the new lines and what they were.
+    const removal = kind === 'delete';
+    const shownSide = removal ? lines.b : lines.a;
+    const otherSide = removal ? lines.a : lines.b;
+    const [from, to] = removal ? group.b : group.a;
+    const [otherFrom, otherTo] = removal ? group.a : group.b;
+    const text = shownSide.around(from, to);
+    const first = shownSide.lineAt(from);
+    const last = first + (text.match(/\n/g)?.length ?? 0);
+    const where = last > first ? `lines ${first}–${last}` : `line ${first}`;
+    const covers: Json = {};
+    if (group.removed.length) covers.removes = idRuns(group.removed);
+    if (group.added.length) covers.adds = idRuns(group.added);
+    this.push(kind, 'text', text, `block content; ${where}; ${removal ? 'now' : 'was'} ${JSON.stringify(otherSide.around(otherFrom, otherTo))}`, covers);
+  }
+}
+
+/** A changed stretch of payload text: its removed and added pieces, and its range before and after. */
+interface Changed {
+  removed: Piece[];
+  added: Piece[];
+  b: [number, number];
+  a: [number, number];
+}
+
+/** How many characters end `list` contiguously: the run of its last pieces with no gap between them. */
+function trailing(list: readonly Piece[]): number {
+  let total = 0;
+  for (let k = list.length - 1; k >= 0; k--) {
+    if (k < list.length - 1 && list[k].at + list[k].len !== list[k + 1].at) break;
+    total += list[k].len;
+  }
+  return total;
+}
+
+const WORD = /[\p{L}\p{N}_$]/u;
+const isWord = (text: string, at: number) => at > 0 && at < text.length && WORD.test(text[at - 1]) && WORD.test(text[at]);
+const isLowSurrogate = (text: string, at: number) => {
+  const code = text.charCodeAt(at);
+  return code >= 0xdc00 && code <= 0xdfff;
+};
+
+/** A text's lines: numbers, counted forward once, and the line or lines around a range, clipped at whole tokens. */
+class LineCounter {
+  #at = 0;
+  #line = 1;
+
+  constructor(readonly text: string) {}
+
+  /** The 1-based line holding offset `at`; offsets asked for only ever grow. */
+  lineAt(at: number): number {
+    if (at < this.#at) [this.#at, this.#line] = [0, 1];
+    for (let i = this.text.indexOf('\n', this.#at); i >= 0 && i < at; i = this.text.indexOf('\n', i + 1)) this.#line += 1;
+    this.#at = at;
+    return this.#line;
+  }
+
+  /** The whole lines holding `from` to `to`, with at most `CONTEXT / 2` characters each side of the range. */
+  around(from: number, to: number): string {
+    const text = this.text;
+    const start = from === 0 ? 0 : text.lastIndexOf('\n', from - 1) + 1;
+    // A range ending in a line break ends there.
+    let end = to > from && text[to - 1] === '\n' ? to : text.indexOf('\n', to);
+    if (end < 0) end = text.length;
+    // Cut at a token's edge when the context holds one, else mid-token, never inside a surrogate pair.
+    const raw = Math.max(start, from - CONTEXT / 2);
+    let s = raw;
+    while (s < from && isWord(text, s)) s += 1;
+    if (s === from && s > raw) s = raw;
+    while (s < from && isLowSurrogate(text, s)) s += 1;
+    const rawEnd = Math.min(end, to + CONTEXT / 2);
+    let e = rawEnd;
+    while (e > to && isWord(text, e)) e -= 1;
+    if (e === to && e < rawEnd) e = rawEnd;
+    while (e > to && isLowSurrogate(text, e)) e -= 1;
+    return `${s > start ? '…' : ''}${text.slice(s, e)}${e < end ? '…' : ''}`;
+  }
 }
 
 const pairsOf = (value: unknown): [string, unknown][] =>
   Array.isArray(value) ? (value as unknown[]).filter((p): p is [string, unknown] => Array.isArray(p) && typeof p[0] === 'string') : [];
 
-/** A payload's text as units, from its `text` and the id each run of it starts at (apply.ts `payloadValueOf`). */
-function payloadUnits(value: unknown): Unit[] {
-  if (!isObject(value)) return [];
+/** A payload's text as pieces, from its `text` and the id each run of it starts at (apply.ts `payloadValueOf`). */
+function payloadPieces(value: unknown): { pieces: Piece[]; text: string } {
+  if (!isObject(value)) return { pieces: [], text: '' };
   const text = value.text;
   const ids = Array.isArray(value.ids) ? (value.ids as unknown[]) : [];
-  const out: Unit[] = [];
+  const out: Piece[] = [];
+  const parts: string[] = [];
   let at = 0;
+  let offset = 0;
   ids.forEach((pair, n) => {
     if (!Array.isArray(pair) || typeof pair[0] !== 'string') return;
     const len: unknown = pair[1];
     // A run length that is not a count (never so from a projection, but hashed as such) is read as it stands.
     if (typeof len !== 'number' || !Number.isSafeInteger(len) || len < 0) {
-      out.push({ id: pair[0], node: pair });
+      out.push(piece({ id: pair[0], len: 1, node: pair, owner: null, at: offset }));
       return;
     }
-    const [client, clock] = pair[0].split(':').map(Number);
     const part = typeof text === 'string' ? text.slice(at, at + len) : Array.isArray(text) ? text[n] : undefined;
     at += len;
-    if (typeof part === 'string') for (let i = 0; i < part.length; i++) out.push({ id: `${client}:${clock + i}`, ch: part[i] });
-    else out.push({ id: pair[0], node: part });
+    if (typeof part !== 'string') out.push(piece({ id: pair[0], len: 1, node: part, owner: null, at: offset }));
+    else if (part.length) {
+      out.push(piece({ id: pair[0], len: part.length, s: part, owner: null, at: offset }));
+      parts.push(part);
+      offset += part.length;
+    }
   });
   // Text past what the id runs cover (never so in Yjs, but hashed as such) is still read.
-  if (typeof text === 'string') for (let i = at; i < text.length; i++) out.push({ id: `?:${i}`, ch: text[i] });
-  return out;
+  if (typeof text === 'string' && at < text.length) {
+    const rest = text.slice(at);
+    out.push(piece({ id: '?', client: `${OPAQUE}?`, clock: 0, len: rest.length, s: rest, owner: null, at: offset }));
+    parts.push(rest);
+  }
+  return { pieces: out, text: parts.join('') };
 }
 
 /** Where a hunk sits, with a fingerprint of the whole hunk, so rows of two different hunks never read the same. */
@@ -583,6 +845,7 @@ function readingOrder(hunks: readonly Hunk[]): Hunk[] {
 
 /** Every row a card shows for `hunks`, in reading order: each hunk yields at least one, and nothing is folded away. */
 export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
+  describeStats.calls += 1;
   const out: ReviewRow[] = [];
   const read = new Reader();
   for (const hunk of readingOrder(hunks)) {
@@ -598,6 +861,23 @@ export function describeHunks(hunks: readonly Hunk[]): ReviewRow[] {
     for (const row of rows.out) out.push(row);
   }
   return out;
+}
+
+const described = new Map<string, ReviewRow[]>();
+/** Previews whose rows are kept, most recent last. */
+const DESCRIBED = 32;
+
+/**
+ * A preview's rows, built once per preview hash (the hash covers every hunk, and the rows are a function of the
+ * hunks). The rows are shared: never mutate them.
+ */
+export function describePreview(preview: { hash: string; hunks: readonly Hunk[] }): ReviewRow[] {
+  let rows = described.get(preview.hash);
+  if (rows) described.delete(preview.hash);
+  else rows = describeHunks(preview.hunks);
+  described.set(preview.hash, rows);
+  if (described.size > DESCRIBED) described.delete(described.keys().next().value!);
+  return rows;
 }
 
 /** A piece of a row's text as drawn: plain text, or a run of whitespace (`space`, its exact characters) drawn as glyphs. */
