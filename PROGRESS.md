@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 51% done** (102 of 200 planned tasks verified)
+**Overall: 52% done** (103 of 200 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 12 / 12 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -123,6 +123,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T4.R2 verified: comments now sit on the final M3, so a long comment or reply and a note created with a full comments sidecar fit under the request caps, and a large paste in a commented note lays out remote cursors once per batch instead of stalling.
 - 2026-10-09 — T5.R2 verified: suggestions now sit on the final M4, and a large paste in Suggest mode lands whole as one suggestion within every suggestion cap or is refused whole with the pasted blocks offered back, never half-applied.
 - 2026-10-09 — T5.S3 verified: Backspace or Delete in Suggest mode past a long struck run (20,000 characters) now answers quickly, reading each node once while still deleting whole graphemes and keeping own-versus-body routing.
+- 2026-10-09 — T5.S7 verified: text a suggester deletes and then re-types at the end of a stretch now reads as unchanged on the reviewer's card instead of as a delete plus an insert.
 
 ## T1.1s identity audit
 
