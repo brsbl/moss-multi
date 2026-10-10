@@ -98,12 +98,7 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
   const run = async (entry: Entry, key: string) => {
     active += 1;
     entry.inflight = true;
-    let answer: PreviewAnswer | null = null;
-    try {
-      answer = await fetcher(entry.docId, entry.id);
-    } catch {
-      answer = null;
-    }
+    const answer = await fetcher(entry.docId, entry.id).catch((): PreviewAnswer | null => null);
     active -= 1;
     entry.inflight = false;
     if (answer?.status === 429) {
