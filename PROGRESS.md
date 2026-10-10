@@ -171,6 +171,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 ### From T8.3's checker (24262e0, 2026-10-09)
 
 - T8.3 checker P2 (staging body-cap probe accepts any 413, not specifically the Worker's JSON 413): off loopback `oversized()` in scripts/security/sweep.mjs returns only the status, so an edge or intermediary 413 would also pass; assert `application/json` and `{"error":"too-large"}`.
+- T8.3 checker P2 (the sweep's reporter is not restricted when run off loopback; Codex P1, downgraded): on staging its failure details, sign-up error text, error.stack and --json output can include response excerpts and the staging hostname (scripts/security/sweep.mjs:96, :325-329, :470-476); CI runs it only against the loopback smoke stack and off loopback only by hand to the operator's terminal, but it should apply the T8.Ds no-trace policy off loopback.
+- T8.3 checker P2 (the spoofed-header sign-in check does not prove which IP the limiter keys on): varying x-forwarded-for and x-real-ip with the same source and email would also pass under ipAddressHeaders ['x-forwarded-for'] (a shared bucket); auth.ts:53 correctly names cf-connecting-ip and auth.test.ts:119-135 covers it, so this is a coverage gap where docs/SECURITY.md:64 claims more than the check shows.
 
 ### From T8.3a's checker (d72058b, 2026-10-08)
 
