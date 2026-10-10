@@ -5,11 +5,16 @@
 // "Changed in Moss"; pasted media goes only through the host; and the editor is shot in light and dark.
 // T3.10 (editor 0.2.0): `selection()` (feature `selection-1`) with lines golden-compared against the file a save
 // writes, exact after an unsaved edit, and moss's Share with Agent button only with services.shareWithAgent.
+// T3.11 (editor 0.3.0, API 2): a moss-html block renders inert until the user presses Run (PRODUCT ruling 21), and
+// the frame policy refuses a running block's requests and navigations (the WebRTC guard is checked as defense in
+// depth, not as a guarantee); copyFromNote
+// copies only from a note the user opened; a case-only retitle keeps the markdown entry's spelling as Moss desktop
+// does; and an API 1 host (the 0.2.0 host fixture) gets a typed apiMismatch at mount.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test, type Page } from '@playwright/test';
-import { serveEditor, type EditorServer } from './server.ts';
+import { expect, test, type Locator, type Page } from '@playwright/test';
+import { framePolicy, serveEditor, type EditorServer } from './server.ts';
 import {
   SELECTION_CASES,
   SELECTION_COMMENTS,
@@ -47,6 +52,7 @@ interface Fixture {
   shared(): (MossSelection | null)[];
   violations: string[];
   reset(options?: { caseInsensitive?: boolean }): void;
+  open(noteId: string): void;
   seed(segments: string[], note: { markdown: string; meta: object; comments?: string | null; layout?: string | null }): string;
   seedAsset(dir: string, name: string, base64: string): void;
   mount(noteId: string, options?: { theme?: 'light' | 'dark'; share?: boolean | 'fail' }): Promise<{ ok: boolean; code?: string; status: string }>;
@@ -56,17 +62,31 @@ interface Fixture {
   unmountDetail(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string; markdown: string | null }>;
   delayWrites(ms: number): void;
   status(): string | null;
-  events(): { kind: string; cause?: string; status?: string }[];
+  events(): { kind: string; cause?: string; status?: string; op?: string; location?: object }[];
   files(under?: string): Record<string, string>;
   externalWrite(path: string, text: string): void;
   silentWrite(path: string, text: string): void;
-  calls(): { op: string; name?: string; ops?: string[]; sourceNoteId?: string; sourceRef?: string }[];
+  calls(): { op: string; name?: string; ops?: string[]; sourceNoteId?: string; sourceRef?: string; result?: string }[];
   assetUrl(noteId: string, ref: string): string | null;
+}
+
+interface Api1Result {
+  host: { api: number; version: string; features: string[] };
+  editor: { api: number; version: string; features: string[] };
+  ready: { ok: boolean; name?: string; code?: string; message?: string };
+  status: string;
+  placeholder: string | null;
+  events: { kind: string; op?: string; status?: string; willRetry?: boolean }[];
+  calls: string[];
+  unchanged: boolean;
+  flush: { kind: string };
+  unmount: { kind: string; flush: string };
 }
 
 declare global {
   interface Window {
     editorFixture: Fixture;
+    api1Fixture: { mount(noteId: string, note: { markdown: string; meta: object }): Promise<Api1Result> };
   }
 }
 
@@ -137,6 +157,21 @@ const scrollTop = (page: Page) =>
   });
 
 const frames = (page: Page) => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+
+/** The block's own document inside a moss-html preview frame (`layer`: moss's static or interactive frame). */
+const blockIn = (page: Page, index = 0, layer: 'static' | 'interactive' = 'static') =>
+  body(page)
+    .locator('[data-moss-html-preview-viewport]')
+    .nth(index)
+    .frameLocator(`iframe[title="${layer === 'static' ? 'HTML preview' : 'HTML preview (interactive)'}"]`)
+    .frameLocator('iframe');
+
+/** PRODUCT ruling 21: the user activates the `index`th HTML block and presses its Run button. */
+async function runBlock(page: Page, index = 0) {
+  const viewport = body(page).locator('[data-moss-html-preview-viewport]').nth(index);
+  await viewport.getByRole('button', { name: 'Activate live HTML preview' }).click();
+  await viewport.frameLocator('iframe[title="HTML preview (interactive)"]').getByRole('button', { name: 'Run' }).click();
+}
 
 const files = (page: Page) => page.evaluate(() => window.editorFixture.files());
 
@@ -530,6 +565,8 @@ test.describe('embeddable editor', () => {
       { id: ID, plan: meta('Plan'), source: { ...meta('Source'), id: OTHER }, png },
     );
     expect(result).toEqual({ ok: true, status: 'clean' });
+    // The user has the source note open in the host, so the host may copy from it.
+    await page.evaluate((other) => window.editorFixture.open(other), OTHER);
     const urls = await page.evaluate(({ id, other }) => ({ own: window.editorFixture.assetUrl(id, 'assets/own.png'), other: window.editorFixture.assetUrl(other, 'assets/pattern.png') }), { id: ID, other: OTHER });
     expect(urls.own).toMatch(/^blob:/);
     expect(urls.other).toMatch(/^blob:/);
@@ -570,9 +607,286 @@ test.describe('embeddable editor', () => {
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
 
-  test('advertises selection-1 and share-with-agent-1 in MOSS_EDITOR_INFO, as editor 0.2.0 of API 1', async ({ page }) => {
+  test('advertises selection-1 and share-with-agent-1 in MOSS_EDITOR_INFO, as editor 0.3.0 of API 2', async ({ page }) => {
     await open(page);
-    expect(await page.evaluate(() => window.editorFixture.info)).toEqual({ api: 1, version: '0.2.0', features: ['selection-1', 'share-with-agent-1'] });
+    expect(await page.evaluate(() => window.editorFixture.api)).toBe(2);
+    expect(await page.evaluate(() => window.editorFixture.info)).toEqual({ api: 2, version: '0.3.0', features: ['selection-1', 'share-with-agent-1'] });
+  });
+
+  test('ruling 21: a moss-html block renders inert until the user presses Run, which lasts while the editor is mounted', async ({ page }) => {
+    const seen = await open(page);
+    const note = [
+      '# Plan',
+      '',
+      '```moss-html',
+      '<style>#out { color: rgb(10, 120, 30); }</style>',
+      '<p id="out">inert</p>',
+      "<script>document.getElementById('out').textContent = 'ran';</script>",
+      '```',
+      '',
+      'After the block.',
+      '',
+    ].join('\n');
+    await mountNote(page, note);
+    // Inert: the HTML and its style render, and no script runs, however long the note stays open.
+    await expect(blockIn(page).locator('#out')).toHaveText('inert', { timeout: 10_000 });
+    expect(await blockIn(page).locator('#out').evaluate((el) => getComputedStyle(el).color)).toBe('rgb(10, 120, 30)');
+    await page.waitForTimeout(1_500);
+    await expect(blockIn(page).locator('#out')).toHaveText('inert');
+    // Activating the block is not consent either: its interactive frame is inert until Run.
+    const viewport = body(page).locator('[data-moss-html-preview-viewport]');
+    await viewport.getByRole('button', { name: 'Activate live HTML preview' }).click();
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('inert', { timeout: 10_000 });
+    await page.waitForTimeout(1_000);
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('inert');
+    await viewport.frameLocator('iframe[title="HTML preview (interactive)"]').getByRole('button', { name: 'Run' }).click();
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('ran', { timeout: 10_000 });
+    // The choice lasts for the block while the editor is mounted: deselected, its static frame runs too.
+    await body(page).getByText('After the block.', { exact: true }).click();
+    await expect(viewport.locator('iframe[title="HTML preview (interactive)"]')).toHaveCount(0);
+    await expect(blockIn(page).locator('#out')).toHaveText('ran', { timeout: 10_000 });
+    // A new mount starts inert again.
+    await page.evaluate(() => window.editorFixture.unmount({ discardUnsaved: true }));
+    await mountNote(page, note);
+    await expect(blockIn(page).locator('#out')).toHaveText('inert', { timeout: 10_000 });
+    await page.waitForTimeout(1_000);
+    await expect(blockIn(page).locator('#out')).toHaveText('inert');
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test("ruling 21: Run is the one block's, never a twin's with the same HTML, and its fullscreen view shares it", async ({ page }) => {
+    const seen = await open(page);
+    const twin = ['```moss-html', '<p id="out">twin: inert</p>', "<script>document.getElementById('out').textContent = 'twin: ran';</script>", '```'];
+    const note = ['# Plan', '', ...twin, '', ...twin, '', 'After the blocks.', ''].join('\n');
+    await mountNote(page, note);
+    const viewports = body(page).locator('[data-moss-html-preview-viewport]');
+    await expect(viewports).toHaveCount(2, { timeout: 10_000 });
+    await expect(blockIn(page, 1).locator('#out')).toHaveText('twin: inert', { timeout: 10_000 });
+    await runBlock(page, 0);
+    await expect(blockIn(page, 0, 'interactive').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    // Deselected: block 0's static frame runs, and its twin's stays inert.
+    await body(page).getByText('After the blocks.', { exact: true }).click();
+    await expect(blockIn(page, 0).locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await page.waitForTimeout(1_000);
+    await expect(blockIn(page, 1).locator('#out')).toHaveText('twin: inert');
+    // Activating the twin is not Run: its interactive frame stays inert.
+    await viewports.nth(1).getByRole('button', { name: 'Activate live HTML preview' }).click();
+    await expect(blockIn(page, 1, 'interactive').locator('#out')).toHaveText('twin: inert', { timeout: 10_000 });
+    await page.waitForTimeout(1_500);
+    await expect(blockIn(page, 1, 'interactive').locator('#out')).toHaveText('twin: inert');
+    // The fullscreen view, portalled outside its block, shares the block's choice: the twin's opens inert, and Run
+    // pressed there is the twin's Run, so its inline frame runs too.
+    const fullscreen = page.frameLocator('iframe[title="HTML preview (fullscreen)"]');
+    // Every block shows its own Fullscreen button.
+    const blocks = body(page).locator('[data-block-decorator-key]', { has: page.locator('[data-moss-html-preview-viewport]') });
+    const press = (button: Locator) => button.evaluate((element: HTMLElement) => element.click());
+    await press(blocks.nth(1).getByRole('button', { name: 'Fullscreen' }));
+    await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: inert', { timeout: 10_000 });
+    await fullscreen.getByRole('button', { name: 'Run' }).click();
+    await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await expect(blockIn(page, 1, 'interactive').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await press(page.getByRole('button', { name: 'Close lightbox' }));
+    await expect(page.locator('iframe[title="HTML preview (fullscreen)"]')).toHaveCount(0);
+    // Block 0's fullscreen view opens running, since block 0 ran.
+    await press(blocks.nth(0).getByRole('button', { name: 'Fullscreen' }));
+    await expect(fullscreen.frameLocator('iframe').locator('#out')).toHaveText('twin: ran', { timeout: 10_000 });
+    await press(page.getByRole('button', { name: 'Close lightbox' }));
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test('API 2: a moss-html block renders and runs in its frame, the policy refuses its requests, and (defense in depth, not a guarantee) the guard holds these WebRTC probes', async ({ page }) => {
+    const seen = await open(page);
+    const collector = server.collector.url;
+    const socket = collector.replace(/^http/, 'ws');
+    // A peer connection that gathers ICE candidates against the collector's STUN port: CSP governs none of it. Only
+    // the in-realm guard stops these probes, as defense in depth; a running block that tampers with prototypes can
+    // get past it, an accepted residual risk (PRODUCT ruling 21, contract.ts htmlFrame).
+    const rtc = `try { var pc = new RTCPeerConnection({ iceServers: [{ urls: '${server.collector.stun}' }] }); pc.createDataChannel('x'); pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {}); } catch (e) {}`;
+    const attr = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const child = (script: string) => `<iframe srcdoc="${attr(script)}"></iframe>`;
+    const inChild = child(`<script>${rtc}</script>`);
+    const note = [
+      '# Plan',
+      '',
+      '```moss-html',
+      '<style>#out { color: rgb(10, 120, 30); }</style>',
+      '<p id="out">waiting</p>',
+      `<img src="${collector}/img" alt="">`,
+      `<link rel="stylesheet" href="${collector}/link">`,
+      `<iframe src="${collector}/iframe"></iframe>`,
+      `<script src="${collector}/script"></script>`,
+      // WebRTC in a child frame's own realm: a srcdoc child, a javascript: child, and one inside a closed
+      // declarative shadow root.
+      inChild,
+      `<iframe src="${attr(`javascript:"<script>${rtc}</script>"`)}"></iframe>`,
+      `<div><template shadowrootmode="closed">${inChild}</template></div>`,
+      '<div id="host"></div>',
+      '<script>',
+      '  var sent = 0;',
+      `  try { fetch('${collector}/fetch').catch(function () {}); sent++; } catch (e) {}`,
+      `  try { var xhr = new XMLHttpRequest(); xhr.open('GET', '${collector}/xhr'); xhr.send(); sent++; } catch (e) {}`,
+      `  try { new WebSocket('${socket}/socket'); sent++; } catch (e) {}`,
+      `  try { navigator.sendBeacon('${collector}/beacon', 'x'); sent++; } catch (e) {}`,
+      `  try { new Image().src = '${collector}/image'; sent++; } catch (e) {}`,
+      `  ${rtc}`,
+      // The same from script: a child frame appended late, one in a closed shadow root, one written with a
+      // declarative shadow root.
+      `  var late = document.createElement('div'); late.innerHTML = ${JSON.stringify(inChild)}; document.body.appendChild(late);`,
+      `  try { document.getElementById('host').attachShadow({ mode: 'closed' }).innerHTML = ${JSON.stringify(inChild)}; } catch (e) {}`,
+      `  document.write(${JSON.stringify(`<div><template shadowrootmode="closed">${inChild}</template></div>`)});`,
+      // A clonable shadow root copied by cloneNode or importNode, which never calls attachShadow.
+      `  try { var c = document.createElement('div'); var cs = c.attachShadow({ mode: 'closed', clonable: true }); cs.innerHTML = ${JSON.stringify(inChild)}; document.body.appendChild(c.cloneNode(true)); document.body.appendChild(document.importNode(c, true)); } catch (e) {}`,
+      // DOMParser asked for declarative shadow roots.
+      `  try { var d = new DOMParser().parseFromString(${JSON.stringify(`<div><template shadowrootmode="open">${inChild}</template></div>`)}, 'text/html', { includeShadowRoots: true }); document.body.appendChild(document.adoptNode(d.body.firstChild)); } catch (e) {}`,
+      "  document.getElementById('out').textContent = 'ran: ' + sent;",
+      '</script>',
+      '```',
+      '',
+    ].join('\n');
+    server.collector.hits.length = 0;
+    await mountNote(page, note);
+    const viewport = body(page).locator('[data-moss-html-preview-viewport]');
+    const frame = viewport.locator('iframe[title="HTML preview"]');
+    await expect(frame).toHaveCount(1, { timeout: 10_000 });
+    await expect(frame).toHaveAttribute('src', '/editor/moss-html-frame.html');
+    await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
+    await runBlock(page);
+    await page.waitForTimeout(4_000);
+    expect(server.collector.hits).toEqual([]);
+    // The block still renders and runs, in a sandboxed child of the frame document: its inline style applies and
+    // its inline script writes.
+    const out = blockIn(page, 0, 'interactive').locator('#out');
+    await expect(out).toHaveText(/^ran: \d$/, { timeout: 10_000 });
+    expect(await out.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(10, 120, 30)');
+    // The host serves the frame document with editor.json's policy: inline scripts and styles, data: and blob:
+    // images, and no network at all.
+    const policy = framePolicy();
+    expect(policy).toBe(
+      "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'",
+    );
+    expect((await page.request.get(`${server.url}/editor/moss-html-frame.html`)).headers()['content-security-policy']).toBe(policy);
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test('API 2: a moss-html block cannot navigate its frame, its parent, the page or a popup to another origin', async ({ page }) => {
+    const seen = await open(page);
+    const collector = server.collector.url;
+    // One block per probe, since a navigation that went through would end the block's document.
+    const probes = [
+      `<script>location.replace('${collector}/replace');</script>`,
+      `<script>location.href = '${collector}/assign';</script>`,
+      `<meta http-equiv="refresh" content="0;url=${collector}/refresh">`,
+      `<a id="a" href="${collector}/click">go</a><script>document.getElementById('a').click();</script>`,
+      `<form id="f" action="${collector}/form"><input name="q" value="1"></form><script>document.getElementById('f').submit();</script>`,
+      `<script>try { parent.location = '${collector}/parent'; } catch (e) {}</script>`,
+      `<script>try { top.location = '${collector}/top'; } catch (e) {}</script>`,
+      `<script>try { open('${collector}/popup'); } catch (e) {}</script>`,
+    ];
+    const note = ['# Plan', '', ...probes.flatMap((probe) => ['```moss-html', `<p>probe</p>${probe}`, '```', '']).slice(0, -1), ''].join('\n');
+    server.collector.hits.length = 0;
+    await mountNote(page, note);
+    await expect(body(page).locator('[data-moss-html-preview-viewport] iframe')).toHaveCount(probes.length, { timeout: 10_000 });
+    for (let index = 0; index < probes.length; index++) await runBlock(page, index);
+    await page.waitForTimeout(4_000);
+    expect(server.collector.hits).toEqual([]);
+    // A frame whose block tried to load another page is torn down, in both of moss's layers.
+    await expect(body(page).locator('[data-moss-html-preview-viewport]').first().frameLocator('iframe[title="HTML preview"]').getByText('This block tried to open another page')).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`^${server.url}/fixture/`));
+    // WebKit reports the sandbox's refusals of the parent and top probes as page errors; those are the refusals
+    // asserted here.
+    expect(seen.errors.filter((error) => !/The frame attempting navigation (of the top-level window )?is sandboxed/.test(error))).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test('API 2: copyFromNote refuses a source note the user has not opened, and the paste keeps no reference to it', async ({ page }) => {
+    const seen = await open(page);
+    const OTHER = '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d';
+    const png = readFileSync(join(MEDIA, 'pattern.png')).toString('base64');
+    const result = await page.evaluate(
+      ({ id, plan, source, png }) => {
+        window.editorFixture.reset();
+        const dir = window.editorFixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nPaste here\n', meta: plan });
+        const sourceDir = window.editorFixture.seed(['Notes', 'Source'], { markdown: '# Source\n\n![pattern](assets/pattern.png)\n', meta: source });
+        window.editorFixture.seedAsset(dir, 'own.png', png);
+        window.editorFixture.seedAsset(sourceDir, 'pattern.png', png);
+        return window.editorFixture.mount(id);
+      },
+      { id: ID, plan: meta('Plan'), source: { ...meta('Source'), id: OTHER }, png },
+    );
+    expect(result).toEqual({ ok: true, status: 'clean' });
+    // A host-issued URL for a note the user never opened, as pasted content could carry one.
+    const urls = await page.evaluate(({ id, other }) => ({ own: window.editorFixture.assetUrl(id, 'assets/own.png'), other: window.editorFixture.assetUrl(other, 'assets/pattern.png') }), { id: ID, other: OTHER });
+    await body(page).getByText('Paste here', { exact: true }).click();
+    await page.keyboard.press('End');
+    await frames(page);
+    await body(page).evaluate((root, { own, other }) => {
+      const data = new DataTransfer();
+      data.setData('text/html', `<p><img src="${other}" alt="pattern"></p><p><img src="${own}" alt="own"></p>`);
+      data.setData('text/plain', '');
+      root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }, urls);
+    await expect.poll(() => page.evaluate(() => window.editorFixture.events().filter((event) => event.kind === 'error').map((event) => event.op))).toEqual(['assetCopy']);
+    await expect(body(page).locator('img')).toHaveCount(1, { timeout: 10_000 });
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const copies = (await page.evaluate(() => window.editorFixture.calls())).filter((call) => call.op === 'assetCopy');
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ sourceNoteId: OTHER, sourceRef: 'assets/pattern.png', result: 'refused:sourceNotOpen' });
+    const written = await files(page);
+    expect(Object.keys(written).filter((path) => path.startsWith('/Moss/Notes/Plan/assets/'))).toEqual(['/Moss/Notes/Plan/assets/own.png']);
+    const markdown = written['/Moss/Notes/Plan/Plan.md'];
+    expect(markdown).not.toContain('blob:');
+    expect(markdown).not.toContain('pattern');
+    expect(markdown).toContain('(assets/own.png)');
+    expect(seen.errors).toEqual([]);
+    expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
+  });
+
+  test("API 2: a case-only retitle keeps the markdown entry's spelling, as Moss desktop's save does on APFS", async ({ page }) => {
+    const seen = await open(page);
+    const result = await page.evaluate(
+      ({ id, meta }) => {
+        window.editorFixture.reset({ caseInsensitive: true });
+        window.editorFixture.seed(['Notes', 'Plan'], { markdown: '# Plan\n\nBody\n', meta });
+        return window.editorFixture.mount(id);
+      },
+      { id: ID, meta: meta('Plan') },
+    );
+    expect(result).toEqual({ ok: true, status: 'clean' });
+    await title(page).click();
+    await page.keyboard.press('ControlOrMeta+A');
+    await page.keyboard.type('plan');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = await files(page);
+    // Desktop's golden (pipeline.golden.test.ts): the folder is renamed and the file replaced in place, so the entry
+    // keeps its spelling `Plan.md`.
+    expect(Object.keys(written)).toEqual(['/Moss/Notes/plan/Plan.md', '/Moss/Notes/plan/meta.json']);
+    expect(written['/Moss/Notes/plan/Plan.md']).toMatch(/^# plan\n\nBody\n?$/);
+    expect(JSON.parse(written['/Moss/Notes/plan/meta.json']).title).toBe('plan');
+    const saved = (await page.evaluate(() => window.editorFixture.events())).filter((event) => event.kind === 'saved');
+    expect(saved.at(-1)?.location).toEqual({ folderPath: 'Notes', folderName: 'plan', markdownName: 'plan.md' });
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('API 2: an API 1 host (the 0.2.0 host fixture) mounting this bundle gets a typed apiMismatch at mount, and nothing is read or written', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(`${server.url}/fixture/api1/index.html`);
+    await expect(page.locator('html[data-fixture="ready"]')).toBeAttached();
+    const result = await page.evaluate(({ id, note }) => window.api1Fixture.mount(id, note), { id: ID, note: { markdown: '# Plan\n\nBody\n', meta: meta('Plan') } });
+    expect(result.host).toEqual({ api: 1, version: '0.2.0', features: ['selection-1', 'share-with-agent-1'] });
+    expect(result.editor.api).toBe(2);
+    expect(result.ready).toEqual({ ok: false, name: 'MossEditorError', code: 'apiMismatch', message: 'bridge.api is 1; this editor implements API 2' });
+    expect(result.status).toBe('notLoaded');
+    expect(result.placeholder).toContain('API 2');
+    expect(result.events).toEqual([{ kind: 'error', op: 'read', status: 'notLoaded', willRetry: false }]);
+    expect(result.calls).toEqual([]);
+    expect(result.unchanged).toBe(true);
+    expect(result.flush).toEqual({ kind: 'notLoaded' });
+    expect(result.unmount).toEqual({ kind: 'unmounted', flush: 'notLoaded' });
+    expect(errors).toEqual([]);
   });
 
   for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
@@ -716,6 +1030,144 @@ test.describe('embeddable editor', () => {
     await selectText(page, BODY, first!.from, first!.to);
     await button.click();
     await expect.poll(() => page.evaluate(() => window.editorFixture.shared())).toEqual([first!.expected]);
+  });
+});
+
+// T3.13: a decorator's open draft survives unmount, and typing after a slash-menu chart lands after it.
+test.describe('editor fixes before 0.3.0', () => {
+  const CHART = '```moss-chart\n{"type":"bar","title":"Draft","data":[{"label":"A","value":3},{"label":"B","value":5}]}\n```';
+  const HTML = '```moss-html\n<p>Saved HTML.</p>\n```';
+
+  test('a chart JSON draft and an HTML source draft left open at unmount are in the final write, frozen while it waits', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, `# Plan\n\nFirst line\n\n${CHART}\n\n${HTML}\n`);
+    await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
+    // The chart's JSON editor and the HTML block's source, changed without pressing Apply or Done.
+    await body(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await body(page).locator('textarea').first().fill('{"type":"bar","title":"Edited","data":[{"label":"A","value":9}]}');
+    // moss's preview layer covers the block's header buttons until hover, so the press goes to the button itself.
+    await body(page).getByRole('button', { name: 'Edit HTML' }).dispatchEvent('click');
+    await expect(body(page).locator('textarea')).toHaveCount(2);
+    await body(page).locator('textarea').last().fill('<p>HTML draft.</p>');
+    await page.evaluate(() => window.editorFixture.delayWrites(1_500));
+    const unmounting = page.evaluate(() => window.editorFixture.unmountDetail());
+    await expect(page.locator('[data-moss-editor-root]')).toHaveAttribute('inert', '');
+    const result = await unmounting;
+    expect(result.kind).toBe('unmounted');
+    expect(result.flush).toBe('saved');
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written, 'the chart draft is written').toContain('"title": "Edited"');
+    expect(written, 'the HTML draft is written').toContain('<p>HTML draft.</p>');
+    expect(result.markdown).toBe(written);
+    expect(seen.errors).toEqual([]);
+  });
+
+  const slashChart = async (page: Page, { behind = false } = {}) => {
+    await mountNote(page, '# Plan\n\nFirst line\n');
+    await body(page).getByText('First line').click();
+    // The caret at the end of the line (End is not a line end in every engine).
+    await body(page).evaluate((root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data === 'First line') return document.getSelection()?.collapse(node, (node as Text).data.length);
+      }
+      throw new Error('no First line');
+    });
+    await frames(page);
+    await page.keyboard.press('Enter');
+    if (behind) {
+      // The menu lists every command. Then, as on a busy main thread (j11's flake), the search for "bar" runs but
+      // React has not yet committed its results: zero-delay timers are held while typing, then run with React's
+      // scheduler (MessagePort) held, so the menu still shows the list for "/" when Enter comes.
+      await page.keyboard.type('/');
+      await expect(page.locator('button[data-index]').first()).toBeVisible();
+      await page.evaluate(() => {
+        const w = window as unknown as { held: { timers: (() => void)[]; messages: (() => void)[] }; realSetTimeout: typeof setTimeout; realPost: MessagePort['postMessage'] };
+        w.held = { timers: [], messages: [] };
+        w.realSetTimeout = window.setTimeout;
+        w.realPost = MessagePort.prototype.postMessage;
+        window.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+          if (ms) return w.realSetTimeout(fn, ms, ...args);
+          w.held.timers.push(() => fn(...args));
+          return 0;
+        }) as typeof setTimeout;
+      });
+      await page.keyboard.type('bar');
+      await frames(page);
+      await page.evaluate(async () => {
+        const w = window as unknown as { held: { timers: (() => void)[]; messages: (() => void)[] }; realSetTimeout: typeof setTimeout; realPost: MessagePort['postMessage'] };
+        MessagePort.prototype.postMessage = function (this: MessagePort, ...args: unknown[]) {
+          w.held.messages.push(() => (w.realPost as (...a: unknown[]) => void).apply(this, args));
+        } as MessagePort['postMessage'];
+        window.setTimeout = w.realSetTimeout;
+        for (const run of w.held.timers.splice(0)) run();
+        await Promise.resolve();
+      });
+      await frames(page);
+      await expect(page.locator('button[data-index="0"]'), 'the menu still shows the search for "/"').not.toContainText('Bar Chart');
+      await page.keyboard.press('Enter');
+      await page.evaluate(() => {
+        const w = window as unknown as { held: { messages: (() => void)[] }; realPost: MessagePort['postMessage'] };
+        MessagePort.prototype.postMessage = w.realPost;
+        for (const post of w.held.messages.splice(0)) post();
+      });
+    } else {
+      await page.keyboard.type('/bar');
+      await expect(page.getByText('Bar Chart', { exact: true })).toBeVisible();
+      await page.keyboard.press('Enter');
+    }
+    await expect(body(page).locator('.recharts-surface')).toHaveCount(1);
+  };
+  const AFTER_CHART = (text: string) => new RegExp(`^# Plan\\n\\nFirst line\\n\\n\`\`\`moss-chart\\n[\\s\\S]*\\n\`\`\`\\n\\n${text}\\n?$`);
+
+  test('typing after inserting a chart from the slash menu lands after the chart, in order', async ({ page }) => {
+    const seen = await open(page);
+    await slashChart(page);
+    await page.keyboard.type('abc');
+    await frames(page);
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written).toMatch(AFTER_CHART('abc'));
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('Enter in the slash menu runs the command for the whole query, even before the menu\'s search catches up', async ({ page }) => {
+    const seen = await open(page);
+    await slashChart(page, { behind: true });
+    await expect(body(page).locator('table'), 'no command from the stale list ran').toHaveCount(0);
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+    expect(written).toMatch(/^# Plan\n\nFirst line\n\n```moss-chart\n/);
+    expect(written, 'no table was inserted').not.toContain('|');
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('an IME or dead-key composition after a slash-menu chart lands after the chart', async ({ page, browserName }) => {
+    const seen = await open(page);
+    await slashChart(page);
+    if (browserName === 'chromium') {
+      // A real composition, as an IME (or a macOS dead key) drives it: no keydown Lexical acts on, no insertText beforeinput.
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+      await cdp.send('Input.imeSetComposition', { text: 'にほ', selectionStart: 2, selectionEnd: 2 });
+      await cdp.send('Input.insertText', { text: '日本' });
+      await frames(page);
+      expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+      expect((await files(page))['/Moss/Notes/Plan/Plan.md']).toMatch(AFTER_CHART('日本'));
+    } else {
+      // Playwright drives no IME in WebKit: start the composition on the root as the engine does, and check the caret is
+      // in a new paragraph below the chart, where the engine then composes.
+      await body(page).evaluate((root) => root.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' })));
+      await frames(page);
+      const caret = await body(page).evaluate((root) => {
+        let block = document.getSelection()?.anchorNode ?? null;
+        while (block && block.parentNode !== root) block = block.parentNode;
+        const element = block instanceof Element ? block : null;
+        return { tag: element?.tagName ?? null, afterChart: Boolean(element?.previousElementSibling?.querySelector('.recharts-surface')) };
+      });
+      expect(caret).toEqual({ tag: 'P', afterChart: true });
+    }
+    expect(seen.errors).toEqual([]);
   });
 });
 

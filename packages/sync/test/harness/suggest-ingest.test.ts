@@ -471,6 +471,15 @@ describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
     expect(await leases(back)).toHaveLength(2);
   });
 
+  it('refused frames that name one record, on one socket, each count toward the cooldown (T5.R2)', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    for (let i = 0; i < 2; i += 1) expect(await send(sam, { t: 'suggest-withdraw', record: 'nope' })).toMatchObject({ t: 'suggest-refused' });
+    expect(sam.closed, 'two refusals').toBeNull();
+    expect(await send(sam, { t: 'suggest-withdraw', record: 'nope' })).toMatchObject({ t: 'suggest-refused' });
+    expect(sam.closed?.code, 'three refusals of the same record').toBe(CLOSE.connectionLimit);
+  });
+
   it('role refusals of body frames count toward the cooldown', async () => {
     const opened = await seeded();
     const body = bodyState(opened.dobj.document);

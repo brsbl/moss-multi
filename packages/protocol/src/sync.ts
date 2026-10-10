@@ -67,7 +67,14 @@ export type ServerEvent =
    * carried (base64 `Y.encodeSnapshot` of a snapshot with an empty state vector): a delete never moves a state
    * vector, so `sv` alone cannot say a delete has landed.
    */
-  | { t: 'ack'; sv: string; ds?: string; p?: Record<string, PayloadAck> }
+  | { t: 'ack'; sv: string; ds?: string; p?: Record<string, PayloadAck>; pb?: number }
+  /**
+   * After the sync step 1 on connect: `pb` is the bytes of every payload doc the DocDO stores for the note, withheld
+   * ones too, as it counts them against the state cap (A§5.1). Acks carry it as well. A client holds only the payloads
+   * its tree names, so it adds this, not its own, to its cap estimate (T3.S6). Sent only when there are any; an ack
+   * without `pb` means none.
+   */
+  | { t: 'usage'; pb: number }
   | { t: 'doc-deleted' }
   | SuggestReply;
 

@@ -3,14 +3,14 @@
 // Named versions are counted per person (an agent as its owner) by that person's PrincipalDO and restores as REST
 // writes; the DocDO re-authorizes the actor in the same serialized write (A§8), so the Worker's role is never the last word.
 import { getServerByName } from 'partyserver';
-import { NAMED_VERSION_RATE, NAMED_VERSIONS_PER_NOTE, NAMED_VERSIONS_PER_PERSON, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
+import { NAMED_VERSION_RATE, NAMED_VERSIONS_PER_NOTE, NAMED_VERSIONS_PER_PERSON, REST_WRITE_RATE, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
-import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { JSON_BODY_MAX_BYTES, NO_STORE, notFound, readJsonObject, tooLarge } from './respond.ts';
 
 export const VERSIONS_ROUTE = /^\/api\/docs\/([^/]+)\/versions(?:\/([^/]+)(\/restore)?)?$/;
 
@@ -36,19 +36,34 @@ const REFUSAL: Record<string, string> = {
   'restore-base-stale': 'The note has changed since Restore was opened. Open Restore again to restore this version.',
 };
 
-/** A restore's base as a client sends it (restore-base.ts), bounded; the DocDO decides whether it is usable. */
-const BASE_MAX_CHARS = 65_536;
+/**
+ * A restore's base as a client sends it (restore-base.ts), bounded; the DocDO decides whether it is usable. A state
+ * vector never encodes longer than the state it describes (restore-base.test.ts), and every entry point holds a note and
+ * its payloads to STATE_CAP_BYTES together (A§5.1), so an honest base's vectors decode to at most that: in base64,
+ * BASE_VECTOR_MAX_CHARS plus each vector's padding.
+ */
 const BASE_MAX_PAYLOADS = 10_000;
+const BASE64_PADDING = 4;
+export const BASE_VECTOR_MAX_CHARS = 4 * Math.ceil(STATE_CAP_BYTES / 3);
+/**
+ * A restore body's cap (T6.R): every vector, and each payload's id (at most 64 characters), JSON and padding, over the
+ * default cap for the rest. A save names at most 80 characters, under the default.
+ */
+export const RESTORE_BODY_MAX_BYTES = JSON_BODY_MAX_BYTES + BASE_VECTOR_MAX_CHARS + BASE_MAX_PAYLOADS * (64 + 6 + BASE64_PADDING);
 function restoreBase(raw: unknown): { ok: true; base: unknown } | { ok: false } {
   if (raw === undefined) return { ok: true, base: undefined };
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false };
   const { note, payloads, age } = raw as Record<string, unknown>;
-  if (typeof note !== 'string' || note.length > BASE_MAX_CHARS || typeof age !== 'number') return { ok: false };
+  if (typeof note !== 'string' || typeof age !== 'number') return { ok: false };
   if (typeof payloads !== 'object' || payloads === null || Array.isArray(payloads)) return { ok: false };
   const entries = Object.entries(payloads);
-  if (entries.length > BASE_MAX_PAYLOADS || entries.some(([id, sv]) => id.length > 64 || typeof sv !== 'string' || sv.length > BASE_MAX_CHARS)) return { ok: false };
+  if (entries.length > BASE_MAX_PAYLOADS || entries.some(([id, sv]) => id.length > 64 || typeof sv !== 'string')) return { ok: false };
+  const chars = entries.reduce((sum, [, sv]) => sum + (sv as string).length, note.length);
+  if (chars > BASE_VECTOR_MAX_CHARS + BASE64_PADDING * (entries.length + 1)) return { ok: false };
   return { ok: true, base: { note, payloads: Object.fromEntries(entries), age } };
 }
+
+const rateLimited = (windowMs: number) => json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(windowMs / 1000) });
 
 interface Verdict {
   ok: boolean;
@@ -67,8 +82,13 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   if (request.method !== method) return json({ error: 'method-not-allowed' }, 405, { allow: vid && !restore ? 'GET' : restore ? 'POST' : 'GET, POST' });
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to see version history' }, 401, NO_STORE);
-  // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
-  const body = method === 'POST' ? ((await readJsonObject(request)) ?? {}) : {};
+  // A restore's body can run to megabytes, so its write token is charged before the body is read, and a declared
+  // oversize is refused before either. A body is read before access resolves, so a stalled one cannot outlive a revocation.
+  if (action === 'restore') {
+    if (Number(request.headers.get('content-length') ?? 0) > RESTORE_BODY_MAX_BYTES) return tooLarge();
+    if (!(await (await getServerByName(env.PrincipalDO, principal.id)).takeWriteToken())) return rateLimited(REST_WRITE_RATE.windowMs);
+  }
+  const body = method === 'POST' ? ((await readJsonObject(request, action === 'restore' ? RESTORE_BODY_MAX_BYTES : undefined)) ?? {}) : {};
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, FLOOR[action])) return json({ error: 'forbidden', message: MESSAGE[action] }, 403, NO_STORE);
@@ -79,15 +99,8 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   const base = restoreBase((body as { base?: unknown }).base);
   if (action === 'restore' && !base.ok) return json({ error: 'bad-request', message: 'A restore base is malformed' }, 400, NO_STORE);
   const person = actingUserId(principal) ?? principal.id;
-  if (action === 'save' || action === 'restore') {
-    // Named saves are rated per person: an agent spends its owner's tokens, so more keys add no rate.
-    const principalDO = await getServerByName(env.PrincipalDO, action === 'save' ? person : principal.id);
-    const allowed = action === 'save' ? await principalDO.takeVersionToken() : await principalDO.takeWriteToken();
-    if (!allowed) {
-      const window = action === 'save' ? NAMED_VERSION_RATE.windowMs : REST_WRITE_RATE.windowMs;
-      return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(window / 1000) });
-    }
-  }
+  // Named saves are rated per person: an agent spends its owner's tokens, so more keys add no rate.
+  if (action === 'save' && !(await (await getServerByName(env.PrincipalDO, person)).takeVersionToken())) return rateLimited(NAMED_VERSION_RATE.windowMs);
   const input = {
     reviewer: { id: principal.id, role: access.role },
     actor: {
