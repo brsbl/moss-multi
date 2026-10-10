@@ -154,6 +154,7 @@ test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only 
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
   await expect(refusal, 'the demotion alone says the note is view-only').toHaveText(VIEW_ONLY, { timeout: LIVE_TIMEOUT });
   const shownAt = Date.now();
+  await ui.waitOpen(ben, docId, 'readonly');
   // Removed at once through the members API (the dialog's clicks take too long in WebKit): the view-only notice
   // would otherwise still show for its 4 s.
   const removed = await ada.context.request.delete(`/api/docs/${docId}/members`, { headers: { origin: stack.baseUrl }, data: { principalId: ben.principal!.id } });
