@@ -1,22 +1,22 @@
 // @vitest-environment jsdom
-// T5.R2: in Suggest mode a large paste (T3.S6) is never batched. It is admitted against every suggestion cap before
-// anything changes, the deletion of a selection it replaces included, then lands in one transaction (one op, one
-// record), or is refused whole with nothing changed (suggestions.md §5). Its undo and its redo are one step each.
+// T5.R2, T5.S10: in Suggest mode a paste is the ordinary Lexical paste, one editor update in the fork, never the large
+// paste's batches (T3.S6). Before it is dispatched it is admitted against every suggestion cap, the deletion of a
+// selection it replaces included, then lands with that strike as one undo step (one op, one record), or is refused
+// whole with nothing changed (suggestions.md §5). Its undo and its redo are one step each.
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestRequest } from '@moss-multi/protocol/suggest';
 import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
 import {
-  $getRoot, $getSelection, COMMAND_PRIORITY_EDITOR, COMMAND_PRIORITY_HIGH, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND, type Klass, type LexicalNode,
+  $getRoot, $getSelection, $isRangeSelection, COMMAND_PRIORITY_EDITOR, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
 } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as Y from 'yjs';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
 import { GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
-import { openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
+import { closeRecord, openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
 import { nodeRegistry } from '../../../../../../packages/sync/src/suggest/review.ts';
-import { seededBody, select, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
-import { $insertBlocks, pasteLarge, planPlainText, registerWholePaste } from '../../large-paste.ts';
+import { EDITOR, seededBody, select, spansOfText, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { refusalMessage } from '../../refusal.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
@@ -30,24 +30,29 @@ vi.mock('../doc-session.ts', async (original) => ({
 }));
 
 beforeEach(() => {
-  // jsdom's Performance may lack User Timing; the paste marks its steps with it.
-  const perf = performance as unknown as Record<string, unknown>;
-  if (typeof perf.mark !== 'function') perf.mark = () => undefined;
-  if (typeof perf.measure !== 'function') perf.measure = () => undefined;
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 });
 afterEach(() => {
+  vi.runAllTimers();
   vi.useRealTimers();
 });
 
+/** A clipboard holding `text` as plain text, as a paste event carries it. */
+const plainClipboard = (text: string) => ({
+  types: ['text/plain'],
+  getData: (type: string) => (type === 'text/plain' ? text : ''),
+}) as unknown as DataTransfer;
+
 /**
- * A suggester's pane on F: the body's undo, the routing, and a paste handler that lands every paste through pasteLarge,
- * as the MarkdownEditor seam does a large one; a reachable DocDO.
+ * A suggester's pane on F: the body's undo, the routing, and Lexical's own plain-text paste (a paragraph per line, as
+ * @lexical/rich-text's paste handler makes one, in one update); a reachable DocDO. `before` runs on the DocDO before
+ * the fork asks for its leases.
  */
-function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n') {
+function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n', before?: (ingest: SuggestIngest) => void) {
   const live = seededBody(markdown);
   let n = 0;
   const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}` });
+  before?.(ingest);
   const outbox: SuggestRequest[] = [];
   let requests = 0;
   /** Requests that change a suggestion: every kind but a lease. */
@@ -67,11 +72,9 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n')
   Object.assign(editor, { registerRootListener: () => () => {}, getRootElement: () => null, getElementByKey: () => null });
   const undo = createBindingUndoManager(bound.binding);
   (editor as unknown as Record<symbol, unknown>)[Symbol.for('@lexical/yjs/UndoManager')] = undo;
-  const nodes = [...editor._nodes.values()].map(({ klass }) => klass) as Klass<LexicalNode>[];
-  let clipboard = '';
   const stops = [
     publishBinding(editor, bound.binding),
-    // The collaboration plugin's undo and redo, which a paste's sliced redo and the routing take precedence over.
+    // The collaboration plugin's undo and redo, which the routing takes precedence over.
     editor.registerCommand(UNDO_COMMAND, () => {
       undo.undo();
       return true;
@@ -80,17 +83,20 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n')
       undo.redo();
       return true;
     }, COMMAND_PRIORITY_EDITOR),
-    // The seam: this handler lands every paste whole.
-    registerWholePaste(editor, () => true),
-    editor.registerCommand(PASTE_COMMAND, () => {
-      pasteLarge(editor, {
-        plan: planPlainText(nodes, clipboard),
-        nodes,
-        $restore: () => false,
-        $insert: (blocks) => $insertBlocks(blocks, $getSelection()!, (some, at) => at.insertNodes(some)),
+    // Lexical's own plain-text paste: each line break a paragraph break, the text inserted at the selection.
+    editor.registerCommand(PASTE_COMMAND, (event) => {
+      const text = (event as ClipboardEvent).clipboardData?.getData('text/plain') ?? '';
+      editor.update(() => {
+        text.split('\n').forEach((line, i) => {
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection)) return;
+          if (i > 0) selection.insertParagraph();
+          const at = $getSelection();
+          if (line && $isRangeSelection(at)) at.insertText(line);
+        });
       });
       return true;
-    }, COMMAND_PRIORITY_HIGH),
+    }, COMMAND_PRIORITY_EDITOR),
     registerSuggestRouting(editor, fork),
   ];
   const unsaved: string[] = [];
@@ -107,12 +113,12 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n')
   editor.update(() => $getRoot().getLastChildOrThrow().selectEnd(), { discrete: true });
   /** A real paste command of `lines`, as plain text, run to its end. */
   const paste = (lines: string[]) => {
-    clipboard = lines.join('\n');
-    editor.dispatchCommand(PASTE_COMMAND, { clipboardData: null } as unknown as ClipboardEvent);
+    editor.dispatchCommand(PASTE_COMMAND, { clipboardData: plainClipboard(lines.join('\n')), preventDefault: () => {} } as unknown as ClipboardEvent);
   };
   return {
     fork,
     live,
+    ingest,
     unsaved,
     paste,
     pump,
@@ -127,6 +133,8 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n')
       select(prefix, anchor, focus);
     }, { discrete: true }),
     selected: () => editor.getEditorState().read(() => $getSelection()?.getTextContent() ?? ''),
+    /** Characters struck by the author's open delete parts. */
+    struck: () => fork.struck().reduce((sum, span) => sum + span.len, 0),
     undo: () => editor.update(() => {
       editor.dispatchCommand(UNDO_COMMAND, undefined);
     }, { discrete: true }),
@@ -250,7 +258,7 @@ it('an admissible paste over a selection strikes it and lands, as one suggestion
     vi.runAllTimers();
     pane.pump();
     expect(pane.fork.closed, 'admitted').toBe(false);
-    expect(pane.fork.struck().reduce((sum, span) => sum + span.len, 0), 'the selection is struck').toBe(4);
+    expect(pane.struck(), 'the selection is struck').toBe(4);
     expect(pane.text()).toContain('para <0>');
     expect(pane.text()).toContain('para <299>');
     expect(openRecords(pane.live, SUGGESTER.id), 'one record holds the strike and the paste').toHaveLength(1);
@@ -376,21 +384,20 @@ it('a paste over a selection of another author\'s text strikes it and lands in o
     pane.paste(lines);
     vi.runAllTimers();
     pane.pump();
-    const struck = () => pane.fork.struck().reduce((sum, span) => sum + span.len, 0);
-    expect(struck(), 'the selection is struck').toBe(4);
+    expect(pane.struck(), 'the selection is struck').toBe(4);
     expect(pane.text()).toContain('para <299>');
 
     pane.undo();
     vi.runAllTimers();
     pane.pump();
     expect(pane.text(), 'one undo takes the paste back').not.toMatch(/para <\d+>/);
-    expect(struck(), 'and the strike').toBe(0);
+    expect(pane.struck(), 'and the strike').toBe(0);
 
     pane.redo();
     vi.runAllTimers();
     pane.pump();
     expect(pane.text(), 'one redo brings the paste back').toContain('para <299>');
-    expect(struck(), 'and the strike').toBe(4);
+    expect(pane.struck(), 'and the strike').toBe(4);
     expect(pane.fork.closed, 'nothing refused').toBe(false);
   } finally {
     pane.dispose();
@@ -419,16 +426,89 @@ it('a paste inside a long paragraph counts the paragraph\'s rest, which the spli
   }
 });
 
-it('a paste inside a long paragraph that fits with the paragraph\'s rest lands as one suggestion, the DocDO refusing nothing', { timeout: 120_000 }, () => {
-  const pane = suggesting(`Ada ${'q'.repeat(150_000)}\n\nSecond line.\n`);
+it('a paste inside a 150 KB paragraph either lands as one suggestion whose undo and redo are one step each, or is refused whole with nothing changed', { timeout: 120_000 }, () => {
+  const pane = suggesting(`Lead words MID ${'q'.repeat(150_000)}\n\nSecond line.\n`);
   try {
-    pane.select('Ada', 0, 3);
-    pane.paste([`One ${'a'.repeat(20_000)}`, `Two ${'b'.repeat(20_000)}`]);
+    pane.select('Lead words', 11, 14);
+    expect(pane.selected()).toBe('MID');
+    const text = pane.text();
+    const before = pane.requests();
+    pane.paste([`Alpha ${'c'.repeat(20_000)}`, `Beta ${'d'.repeat(20_000)}`]);
+    const notice = refusalMessage();
+    if (notice) {
+      expect(notice, 'refused visibly').toMatch(/suggest/i);
+      expect(pane.requests(), 'nothing was sent, no strike either').toBe(before);
+      expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
+      expect(pane.text(), 'F is unchanged').toBe(text);
+      expect(pane.selected(), 'the selection is kept').toBe('MID');
+      vi.runAllTimers();
+      pane.pump();
+      expect(pane.fork.closed, 'input stays open').toBe(false);
+      expect(openRecords(pane.live, SUGGESTER.id), 'no suggestion was made').toEqual([]);
+      return;
+    }
     vi.runAllTimers();
     pane.pump();
-    expect(pane.fork.closed, 'admitted, and stored').toBe(false);
-    expect(pane.text()).toContain('Two bbb');
-    expect(openRecords(pane.live, SUGGESTER.id), 'one suggestion holds the strike and the paste').toHaveLength(1);
+    expect(pane.fork.closed, 'the paste is stored').toBe(false);
+    expect(pane.struck(), 'the selection is struck').toBe(3);
+    expect(pane.text()).toContain('Beta ddd');
+    const sent = pane.fork.sent;
+
+    pane.undo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the undo is stored').toBe(false);
+    expect(pane.fork.sent - sent, 'one undo, one op').toBe(1);
+    expect(pane.text(), 'one undo takes the paste back').toBe(text);
+    expect(pane.struck(), 'and the strike').toBe(0);
+
+    pane.redo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the redo is stored').toBe(false);
+    expect(pane.fork.sent - sent, 'one redo, one op').toBe(2);
+    expect(pane.text(), 'one redo brings the paste back').toContain('Beta ddd');
+    expect(pane.struck(), 'and the strike').toBe(3);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('when the active lease names an accepted record, a paste opens its continuation and counts the open-suggestion cap: past it, refused before anything changes', { timeout: 120_000 }, () => {
+  // Another window of the author holds three unused leases: this fork gets one lease and no spare.
+  const window = { ...SUGGESTER, role: 'suggester', connection: 'other-window' };
+  const pane = suggesting(undefined, (ingest) => {
+    expect(ingest.lease(window, [], 2).ok).toBe(true);
+    expect(ingest.lease(window, [], 1).ok).toBe(true);
+  });
+  try {
+    pane.paste(['hello']);
+    vi.runAllTimers();
+    pane.pump();
+    const accepted = pane.fork.record!;
+    expect(readRecord(pane.live, accepted), 'the paste made a record').not.toBeNull();
+    // The author's other windows hold as many open suggestions as one author may.
+    for (let i = 0; i < SUGGEST_LIMITS.openPerPrincipal; i += 1) {
+      const who = { ...SUGGESTER, role: 'suggester', connection: `w-${i}` };
+      const grant = pane.ingest.lease(who, [], 1);
+      if (!grant.ok) throw new Error(`no lease: ${grant.reason}`);
+      expect(pane.ingest.delete(who, grant.leases[0].record, { id: `d${i}`, targets: spansOfText(pane.live, 'Intro') })).toMatchObject({ ok: true });
+      pane.ingest.expireConnection(`w-${i}`);
+    }
+    // An editor accepts the fork's record: its next frame opens a continuation, a new open record.
+    closeRecord(pane.live, accepted, { status: 'accepted', resolvedBy: EDITOR.id, resolvedAt: 1 });
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.record, 'no spare lease to rotate to').toBe(accepted);
+    expect(openRecords(pane.live, SUGGESTER.id), 'the author is at the cap').toHaveLength(SUGGEST_LIMITS.openPerPrincipal);
+    const text = pane.text();
+    const before = pane.changes();
+    pane.paste(['world']);
+    expect(noticed(), 'refused visibly').toMatch(/too many open suggestions/i);
+    expect(pane.changes(), 'nothing was sent').toBe(before);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
   } finally {
     pane.dispose();
   }

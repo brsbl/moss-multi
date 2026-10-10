@@ -1,4 +1,4 @@
-// j16-paste (T5.R2; docs/design/suggestions.md §5, T3.S6): in Suggest mode a large paste is never batched. It is
+// j16-paste (T5.R2, T5.S10; docs/design/suggestions.md §5, T3.S6): in Suggest mode a large paste is never batched. It is
 // admitted against the suggestion caps before anything changes, the strike of a selection it replaces included, then
 // lands in one transaction, one frame, one suggestion; or it is refused whole, visibly, with nothing struck or sent
 // and the selection kept. One undo takes it back and one redo brings it back.
@@ -131,4 +131,42 @@ test('j16-paste: a paste inside a long paragraph counts the paragraph\'s rest, w
   await expect(ui.body(ben, docId)).not.toContainText('One aaa');
   expect(await ben.page.evaluate(() => window.getSelection()?.toString()), 'the selection is kept').toBe('Ada');
   expect(await content(ada, docId, 'working'), 'no suggestion was made').toBe(working);
+});
+
+test('j16-paste: a paste inside a 150 KB paragraph either lands as one suggestion whose undo and redo are one step each, or is refused whole with nothing changed @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, `Lead words MID ${'q'.repeat(150_000)}\n\nSecond line.`);
+  const body = ui.body(ben, docId);
+  const refusal = ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
+  const working = await content(ada, docId, 'working');
+  await caret(ben, docId, 'Lead words MID', 11, 3);
+  const before = await sent(ben, docId);
+  await pastePlain(ben, docId, `Alpha ${'c'.repeat(20_000)}\nBeta ${'d'.repeat(20_000)}`);
+  // Either it is refused at once, or its one frame goes out.
+  await expect.poll(async () => ((await refusal.textContent()) ?? '').includes('too large for one suggestion') || (await sent(ben, docId)) > before, { timeout: 60_000 }).toBe(true);
+  if ((await sent(ben, docId)) === before) {
+    await settled(ben, docId, 'the refused paste');
+    expect(await painted(ben, 'suggest-delete'), 'nothing is struck').toEqual([]);
+    await expect(body).not.toContainText('Alpha ccc');
+    expect(await ben.page.evaluate(() => window.getSelection()?.toString()), 'the selection is kept').toBe('MID');
+    expect(await content(ada, docId, 'working'), 'no suggestion was made').toBe(working);
+    return;
+  }
+  await settled(ben, docId, 'the paste');
+  expect(await sent(ben, docId) - before, 'the paste is one frame').toBe(1);
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'the selection is struck' }).toEqual(['MID']);
+  await expect(body).toContainText('Beta ddd');
+
+  await ben.page.keyboard.press(`${mod}+z`);
+  await settled(ben, docId, 'the undo');
+  expect(await sent(ben, docId) - before, 'the undo is one frame').toBe(2);
+  await expect(body, 'one undo takes the paste back').not.toContainText('Alpha ccc');
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'and the strike' }).toEqual([]);
+  await expect.poll(() => content(ada, docId, 'working'), { message: 'nothing is suggested' }).toBe(working);
+
+  await ben.page.keyboard.press(`${mod}+Shift+z`);
+  await settled(ben, docId, 'the redo');
+  expect(await sent(ben, docId) - before, 'the redo is one frame').toBe(3);
+  await expect(body, 'one redo brings the paste back').toContainText('Beta ddd');
+  await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'and the strike' }).toEqual(['MID']);
 });
