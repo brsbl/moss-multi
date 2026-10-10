@@ -1123,10 +1123,9 @@ export interface MossCompanionExpectation {
  * 3. If `rename` is non-null: `allocateFolderName`; if the result equals the
  *    current name, skip. A case-only change on a case-insensitive volume is a
  *    plain `rename(2)`. Otherwise rename the folder exclusively
- *    (`renamex_np(RENAME_EXCL)` or `renameat2(RENAME_NOREPLACE)`); the
- *    volume is the arbiter, so on EEXIST add that name to the siblings and
- *    allocate again (the next suffix), never writing into that folder; return
- *    `raced` only if allocation runs out. The folder rename is never rolled back. All later paths are in the new
+ *    (`renamex_np(RENAME_EXCL)` or `renameat2(RENAME_NOREPLACE)`); on EEXIST,
+ *    re-list siblings and allocate once more, then return `raced`. The
+ *    folder rename is never rolled back. All later paths are in the new
  *    folder.
  * 4. Apply the ops in order markdown, comments, layout, meta, each as a
  *    verified replacement. Temp and holding names come from

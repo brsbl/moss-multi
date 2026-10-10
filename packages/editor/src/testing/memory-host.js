@@ -384,32 +384,23 @@ export class MemoryHost {
       }
       const parent = dirname(dir);
       const own = basename(dir);
-      const siblingNames = this.volume.readdir(parent).map((entry) => entry.name).filter((name) => name !== own);
-      // The volume is the arbiter: an exclusive rename that meets EEXIST takes the next suffix, never that folder.
-      for (;;) {
-        let finalName;
-        try {
-          finalName = allocateFolderName({
-            desiredName: write.rename.desiredName,
-            currentName: own,
-            siblingNames,
-            caseInsensitive: this.volume.caseInsensitive,
-          });
-        } catch {
-          return conflict('raced');
-        }
-        if (finalName === own) break;
+      const listSiblings = () => this.volume.readdir(parent).map((entry) => entry.name).filter((name) => name !== own);
+      const allocate = (siblingNames) =>
+        allocateFolderName({ desiredName: write.rename.desiredName, currentName: own, siblingNames, caseInsensitive: this.volume.caseInsensitive });
+      // Step 3: the volume is the arbiter. On EEXIST, re-list (plus the name it refused), allocate once more, then `raced`.
+      let finalName = allocate(listSiblings());
+      for (let attempt = 0; finalName !== own; attempt += 1) {
         const target = `${parent}/${finalName}`;
         try {
           if (this.volume.key(target) === this.volume.key(dir)) this.volume.rename(dir, target);
           else this.volume.renameExclusive(dir, target);
+          dir = target;
+          break;
         } catch (error) {
           if (error?.code !== 'EEXIST') throw error;
-          siblingNames.push(finalName);
-          continue;
+          if (attempt > 0) return conflict('raced');
+          finalName = allocate([...listSiblings(), finalName]);
         }
-        dir = target;
-        break;
       }
     }
 
