@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { ACK_COALESCE_MS } from '@moss-multi/protocol/limits';
-import { base64ToBytes, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, decodePayloadFrame, encodePartyPrincipal, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, TRUSTED, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
 import { COMPACT_BYTES, PAYLOAD_DOCS_HELD } from '../../src/payloads.ts';
 import { PAYLOAD_TEXT, payloadText } from '../../src/payload-docs.ts';
@@ -1048,4 +1048,97 @@ describe('T3.S13 a payload frame leaves nothing parked: refused unresolved, comp
       } finally { ada.dispose(); }
     });
   }
+});
+
+describe('T3.S14 the answer budget: payload step 1s @p:tech-8', () => {
+  const BUDGET = { docs: 4, windowMs: 10_000 };
+  class Budgeted extends DocDO {
+    static override limits = { ...DocDO.limits, answerBudget: BUDGET };
+  }
+  /** Payload `id`'s full-state answers on a socket since `from`. */
+  const answers = (socket: FakeSocket, id: string, from: number) => socket.sent.slice(from).filter((frame) => {
+    if (typeof frame === 'string') return false;
+    const decoded = decodePayloadFrame(frame);
+    return decoded?.id === id && decoded.step === PAYLOAD_STEP2;
+  }).length;
+
+  it('bounds the encodes a viewer\'s repeated payload step 1s draw while an editor keeps writing, then answers the latest one', async () => {
+    const opened = await start(openDoc(new Backing(), Budgeted as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    const ada = await LiveClient.open(opened);
+    const viewer = await LiveClient.open(opened, { role: 'viewer', id: 'viewer-p' });
+    try {
+      // Most of the stored state, so each answer costs about one whole state.
+      const text = `BUDGET-${'x'.repeat(64 * 1024)}`;
+      ada.insert('code-block', text);
+      await syncAll(ada, viewer);
+      const id = ada.ids()[0];
+      expect(viewer.texts(), 'a fresh connect converges').toEqual([text]);
+      const from = viewer.socket.socket.sent.length;
+      const empty = encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(new Y.Doc()));
+      for (let i = 0; i < 256; i += 1) {
+        await viewer.socket.deliver(empty);
+        if (i % 32 === 0) {
+          ada.type(0, ada.texts()[0].length, `${i};`);
+          await ada.sync();
+        }
+      }
+      // The budget, plus the one answer that may run it into debt.
+      expect(answers(viewer.socket.socket, id, from), 'repeated payload step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs + 1);
+      expect(ada.socket.closed).toBeNull();
+      expect(viewer.socket.closed).toBeNull();
+      expect(heldText(ada.payloads.get(id)), 'the editor kept writing').toContain('224;');
+      const before = answers(viewer.socket.socket, id, from);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer.socket.socket, id, from) - before, 'the waiting step 1s coalesce into one answer').toBe(1);
+      await viewer.down();
+      expect(viewer.texts()).toEqual(ada.texts());
+      // A reconnect of the same principal with its budget spent: its step 1s wait for the refill, then converge.
+      for (let i = 0; i < 16; i += 1) await viewer.socket.deliver(empty);
+      await viewer.socket.drop();
+      ada.type(0, 0, 'again ');
+      await ada.sync();
+      await viewer.reconnect();
+      expect(viewer.texts(), 'over budget, the reconnect\'s answers wait').not.toEqual(ada.texts());
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await viewer.down();
+      expect(viewer.socket.closed).toBeNull();
+      expect(viewer.texts()).toEqual(ada.texts());
+    } finally { ada.dispose(); viewer.dispose(); }
+  });
+
+  it('waiting payload step 1s past the inbox\'s frame bound are answered after the refill under access checks, and the socket stays', async () => {
+    const limits = { ...DocDO.limits, answerBudget: BUDGET, inboxFramesPerConnection: 8 };
+    class Gated extends DocDO {
+      static override limits = limits;
+      static override access = () => ({
+        stamp: (_docId: string, sessions: string[], agents: string[]) => Promise.resolve({ key: 'owner:1', sessions: new Set(sessions), agents: new Set(agents) }),
+        resolve: () => Promise.reject(new Error('every socket here is admitted under the current epoch')),
+      });
+    }
+    const who = (id: string, role: string) => ({ headers: {
+      [TRUSTED.principal]: encodePartyPrincipal({ id, kind: 'user', name: id }),
+      [TRUSTED.role]: role, [TRUSTED.session]: `sess-${id}`, [TRUSTED.resolvedAt]: String(Date.now()), [TRUSTED.epoch]: 'owner:1',
+    } });
+    const opened = await start(openDoc(new Backing(), Gated as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    const ada = await LiveClient.open(opened, who('ada', 'editor'));
+    const viewer = await LiveClient.open(opened, who('viewer-g', 'viewer'));
+    try {
+      ada.insertMany('code-block', 12);
+      await syncAll(ada, viewer);
+      const ids = ada.ids();
+      expect(ids.length).toBe(12);
+      expect(viewer.texts()).toEqual(ada.texts());
+      const fresh = Y.encodeStateVector(new Y.Doc());
+      for (let i = 0; i < 16; i += 1) await viewer.socket.deliver(syncFrame(0, fresh));
+      const from = viewer.socket.socket.sent.length;
+      // One waiting step 1 per payload, each sent once, more than the inbox holds for one socket.
+      for (const id of ids) await viewer.socket.deliver(encodePayloadFrame(id, PAYLOAD_STEP1, fresh));
+      expect(ids.map((id) => answers(viewer.socket.socket, id, from)).filter((n) => n > 0).length, 'over budget, they wait').toBeLessThan(ids.length);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(viewer.socket.closed, 'the replay of its own waiting frames does not close it').toBeNull();
+      expect(ids.map((id) => answers(viewer.socket.socket, id, from)), 'each waiting step 1 is answered').toEqual(ids.map(() => 1));
+    } finally { ada.dispose(); viewer.dispose(); }
+  });
 });
