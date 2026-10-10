@@ -55,10 +55,11 @@ describe('a highlight of a long style and many runs stays bounded @p:tech-4', ()
     });
   }, 60_000);
 
-  // Comment markers holding replacement patterns (`$&` copied the opener, `$`` the split) once multiplied the line.
+  // Comment markers holding replacement patterns (`$&` copied the opener, `$`` and `$'` the split) once multiplied the line.
   const MARKED: [string, string][] = [
     ['$& start marker', `%%m:${'$&'.repeat(3_000)}:start%%<mark data-color="yellow" style="${' '.repeat(4_096)}">**x**</mark>%%m:id:end%%`],
     ['$` end marker', `%%m:id:start%%<mark data-color="yellow" style="${' '.repeat(4_096)}">**x**</mark>%%m:${'$`'.repeat(3_000)}:end%%`],
+    ["$' start marker, 10 runs", `%%m:${"$'".repeat(3_000)}:start%%<mark data-color="yellow" style="${' '.repeat(256)}">${'*x* '.repeat(10)}</mark>%%m:id:end%%`],
   ];
   async function checkMarked(text: string, land: (markdown: string) => Promise<string>): Promise<void> {
     const markdown = `before\n\n${text}\n\nafter`;
@@ -66,7 +67,7 @@ describe('a highlight of a long style and many runs stays bounded @p:tech-4', ()
     const exported = await land(markdown);
     expect(exported).toContain('before');
     expect(exported).toContain('after');
-    expect(xs(exported), 'the run is kept').toBe(1);
+    expect(xs(exported), 'every run is kept').toBe(xs(text));
     expect(exported.length, `${markdown.length} chars exported as ${exported.length}`).toBeLessThanOrEqual(4 * markdown.length + 1_024);
     expect(performance.now() - started).toBeLessThan(5_000);
   }

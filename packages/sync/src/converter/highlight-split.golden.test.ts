@@ -121,6 +121,8 @@ describe('highlight normalization is bounded @p:tech-4', () => {
     ['$& start marker, one run', markerLine('$&'.repeat(3_000), 'id', 4_096, '**x**')],
     ['$` end marker, one run', markerLine('id', '$`'.repeat(3_000), 4_096, '**x**')],
     ['$` end marker, Obsidian', `%%m:id:start%%==**${'x'.repeat(4_096)}**==%%m:${'$`'.repeat(3_000)}:end%%`],
+    ["$' start marker, 10 runs", markerLine("$'".repeat(3_000), 'id', 256, '*x* '.repeat(10))],
+    ["$' start marker, Obsidian", `%%m:${"$'".repeat(3_000)}:start%%==${'*x* '.repeat(200)}==%%m:id:end%%`],
   ];
   it.each(cases)('keeps the normalized line bounded: %s', (_name, line) => {
     const started = performance.now();
