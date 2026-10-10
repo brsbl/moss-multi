@@ -923,7 +923,8 @@ describe('answers', () => {
           clients.push(viewer);
         }
         expect(budgetRows(opened.backing), 'spent budgets are persisted').toBeGreaterThan(0);
-        expect(budgetRows(opened.backing), 'only budgets spent since they last refilled').toBeLessThanOrEqual(KEYS);
+        // The editor's own small charges are persisted too.
+        expect(budgetRows(opened.backing), 'only budgets spent since they last refilled').toBeLessThanOrEqual(KEYS + 1);
         opened = await hibernate(opened, clients);
         // Every budget refills, with debt to spare.
         await vi.advanceTimersByTimeAsync(3 * BUDGET.windowMs);
