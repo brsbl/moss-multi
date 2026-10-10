@@ -8,8 +8,8 @@ import { serverWrite } from '../../src/server-doc.ts';
 import { Backing, openDoc, start, wake } from './do-harness.ts';
 import { FakeState } from './workerd.ts';
 
-async function searchIndex(): Promise<SearchDO> {
-  const index = new SearchDO(new FakeState(new Backing('global')) as never, {} as never);
+async function searchIndex(backing = new Backing('global')): Promise<SearchDO> {
+  const index = new SearchDO(new FakeState(backing) as never, {} as never);
   await index.setName('global');
   return index;
 }
@@ -48,6 +48,38 @@ describe('SearchDO', () => {
     expect(await index.backlinks({ keys: ['launch-plan'], allowedDocIds: ['src', 'other'] })).toEqual(['src']);
     expect((await index.backlinks({ keys: ['launch-plan', 'launch-plan-2'], allowedDocIds: ['src', 'other'] })).sort()).toEqual(['other', 'src']);
     expect(await index.backlinks({ keys: ['launch-plan'], allowedDocIds: ['other'] })).toEqual([]);
+  });
+
+  it('reads backlinks through the allowed set, so 50,000 inaccessible sources linking the same key are never read', async () => {
+    const backing = new Backing('global');
+    const state = new FakeState(backing);
+    const index = new SearchDO(state as never, {} as never);
+    await index.setName('global');
+    await index.index({ docId: 'mine-1', title: 'Mine', body: 'Back to [[Home]].' });
+    await index.index({ docId: 'mine-2', title: 'Also mine', body: 'See [[home]] and [[Elsewhere]].' });
+    await index.index({ docId: 'mine-3', title: 'Unlinked', body: 'No links here.' });
+    backing.db.exec(`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 49999)
+      INSERT INTO links (src_doc_id, target_key) SELECT 'other-' || i, 'home' FROM n`);
+    expect(backing.query<{ n: number }>("SELECT count(*) AS n FROM links WHERE target_key = 'home'")[0].n).toBe(50_002);
+
+    const exec = state.storage.sql.exec;
+    const ran: { query: string; bindings: unknown[]; rows: number }[] = [];
+    state.storage.sql.exec = (query, ...bindings) => {
+      const cursor = exec(query, ...bindings);
+      ran.push({ query, bindings, rows: cursor.toArray().length });
+      return cursor;
+    };
+    const allowed = ['mine-1', 'mine-2', 'mine-3', 'other-7', 'missing'];
+    expect((await index.backlinks({ keys: ['home'], allowedDocIds: allowed })).sort()).toEqual(['mine-1', 'mine-2', 'other-7']);
+    expect(await index.backlinks({ keys: ['home'], allowedDocIds: ['mine-3', 'missing'] })).toEqual([]);
+
+    expect(ran.length).toBeGreaterThan(0);
+    for (const { query, bindings, rows } of ran) {
+      expect(rows, 'rows handed back stay within the allowed set').toBeLessThanOrEqual(allowed.length);
+      const plan = backing.query<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, ...bindings).map((row) => row.detail).join(' | ');
+      expect(plan, 'links is searched by source id, driven by the allowed ids').toMatch(/SEARCH \w+ USING (COVERING )?INDEX links_src/);
+      expect(plan, 'never a scan of links, nor a walk of every source of the key').not.toMatch(/SCAN links|links_target/);
+    }
   });
 });
 
