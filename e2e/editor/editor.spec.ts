@@ -804,7 +804,7 @@ test.describe('embeddable editor', () => {
     expect(errors).toEqual([]);
   });
 
-  for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
+  for (const { name, from, to, within, nth, toStart, reversed, expected } of SELECTION_CASES) {
     test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the saved file`, async ({ page, browserName }) => {
       // WebKit's editable root pulls a DOM range ending inside the code block (contenteditable=false) back to the
       // table before it, so the page's selection is not this case there; the viewer covers it in WebKit.
@@ -821,7 +821,7 @@ test.describe('embeddable editor', () => {
           el.setSelectionRange(start, el.value.indexOf(to, start) + to.length);
         }, { from, to });
       } else {
-        await selectText(page, BODY, from, to, within);
+        await selectText(page, BODY, from, to, within, 0, { toStart, reversed });
       }
       const selection = await page.evaluate(() => window.editorFixture.selection());
       expect(selection).toEqual(expected);
@@ -1115,6 +1115,143 @@ test.describe('desktop editor session commit and naming', () => {
     const written = await files(page);
     expect(written['/Moss/Notes/Plan/Plan.md']).toMatch(/^# Plan\n\nEdited Alpha %%m:a:start%%beta%%m:a:end%% gamma %%m:b:start%%delta%%m:b:end%%\n?$/);
     expect(JSON.parse(written['/Moss/Notes/Plan/meta.json']).commentColors).toEqual({ a: 0, b: 3 });
+    expect(seen.errors).toEqual([]);
+  });
+});
+
+// T3.B18: a draft in a focused source field (an HTML block's, a code block's inside a tab panel) is in the export a
+// selection reads, without a blur; and a real mouse drag from a list into a code block reads what the engine selects.
+test.describe('selection across blocks', () => {
+  const DRAFTS = 'Drafts';
+  const DRAFT_NOTE = [
+    `# ${DRAFTS}`,
+    '',
+    'Intro.',
+    '',
+    '```moss-html',
+    '<p>Hello</p>',
+    '```',
+    '',
+    ':::tabs',
+    '=== Code',
+    '```javascript',
+    'let a = 1;',
+    'let b = 2;',
+    '```',
+    '',
+    '=== Text',
+    'Plain words.',
+    '',
+    ':::',
+    '',
+    '',
+    'Outro.',
+    '',
+  ].join('\n');
+  const lineOf = (file: string, text: string) => file.split('\n').indexOf(text) + 1;
+  const written = async (page: Page) => (await files(page))[`/Moss/Notes/${DRAFTS}/${DRAFTS}.md`]!;
+
+  test("a selection in an HTML block's uncommitted source names the draft and the lines it is saved on", async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, DRAFT_NOTE, { title: DRAFTS });
+    await body(page).locator('[data-moss-html-preview-viewport]').first().hover();
+    await body(page).getByTitle('Edit HTML').first().click();
+    const source = body(page).locator('textarea.moss-codeblock-textarea');
+    await expect(source).toBeFocused();
+    await source.evaluate((el: HTMLTextAreaElement) => {
+      const at = el.value.indexOf('<p>Hello</p>') + '<p>Hello</p>'.length;
+      el.setSelectionRange(at, at);
+    });
+    await page.keyboard.type('\n<p>Draft line</p>');
+    await source.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.indexOf('Hello'), el.value.indexOf('Draft line') + 'Draft line'.length));
+    const selection = (await page.evaluate(() => window.editorFixture.selection())) as MossSelection;
+    await page.keyboard.press('ControlOrMeta+Enter');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const file = await written(page);
+    expect(selection).toEqual({
+      text: 'Hello</p>\n<p>Draft line',
+      markdown: '<p>Hello</p>\n<p>Draft line</p>',
+      lines: { start: lineOf(file, '<p>Hello</p>'), end: lineOf(file, '<p>Draft line</p>') },
+      headings: [],
+      blocks: [{ type: 'html-block', line: lineOf(file, '```moss-html') }],
+    });
+    expectLinesIn(file, selection);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('a selection in a tab panel\'s code block being edited names the draft and the lines it is saved on', async ({ page }) => {
+    const seen = await open(page);
+    await mountNote(page, DRAFT_NOTE, { title: DRAFTS });
+    await body(page).locator('.moss-codeblock-pre').first().click();
+    const source = body(page).locator('textarea.moss-codeblock-textarea');
+    await expect(source).toBeFocused();
+    await source.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.length, el.value.length));
+    await page.keyboard.type('\nlet c = 3;');
+    await source.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.indexOf('b = 2'), el.value.indexOf('c = 3') + 'c = 3'.length));
+    const selection = (await page.evaluate(() => window.editorFixture.selection())) as MossSelection;
+    await source.evaluate((el: HTMLTextAreaElement) => el.blur());
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const file = await written(page);
+    expect(selection).toEqual({
+      text: 'b = 2;\nlet c = 3',
+      markdown: 'let b = 2;\nlet c = 3;',
+      lines: { start: lineOf(file, 'let b = 2;'), end: lineOf(file, 'let c = 3;') },
+      headings: [],
+      blocks: [{ type: 'tab-group', line: lineOf(file, ':::tabs') }],
+    });
+    expectLinesIn(file, selection);
+    expect(seen.errors).toEqual([]);
+  });
+
+  test('a real mouse drag from a list into a code block reads the code the engine selected', async ({ page }) => {
+    const seen = await open(page);
+    await mountSelectionNote(page);
+    const at = (which: 'start' | 'end') =>
+      body(page).evaluate((root, which) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const code = root.querySelector('.moss-codeblock-code');
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const text = node as Text;
+          const inCode = !!code?.contains(text);
+          const index = which === 'start' ? (inCode ? -1 : text.data.indexOf('Third item')) : inCode ? text.data.indexOf('crop') : -1;
+          if (index < 0) continue;
+          const range = document.createRange();
+          // The first character of "Third item", or the last of the first "crop" in the code.
+          const char = which === 'start' ? index : index + 3;
+          range.setStart(text, char);
+          range.setEnd(text, char + 1);
+          const rect = range.getBoundingClientRect();
+          return { x: which === 'start' ? rect.left + 1 : rect.right - 1, y: rect.top + rect.height / 2 };
+        }
+        throw new Error(`no ${which} point`);
+      }, which);
+    const from = await at('start');
+    const to = await at('end');
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 12 });
+    await page.mouse.up();
+    await frames(page);
+    // Where the engine put the selection: its start, and how much of the code it reaches.
+    const made = await body(page).evaluate((root) => {
+      const range = document.getSelection()!.getRangeAt(0);
+      const code = root.querySelector('.moss-codeblock-code')!;
+      const lines = [...code.querySelectorAll('.moss-codeblock-line')];
+      const line = lines.findIndex((candidate) => candidate.contains(range.endContainer));
+      let reached: string | null = null;
+      if (line >= 0) {
+        const before = document.createRange();
+        before.setStart(lines[line]!, 0);
+        before.setEnd(range.endContainer, range.endOffset);
+        reached = [...lines.slice(0, line).map((entry) => entry.textContent ?? ''), before.toString()].join('\n');
+      }
+      return { start: (range.startContainer.textContent ?? '').slice(range.startOffset), reached, page: document.getSelection()!.toString() };
+    });
+    const selection = (await page.evaluate(() => window.editorFixture.selection())) as MossSelection;
+    expect(made.start, `the drag starts at "Third item" (${JSON.stringify(made)})`).toBe('Third item');
+    expect(made.reached, `the drag ends inside the code (${JSON.stringify(made)})`).toBe('def sow(crop');
+    expect(selection).toEqual(SELECTION_CASES.find((entry) => entry.name === 'from a list into a code block')!.expected);
+    expectLinesIn(await savedSelectionNote(page), selection);
     expect(seen.errors).toEqual([]);
   });
 });
