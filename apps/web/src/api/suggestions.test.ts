@@ -277,4 +277,18 @@ describe('a live suggestion notifies the people who can review it @p:ppl-3 @p:me
     expect(await rows(vaultEditor.id), 'a vault editor').toEqual([{ type: 'suggestion', payload }]);
     expect(await rows(folderViewer.id), 'a folder viewer').toEqual([]);
   });
+
+  it('coalesces per author and note: one unread row naming the latest record, a new row once it is read (T5.S4)', async () => {
+    const owner = await signedUpUser(env, 'coalesce-owner', 'Odile');
+    const doc = await insertDoc(d1.db, owner, {});
+    const by = (author: string, record: string) => JSON.stringify({ targetType: 'doc', targetId: doc, by: author, suggestionId: record });
+    for (let i = 0; i < 25; i += 1) await notifySuggestion(env, { docId: doc, author: ben.id, record: `c${i}` });
+    expect(await rows(owner.id), 'one row per author and note').toEqual([{ type: 'suggestion', payload: by(ben.id, 'c24') }]);
+    await notifySuggestion(env, { docId: doc, author: eve.id, record: 'e1' });
+    expect((await rows(owner.id)).map((row) => row.payload).sort(), 'another author is another row').toEqual([by(ben.id, 'c24'), by(eve.id, 'e1')].sort());
+    await d1.db.prepare('UPDATE notifications SET read_at = ? WHERE user_id = ?').bind(Date.now(), owner.id).run();
+    await notifySuggestion(env, { docId: doc, author: ben.id, record: 'c25' });
+    expect((await rows(owner.id)).map((row) => row.payload), 'a read row is never rewritten').toContain(by(ben.id, 'c25'));
+    expect(await rows(owner.id)).toHaveLength(3);
+  });
 });

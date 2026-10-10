@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 54% done** (111 of 205 planned tasks verified)
+**Overall: 54% done** (114 of 210 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 14 / 14 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 9 / 9 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -123,6 +123,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T4.R2 verified: comments now sit on the final M3, so a long comment or reply and a note created with a full comments sidecar fit under the request caps, and a large paste in a commented note lays out remote cursors once per batch instead of stalling.
 - 2026-10-09 — T5.R2 verified: suggestions now sit on the final M4, and a large paste in Suggest mode lands whole as one suggestion within every suggestion cap or is refused whole with the pasted blocks offered back, never half-applied.
 - 2026-10-09 — T5.S3 verified: Backspace or Delete in Suggest mode past a long struck run (20,000 characters) now answers quickly, reading each node once while still deleting whole graphemes and keeping own-versus-body routing.
+- 2026-10-09 — T5.S7 verified: a reviewer's suggestion card now shows a code block edit as its changed line before and after, keeps re-added text at a stretch's end as unchanged, and builds its rows quickly on large suggestions.
+- 2026-10-09 — T5.S4 verified: suggestions and leases now fit inside a bounded share of a note's room, so a busy suggester can no longer fill a note and lock editors out of body and payload edits.
+- 2026-10-10 — T5.S8 verified: the Suggestions panel fetches previews only for cards on screen, expanded or active (two at a time), reuses them when reopened on an unchanged note, and waits out a 429's Retry-After before asking again.
+- 2026-10-10 — T5.S12 verified: every refused suggestion frame now counts toward the refusal cooldown, a connection refused for lack of room gets cheap refusals for its growth frames for a while, and suggestion leases pay the write rate, so a suggester can no longer spin the server with refused frames.
 - 2026-10-07 — T6.1 verified: a note body and its payload docs can be reconciled to a target version in place, keeping the Yjs identity of untouched blocks so a peer's concurrent insert and comment anchors survive, and a result that would not export the target is refused.
 - 2026-10-07 — T6.2 verified: each note now keeps automatic versions (on last disconnect and on activity, deduplicated, large ones spilled to R2) and rate-limited named versions over REST, its history bounded by pruning rather than charging anyone, and a restore whose result fails verification is refused with 409.
 - 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
@@ -302,6 +306,15 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.S4 (Linear converter matching) checker P2: table cells cost 2-3x TABLE_CELL_COST end to end (binding and state-cap check), so a note that spends the whole budget on cells takes ~9 s before a 500 DocCapError whose body is a stack trace → import budget follow-up: charge cells at their end-to-end cost and return a clean 413 doc-cap instead of a 500.
 - T3.S4 (Linear converter matching) checker P2 (carried from the previous check): a cut line's first export escapes the author's delimiters; a line's allowance depends on the rest of the document; long-line protection turns off when the document contains all nine marker characters → import cut follow-up.
 - T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the DocDO cuts a step 1 answer for a multi-author doc with splitUpdate, whose pieces assume a single writer; when the paster's client id is above the server-import client's, list pieces wait in Yjs pending structs until the last lands (measured acceptable for one 30,000-item join) → sync answer follow-up: split multi-writer answers in dependency order.
+- T5.S7 integration flake: j01-paste-check (chromium) missed the 5 s CI stall gate three times on m5 (5003, 5131, 5284 ms; one 2,500-unit batch spent 2.3-2.6 s in layout; run 38025503446, green on attempt 4) while passing on m3, which carries T3.B16's cheaper layout persistence; recheck after m5 sits on the current m3.
+- T5.S4 (Suggestion state share) checker P2 (downgraded from Codex P1; owned by T5.S12, whose brief already carries the red-first suggest-lease burst test): refused suggest-lease frames on a full note skip WRITE_RATE and the refusal count, so each runs the resume loop and a SqlLeases.live() query.
+- T5.S4 (Suggestion state share) checker P2 (downgraded from Codex P1): the fixed 128 B + clocks charge per lease undercounts its SQLite row (nonce, reserved UUID, fork id up to 64 chars, principal and record ids), so the share admits up to ~2x the intended lease bytes → suggest share follow-up: charge the variable-length columns.
+- T5.S4 (Suggestion state share) checker P2 (downgraded from Codex P1): admission can overshoot the share or reserve by one frame's estimate error (24 B charged per delete target vs ~33 B encoded, ~8 KiB per 1,024-span part; lease clocks charged after admission); the running count corrects after the write.
+- T5.S4 (Suggestion state share) checker P2: after one room refusal Suggest input stays closed (server #noRoom clears only on a granted lease or ack, pane #noRoom only on mode change), so a role-locked suggester stays read-only after room is freed until reload.
+- T5.S4 (Suggestion state share) checker P2: the DocDO's 10-minute per-author notice throttle (suggest-noticed:<author>) drops a second record's notice once the reader has read the first; D1 coalescing alone already bounds rows per reader, note and author.
+- T5.S8 (Kept previews are not invalidated by deletion-only or code-block payload edits) checker P2: SuggestionsPanel.tsx keys the reopen cache on Y.encodeStateVector(body), which does not advance on deletes or cover payload Y.Docs, so reopening after such an edit shows stale rows with Accept enabled; the server's digest/hash check refuses with 'changed' and the card refreshes.
+- T5.S8 (An automatic refresh after Accept returns 'changed' also bypasses the 429 pause) checker P2: refresh() always sets entry.asked, which pump() lets through the pause; only an explicit Try again should bypass it (one extra request, only in that interleaving).
+- T5.S8 (The unit tests mount SuggestionList without the real cache key or a real Accept) checker P2: previews.test fakes IntersectionObserver and fetch and never passes 'opened'; a targeted e2e leg should make the checker's real-stack evidence (visible-card requests, no refetch on reopen, 429 recovery) permanent.
 - T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the 4 s periodic resync stays held back while peer sync frames keep arriving, with no time limit, so a lost step 1 answer on an open socket would delay the resync, awareness refresh and unacked resend until a lull → sync robustness follow-up: cap the hold-back.
 - T3.S6b (30,000-item list paste) checker P2 (inherited from T3.S6): e2e/lib/paste.ts sets the CI stall gate MAX_STALL_MS to 5 s while BUILDPLAN T3.S6 says 2 s → paste test follow-up: reconcile the stall bound.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.

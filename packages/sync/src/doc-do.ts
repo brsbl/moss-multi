@@ -140,6 +140,9 @@ export const HOLD_MS = 60_000;
 /** Store items a sub-editor's delete set may make the classifier visit per frame byte (its frame never applies). */
 const CLASSIFY_BUDGET_PER_BYTE = 8;
 
+/** Suggest frames that can mint retained state: all of them short-circuit while a connection has no room. */
+const GROWTH: ReadonlySet<string> = new Set(['suggest-lease', 'suggest-ops', 'suggest-delete', 'suggest-undelete', 'suggest-merge']);
+
 /** A queue that runs each job after the previous one settles; a rejection reaches its caller, not the next job. */
 const serializer = () => {
   let gate: Promise<unknown> = Promise.resolve();
@@ -233,6 +236,8 @@ function send(connection: Connection, message: Uint8Array): void {
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
+/** A suggester's new records notify the bell at most once per this long. */
+const NOTICE_COALESCE_MS = 10 * 60_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -356,6 +361,11 @@ export class DocDO extends YServer<SyncEnv> {
   #versionUpdates = 0;
   #stagedRetry: ReturnType<typeof setTimeout> | null = null;
   #versionAuthors = new Set<string>();
+  /**
+   * Connections whose last suggest refusal was for want of room (`doc-cap`, `ops-cap`), and until when: a grant, an
+   * ack or the end of one refusal window ends it.
+   */
+  readonly #noRoom = new Map<string, number>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -428,6 +438,7 @@ export class DocDO extends YServer<SyncEnv> {
         if (!continues) this.#noticeSuggestion(record, author);
       },
     });
+    store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
       if (this.#idleAt !== null) return;
       this.#idleAt = Date.now() + EMPTY_IDLE_MS;
@@ -764,14 +775,37 @@ export class DocDO extends YServer<SyncEnv> {
       }
     }
     if (request !== null && (typeof request !== 'object' || typeof request.t !== 'string' || !request.t.startsWith('suggest-'))) return;
-    if (request?.t !== 'suggest-lease' && !this.#rate.allow(connection)) {
+    if (!this.#rate.allow(connection)) {
       connection.close(CLOSE.writeRate, 'write rate');
+      return;
+    }
+    // After a refusal for want of room (`doc-cap`, `ops-cap`), every growth frame the client had in flight, and a
+    // rebuilt fork's lease, is refused alike in O(1) with no admission work and not counted, so a fast typist on a
+    // full note stays connected. Every refusal that does reach admission counts toward the cooldown, room or not.
+    if (request !== null && GROWTH.has(request.t) && this.#roomless(connection.id)) {
+      const record = request.t === 'suggest-merge' ? request.into : request.t === 'suggest-lease' ? null : request.record;
+      const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
+      this.sendCustomMessage(connection, JSON.stringify(reply));
       return;
     }
     const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
     const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
     this.sendCustomMessage(connection, JSON.stringify(reply));
-    if (reply.t === 'suggest-refused') this.#countRefusal(attachment.principalId);
+    if (reply.t !== 'suggest-refused') {
+      this.#noRoom.delete(connection.id);
+      return;
+    }
+    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') this.#noRoom.set(connection.id, Date.now() + SUGGEST_LIMITS.refusals.windowMs);
+    this.#countRefusal(attachment.principalId);
+  }
+
+  /** Whether the connection is still in its no-room window: at most one counted room refusal per window. */
+  #roomless(connectionId: string): boolean {
+    const until = this.#noRoom.get(connectionId);
+    if (until === undefined) return false;
+    if (until > Date.now()) return true;
+    this.#noRoom.delete(connectionId);
+    return false;
   }
 
   override async onClose(connection: Connection): Promise<void> {
@@ -780,6 +814,7 @@ export class DocDO extends YServer<SyncEnv> {
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
+    this.#noRoom.delete(connection.id);
     this.#acks.cancel(connection);
     // The last socket leaving a changed doc writes an auto version (A§14).
     const store = this.#store;
@@ -1137,9 +1172,15 @@ export class DocDO extends YServer<SyncEnv> {
     if (next !== null) this.#idleAt = Math.min(this.#idleAt ?? next, next);
   }
 
+  /** One bell notice per author and note per window, kept across wakes; the D1 row coalesces too (notifySuggestion). */
   #noticeSuggestion(record: string, author: string): void {
     const notify = (this.constructor as typeof DocDO).suggestionNotices(this.env);
     if (!notify) return;
+    const key = `suggest-noticed:${author}`;
+    const last = Number(this.#store?.meta(key));
+    const now = Date.now();
+    if (Number.isFinite(last) && last > 0 && now - last < NOTICE_COALESCE_MS) return;
+    this.#store?.setMeta(key, String(now));
     const sent = notify({ docId: this.name, author, record }).catch((error: unknown) => console.error('suggestion notice failed', error));
     try {
       this.ctx.waitUntil(sent);

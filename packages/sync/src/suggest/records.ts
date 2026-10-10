@@ -170,6 +170,51 @@ export const partBytes = (part: DeletePart): number => part.id.length + part.quo
 export const recordBytes = (record: SuggestionRecord): number =>
   record.ops.reduce((sum, op) => sum + op.update.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0);
 
+/** The bytes lib0 spends on `n` as a var uint. */
+export function varUintBytes(n: number): number {
+  let bytes = 1;
+  for (let rest = n; rest > 127; rest = Math.floor(rest / 128)) bytes += 1;
+  return bytes;
+}
+
+/**
+ * The encoded bytes the doc holds for `suggestions`: every struct under S (open ops, closed records' metadata, the
+ * tombstones closes and merges leave) and S's share of the delete set. O(S structs + the delete set), so for a wake or
+ * a compaction, not a frame. Without a bound writer (unit tests) the records' JSON stands in.
+ */
+export function suggestionStateBytes(doc: Y.Doc): number {
+  const writer = writers.get(doc);
+  if (!writer) {
+    let bytes = 0;
+    for (const id of recordIds(doc)) {
+      const record = readRecord(doc, id);
+      if (record) bytes += id.length + metaBytes(doc, id) + recordBytes(record) + 64;
+    }
+    return bytes;
+  }
+  const full = Y.encodeStateVector(doc);
+  const without = Y.decodeStateVector(full);
+  without.delete(writer.client);
+  const structs = Y.encodeStateAsUpdate(doc, Y.encodeStateVector(without)).byteLength - Y.encodeStateAsUpdate(doc, full).byteLength;
+  // S's delete-set entry: its client, its range count and each deleted run's clock and length.
+  let deletes = 0;
+  let ranges = 0;
+  let from = -1;
+  let len = 0;
+  for (const struct of [...(doc.store.clients.get(writer.client) ?? []), null]) {
+    if (struct?.deleted) {
+      if (from < 0) from = struct.id.clock;
+      len += struct.length;
+    } else if (from >= 0) {
+      deletes += varUintBytes(from) + varUintBytes(len);
+      ranges += 1;
+      from = -1;
+      len = 0;
+    }
+  }
+  return structs + (ranges ? varUintBytes(writer.client) + varUintBytes(ranges) + deletes : 0);
+}
+
 export function recordIds(doc: Y.Doc): string[] {
   return [...doc.getMap(SUGGESTIONS).keys()];
 }
