@@ -109,13 +109,14 @@ export class SearchDO extends Server<SyncEnv> {
   /** The allowed docs whose bodies link to any of `keys` (a doc's title key, filename stem and id key, A§5.3). */
   async backlinks({ keys, allowedDocIds }: { keys: string[]; allowedDocIds: string[] }): Promise<string[]> {
     await this.__unsafe_ensureInitialized();
-    const allowed = new Set(allowedDocIds);
+    const allowed = [...new Set(allowedDocIds)];
     const wanted = [...new Set(keys.filter((key) => key !== ''))];
-    if (wanted.length === 0 || allowed.size === 0) return [];
-    const rows = this.ctx.storage.sql.exec<{ src_doc_id: string }>(
-      `SELECT DISTINCT src_doc_id FROM links WHERE target_key IN (${wanted.map(() => '?').join(', ')})`, ...wanted,
-    ).toArray();
-    return rows.map((row) => row.src_doc_id).filter((id) => allowed.has(id));
+    if (wanted.length === 0 || allowed.length === 0) return [];
+    // Driven by the allowed ids through links_src, so other tenants' links to the same key are never read.
+    return this.ctx.storage.sql.exec<{ src_doc_id: string }>(
+      `SELECT DISTINCT l.src_doc_id FROM json_each(?) AS a CROSS JOIN links AS l INDEXED BY links_src
+        WHERE l.src_doc_id = a.value AND l.target_key IN (${wanted.map(() => '?').join(', ')})`, JSON.stringify(allowed), ...wanted,
+    ).toArray().map((row) => row.src_doc_id);
   }
 
   #unindexed(allowed: string): string[] {
