@@ -39,8 +39,10 @@ export class MemoryVolume {
     this.quiet = 0;
   }
 
+  /** As APFS: normalization-insensitive always, and case-insensitive with full case folding when asked. */
   key(path) {
-    return this.caseInsensitive ? path.normalize('NFD').toLowerCase() : path;
+    const normalized = path.normalize('NFD');
+    return this.caseInsensitive ? normalized.toUpperCase().toLowerCase().normalize('NFD') : normalized;
   }
 
   changed(path) {

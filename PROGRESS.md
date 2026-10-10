@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 46% done** (91 of 200 planned tasks verified)
+**Overall: 47% done** (93 of 200 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 39 / 39 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 41 / 41 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -110,6 +110,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S16 verified: backlinks now read only links from notes the caller can reach, so their cost no longer grows with other tenants' notes that link the same title.
 - 2026-10-09 — T3.S17 verified: undoing a step that restores or deletes thousands of collaborator-written lines now sorts and searches authorship once per step, so its cost grows as K log K instead of quadratically.
 - 2026-10-09 — T3.S18 verified: changing a property between null and NaN, Infinity or -Infinity (written as `.nan`, `.inf`, `-.inf`), top-level or nested, is now kept and synced to collaborators instead of being dropped as no change.
+- 2026-10-09 — T3.B12 verified: in the desktop editor a comment reply typed while a note reloads in place, or a chart draft open when a note is removed, is now kept instead of reported saved and lost, and a new note titled σ beside ς or NFC Café beside NFD Café now gets a free suffixed folder name instead of staying unsaved.
+- 2026-10-09 — T3.S19 verified: `stack.mjs reap` now keeps a live stack started with --state-dir in the registry, as it already did for default storage, and still removes dead stacks of both kinds.
 
 ## T1.1s identity audit
 
@@ -200,6 +202,10 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.S6b (30,000-item list paste) checker P2 (inherited from T3.S6): e2e/lib/paste.ts sets the CI stall gate MAX_STALL_MS to 5 s while BUILDPLAN T3.S6 says 2 s → paste test follow-up: reconcile the stall bound.
 - T3.S9 (Linear formula literals) checker P2: the export and search-feed timing cases above lineChars (256 KB to 2 MB) contain no stored FormulaNode, because import keeps lines over 131072 chars as literal text; the shared scanner is linear on its own (1.35-20 ms at 128 KB-2 MB), so a coverage gap → formula timing follow-up: build a stored FormulaNode above lineChars and time its uncached export.
 - T3.S11 (Linear frontmatter updates) checker P2 (infrastructure): the browser QA pass was cut short because the host disk was full (ENOSPC opening the browser session; 80k/180k-key POST /api/docs 500s and a workerd search-feed 'internal error' point to storage, not import CPU), so no Properties-panel screenshots were taken → rerun that QA pass on a host with free disk.
+- T3.B12 (Desktop editor session commit and host naming) checker P2: a removal during a settling load can drop the 'removed' event: `remove()` in `packages/editor/src/session.ts` emits it only if status is still 'removed' when the commit settles, but an in-flight `loadInPlace` (its `applyRead` checks only for 'unmounted') or a save's `afterSaved` can reset status to 'clean' and `giveBack` can make the editor editable again, so no 'removed' fires until the next write gets notFound (status overwrite is older; the lost event is new, tight timing window).
+- T3.B12 (Desktop editor session commit and host naming) checker P2: case folding by upper-then-lower misses ẞ beside ß: `volumeKey` in `packages/editor/src/host/moss-editor-host.js` maps ẞ to ß and ß to ss, so on case-insensitive APFS 'ẞ' beside 'ß' gets no suffix and the rename fails with EEXIST (title stays unsaved, nothing overwritten); `MemoryVolume` in `testing/memory-host.js` copies the same approximation, so tests cannot catch it.
+- T3.S19 (Reap keeps --state-dir stacks) checker P2: `namesPersistDir` in `scripts/stack.mjs` matches `--persist-to <dir>` by substring with no value boundary, so a recorded r1 persistDir also matches a live r10 leader; if a stale r1 entry's pgid were reused by r10's group, reap could kill it (needs an exact pgid collision, predates T3.S19 in ownsGroup, test hygiene only) → stack follow-up: match the whole --persist-to value.
+- T3.S19 (Reap keeps --state-dir stacks) checker P2: the new `judgeGroup storage` tests feed hand-written process lists to judgeGroup and never run reap against real stacks, so reap's registry-removal side effects are not exercised (the checker covered them with a manual real-stack check) → stack test follow-up: a reap integration test over real default and --state-dir stacks.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
 - T2.3s checker P2 (downgraded from Codex P1): a signed-out share-link holder gets 401, not 404, from trash, restore and the Trash read; nothing is disclosed (the 401 is identical for a missing note) and it predates T2.3s; A§8 confines the 401 exception to a credential-less CLI → align to 404 in an access follow-up.
 - T2.3s checker P2: the revocation tests in `trash-security.test.ts` use stub DocDO and PrincipalDO, so they do not prove open editors recover (or that a terminal editor on a live note is kicked) → T2.5 → closed by T2.5 (`mid-trash.harness.test.ts` over the real DocDO and PrincipalDO; a reverted trash pushes `meta` and a pane terminal on `deleted` re-asks and reopens).
