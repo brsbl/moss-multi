@@ -383,6 +383,7 @@ function CodeBlockComponent({
                 }}
                 className="moss-code-toolbar-btn"
                 title="Add comment"
+                data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
               >
                 <StickyNote className="h-3 w-3" />
               </button>

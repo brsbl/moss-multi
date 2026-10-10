@@ -157,7 +157,11 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                <button
                  type="button"
                  onClick={(e) => {
-@@ -357,6 +385,7 @@ function CodeBlockComponent({
+@@ -354,9 +382,11 @@ function CodeBlockComponent({
+                 }}
+                 className="moss-code-toolbar-btn"
+                 title="Add comment"
++                data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
                >
                  <StickyNote className="h-3 w-3" />
                </button>
@@ -165,7 +169,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            </div>
  
-@@ -373,6 +402,7 @@ function CodeBlockComponent({
+@@ -373,6 +403,7 @@ function CodeBlockComponent({
              {isEditing ? (
                <textarea
                  ref={textareaRef}
@@ -173,7 +177,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                  value={localCode}
                  onChange={(e) => setLocalCode(e.target.value)}
                  onKeyDown={handleTextareaKeyDown}
-@@ -404,11 +434,11 @@ function CodeBlockComponent({
+@@ -404,11 +435,11 @@ function CodeBlockComponent({
                <span className="inline-flex items-center gap-1 align-middle">
                  <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                </span>{' '}
@@ -187,7 +191,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            )}
          </div>
-@@ -421,7 +451,7 @@ function CodeBlockComponent({
+@@ -421,7 +452,7 @@ function CodeBlockComponent({
  registerNodeView(CodeBlockNode.getType(), function decorate(this: CodeBlockNode): JSX.Element {
      return (
        <CodeBlockComponent

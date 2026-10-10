@@ -514,8 +514,11 @@ export function CommentPopover({
   const [editText, setEditText] = useState('');
   const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
   const [replyText, setReplyText] = useState('');
-  const replyTextRef = useRef(replyText); // moss-multi seam: comments: the reply box's text when a bound submit settles
+  // moss-multi seam: comments: the reply box's text and thread when a bound submit settles
+  const replyTextRef = useRef(replyText);
   replyTextRef.current = replyText;
+  const replyRootRef = useRef(root.id);
+  replyRootRef.current = root.id;
   const [replyImageUrls, setReplyImageUrls] = useState<string[]>([]);
   const [replyResetSignal, setReplyResetSignal] = useState(0);
   const [editFooterHost, setEditFooterHost] = useState<HTMLDivElement | null>(null);
@@ -857,18 +860,20 @@ export function CommentPopover({
         replyImageUrls.length > 0 ? replyImageUrls : undefined
       );
       if (!created) return;
-      // moss-multi seam: comments (comments.md §12): on a bound note the reply box keeps its text until the server takes
-      // the reply, so a refused or lost write stays here and a resubmit retries it under the same id
-      const answer = shared ? submitted(noteId, `reply:${root.id}`) : null;
-      if (answer) {
-        void answer.then((result) => {
-          if (result.ok && replyTextRef.current.trim() === text) resetReplyComposer();
-        });
-        return;
-      }
       // Force-clear the still-mounted composer (the anti-echo guard would
       // otherwise keep the just-typed text) and keep focus for the next comment.
       resetReplyComposer();
+      // moss-multi seam: comments (comments.md §12): the reply shows at once as pending; if the server refuses or loses
+      // it, its text and images come back to an empty reply box of the same thread, and a resubmit retries the draft
+      const answer = shared ? submitted(noteId, `reply:${root.id}`) : null;
+      const images = replyImageUrls;
+      const rootId = root.id;
+      void answer?.then((result) => {
+        if (result.ok || replyRootRef.current !== rootId || replyTextRef.current.trim()) return;
+        setReplyText(text);
+        setReplyImageUrls(images);
+        setReplyResetSignal(s => s + 1);
+      });
     },
     [noteId, onReply, replyText, replyImageUrls, resetReplyComposer, root.id, shared]
   );

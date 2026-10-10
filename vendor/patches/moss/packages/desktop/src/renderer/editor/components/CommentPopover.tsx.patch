@@ -65,16 +65,19 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
                  {viewDisplaySrcs.length > 0 && (
                    <div className="mt-1.5 flex flex-wrap gap-1.5">
                      {viewDisplaySrcs.map((src, index) => {
-@@ -502,6 +513,8 @@ export function CommentPopover({
+@@ -502,6 +513,11 @@ export function CommentPopover({
    const [editText, setEditText] = useState('');
    const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
    const [replyText, setReplyText] = useState('');
-+  const replyTextRef = useRef(replyText); // moss-multi seam: comments: the reply box's text when a bound submit settles
++  // moss-multi seam: comments: the reply box's text and thread when a bound submit settles
++  const replyTextRef = useRef(replyText);
 +  replyTextRef.current = replyText;
++  const replyRootRef = useRef(root.id);
++  replyRootRef.current = root.id;
    const [replyImageUrls, setReplyImageUrls] = useState<string[]>([]);
    const [replyResetSignal, setReplyResetSignal] = useState(0);
    const [editFooterHost, setEditFooterHost] = useState<HTMLDivElement | null>(null);
-@@ -541,6 +554,10 @@ export function CommentPopover({
+@@ -541,6 +557,10 @@ export function CommentPopover({
    }, [commentsMap, root.id]);
  
    const isResolvedThread = typeof root.resolvedAt === 'number';
@@ -85,7 +88,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
    const lastCommentId = replies.at(-1)?.id ?? root.id;
    const isEditingLastComment = editingId === lastCommentId;
  
-@@ -728,10 +745,19 @@ export function CommentPopover({
+@@ -728,10 +748,19 @@ export function CommentPopover({
        const hasContent = trimmedText.length > 0 || editImageUrls.length > 0;
        if (hasContent && (trimmedText !== target.text || urlsChanged)) {
          onUpdate(target.id, trimmedText, urlsChanged ? editImageUrls : undefined);
@@ -106,29 +109,28 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
    );
  
    const handleCancelEdit = useCallback(() => {
-@@ -830,11 +856,20 @@ export function CommentPopover({
-         replyImageUrls.length > 0 ? replyImageUrls : undefined
-       );
-       if (!created) return;
-+      // moss-multi seam: comments (comments.md §12): on a bound note the reply box keeps its text until the server takes
-+      // the reply, so a refused or lost write stays here and a resubmit retries it under the same id
-+      const answer = shared ? submitted(noteId, `reply:${root.id}`) : null;
-+      if (answer) {
-+        void answer.then((result) => {
-+          if (result.ok && replyTextRef.current.trim() === text) resetReplyComposer();
-+        });
-+        return;
-+      }
+@@ -833,8 +862,19 @@ export function CommentPopover({
        // Force-clear the still-mounted composer (the anti-echo guard would
        // otherwise keep the just-typed text) and keep focus for the next comment.
        resetReplyComposer();
++      // moss-multi seam: comments (comments.md §12): the reply shows at once as pending; if the server refuses or loses
++      // it, its text and images come back to an empty reply box of the same thread, and a resubmit retries the draft
++      const answer = shared ? submitted(noteId, `reply:${root.id}`) : null;
++      const images = replyImageUrls;
++      const rootId = root.id;
++      void answer?.then((result) => {
++        if (result.ok || replyRootRef.current !== rootId || replyTextRef.current.trim()) return;
++        setReplyText(text);
++        setReplyImageUrls(images);
++        setReplyResetSignal(s => s + 1);
++      });
      },
 -    [onReply, replyText, replyImageUrls, resetReplyComposer, root.id]
 +    [noteId, onReply, replyText, replyImageUrls, resetReplyComposer, root.id, shared]
    );
  
    const handleDeleteConfirm = useCallback(() => {
-@@ -935,7 +970,7 @@ export function CommentPopover({
+@@ -935,7 +975,7 @@ export function CommentPopover({
    if (!anchorRect) return null;
  
    return (
@@ -137,7 +139,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
        <Popover.Root open={open} onOpenChange={handleOpenChange}>
          <Popover.Anchor virtualRef={virtualRef} />
          <Popover.Portal>
-@@ -1075,6 +1110,7 @@ export function CommentPopover({
+@@ -1075,6 +1115,7 @@ export function CommentPopover({
                        </TooltipContent>
                      </Tooltip>
                    )}
@@ -145,7 +147,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
                    <Tooltip>
                      <TooltipTrigger asChild>
                        <button
-@@ -1090,6 +1126,7 @@ export function CommentPopover({
+@@ -1090,6 +1131,7 @@ export function CommentPopover({
                        Delete thread
                      </TooltipContent>
                    </Tooltip>
@@ -153,7 +155,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
                  </div>
                </div>
              </TooltipProvider>
-@@ -1236,7 +1273,7 @@ export function CommentPopover({
+@@ -1236,7 +1278,7 @@ export function CommentPopover({
          variant="danger"
          onConfirm={handleDeleteConfirm}
        />

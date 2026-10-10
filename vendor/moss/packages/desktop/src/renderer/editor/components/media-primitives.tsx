@@ -406,6 +406,7 @@ export function MediaNodeHeader({
       <div className="flex items-center gap-1">
         {children}
         {canAddComment && (
+          <span className="contents" data-comment-entry="" /* moss-multi seam: comments (T4.B3) */>
           <MediaHeaderButton
             icon={StickyNote}
             title="Add comment"
@@ -415,6 +416,7 @@ export function MediaNodeHeader({
               editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
             }}
           />
+          </span>
         )}
         {canEdit && onFullscreen && (
           <MediaHeaderButton

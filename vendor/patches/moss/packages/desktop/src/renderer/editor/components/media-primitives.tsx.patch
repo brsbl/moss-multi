@@ -47,12 +47,13 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
  
    return (
      <div
-@@ -392,25 +404,25 @@ export function MediaNodeHeader({
+@@ -392,25 +404,27 @@ export function MediaNodeHeader({
      >
        <div className="flex items-center gap-1">
          {children}
 -        {editable && (
 +        {canAddComment && (
++          <span className="contents" data-comment-entry="" /* moss-multi seam: comments (T4.B3) */>
            <MediaHeaderButton
              icon={StickyNote}
              title="Add comment"
@@ -63,6 +64,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/media-primitives.ts
                editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
              }}
            />
++          </span>
          )}
 -        {editable && onFullscreen && (
 +        {canEdit && onFullscreen && (

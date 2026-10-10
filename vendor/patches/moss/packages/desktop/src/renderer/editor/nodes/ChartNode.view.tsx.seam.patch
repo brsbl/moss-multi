@@ -325,7 +325,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
              <TooltipProvider delayDuration={200}>
                <Tooltip>
                  <TooltipTrigger asChild>
-@@ -559,11 +620,13 @@ function ChartWrapper({
+@@ -551,6 +612,7 @@ function ChartWrapper({
+                       e.stopPropagation();
+                       editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
+                     }}
++                    data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
+                     className="flex h-6 w-6 items-center justify-center rounded border border-surface-panel bg-surface-raised-control text-ink-muted shadow-sm hover:bg-surface-canvas hover:text-ink-default"
+                   >
+                     <StickyNote className="h-3 w-3" />
+@@ -559,11 +621,13 @@ function ChartWrapper({
                  <TooltipContent side="bottom"><p>Add comment</p></TooltipContent>
                </Tooltip>
              </TooltipProvider>
@@ -340,7 +348,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/ChartNode.view.tsx b/pac
            <Suspense fallback={<ChartSkeleton />}>
              <ChartRenderer config={config} nodeKey={nodeKey} showTitle={false} />
            </Suspense>
-@@ -575,5 +638,5 @@ function ChartWrapper({
+@@ -575,5 +639,5 @@ function ChartWrapper({
  
  // moss-multi seam: node-views (A§12)
  registerNodeView(ChartNode.getType(), function decorate(this: ChartNode): JSX.Element {

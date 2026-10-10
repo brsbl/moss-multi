@@ -335,6 +335,7 @@ function SketchSurface({
   grid,
   labels,
   isEditing,
+  editable,
   toolMode,
   onToolModeChange,
   onGridChange,
@@ -343,6 +344,7 @@ function SketchSurface({
   grid: boolean[];
   labels: TextLabel[];
   isEditing: boolean;
+  editable: boolean; // moss-multi seam: read-only-decorators (T4.B3): a read-only body holds nothing focusable
   toolMode: 'draw' | 'erase' | 'label';
   onToolModeChange: (mode: 'draw' | 'erase' | 'label') => void;
   onGridChange: (newGrid: boolean[]) => void;
@@ -779,7 +781,7 @@ function SketchSurface({
           overflow: 'hidden'
         }}
         onKeyDown={handleOverlayKeyDown}
-        tabIndex={isEditing ? 0 : -1}
+        tabIndex={isEditing ? 0 : editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T4.B3) */}
       >
         {labels.map(label => {
           const isEditingThis = editingLabelId === label.id;
@@ -1366,6 +1368,7 @@ function SketchWrapper({
                           e.stopPropagation();
                           editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
                         }}
+                        data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
                         className="flex h-6 w-6 items-center justify-center rounded border border-surface-panel bg-surface-raised-control text-ink-muted shadow-sm hover:bg-surface-canvas hover:text-ink-default"
                       >
                         <StickyNote className="h-3 w-3" />
@@ -1386,6 +1389,7 @@ function SketchWrapper({
             grid={grid}
             labels={labels}
             isEditing={isEditing}
+            editable={editable}
             toolMode={toolMode}
             onToolModeChange={setToolMode}
             onGridChange={handleGridChange}

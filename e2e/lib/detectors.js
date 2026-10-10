@@ -69,7 +69,8 @@ export function markerLeak({ names }) {
 }
 
 /**
- * Invariant 9: nothing under a binding that is not live is focusable, editable or focused.
+ * Invariant 9: nothing under a binding that is not live is focusable, editable or focused, except a block's Add
+ * comment control in a `readonly` body (a commenter comments on blocks).
  * @param {{ names: Names }} arg
  * @returns {string[]}
  */
@@ -84,7 +85,7 @@ export function editableUnbound({ names }) {
       for (const el of [field, ...field.querySelectorAll('*')]) {
         const html = /** @type {HTMLElement} */ (el);
         if (html.isContentEditable) found.push(`${where}: <${el.tagName.toLowerCase()}> is editable`);
-        else if (el.matches(focusable) && !el.matches(':disabled')) {
+        else if (el.matches(focusable) && !el.matches(':disabled') && !(state === 'readonly' && el.closest(`[${names.commentEntry}]`))) {
           found.push(`${where}: <${el.tagName.toLowerCase()}> is focusable`);
         }
       }

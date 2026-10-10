@@ -672,7 +672,8 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 | `data-app-state` | html | `booting`, `ready`, `degraded` (ruling 10) |
 | `data-editor-pane` + `data-doc-id` | each pane root | the doc id |
 | `data-doc-state` | pane | `binding`, `retrying` (first-sync deadline passed), `live`, `offline`, `terminal`. `live` only after first sync **and** an editable root, set in one effect |
-| `data-title-binding`, `data-body-binding` | title field, body root | `unbound`, `live`, `readonly`, `terminal`. While not `live`, the element is non-focusable |
+| `data-title-binding`, `data-body-binding` | title field, body root | `unbound`, `live`, `readonly`, `terminal`. While not `live`, the element is non-focusable, and so is everything in it except, in a `readonly` body, a `data-comment-entry` |
+| `data-comment-entry` | a block header's Add comment (code, chart, canvas, media; vendor seam) | the commenter's block entry point |
 | `data-editor-generation` | body root | +1 on every Lexical editor creation (remount detector) |
 | `data-sync-unacked` | pane | `0` or `1` (§10.6) |
 | `data-notice-band` | reserved band below each pane’s top bar | connection and input-refusal notices |

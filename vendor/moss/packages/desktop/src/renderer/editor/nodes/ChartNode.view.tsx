@@ -613,6 +613,7 @@ function ChartWrapper({
                       e.stopPropagation();
                       editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
                     }}
+                    data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
                     className="flex h-6 w-6 items-center justify-center rounded border border-surface-panel bg-surface-raised-control text-ink-muted shadow-sm hover:bg-surface-canvas hover:text-ink-default"
                   >
                     <StickyNote className="h-3 w-3" />

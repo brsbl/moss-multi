@@ -498,7 +498,8 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
     const button = blockCommentButton(block);
     await expect(button, `${type}: the commenter is offered Add comment`).toHaveCount(1);
     await expect(block.getByRole('button', { name: /^(Edit|Draw|Delete|Fullscreen)$/ }), `${type}: but no body edit`).toHaveCount(0);
-    await button.click();
+    // The read-only body is aria-disabled, so the click is forced, as a person's click lands regardless.
+    await button.click({ force: true });
     const composer = cara.page.getByRole('dialog', { name: 'Add comment' });
     await expect(composer, `${type}: the block composer opens`).toBeVisible();
     await expect(composer.getByRole('textbox').first()).toBeFocused();
