@@ -427,3 +427,47 @@ describe('T4.S3 anchor cost: tokens are budgeted before a text item is expanded 
     for (const order of ['append', 'prepend'] as const) expect(fragmentedReplaced(order).middle, order).toBe('anchored');
   });
 });
+
+const GAP = 9_000;
+
+/**
+ * One paragraph of GAP one-character items (alternating writers, so they never merge) between 'Head.' and 'Tail.',
+ * one-character comments on `comments` of them (spread over the gap), then one delete-only frame that deletes them all.
+ * Wider than two walk budgets, so every comment's gap walk runs out wherever it starts.
+ */
+function fragmentedDeleted(comments: number): { stats: FrameStats; statuses: (string | undefined)[] } {
+  const server = new Y.Doc();
+  const root = server.get('root', Y.XmlText);
+  server.transact(() => {
+    addParagraph(root, 0, 'Head.');
+    addParagraph(root, 1, '');
+    addParagraph(root, 2, 'Tail.');
+  });
+  const own = server.clientID;
+  for (let k = 0; k < GAP; k += 1) {
+    server.clientID = k % 2 ? 2_000_001 : 2_000_002;
+    server.transact(() => paragraph(server, 1).insert(paragraph(server, 1).length, String.fromCharCode(97 + (k % 26))));
+  }
+  server.clientID = own;
+  const { host, client, send } = hosted(server);
+  const units: { item: Y.Item; off: number }[] = [];
+  for (let item = paragraph(server, 1)._start; item; item = item.right) {
+    if (item.content instanceof Y.ContentString) units.push({ item, off: 0 });
+  }
+  expect(units).toHaveLength(GAP);
+  const at = (n: number) => (comments === 1 ? GAP / 2 : 500 + n * 4);
+  for (let n = 0; n < comments; n += 1) host.create(`c${n}`, mintAnchor(units[at(n)], units[at(n)]));
+  expect(send(() => paragraph(client, 1).delete(1, GAP)).refused).toBeNull();
+  return { stats: counted(host), statuses: Array.from({ length: comments }, (_, n) => host.anchor(`c${n}`)?.status) };
+}
+
+describe('anchor cost: gap walks in one frame share what they measured @p:tech-3', () => {
+  it('a fragmented gap wider than two walk budgets: work grows with its structs, not by a walk budget per comment', () => {
+    const one = fragmentedDeleted(1);
+    const many = fragmentedDeleted(2_000);
+    expect(one.statuses).toEqual(['orphaned']);
+    expect(many.statuses.every((status) => status === 'orphaned'), 'every walk still runs out').toBe(true);
+    expect(one.stats.structs, 'one walk reads up to its budget').toBeGreaterThan(WALK_BUDGET);
+    expect(many.stats.structs - one.stats.structs, 'each struct is walked about once per direction').toBeLessThanOrEqual(2 * GAP + 16 * 2_000);
+  });
+});
