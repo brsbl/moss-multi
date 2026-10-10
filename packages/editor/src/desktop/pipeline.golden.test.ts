@@ -233,9 +233,8 @@ const snapshotOf = (state: RendererState): RendererSnapshot => ({
   },
 });
 
-/** What the goldens compare: every file under /Moss by path. */
-const compared = (volume: MemoryVolume) =>
-  Object.fromEntries(Object.entries(volume.snapshot('/Moss')).map(([path, text]) => [path, path.endsWith('.json') ? JSON.parse(text) : text]));
+/** What the goldens compare: every file under /Moss, byte for byte, by its spelled path. */
+const compared = (volume: MemoryVolume) => volume.snapshot('/Moss');
 
 async function editorRead(host: MemoryHost) {
   const disk = await host.read(ID);

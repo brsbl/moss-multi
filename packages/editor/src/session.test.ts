@@ -7,6 +7,7 @@ import { MemoryHost, MemoryVolume, seedNote } from './testing/memory-host.js';
 import { isMossAssetName } from './host/moss-editor-host.js';
 import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
 import { isNoteRelativeCompanionPath } from './desktop/note-store.port';
+import { adoptCommentColors, commentColorsOf, hydrateNoteComments, type CommentsMap } from './comment-state';
 import { EditorSession, TIMING, type SessionSurface } from './session';
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -32,7 +33,8 @@ class FakeSurface implements SessionSurface {
   editable = false;
   live = { title: '', body: '', comments: {} as RendererSnapshot['commentMetadata'] };
   views: unknown[] = [];
-  colors: Record<string, number> = {};
+  /** The comments map as moss's renderer holds it, hydrated as the real surface hydrates it. */
+  comments: CommentsMap = {};
   commit?: () => void | Promise<void>;
   frozen = false;
   /** Every freeze call: a full one (unmount) lets focus go, an input-only one (a load, a removal) keeps it. */
@@ -55,23 +57,19 @@ class FakeSurface implements SessionSurface {
     this.loaded = content;
     this.loads.push(options);
     this.live = { title: content.title, body: content.body, comments: content.commentMetadata };
-    this.colors = { ...(content.commentColors ?? {}) };
+    this.comments = hydrateNoteComments(content);
     return this.settling ?? undefined;
   }
 
   /** moss's comment UI adds a comment (a reply from an open composer) in the user's color. */
   addComment(id: string, comment: RendererSnapshot['commentMetadata'][string]) {
     this.live.comments = { ...this.live.comments, [id]: comment };
-    this.colors = { ...this.colors, [id]: 0 };
+    this.comments = { ...this.comments, [id]: { id, ...comment, color: 0 } };
   }
 
   /** As the real surface: a color the user did not change takes the new baseline's. */
   adoptCommentColors(previous: Record<string, number> | undefined, next: Record<string, number> | undefined) {
-    for (const id of new Set([...Object.keys(previous ?? {}), ...Object.keys(next ?? {})])) {
-      if (this.colors[id] !== previous?.[id]) continue;
-      if (next?.[id] === undefined) delete this.colors[id];
-      else this.colors[id] = next[id];
-    }
+    this.comments = adoptCommentColors(this.comments, previous, next) ?? this.comments;
   }
 
   snapshot(): RendererSnapshot {
@@ -80,7 +78,7 @@ class FakeSurface implements SessionSurface {
       content: assembleContent(this.loaded, { title: this.live.title, body: this.live.body }),
       commentMetadata: this.live.comments,
       layoutMetadata: { version: 1, tableCount: 0, tables: [] },
-      intents: { frontmatterMetaUpdates: {}, commentColors: { ...this.colors } },
+      intents: { frontmatterMetaUpdates: {}, commentColors: commentColorsOf(this.comments) },
     };
   }
 

@@ -29,7 +29,6 @@ import { commentDirtySignalAtom, noteCommentsMapAtom, noteEntityAtom, noteIdsAto
 import { browserSplitTargetAtom, mapNoteMetadataToNoteEntity, splitTabNoteIdAtom, webEmbedLightboxTargetAtom } from '@moss/shared/state/atoms';
 import { collectReachableCommentThreadIds, extractCommentAnchorIds } from '@moss-desktop/common/markdown-layers';
 import { buildCommentMetadata } from '@moss-desktop/renderer/editor/utils/comment-export';
-import { hydrateComments } from '@moss-desktop/renderer/editor/utils/comment-import';
 import { flushDecoratorDrafts } from '@moss-desktop/renderer/editor/utils/decoratorDraftRegistry';
 import {
   DIRTY_TRACKER_CONTENT_TAGS,
@@ -42,6 +41,7 @@ import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
 import { linesBeforeBody, offsetLines, readSelection } from '@moss-multi/host/selection.ts';
 import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
 import type { MossEditorHandle, MossEditorNote, MossEditorOptions, MossEditorServices, MossEditorTheme, MossSelection } from './contract';
+import { adoptCommentColors, commentColorsOf, hydrateNoteComments } from './comment-state';
 import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
 import { noteIdKey } from './host/moss-editor-host.js';
 import { installEditorElectronApi } from './electron-api';
@@ -86,6 +86,10 @@ class FrameSurface implements SessionSurface {
   private committedTitle = '';
   /** Changes from a load, moss's own post-mount transforms included, are not the user's edits. */
   private settling = true;
+  /** The comments map is being replaced from the note; only that write is not the user's comment edit. */
+  private hydrating = false;
+  /** Input aimed at this editor, its portals included, is cancelled (a load settling, a removal, an unmount). */
+  blocking = false;
   private pendingReady: (() => void) | null = null;
   private stopUpdates: (() => void) | null = null;
   private stopComments: (() => void) | null = null;
@@ -101,7 +105,10 @@ class FrameSurface implements SessionSurface {
     private readonly noteId: string,
     private readonly host: HTMLElement,
   ) {
-    this.stopComments = store.sub(commentDirtySignalAtom(noteId), () => this.edited());
+    // moss bumps this signal only for comment edits made in its UI, which count even while a load settles.
+    this.stopComments = store.sub(commentDirtySignalAtom(noteId), () => {
+      if (!this.hydrating) this.session?.markEdited();
+    });
   }
 
   subscribe = (listener: () => void) => {
@@ -121,7 +128,12 @@ class FrameSurface implements SessionSurface {
   }
 
   private hydrateComments(content: EditorContent) {
-    this.store.set(noteCommentsMapAtom(this.noteId), hydrateComments(content.commentMetadata, content.commentColors));
+    this.hydrating = true;
+    try {
+      this.store.set(noteCommentsMapAtom(this.noteId), hydrateNoteComments(content));
+    } finally {
+      this.hydrating = false;
+    }
   }
 
   /** The views of the lazy families `content` holds, loaded before it shows so it opens with no placeholder. */
@@ -258,11 +270,7 @@ class FrameSurface implements SessionSurface {
     const anchorIds = extractCommentAnchorIds(markdownBody);
     const surviving = Object.keys(commentsMap).length === 0 || anchorIds.size === 0 ? new Set<string>() : collectReachableCommentThreadIds(anchorIds, commentsMap);
     const currentCommentsMap = Object.fromEntries(Object.entries(commentsMap).filter(([id]) => surviving.has(id)));
-    const commentColors = Object.fromEntries(
-      Object.entries(currentCommentsMap)
-        .filter(([, comment]) => comment.color !== undefined)
-        .map(([id, comment]) => [id, comment.color as number]),
-    );
+    const commentColors = commentColorsOf(currentCommentsMap);
     return {
       content: assembleContent(content, { title: this.committedTitle, body: markdownBody }),
       commentMetadata: buildCommentMetadata(currentCommentsMap),
@@ -299,18 +307,21 @@ class FrameSurface implements SessionSurface {
     if (el?.parentElement === document.body && !el.contains(this.host)) this.portals.add(el);
   }
 
-  freeze(frozen: boolean): void {
+  /** `keepFocus` (a load settling, a removal's commit) cancels input but leaves focus and the caret where they are. */
+  freeze(frozen: boolean, options: { keepFocus?: boolean } = {}): void {
     this.unfreeze?.();
     this.unfreeze = null;
+    const full = frozen && options.keepFocus !== true;
+    this.blocking = frozen;
     if (frozen) {
-      // inert covers the root and the containers of moss's popovers (the comment composer, replies, menus), which
-      // portal into document.body; native capture listeners cancel any input still aimed at either, and whatever of
-      // them holds focus lets go. EditorPane's capture handlers also catch a popover not seen before.
+      // Native capture listeners cancel any input aimed at the root or the containers of moss's popovers (the
+      // comment composer, replies, menus), which portal into document.body. A full freeze also makes them inert and
+      // whatever of them holds focus lets go. EditorPane's capture handlers also catch a popover not seen before.
       const owned = (node: EventTarget | null) =>
         node instanceof Node && (this.host.contains(node) || node === this.focusTarget || [...this.portals].some((portal) => portal.contains(node)));
       const active = document.activeElement;
-      if (active instanceof HTMLElement && owned(active)) active.blur();
-      const inerted = [...this.portals].filter((portal) => portal.isConnected && !portal.inert);
+      if (full && active instanceof HTMLElement && owned(active)) active.blur();
+      const inerted = full ? [...this.portals].filter((portal) => portal.isConnected && !portal.inert) : [];
       for (const portal of inerted) portal.inert = true;
       const block = (event: Event) => {
         if (!owned(event.target)) return;
@@ -318,14 +329,15 @@ class FrameSurface implements SessionSurface {
         event.preventDefault();
         event.stopImmediatePropagation();
       };
-      const types = ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'textInput', 'compositionstart', 'paste', 'cut', 'drop', 'pointerdown', 'mousedown', 'click', 'submit', 'focusin'];
+      const types = ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'textInput', 'compositionstart', 'paste', 'cut', 'drop', 'pointerdown', 'mousedown', 'click', 'submit'];
+      if (full) types.push('focusin');
       for (const type of types) window.addEventListener(type, block, true);
       this.unfreeze = () => {
         for (const type of types) window.removeEventListener(type, block, true);
         for (const portal of inerted) portal.inert = false;
       };
     }
-    this.set({ frozen });
+    this.set({ frozen: full });
   }
 
   setEditable(editable: boolean): void {
@@ -351,19 +363,8 @@ class FrameSurface implements SessionSurface {
   /** meta.json's colors changed on disk: a comment whose color the user has not changed takes the new one. */
   adoptCommentColors(previous: Record<string, number> | undefined, next: Record<string, number> | undefined): void {
     const atom = noteCommentsMapAtom(this.noteId);
-    const current = this.store.get(atom);
-    let changed = false;
-    const updated = Object.fromEntries(
-      Object.entries(current).map(([id, comment]) => {
-        const color = next?.[id];
-        if (comment.color !== previous?.[id] || comment.color === color) return [id, comment];
-        changed = true;
-        const recolored = { ...comment, color };
-        if (color === undefined) delete recolored.color;
-        return [id, recolored];
-      }),
-    );
-    if (changed) this.store.set(atom, updated);
+    const updated = adoptCommentColors(this.store.get(atom), previous, next);
+    if (updated) this.store.set(atom, updated);
   }
 
   view(view: SessionView): void {
@@ -509,7 +510,7 @@ function EditorPane({ surface, session, noteId, onNavigateToNote, onShare }: {
   const { content, view } = state;
   // React events bubble through portals, so these capture handlers see input in moss's portalled popovers too.
   const swallow = (event: SyntheticEvent) => {
-    if (!surface.getState().frozen) return;
+    if (!surface.blocking) return;
     event.preventDefault();
     event.stopPropagation();
   };

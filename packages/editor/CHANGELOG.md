@@ -32,6 +32,10 @@ host that mounts it gets `ready` rejected with `apiMismatch` and nothing is read
 - contract.ts states that `onEvent` is required for a host that retains save receipts, and the retitle step onto a
   distinct existing `<folderName>.md` exactly.
 - `selection-1` and `share-with-agent-1` are unchanged.
+- The `removed` event comes once the drafts open at removal (a focused title, a chart or HTML draft) are committed,
+  so `hadUnsavedEdits` counts them; input is frozen meanwhile, and while an in-place reload settles.
+- `allocateFolderName` treats a sibling that differs only by Unicode normalization as taken on any volume, and folds
+  case fully on a case-insensitive one (σ and ς), so a retitle takes a free suffixed name instead of failing.
 - **The package is a directory, not one script** (T3.12): `moss-editor.js` imports content-hashed chunks under
   `assets/`, listed in editor.json `chunks` (with the ones every mount loads in `preload`). Charts, canvases and HTML
   blocks load their code when a note first holds one. The host serves the whole package directory from the entry's
