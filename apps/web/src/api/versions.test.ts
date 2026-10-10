@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertAgent, insertDoc, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
+import { BASE_VECTOR_MAX_CHARS } from './versions.ts';
 
 const calls: { op: string; docId: string; input: unknown }[] = [];
 let verdict: Record<string, unknown> | null = null;
@@ -151,7 +152,7 @@ describe('version routes @p:mean-3', () => {
     expect((await send('POST', ada.cookie, `${versions()}/v1/restore`, { base })).status).toBe(200);
     expect(calls[0].input).toMatchObject({ id: 'v1', base });
     calls.length = 0;
-    for (const bad of [5, { note: 1, payloads: {}, age: 0 }, { note: '', payloads: [], age: 0 }, { note: '', payloads: { a: 2 }, age: 0 }, { note: 'x'.repeat(70_000), payloads: {}, age: 0 }]) {
+    for (const bad of [5, { note: 1, payloads: {}, age: 0 }, { note: '', payloads: [], age: 0 }, { note: '', payloads: { a: 2 }, age: 0 }, { note: 'x'.repeat(BASE_VECTOR_MAX_CHARS + 5), payloads: {}, age: 0 }]) {
       expect((await send('POST', ada.cookie, `${versions()}/v1/restore`, { base: bad })).status, JSON.stringify(bad).slice(0, 40)).toBe(400);
     }
     expect(calls).toEqual([]);

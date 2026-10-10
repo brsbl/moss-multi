@@ -165,11 +165,17 @@ describe('JSON bodies are capped on every route that reads one', () => {
   // captured by captureRestoreBase. Each session's payload doc writes under its own random 32-bit client id, so a
   // payload's vector grows by about six bytes for every session that ever wrote it; nothing bounds that count.
   const writtenBy = (sessions: number, first = 0xf000_0000): Y.Doc => {
-    const doc = new Y.Doc();
+    // Each session writes on its own and the doc takes them merged, as a server would hold them.
+    const updates: Uint8Array[] = [];
     for (let s = 0; s < sessions; s += 1) {
-      doc.clientID = first + s;
-      doc.getText('t').insert(0, 'x');
+      const session = new Y.Doc();
+      session.clientID = first + s;
+      session.getMap('m').set(String(s), 1);
+      updates.push(Y.encodeStateAsUpdate(session));
+      session.destroy();
     }
+    const doc = new Y.Doc();
+    Y.applyUpdate(doc, Y.mergeUpdates(updates));
     return doc;
   };
   const captured = (note: Y.Doc, payload: Y.Doc, ids: number, idLength: number) => {

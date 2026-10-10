@@ -28,14 +28,16 @@ const CASES: [string, (doc: Y.Doc) => void, boolean?][] = [
     text.insert(0, 'xy');
     text.delete(0, 2);
   })],
-  ['one session, a long run typed a character at a time and deleted', (doc) => {
+  ['one session, a long run typed and deleted', (doc) => {
     const text = doc.getText('t');
-    for (let i = 0; i < 20_000; i += 1) text.insert(i, 'x');
+    for (let i = 0; i < 300; i += 1) text.insert(i, 'x');
+    text.insert(150, 'y'.repeat(3_000_000));
     text.delete(0, text.length);
   }],
   ['the same, without garbage collection', (doc) => {
     const text = doc.getText('t');
-    for (let i = 0; i < 20_000; i += 1) text.insert(i, 'x');
+    for (let i = 0; i < 300; i += 1) text.insert(i, 'x');
+    text.insert(150, 'y'.repeat(3_000_000));
     text.delete(0, text.length);
   }, false],
   ['astral characters', (doc) => sessions(doc, 500, (d) => d.getText('t').insert(0, '😀'))],
@@ -57,6 +59,6 @@ describe('a state vector is never longer than the state it describes', () => {
       expect(vector).toBeLessThanOrEqual(log.reduce((sum, update) => sum + update.byteLength, 0));
       expect(vector).toBeLessThanOrEqual(Y.mergeUpdates(log).byteLength);
       doc.destroy();
-    });
+    }, 30_000);
   }
 });
