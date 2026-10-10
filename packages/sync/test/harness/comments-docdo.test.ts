@@ -859,9 +859,19 @@ describe('a comment write leaves no await between its last socket check and the 
   /** The principal whose next resolve is held until `resume` runs. */
   let pause: string | null = null;
   let resume: (() => void) | null = null;
+  /** Sessions D1 no longer has; and, when set, the session whose next stamp read is held until `release` runs. */
+  const ended = new Set<string>();
+  let holdStamp: string | null = null;
+  let release: (() => void) | null = null;
   class PausedDocDO extends DocDO {
     static override access = () => ({
-      stamp: async (_docId: string, sessions: string[], agents: string[]) => ({ key: epoch, sessions: new Set(sessions), agents: new Set(agents) }),
+      stamp: async (_docId: string, sessions: string[], agents: string[]) => {
+        if (holdStamp !== null && sessions.includes(holdStamp)) {
+          holdStamp = null;
+          await new Promise<void>((go) => { release = go; });
+        }
+        return { key: epoch, sessions: new Set(sessions.filter((s) => !ended.has(s))), agents: new Set(agents) };
+      },
       resolve: async (_docId: string, socket: SocketIdentity): Promise<Resolved | null> => {
         if (pause === socket.principalId) {
           pause = null;
@@ -886,6 +896,9 @@ describe('a comment write leaves no await between its last socket check and the 
     gone.clear();
     pause = null;
     resume = null;
+    ended.clear();
+    holdStamp = null;
+    release = null;
   });
 
   it('a reader revoked in D1 while the actor resolves, its kick missed, closes 4403 and receives nothing of the write', async () => {
@@ -925,6 +938,25 @@ describe('a comment write leaves no await between its last socket check and the 
     expect(await write).toMatchObject({ ok: false });
     expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
     expect(ben.closed, 'the kept socket stays').toBeNull();
+  });
+
+  it.each([
+    ['its grant is removed', 403, () => { epoch = 'e2'; gone.add('ada'); }],
+    ['its session ends', 401, () => { ended.add('sess-ada'); }],
+  ] as const)('an actor whose %s after it resolved, its kick missed, is refused and nothing lands', async (_case, status, revoke) => {
+    const opened = await opening();
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ben.hello();
+    const benBefore = ben.socket.sent.length;
+    // The socket check's stamp read is held: the actor has resolved, and its access ends in D1 with no recheck sent.
+    holdStamp = 'sess-ben';
+    const write = opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'after my revoke', parentId: 'c1' });
+    await until(() => release !== null);
+    revoke();
+    release!();
+    expect(await write).toMatchObject({ ok: false, status });
+    expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
+    expect(ben.socket.sent.length, 'no frame of a write reached the reader').toBe(benBefore);
   });
 });
 
