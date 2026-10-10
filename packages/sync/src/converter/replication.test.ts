@@ -79,7 +79,7 @@ function wireKeys(type: Y.XmlText | Y.XmlElement, found = new Map<string, Set<st
 
 type Commentable = LexicalNode & { getCommentIds(): string[]; setCommentIds(ids: string[]): void };
 function $clearDecoratorComments(node: LexicalNode): void {
-  const commentable = node as Partial<Commentable>;
+  const commentable = node as unknown as Partial<Commentable>;
   if (commentable.getCommentIds && commentable.setCommentIds && commentable.getCommentIds().length) commentable.setCommentIds([]);
   if ($isElementNode(node)) for (const child of node.getChildren()) $clearDecoratorComments(child);
 }

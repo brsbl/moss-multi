@@ -95,7 +95,8 @@ const DECORATORS = [
 
 type Commentable = LexicalNode & { getCommentIds(): string[]; setCommentIds(ids: string[]): void };
 function $commentables(node: LexicalNode = $getRoot(), out: Commentable[] = []): Commentable[] {
-  if ($isDecoratorNode(node) && typeof (node as Partial<Commentable>).setCommentIds === 'function') out.push(node as Commentable);
+  const commentable = node as unknown as Partial<Commentable>;
+  if ($isDecoratorNode(node) && typeof commentable.setCommentIds === 'function') out.push(commentable as Commentable);
   if ($isElementNode(node)) for (const child of node.getChildren()) $commentables(child, out);
   return out;
 }
