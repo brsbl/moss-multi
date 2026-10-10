@@ -57,6 +57,9 @@ export const CUSTOM_PREFIX = '__YPS:';
 
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
 
+/** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
+export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);
+
 export type ServerEvent =
   /** A write that did not land; the close follows. */
   | { t: 'write-refused'; reason: WriteRefusalReason }

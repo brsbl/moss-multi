@@ -4,6 +4,7 @@ import { $getRoot, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown, importMarkdown } from '../src/converter/index.ts';
 import { writeTitle } from '../src/server-title.ts';
+import { textHash } from './text-hash.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 
 let imported: LexicalEditor | null = null;
@@ -35,10 +36,9 @@ function stateBytes(markdown: string): number {
 }
 
 const utf8 = (text: string) => new TextEncoder().encode(text).byteLength;
-
 export default {
   async fetch(request: Request): Promise<Response> {
-    const { pathname } = new URL(request.url);
+    const { pathname, searchParams } = new URL(request.url);
     if (pathname === '/ping') return new Response('ok');
     if (pathname === '/import') {
       const markdown = await request.text();
@@ -53,7 +53,8 @@ export default {
     }
     if (pathname === '/export') {
       if (!imported) return new Response('import first', { status: 409 });
-      return Response.json({ bytes: utf8(exportMarkdown(imported)) });
+      const markdown = exportMarkdown(imported);
+      return Response.json({ bytes: utf8(markdown), ...(searchParams.has('hash') ? { hash: textHash(markdown) } : {}) });
     }
     if (pathname === '/state') {
       const markdown = await request.text();
