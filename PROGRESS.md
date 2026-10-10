@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 52% done** (106 of 205 planned tasks verified)
+**Overall: 52% done** (108 of 207 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 42 / 42 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 44 / 44 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -126,6 +126,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.B12 verified: in the desktop editor a comment reply typed while a note reloads in place, or a chart draft open when a note is removed, is now kept instead of reported saved and lost, and a new note titled σ beside ς or NFC Café beside NFD Café now gets a free suffixed folder name instead of staying unsaved.
 - 2026-10-09 — T3.S19 verified: `stack.mjs reap` now keeps a live stack started with --state-dir in the registry, as it already did for default storage, and still removes dead stacks of both kinds.
 - 2026-10-09 — T3.S10 verified: importing a note whose highlight wraps many formatted runs, or carries a long style attribute, now keeps its output bounded (a highlight past the bound stays as written), and comment markers holding `$&` or `$`` are inserted as written instead of copying text.
+- 2026-10-09 — T3.B1 verified: importing a note whose frontmatter YAML aliases expand past a budget or cycle, or whose tables would overrun the converter's work budget, is now refused promptly as a 413 instead of stalling or failing with a 500, and lines too long to convert stay shielded whatever characters they contain.
+- 2026-10-09 — T3.B16 verified: table column and tab widths a person drags now survive reload and peer table insertions without a replaced table inheriting old widths, saved layout entries stay bounded, and typing or receiving unrelated edits no longer rescans the note or writes layout storage.
 
 ## T1.1s identity audit
 
@@ -243,6 +245,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T3.B12 (Desktop editor session commit and host naming) checker P2: a removal during a settling load can drop the 'removed' event: `remove()` in `packages/editor/src/session.ts` emits it only if status is still 'removed' when the commit settles, but an in-flight `loadInPlace` (its `applyRead` checks only for 'unmounted') or a save's `afterSaved` can reset status to 'clean' and `giveBack` can make the editor editable again, so no 'removed' fires until the next write gets notFound (status overwrite is older; the lost event is new, tight timing window).
 - T3.B12 (Desktop editor session commit and host naming) checker P2: case folding by upper-then-lower misses ẞ beside ß: `volumeKey` in `packages/editor/src/host/moss-editor-host.js` maps ẞ to ß and ß to ss, so on case-insensitive APFS 'ẞ' beside 'ß' gets no suffix and the rename fails with EEXIST (title stays unsaved, nothing overwritten); `MemoryVolume` in `testing/memory-host.js` copies the same approximation, so tests cannot catch it.
 - T3.S10 (Bounded highlight splits) checker P2: comment closer placement still rescans the suffix quadratically: the comment passes find the last closer with `/(<\/mark>)(?!.*<\/mark>)/` and `/(==)(?!.*==)/` (unchanged from the merge base and moss's pin), so a marker holding many `==` or `</mark>` sequences costs quadratic time, though output size stays bounded.
+- T3.B1 (Bounded frontmatter aliases and import cost) checker P2: a table just under the cell budget still lands above SP2's 5 s, and that leg is reported, not gated: the 17,984-cell leg in `scripts/measure-converter.mjs` is marked reported:true, so neither its CPU time nor its HTTP status is asserted; on the green run its DocDO create took 6,160 ms of workerd CPU (HTTP 200), and the converter-only 2 MB padded leg took 6,810 ms, also ungated (commit 041bcee9 removed that assertion).
+- T3.B16 (Table and tab layout persistence) checker P2: deleting a block that contains a table or tab group skips pruning until the next layout scan: the listener in `apps/web/src/host/collab/layout-local.ts` scans only when a dirty node is itself a table or tab group, and Lexical's GC drops a nested table without dirtying it, so its saved identity and ordinal entries linger until the next qualifying update or reload (no surviving width is lost; freshness only).
+- T3.B16 (Table and tab layout persistence) checker P2: the rendering-ignores-stored-widths mutation was only shown failing at j01's tab-title assertion, not the table assertion beside it, so the table half was never isolated (post-reload near() checks would catch a table reverting to equal columns) → optional table-only rendering mutation.
 - T3.S19 (Reap keeps --state-dir stacks) checker P2: `namesPersistDir` in `scripts/stack.mjs` matches `--persist-to <dir>` by substring with no value boundary, so a recorded r1 persistDir also matches a live r10 leader; if a stale r1 entry's pgid were reused by r10's group, reap could kill it (needs an exact pgid collision, predates T3.S19 in ownsGroup, test hygiene only) → stack follow-up: match the whole --persist-to value.
 - T3.S19 (Reap keeps --state-dir stacks) checker P2: the new `judgeGroup storage` tests feed hand-written process lists to judgeGroup and never run reap against real stacks, so reap's registry-removal side effects are not exercised (the checker covered them with a manual real-stack check) → stack test follow-up: a reap integration test over real default and --state-dir stacks.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.

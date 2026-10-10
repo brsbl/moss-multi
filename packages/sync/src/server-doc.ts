@@ -4,6 +4,7 @@
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
+import { refusingSpentImports } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
   $createParagraphNode, $getRoot, $isDecoratorNode, $isElementNode, $isTextNode, TextNode, type ElementNode, type LexicalEditor, type LexicalNode,
 } from 'lexical';
@@ -249,12 +250,13 @@ function $stripCommentMarks(): ImportedMarks {
 /**
  * Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). With a
  * comments sidecar, its markers become recorded ranges (moss's `$processCommentMarkers`, then unwrapped); without
- * one, markers are dropped.
+ * one, markers are dropped. Throws IMPORT_BUDGET_SPENT, writing nothing, for markdown that spends the converter's
+ * whole work budget.
  */
 export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontmatter?: string, comments?: Record<string, unknown>): ImportedMarks {
   let marks: ImportedMarks = { ranges: new Map(), text: '' };
   serverWrite(live, SERVER_IMPORT, (doc) => {
-    $importNoteBody(markdown, { comments: (comments ?? {}) as never });
+    refusingSpentImports(() => $importNoteBody(markdown, { comments: (comments ?? {}) as never }));
     marks = $stripCommentMarks();
     if (frontmatter !== undefined) {
       importFrontmatter(doc, frontmatter, SERVER_IMPORT);

@@ -14,6 +14,8 @@
 // SearchDO bodies of unclosed openers, exiting non-zero past the per-request CPU and linear-scaling budgets. The
 // converter also imports and exports notes of unclosed openers (packages/sync/measure/converter-cases.ts) as single
 // lines from 1 KB to 2 MB, exiting non-zero past LINE_BUDGET_MS.
+// Table notes go through the converter and the DocDO's create, exiting non-zero when a leg errs or takes more than
+// IMPORT_BUDGET_MS, a 2 MB note past the cell budget is not refused as doc-cap, or a table within it does not land whole.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -417,6 +419,78 @@ async function measurePayloadFrames(port) {
   } finally {
     await stop(server.child);
   }
+}
+
+// Table imports (A§12; SP2): through the converter alone and through the real DocDO's create (import, binding and
+// admission), each in a fresh worker after a warm-up. The create refuses a 2 MB note of rows past the import's cell
+// budget (dense cells, or narrow rows each padded to a wide header) as doc-cap (413) and lands a table within it whole,
+// its export the converter's; every create within IMPORT_BUDGET_MS of workerd CPU, never an error. A table at the edge of
+// the budget is reported only: what the create costs past the converter grows with the doc's state, as the 2 MB scale
+// note's does.
+const TABLE_TIMEOUT_MS = 30_000;
+const tableHeader = (cells) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
+const tableRows = (cells, row, bytes) => `${tableHeader(cells)}${row.repeat(Math.floor((bytes - tableHeader(cells).length) / row.length))}`;
+const DENSE_ROW = `|${'a|'.repeat(64)}\n`;
+const TABLE_CASES = [
+  { name: 'dense one-letter cells, 64 a row, past the cell budget', markdown: tableRows(64, DENSE_ROW, 2 * 1024 * 1024), create: 413 },
+  { name: 'two-cell rows padded to a 4,096-column header, past the cell budget', markdown: tableRows(4_096, '| b | c |\n', 2 * 1024 * 1024), create: 413 },
+  { name: 'dense one-letter cells, 64 a row, 8,192 cells', markdown: `${tableHeader(64)}${DENSE_ROW.repeat(127)}`, create: 200 },
+  { name: 'dense one-letter cells, 64 a row, 17,984 cells (the edge of the budget; reported)', markdown: `${tableHeader(64)}${DENSE_ROW.repeat(280)}`, create: 200, reported: true },
+];
+
+/** One request in a fresh worker after a warm-up: its workerd CPU and answer (and its export's hash), or why it failed. */
+async function tableRequest(port, worker, path, markdown, exportPath) {
+  const server = await startWorker(worker, port);
+  let before = null;
+  try {
+    const warm = await fetch(`${server.origin}${path}warm`, { method: 'POST', body: tableRows(8, `|${'a|'.repeat(8)}\n`, 8 * 1024) });
+    if (!warm.ok) throw new Error(`warm-up: HTTP ${warm.status} ${await warm.text()}`);
+    before = workerdStats(server.child.pid);
+    const response = await fetch(`${server.origin}${path}note`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) });
+    const text = await response.text();
+    const cpuMs = workerdStats(server.child.pid).cpuMs - before.cpuMs;
+    let answer = null;
+    try {
+      answer = JSON.parse(text);
+    } catch {
+      // reported below
+    }
+    const ok = response.status === 200 || (response.status === 413 && answer?.error === 'doc-cap');
+    if (!ok) return { cpuMs, status: response.status, answer, failed: `HTTP ${response.status} ${text.slice(0, 160)}` };
+    // The export runs after the CPU is read: it only shows what landed.
+    const exported = response.status === 200 ? await (await fetch(`${server.origin}${exportPath}`, { signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) })).json() : null;
+    return { cpuMs, status: response.status, answer, hash: exported?.hash };
+  } catch (error) {
+    const timedOut = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError';
+    return { cpuMs: before ? workerdStats(server.child.pid).cpuMs - before.cpuMs : undefined, failed: timedOut ? `ran past ${TABLE_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0] };
+  } finally {
+    await stop(server.child);
+  }
+}
+
+async function measureTableImports(port) {
+  const results = [];
+  for (const { name, markdown, create: expected, reported } of TABLE_CASES) {
+    const converter = await tableRequest(port, 'converter', '/import?', markdown, '/export?hash');
+    const create = await tableRequest(port + 1, 'docdo', '/create?doc=', markdown, '/export?doc=note');
+    port += 2;
+    const problems = [];
+    for (const [leg, r] of [['converter', converter], ['DocDO create', create]]) {
+      if (r.failed) problems.push(`${leg}: ${r.failed}`);
+      // The converter alone keeps the rows past the budget as text (the multiline cases hold that path to SP2).
+      else if (!reported && leg === 'DocDO create' && r.cpuMs > IMPORT_BUDGET_MS) problems.push(`${leg}: ${r.cpuMs} ms of workerd CPU, over ${IMPORT_BUDGET_MS} ms`);
+    }
+    if (!create.failed && !reported && create.status !== expected) problems.push(`DocDO create: HTTP ${create.status}, not ${expected}`);
+    if (!create.failed && create.status === 200 && !converter.failed && create.hash !== converter.hash) {
+      problems.push(`DocDO create: its export (${create.hash}) is not the converter's (${converter.hash})`);
+    }
+    results.push({ name, bytes: markdown.length, converter, create, reported, problems });
+  }
+  return results;
+}
+
+function tableImportProblems(results) {
+  return results.flatMap((r) => r.problems.map((problem) => `${r.name}: ${problem}`));
 }
 
 // The search index (A§5.3): one global SearchDO indexes every doc and snippets every hit, so a body full of openers
@@ -900,6 +974,7 @@ async function main() {
   const ordinary = await measureOrdinary(port + 99);
   const multiline = await measureMultiline(port + 200);
   const entityTabs = await measureEntityTabs(port + 300);
+  const tables = await measureTableImports(port + 400);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -984,6 +1059,10 @@ async function main() {
         : `| Lines repeated, ${r.name}: workerd CPU (import / export) | ${r.sizes.map((size) => `${kb(size.bytes)} ${size.importCpuMs} / ${size.exportCpuMs} ms`).join(', ')} (growth at most ${ADVERSARIAL_SCALING}x) |`,
     ),
     `| Entity tabs, one line of \`&#9;\` × ${ENTITY_TAB_COUNTS.join(' / ')}: workerd CPU (import / export) | ${entityTabs.sizes.map((size) => `${size.importCpuMs} / ${size.exportCpuMs} ms${size.cut ? ' (kept literal)' : ''}`).join(', ')}${entityTabs.failed ? `; FAILED: ${entityTabs.failed}` : ''} (line budget ${LINE_BUDGET_MS} ms, growth at most ${ADVERSARIAL_SCALING}x a doubling) |`,
+    ...tables.map((t) => {
+      const part = (r) => `${r.cpuMs ?? '?'} ms${r.status ? `, HTTP ${r.status}` : ''}${r.answer?.work === undefined ? '' : `, work ${Math.round(r.answer.work / 1e6)}M`}${r.answer?.cut ? `, ${r.answer.cut} cut` : ''}${r.answer?.blocks ? `, ${r.answer.blocks} blocks` : ''}${r.answer?.stateBytes ? `, state ${mb(r.answer.stateBytes)}` : ''}${r.failed ? `, FAILED: ${r.failed}` : ''}`;
+      return `| Table import, ${t.name}, ${kb(t.bytes)}: workerd CPU, converter / DocDO create | ${part(t.converter)} / ${part(t.create)}${t.problems.length ? `; FAILED: ${t.problems.join('; ')}` : ''} (budget ${t.reported ? 'reported only' : `${IMPORT_BUDGET_MS} ms`}) |`;
+    }),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -1040,6 +1119,11 @@ async function main() {
   const tabProblems = entityTabProblems(entityTabs);
   if (tabProblems.length > 0) {
     console.error(`measure-converter: entity-tab lines over budget or growing faster than linearly in workerd: ${tabProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
+  const tableProblems = tableImportProblems(tables);
+  if (tableProblems.length > 0) {
+    console.error(`measure-converter: table imports failed, refused wrongly or over ${seconds(IMPORT_BUDGET_MS)} in workerd: ${tableProblems.join('; ')}`);
     process.exitCode = 1;
   }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);

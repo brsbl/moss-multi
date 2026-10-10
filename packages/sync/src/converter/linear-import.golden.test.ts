@@ -274,6 +274,25 @@ describe('linear inline import @p:tech-4', () => {
       expect(textOf(again) === textOf(editor)).toBe(true);
     }, 120_000);
 
+    it('shields a long line holding every control character a marker could use, as it shields one without them', () => {
+      const controls = '\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u000e\u000f';
+      const line = (fill: string) => `# **b** [a](b) \`c\` ~~d~~ ${fill}\u00a0${'x'.repeat(LINEAR_IMPORT_LIMITS.lineChars)}`;
+      const run = (text: string) => {
+        const [cut, spent] = [linearImportStats.cut, linearImportStats.spent];
+        const editor = importMarkdown(`Before **it**.\n\n${text}\n\nAfter **it**.`);
+        return { editor, cut: linearImportStats.cut - cut, spent: linearImportStats.spent - spent };
+      };
+      const fill = `${controls}${'\u0001'.repeat(3)}`;
+      const plain = run(line('y'.repeat(fill.length)));
+      const marked = run(line(fill));
+      expect(plain.cut).toBe(1);
+      expect(marked.cut).toBe(1);
+      expect(blocks(marked.editor)).toEqual([['paragraph', 'Before it.'], ['paragraph', line(fill)], ['paragraph', 'After it.']]);
+      expect(marked.spent).toBeLessThanOrEqual(plain.spent * 1.01 + 10_000);
+      const again = importMarkdown(exportMarkdown(marked.editor));
+      expect(textOf(again) === textOf(marked.editor)).toBe(true);
+    }, 120_000);
+
     it('gives a long line inside a fenced block back to that block', () => {
       const long = 'y'.repeat(LINEAR_IMPORT_LIMITS.lineChars + 1);
       for (const markdown of [`\`\`\`moss-html\n<p>${long}</p>\n\`\`\``, `\`\`\`js\nconst a = '${long}';\n\`\`\``]) {
