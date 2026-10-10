@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { ACK_COALESCE_MS } from '@moss-multi/protocol/limits';
-import { base64ToBytes, CLOSE, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, decodePayloadFrame, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
 import { COMPACT_BYTES, PAYLOAD_DOCS_HELD } from '../../src/payloads.ts';
 import { PAYLOAD_TEXT, payloadText } from '../../src/payload-docs.ts';
@@ -1048,4 +1048,57 @@ describe('T3.S13 a payload frame leaves nothing parked: refused unresolved, comp
       } finally { ada.dispose(); }
     });
   }
+});
+
+describe('T3.S14 the answer budget: payload step 1s @p:tech-8', () => {
+  const BUDGET = { docs: 4, windowMs: 10_000 };
+  class Budgeted extends DocDO {
+    static override limits = { ...DocDO.limits, answerBudget: BUDGET };
+  }
+  /** Payload `id`'s full-state answers on a socket since `from`. */
+  const answers = (socket: FakeSocket, id: string, from: number) => socket.sent.slice(from).filter((frame) => {
+    if (typeof frame === 'string') return false;
+    const decoded = decodePayloadFrame(frame);
+    return decoded?.id === id && decoded.step === PAYLOAD_STEP2;
+  }).length;
+
+  it('bounds the encodes a viewer\'s repeated payload step 1s draw while an editor keeps writing, then answers the latest one', async () => {
+    const opened = await start(openDoc(new Backing(), Budgeted as never));
+    await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: SEED });
+    const ada = await LiveClient.open(opened);
+    const viewer = await LiveClient.open(opened, { role: 'viewer', id: 'viewer-p' });
+    try {
+      ada.insert('code-block', 'BUDGET-');
+      await syncAll(ada, viewer);
+      const id = ada.ids()[0];
+      expect(viewer.texts(), 'a fresh connect converges').toEqual(['BUDGET-']);
+      const from = viewer.socket.socket.sent.length;
+      const empty = encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(new Y.Doc()));
+      for (let i = 0; i < 256; i += 1) {
+        await viewer.socket.deliver(empty);
+        if (i % 32 === 0) {
+          ada.type(0, ada.texts()[0].length, `${i};`);
+          await ada.sync();
+        }
+      }
+      expect(answers(viewer.socket.socket, id, from), 'repeated payload step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs);
+      expect(ada.socket.closed).toBeNull();
+      expect(viewer.socket.closed).toBeNull();
+      expect(heldText(ada.payloads.get(id)), 'the editor kept writing').toContain('224;');
+      const before = answers(viewer.socket.socket, id, from);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer.socket.socket, id, from) - before, 'the waiting step 1s coalesce into one answer').toBe(1);
+      await viewer.down();
+      expect(viewer.texts()).toEqual(ada.texts());
+      // A reconnect of the same principal, budget spent or not, converges once its answers go out.
+      await viewer.socket.drop();
+      ada.type(0, 0, 'again ');
+      await ada.sync();
+      await viewer.reconnect();
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await viewer.down();
+      expect(viewer.socket.closed).toBeNull();
+      expect(viewer.texts()).toEqual(ada.texts());
+    } finally { ada.dispose(); viewer.dispose(); }
+  });
 });
