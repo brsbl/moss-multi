@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 55% done** (112 of 205 planned tasks verified)
+**Overall: 55% done** (113 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 46 / 46 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 12 / 12 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 13 / 13 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -132,6 +132,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S20 verified: when someone is demoted to view and then removed within a few seconds, the note now shows only 'Your access to this note has ended.' instead of a stale view-only notice beside it.
 - 2026-10-09 — T4.S5 verified: a large plain paste now lands whole, as one undo step, even when cursor geometry throws or a viewer peer sends malformed cursor positions mid-paste.
 - 2026-10-10 — T4.B2 verified: comment ids on decorators are never read back from an old doc, long gap walks in one frame stay inside their step budget, and comment anchors survive a DocDO restart, checked end to end by the comments guard journey.
+- 2026-10-10 — T4.B1 verified: a comment write now re-checks its sockets and author in one read with nothing awaited before it lands, mention and reply notifications go only to people who still have access, the @ list shows everyone with direct or inherited access, and a note created at the body cap with its comments is stored by the real note server.
 
 ## T1.1s identity audit
 
@@ -544,3 +545,4 @@ Local browser verification remains assigned to the independent checker under the
 - T3.S20 (One notice when access ends) checker P2: `DocSession.end()` always settles the view-only notice, and the refusal store (refusal.ts) is one tab-wide message matched on text, so note B ending within 4 s of note A's demotion in a split pane clears A's still-accurate notice (cosmetic) → refusal follow-up: scope the settle to the note that raised the notice.
 - T4.B2 (Comment anchors, frame guard coverage and excluded fields) checker P2: budget-exhausted predecessor-block descents inside `prev()` are not memoized (B255 residual). `#reach` stores a step only after `prev()` returns, and `prev()` can throw OverBudget partway through a left sibling block's children (anchor-frame.ts:277-288), so a frame that deletes a block with more than WALK_BUDGET child structs before a block with many comments redoes the same budget-sized scan per comment; still bounded at one WALK_BUDGET per comment, so a missed optimisation rather than a regression; the 9,000-item test covers only a gap inside one paragraph.
 - T4.B2 (Comment anchors, frame guard coverage and excluded fields) checker P2: no red evidence for the B265 workerd j15-comments-guard fixtures with the guard or purge disabled; tests-first run 38036985164 skipped e2e and its failures came from the unit assertions, so add a run that shows those workerd fixtures failing with the guard or purge off (the Node harness already has red coverage for the same fixtures).
+- T4.B1 (B260 lacks executed negative controls) checker P2: `body-cap.harness.test.ts` passed on its first run (4079877f) and its smaller-cap control is only an in-test byte comparison against MARKDOWN_ONLY_BODY_MAX_BYTES; no remote-CI run shows the case failing with the old stub, an invalid sidecar or the restored smaller cap (evidence gap; backlog P3, follow-up only).
