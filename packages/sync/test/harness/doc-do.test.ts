@@ -206,7 +206,16 @@ describe('server writes', () => {
 
   // YAML aliases share one parsed node: 400 bytes naming 262,144 leaves, and anchors that name themselves.
   const aliasBomb = ['l0: &l0 [1, 1, 1, 1]', ...Array.from({ length: 9 }, (_, i) => `l${i + 1}: &l${i + 1} [${Array(4).fill(`*l${i}`).join(', ')}]`)].join('\n');
-  it.each([['an exponential alias graph', aliasBomb], ['a self-referencing sequence', 'self: &s [*s]'], ['a self-referencing mapping', 'map: &m {k: *m}']])(
+  // 98 KB naming 8,192 copies of one 64 KB string (512 MB), as a value and as a flow-sequence key js-yaml joins in load.
+  const longString = `blob: &b ${'x'.repeat(65_536)}`;
+  const aliases = Array(8_192).fill('*b').join(', ');
+  it.each([
+    ['an exponential alias graph', aliasBomb],
+    ['a self-referencing sequence', 'self: &s [*s]'],
+    ['a self-referencing mapping', 'map: &m {k: *m}'],
+    ['8,192 aliases of one 64 KB string', `${longString}\ncopies: [${aliases}]`],
+    ['a flow-sequence key of 8,192 aliases of one 64 KB string', `${longString}\n? [${aliases}]\n: v`],
+  ])(
     'refuses frontmatter of %s promptly as doc-cap and writes nothing', { timeout: 20_000 }, async (_, yaml) => {
       const opened = await start(openDoc());
       const before = Y.encodeStateAsUpdate(opened.dobj.document);

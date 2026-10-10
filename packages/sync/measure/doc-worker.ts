@@ -5,6 +5,7 @@ import * as Y from 'yjs';
 import { encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../src/doc-do.ts';
 import type { PayloadWork } from '../src/payloads.ts';
+import { textHash } from './text-hash.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 
 /** The DocDO, plus a method that reports its payload work (a getter is not an RPC method). */
@@ -48,6 +49,10 @@ export default {
       }
       const { state } = await stub.snapshotForDuplicate();
       return Response.json({ ids: namedIds(state), work: linearImportStats.spent - work, stateBytes: state.byteLength });
+    }
+    if (url.pathname === '/export') {
+      const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
+      return Response.json({ bytes: new TextEncoder().encode(markdown).byteLength, hash: textHash(markdown) });
     }
     if (url.pathname === '/work') {
       const stub = await getServerByName(env.DocDO, docId);

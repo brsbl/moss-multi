@@ -192,9 +192,18 @@ describe('frontmatter scale', () => {
 // YAML aliases share one parsed node, so a few hundred bytes can name an exponential or cyclic tree.
 const ALIAS_BOMB = ['l0: &l0 [1, 1, 1, 1]', ...Array.from({ length: 9 }, (_, i) => `l${i + 1}: &l${i + 1} [${Array(4).fill(`*l${i}`).join(', ')}]`)].join('\n');
 const SELF_ALIASES = ['self: &s [*s]', 'map: &m {k: *m}'];
+// 98 KB naming 8,192 copies of one 64 KB string (512 MB), as a value and as a flow-sequence key js-yaml joins in load.
+const LONG_STRING = `blob: &b ${'x'.repeat(65_536)}`;
+const STRING_COPIES = `${LONG_STRING}\ncopies: [${Array(8_192).fill('*b').join(', ')}]`;
+const STRING_KEY = `${LONG_STRING}\n? [${Array(8_192).fill('*b').join(', ')}]\n: v`;
 
 describe('alias expansion', () => {
-  it.each([['an exponential alias graph', ALIAS_BOMB], ...SELF_ALIASES.map((yaml) => [`a self-referencing anchor, ${yaml}`, yaml])])(
+  it.each([
+    ['an exponential alias graph', ALIAS_BOMB],
+    ...SELF_ALIASES.map((yaml) => [`a self-referencing anchor, ${yaml}`, yaml]),
+    ['8,192 aliases of one 64 KB string', STRING_COPIES],
+    ['a flow-sequence key of 8,192 aliases of one 64 KB string', STRING_KEY],
+  ])(
     'refuses %s promptly and writes nothing', { timeout: 10_000 }, (_, yaml) => {
       const doc = new Y.Doc();
       writeFrontmatterKey(doc, 'kept', 'yes', LOCAL);
