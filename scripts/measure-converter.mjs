@@ -428,7 +428,7 @@ const tableHeader = (cells) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cel
 const tableRows = (cells, row, bytes) => `${tableHeader(cells)}${row.repeat(Math.floor((bytes - tableHeader(cells).length) / row.length))}`;
 const TABLE_CASES = {
   'dense one-letter cells, 64 a row': { body: (bytes) => tableRows(64, `|${'a|'.repeat(64)}\n`, bytes), sizes: [128 * 1024, 384 * 1024] },
-  'two-cell rows padded to a 4,096-column header': { body: (bytes) => tableRows(4_096, '| b | c |\n', bytes), sizes: [32 * 1024] },
+  'two-cell rows padded to a 4,096-column header': { body: (bytes) => tableRows(4_096, '| b | c |\n', bytes), sizes: [64 * 1024] },
 };
 
 /** One request in a fresh worker after a warm-up: its workerd CPU and answer, or why it failed. */
