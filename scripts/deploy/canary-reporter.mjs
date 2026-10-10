@@ -61,7 +61,7 @@ export function findingFacts(message) {
       else if (detail.startsWith('console error')) fact = 'console error';
       else if (detail.startsWith('page error')) fact = 'page error';
     } else if (n === '3') {
-      const sockets = /(\d+) socket opens in one document, (\d+) allowed/.exec(detail);
+      const sockets = /\b(\d{1,6}) socket opens in one document, (\d{1,6}) allowed/.exec(detail);
       if (sockets) fact = `${sockets[1]} socket opens, ${sockets[2]} allowed`;
     } else if (n === '7') {
       const field = / (title|body): /.exec(detail)?.[1] ?? '';
