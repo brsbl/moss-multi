@@ -105,13 +105,13 @@ const REASONS: Record<string, string> = {
 };
 const reasonText = (reason: string) => REASONS[reason] ?? 'It could not be applied.';
 
-async function call(url: string, body?: unknown): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> {
+async function call(url: string, body?: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> {
   // A role that comes from a share link travels with every call, as the comment API's does.
   const share = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share');
   const headers: Record<string, string> = { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) };
   const response = await fetch(url, body === undefined
-    ? { method: 'GET', credentials: 'same-origin', headers }
-    : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    ? { method: 'GET', credentials: 'same-origin', headers, signal }
+    : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   return { ok: response.ok, status: response.status, json };
 }
@@ -125,9 +125,12 @@ function usePreview(docId: string, record: SuggestionRecord, enabled: boolean): 
   useEffect(() => {
     if (!enabled) return;
     let live = true;
+    // A preview still on the way when the card stops wanting one (a review action began) is dropped, so it never
+    // reaches a record the action closed.
+    const abort = new AbortController();
     // Debounced, so an author still typing costs one preview per pause.
     const timer = setTimeout(() => {
-      void call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(record.meta.id)}/preview`).then(
+      void call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(record.meta.id)}/preview`, undefined, abort.signal).then(
         ({ ok, json }) => {
           if (!live) return;
           const shown = json.preview as { hunks: Hunk[]; hash: string; digest: string } | undefined;
@@ -139,6 +142,7 @@ function usePreview(docId: string, record: SuggestionRecord, enabled: boolean): 
     return () => {
       live = false;
       clearTimeout(timer);
+      abort.abort();
     };
   }, [docId, record.meta.id, digest, enabled]);
   return [preview.digest === digest ? preview.value : { state: 'loading' }, () => setRound((r) => r + 1)];
@@ -146,11 +150,18 @@ function usePreview(docId: string, record: SuggestionRecord, enabled: boolean): 
 
 const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
 
+/** Records this window accepted, rejected or withdrawn, by doc and id, so a remounted card previews none of them. */
+const reviewedHere = new Set<string>();
+
 function SuggestionCard({ docId, record, me, role, active }: { docId: string; record: SuggestionRecord; me: string | null; role: Role | null; active: boolean }): ReactNode {
   const { meta } = record;
   const open = meta.status === 'open';
-  const [preview, refresh] = usePreview(docId, record, open);
+  const reviewedKey = `${docId}\u0000${meta.id}`;
   const [busy, setBusy] = useState(false);
+  // Once a review action is under way or has closed the record, the card previews nothing more, even before the
+  // closed record reaches this window.
+  const [reviewed, setReviewed] = useState(() => reviewedHere.has(reviewedKey));
+  const [preview, refresh] = usePreview(docId, record, open && !busy && !reviewed);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -170,7 +181,10 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
     const body = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
     try {
       const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, body);
-      if (!result.ok) {
+      if (result.ok) {
+        reviewedHere.add(reviewedKey);
+        setReviewed(true);
+      } else {
         const reason = String(result.json.error ?? 'refused');
         setError(reasonText(reason));
         // The note changed since this preview: fetch the one an accept must now name.
