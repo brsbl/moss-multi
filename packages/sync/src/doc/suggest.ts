@@ -129,6 +129,10 @@ export class MemoryLeases implements LeaseStore {
 
 type Row = Record<string, ArrayBuffer | string | number | null>;
 
+/** live(): the principal's live unbound rows only, through the partial covering index (named: the planner has no stats). */
+export const LIVE_LEASES_SQL =
+  'SELECT COUNT(*) AS n FROM suggest_leases INDEXED BY suggest_leases_live WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?';
+
 export class SqlLeases implements LeaseStore {
   constructor(private readonly sql: SqlStorage) {
     sql.exec(`CREATE TABLE IF NOT EXISTS suggest_leases (client_id INTEGER PRIMARY KEY, principal_id TEXT NOT NULL,
@@ -179,9 +183,7 @@ export class SqlLeases implements LeaseStore {
   }
 
   live(principal: string, since: number): number {
-    const row = this.sql.exec<Row>(
-      'SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?', principal, since,
-    ).toArray()[0];
+    const row = this.sql.exec<Row>(LIVE_LEASES_SQL, principal, since).toArray()[0];
     return Number(row?.n ?? 0);
   }
 
