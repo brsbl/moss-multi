@@ -380,9 +380,13 @@ describe('T5.2 record ids, continuations and delete targets @p:mean-2', () => {
     const s1 = leaseOne(small, sam());
     expect(small.ops(sam(), s1.record, big(s1.client, 120_000))).toEqual({ ok: false, reason: 'ops-cap' });
 
-    const near = ingestOn(seededBody(), { stateBytes: () => STATE_CAP_BYTES - 100 });
+    // Leased while the note had room; then it fills. A full note mints no fresh lease either (T5.S4).
+    let held = 0;
+    const near = ingestOn(seededBody(), { stateBytes: () => held });
     const n1 = leaseOne(near, sam());
+    held = STATE_CAP_BYTES - 100;
     expect(near.ops(sam(), n1.record, big(n1.client, 1_000))).toEqual({ ok: false, reason: 'doc-cap' });
+    expect(near.lease(sam('c-near'), [], 1)).toEqual({ ok: false, reason: 'doc-cap' });
 
     const many = seededBody();
     const counted = ingestOn(many);
