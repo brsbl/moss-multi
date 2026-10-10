@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createAuth } from './auth.ts';
-import { configProblem, configuredSocialProviders, PLACEHOLDER_SECRET, refusalFor } from './config.ts';
+import { configProblem, configuredSocialProviders, minPasswordLength, PLACEHOLDER_SECRET, refusalFor } from './config.ts';
 
 const GOOD = { BETTER_AUTH_SECRET: 'f'.repeat(64), BETTER_AUTH_URL: 'http://127.0.0.1:8850' };
 const STAGING = 'https://moss-multi-staging.example.workers.dev';
@@ -29,6 +29,18 @@ describe('fail closed', () => {
     expect(refusal?.status).toBe(503);
     expect(await refusal?.json()).toEqual({ error: 'misconfigured' });
     expect(() => createAuth({ ...env, DB: {} as D1Database })).toThrow(reason);
+  });
+});
+
+describe('password minimum', () => {
+  it('is 8 on loopback and 12 elsewhere, and is what better-auth enforces', () => {
+    expect(minPasswordLength(GOOD.BETTER_AUTH_URL)).toBe(8);
+    expect(minPasswordLength(STAGING)).toBe(12);
+    expect(minPasswordLength(undefined)).toBe(12);
+    for (const url of [GOOD.BETTER_AUTH_URL, STAGING]) {
+      const auth = createAuth({ ...GOOD, BETTER_AUTH_URL: url, DB: {} as D1Database });
+      expect(auth.options.emailAndPassword?.minPasswordLength).toBe(minPasswordLength(url));
+    }
   });
 });
 
