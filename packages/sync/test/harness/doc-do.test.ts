@@ -924,7 +924,8 @@ describe('answers', () => {
         }
         expect(budgetRows(opened.backing), 'spent budgets are persisted').toBeGreaterThan(0);
         // The editor's own small charges are persisted too.
-        expect(budgetRows(opened.backing), 'only budgets spent since they last refilled').toBeLessThanOrEqual(KEYS + 1);
+        const rows = JSON.stringify({ round, now: Date.now(), rows: opened.backing.query('SELECT * FROM answer_budgets') });
+        expect(budgetRows(opened.backing), `only budgets spent since they last refilled: ${rows}`).toBeLessThanOrEqual(KEYS + 1);
         opened = await hibernate(opened, clients);
         // Every budget refills, with debt to spare.
         await vi.advanceTimersByTimeAsync(3 * BUDGET.windowMs);
