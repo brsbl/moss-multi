@@ -2,7 +2,10 @@
 // with 413 before a byte is read, and one that streams past the cap without declaring a length is refused as it passes
 // it, never buffered further. Uploads stream with their own bounds (assets.test.ts).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { PayloadDocs } from '@moss-multi/sync/payload-docs';
+import { captureRestoreBase } from '@moss-multi/sync/restore-base';
+import * as Y from 'yjs';
 import { handleAuthRoute } from '../auth/route.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
@@ -158,24 +161,61 @@ describe('JSON bodies are capped on every route that reads one', () => {
     expect(response.status, await response.clone().text()).toBe(200);
   }, 30_000);
 
-  // T6.R: a restore carries its base, the state vectors of the note and of every payload the restorer held (A§14). The
-  // route admits up to 10,000 payloads; a long-lived note's vectors name every session that wrote it, so an honest
-  // maximal base (the note's vector at its 65,536-character bound, 10,000 minted ids, each vector naming 64 clients
-  // with clocks in the millions) is far past T3.S7's 64 KiB default.
-  it('a restore takes the base of a note with the most payloads the route admits', async () => {
-    const vector = (clients: number) => {
-      const bytes: number[] = [clients];
-      for (let c = 0; c < clients; c += 1) bytes.push(0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x03);
-      return Buffer.from(bytes).toString('base64');
-    };
-    const payloads: Record<string, string> = {};
-    for (let i = 0; i < 10_000; i += 1) payloads[i.toString(16).padStart(32, '0')] = vector(64);
-    const sent = JSON.stringify({ base: { note: 'A'.repeat(65_536), payloads, age: 599_999 } });
-    expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES * 100);
+  // T6.R: a restore carries its base, the state vectors of the note and of every payload the restorer held (A§14),
+  // captured by captureRestoreBase. Each session's payload doc writes under its own random 32-bit client id, so a
+  // payload's vector grows by about six bytes for every session that ever wrote it; nothing bounds that count.
+  const writtenBy = (sessions: number, first = 0xf000_0000): Y.Doc => {
+    const doc = new Y.Doc();
+    for (let s = 0; s < sessions; s += 1) {
+      doc.clientID = first + s;
+      doc.getText('t').insert(0, 'x');
+    }
+    return doc;
+  };
+  const captured = (note: Y.Doc, payload: Y.Doc, ids: number, idLength: number) => {
+    const held = new PayloadDocs();
+    // One real doc held under every id: its vector is captured as each payload's would be.
+    for (let i = 0; i < ids; i += 1) held.docs.set(i.toString(16).padStart(idLength, '0'), payload);
+    return captureRestoreBase(note, held);
+  };
+  const decoded = (base: { note: string; payloads: Record<string, string> }) =>
+    [base.note, ...Object.values(base.payloads)].reduce((sum, sv) => sum + Buffer.from(sv, 'base64').byteLength, 0);
+
+  it('a restore takes a captured base of 10,000 payloads, each written by 105 sessions', async () => {
+    const base = captured(writtenBy(1), writtenBy(105), 10_000, 32);
+    const sent = JSON.stringify({ base: { ...base, age: 599_999 } });
+    expect(sent.length, 'past a cap that assumed 64 writers a payload').toBeGreaterThan(8_571_072);
+    const response = await comment('POST', `/api/docs/${docId}/versions/v-cap/restore`, sent);
+    expect(response.status, await response.clone().text()).toBe(200);
+  }, 120_000);
+
+  // A state vector never encodes longer than the state it describes (restore-base.test.ts), and every entry point holds
+  // a note and its payloads to STATE_CAP_BYTES together (A§5.1). So no honest base's vectors decode past that cap.
+  it('a restore takes a base whose vectors decode to the whole state cap, with the longest ids', async () => {
+    const note = writtenBy(20_000, 0xe000_0000);
+    const noteBytes = Y.encodeStateVector(note).byteLength;
+    const each = Math.floor((STATE_CAP_BYTES - noteBytes) / 10_000);
+    const payload = writtenBy(Math.floor((each - 3) / 6));
+    const base = captured(note, payload, 10_000, 64);
+    expect(base.note.length, 'one vector far past 64 KiB').toBeGreaterThan(65_536 * 2);
+    expect(decoded(base)).toBeLessThanOrEqual(STATE_CAP_BYTES);
+    expect(decoded(base)).toBeGreaterThan(STATE_CAP_BYTES - 10_000 * 6);
+    const sent = JSON.stringify({ base: { ...base, age: 599_999 } });
     expect(sent.length, 'under the restore cap').toBeLessThanOrEqual(RESTORE_BODY_MAX_BYTES);
     const response = await comment('POST', `/api/docs/${docId}/versions/v-cap/restore`, sent);
     expect(response.status, await response.clone().text()).toBe(200);
-  }, 60_000);
+  }, 120_000);
+
+  it('a restore past its write budget is refused 429 before its body is read', async () => {
+    const read = { pulled: false };
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { read.pulled = true; controller.close(); } });
+    const spent = { ...env, PrincipalDO: { ...PrincipalDO, get: () => ({ ...PrincipalDO.get(), takeWriteToken: async () => false }) } as never };
+    const response = await handleApi(new Request(`${BASE}/api/docs/${docId}/versions/v-cap/restore`, {
+      method: 'POST', headers: { origin: BASE, cookie: ada.cookie, 'content-type': 'application/json' }, body, duplex: 'half',
+    } as RequestInit), spent);
+    expect(response.status).toBe(429);
+    expect(read.pulled, 'the body was not read').toBe(false);
+  }, 30_000);
 
   it('a named save takes the longest name, every character escaped', async () => {
     const response = await comment('POST', `/api/docs/${docId}/versions`, JSON.stringify({ name: '\u0001'.repeat(80) }));
