@@ -3,6 +3,7 @@
 // suggest limit by a bound no paste of the clipboard exceeds, or refused with nothing changed and the selection kept.
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { IdSpan, SuggestRefusal } from '@moss-multi/protocol/suggest';
+import { pendingPartBytes } from '@moss-multi/sync/suggest/client';
 import type { ForkView } from '@moss-multi/sync/suggest/forks';
 import { $getSelection, $isElementNode, $isRangeSelection, $isRootOrShadowRoot, $isTextNode, type BaseSelection, type LexicalNode } from 'lexical';
 import { noteBytes } from '../../large-paste.ts';
@@ -27,15 +28,19 @@ function textBound(text: string): number {
   return bytesOf(text) * PER_BYTE + lines * PER_LINE + (text.match(MARKUP)?.length ?? 0) * PER_MARK;
 }
 
-/** Every element and text node of the HTML may become a block and a node in it (a table cell, its paragraph). */
+/**
+ * Every element and text node of the HTML may become a block and a node in it (a table cell, its paragraph), and every
+ * attribute of an element a property of its node (a link keeps its href, title, rel and target).
+ */
 function htmlBound(html: string): number {
   if (!html) return 0;
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   let bound = 0;
-  const walker = parsed.createTreeWalker(parsed.body,NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  const walker = parsed.createTreeWalker(parsed.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     bound += PER_LINE;
     if (node.nodeType === Node.TEXT_NODE) bound += bytesOf(node.nodeValue ?? '') * PER_BYTE;
+    else for (const { name, value } of (node as Element).attributes) bound += (bytesOf(name) + bytesOf(value)) * PER_BYTE + PER_MARK;
   }
   return bound;
 }
@@ -98,14 +103,16 @@ const REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
 
 /**
  * Admits, at the selection, a paste of at most `bound` bytes of ops that strikes `targets` (the body text it
- * replaces): null when it fits every limit, else the notice to show. It counts the bound, the rest of the block it
- * lands in twice (the paste re-creates it, and so does the paste's undo), and the strike, against the record cap with
- * what the record it lands in already holds (client.ts admit, which finds that record as the DocDO does), the open
- * records' ops, the open-suggestion cap, and the note's cap with the payloads the DocDO counts for the body.
+ * replaces): null when it fits every limit, else the notice to show. A record's ops only grow, so it counts the paste,
+ * its one undo and its one redo: the bound twice (the redo re-creates the paste), the rest of the block it lands in
+ * three times (the paste, its undo and its redo each re-create it), and the strike twice (the redo strikes again). It
+ * counts them against the record cap with what the record it lands in already holds (client.ts admit, which finds
+ * that record as the DocDO does), the open records' ops, the open-suggestion cap, and the note's cap with the payloads
+ * the DocDO counts for the body.
  */
 export function $admitPaste(fork: ForkView, bound: number, targets: IdSpan[]): string | null {
   const selection = $getSelection();
-  const adds = bound + 2 * $restBytes(selection);
+  const adds = 2 * bound + 3 * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0);
   if (noteBytes(fork.body) + adds > STATE_CAP_BYTES * 0.97) return WRITE_REFUSED['doc-cap'];
   // The blocks it spans: an older open record of the author's it builds on merges into its record.
   const tops = $isRangeSelection(selection)

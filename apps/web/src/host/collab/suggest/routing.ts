@@ -740,7 +740,11 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
         return true;
       }
       // Nothing in it the bound reads (files): the paste may make no step of its own to join.
-      $routeRange(false, bound > 0);
+      if ($routeRange(false, bound > 0) === 'none' && bound > 0) {
+        // At a caret: the paste is its own step, apart from typing just before or after it.
+        manager()?.stopCapturing();
+        setTimeout(() => manager()?.stopCapturing(), 0);
+      }
       return false;
     }, P),
     editor.registerCommand(CUT_COMMAND, (event) => {

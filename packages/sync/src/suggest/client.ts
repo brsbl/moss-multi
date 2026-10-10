@@ -455,7 +455,7 @@ let partSeq = 0;
 const partId = () => `p${Date.now().toString(36)}${(partSeq += 1).toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 /** A delete part's bytes as the DocDO will store it, before it reads the quote (at most 1,024 characters). */
-const pendingPartBytes = (targets: readonly IdSpan[]): number =>
+export const pendingPartBytes = (targets: readonly IdSpan[]): number =>
   partBytes({ id: partId(), kind: 'delete', targets: [...targets], quote: '' }) + 2 * Math.min(1024, targets.reduce((sum, span) => sum + span.len, 0));
 /**
  * The fork F. `begin()` asks for leases; their reply fills F (bind the editor first, so it reconciles F like a first
