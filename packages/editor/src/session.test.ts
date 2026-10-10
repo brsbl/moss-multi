@@ -973,6 +973,34 @@ describe('the fixture host, folder allocation', () => {
     expect(session.location?.folderName).toBe('Q3 Plan (1)');
     expect(session.status).not.toBe('conflict');
   });
+
+  it('as API 2 step 3: a second EEXIST after allocating once more returns raced and touches neither folder', async () => {
+    const seeded = ['Q3 Plan', 'Q3 Plan (1)'].map((title, index) =>
+      seedNote(volume, ['Notes', 'Projects', title], {
+        markdown: `# ${title}\n\nOther note\n`,
+        meta: { ...META, id: `9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6${index}`, title },
+      }),
+    );
+    const before = seeded.map((dir) => volume.snapshot(`${dir}/`));
+    // The listing misses both folders, so the first and the re-allocated rename both meet EEXIST.
+    const readdir = volume.readdir.bind(volume);
+    volume.readdir = (dir: string) => readdir(dir).filter((entry) => !entry.name.startsWith('Q3 Plan'));
+    const write = host.write.bind(host);
+    const results: Awaited<ReturnType<typeof host.write>>[] = [];
+    host.write = async (noteId, request) => {
+      const result = await write(noteId, request);
+      results.push(result);
+      return result;
+    };
+    const session = mount();
+    await session.ready;
+    surface.live.title = 'Q3 Plan';
+    session.markEdited();
+    await settle(1_500);
+    expect(results[0]).toMatchObject({ kind: 'conflict', reason: 'raced' });
+    expect(seeded.map((dir) => volume.snapshot(`${dir}/`))).toEqual(before);
+    expect(volume.exists('/Moss/Notes/Projects/Q3 Plan (2)')).toBe(false);
+  });
 });
 
 describe('the fixture host, step 6', () => {
