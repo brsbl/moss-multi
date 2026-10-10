@@ -316,9 +316,9 @@ function restoredSplit(lines: string[]): string[] {
 let importBudget: { left: number; work: number } | null = null;
 
 // A table cell: moss imports its markdown as a note of its own and makes the cell, paragraph and text nodes, which the
-// DocDO's import then binds to Yjs and admits, about 60 µs of workerd CPU in all; its line's LINE_COST and its text's
-// work are charged as any line's are.
-const TABLE_CELL_COST = 63_000;
+// DocDO's create then binds to Yjs, admits and applies, 120 to 190 µs of workerd CPU in all (the table legs of
+// scripts/measure-converter.mjs); its line's LINE_COST and its text's work are charged as any line's are.
+const TABLE_CELL_COST = 200_000;
 
 // Whether the import running can pay for a table row's cells; it pays for them if so.
 setTableCellCharge((cells) => {

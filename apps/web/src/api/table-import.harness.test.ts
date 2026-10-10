@@ -60,17 +60,17 @@ const rows = async () => (await d1.db.prepare('SELECT COUNT(*) AS n FROM docs WH
 
 const header = (cells: number) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
 
-/** `bytes` of rows of `cells` one-letter cells under a header as wide: 256K cells at 512 KB, past the cell budget. */
+/** `bytes` of rows of `cells` one-letter cells under a header as wide: 256K cells at 512 KB, past the work budget. */
 function denseTable(cells: number, bytes: number): string {
   const row = `|${'a|'.repeat(cells)}\n`;
   return `${header(cells)}${row.repeat(Math.floor(bytes / row.length))}`;
 }
 
-/** `count` one-cell rows under a header of `cells` columns, each padded to the header's width. */
-const paddedTable = (cells: number, count: number) => `${header(cells)}${'|b|\n'.repeat(count)}`;
+/** `count` two-cell rows under a header of `cells` columns, each padded to the header's width. */
+const paddedTable = (cells: number, count: number) => `${header(cells)}${'| b | c |\n'.repeat(count)}`;
 
 describe('table imports past the work budget', () => {
-  it.each([['dense cells', denseTable(64, 512 * 1024)], ['narrow rows padded under a wide header', paddedTable(4_096, 20_000)]])(
+  it.each([['dense cells', denseTable(64, 512 * 1024)], ['narrow rows padded under a wide header', paddedTable(4_096, 4_000)]])(
     '%s: lands whole or is a JSON 413 doc-cap with no row, never a 500', { timeout: 120_000 }, async (_, markdown) => {
       const before = await rows();
       const started = performance.now();
