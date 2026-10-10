@@ -495,8 +495,21 @@ test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block co
   await expect(box(dee), 'an editor toggles the checkbox').toHaveAttribute('aria-checked', 'true');
   await expect.poll(() => deeFrames.count(), { message: 'and the toggle is a write' }).toBeGreaterThan(deeBefore);
   await expect(box(ada), 'which reaches the owner').toHaveAttribute('aria-checked', 'true', { timeout: LIVE_TIMEOUT });
-  await ui.body(dee, docId).locator('p').filter({ hasText: 'Ranked end.' }).click();
-  await dee.page.keyboard.press('End');
+  // The decorators above can still settle their height after the toggle, moving the paragraph under a click aimed
+  // at it, so the caret is confirmed at its end before Enter; otherwise Enter and Backspace edit the checklist.
+  const end = ui.body(dee, docId).locator('p').filter({ hasText: 'Ranked end.' });
+  await expect(async () => {
+    await end.click();
+    await dee.page.keyboard.press('End');
+    expect(await end.evaluate((p) => {
+      const selection = getSelection();
+      if (!selection?.isCollapsed || !selection.anchorNode || !p.contains(selection.anchorNode)) return false;
+      const rest = document.createRange();
+      rest.selectNodeContents(p);
+      rest.setStart(selection.anchorNode, selection.anchorOffset);
+      return rest.toString() === '';
+    })).toBe(true);
+  }, 'the editor\'s caret sits at the end of "Ranked end."').toPass({ timeout: LIVE_TIMEOUT });
   await dee.page.keyboard.press('Enter');
   await dee.page.keyboard.type('/');
   await expect(slashOptions(dee).first(), 'an editor\'s "/" opens the slash menu').toBeVisible();
