@@ -214,7 +214,8 @@ describe('JSON bodies are capped on every route that reads one', () => {
 
   it('a restore past its write budget is refused 429 before its body is read', async () => {
     const read = { pulled: false };
-    const body = new ReadableStream<Uint8Array>({ pull(controller) { read.pulled = true; controller.close(); } });
+    // No queue ahead: the stream is pulled only when something reads it.
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { read.pulled = true; controller.close(); } }, { highWaterMark: 0 });
     const spent = { ...env, PrincipalDO: { ...PrincipalDO, get: () => ({ ...PrincipalDO.get(), takeWriteToken: async () => false }) } as never };
     const response = await handleApi(new Request(`${BASE}/api/docs/${docId}/versions/v-cap/restore`, {
       method: 'POST', headers: { origin: BASE, cookie: ada.cookie, 'content-type': 'application/json' }, body, duplex: 'half',
