@@ -7,7 +7,7 @@ import { ensureDefaultVault } from '../api/vaults.ts';
 import { createDb } from '../db/client.ts';
 import { authSchema } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
-import { configProblem, configuredSocialProviders, isLoopbackUrl } from './config.ts';
+import { configProblem, configuredSocialProviders, isLoopbackUrl, minPasswordLength } from './config.ts';
 
 export const CLI_CLIENT_ID = 'moss-multi-cli';
 
@@ -43,7 +43,7 @@ export function createAuth(env: AuthEnv) {
     session: { cookieCache: { enabled: false } },
     emailAndPassword: {
       enabled: true,
-      minPasswordLength: loopback ? 8 : 12,
+      minPasswordLength: minPasswordLength(env.BETTER_AUTH_URL),
       requireEmailVerification: false, // no email provider is configured (P:People)
     },
     socialProviders: configuredSocialProviders(env),

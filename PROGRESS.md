@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 48% done** (99 of 205 planned tasks verified)
+**Overall: 49% done** (100 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 47 / 47 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 48 / 48 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -118,6 +118,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T3.S14 verified: a flood of step 1s from viewers or anonymous link holders now draws on an answer budget charged by what each answer sends, so it can no longer make the server re-encode whole notes without limit, while a reconnect or resync past the budget is answered late, never dropped.
 - 2026-10-09 — T3.S20 verified: when someone is demoted to view and then removed within a few seconds, the note now shows only 'Your access to this note has ended.' instead of a stale view-only notice beside it.
 - 2026-10-09 — T3.B25 verified: an anonymous link viewer's answer budget is now kept per link and address across reconnects, with open sockets per address capped, so reconnecting or opening parallel sockets no longer buys fresh full-note encodes.
+- 2026-10-10 — T3.B18 verified: exporting a selection now includes the unsaved draft of a focused HTML block or a code block inside a tab panel, and a selection that ends at the start of a list item stops at the item before, so a drag from a list into a code block exports exactly the lines selected.
 
 ## T1.1s identity audit
 
@@ -487,3 +488,6 @@ Local browser verification remains assigned to the independent checker under the
 - T3.S14 (Bounded full-state answers) checker P2: the anonymous budget is keyed by the client-chosen connection.id (`_pk`), so two live sockets with the same `_pk` share a budget and either one closing deletes the other's; key it by the Connection object, as the waiting map and write-rate accounting do.
 - T3.S20 (One notice when access ends) checker P2: `DocSession.end()` always settles the view-only notice, and the refusal store (refusal.ts) is one tab-wide message matched on text, so note B ending within 4 s of note A's demotion in a split pane clears A's still-accurate notice (cosmetic) → refusal follow-up: scope the settle to the note that raised the notice.
 - T3.B25 (Anonymous answer budgets survive reconnects) checker P2: the 'signed-in readers keep one budget across sockets' test in `packages/sync/test/harness/doc-do.test.ts` cannot fail if each socket gets its own budget (CAP+2 = 5 sockets, one empty-vector step 1 each, at most BUDGET.docs+1 = 5 answers allowed), so it does not guard the one-budget clause; the code is correct (`budgetKey` uses principalId for signed-in principals, doc-do.ts:201) — test-evidence gap only.
+- T3.B18 (Selection export across blocks) checker P2: `$atStartOf` (apps/web/src/host/selection.ts:223-230) checks only textContent and media selectors, so a prefix holding only a `<br>` (a paragraph or list item starting with a LineBreakNode) counts as 'at start' and the endWhole branch (:431-434) or `$endsAtItemStart` (:237, :264) can drop a block or item the user entered.
+- T3.B18 (Selection export across blocks) checker P2: `$lineIn` counts nested decorators by equal getCode/getRawHtml output (selection.ts:281-292), so an unfenced raw-HTML blockquote with the same text as a code block's draft shifts the ordinal, fenceIn returns null, and the selection widens to the whole tab group (contrived; degrades to the whole block).
+- T3.B18 (Selection export across blocks) checker P2: the mouse leg's red run 38025938059 failed on an earlier endpoint assumption before reaching the export assertion; the checker's local negative control (origin/m3 selection.ts) exported lines 12-22 against the expected 12-17, so the test can fail — process note only.
