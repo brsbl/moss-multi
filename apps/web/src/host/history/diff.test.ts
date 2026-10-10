@@ -5,15 +5,15 @@ import { DIFF_WORK_BUDGET, diffText, type DiffBudget, type DiffSpan } from './di
 
 const side = (spans: DiffSpan[], drop: DiffSpan['kind']) => spans.filter((s) => s.kind !== drop).map((s) => s.text).join('');
 
-function paragraph(seed: number, words = 80): string {
-  return Array.from({ length: words }, (_, i) => `w${(seed * 7919 + i * 104729) % 100003}`).join(' ');
+function paragraph(seed: number, prefix: string, words = 100): string {
+  return Array.from({ length: words }, (_, i) => `${prefix}${seed}.${i}`).join(' ');
 }
 
 describe('diffText work budget', () => {
   it('bounds the aggregate steps for hundreds of rewritten regions and falls back to coarse spans', () => {
     // 400 paragraphs, each rewritten word by word, separated by unchanged lines so each is its own region.
-    const oldParas = Array.from({ length: 400 }, (_, i) => paragraph(i));
-    const newParas = Array.from({ length: 400 }, (_, i) => paragraph(i + 100_000));
+    const oldParas = Array.from({ length: 400 }, (_, i) => paragraph(i, 'old'));
+    const newParas = Array.from({ length: 400 }, (_, i) => paragraph(i, 'new'));
     const oldText = oldParas.map((p, i) => `keep ${i}\n${p}\n`).join('');
     const newText = newParas.map((p, i) => `keep ${i}\n${p}\n`).join('');
 
