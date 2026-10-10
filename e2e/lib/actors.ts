@@ -82,9 +82,9 @@ export class Actor implements ActorView {
 let minted = 0;
 
 /**
- * Off the hook stack (staging, the rehearsal) a declared-setup API request opens its own connection: a pooled
- * keep-alive connection the server side closed while idle fails the next request with "socket hang up", which the
- * latency rehearsal hit on GETs and POSTs alike (T8.2).
+ * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
+ * idle fails the next request with "socket hang up", which the latency rehearsal hit on GETs and POSTs alike and the
+ * hook stack hit in j18 (T8.2).
  */
 function freshConnections(request: APIRequestContext): void {
   const send = request.fetch.bind(request);
@@ -157,7 +157,7 @@ export class Actors {
         })
       : null;
     this.options.stack?.budget?.watch(context);
-    if (this.options.stack?.canary) freshConnections(context.request);
+    freshConnections(context.request);
     // The card's own sign-ins and sign-ups count against the auth limit setup paces under (auth-pace.ts).
     context.on('response', (response) => {
       const kind = authKind(response.url(), response.request().method());
