@@ -1232,22 +1232,22 @@ test.describe('selection across blocks', () => {
     await page.mouse.move(to.x, to.y, { steps: 12 });
     await page.mouse.up();
     await frames(page);
-    // What both engines make: the selection stops at the code block's edge (contenteditable=false), none of its code in
-    // it, where a programmatic range ending in the code (the case above) stays in Chromium.
+    // What the engines make: the selection stops short of the code (contenteditable=false), Chromium at the code
+    // block's start and WebKit back in the table, where a programmatic range ending in the code (the case above)
+    // stays in Chromium.
     const made = await body(page).evaluate((root) => {
       const range = document.getSelection()!.getRangeAt(0);
-      const block = [...root.children].find((child) => child.querySelector('.moss-codeblock-code'))!;
-      const before = document.createRange();
-      before.setStart(block, 0);
-      before.setEnd(range.endContainer, range.endOffset);
+      const code = root.querySelector('.moss-codeblock-code')!;
+      const where = (node: Node) => (node.nodeType === Node.TEXT_NODE ? `text ${JSON.stringify((node as Text).data)}` : (node as Element).className || node.nodeName);
       return {
         start: (range.startContainer.textContent ?? '').slice(range.startOffset),
-        atCodeStart: block.contains(range.endContainer) && before.toString() === '',
+        codeAfterEnd: range.comparePoint(code, 0) === 1,
+        end: `${where(range.endContainer)} @${range.endOffset}`,
         page: document.getSelection()!.toString(),
       };
     });
     expect(made.start, `the drag starts at "Third item" (${JSON.stringify(made)})`).toBe('Third item');
-    expect(made.atCodeStart, `the drag ends at the code block's start (${JSON.stringify(made)})`).toBe(true);
+    expect(made.codeAfterEnd, `the drag selects none of the code (${JSON.stringify(made)})`).toBe(true);
     const selection = (await page.evaluate(() => window.editorFixture.selection())) as MossSelection;
     // None of the code is selected, so none of it is exported.
     expect(selection).toEqual({
