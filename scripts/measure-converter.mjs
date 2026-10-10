@@ -422,7 +422,7 @@ async function measurePayloadFrames(port) {
 // Table imports (A§12; SP2): through the converter alone and through the real DocDO's create (import, binding and
 // admission), each in a fresh worker after a warm-up. The create refuses a 2 MB note of rows past the import's cell
 // budget (dense cells, or narrow rows each padded to a wide header) as doc-cap (413) and lands a table within it whole,
-// its export the converter's; every leg within IMPORT_BUDGET_MS of workerd CPU, never an error. A table at the edge of
+// its export the converter's; every create within IMPORT_BUDGET_MS of workerd CPU, never an error. A table at the edge of
 // the budget is reported only: what the create costs past the converter grows with the doc's state, as the 2 MB scale
 // note's does.
 const TABLE_TIMEOUT_MS = 30_000;
@@ -475,7 +475,8 @@ async function measureTableImports(port) {
     const problems = [];
     for (const [leg, r] of [['converter', converter], ['DocDO create', create]]) {
       if (r.failed) problems.push(`${leg}: ${r.failed}`);
-      else if (!reported && r.cpuMs > IMPORT_BUDGET_MS) problems.push(`${leg}: ${r.cpuMs} ms of workerd CPU, over ${IMPORT_BUDGET_MS} ms`);
+      // The converter alone keeps the rows past the budget as text (the multiline cases hold that path to SP2).
+      else if (!reported && leg === 'DocDO create' && r.cpuMs > IMPORT_BUDGET_MS) problems.push(`${leg}: ${r.cpuMs} ms of workerd CPU, over ${IMPORT_BUDGET_MS} ms`);
     }
     if (!create.failed && !reported && create.status !== expected) problems.push(`DocDO create: HTTP ${create.status}, not ${expected}`);
     if (!create.failed && create.status === 200 && !converter.failed && create.hash !== converter.hash) {
