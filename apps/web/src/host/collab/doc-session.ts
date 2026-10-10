@@ -352,7 +352,9 @@ export class DocSession {
     this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
       this.#syncHeard = Date.now();
       if (decoder.arr[decoder.pos] === 1) this.#resyncOwed = false;
+      const started = performance.now();
       sync(encoder, decoder, provider, emitSynced, type);
+      if (performance.now() - started > 50) performance.measure('moss-sync-message', { start: started });
     };
     this.provider.messageHandlers[PAYLOAD_MESSAGE] = (_encoder, decoder) => {
       this.#payloadSync.receive(decoder.arr);
@@ -699,7 +701,10 @@ export class DocSession {
       } catch {
         // a malformed vector reopens nothing
       }
+      const started = performance.now();
       if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
+      // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
+      if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
     } else if (event.t === 'write-refused') {
       this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
       refuseInput(this.#refusedMessage);

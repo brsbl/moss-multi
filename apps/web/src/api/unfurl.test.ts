@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
-import { parseCard } from './unfurl.ts';
+import { parseCard, parseWork } from './unfurl.ts';
 import type { HostResolver } from './ssrf.ts';
 import { setRemoteFetchForTests } from './remote.ts';
 
@@ -198,22 +198,27 @@ const CAP = 512 * 1024;
 const UNCLOSED: [string, string][] = [['meta', '<meta '], ['link', '<LINK '], ['title without >', '<title '], ['title without </title>', '<title>']];
 const hostile = (opener: string, bytes: number) => opener.repeat(Math.ceil(bytes / opener.length)).slice(0, bytes);
 
-/** Times `run` on pages doubling to the cap: each costs at most about three times the half-size one, the cap `budgetMs`. */
-async function expectLinear(opener: string, run: (body: string, size: number) => Promise<void> | void, budgetMs: number, slackMs: number) {
-  const time = async (size: number) => {
+/**
+ * Runs `run` on pages doubling to the cap: parseCard's searches pass over at most about twice the characters for twice
+ * the page (a rescan per opener is quadratic), and the cap page takes under `ceilingMs`, a generous backstop.
+ */
+async function expectLinear(opener: string, run: (body: string, size: number) => Promise<void> | void, ceilingMs: number) {
+  const scanned = async (size: number) => {
     const body = hostile(opener, size);
+    parseWork.scanned = 0;
     const startedAt = performance.now();
     await run(body, size);
-    return performance.now() - startedAt;
+    return { work: parseWork.scanned, ms: performance.now() - startedAt };
   };
-  await time(1024); // warm up
-  let previous = await time(2048);
+  let previous = (await scanned(2048)).work;
+  let last = { work: previous, ms: 0 };
   for (let size = 4096; size <= CAP; size *= 2) {
-    const took = await time(size);
-    expect(took, `${size} bytes took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + slackMs);
-    previous = took;
+    last = await scanned(size);
+    expect(last.work, `${size} bytes scanned ${last.work} characters after ${previous} for half`).toBeLessThanOrEqual(2 * previous + 64);
+    expect(last.work, `${size} bytes scanned ${last.work} characters`).toBeLessThanOrEqual(4 * size);
+    previous = last.work;
   }
-  expect(previous, `the ${CAP}-byte page took ${Math.round(previous)} ms`).toBeLessThan(budgetMs);
+  expect(last.ms, `the ${CAP}-byte page took ${Math.round(last.ms)} ms`).toBeLessThan(ceilingMs);
 }
 
 /** The tags the regexes before T3.S12 read, rebuilt as a well-formed page: the answer key for ordinary pages. */
@@ -229,7 +234,7 @@ describe('parseCard on hostile and ordinary pages', () => {
     const empty = parseCard('', 'https://site.example/');
     await expectLinear(opener, (body) => {
       expect(parseCard(body, 'https://site.example/')).toEqual(empty);
-    }, 250, 25);
+    }, 2_500);
   }, 120_000);
 
   it.each([
@@ -261,7 +266,7 @@ describe('POST /api/unfurl on a hostile page', () => {
       const response = await post('/api/unfurl', ada.cookie, { noteId: docId, url });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ status: 'fallback', url });
-    }, 1000, 50);
+    }, 10_000);
     routes['https://site.example/'] = html(PAGE);
     const startedAt = performance.now();
     const response = await post('/api/unfurl', ada.cookie, { noteId: docId, url: 'https://site.example/' });

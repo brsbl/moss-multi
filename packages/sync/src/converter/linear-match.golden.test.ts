@@ -97,7 +97,25 @@ describe('linear transformer matching @p:tech-4', () => {
     expect(timed(() => isTableDividerRow(`|-|-${' '.repeat(100_000)}x`))).toBeLessThan(SLOW_MS);
   });
 
-  // The raw-URL shortcut runs on every typed space, over the text up to the caret: twice the text, about twice the time.
+  /** The regex executions `run` makes: the linear scans test a character class per character they read. */
+  const executions = (run: () => unknown) => {
+    const exec = RegExp.prototype.exec;
+    let calls = 0;
+    RegExp.prototype.exec = function (this: RegExp, text: string) {
+      calls += 1;
+      return exec.call(this, text);
+    };
+    try {
+      run();
+    } finally {
+      RegExp.prototype.exec = exec;
+    }
+    return calls;
+  };
+
+  // The raw-URL shortcut runs on every typed space, over the text up to the caret: four times the text, about four
+  // times the character tests (sixteen when a scan restarts per start), and the plain regex's quadratic retries pass
+  // the time ceiling.
   it.each([
     ['path segments', 'a/'],
     ['dots', 'a.'],
@@ -107,15 +125,12 @@ describe('linear transformer matching @p:tech-4', () => {
   ])('matches the raw-URL typing shortcut in linear time on %s', (_name, run) => {
     const shortcut = MARKDOWN_EDITOR_TRANSFORMERS.find((t) => t.type === 'text-match' && t.trigger === ' ')!;
     const re = (shortcut as { regExp: RegExp }).regExp;
-    const at = (chars: number) => {
-      const text = `${run.repeat(Math.ceil(chars / run.length))} `;
-      return Math.min(...[0, 1, 2].map(() => timed(() => text.match(re))));
-    };
-    at(20_000);
-    const small = at(80_000);
-    const large = at(320_000);
-    expect(large).toBeLessThan(Math.max(8 * small, 20));
-    expect(large).toBeLessThan(SLOW_MS);
+    const text = (chars: number) => `${run.repeat(Math.ceil(chars / run.length))} `;
+    const small = executions(() => text(80_000).match(re));
+    const large = executions(() => text(320_000).match(re));
+    expect(large, `80k characters: ${small} regex executions, 320k: ${large}`).toBeLessThanOrEqual(4 * small + 64);
+    const long = text(320_000);
+    expect(timed(() => long.match(re))).toBeLessThan(SLOW_MS);
   });
 
   it('runs every typing shortcut in linear time on unclosed openers', () => {

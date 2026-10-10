@@ -115,29 +115,82 @@ const WORDS: Record<string, (n: number) => string> = {
   'hyphenated host': (n) => 'a-'.repeat(Math.floor(n / 2)) + '.',
 };
 
-/** The fastest of a few runs of both matchers over `text`, in ms; one run when it is already slow. */
-function time(text: string): number {
-  let best = Infinity;
-  for (let run = 0; run < 3; run += 1) {
+/** Thrown once a scan reads more than its budget: a quadratic scan stops early instead of running for minutes. */
+class OverBudget extends Error {}
+
+/**
+ * The scanned text, counting every character the matchers read: one per `charCodeAt`, and the characters an `indexOf`,
+ * `includes` or `slice` passes over. A string method the matchers start to use without a count here throws.
+ */
+class CountedText {
+  reads = 0;
+  constructor(readonly text: string, readonly budget: number) {}
+  get length(): number {
+    return this.text.length;
+  }
+  #read(count: number): void {
+    this.reads += count;
+    if (this.reads > this.budget) throw new OverBudget(`read more than ${this.budget} characters`);
+  }
+  charCodeAt(index: number): number {
+    this.#read(1);
+    return this.text.charCodeAt(index);
+  }
+  indexOf(search: string, from = 0): number {
+    const at = this.text.indexOf(search, from);
+    this.#read((at === -1 ? this.text.length : at + search.length) - Math.max(0, from));
+    return at;
+  }
+  includes(search: string): boolean {
+    return this.indexOf(search) !== -1;
+  }
+  slice(start: number, end = this.text.length): string {
+    this.#read(Math.max(0, end - start));
+    return this.text.slice(start, end);
+  }
+}
+
+/** Characters both matchers read over `text`; Infinity past `budget`. */
+function reads(text: string, budget: number): number {
+  const counted = new CountedText(text, budget);
+  try {
+    findEmail(counted as unknown as string);
+    Array.from(schemelessUrlMatches(counted as unknown as string));
+  } catch (error) {
+    if (error instanceof OverBudget) return Infinity;
+    throw error;
+  }
+  return counted.reads;
+}
+
+/** At most this many reads per character: the matchers scan no character more than a few times. */
+const READS_PER_CHAR = 16;
+
+it('scans a long word in linear time: doubling it from 25k to 50k to 100k characters at most doubles the characters read', () => {
+  for (const [name, build] of Object.entries(WORDS)) {
+    let previous = reads(build(25_000), READS_PER_CHAR * 25_000);
+    expect(previous, `${name}: 25000 chars read ${previous} times`).toBeLessThanOrEqual(READS_PER_CHAR * 25_000);
+    for (const n of [50_000, 100_000]) {
+      const count = reads(build(n), READS_PER_CHAR * n);
+      expect(count, `${name}: ${n / 2} chars read ${previous} times, ${n} read ${count}`).toBeLessThanOrEqual(2 * previous + 64);
+      previous = count;
+    }
+  }
+});
+
+it('scans each 100k-character word within a generous time ceiling', () => {
+  for (const build of Object.values(WORDS)) {
+    findEmail(build(2_000));
+    Array.from(schemelessUrlMatches(build(2_000)));
+  }
+  for (const [name, build] of Object.entries(WORDS)) {
+    const text = build(100_000);
     const start = performance.now();
     findEmail(text);
     Array.from(schemelessUrlMatches(text));
-    best = Math.min(best, performance.now() - start);
-    if (best > 500) break;
-  }
-  return best;
-}
-
-it('scans a long word in linear time: doubling it from 25k to 50k to 100k characters at most triples the time', { timeout: 240_000 }, () => {
-  for (const build of Object.values(WORDS)) time(build(2_000));
-  for (const [name, build] of Object.entries(WORDS)) {
-    let previous = time(build(25_000));
-    for (const n of [50_000, 100_000]) {
-      const ms = time(build(n));
-      expect(ms, `${name}: ${n / 2} chars took ${previous.toFixed(1)} ms, ${n} took ${ms.toFixed(1)} ms`).toBeLessThanOrEqual(3 * previous + 5);
-      previous = ms;
-    }
-    expect(previous, `${name}: 100k chars`).toBeLessThan(100);
+    const ms = performance.now() - start;
+    // About ten times the slowest word's time on a loaded CI runner (28 ms); a quadratic scan takes seconds.
+    expect(ms, `${name}: 100k chars took ${ms.toFixed(1)} ms`).toBeLessThan(250);
   }
 });
 
