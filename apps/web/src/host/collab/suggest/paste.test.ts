@@ -487,6 +487,10 @@ it('when the active lease names an accepted record, a paste opens its continuati
     pane.pump();
     const accepted = pane.fork.record!;
     expect(readRecord(pane.live, accepted), 'the paste made a record').not.toBeNull();
+    // An editor accepts the fork's record: its next frame opens a continuation, a new open record.
+    closeRecord(pane.live, accepted, { status: 'accepted', resolvedBy: EDITOR.id, resolvedAt: 1 });
+    vi.runAllTimers();
+    pane.pump();
     // The author's other windows hold as many open suggestions as one author may.
     for (let i = 0; i < SUGGEST_LIMITS.openPerPrincipal; i += 1) {
       const who = { ...SUGGESTER, role: 'suggester', connection: `w-${i}` };
@@ -495,8 +499,6 @@ it('when the active lease names an accepted record, a paste opens its continuati
       expect(pane.ingest.delete(who, grant.leases[0].record, { id: `d${i}`, targets: spansOfText(pane.live, 'Intro') })).toMatchObject({ ok: true });
       pane.ingest.expireConnection(`w-${i}`);
     }
-    // An editor accepts the fork's record: its next frame opens a continuation, a new open record.
-    closeRecord(pane.live, accepted, { status: 'accepted', resolvedBy: EDITOR.id, resolvedAt: 1 });
     vi.runAllTimers();
     pane.pump();
     expect(pane.fork.record, 'no spare lease to rotate to').toBe(accepted);
