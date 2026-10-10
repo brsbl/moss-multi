@@ -515,11 +515,11 @@ test('advertises selection-1 and share-with-agent-1 in MOSS_VIEWER_INFO, as view
   expect(await page.evaluate(() => window.viewerFixture.info)).toEqual({ api: 1, version: '1.1.0', features: ['selection-1', 'share-with-agent-1'] });
 });
 
-for (const { name, from, to, within, nth, expected } of SELECTION_CASES) {
+for (const { name, from, to, within, nth, toStart, reversed, expected } of SELECTION_CASES) {
   test(`selection ${name}: exact text, markdown, lines and headings, the lines golden in the loaded file`, async ({ page }) => {
     const seen = watch(page);
     await mount(page, 'light', { markdown: SELECTION_NOTE, layout: undefined, noteId: 'note-selection' });
-    await selectText(page, BODY, from, to, within, nth);
+    await selectText(page, BODY, from, to, within, nth, { toStart, reversed });
     const selection = await selectionOf(page);
     expect(selection).toEqual(expected);
     expectNoMarker(selection as MossSelection);
