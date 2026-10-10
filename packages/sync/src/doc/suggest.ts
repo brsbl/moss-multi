@@ -52,6 +52,11 @@ export interface LeaseStore {
   reservedFor(record: string): Lease | undefined;
   /** Unexpired leases used since `since` that hold no record yet: the ids a principal holds in reserve. */
   live(principal: string, since: number): number;
+  /** Leases of `principal` that hold no record yet, live or not: its retained reservations. */
+  unbound(principal: string): number;
+  /** `principal`'s reservation to retire first: closed before idle (idle since `since`), least recently used first. */
+  retirable(principal: string, since: number): Lease | undefined;
+  remove(client: number): void;
   expireConnection(connection: string): void;
   spend(record: string): void;
   rebind(from: string, into: string): void;
@@ -88,6 +93,28 @@ export class MemoryLeases implements LeaseStore {
     return count;
   }
 
+  unbound(principal: string): number {
+    let count = 0;
+    for (const lease of this.#byClient.values()) if (lease.principal === principal && lease.record === null) count += 1;
+    return count;
+  }
+
+  retirable(principal: string, since: number): Lease | undefined {
+    let found: Lease | undefined;
+    for (const lease of this.#byClient.values()) {
+      if (lease.principal !== principal || lease.record !== null || (!lease.expired && lease.usedAt >= since)) continue;
+      if (!found || (lease.expired && !found.expired) || (lease.expired === found.expired && lease.usedAt < found.usedAt)) found = lease;
+    }
+    return found && { ...found, clocks: { ...found.clocks } };
+  }
+
+  remove(client: number): void {
+    const lease = this.#byClient.get(client);
+    if (!lease) return;
+    this.#byClient.delete(client);
+    this.#byReserved.delete(lease.reserved);
+  }
+
   expireConnection(connection: string): void {
     for (const lease of this.#byClient.values()) if (lease.connection === connection) lease.expired = true;
   }
@@ -109,12 +136,20 @@ export class MemoryLeases implements LeaseStore {
 
 type Row = Record<string, ArrayBuffer | string | number | null>;
 
+/** live(): the principal's live unbound rows only, through the partial covering index (named: the planner has no stats). */
+export const LIVE_LEASES_SQL =
+  'SELECT COUNT(*) AS n FROM suggest_leases INDEXED BY suggest_leases_live WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?';
+
 export class SqlLeases implements LeaseStore {
   constructor(private readonly sql: SqlStorage) {
     sql.exec(`CREATE TABLE IF NOT EXISTS suggest_leases (client_id INTEGER PRIMARY KEY, principal_id TEXT NOT NULL,
       connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, clocks TEXT NOT NULL,
       spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL, fork_id TEXT)`);
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_principal ON suggest_leases (principal_id, spent, expired)');
+    // live() and the reservation reads touch only unbound rows (live ones for live()), never a principal's history;
+    // SQLite counts a partial index as covering only when it holds every column the query names.
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_live ON suggest_leases (principal_id, used_at, record_id, expired) WHERE record_id IS NULL AND expired = 0');
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_unbound ON suggest_leases (principal_id, used_at) WHERE record_id IS NULL');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_record ON suggest_leases (record_id)');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_connection ON suggest_leases (connection_id)');
   }
@@ -156,10 +191,23 @@ export class SqlLeases implements LeaseStore {
   }
 
   live(principal: string, since: number): number {
-    const row = this.sql.exec<Row>(
-      'SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?', principal, since,
-    ).toArray()[0];
+    const row = this.sql.exec<Row>(LIVE_LEASES_SQL, principal, since).toArray()[0];
     return Number(row?.n ?? 0);
+  }
+
+  unbound(principal: string): number {
+    return Number(this.sql.exec<Row>('SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL', principal).toArray()[0]?.n ?? 0);
+  }
+
+  retirable(principal: string, since: number): Lease | undefined {
+    return this.#one(
+      'SELECT * FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND (expired = 1 OR used_at < ?) ORDER BY expired DESC, used_at LIMIT 1',
+      principal, since,
+    );
+  }
+
+  remove(client: number): void {
+    this.sql.exec('DELETE FROM suggest_leases WHERE client_id = ?', client);
   }
 
   expireConnection(connection: string): void {
@@ -214,6 +262,11 @@ export interface IngestOptions {
 /** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
 type Placed = Map<string, Map<number, { clock: number; len: number; at: Placement }[]>>;
 
+/**
+ * Unbound reservations one principal retains, live or dormant: past it, a fresh lease first retires its oldest dormant
+ * one. A few windows' worth beyond the live cap.
+ */
+export const RESERVED_MAX = 4 * SUGGEST_LIMITS.liveLeases;
 /** Leases one resume may name: a principal's open records may hold more than the unused-lease cap. */
 const RESUME_MAX = 64;
 /** Item headers and keys a meta write adds, beyond the JSON itself. */
@@ -331,6 +384,14 @@ export class SuggestIngest {
     const fresh = Math.max(0, Math.min(wanted, Math.floor(this.#room() / leaseBytes({ clocks: {} }))));
     const writer = suggestionsWriter(this.doc)?.client;
     for (let i = 0; i < fresh; i += 1) {
+      // At `RESERVED_MAX` the oldest dormant reservation is deleted, never reissued: a fork may hold edits under it the
+      // server never saw, so its resume is refused and the text offered back. New grants draw fresh random ids.
+      while (this.leases.unbound(who.id) >= RESERVED_MAX) {
+        const retired = this.leases.retirable(who.id, since);
+        if (!retired) break;
+        this.leases.remove(retired.client);
+        this.#retained = Math.max(0, this.#retained - leaseBytes(retired));
+      }
       let client = 0;
       while (client === 0 || client === writer || this.doc.store.clients.has(client) || this.leases.get(client)) client = crypto.getRandomValues(new Uint32Array(1))[0];
       const reserved = this.#mint();
