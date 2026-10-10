@@ -20,7 +20,7 @@ import { createRequire } from 'node:module';
 import { createConnection } from 'node:net';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
@@ -494,7 +494,7 @@ function tableImportProblems(results) {
 // The search index (A§5.3): one global SearchDO indexes every doc and snippets every hit, so a body full of openers
 // with no closer (packages/sync/measure/search-cases.ts) must cost it linear work. Each case runs in a fresh worker; a
 // request past SEARCH_TIMEOUT_MS fails the case. The larger run must cost at most SEARCH_SCALING times the smaller.
-const SEARCH_SIZES = [200_000, 400_000];
+export const SEARCH_SIZES = [200_000, 400_000];
 const SEARCH_RUNS = 3;
 // Workerd CPU per request (index, search with its snippet, headings) at every size.
 const SEARCH_BUDGET_MS = 100;
@@ -851,7 +851,7 @@ function adversarialBudgetProblems(results) {
 const SEARCH_OPS = ['indexCpuMs', 'searchCpuMs', 'headingsCpuMs'];
 
 /** Every way the search runs miss the stated budget (empty when they meet it). */
-function searchBudgetProblems(results) {
+export function searchBudgetProblems(results) {
   const problems = [];
   for (const r of results) {
     if (r.failed) {
@@ -1083,7 +1083,7 @@ async function main() {
 }
 
 /** Every way the payload-frame runs miss the stated budget (empty when they meet it). */
-function payloadBudgetProblems(notes) {
+export function payloadBudgetProblems(notes) {
   const problems = [];
   for (const n of notes) {
     if (n.frameCpuMs > PAYLOAD_FRAME_BUDGET_MS) problems.push(`${n.blocks} ids: ${n.frameCpuMs} ms of CPU per frame`);
@@ -1099,7 +1099,9 @@ function payloadBudgetProblems(notes) {
   return problems;
 }
 
-main().catch((error) => {
-  console.error(`measure-converter: ${error.stack ?? error.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`measure-converter: ${error.stack ?? error.message}`);
+    process.exitCode = 1;
+  });
+}
