@@ -1068,10 +1068,12 @@ describe('T3.S14 the answer budget: payload step 1s @p:tech-8', () => {
     const ada = await LiveClient.open(opened);
     const viewer = await LiveClient.open(opened, { role: 'viewer', id: 'viewer-p' });
     try {
-      ada.insert('code-block', 'BUDGET-');
+      // Most of the stored state, so each answer costs about one whole state.
+      const text = `BUDGET-${'x'.repeat(64 * 1024)}`;
+      ada.insert('code-block', text);
       await syncAll(ada, viewer);
       const id = ada.ids()[0];
-      expect(viewer.texts(), 'a fresh connect converges').toEqual(['BUDGET-']);
+      expect(viewer.texts(), 'a fresh connect converges').toEqual([text]);
       const from = viewer.socket.socket.sent.length;
       const empty = encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(new Y.Doc()));
       for (let i = 0; i < 256; i += 1) {
@@ -1081,7 +1083,8 @@ describe('T3.S14 the answer budget: payload step 1s @p:tech-8', () => {
           await ada.sync();
         }
       }
-      expect(answers(viewer.socket.socket, id, from), 'repeated payload step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs);
+      // The budget, plus the one answer that may run it into debt.
+      expect(answers(viewer.socket.socket, id, from), 'repeated payload step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs + 1);
       expect(ada.socket.closed).toBeNull();
       expect(viewer.socket.closed).toBeNull();
       expect(heldText(ada.payloads.get(id)), 'the editor kept writing').toContain('224;');

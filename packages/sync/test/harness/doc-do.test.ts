@@ -695,7 +695,8 @@ describe('answers', () => {
         await viewer.deliver(empty);
         if (i % 32 === 0) await typeTitle(editor, ` ${i}`);
       }
-      expect(answers(viewer, from), 'repeated step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs);
+      // The budget, plus the one answer that may run it into debt.
+      expect(answers(viewer, from), 'repeated step 1s draw a bounded number of encodes').toBeLessThanOrEqual(BUDGET.docs + 1);
       expect(editor.closed).toBeNull();
       expect(title(opened.dobj.document), 'the editor kept writing').toContain(' 224');
       expect(viewer.closed, 'an over-budget step 1 waits; the socket stays').toBeNull();

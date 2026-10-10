@@ -6,7 +6,7 @@ import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
@@ -55,6 +55,8 @@ export interface DocLimits {
   inboxBytes: number;
   /** How long a validation waits for D1 before failing closed (L§4.7). */
   accessDeadlineMs: number;
+  /** Full-state answers per principal: `docs` whole states at once, refilled over `windowMs` (T3.S14). */
+  answerBudget: { docs: number; windowMs: number };
 }
 
 export interface CreateDocInput {
@@ -184,6 +186,8 @@ function send(connection: Connection, message: Uint8Array): void {
  * reads the doc starts with ready(), so a stub that outlives an eviction never reads an empty doc.
  */
 
+/** The least share of a whole state an answer costs, so tiny answers are bounded in number too. */
+const MIN_ANSWER_SHARE = 1 / 256;
 /** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
@@ -203,6 +207,7 @@ export class DocDO extends YServer<SyncEnv> {
     inboxBytesPerConnection: 2 * 1024 * 1024,
     inboxBytes: 8 * 1024 * 1024,
     accessDeadlineMs: ACCESS_DEADLINE_MS,
+    answerBudget: ANSWER_BUDGET,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
@@ -269,6 +274,11 @@ export class DocDO extends YServer<SyncEnv> {
   #pendingFlush: Promise<void> | null = null;
   /** Validations, admissions and frame batches run one at a time, in arrival order. */
   readonly #serial = serializer();
+  /** Each principal's answer budget in whole states, as of `at` (T3.S14). In memory: a wake starts full. */
+  readonly #answerBudgets = new Map<string, { left: number; at: number }>();
+  /** Each socket's step 1s waiting for its principal's budget: the latest per doc ('' the note, else a payload id). */
+  readonly #waitingAnswers = new Map<Connection, Map<string, WSMessage>>();
+  #answerTimer: ReturnType<typeof setTimeout> | undefined;
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
 
@@ -530,7 +540,7 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     if (frame.kind === 'step1') {
-      this.#answer(connection, message);
+      if (this.#mayAnswer(connection, attachment, '', store.stateBytes, message)) this.#answer(connection, message);
       return;
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
@@ -577,6 +587,69 @@ export class DocDO extends YServer<SyncEnv> {
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
+    this.#waitingAnswers.delete(connection);
+    // A full budget is the same as none.
+    const now = Date.now();
+    for (const principal of [...this.#answerBudgets.keys()]) {
+      if (this.#budget(principal, now).left >= this.#limits.answerBudget.docs) this.#answerBudgets.delete(principal);
+    }
+  }
+
+  /** A principal's answer budget now, refilled since it was last read. */
+  #budget(principal: string, now: number): { left: number; at: number } {
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const held = this.#answerBudgets.get(principal);
+    const budget = { left: held ? Math.min(docs, held.left + ((now - held.at) * docs) / windowMs) : docs, at: now };
+    this.#answerBudgets.set(principal, budget);
+    return budget;
+  }
+
+  /**
+   * Whether a step 1 for `target` ('' the note, else a payload id) is answered now, checked before any encode: each
+   * answer costs its share (`bytes`) of the stored state, and one is answered while the principal's budget is above
+   * zero. Otherwise the frame waits as the socket's latest step 1 for `target`, replacing any older one, and is
+   * answered once the budget refills, so an honest reconnect or resync is late, never unanswered (T3.S14).
+   */
+  #mayAnswer(connection: Connection, attachment: Attachment, target: string, bytes: number, message: WSMessage): boolean {
+    const budget = this.#budget(attachment.principalId, Date.now());
+    const waiting = this.#waitingAnswers.get(connection);
+    if (budget.left <= 0) {
+      if (waiting) waiting.set(target, message);
+      else this.#waitingAnswers.set(connection, new Map([[target, message]]));
+      this.#scheduleAnswers();
+      return false;
+    }
+    // This answer covers any older step 1 for the same target.
+    waiting?.delete(target);
+    if (waiting?.size === 0) this.#waitingAnswers.delete(connection);
+    const total = (this.#store?.stateBytes ?? 0) + (this.#payloads?.totalBytes ?? 0);
+    budget.left -= Math.max(MIN_ANSWER_SHARE, total > 0 ? Math.min(1, bytes / total) : 0);
+    return true;
+  }
+
+  /** Re-handles the waiting step 1s when the first waiting principal's budget is above zero again. */
+  #scheduleAnswers(): void {
+    if (this.#answerTimer !== undefined) return;
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const now = Date.now();
+    let due = Infinity;
+    for (const connection of this.#waitingAnswers.keys()) {
+      const principal = attachmentOf(connection)?.principalId;
+      if (principal !== undefined) due = Math.min(due, Math.max(0, (-this.#budget(principal, now).left * windowMs) / docs));
+    }
+    if (due === Infinity) return;
+    this.#answerTimer = setTimeout(() => {
+      this.#answerTimer = undefined;
+      const waiting = [...this.#waitingAnswers];
+      this.#waitingAnswers.clear();
+      // Through the same validation and gates as a new frame; one still over budget waits again.
+      for (const [connection, messages] of waiting) {
+        if (!isOpen(connection)) continue;
+        for (const message of messages.values()) {
+          void Promise.resolve(this.onMessage(connection, message)).catch((error) => console.error('DocDO waiting step 1 failed', error));
+        }
+      }
+    }, Math.ceil(due) + 1);
   }
 
   /**
@@ -991,6 +1064,7 @@ export class DocDO extends YServer<SyncEnv> {
     try {
       if (step === PAYLOAD_STEP1) {
         if (!payloads.served(id)) return;
+        if (!this.#mayAnswer(connection, attachment, id, payloads.bytesOf(id), encodePayloadFrame(id, PAYLOAD_STEP1, data))) return;
         send(connection, encodePayloadFrame(id, PAYLOAD_STEP2, Y.encodeStateAsUpdate(payloads.doc(id), data)));
         payloads.addReaders(id, [attachment.principalId]);
         return;
