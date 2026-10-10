@@ -134,6 +134,7 @@ export type CommentActor = SocketIdentity;
 
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
 const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
+const FORBIDDEN: CommentResult = { ok: false, status: 403, error: 'forbidden' };
 
 /** A server write that would pass the state cap (A§5.1 Limits). */
 export class DocCapError extends Error {
@@ -887,10 +888,11 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * Every comment write (A§8 pull validation, T2.5): in one serialized write the open sockets are validated, the actor
-   * is re-resolved through the same check whether or not it has a socket (a live session or key, at least commenter,
-   * a live doc), and the write runs right after with no await between. A check that cannot answer refuses. With no
-   * access check installed (the Node harness), writes apply as frames do.
+   * Every comment write (A§8 pull validation, T2.5): in one serialized write the actor is re-resolved through the same
+   * check whether or not it has a socket (a live session or key, at least commenter, a live doc), then the open sockets
+   * are validated, and the write runs right after with no await between, so a reader revoked while the actor was read
+   * is closed before it. A check that cannot answer refuses. With no access check installed (the Node harness), writes
+   * apply as frames do.
    */
   async #commentWrite(actor: CommentActor | undefined, write: (store: DocStore, comments: DocComments) => CommentResult): Promise<CommentResult> {
     const store = await this.#ready();
@@ -910,8 +912,13 @@ export class DocDO extends YServer<SyncEnv> {
       if (check) {
         let refused: CommentResult | null;
         try {
-          await this.#validate(check);
-          refused = await this.#authorizeActor(check, store, actor);
+          const resolvedAt = Date.now();
+          refused = await this.#authorizeActor(check, store, actor, resolvedAt);
+          if (!refused) {
+            await this.#validate(check);
+            // A kick that landed while the sockets were read outdates the actor's answer too.
+            if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) refused = FORBIDDEN;
+          }
         } catch (error) {
           console.error('DocDO could not re-authorize a comment write; refusing it', error);
           return UNCONFIRMED;
@@ -925,12 +932,11 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /** The actor's verdict now: null while it may comment, else the refusal. Throws when D1 cannot answer. */
-  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | null> {
+  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number): Promise<CommentResult | null> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
     if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
     if (actor.kind === 'user' && !session) return unauthenticated;
-    const resolvedAt = Date.now();
     const { stamp, access } = await withDeadline(this.#limits.accessDeadlineMs, async (race) => {
       const read = await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
       return { stamp: read, access: await race(check.resolve(this.name, actor)) };
@@ -938,9 +944,9 @@ export class DocDO extends YServer<SyncEnv> {
     if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
     if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
     if (access === null) return { ok: false, status: 404, error: 'not-found' };
-    if (!roleAtLeast(access.role, 'commenter')) return { ok: false, status: 403, error: 'forbidden' };
+    if (!roleAtLeast(access.role, 'commenter')) return FORBIDDEN;
     // A kick persisted while D1 answered outdates what it said.
-    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return { ok: false, status: 403, error: 'forbidden' };
+    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return FORBIDDEN;
     return null;
   }
 
@@ -1177,11 +1183,14 @@ export class DocDO extends YServer<SyncEnv> {
     return (this.constructor as typeof DocDO).liveness(this.env);
   }
 
-  /** `admitting`, a socket still in onConnect, is left for its own refusal. */
+  /**
+   * `admitting`, a socket still in onConnect, is left for its own refusal. A D1 read past the access deadline throws
+   * before anything changes, freeing the queue; its late answer is ignored.
+   */
   async #settle(release: string[], admitting?: Connection): Promise<{ deleted: boolean }> {
     const trashedInD1 = this.#liveness();
     if (!trashedInD1) throw new Error('DocDO has no D1 to settle from');
-    const deleted = await trashedInD1(this.name);
+    const deleted = await withDeadline(this.#limits.accessDeadlineMs, (race) => race(trashedInD1(this.name)));
     const store = await this.#ready();
     const holds = holdsOf(store);
     for (const hold of release) holds.delete(hold);

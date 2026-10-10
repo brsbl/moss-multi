@@ -1,6 +1,7 @@
 // Who wrote a comment, and whom an @ can name (docs/design/comments.md §12, §14 decision 3): records carry principal
-// ids only. The members list names the owner and grant holders to anyone with a grant; a link-only reader gets none,
-// so every author but the reader is "Collaborator" there, and an author no longer on the note reads the same.
+// ids only. The roster names the owner and everyone a grant on the note or a folder above it reaches, to anyone with
+// a grant; a link-only reader gets none, so every author but the reader is "Collaborator" there, and an author no
+// longer on the note reads the same.
 import { shareToken } from '../media/web-asset-url.ts';
 
 export const ME = 'Me';
@@ -33,7 +34,7 @@ async function ask(docId: string, roster: Roster): Promise<void> {
   roster.asked = Date.now();
   try {
     const share = shareToken();
-    const response = await fetch(`/api/docs/${encodeURIComponent(docId)}/members`, {
+    const response = await fetch(`/api/docs/${encodeURIComponent(docId)}/members?scope=effective`, {
       credentials: 'same-origin',
       headers: { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
       signal: AbortSignal.timeout(10_000),
@@ -81,8 +82,8 @@ export function authorLabel(docId: string, author: string): string {
 }
 
 /**
- * The people an @ in a comment on `docId` can name: the owner and grant holders, the reader excluded. The first ask
- * of an opened menu reads the list again, so someone shared a moment ago is offered.
+ * The people an @ in a comment on `docId` can name: the owner and direct or inherited grant holders, the reader
+ * excluded. The first ask of an opened menu reads the list again, so someone shared a moment ago is offered.
  */
 export function mentionable(docId: string, fresh = false): Person[] {
   const roster = rosterOf(docId);
