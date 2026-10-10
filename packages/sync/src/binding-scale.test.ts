@@ -52,7 +52,7 @@ function countSizes(node: object | undefined): void {
 /** Counts the elements each splice moves or inserts, while `run` runs. */
 function countingSplices<T>(run: () => T): T {
   const splice = Array.prototype.splice;
-  // eslint-disable-next-line no-extend-native -- restored below: the test's own work count
+  // Restored below: the test's own work count.
   Array.prototype.splice = function (this: unknown[], ...args: [number, number?, ...unknown[]]) {
     const [start, deleteCount] = args;
     const from = start < 0 ? Math.max(0, this.length + start) : Math.min(start, this.length);
