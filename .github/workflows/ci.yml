@@ -46,6 +46,10 @@ on:
         description: 'Rehearse the staging full suite (T8.2): journeys on a stack with no test hooks, per-run principals, no @local-only legs'
         type: boolean
         default: false
+      latency_ms:
+        description: 'Delay every loopback packet by this many ms (tc netem), so a rehearsal meets staging-like round trips; 0 is none'
+        type: number
+        default: 0
 
 permissions:
   contents: read
@@ -284,7 +288,8 @@ jobs:
     container:
       # Keep the tag equal to @playwright/test in e2e/package.json; the first step checks it.
       image: mcr.microsoft.com/playwright:v1.61.1-noble
-      options: --ipc=host --init
+      # NET_ADMIN only for a latency dispatch, which shapes the container's own loopback.
+      options: ${{ github.event.inputs.latency_ms && github.event.inputs.latency_ms != '0' && '--ipc=host --init --cap-add=NET_ADMIN' || '--ipc=host --init' }}
     strategy:
       fail-fast: false
       matrix:
@@ -321,6 +326,16 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist $([ -n "$STAGING_SUITE" ] || echo --hooks) --state-dir /dev/shm/moss-stack
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # Staging's round trips on loopback: every packet on lo waits LATENCY ms, so each browser or Node request to the
+      # stack pays it on the way in and out of wrangler's proxy and workerd.
+      - name: Loopback latency
+        if: github.event.inputs.latency_ms && github.event.inputs.latency_ms != '0'
+        env:
+          LATENCY: ${{ github.event.inputs.latency_ms }}
+        run: |
+          command -v tc > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends iproute2 > /dev/null)
+          tc qdisc add dev lo root netem delay "${LATENCY}ms"
+          tc qdisc show dev lo
       - name: The staging suite's state (per-run principals, a request budget)
         if: env.STAGING_SUITE == '1'
         run: |

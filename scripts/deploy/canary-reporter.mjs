@@ -1,8 +1,8 @@
 // The run log against a non-loopback target (e2e/playwright.config.ts; deploy-staging.yml's canary). That log is
 // public, and a failed authenticated request's error carries Playwright's call log, cookie header included. So this
 // prints each test's title, status and duration, and for a failure only fixed facts: where in the suite it failed, the
-// kind of error, and which invariants it broke; error text and test output are withheld. The JSON reporter keeps the
-// detail on the runner, which nothing uploads.
+// kind of error, numeric expected and received values, and which invariants it broke; error text and test output are
+// withheld. The JSON reporter keeps the detail on the runner, which nothing uploads.
 
 /** @param {number} ms */
 const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
@@ -36,10 +36,36 @@ export function failureTrace(result) {
     if (frames.length > 0) lines.push(`at ${[...new Set(frames)].slice(0, 4).join(' < ')}`);
     const kinds = KINDS.filter(([, pattern]) => pattern.test(error.message ?? '')).map(([kind]) => kind);
     if (kinds.length > 0) lines.push(`kind ${kinds.join(', ')}`);
+    const values = numericValues(error.message ?? '');
+    if (values) lines.push(values);
     lines.push(...findingFacts(error.message ?? ''));
   }
   return lines;
 }
+
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, 'g');
+
+/**
+ * An assertion's expected and received values when both are plain numbers (a latency, a count), else null: a text
+ * value can carry anything the page showed, so it is never printed.
+ * @param {string} message
+ */
+export function numericValues(message) {
+  message = message.replace(ANSI, '');
+  const expected = /^Expected: {1,8}((?:[<>]=? )?-?\d{1,9}(?:\.\d{1,6})?)$/m.exec(message);
+  const received = /^Received: {1,8}(-?\d{1,9}(?:\.\d{1,6})?)$/m.exec(message);
+  return expected && received ? `expected ${expected[1]}, received ${received[1]}` : null;
+}
+
+/**
+ * A console error's fixed class: a resource load failure with its status, a WebSocket failure, or nothing.
+ * @param {string} detail
+ */
+const consoleKind = (detail) => {
+  const load = /Failed to load resource: the server responded with a status of (\d{3})/.exec(detail);
+  if (load) return ` (load ${load[1]})`;
+  return /WebSocket/i.test(detail) ? ' (websocket)' : '';
+};
 
 /** A request path as its route: every segment that is not a short lowercase word (an id or a token) becomes `:id`. */
 const route = (path) => path.split('/').map((segment) => (segment === '' || /^[a-z][a-z-]{0,19}$/.test(segment) ? segment : ':id')).join('/');
@@ -59,15 +85,18 @@ export function findingFacts(message) {
     if (n === '1') {
       const http = /^HTTP (\d{3}) ([A-Z]{3,7}) (?:[a-z]+:\/\/[^/\s]+)?(\/[^\s?#]*)/.exec(detail);
       if (http) fact = `HTTP ${http[1]} ${http[2]} ${route(http[3])}`;
-      else if (detail.startsWith('console error')) fact = 'console error';
+      else if (detail.startsWith('console error')) fact = `console error${consoleKind(detail)}`;
       else if (detail.startsWith('page error')) fact = 'page error';
     } else if (n === '3') {
       const sockets = /\b(\d{1,6}) socket opens in one document, (\d{1,6}) allowed/.exec(detail);
       if (sockets) fact = `${sockets[1]} socket opens, ${sockets[2]} allowed`;
+      const ended = /\((\d{1,6}) errored; lived ((?:\d{1,9} ms|open)(?:, (?:\d{1,9} ms|open)){0,20})\)/.exec(detail);
+      if (sockets && ended) fact += ` (${ended[1]} errored; lived ${ended[2]})`;
     } else if (n === '7') {
       const field = / (title|body): /.exec(detail)?.[1] ?? '';
       const counts = /appears (\d+) time\(s\), typed (\d+)/.exec(detail);
-      fact = counts ? `${field} appears ${counts[1]}, typed ${counts[2]}` : `${field} out of order`;
+      if (counts) fact = `${field} appears ${counts[1]}, typed ${counts[2]}`;
+      else fact = / still unbound after /.test(detail) ? `${field} still unbound` : `${field} out of order`;
     }
     facts.push(`invariant ${n} [${actor}]${fact ? ` ${fact}` : ''}`);
   }

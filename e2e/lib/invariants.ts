@@ -89,7 +89,11 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
   for (const group of groups.values()) {
     const { docId } = group[0];
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
-    if (group.length > allowed) problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed`);
+    if (group.length > allowed) {
+      // How each socket ended, for a log that may not print the census: a socket error is a handshake or network failure.
+      const lived = group.map((s) => (s.closedAt === null ? 'open' : `${s.closedAt - s.openedAt} ms`)).join(', ');
+      problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${group.filter((s) => s.error).length} errored; lived ${lived})`);
+    }
     const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);
     events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     let open = 0;
@@ -128,20 +132,49 @@ export async function actorFindings(actor: ActorView, journey: string, version: 
   return [...findings, ...(await domFindings(actor))];
 }
 
-/** Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. */
-export async function typedFindings(actors: ActorView[], typed: Typed[]): Promise<Finding[]> {
+/** How long invariant 7 waits for a field that is binding or rebinding (A§19) to bind before it fails. */
+export const BIND_WAIT_MS = 15_000;
+
+type Field = 'title' | 'body';
+type Pane = Awaited<ReturnType<typeof fieldTexts>>[number];
+const bindingOf = (pane: Pane, field: Field) => (field === 'title' ? pane.titleBinding : pane.bodyBinding);
+
+/**
+ * Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. A field still
+ * binding or rebinding shows no doc text yet, so the check waits for it to bind (at most `waitMs` across the whole
+ * check) and then reads it; one that never binds is a finding.
+ */
+export async function typedFindings(actors: ActorView[], typed: Typed[], waitMs = BIND_WAIT_MS): Promise<Finding[]> {
   const findings: Finding[] = [];
   const docs = [...new Set(typed.map((entry) => entry.docId))];
+  const deadline = Date.now() + waitMs;
   for (const actor of actors) {
-    if (actor.page.isClosed()) continue;
     for (const docId of docs) {
-      const panes = await actor.page.evaluate(fieldTexts, { names: NAMES, docId });
+      const fields = (['title', 'body'] as const).filter((field) => typed.some((entry) => entry.docId === docId && entry.field === field));
+      // A page mid-navigation has no context to read; it is read again until the deadline.
+      const read = async (): Promise<Pane[] | null> => {
+        if (actor.page.isClosed()) return [];
+        return actor.page.evaluate(fieldTexts, { names: NAMES, docId }).catch((error: unknown) => {
+          if (Date.now() >= deadline) throw error;
+          return null;
+        });
+      };
+      const pending = (shown: Pane[] | null) => shown === null || shown.some((pane) => fields.some((field) => bindingOf(pane, field) === 'unbound'));
+      let panes = await read();
+      while (pending(panes) && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 250));
+        panes = await read();
+      }
+      panes ??= await read() ?? [];
       for (const pane of panes) {
-        for (const field of ['title', 'body'] as const) {
+        for (const field of fields) {
+          const report = finding(7, actor.label);
+          if (bindingOf(pane, field) === 'unbound') {
+            findings.push(report(`${docId} ${field}: still unbound after ${Math.round(waitMs / 1000)} s`));
+            continue;
+          }
           const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
-          // A field still binding shows no doc text yet; a peer that opened late is checked once it is bound.
-          if (entries.length === 0 || (field === 'title' ? pane.titleBinding : pane.bodyBinding) === 'unbound') continue;
-          findings.push(...typedProblems(pane[field], entries).map((detail) => finding(7, actor.label)(`${docId} ${field}: ${detail}`)));
+          findings.push(...typedProblems(pane[field], entries).map((detail) => report(`${docId} ${field}: ${detail}`)));
         }
       }
     }

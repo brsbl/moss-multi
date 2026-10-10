@@ -55,7 +55,6 @@ export function ownerProbe(stack: Stack, owner: Principal): (docId: string) => P
   return async (docId) => {
     const cookie = (await signIn(stack.baseUrl, owner)).map(({ name, value }) => `${name}=${value}`).join('; ');
     const url = `${stack.baseUrl}/api/docs/${encodeURIComponent(docId)}/instance`;
-    stack.budget?.charge(url);
     const response = await fetch(url, { headers: { cookie }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`owner instance probe for ${docId}: ${response.status} ${(await response.text()).slice(0, 200)}`);
     return (await response.json()) as Instance;

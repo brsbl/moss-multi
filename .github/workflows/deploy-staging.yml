@@ -27,6 +27,10 @@ on:
         description: 'Worker requests each full-suite shard may make (16 shards)'
         type: number
         default: 5000
+      suite_grep:
+        description: 'Only the full-suite legs matching this Playwright --grep (to re-check a staging-only failure); empty is every leg'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -305,7 +309,11 @@ jobs:
           SHARD: ${{ matrix.shard }}
           E2E_GLOBAL_TIMEOUT_MIN: '50'
           MOSS_MULTI_NO_OPEN: '1'
-        run: pnpm exec playwright test --project=staging-"$BROWSER" --shard="$SHARD/8"
+          GREP: ${{ inputs.suite_grep }}
+        run: |
+          args=(--project="staging-$BROWSER" --shard="$SHARD/8")
+          if [ -n "$GREP" ]; then args+=(--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi
+          pnpm exec playwright test "${args[@]}"
       - name: A credential-free summary
         if: always()
         run: |

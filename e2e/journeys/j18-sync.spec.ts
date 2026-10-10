@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import type { Actor } from '../lib/actors.ts';
 import type { Stack } from '../lib/stack.ts';
 import { expect, test, ui } from '../lib/test.ts';
+import { childBudgetEnv } from '../lib/budget.ts';
 
 const CLI = fileURLToPath(new URL('../../packages/cli/dist/moss-multi.mjs', import.meta.url));
 const SOLO = 'one person and her own agent key keep her own notes folder in sync';
@@ -24,7 +25,7 @@ interface Run { code: number; stdout: string; stderr: string }
 function moss(args: string[], env: Record<string, string>, cwd: string): Promise<Run> {
   if (!existsSync(CLI)) throw new Error(`${CLI} is missing: build it with pnpm --filter @moss-multi/cli build`);
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH ?? '', HOME: cwd, ...env }, encoding: 'utf8', timeout: 60_000 },
+    execFile(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH ?? '', HOME: cwd, ...childBudgetEnv(), ...env }, encoding: 'utf8', timeout: 60_000 },
       (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr }));
   });
 }
@@ -60,7 +61,7 @@ async function openDoc(actor: Actor, docId: string): Promise<void> {
 /** `watch` in `dir`, ticking every `interval` seconds; resolves once it says it is watching. */
 async function startWatch(dir: string, env: Record<string, string>, interval: number): Promise<{ child: ChildProcessWithoutNullStreams; output: () => string; stop: () => Promise<number> }> {
   if (!existsSync(CLI)) throw new Error(`${CLI} is missing: build it with pnpm --filter @moss-multi/cli build`);
-  const child = spawn(process.execPath, [CLI, 'watch', '--interval', String(interval)], { cwd: dir, env: { PATH: process.env.PATH ?? '', HOME: dir, ...env } });
+  const child = spawn(process.execPath, [CLI, 'watch', '--interval', String(interval)], { cwd: dir, env: { PATH: process.env.PATH ?? '', HOME: dir, ...childBudgetEnv(), ...env } });
   let output = '';
   child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
   child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });

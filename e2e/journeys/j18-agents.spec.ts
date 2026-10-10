@@ -20,6 +20,7 @@ import { grant } from '../lib/grants.ts';
 import type { Stack } from '../lib/stack.ts';
 import { openIn } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
+import { childBudgetEnv } from '../lib/budget.ts';
 
 const CLI = fileURLToPath(new URL('../../packages/cli/dist/moss-multi.mjs', import.meta.url));
 const SOLO = 'one person and her own agent key push into her own notes';
@@ -33,7 +34,7 @@ interface Run { code: number; stdout: string; stderr: string }
 function moss(args: string[], env: Record<string, string>, cwd: string): Promise<Run> {
   if (!existsSync(CLI)) throw new Error(`${CLI} is missing: build it with pnpm --filter @moss-multi/cli build`);
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH ?? '', HOME: cwd, ...env }, maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
+    execFile(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH ?? '', HOME: cwd, ...childBudgetEnv(), ...env }, maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
       (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr }));
   });
 }

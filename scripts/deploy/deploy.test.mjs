@@ -519,6 +519,19 @@ describe('canary recording', () => {
       expect(failureTrace({ errors: [late] })).toEqual(['kind expect', 'expected < 1000, received 1234']);
       const text = { message: `expect(received).toBe(expected)\n\nExpected: "${SESSION}"\nReceived: "SYNTHETIC text"`, stack: '' };
       expect(failureTrace({ errors: [text] })).toEqual(['kind expect']);
+      const kinds = { message: [
+        'invariants: 3 finding(s)',
+        `  invariant 1 [ada] console error: Failed to load resource: the server responded with a status of 404 () (${URL_STAGING}/api/docs/x/backlinks)`,
+        `  invariant 1 [ben] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/parties/doc-d-o/x?token=SECRET' failed`,
+        '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; lived 12 ms, open)',
+      ].join('\n'), stack: '' };
+      const facts = failureTrace({ errors: [kinds] });
+      expect(facts).toEqual([
+        'invariant 1 [ada] console error (load 404)',
+        'invariant 1 [ben] console error (websocket)',
+        'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; lived 12 ms, open)',
+      ]);
+      expect(facts.join('\n')).not.toMatch(/SECRET|workers\.dev|backlinks/);
     });
 
     it('withholds a run-level error and test output off loopback', async () => {

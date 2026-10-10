@@ -111,13 +111,11 @@ export class Actors {
     if (canary && canary.principals !== 'per-run') {
       const secret = process.env[canary.poolSecretEnv];
       if (!secret) throw new InfraBlocked(`the canary pool secret ${canary.poolSecretEnv} is not set`);
-      this.stack.budget?.charge(`${this.stack.baseUrl}/api/auth/sign-in/email`);
       const principal = await poolPrincipal(this.stack.baseUrl, secret, label);
       this.principals.push(principal);
       return principal;
     }
     minted += 1;
-    this.options.stack?.budget?.charge(`${this.stack.baseUrl}/api/auth/sign-up/email`);
     const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
     this.principals.push(principal);
     return principal;
@@ -164,7 +162,6 @@ export class Actors {
   /** A fresh context holding its own new session for `principal`, not navigated yet. */
   async session(principal: Principal, options: OpenOptions = {}): Promise<Actor> {
     const actor = await this.newActor(options.label ?? principal.label, principal, options);
-    if (!principal.pooled) this.options.stack?.budget?.charge(`${this.stack.baseUrl}/api/auth/sign-in/email`);
     await actor.context.addCookies(await signIn(this.stack.baseUrl, principal));
     return actor;
   }

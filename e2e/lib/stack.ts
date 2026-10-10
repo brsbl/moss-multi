@@ -43,6 +43,8 @@ export class Stack {
 
   private constructor(readonly state: StackState) {
     this.budget = state.canary ? new RequestBudget(state.canary.budgetPath, state.canary.budget, state.baseUrl) : null;
+    // Setup's sign-ups and sign-ins (with their retries), probes and a leg's own Node requests all count.
+    this.budget?.watchNode();
   }
 
   static fromState(path = process.env.STACK_STATE): Stack {
@@ -62,7 +64,6 @@ export class Stack {
   /** `/api/version` must report the bytes the stack was started on. */
   async assertProvenance(): Promise<Provenance> {
     let version: Provenance;
-    this.budget?.charge(`${this.baseUrl}/api/version`);
     try {
       const response = await fetch(`${this.baseUrl}/api/version`, { signal: AbortSignal.timeout(10_000) });
       const text = await response.text();
