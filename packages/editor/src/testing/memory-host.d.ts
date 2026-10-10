@@ -24,6 +24,7 @@ export class MemoryVolume {
   writeFile(path: string, data: string | Uint8Array, mtimeMs?: number): void;
   unlink(path: string): void;
   rename(from: string, to: string): void;
+  renameExclusive(from: string, to: string): void;
   readdir(dir: string): MemoryEntry[];
   snapshot(under?: string): Record<string, string>;
 }
