@@ -1086,6 +1086,39 @@ test.describe('editor fixes before 0.3.0', () => {
   });
 });
 
+test.describe('desktop editor session commit and naming', () => {
+  test("legacy comment colors hydrate as their comments' source colors and are saved that way, through a meta.json refresh", async ({ page }) => {
+    const seen = await open(page);
+    const at = 1_780_000_300;
+    const comments = JSON.stringify({
+      a: { text: 'Mine', createdAt: at, updatedAt: at, source: 'user' },
+      b: { text: 'From the agent', createdAt: at + 1, updatedAt: at + 1, source: 'agent' },
+    });
+    const markdown = '# Plan\n\nAlpha %%m:a:start%%beta%%m:a:end%% gamma %%m:b:start%%delta%%m:b:end%%\n';
+    const result = await page.evaluate(
+      ({ id, markdown, meta, comments }) => {
+        window.editorFixture.reset();
+        window.editorFixture.seed(['Notes', 'Plan'], { markdown, meta, comments });
+        return window.editorFixture.mount(id);
+      },
+      { id: ID, markdown, meta: { ...meta('Plan'), commentColors: { a: 1, b: 0 } }, comments },
+    );
+    expect(result).toEqual({ ok: true, status: 'clean' });
+    await expect(body(page).locator('mark')).toHaveCount(2);
+    // Moss rewrites meta.json alone, with other legacy colors; the editor takes the new baseline.
+    await page.evaluate((next) => window.editorFixture.externalWrite('/Moss/Notes/Plan/meta.json', JSON.stringify(next, null, 2)), { ...meta('Plan'), commentColors: { a: 2, b: 2 } });
+    await expect.poll(() => page.evaluate(() => window.editorFixture.calls().filter((call) => call.op === 'read').length)).toBeGreaterThan(1);
+    await body(page).getByText('Alpha', { exact: false }).first().click();
+    await page.keyboard.press('Home');
+    await page.keyboard.type('Edited ');
+    expect(await page.evaluate(() => window.editorFixture.flush())).toMatchObject({ kind: 'saved' });
+    const written = await files(page);
+    expect(written['/Moss/Notes/Plan/Plan.md']).toMatch(/^# Plan\n\nEdited Alpha %%m:a:start%%beta%%m:a:end%% gamma %%m:b:start%%delta%%m:b:end%%\n?$/);
+    expect(JSON.parse(written['/Moss/Notes/Plan/meta.json']).commentColors).toEqual({ a: 0, b: 3 });
+    expect(seen.errors).toEqual([]);
+  });
+});
+
 const BODY = '[data-moss-editor] [data-moss-note-editor-root="true"]';
 const SHARE = 'button[aria-label="Share with Agent"]';
 
