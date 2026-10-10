@@ -191,7 +191,7 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     expect(minted, 'leases are bounded by the share').toBeLessThanOrEqual(Math.floor((CAP * SUGGEST_LIMITS.stateShare) / 130));
   });
 
-  it('a burst of suggest frames in flight on a full note, and reloads, are refused for room without the refusal cooldown', { timeout: 60_000 }, async () => {
+  it('a burst of suggest frames in flight on a full note, and a reload, are refused for room without the refusal cooldown', { timeout: 60_000 }, async () => {
     const opened = await start(openDoc(undefined, SmallDoc as never));
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
     const sam = await on(opened, SAM);
@@ -216,12 +216,17 @@ describe('T5.S4 retained suggestion state has a bounded share and leaves editors
     expect(sam.closed, 'the suggester stays connected').toBeNull();
     const replies = sam.events.slice(before).filter(isReply);
     expect(replies.map((reply) => reply.t === 'suggest-refused' && reply.reason), 'every frame refused for room').toEqual(Array(8).fill('doc-cap'));
-    // Reloads: each new socket's lease is refused for room, and none of it cools the suggester down.
-    for (let i = 0; i < 3; i += 1) {
-      const reload = await on(opened, SAM);
-      expect(await send(reload, { t: 'suggest-lease' }), `reload ${i}`).toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
-      expect(reload.closed, `reload ${i} stays connected`).toBeNull();
-    }
+    // A reload: the new socket's lease is refused for room and counted (T5.S12), short of the cooldown.
+    const reload = await on(opened, SAM);
+    expect(await send(reload, { t: 'suggest-lease' }), 'reload').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+    expect(reload.closed, 'the reload stays connected').toBeNull();
+    expect(sam.closed).toBeNull();
+    // The no-room state lasts one refusal window: then a lease reaches admission again, so freed room is found.
+    await vi.advanceTimersByTimeAsync(SUGGEST_LIMITS.refusals.windowMs);
+    const lease = vi.spyOn(SuggestIngest.prototype, 'lease');
+    expect(await send(sam, { t: 'suggest-lease' })).toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+    expect(lease).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
     expect(sam.closed).toBeNull();
     // The editor still writes.
     firstBlock(ed.doc).insert(0, 'Ada adds a line.');

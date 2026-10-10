@@ -125,6 +125,9 @@ export const HOLD_MS = 60_000;
 /** Store items a sub-editor's delete set may make the classifier visit per frame byte (its frame never applies). */
 const CLASSIFY_BUDGET_PER_BYTE = 8;
 
+/** Suggest frames that can mint retained state: all of them short-circuit while a connection has no room. */
+const GROWTH: ReadonlySet<string> = new Set(['suggest-lease', 'suggest-ops', 'suggest-delete', 'suggest-undelete', 'suggest-merge']);
+
 /** A queue that runs each job after the previous one settles; a rejection reaches its caller, not the next job. */
 const serializer = () => {
   let gate: Promise<unknown> = Promise.resolve();
@@ -323,8 +326,11 @@ export class DocDO extends YServer<SyncEnv> {
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
   readonly #refusals = new Map<string, number[]>();
   readonly #cooldowns = new Map<string, number>();
-  /** Connections whose last suggest refusal was for want of room (`doc-cap`, `ops-cap`), until a grant or an ack. */
-  readonly #noRoom = new Set<string>();
+  /**
+   * Connections whose last suggest refusal was for want of room (`doc-cap`, `ops-cap`), and until when: a grant, an
+   * ack or the end of one refusal window ends it.
+   */
+  readonly #noRoom = new Map<string, number>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -722,15 +728,15 @@ export class DocDO extends YServer<SyncEnv> {
       }
     }
     if (request !== null && (typeof request !== 'object' || typeof request.t !== 'string' || !request.t.startsWith('suggest-'))) return;
-    if (request?.t !== 'suggest-lease' && !this.#rate.allow(connection)) {
+    if (!this.#rate.allow(connection)) {
       connection.close(CLOSE.writeRate, 'write rate');
       return;
     }
-    // A refusal for want of room (`doc-cap`, `ops-cap`) is the note's state, not abuse: it never counts toward the
-    // cooldown, so a fast typist or a reload on a full note stays connected. After one, the growth frames the client
-    // had in flight are refused alike in O(1); a granted lease or an ack ends that.
-    if (this.#noRoom.has(connection.id) && (request?.t === 'suggest-ops' || request?.t === 'suggest-delete' || request?.t === 'suggest-merge')) {
-      const record = request.t === 'suggest-merge' ? request.into : request.record;
+    // After a refusal for want of room (`doc-cap`, `ops-cap`), every growth frame the client had in flight, and a
+    // rebuilt fork's lease, is refused alike in O(1) with no admission work and not counted, so a fast typist on a
+    // full note stays connected. Every refusal that does reach admission counts toward the cooldown, room or not.
+    if (request !== null && GROWTH.has(request.t) && this.#roomless(connection.id)) {
+      const record = request.t === 'suggest-merge' ? request.into : request.t === 'suggest-lease' ? null : request.record;
       const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
       this.sendCustomMessage(connection, JSON.stringify(reply));
       return;
@@ -742,8 +748,17 @@ export class DocDO extends YServer<SyncEnv> {
       this.#noRoom.delete(connection.id);
       return;
     }
-    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') this.#noRoom.add(connection.id);
-    else this.#countRefusal(attachment.principalId);
+    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') this.#noRoom.set(connection.id, Date.now() + SUGGEST_LIMITS.refusals.windowMs);
+    this.#countRefusal(attachment.principalId);
+  }
+
+  /** Whether the connection is still in its no-room window: at most one counted room refusal per window. */
+  #roomless(connectionId: string): boolean {
+    const until = this.#noRoom.get(connectionId);
+    if (until === undefined) return false;
+    if (until > Date.now()) return true;
+    this.#noRoom.delete(connectionId);
+    return false;
   }
 
   override onClose(connection: Connection): void {
