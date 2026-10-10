@@ -187,6 +187,81 @@ describe('version routes @p:mean-3', () => {
     expect(calls).toEqual([]);
   });
 
+  // T6.S9: a restore's body can run to megabytes, so it is read only for a principal who may restore, after its write
+  // token is charged on the acting person; access is resolved again once the body is in, so a revocation still wins.
+  /** A restore body that counts what is pulled; nothing is queued ahead, so it is pulled only when read. */
+  const counted = (bytes: number, onPull?: () => Promise<void>) => {
+    const read = { bytes: 0 };
+    const text = new TextEncoder().encode(JSON.stringify({ pad: ' '.repeat(Math.max(0, bytes - 12)) }));
+    let sent = false;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (sent) return controller.close();
+        await onPull?.();
+        sent = true;
+        read.bytes += text.byteLength;
+        controller.enqueue(text);
+      },
+    }, { highWaterMark: 0 });
+    return { stream, read, length: text.byteLength };
+  };
+  const restoreStreaming = (cookie: string, body: ReadableStream<Uint8Array>, headers: Record<string, string> = {}, doc = docId) =>
+    handleApi(new Request(`${BASE}/api/docs/${doc}/versions/v1/restore`, {
+      method: 'POST', headers: { 'content-type': 'application/json', origin: BASE, cookie, ...headers }, body, duplex: 'half',
+    } as RequestInit), env);
+
+  it.each([2_000_000, 8_000_000])('refuses a stranger a %i-byte restore 404 without reading its body or charging a token', async (bytes) => {
+    for (const declared of [false, true]) {
+      const body = counted(bytes);
+      const response = await restoreStreaming(dan.cookie, body.stream, declared ? { 'content-length': String(body.length) } : {});
+      expect(response.status, `declared: ${declared}`).toBe(404);
+      expect(body.read.bytes, 'the body was not read').toBe(0);
+    }
+    expect(tokens).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses a viewer a large restore 403 without reading its body', async () => {
+    for (const declared of [false, true]) {
+      const body = counted(2_000_000);
+      const response = await restoreStreaming(cara.cookie, body.stream, declared ? { 'content-length': String(body.length) } : {});
+      expect(response.status).toBe(403);
+      expect(body.read.bytes).toBe(0);
+    }
+    expect(tokens).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses repeated large restores 429 before reading, one rate across an owner and her keys', async () => {
+    const keys = await Promise.all([insertAgent(d1.db, eve), insertAgent(d1.db, eve)]);
+    for (const agent of keys) expect((await sendAsKey(agent.key, `${versions()}/v1/restore`, {})).status).toBe(200);
+    expect(tokens, "every key of Eve's spends Eve's write rate").toEqual(keys.map(() => `write:${eve.id}`));
+    writeTokens = 0;
+    const body = counted(2_000_000);
+    expect((await restoreStreaming(eve.cookie, body.stream)).status).toBe(429);
+    expect(body.read.bytes, 'the body was not read').toBe(0);
+  });
+
+  it('refuses a restore whose access is revoked while its body is read', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: doc }, { id: eve.id }, 'editor');
+    const revoke = () => d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(doc, eve.id).run().then(() => undefined);
+    const body = counted(2_000_000, revoke);
+    expect((await restoreStreaming(eve.cookie, body.stream, {}, doc)).status).toBe(404);
+    expect(body.read.bytes, 'the body was read before the revocation').toBeGreaterThan(0);
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses a restore whose role drops below editor, or whose note is trashed, while its body is read', async () => {
+    const doc = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: doc }, { id: eve.id }, 'editor');
+    const demote = () => d1.db.prepare("UPDATE doc_members SET role = 'viewer' WHERE doc_id = ? AND principal_id = ?").bind(doc, eve.id).run().then(() => undefined);
+    expect((await restoreStreaming(eve.cookie, counted(1_000, demote).stream, {}, doc)).status).toBe(403);
+    const trash = () => d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), doc).run().then(() => undefined);
+    expect((await restoreStreaming(ada.cookie, counted(1_000, trash).stream, {}, doc)).status).toBe(404);
+    expect(calls).toEqual([]);
+  });
+
   it.each([
     ['version-limit', /You have saved the most named versions/],
     ['note-version-limit', /This note has the most named versions/],

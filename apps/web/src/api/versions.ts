@@ -82,23 +82,32 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   if (request.method !== method) return json({ error: 'method-not-allowed' }, 405, { allow: vid && !restore ? 'GET' : restore ? 'POST' : 'GET, POST' });
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to see version history' }, 401, NO_STORE);
-  // A restore's body can run to megabytes, so its write token is charged before the body is read, and a declared
-  // oversize is refused before either. A body is read before access resolves, so a stalled one cannot outlive a revocation.
+  const person = actingUserId(principal) ?? principal.id;
+  const resolve = () => resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  const refusal = (access: Awaited<ReturnType<typeof resolve>>): Response | null => {
+    if (!access || access.deleted) return notFound();
+    if (!roleAtLeast(access.role, FLOOR[action])) return json({ error: 'forbidden', message: MESSAGE[action] }, 403, NO_STORE);
+    return null;
+  };
+  // A restore's body can run to megabytes (T6.S9), so it is read only for a principal who may restore, after a declared
+  // oversize is refused and the acting person's write token is charged (an agent spends its owner's, so keys add no rate).
   if (action === 'restore') {
+    const early = refusal(await resolve());
+    if (early) return early;
     if (Number(request.headers.get('content-length') ?? 0) > RESTORE_BODY_MAX_BYTES) return tooLarge();
-    if (!(await (await getServerByName(env.PrincipalDO, principal.id)).takeWriteToken())) return rateLimited(REST_WRITE_RATE.windowMs);
+    if (!(await (await getServerByName(env.PrincipalDO, person)).takeWriteToken())) return rateLimited(REST_WRITE_RATE.windowMs);
   }
   const body = method === 'POST' ? ((await readJsonObject(request, action === 'restore' ? RESTORE_BODY_MAX_BYTES : undefined)) ?? {}) : {};
-  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
-  if (!access || access.deleted) return notFound();
-  if (!roleAtLeast(access.role, FLOOR[action])) return json({ error: 'forbidden', message: MESSAGE[action] }, 403, NO_STORE);
+  // Access resolves (again) once the body is in, so a revocation, demotion or trash during a slow body still wins.
+  const access = await resolve();
+  const refused = refusal(access);
+  if (refused || !access) return refused ?? notFound();
   if (vid !== undefined && !ID.test(vid)) return json({ error: 'bad-request' }, 400, NO_STORE);
   const rawName = (body as { name?: unknown }).name;
   const name = typeof rawName === 'string' ? rawName.trim() : '';
   if (action === 'save' && (!name || name.length > NAME_MAX)) return json({ error: 'bad-request', message: 'A version needs a name of 1 to 80 characters' }, 400, NO_STORE);
   const base = restoreBase((body as { base?: unknown }).base);
   if (action === 'restore' && !base.ok) return json({ error: 'bad-request', message: 'A restore base is malformed' }, 400, NO_STORE);
-  const person = actingUserId(principal) ?? principal.id;
   // Named saves are rated per person: an agent spends its owner's tokens, so more keys add no rate.
   if (action === 'save' && !(await (await getServerByName(env.PrincipalDO, person)).takeVersionToken())) return rateLimited(NAMED_VERSION_RATE.windowMs);
   const input = {
