@@ -28,7 +28,7 @@ import {
 import { deterministicIds, EDITOR, exported, NOTE_ID, seededBody, select, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
-import { textIds } from './chars.ts';
+import { charWork, textIds } from './chars.ts';
 import { struckByRecord } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 
@@ -948,4 +948,68 @@ describe('the strike census: every block kind on each side of a boundary, every 
       });
     }
   }
+});
+
+// Whole-repo Slop Cop P1 (T5.S3): Backspace past a long struck run reads the node's ids and graphemes once, not once
+// per struck character, and still strikes only the whole live grapheme before it.
+describe('Backspace past a long struck run is linear and strikes the whole grapheme before it @p:mean-2 @p:R17', () => {
+  const filler = (length: number) => 'lorem ipsum dolor sit amet '.repeat(Math.ceil(length / 27)).slice(0, length);
+  const struckLength = (pane: Pane) => pane.fork.struck().reduce((sum, span) => sum + span.len, 0);
+  /** Strikes `size` characters after `ab` + `grapheme` with one range delete, then presses Backspace at their end. */
+  const strikeThenBackspace = (pane: Pane, grapheme: string, size: number, own = '') => {
+    const start = 2 + grapheme.length;
+    pane.caret('ab', start, start + size);
+    pane.press('Backspace');
+    expect(struckLength(pane), 'the range strike').toBe(size);
+    if (own) {
+      pane.caret('ab', start);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText(own));
+    }
+    pane.caret('ab', start + own.length + size);
+    charWork.steps = 0;
+    pane.press('Backspace');
+    return charWork.steps;
+  };
+
+  it('5,000, 10,000 and 20,000 struck characters: the work grows linearly, and only the combining mark or surrogate pair before them is struck', () => {
+    const work = new Map<number, number>();
+    for (const size of [5_000, 10_000, 20_000]) {
+      for (const grapheme of ['é', '\u{1F600}']) {
+        const line = `ab${grapheme}${filler(size)} tail.`;
+        const pane = suggesting(`Intro line stays.\n\n${line}\n`);
+        try {
+          const steps = strikeThenBackspace(pane, grapheme, size);
+          expect(steps, `work for ${size} struck characters`).toBeLessThanOrEqual(40 * line.length);
+          work.set(size, Math.max(work.get(size) ?? 0, steps));
+          expect(pane.text(), 'F keeps every character').toBe(`Intro line stays.\n\n${line}`);
+          expect(struckLength(pane), 'the whole grapheme, both code units').toBe(size + 2);
+          pane.editor.getEditorState().read(() => {
+            const node = textNode('ab');
+            const ids = textIds(pane.binding, node.getKey())!;
+            expect(pane.fork.isStruck(ids[1]), "'b' stays live").toBe(false);
+            expect(pane.fork.isStruck(ids[2]) && pane.fork.isStruck(ids[3]), 'the grapheme is struck').toBe(true);
+            const selection = $getSelection() as RangeSelection;
+            expect([selection.anchor.key, selection.anchor.offset], 'the caret before the grapheme').toEqual([node.getKey(), 2]);
+          });
+        } finally {
+          pane.dispose();
+        }
+      }
+    }
+    expect(work.get(20_000)! / work.get(5_000)!, 'four times the strike, at most about four times the work').toBeLessThan(6);
+  });
+
+  it("the author's own character before a long struck run deletes natively, with linear work", () => {
+    const size = 5_000;
+    const line = `ab\u{1F600}${filler(size)} tail.`;
+    const pane = suggesting(`Intro line stays.\n\n${line}\n`);
+    try {
+      const steps = strikeThenBackspace(pane, '\u{1F600}', size, 'Q');
+      expect(steps).toBeLessThanOrEqual(40 * line.length);
+      expect(pane.text(), 'the own character is gone, the body stays').toBe(`Intro line stays.\n\n${line}`);
+      expect(struckLength(pane), 'nothing more struck').toBe(size);
+    } finally {
+      pane.dispose();
+    }
+  });
 });

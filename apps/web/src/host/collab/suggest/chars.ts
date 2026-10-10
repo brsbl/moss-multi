@@ -14,6 +14,9 @@ interface CollabLike {
   _xmlElem?: Y.XmlElement;
 }
 
+/** Characters and grapheme segments visited here; the routing tests read it to bound a delete's work. */
+export const charWork = { steps: 0 };
+
 const collabOf = (binding: Binding, key: NodeKey): CollabLike | undefined => binding.collabNodeMap.get(key) as unknown as CollabLike | undefined;
 
 /** The ids of a text node's characters, in order; null when the binding holds no text node for `key`. */
@@ -27,6 +30,7 @@ export function textIds(binding: Binding, key: NodeKey): Y.ID[] | null {
     if (item.deleted) continue;
     if (item.content instanceof Y.ContentString) {
       for (let i = 0; i < item.length; i += 1) ids.push(Y.createID(item.id.client, item.id.clock + i));
+      charWork.steps += item.length;
       continue;
     }
     if (item.content instanceof Y.ContentFormat) continue;
@@ -71,6 +75,7 @@ export function charAround(text: string, at: number): [number, number] {
   // Iterated, not containing(): JavaScriptCore's containing() at a boundary returns the segment before it too.
   if (graphemes) {
     for (const { index, segment } of graphemes.segment(text)) {
+      charWork.steps += 1;
       if (index > at) break;
       if (at < index + segment.length) return [index, index + segment.length];
     }
