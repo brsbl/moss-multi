@@ -35,7 +35,9 @@ host that mounts it gets `ready` rejected with `apiMismatch` and nothing is read
 - The `removed` event comes once the drafts open at removal (a focused title, a chart or HTML draft) are committed,
   so `hadUnsavedEdits` counts them; input is frozen meanwhile, and while an in-place reload settles.
 - `allocateFolderName` treats a sibling that differs only by Unicode normalization as taken on any volume, and folds
-  case fully on a case-insensitive one (σ and ς), so a retitle takes a free suffixed name instead of failing.
+  case fully, to a fixed point, on a case-insensitive one (σ and ς; ẞ, ß, ſs and ss), so a retitle takes a free
+  suffixed name instead of failing. A host's exclusive folder rename that still meets EEXIST takes the next suffix
+  rather than returning `raced` (contract.ts write step 3).
 - **The package is a directory, not one script** (T3.12): `moss-editor.js` imports content-hashed chunks under
   `assets/`, listed in editor.json `chunks` (with the ones every mount loads in `preload`). Charts, canvases and HTML
   blocks load their code when a note first holds one. The host serves the whole package directory from the entry's

@@ -41,8 +41,14 @@ export class MemoryVolume {
 
   /** As APFS: normalization-insensitive always, and case-insensitive with full case folding when asked. */
   key(path) {
-    const normalized = path.normalize('NFD');
-    return this.caseInsensitive ? normalized.toUpperCase().toLowerCase().normalize('NFD') : normalized;
+    let key = path.normalize('NFD');
+    if (!this.caseInsensitive) return key;
+    let previous;
+    do {
+      previous = key;
+      key = key.toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+    } while (key !== previous);
+    return key;
   }
 
   changed(path) {
@@ -113,6 +119,12 @@ export class MemoryVolume {
   unlink(path) {
     if (!this.files.delete(this.key(path))) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
     this.changed(path);
+  }
+
+  /** `rename` that refuses an existing target, as `renamex_np(RENAME_EXCL)`: throws EEXIST. */
+  renameExclusive(from, to) {
+    if (this.exists(to)) throw Object.assign(new Error(`EEXIST: ${to}`), { code: 'EEXIST' });
+    this.rename(from, to);
   }
 
   /** Renames a file or a whole directory. */
@@ -372,18 +384,32 @@ export class MemoryHost {
       }
       const parent = dirname(dir);
       const own = basename(dir);
-      const finalName = allocateFolderName({
-        desiredName: write.rename.desiredName,
-        currentName: own,
-        siblingNames: this.volume.readdir(parent).map((entry) => entry.name).filter((name) => name !== own),
-        caseInsensitive: this.volume.caseInsensitive,
-      });
-      if (finalName !== own) {
+      const siblingNames = this.volume.readdir(parent).map((entry) => entry.name).filter((name) => name !== own);
+      // The volume is the arbiter: an exclusive rename that meets EEXIST takes the next suffix, never that folder.
+      for (;;) {
+        let finalName;
+        try {
+          finalName = allocateFolderName({
+            desiredName: write.rename.desiredName,
+            currentName: own,
+            siblingNames,
+            caseInsensitive: this.volume.caseInsensitive,
+          });
+        } catch {
+          return conflict('raced');
+        }
+        if (finalName === own) break;
         const target = `${parent}/${finalName}`;
-        const caseOnly = this.volume.key(target) === this.volume.key(dir);
-        if (!caseOnly && this.volume.exists(target)) return conflict('raced');
-        this.volume.rename(dir, target);
+        try {
+          if (this.volume.key(target) === this.volume.key(dir)) this.volume.rename(dir, target);
+          else this.volume.renameExclusive(dir, target);
+        } catch (error) {
+          if (error?.code !== 'EEXIST') throw error;
+          siblingNames.push(finalName);
+          continue;
+        }
         dir = target;
+        break;
       }
     }
 
