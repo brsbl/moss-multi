@@ -134,6 +134,7 @@ export type CommentActor = SocketIdentity;
 
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
 const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
+const FORBIDDEN: CommentResult = { ok: false, status: 403, error: 'forbidden' };
 
 /** A server write that would pass the state cap (A§5.1 Limits). */
 export class DocCapError extends Error {
@@ -887,10 +888,11 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * Every comment write (A§8 pull validation, T2.5): in one serialized write the open sockets are validated, the actor
-   * is re-resolved through the same check whether or not it has a socket (a live session or key, at least commenter,
-   * a live doc), and the write runs right after with no await between. A check that cannot answer refuses. With no
-   * access check installed (the Node harness), writes apply as frames do.
+   * Every comment write (A§8 pull validation, T2.5): in one serialized write the actor is re-resolved through the same
+   * check whether or not it has a socket (a live session or key, at least commenter, a live doc), then the open sockets
+   * are validated in one read that checks the actor again as a socket admitted at its epoch, and the write runs right
+   * after with no await between. A reader or actor revoked while the actor was read is refused with no kick needed.
+   * A check that cannot answer refuses. With no access check installed (the Node harness), writes apply as frames do.
    */
   async #commentWrite(actor: CommentActor | undefined, write: (store: DocStore, comments: DocComments) => CommentResult): Promise<CommentResult> {
     const store = await this.#ready();
@@ -910,8 +912,17 @@ export class DocDO extends YServer<SyncEnv> {
       if (check) {
         let refused: CommentResult | null;
         try {
-          await this.#validate(check);
-          refused = await this.#authorizeActor(check, store, actor);
+          const resolvedAt = Date.now();
+          const authorized = await this.#authorizeActor(check, store, actor, resolvedAt);
+          refused = typeof authorized === 'string' ? null : authorized;
+          if (!refused) {
+            const verdict = await this.#validate(check, undefined, { ...actor, role: 'commenter', epoch: authorized } as Attachment);
+            if (verdict === CLOSE.sessionEnded) refused = { ok: false, status: 401, error: 'unauthenticated' };
+            else if (verdict === CLOSE.deleted) refused = { ok: false, status: 404, error: 'trashed' };
+            else if (typeof verdict === 'number') refused = FORBIDDEN;
+            // A kick that landed while the sockets were read outdates the actor's answer too.
+            else if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) refused = FORBIDDEN;
+          }
         } catch (error) {
           console.error('DocDO could not re-authorize a comment write; refusing it', error);
           return UNCONFIRMED;
@@ -924,13 +935,15 @@ export class DocDO extends YServer<SyncEnv> {
     });
   }
 
-  /** The actor's verdict now: null while it may comment, else the refusal. Throws when D1 cannot answer. */
-  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | null> {
+  /**
+   * The actor's verdict now: the access epoch it was resolved at while it may comment, else the refusal. Throws when D1
+   * cannot answer.
+   */
+  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number): Promise<CommentResult | string> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
     if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
     if (actor.kind === 'user' && !session) return unauthenticated;
-    const resolvedAt = Date.now();
     const { stamp, access } = await withDeadline(this.#limits.accessDeadlineMs, async (race) => {
       const read = await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
       return { stamp: read, access: await race(check.resolve(this.name, actor)) };
@@ -938,10 +951,10 @@ export class DocDO extends YServer<SyncEnv> {
     if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
     if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
     if (access === null) return { ok: false, status: 404, error: 'not-found' };
-    if (!roleAtLeast(access.role, 'commenter')) return { ok: false, status: 403, error: 'forbidden' };
+    if (!roleAtLeast(access.role, 'commenter')) return FORBIDDEN;
     // A kick persisted while D1 answered outdates what it said.
-    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return { ok: false, status: 403, error: 'forbidden' };
-    return null;
+    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return FORBIDDEN;
+    return stamp.key;
   }
 
   /**
@@ -1115,15 +1128,17 @@ export class DocDO extends YServer<SyncEnv> {
    * Pull validation (A§8): reads the doc's access epoch and the sockets' credentials, then closes every socket whose
    * session ended (4402) or key was revoked (4403), and re-resolves each socket admitted under an older epoch, closing
    * it on a lowered or lost role (4403) or a doc in Trash (4410). A socket that keeps its role takes the new epoch.
-   * Throws, closing nothing, when D1 cannot answer.
+   * Throws, closing nothing, when D1 cannot answer. `actor`, a comment writer, is judged in the same read as a socket
+   * would be and its verdict returned, so the last D1 read before its write confirms it even with no socket open.
    */
-  async #validate(check: AccessCheck, only?: Connection[]): Promise<void> {
+  async #validate(check: AccessCheck, only?: Connection[], actor?: Attachment): Promise<number | Resolved | null> {
     const sockets = (only ?? [...this.#all()]).flatMap((connection) => {
       const attachment = attachmentOf(connection);
       return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
     });
-    if (sockets.length === 0) return;
-    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, sockets, race));
+    if (sockets.length === 0 && !actor) return null;
+    const subjects = actor ? [...sockets, { attachment: actor }] : sockets;
+    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, subjects, race));
     for (const [i, { connection, attachment }] of sockets.entries()) {
       const verdict = verdicts[i];
       if (!isOpen(connection)) continue;
@@ -1139,11 +1154,13 @@ export class DocDO extends YServer<SyncEnv> {
       if (verdict === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
       connection.close(verdict, verdict === CLOSE.sessionEnded ? 'session ended' : verdict === CLOSE.deleted ? 'deleted' : 'revoked');
     }
+    return actor ? verdicts[sockets.length] ?? null : null;
   }
 
   /**
    * Each socket's verdict: null to keep it as admitted, its access when re-resolved and kept, or the code that closes
-   * it. Every D1 read goes through `race`, the validation's deadline.
+   * it. Every D1 read goes through `race`, the validation's deadline. When a resolve ran, the stamp is read again after
+   * it and must be unchanged, so nothing judged on the first read lost access unseen; three changed reads throw.
    */
   async #verdicts(
     check: AccessCheck,
@@ -1151,37 +1168,48 @@ export class DocDO extends YServer<SyncEnv> {
     race: <R>(read: Promise<R>) => Promise<R>,
   ): Promise<{ stamp: Stamp; verdicts: (number | Resolved | null)[] }> {
     const unique = (ids: (string | null)[]) => [...new Set(ids.filter((id): id is string => id !== null))];
-    const stamp = await race(check.stamp(
-      this.name,
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null))),
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null))),
-    ));
-    const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
-    const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
-      if (attachment.kind === 'user' && attachment.sessionId !== null && !stamp.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
-      if (attachment.kind === 'agent' && !stamp.agents.has(attachment.principalId)) return CLOSE.revoked;
-      if (stamp.key && attachment.epoch === stamp.key) return null;
-      const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
-      let access = resolved.get(who);
-      if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
-      const now = await access;
-      if (now === 'deleted') return CLOSE.deleted;
-      if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
-      // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
-      return { role: attachment.role, presence: now.presence };
-    })));
-    return { stamp, verdicts };
+    const sessions = unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null)));
+    const agents = unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null)));
+    let stamp = await race(check.stamp(this.name, sessions, agents));
+    for (let pass = 1; ; pass += 1) {
+      const current = stamp;
+      const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
+      const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
+        if (attachment.kind === 'user' && attachment.sessionId !== null && !current.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
+        if (attachment.kind === 'agent' && !current.agents.has(attachment.principalId)) return CLOSE.revoked;
+        if (current.key && attachment.epoch === current.key) return null;
+        const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
+        let access = resolved.get(who);
+        if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
+        const now = await access;
+        if (now === 'deleted') return CLOSE.deleted;
+        if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
+        // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
+        return { role: attachment.role, presence: now.presence };
+      })));
+      if (resolved.size === 0) return { stamp, verdicts };
+      // A subject judged on the stamp may have lost access while the resolves awaited D1: a last read confirms the
+      // epoch and every live credential held, else the verdicts are taken again under the new stamp.
+      const again = await race(check.stamp(this.name, sessions, agents));
+      const held = again.key === stamp.key && [...stamp.sessions].every((id) => again.sessions.has(id)) && [...stamp.agents].every((id) => again.agents.has(id));
+      if (held) return { stamp, verdicts };
+      if (pass === 3) throw new Error('access kept changing while the sockets were validated');
+      stamp = again;
+    }
   }
 
   #liveness(): TrashedInD1 | null {
     return (this.constructor as typeof DocDO).liveness(this.env);
   }
 
-  /** `admitting`, a socket still in onConnect, is left for its own refusal. */
+  /**
+   * `admitting`, a socket still in onConnect, is left for its own refusal. A D1 read past the access deadline throws
+   * before anything changes, freeing the queue; its late answer is ignored.
+   */
   async #settle(release: string[], admitting?: Connection): Promise<{ deleted: boolean }> {
     const trashedInD1 = this.#liveness();
     if (!trashedInD1) throw new Error('DocDO has no D1 to settle from');
-    const deleted = await trashedInD1(this.name);
+    const deleted = await withDeadline(this.#limits.accessDeadlineMs, (race) => race(trashedInD1(this.name)));
     const store = await this.#ready();
     const holds = holdsOf(store);
     for (const hold of release) holds.delete(hold);
