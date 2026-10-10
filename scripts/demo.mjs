@@ -85,6 +85,36 @@ export const THREADS = [
   },
 ];
 
+/**
+ * Who runs the comments step, in order. A pass adds the person's roots, then their replies under roots that exist,
+ * then their reactions on messages that exist, so a reaction on a later reply needs its own later pass.
+ */
+export function commentPasses(threads) {
+  const people = [...new Set(threads.flatMap((t) => [t.by, ...(t.replies ?? []).map((r) => r.by), ...(t.reactions ?? []).map((r) => r.by)]))];
+  const have = new Set();
+  const left = new Set(threads.flatMap((t) => [t, ...(t.replies ?? []), ...(t.reactions ?? [])]));
+  const passes = [];
+  for (let round = 0; left.size && round < 2 * threads.length + 2; round += 1) {
+    for (const me of people) {
+      let did = false;
+      const add = (item, text) => {
+        if (text) have.add(text);
+        left.delete(item);
+        did = true;
+      };
+      for (const t of threads) if (t.by === me && left.has(t)) add(t, t.text);
+      for (const t of threads) for (const r of t.replies ?? []) if (r.by === me && left.has(r) && have.has(t.text)) add(r, r.text);
+      for (const t of threads) {
+        const messages = [t.text, ...(t.replies ?? []).map((r) => r.text)].filter((text) => have.has(text));
+        for (const r of t.reactions ?? []) if (r.by === me && left.has(r) && messages.some((text) => text.includes(r.on))) add(r);
+      }
+      if (did) passes.push(me);
+    }
+  }
+  if (left.size) fail('some comment thread waits on a message nobody writes');
+  return passes;
+}
+
 // ---------- configuration and principals ----------
 
 /** The stack's base URL and the one demo run id for it: the same URL always maps to the same run. */
@@ -242,23 +272,27 @@ export async function buildDemo(opts) {
       ids[note.key] = made.id;
       log(`${made.created ? 'built' : 'kept'} "${note.title}" ${baseUrl}/d/${made.id}`);
     }
-    await step('version', { docId: ids.launch, name: 'First outline' });
+    log(`version "First outline" ${(await step('version', { docId: ids.launch, name: 'First outline' })).created ? 'added' : 'kept'}`);
 
     const ben = principals.find((p) => p.label === 'ben');
     const shared = await step('share', { folderName: FOLDER, email: ben.email, access: 'Can suggest', linkAccess: 'Can view' });
     if (shared.invite) await step('accept', { invite: shared.invite });
     log(`folder shared with ${ben.email}; view link ${shared.link}`);
 
-    for (const me of ['ada', 'ben', 'ada']) await step('comments', { docId: ids.launch, me, mode: me === 'ben' ? 'suggest' : 'edit', threads: THREADS });
-    await step('suggest', { docId: ids.launch, find: SENTENCE.find, replace: SENTENCE.replace });
+    for (const me of commentPasses(THREADS)) {
+      const added = await step('comments', { docId: ids.launch, me, mode: me === 'ben' ? 'suggest' : 'edit', threads: THREADS });
+      log(`comments as ${me}: added ${added.roots} roots, ${added.replies} replies, ${added.reactions} reactions`);
+    }
+    const suggested = await step('suggest', { docId: ids.launch, find: SENTENCE.find, replace: SENTENCE.replace });
+    log(suggested.created ? "Ben's suggestion added" : "Ben's suggestion is already pending");
     if (!opts['skip-agent']) {
       const { suggestions } = await step('suggestions', { docId: ids.launch });
       if (pendingBy(suggestions, AGENT)) log('the agent suggestion is already pending');
       else log(await agentSuggests({ baseUrl, key: (await step('agentKey', { name: AGENT })).key, docId: ids.launch }));
     }
-    await step('version', { docId: ids.launch, name: 'Ready for review' });
+    log(`version "Ready for review" ${(await step('version', { docId: ids.launch, name: 'Ready for review' })).created ? 'added' : 'kept'}`);
 
-    shots.push((await step('signature', { docId: ids.launch, sentence: SENTENCE.text, replace: SENTENCE.replace })).shot);
+    shots.push((await step('signature', { docId: ids.launch, sentence: SENTENCE.text, find: SENTENCE.find, replace: SENTENCE.replace })).shot);
     shots.push(...(await step('everyNode', { docId: ids.every, htmlResult: 'Ran on click' })).shots);
     shots.push(...(await step('review', { docId: ids.launch, rootText: THREADS[0].text })).shots);
     shots.push((await step('history', { docId: ids.launch })).shot);

@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (109 of 137 planned tasks verified)
+**Overall: 80% done** (110 of 137 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 7 / 10 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 8 / 10 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -130,6 +130,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T8.3a verified: `scripts/security/sweep.mjs` runs the adversarial security checklist (headers, header stripping, existence leaks, revocation, limits) against a production build in CI, an authorization matrix covers every `/api` route, request bodies are capped and app pages refuse foreign framing; docs/SECURITY.md records the results.
 - 2026-10-09 — T8.Ds verified: `deploy-staging.yml` now deploys only a green, same-repository branch CI run whose head is still on its branch, checked by `run-gate.mjs` before any checkout or secret, and the staging canary keeps no trace, screenshot or video, logs only test titles, statuses and durations, and uploads only `requests.json` and that summary.
 - 2026-10-09 — T8.3 verified: the security sweep now runs against staging and passes all 52 checks (headers, header stripping, existence leaks, origin gate, revocation, SSRF, body caps through the edge, rate limits including spoofed client IPs), with the staging column recorded in docs/SECURITY.md.
+- 2026-10-09 — T8.5 verified: `scripts/demo.mjs` builds the demo in one run with every reply and reaction landing, logs what each step added, and checks the signature shot of a peer's caret and a pending suggestion beside rich blocks live before and after capture, retaking it if the frame is wrong.
 
 ## T1.1s identity audit
 
@@ -162,6 +163,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.5's checker (1cbe2ad, 2026-10-09)
+
+- T8.5 checker P2 (the signature check counts whole blocks, not the visible text): inspectSignature in e2e/qa/demo.js joins the full textContent of any block overlapping the view and signatureProblems only checks the strings are present, so a clipped paragraph whose required words are off-screen still passes; horizontal clipping and whether the suggestion is painted are unchecked, and demo.test.mjs never runs the DOM inspector.
 
 ### From T8.3's checker (24262e0, 2026-10-09)
 
