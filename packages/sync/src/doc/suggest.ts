@@ -52,6 +52,10 @@ export interface LeaseStore {
   reservedFor(record: string): Lease | undefined;
   /** Unexpired leases used since `since` that hold no record yet: the ids a principal holds in reserve. */
   live(principal: string, since: number): number;
+  /** Leases of `principal` that hold no record yet, live or not: its retained reservations. */
+  unbound(principal: string): number;
+  /** `principal`'s least recently used reservation that is expired or idle since `since`, of `fork` when given. */
+  dormant(principal: string, since: number, fork?: string): Lease | undefined;
   expireConnection(connection: string): void;
   spend(record: string): void;
   rebind(from: string, into: string): void;
@@ -88,6 +92,22 @@ export class MemoryLeases implements LeaseStore {
     return count;
   }
 
+  unbound(principal: string): number {
+    let count = 0;
+    for (const lease of this.#byClient.values()) if (lease.principal === principal && lease.record === null) count += 1;
+    return count;
+  }
+
+  dormant(principal: string, since: number, fork?: string): Lease | undefined {
+    let found: Lease | undefined;
+    for (const lease of this.#byClient.values()) {
+      if (lease.principal !== principal || lease.record !== null || (!lease.expired && lease.usedAt >= since)) continue;
+      if (fork !== undefined && lease.fork !== fork) continue;
+      if (!found || lease.usedAt < found.usedAt) found = lease;
+    }
+    return found && { ...found, clocks: { ...found.clocks } };
+  }
+
   expireConnection(connection: string): void {
     for (const lease of this.#byClient.values()) if (lease.connection === connection) lease.expired = true;
   }
@@ -115,6 +135,9 @@ export class SqlLeases implements LeaseStore {
       connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, clocks TEXT NOT NULL,
       spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL, fork_id TEXT)`);
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_principal ON suggest_leases (principal_id, spent, expired)');
+    // live() and the reservation reads touch only unbound rows (live ones for live()), never a principal's history.
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_live ON suggest_leases (principal_id, used_at) WHERE record_id IS NULL AND expired = 0');
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_unbound ON suggest_leases (principal_id, used_at) WHERE record_id IS NULL');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_record ON suggest_leases (record_id)');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_connection ON suggest_leases (connection_id)');
   }
@@ -160,6 +183,17 @@ export class SqlLeases implements LeaseStore {
       'SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?', principal, since,
     ).toArray()[0];
     return Number(row?.n ?? 0);
+  }
+
+  unbound(principal: string): number {
+    return Number(this.sql.exec<Row>('SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL', principal).toArray()[0]?.n ?? 0);
+  }
+
+  dormant(principal: string, since: number, fork?: string): Lease | undefined {
+    const where = 'principal_id = ? AND record_id IS NULL AND (expired = 1 OR used_at < ?)';
+    return fork === undefined
+      ? this.#one(`SELECT * FROM suggest_leases WHERE ${where} ORDER BY used_at LIMIT 1`, principal, since)
+      : this.#one(`SELECT * FROM suggest_leases WHERE ${where} AND fork_id = ? ORDER BY used_at LIMIT 1`, principal, since, fork);
   }
 
   expireConnection(connection: string): void {
@@ -214,6 +248,11 @@ export interface IngestOptions {
 /** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
 type Placed = Map<string, Map<number, { clock: number; len: number; at: Placement }[]>>;
 
+/**
+ * Unbound reservations one principal retains, live or dormant: past it, fresh leases resume its dormant ones instead
+ * of minting rows. A few windows' worth beyond the live cap.
+ */
+export const RESERVED_MAX = 4 * SUGGEST_LIMITS.liveLeases;
 /** Leases one resume may name: a principal's open records may hold more than the unused-lease cap. */
 const RESUME_MAX = 64;
 /** Item headers and keys a meta write adds, beyond the JSON itself. */
@@ -328,9 +367,21 @@ export class SuggestIngest {
     }
     const wanted = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
     // A lease row is retained state too: none is minted past the share, or into the reserve kept for edits.
-    const fresh = Math.max(0, Math.min(wanted, Math.floor(this.#room() / leaseBytes({ clocks: {} }))));
+    let room = Math.floor(this.#room() / leaseBytes({ clocks: {} }));
     const writer = suggestionsWriter(this.doc)?.client;
-    for (let i = 0; i < fresh; i += 1) {
+    for (let i = 0; i < wanted; i += 1) {
+      // A dormant reservation is resumed rather than a row minted: this fork's own first (one whose grant it never
+      // heard), any of the principal's once it holds `RESERVED_MAX`. It holds no record and no acknowledged clock, so
+      // only its connection changes; its ids never pass to another principal.
+      const reuse = (fork !== null ? this.leases.dormant(who.id, since, fork) : undefined)
+        ?? (this.leases.unbound(who.id) >= RESERVED_MAX ? this.leases.dormant(who.id, since) : undefined);
+      if (reuse) {
+        this.leases.put({ ...reuse, connection: who.connection, expired: false, usedAt: now, fork });
+        grants.push({ client: reuse.client, record: reuse.reserved, clock: ownValue(reuse.clocks, BODY_DOC) ?? 0, clocks: reuse.clocks });
+        continue;
+      }
+      if (room <= 0) break;
+      room -= 1;
       let client = 0;
       while (client === 0 || client === writer || this.doc.store.clients.has(client) || this.leases.get(client)) client = crypto.getRandomValues(new Uint32Array(1))[0];
       const reserved = this.#mint();
@@ -338,7 +389,7 @@ export class SuggestIngest {
       grants.push({ client, record: reserved, clock: 0, clocks: {} });
       this.#retained += leaseBytes({ clocks: {} });
     }
-    return grants.length ? { ok: true, leases: grants } : refused(fresh < wanted ? 'doc-cap' : 'lease-cap');
+    return grants.length ? { ok: true, leases: grants } : refused(wanted > 0 ? 'doc-cap' : 'lease-cap');
   }
 
   /** One fork transaction: a body update, or `{doc, update}` in the body or a payload doc of the fork. */

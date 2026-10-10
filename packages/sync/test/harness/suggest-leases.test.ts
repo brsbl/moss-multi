@@ -69,7 +69,7 @@ describe('T5.S5 unbound lease reservations are bounded per principal @p:mean-2',
       await sam.drop();
       if (i % 15 === 14) opened = await start(wake(opened));
     }
-    expect(rows(opened, SAM.id), 'rows retained for one principal').toBeLessThanOrEqual(BOUND);
+    expect(rows(opened, SUGGESTER.id), 'rows retained for one principal').toBeLessThanOrEqual(BOUND);
     expect(seen.size, 'client ids handed out').toBeLessThanOrEqual(BOUND);
 
     // A resumed reservation writes as a fresh one does.
@@ -89,7 +89,7 @@ describe('T5.S5 unbound lease reservations are bounded per principal @p:mean-2',
     const again = await on(opened, SAM);
     const after = (await lease(again, { fork })).map((grant) => grant.client).sort();
     expect(after).toEqual(before);
-    expect(rows(opened, SAM.id)).toBe(before.length);
+    expect(rows(opened, SUGGESTER.id)).toBe(before.length);
   });
 
   it('live() reads a partial covering index of live rows only', async () => {
@@ -98,7 +98,7 @@ describe('T5.S5 unbound lease reservations are bounded per principal @p:mean-2',
     const sam = await on(opened, SAM);
     await lease(sam);
     const plan = opened.backing.query<{ detail: string }>(
-      'EXPLAIN QUERY PLAN SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?', SAM.id, 0,
+      'EXPLAIN QUERY PLAN SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?', SUGGESTER.id, 0,
     ).map((row) => row.detail).join('\n');
     expect(plan).toContain('USING COVERING INDEX suggest_leases_live');
     const index = opened.backing.query<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'suggest_leases_live'")[0]?.sql ?? '';
