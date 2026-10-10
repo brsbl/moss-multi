@@ -1,7 +1,7 @@
 // Suggestion previews for the panel's cards (T5.S8). A preview costs one token of the reader's budget
 // (SUGGEST_PREVIEW_RATE), so only a card on screen, expanded or active asks for one, at most PREVIEW_CONCURRENCY run at
 // once, an answer is kept per record digest across panel reopenings, and a 429 pauses every request until its
-// Retry-After has passed, then the waiting cards are asked for again.
+// Retry-After has passed, then the waiting cards are asked for again (a reader's Try again still sends its one request).
 import type { Hunk } from '@moss-multi/core/suggest/apply';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
@@ -40,6 +40,8 @@ interface Entry {
   value: Preview;
   wanters: number;
   inflight: boolean;
+  /** The reader pressed Try again: one request goes even while paused. */
+  asked: boolean;
 }
 
 /** Seconds or an HTTP date, as Retry-After allows; DEFAULT_PAUSE_MS when absent or unreadable. */
@@ -70,7 +72,7 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
     const name = `${docId}\u0000${id}`;
     let entry = entries.get(name);
     if (!entry) {
-      entry = { docId, id, round: 0, want: '', fetched: null, shown: null, value: LOADING, wanters: 0, inflight: false };
+      entry = { docId, id, round: 0, want: '', fetched: null, shown: null, value: LOADING, wanters: 0, inflight: false, asked: false };
       entries.set(name, entry);
     }
     return entry;
@@ -78,19 +80,21 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
 
   const pump = () => {
     const now = Date.now();
-    if (now < pausedUntil) {
+    const paused = now < pausedUntil;
+    if (paused) {
       resume ??= setTimeout(() => {
         resume = null;
         pump();
       }, pausedUntil - now);
-      return;
     }
     for (const entry of pending) {
       if (active >= PREVIEW_CONCURRENCY) return;
+      if (paused && !entry.asked) continue;
       pending.delete(entry);
       // A card that scrolled away or closed before its turn is asked for again when it is back.
       // One in flight answers first, then asks again if the record moved meanwhile.
       if (entry.inflight || entry.wanters === 0 || entry.fetched === entry.want) continue;
+      entry.asked = false;
       void run(entry, entry.want);
     }
   };
@@ -150,6 +154,7 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
       const entry = entryOf(docId, id);
       entry.round += 1;
       entry.want = `${digest}:${entry.round}`;
+      entry.asked = true;
       changed();
       if (entry.wanters > 0) {
         pending.add(entry);
