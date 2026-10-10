@@ -137,3 +137,41 @@ it('SP6 validates 1000 repeated awareness frames within a bounded CPU budget', a
   expect(elapsedMs).toBeLessThan(5000);
   expect(opened.dobj.document.awareness.getStates().get(42)?.name).toBe('Ada');
 });
+
+it('a direct viewer or an agent cannot relay malformed cursor positions; well-formed ones still relay', async () => {
+  const opened = await start(openDoc());
+  const viewer = await connect(opened, { id: 'ada', name: 'Ada', role: 'viewer' });
+  const agent = await connect(opened, { id: 'bot', name: 'Bot', kind: 'agent', session: null });
+  const peer = await connect(opened, { id: 'ben', name: 'Ben' });
+  const states = opened.dobj.document.awareness.getStates();
+  const relayed = () => peer.socket.sent.filter(f => typeof f !== 'string' && f[0] === 1).length;
+  const bot = { name: 'Bot', color: '#123456', user: { principalId: 'bot', name: 'Bot', isAgent: true, color: '#123456', colorSettled: true } };
+  // Lexical's RelativePosition through JSON (nulls kept) and Y.relativePositionToJSON's form (nulls omitted).
+  const lexical = { type: null, tname: null, item: { client: 7, clock: 3 }, assoc: 0 };
+  const compact = { type: { client: 7, clock: 0 }, assoc: -1 };
+  await viewer.deliver(frame(42, { ...state(), focusing: true, anchorPos: lexical, focusPos: { tname: 'root', assoc: 0 } }));
+  await agent.deliver(frame(43, { ...bot, focusing: true, anchorPos: compact, focusPos: compact }));
+  expect(states.get(42)).toMatchObject({ anchorPos: lexical, focusPos: { tname: 'root', assoc: 0 } });
+  expect(states.get(43)).toMatchObject({ anchorPos: compact, focusPos: compact });
+  const before = relayed();
+  expect(before).toBeGreaterThanOrEqual(2);
+  const malformed: unknown[] = [
+    {}, { assoc: 0 }, { type: null, tname: null, item: null, assoc: 0 }, { item: {} }, { item: { client: -1, clock: 0 } },
+    { item: { client: 1, clock: 1.5 } }, { item: { client: 1, clock: 1, extra: 1 } }, { item: [1, 2] }, { type: { client: '1', clock: 0 } },
+    { tname: 5 }, { tname: 'root', assoc: 'x' }, { tname: 'root', assoc: 0.5 }, { tname: 'root', junk: 1 }, [], 'root', 3, true,
+  ];
+  let clock = 2;
+  for (const bad of malformed) {
+    for (const [client, id, who] of [[viewer, 42, state()], [agent, 43, bot]] as const) {
+      await client.deliver(frame(id, { ...who, focusing: true, anchorPos: bad, focusPos: lexical }, clock++));
+      await client.deliver(frame(id, { ...who, focusing: true, anchorPos: lexical, focusPos: bad }, clock++));
+    }
+  }
+  expect(relayed()).toBe(before);
+  expect(states.get(42)).toMatchObject({ anchorPos: lexical, focusPos: { tname: 'root', assoc: 0 } });
+  expect(states.get(43)).toMatchObject({ anchorPos: compact, focusPos: compact });
+  await viewer.deliver(frame(42, { ...state(), focusing: false, anchorPos: null, focusPos: null }, clock++));
+  await agent.deliver(frame(43, { ...bot, focusing: false }, clock));
+  expect(relayed()).toBe(before + 2);
+  expect(states.get(43)?.focusing).toBe(false);
+});

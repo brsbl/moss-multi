@@ -4,7 +4,8 @@ import * as Y from 'yjs';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import { writeSyncStep1 } from 'y-protocols/sync';
-import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
   ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
@@ -635,7 +636,8 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * Records the doc's folder and owner and writes its starting content: the seed, or an imported body. Idempotent:
-   * a repeated create changes nothing. Throws DocCapError for a body past the state cap.
+   * a repeated create changes nothing. Throws DocCapError for a body past the state cap or the converter's work budget,
+   * or frontmatter past its expansion budget.
    */
   async create(input: CreateDocInput): Promise<void> {
     const store = await this.#ready();
@@ -643,10 +645,19 @@ export class DocDO extends YServer<SyncEnv> {
     if (store.meta('created') !== null) return;
     if (input.markdown) {
       const parts = splitFrontmatter(input.markdown);
+      // Frontmatter whose aliases name far more than its text holds is refused whole, as a body past the cap is.
+      if (parts.error === FRONTMATTER_EXPANSION_ERROR) throw new DocCapError();
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
       const sidecar = input.comments ? Object.fromEntries(coerceSidecar(input.comments)) : undefined;
-      const marks = importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads), frontmatter, sidecar);
+      let marks: ReturnType<typeof importBody>;
+      try {
+        marks = importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads), frontmatter, sidecar);
+      } catch (error) {
+        // Markdown that spends the converter's whole work budget is refused whole too.
+        if (error instanceof Error && (error.message === IMPORT_BUDGET_SPENT || error.message === FRONTMATTER_EXPANSION_ERROR)) throw new DocCapError();
+        throw error;
+      }
       // Right after the tree diff, in the same turn (comments.md §13).
       // The import's diff may be past a log row and not yet counted in stateBytes, so the room is measured.
       if (sidecar) {
@@ -1185,9 +1196,11 @@ export class DocDO extends YServer<SyncEnv> {
       };
       if (this.#refused(connection, attachment, overCap, missing)) return;
       payloads.addReaders(id, [attachment.principalId]);
-      const doc = payloads.doc(id);
-      Y.applyUpdate(doc, data, connection);
-      this.#acks.schedule(connection, deletes, id, coverage(doc, data));
+      if (!payloads.applyFrame(id, data, connection)) {
+        this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+        return;
+      }
+      this.#acks.schedule(connection, deletes, id, coverage(payloads.doc(id), data));
     } catch {
       // A frame that does not decode is dropped like an unknown one.
     }

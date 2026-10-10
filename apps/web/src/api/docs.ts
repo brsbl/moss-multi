@@ -10,6 +10,7 @@ import {
   CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
 } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
+import { isDocCapError } from '@moss-multi/protocol/sync';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -79,7 +80,7 @@ async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<u
     await run();
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
-    if (error instanceof Error && error.message === 'doc-cap') return docCap();
+    if (isDocCapError(error)) return docCap();
     if (error instanceof Error && error.message === 'media-refused') return notFound();
     throw error;
   }

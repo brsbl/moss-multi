@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
+import { parseCard } from './unfurl.ts';
 import type { HostResolver } from './ssrf.ts';
 import { setRemoteFetchForTests } from './remote.ts';
 
@@ -189,6 +190,91 @@ describe('POST /api/unfurl', () => {
     expect((await post('/api/unfurl', ada.cookie, { url: 'https://site.example/' })).status).toBe(400);
     expect((await post('/api/unfurl', ada.cookie, { noteId: await insertDoc(d1.db, ada) })).status).toBe(400);
   });
+});
+
+/** The page prefix parseCard reads; hostile pages are grown to it. */
+const CAP = 512 * 1024;
+/** Openers with no closing delimiter, each of which used to rescan the rest of the page. */
+const UNCLOSED: [string, string][] = [['meta', '<meta '], ['link', '<LINK '], ['title without >', '<title '], ['title without </title>', '<title>']];
+const hostile = (opener: string, bytes: number) => opener.repeat(Math.ceil(bytes / opener.length)).slice(0, bytes);
+
+/**
+ * Times `run` on pages doubling to the cap: each costs at most about three times the half-size one, the cap `budgetMs`.
+ * Each size keeps the fastest of three runs, so a GC pause or a busy runner in one run does not read as superlinear.
+ */
+async function expectLinear(opener: string, run: (body: string, size: number) => Promise<void> | void, budgetMs: number, slackMs: number) {
+  const time = async (size: number) => {
+    const body = hostile(opener, size);
+    let fastest = Infinity;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const startedAt = performance.now();
+      await run(body, size);
+      fastest = Math.min(fastest, performance.now() - startedAt);
+    }
+    return fastest;
+  };
+  await time(1024); // warm up
+  let previous = await time(2048);
+  for (let size = 4096; size <= CAP; size *= 2) {
+    const took = await time(size);
+    expect(took, `${size} bytes took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + slackMs);
+    previous = took;
+  }
+  expect(previous, `the ${CAP}-byte page took ${Math.round(previous)} ms`).toBeLessThan(budgetMs);
+}
+
+/** The tags the regexes before T3.S12 read, rebuilt as a well-formed page: the answer key for ordinary pages. */
+function regexReading(head: string): string {
+  const metas = [...head.matchAll(/<meta\b[^>]*>/gi)].map(([tag]) => tag);
+  const links = [...head.matchAll(/<link\b[^>]*>/gi)].map(([tag]) => tag);
+  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(head)?.[1];
+  return `${title === undefined ? '' : `<title>${title}</title>`}${metas.join('')}${links.join('')}`;
+}
+
+describe('parseCard on hostile and ordinary pages', () => {
+  it.each(UNCLOSED)('reads repeated unclosed %s openers in linear time, within budget', async (_label, opener) => {
+    const empty = parseCard('', 'https://site.example/');
+    await expectLinear(opener, (body) => {
+      expect(parseCard(body, 'https://site.example/')).toEqual(empty);
+    }, 250, 25);
+  }, 120_000);
+
+  it.each([
+    ['the OpenGraph page', PAGE],
+    ['upper-case tags and a title with attributes', '<HTML><HEAD><TITLE lang="en">Shout &lt;3</TITLE><META NAME="description" CONTENT="Loud"><LINK REL="apple-touch-icon" HREF="/t.png"></HEAD>'],
+    ['Twitter tags over the title', "<title>Plain</title><meta name='twitter:title' content='Tweet'><meta name=twitter:image content=https://img.example/t.png>"],
+    ['look-alike tags', '<metadata name="description" content="no"><meta-x name="description" content="no"><linkage rel="icon" href="/no.png"><titles>This one</titles><meta name="description" content="yes"><meta_x name="theme-color" content="#000"><meta name="theme-color" content="#fff">'],
+    ['the first of each tag', '<title>One</title><title>Two</title><meta property="og:title" content="A"><meta property="og:title" content="B"><link rel="icon" href="/a.png"><link rel="icon" href="/b.png">'],
+    ['an opener inside a tag', '<meta name="x" <meta property="og:title" content="Inner"><link <link rel="canonical" href="/c"><meta\tname="description" content="tab">'],
+    ['an unclosed title then a closed one', '<title>Lost<meta name="description" content="d"></title><title>Kept</title>'],
+    ['a title opener with no >', '<meta name="description" content="d"><title'],
+    ['a title with no </title>', '<title>Open<meta name="description" content="d">'],
+    ['a meta opener with no >, then a closed one', '<meta name="description" content="d"<meta property="og:title" content="t">'],
+    ['a meta at the very end', '<title>T</title><meta'],
+  ])('reads %s as the regexes did', (_label, page) => {
+    const url = 'https://site.example/page';
+    const reading = regexReading(page);
+    expect(parseCard(page, url), reading).toEqual(parseCard(reading, url));
+  });
+});
+
+describe('POST /api/unfurl on a hostile page', () => {
+  it.each(UNCLOSED)('answers a fallback card for repeated unclosed %s openers in linear time, then serves the next request', async (label, opener) => {
+    const docId = await insertDoc(d1.db, ada);
+    let n = 0;
+    await expectLinear(opener, async (body, size) => {
+      const url = `https://site.example/hostile-${label.replace(/\W+/g, '-')}-${size}-${n++}`;
+      routes[url] = html(body);
+      const response = await post('/api/unfurl', ada.cookie, { noteId: docId, url });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: 'fallback', url });
+    }, 1000, 50);
+    routes['https://site.example/'] = html(PAGE);
+    const startedAt = performance.now();
+    const response = await post('/api/unfurl', ada.cookie, { noteId: docId, url: 'https://site.example/' });
+    expect(((await response.json()) as { title: string }).title).toBe('Moss & friends');
+    expect(performance.now() - startedAt, 'the next request is served promptly').toBeLessThan(1000);
+  }, 120_000);
 });
 
 describe('POST /api/docs/:id/assets/from-url (images.persistUrl)', () => {

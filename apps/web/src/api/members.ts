@@ -312,7 +312,7 @@ async function change(
           .bind(target.type, target.id, person?.email.toLowerCase() ?? '', Date.now(), callerId),
         env.DB.prepare(`DELETE FROM ${table} WHERE ${column} = ?1 AND principal_id = ?2 AND ${manages(target, 1, 3)}`).bind(target.id, principalId, callerId),
         // Invites they sent die with their manage, for good (A§8).
-        reapDeadInvites(env.DB, Date.now()),
+        reapDeadInvites(env.DB, Date.now(), { inviter: principalId }),
       ]);
       done = changed(deleted);
     } else {
@@ -321,7 +321,7 @@ async function change(
       const [updated] = await env.DB.batch([
         env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND role = ?4
           AND ${manages(target, 1, 5)}${agentRaise ? ` AND ${liveOwnAgent(5)}` : ''}`).bind(target.id, principalId, role, grant.role, callerId),
-        reapDeadInvites(env.DB, Date.now()),
+        reapDeadInvites(env.DB, Date.now(), { inviter: principalId }),
       ]);
       done = changed(updated);
       if (!done && agentRaise && !await ownLiveAgent(env.DB, principalId, callerId)) {
