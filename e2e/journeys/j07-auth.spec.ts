@@ -1,7 +1,8 @@
 // j07-auth (T0.10): email and password on the moss-styled login card. Sign-up lands in the Home vault shell,
-// sign-out from Settings goes to the card, sign-in returns to the doc `next` names (and never off the site), a wrong
-// password says so, no OAuth button renders, the card works at both Tier A widths, and a session lookup that fails
-// or hangs degrades in place (R10).
+// sign-out from Settings goes to the card and ends only that session (Ada's other browser stays signed in), the
+// keyboard follows a switch between sign-in and sign-up, a too-short password names the minimum, sign-in returns
+// to the doc `next` names (and never off the site), a wrong password says so, no OAuth button renders, the card
+// works at both Tier A widths, and a session lookup that fails or hangs degrades in place (R10).
 import { cookieHeader } from '../lib/doc-client.ts';
 import { signIn, type Principal } from '../lib/principals.ts';
 import type { Page, Request, Route } from '@playwright/test';
@@ -107,8 +108,13 @@ test('sign-up on the login card lands in the Home vault shell, with no OAuth but
 test('sign-out from moss Settings posts JSON {} and goes to the login card, ending only that session @p:ppl-1', async ({ actors, stack }) => {
   const ada = await actors.open(await actors.principal('ada'));
   const ben = await actors.open(await actors.principal('ben'));
+  // Ada's second, independently signed-in browser: its own session, not a tab sharing the first one's cookie.
+  const ada2 = await actors.sameAs(ada);
   await actors.requireDistinct(2);
-  for (const actor of [ada, ben]) await waitForShell(actor);
+  for (const actor of [ada, ben, ada2]) await waitForShell(actor);
+  const sessionCookie = async (actor: Actor) => (await actor.context.cookies()).find((c) => /session_token$/.test(c.name))?.value;
+  expect(await sessionCookie(ada2), "ada's two browsers hold distinct sessions").not.toBe(await sessionCookie(ada));
+  expect(await sessionCookie(ada2)).toBeTruthy();
 
   const signOut = ada.page.waitForRequest((request) => new URL(request.url()).pathname === '/api/auth/sign-out');
   await ui.signOutThroughSettings(ada);
@@ -127,6 +133,47 @@ test('sign-out from moss Settings posts JSON {} and goes to the login card, endi
   await ben.page.reload();
   await waitForShell(ben);
   expect((await me(ben, stack.baseUrl)).status, "the other person's session is untouched").toBe(200);
+
+  expect(await me(ada2, stack.baseUrl), "ada's other session is untouched").toMatchObject({ status: 200, email: (ada.principal as Principal).email });
+  await ada2.page.reload();
+  await waitForShell(ada2);
+});
+
+test('the keyboard follows a mode switch, and a too-short password on sign-up names the minimum @p:ppl-1', async ({ actors, stack }) => {
+  for (const label of ['ada', 'ben']) {
+    const person = actors.credentials(label);
+    const actor = await actors.anonymous('/login', { label });
+    await ui.waitForLoginCard(actor);
+    const { keyboard } = actor.page;
+
+    // Enter on "Create an account" puts the caret in Name, the field the switch inserted, not after the form.
+    await actor.page.getByRole('button', { name: 'Create an account', exact: true }).focus();
+    await keyboard.press('Enter');
+    const signUp = ui.loginForm(actor, 'Create account');
+    await expect(signUp.getByLabel('Name', { exact: true }), `${label}: Name takes focus on entering sign-up`).toBeFocused();
+    await keyboard.type(person.name);
+    await expect(signUp.getByLabel('Name', { exact: true }), 'and receives what is typed').toHaveValue(person.name);
+
+    // Back to sign-in: Name is gone and the caret is in Email.
+    await actor.page.getByRole('button', { name: 'Sign in', exact: true }).focus();
+    await keyboard.press('Enter');
+    await expect(ui.loginForm(actor, 'Sign in').getByLabel('Email', { exact: true }), `${label}: Email takes focus on returning to sign-in`).toBeFocused();
+
+    // A three-character password is refused with the loopback minimum named.
+    await actor.page.getByRole('button', { name: 'Create an account', exact: true }).click();
+    actor.expectHttp(400, '/api/auth/sign-up/email');
+    await signUp.getByLabel('Name', { exact: true }).fill(person.name);
+    await signUp.getByLabel('Email', { exact: true }).fill(person.email);
+    await signUp.getByLabel('Password', { exact: true }).fill('abc');
+    await signUp.getByRole('button', { name: 'Create account', exact: true }).click();
+    await expect(signUp.getByRole('alert'), `${label}: the refusal says how long a password must be`).toContainText(/at least 8 characters/);
+
+    await signUp.getByLabel('Password', { exact: true }).fill(person.password);
+    await signUp.getByRole('button', { name: 'Create account', exact: true }).click();
+    await expect(actor.page, `${label}: a long enough password signs up`).toHaveURL(atPath('/'), { timeout: BOOT_TIMEOUT });
+    await waitForShell(actor);
+    person.id = (await me(actor, stack.baseUrl)).id;
+  }
 });
 
 test('sign-in on the card returns to the doc next names; a wrong password shows a message @p:ppl-1', async ({ actors, stack }) => {

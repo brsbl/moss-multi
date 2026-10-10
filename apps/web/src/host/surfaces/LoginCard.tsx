@@ -4,7 +4,7 @@
 // and none is configured (P:People). Fields stay disabled until hydration, so nothing typed is lost to a
 // pre-hydration submit, and `/login` publishes data-app-state=ready when they open. While a request is out they are
 // read-only rather than disabled, so the field being typed in keeps focus, and a refusal leaves the caret in the
-// password field for the fix.
+// password field for the fix. Switching between sign-in and sign-up puts the caret in the first field of the new form.
 import { Button } from '@moss/shared/components/ui/button';
 import { Card } from '@moss/shared/components/ui/card';
 import { Input } from '@moss/shared/components/ui/input';
@@ -41,9 +41,11 @@ export interface LoginCardProps {
   next: string;
   /** OAuth providers with credentials on this deployment; none for the reference. */
   providers: SocialProviderId[];
+  /** better-auth's minimum password length here, named when a sign-up password is too short. */
+  minPasswordLength?: number | null;
 }
 
-export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
+export function LoginCard({ next, providers, minPasswordLength = null }: LoginCardProps): ReactNode {
   const hydrated = useHydrated();
   const [mode, setMode] = useState<Mode>('sign-in');
   const [name, setName] = useState('');
@@ -52,8 +54,18 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  // Set only by a mode switch, so a first render or a refusal never moves the caret.
+  const switched = useRef(false);
 
   useEffect(() => setAppState('ready'), []);
+
+  useEffect(() => {
+    if (!switched.current) return;
+    switched.current = false;
+    (mode === 'sign-up' ? nameRef : emailRef).current?.focus();
+  }, [mode]);
 
   const signingUp = mode === 'sign-up';
   const action = signingUp ? 'Create account' : 'Sign in';
@@ -62,6 +74,7 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
   const fieldProps = { disabled: !hydrated, readOnly: pending };
 
   function switchMode(): void {
+    switched.current = true;
     setMode(signingUp ? 'sign-in' : 'sign-up');
     setError(null);
   }
@@ -76,7 +89,7 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
     setError(null);
     setPending(true);
     const credentials = { email: email.trim(), password, name };
-    const outcome = signingUp ? await auth.signUp(credentials) : await auth.signIn(credentials);
+    const outcome = signingUp ? await auth.signUp(credentials, { minPasswordLength }) : await auth.signIn(credentials);
     if (outcome.ok) {
       leaveTo(next); // stays pending while the page leaves
       return;
@@ -121,9 +134,9 @@ export function LoginCard({ next, providers }: LoginCardProps): ReactNode {
 
         <form aria-label={action} method="post" noValidate onSubmit={submit} className="mt-8 flex flex-col gap-3">
           {signingUp && (
-            <Field label="Name" type="text" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} {...fieldProps} />
+            <Field label="Name" type="text" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} ref={nameRef} {...fieldProps} />
           )}
-          <Field label="Email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} {...fieldProps} />
+          <Field label="Email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} ref={emailRef} {...fieldProps} />
           <Field
             label="Password"
             type="password"
