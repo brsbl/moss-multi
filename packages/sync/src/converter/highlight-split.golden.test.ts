@@ -72,6 +72,10 @@ function* fuzz(count: number, seed: number): Generator<string> {
   }
 }
 
+// moss inserted comment markers as replacement patterns, so `$&` or `$`` in a marker copied the opener or the split;
+// markers are now inserted as written, which differs from the pin only for such markers.
+const DOLLAR_MARKER = /(\{%c:|%%m:)[^%]*\$/;
+
 const words = (n: number, word: (i: number) => string) => Array.from({ length: n }, (_, i) => word(i)).join(' ');
 const HAND = [
   '<mark data-color="yellow">**bold** rest</mark>',
@@ -89,12 +93,15 @@ const texts = [
   ...FIXTURES.flatMap((f) => [f.markdown, ...f.markdown.split('\n')]),
   ...Object.values(CONVERTER_CASES).map((c) => converterBody(c, 2_000)),
   ...fuzz(30_000, 11),
-].filter((text) => !text.includes('`'));
+].filter((text) => !text.includes('`') && !DOLLAR_MARKER.test(text));
 
 /** One highlight of `runs` italic runs whose style attribute is `style` characters long. */
 const highlightLine = (style: number, runs: number) => `<mark data-color="yellow" style="${' '.repeat(style)}">${'*x* '.repeat(runs)}</mark>`;
 /** The same as an Obsidian highlight inside a comment anchor, whose wrapper is fixed. */
 const obsidianLine = (runs: number) => `%%m:id:start%%==${'*x* '.repeat(runs)}==%%m:id:end%%`;
+/** A comment-anchored highlight whose markers hold replacement patterns (`$&` copies the opener, `$`` the split). */
+const markerLine = (open: string, close: string, style: number, body: string) =>
+  `%%m:${open}:start%%<mark data-color="yellow" style="${' '.repeat(style)}">${body}</mark>%%m:${close}:end%%`;
 
 describe('highlight normalization is bounded @p:tech-4', () => {
   it('normalizes every highlight under the bound exactly as moss does', () => {
@@ -110,6 +117,10 @@ describe('highlight normalization is bounded @p:tech-4', () => {
     ...[256, 1_024, 4_096, 8_192].map((style): [string, string] => [`style ${style}, 1,024 runs`, highlightLine(style, 1_024)]),
     ...[256, 1_024, 4_096, 8_192].map((runs): [string, string] => [`style 1,024, ${runs} runs`, highlightLine(1_024, runs)]),
     [`comment-anchored Obsidian highlight, 1,024 runs`, obsidianLine(1_024)],
+    ['$& start marker, 10 runs', markerLine('$&'.repeat(3_000), 'id', 4_096, '*x* '.repeat(10))],
+    ['$& start marker, one run', markerLine('$&'.repeat(3_000), 'id', 4_096, '**x**')],
+    ['$` end marker, one run', markerLine('id', '$`'.repeat(3_000), 4_096, '**x**')],
+    ['$` end marker, Obsidian', `%%m:id:start%%==**${'x'.repeat(4_096)}**==%%m:${'$`'.repeat(3_000)}:end%%`],
   ];
   it.each(cases)('keeps the normalized line bounded: %s', (_name, line) => {
     const started = performance.now();
@@ -121,6 +132,17 @@ describe('highlight normalization is bounded @p:tech-4', () => {
   it('keeps an over-budget highlight as written', () => {
     const line = highlightLine(4_096, 4_096);
     expect(normalizeRichTextInsideHighlightsForImport(line)).toBe(line);
+    // Its comment markers do not buy it the budget the highlight alone was refused.
+    const anchored = markerLine('$&'.repeat(3_000), 'id', 4_096, '*x* '.repeat(10));
+    expect(normalizeRichTextInsideHighlightsForImport(anchored)).toBe(anchored);
+  });
+
+  it('inserts comment markers as written', () => {
+    for (const line of [
+      markerLine('$&', '$`', 0, '**a**'),
+      '{%c:$&%}<mark data-color="yellow">**a**</mark>{%/c%}',
+      "%%m:$&:start%%==**a**==%%m:$`$':end%%",
+    ]) expect(normalizeRichTextInsideHighlightsForImport(line)).toBe(line);
   });
 
   // Past about 3M added characters the import's note budget (perNote over NORMALIZED and NORMALIZED_NOTE) leaves every

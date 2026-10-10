@@ -55,6 +55,40 @@ describe('a highlight of a long style and many runs stays bounded @p:tech-4', ()
     });
   }, 60_000);
 
+  // Comment markers holding replacement patterns (`$&` copied the opener, `$`` the split) once multiplied the line.
+  const MARKED: [string, string][] = [
+    ['$& start marker', `%%m:${'$&'.repeat(3_000)}:start%%<mark data-color="yellow" style="${' '.repeat(4_096)}">**x**</mark>%%m:id:end%%`],
+    ['$` end marker', `%%m:id:start%%<mark data-color="yellow" style="${' '.repeat(4_096)}">**x**</mark>%%m:${'$`'.repeat(3_000)}:end%%`],
+  ];
+  async function checkMarked(text: string, land: (markdown: string) => Promise<string>): Promise<void> {
+    const markdown = `before\n\n${text}\n\nafter`;
+    const started = performance.now();
+    const exported = await land(markdown);
+    expect(exported).toContain('before');
+    expect(exported).toContain('after');
+    expect(xs(exported), 'the run is kept').toBe(1);
+    expect(exported.length, `${markdown.length} chars exported as ${exported.length}`).toBeLessThanOrEqual(4 * markdown.length + 1_024);
+    expect(performance.now() - started).toBeLessThan(5_000);
+  }
+  it.each(MARKED)('through the DocDO create: %s', async (_name, text) => {
+    await checkMarked(text, async (markdown) => {
+      const { dobj } = await start(openDoc(new Backing(crypto.randomUUID())));
+      await dobj.create({ folderId: 'f', ownerId: 'o', markdown });
+      return dobj.exportMarkdown();
+    });
+  }, 60_000);
+  it.each(MARKED)('through an editor import and push: %s', async (_name, text) => {
+    await checkMarked(text, async (markdown) => {
+      const opened = await start(openDoc(new Backing(crypto.randomUUID())));
+      const client = await connect(opened, { role: 'editor' });
+      const lexical = bindLexical(client.doc);
+      await client.hello();
+      lexical.editor.update(() => $importNoteBody(markdown), { discrete: true });
+      await client.flush();
+      return opened.dobj.exportMarkdown();
+    });
+  }, 60_000);
+
   it('still splits an ordinary highlight on create', async () => {
     const { dobj } = await start(openDoc(new Backing(crypto.randomUUID())));
     await dobj.create({ folderId: 'f', ownerId: 'o', markdown: '<mark data-color="yellow">**bold** rest</mark>' });
