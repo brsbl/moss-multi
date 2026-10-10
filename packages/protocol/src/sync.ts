@@ -214,3 +214,24 @@ export function base64ToBytes(base64: string): Uint8Array {
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
+
+const POSITION_KEYS = new Set(['type', 'tname', 'item', 'assoc']);
+const isPositionId = (value: unknown): boolean => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const { client, clock, ...rest } = value as Record<string, unknown>;
+  return Object.keys(rest).length === 0 && Number.isSafeInteger(client) && (client as number) >= 0 && Number.isSafeInteger(clock) && (clock as number) >= 0;
+};
+/**
+ * A presence `anchorPos`/`focusPos`: absent, null, or a Yjs relative position as JSON, nulls kept (Lexical's
+ * RelativePosition through JSON.stringify) or omitted (Y.relativePositionToJSON). Anything else makes Yjs throw.
+ */
+export function isRelativePositionJSON(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  const position = value as Record<string, unknown>;
+  if (Object.keys(position).some(key => !POSITION_KEYS.has(key))) return false;
+  const { type = null, tname = null, item = null, assoc = 0 } = position;
+  if ((type !== null && !isPositionId(type)) || (item !== null && !isPositionId(item))) return false;
+  if ((tname !== null && typeof tname !== 'string') || !Number.isSafeInteger(assoc)) return false;
+  return type !== null || tname !== null || item !== null;
+}

@@ -120,9 +120,71 @@ describe('structured property regressions', () => {
   });
 });
 
+describe('non-finite and null property values', () => {
+  const values: [string, number | null][] = [['null', null], ['.nan', NaN], ['.inf', Infinity], ['-.inf', -Infinity]];
+  const shapes: [string, (yaml: string) => string, (value: unknown) => unknown][] = [
+    ['top-level', (v) => `limit: ${v}\n`, (data) => (data as { limit: unknown }).limit],
+    ['nested', (v) => `outer:\n  limit: ${v}\n  list:\n    - ${v}\n`, (data) => (data as { outer: { list: unknown[] } }).outer.list[0]],
+  ];
+  const transitions = shapes.flatMap(([shape, yaml, pick]) => values.flatMap(([from, a]) =>
+    values.filter(([to]) => to !== from).map(([to, b]) => [shape, from, to, yaml, pick, a, b] as const)));
+
+  it.each(transitions)('%s %s -> %s round-trips and is detected as a change', (_shape, from, to, yaml, pick, a, b) => {
+    const { a: doc, b: peer, sync } = apart(yaml(from));
+    expect(readField(doc, 'frontmatter')).toBe(yaml(from));
+    expect(Object.is(pick(readFrontmatter(peer)), a)).toBe(true);
+    expect(writeField(doc, 'frontmatter', yaml(to), LOCAL)).toBe(true);
+    expect(readField(doc, 'frontmatter')).toBe(yaml(to));
+    sync();
+    expect(readField(peer, 'frontmatter')).toBe(yaml(to));
+    expect(Object.is(pick(readFrontmatter(peer)), b)).toBe(true);
+    expect(writeField(doc, 'frontmatter', yaml(to), LOCAL)).toBe(false);
+    const edited = readFrontmatter(peer);
+    expect(updateFrontmatter(peer, edited, jsYaml.load(yaml(from), { json: true }) as Record<string, unknown>, LOCAL)).toBe(true);
+    expect(readField(peer, 'frontmatter')).toBe(yaml(from));
+  });
+});
+
 it.each(['---\n# no fields yet\n---\n', '---\n---\n'])('imports an empty YAML block as no properties: %s', (yaml) => {
   const doc = new Y.Doc();
   writeField(doc, 'frontmatter', yaml, 'import');
   expect(readFrontmatter(doc)).toBeNull();
   doc.destroy();
+});
+
+describe('frontmatter scale', () => {
+  // Each step here, for 4x the keys, must cost well under the 16x a quadratic step would.
+  const flat = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${String(i).padStart(6, '0')}`, 0]));
+
+  function steps(count: number): Record<string, number> {
+    const doc = new Y.Doc();
+    const ms: Record<string, number> = {};
+    const time = (name: string, run: () => void) => {
+      const started = Date.now();
+      run();
+      ms[name] = Date.now() - started;
+    };
+    const keys = flat(count);
+    time('import', () => updateFrontmatter(doc, null, keys, LOCAL));
+    expect(frontmatterKeys(doc)).toEqual(Object.keys(keys));
+    time('one-key update', () => writeFrontmatterKey(doc, 'k000001', 1, LOCAL));
+    time('one-key addition', () => writeFrontmatterKey(doc, 'added', 1, LOCAL));
+    const reversed = Object.fromEntries(Object.entries(readFrontmatter(doc) ?? {}).reverse());
+    time('reorder', () => updateFrontmatter(doc, readFrontmatter(doc), reversed, LOCAL));
+    expect(frontmatterKeys(doc)).toEqual(Object.keys(reversed));
+    time('re-import with every value changed', () => updateFrontmatter(doc, readFrontmatter(doc), Object.fromEntries(Object.keys(keys).map((key) => [key, 2])), LOCAL));
+    expect(frontmatterKeys(doc)).toEqual(Object.keys(keys));
+    doc.destroy();
+    return ms;
+  }
+
+  it('imports, updates and reorders tens of thousands of flat keys in time linear in the keys', { timeout: 600_000 }, () => {
+    steps(2_000);
+    const small = steps(10_000);
+    const large = steps(40_000);
+    for (const [name, ms] of Object.entries(large)) {
+      expect(ms, `${name}: 10,000 keys took ${small[name].toFixed(0)} ms, 40,000 took ${ms.toFixed(0)} ms`).toBeLessThanOrEqual(7 * small[name] + 150);
+    }
+    expect(large['one-key update'], 'a one-key update on 40,000 keys stays cheap').toBeLessThan(500);
+  });
 });

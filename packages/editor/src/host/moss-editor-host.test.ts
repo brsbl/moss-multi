@@ -107,7 +107,8 @@ const NOTES = `${ROOT}/Notes`;
 
 /** An in-memory volume; case- and normalization-insensitive like default APFS when `ci` is set. */
 function memoryFs(ci: boolean) {
-  const key = (path: string) => (ci ? path.normalize('NFD').toLowerCase() : path);
+  // APFS: normalization-insensitive always, and case-insensitive (full case folding) on a default volume.
+  const key = (path: string) => (ci ? path.normalize('NFD').toUpperCase().toLowerCase().normalize('NFD') : path.normalize('NFD'));
   const files = new Map<string, { path: string; text: string; mtimeMs: number }>();
   const dirs = new Map<string, string>();
   const addDir = (path: string) => {
@@ -301,6 +302,21 @@ describe('allocateFolderName', () => {
   it('truncates a 252-byte multibyte name by bytes and drops the partial character before the suffix', () => {
     const desiredName = '日'.repeat(84);
     expect(typed.allocateFolderName({ desiredName, currentName: 'Old', siblingNames: [desiredName], caseInsensitive: false })).toBe(`${'日'.repeat(82)} (1)`);
+  });
+
+  it('a sibling that differs only by full case folding or by normalization is taken, so the name takes a suffix', () => {
+    const allocate = (desiredName: string, sibling: string, caseInsensitive: boolean) =>
+      typed.allocateFolderName({ desiredName, currentName: 'Old', siblingNames: [sibling], caseInsensitive });
+    // σ and ς fold to the same letter on a case-insensitive volume.
+    expect(allocate('σ', 'ς', true)).toBe('σ (1)');
+    expect(allocate('Όροσ', 'ΌΡΟΣ', true)).toBe('Όροσ (1)');
+    // APFS compares names normalization-insensitively, case-sensitive or not.
+    const nfc = 'Café';
+    const nfd = 'Café';
+    expect(allocate(nfc, nfd, false)).toBe(`${nfc} (1)`);
+    expect(allocate(nfc, nfd.toUpperCase(), true)).toBe(`${nfc} (1)`);
+    // Case still matters on a case-sensitive volume.
+    expect(allocate(nfc, nfc.toUpperCase(), false)).toBe(nfc);
   });
 
   it('refuses a desired name that fails the sanitizer', () => {

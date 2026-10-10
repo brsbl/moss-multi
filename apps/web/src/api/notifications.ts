@@ -8,10 +8,10 @@ import { inArray, sql } from 'drizzle-orm';
 import type { Principal } from '../auth/principal.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
-import { docs, folders, user } from '../db/schema.ts';
+import { user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
+import { membershipAccess } from './access.ts';
 import { notify, type InvitesEnv } from './invites.ts';
-import { accessTo } from './members.ts';
 import { NO_STORE, readJsonObject, unauthenticated } from './respond.ts';
 
 const TYPES = ['share-invite', 'invite-accepted', 'mention', 'comment-reply'] as const;
@@ -73,25 +73,21 @@ async function listNotices(d1: D1Database, reader: Reader): Promise<Notice[]> {
   const rows = await db.all<Row>(sql`SELECT id, type, payload_json AS payload, created_at AS createdAt, read_at AS readAt
     FROM notifications WHERE user_id = ${reader.id} AND type IN (SELECT value FROM json_each(${JSON.stringify(TYPES)}))
     ORDER BY created_at DESC, rowid DESC LIMIT ${NOTICE_LIMIT}`);
-  const live: { row: Row; payload: Payload }[] = [];
-  for (const row of rows) {
+  const parsed = rows.flatMap((row) => {
     const payload = parsePayload(row.payload);
-    if (!payload) continue;
-    // The reader can still open the item through ownership or a grant (a link alone is not membership).
-    if ((await accessTo(db, reader, { type: payload.targetType, id: payload.targetId })) !== null) live.push({ row, payload });
-  }
-  const ids = (type: Payload['targetType']) => [...new Set(live.filter((n) => n.payload.targetType === type).map((n) => n.payload.targetId))];
+    return payload ? [{ row, payload }] : [];
+  });
+  // The reader can still open the item through ownership or a grant (a link alone is not membership), every target
+  // checked at once.
+  const access = await membershipAccess(db, reader, parsed.map(({ payload }) => ({ type: payload.targetType, id: payload.targetId })));
+  const live = parsed.flatMap((n) => {
+    const target = access.get(`${n.payload.targetType}:${n.payload.targetId}`);
+    return target ? [{ ...n, target }] : [];
+  });
   const people = [...new Set(live.map((n) => n.payload.by))];
-  const [docRows, folderRows, userRows] = await Promise.all([
-    ids('doc').length ? db.select({ id: docs.id, title: docs.title }).from(docs).where(inArray(docs.id, ids('doc'))) : [],
-    ids('folder').length ? db.select({ id: folders.id, name: folders.name, kind: folders.kind }).from(folders).where(inArray(folders.id, ids('folder'))) : [],
-    people.length ? db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inArray(user.id, people)) : [],
-  ]);
-  const docTitles = new Map(docRows.map((d) => [d.id, d.title.trim() || 'Untitled']));
-  const folderNames = new Map(folderRows.map((f) => [f.id, f]));
+  const userRows = people.length ? await db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inArray(user.id, people)) : [];
   const names = new Map(userRows.map((u) => [u.id, u]));
-  return live.map(({ row, payload }) => {
-    const folder = folderNames.get(payload.targetId);
+  return live.map(({ row, payload, target }) => {
     const actor = names.get(payload.by);
     const notice: Notice = {
       id: row.id,
@@ -100,8 +96,8 @@ async function listNotices(d1: D1Database, reader: Reader): Promise<Notice[]> {
       createdAt: row.createdAt,
       by: actor?.name ?? 'Someone',
       target: payload.targetType === 'doc'
-        ? { type: 'doc', id: payload.targetId, title: docTitles.get(payload.targetId) ?? 'Untitled', kind: 'doc' }
-        : { type: 'folder', id: payload.targetId, title: folder?.name ?? 'a folder', kind: folder?.kind ?? 'folder' },
+        ? { type: 'doc', id: payload.targetId, title: target.name.trim() || 'Untitled', kind: 'doc' }
+        : { type: 'folder', id: payload.targetId, title: target.name, kind: target.kind },
     };
     if (payload.invitedEmail && actor && payload.invitedEmail !== actor.email.toLowerCase()) notice.invitedEmail = payload.invitedEmail;
     if (payload.commentId) notice.commentId = payload.commentId;

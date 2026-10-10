@@ -158,48 +158,71 @@ export interface DocReach {
 
 const rank = (role: string) => ROLES.indexOf(role as Role);
 
-/** The grants (owner, doc and folder chain) and live links that reach each doc, read in one pass per doc. */
+/**
+ * The grants (owner, doc and folder chain) and live links that reach each doc, read for all the docs at once: one
+ * batch of two statements, each walking every doc's folder chain keyed by the doc, however many docs there are.
+ */
 export async function reachOf(db: D1Database, docIds: string[]): Promise<Map<string, DocReach>> {
-  const reach = new Map<string, DocReach>();
-  for (const docId of new Set(docIds)) {
-    const chain = `WITH RECURSIVE chain(id, parent_id, depth) AS (
-      SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs d ON d.folder_id = f.id WHERE d.id = ?1
-      UNION ALL SELECT f.id, f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.id = c.parent_id WHERE c.depth < ${DEPTH}
+  const ids = [...new Set(docIds)];
+  const reach = new Map<string, DocReach>(ids.map((id) => [id, { roles: new Map(), tokens: new Set() }]));
+  if (ids.length === 0) return reach;
+  const chain = `WITH RECURSIVE wanted(id) AS (SELECT value FROM json_each(?1)),
+    chain(doc_id, id, parent_id, depth) AS (
+      SELECT d.id, f.id, f.parent_id, 1 FROM docs d JOIN folders f ON f.id = d.folder_id WHERE d.id IN (SELECT id FROM wanted)
+      UNION ALL SELECT c.doc_id, f.id, f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.id = c.parent_id WHERE c.depth < ${DEPTH}
     )`;
-    const [grants, links] = await db.batch<{ principal_id?: string; role?: string; token?: string }>([
-      db.prepare(`${chain} SELECT owner_user_id AS principal_id, 'owner' AS role FROM docs WHERE id = ?1
-        UNION ALL SELECT principal_id, role FROM doc_members WHERE doc_id = ?1
-        UNION ALL SELECT principal_id, role FROM folder_members WHERE folder_id IN (SELECT id FROM chain)`).bind(docId),
-      db.prepare(`${chain} SELECT token FROM share_links WHERE revoked_at IS NULL
-        AND ((target_type = 'doc' AND target_id = ?1) OR (target_type = 'folder' AND target_id IN (SELECT id FROM chain)))`).bind(docId),
-    ]);
-    const roles = new Map<string, Role>();
-    for (const row of grants.results) {
-      if (!row.principal_id || !row.role || rank(row.role) < 0) continue;
-      if (rank(row.role) > rank(roles.get(row.principal_id) ?? '')) roles.set(row.principal_id, row.role as Role);
-    }
-    reach.set(docId, { roles, tokens: new Set(links.results.flatMap((row) => (row.token ? [row.token] : []))) });
+  const [grants, links] = await db.batch<{ doc_id: string; principal_id?: string; role?: string; token?: string }>([
+    db.prepare(`${chain} SELECT id AS doc_id, owner_user_id AS principal_id, 'owner' AS role FROM docs WHERE id IN (SELECT id FROM wanted)
+      UNION ALL SELECT doc_id, principal_id, role FROM doc_members WHERE doc_id IN (SELECT id FROM wanted)
+      UNION ALL SELECT c.doc_id, m.principal_id, m.role FROM chain c JOIN folder_members m ON m.folder_id = c.id`).bind(JSON.stringify(ids)),
+    db.prepare(`${chain} SELECT target_id AS doc_id, token FROM share_links
+        WHERE revoked_at IS NULL AND target_type = 'doc' AND target_id IN (SELECT id FROM wanted)
+      UNION ALL SELECT c.doc_id, l.token FROM chain c JOIN share_links l ON l.target_type = 'folder' AND l.target_id = c.id
+        WHERE l.revoked_at IS NULL`).bind(JSON.stringify(ids)),
+  ]);
+  for (const row of grants.results) {
+    const roles = reach.get(row.doc_id)?.roles;
+    if (!roles || !row.principal_id || !row.role || rank(row.role) < 0) continue;
+    if (rank(row.role) > rank(roles.get(row.principal_id) ?? '')) roles.set(row.principal_id, row.role as Role);
   }
+  for (const row of links.results) if (row.token) reach.get(row.doc_id)?.tokens.add(row.token);
   return reach;
 }
 
 /**
  * After a move: everyone whose grant role on a doc fell or vanished, with their agents, and every link that no longer
- * reaches it, are kicked from that doc (A§8 covered events).
+ * reaches it, are kicked from that doc (A§8 covered events). Reach and agents are read once for all the docs, and the
+ * docs are kicked together.
  */
 export async function kickLosses(env: KickEnv, before: Map<string, DocReach>, at = Date.now()): Promise<void> {
   const after = await reachOf(env.DB, [...before.keys()]);
-  const failed: string[] = [];
-  for (const [docId, was] of before) {
+  const losses = [...before].map(([docId, was]) => {
     const now = after.get(docId) ?? { roles: new Map(), tokens: new Set() };
     const lowered = [...was.roles].filter(([id, role]) => rank(now.roles.get(id) ?? '') < rank(role)).map(([id]) => id);
-    const tokens = [...was.tokens].filter((token) => !now.tokens.has(token));
-    try {
-      await kick(env, [docId], { principalIds: await withAgents(env.DB, lowered), tokens }, at);
-    } catch (error) {
-      if (!(error instanceof KickFailed)) throw error;
-      failed.push(...error.docIds);
-    }
+    return { docId, lowered, tokens: [...was.tokens].filter((token) => !now.tokens.has(token)) };
+  });
+  const agents = await agentsOf(env.DB, [...new Set(losses.flatMap((loss) => loss.lowered))]);
+  const results = await Promise.allSettled(losses.map(({ docId, lowered, tokens }) =>
+    kick(env, [docId], { principalIds: [...new Set([...lowered, ...lowered.flatMap((id) => agents.get(id) ?? [])])], tokens }, at)));
+  const failed: string[] = [];
+  for (const result of results) {
+    if (result.status === 'fulfilled') continue;
+    if (!(result.reason instanceof KickFailed)) throw result.reason;
+    failed.push(...result.reason.docIds);
   }
   if (failed.length > 0) throw new KickFailed(failed);
+}
+
+/** Each person's live agents (withAgents, keyed by the person), in one statement however many people. */
+async function agentsOf(db: D1Database, principalIds: string[]): Promise<Map<string, string[]>> {
+  const agents = new Map<string, string[]>();
+  if (principalIds.length === 0) return agents;
+  const rows = await db.prepare(`SELECT id, owner_user_id AS owner FROM agents
+    WHERE revoked_at IS NULL AND owner_user_id IN (SELECT value FROM json_each(?1))`).bind(JSON.stringify(principalIds)).all<{ id: string; owner: string }>();
+  for (const row of rows.results) {
+    const owned = agents.get(row.owner);
+    if (owned) owned.push(row.id);
+    else agents.set(row.owner, [row.id]);
+  }
+  return agents;
 }

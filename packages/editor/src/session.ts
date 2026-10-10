@@ -74,8 +74,11 @@ export interface SessionSurface {
   /** What moss's renderer would save now. */
   snapshot(): RendererSnapshot | null;
   setEditable(editable: boolean): void;
-  /** Freezes every input, comment UI included, while unmount waits for its final write. */
-  freeze?(frozen: boolean): void;
+  /**
+   * Freezes every input, comment UI included: while unmount waits for its final write, or with `keepFocus` (focus and
+   * the caret stay put) while a load settles or a removal commits, since comment input is not governed by setEditable.
+   */
+  freeze?(frozen: boolean, options?: { keepFocus?: boolean }): void;
   view(view: SessionView): void;
   /** meta.json's comment colors changed on disk: each color the user has not changed takes `next`'s. */
   adoptCommentColors?(previous: Record<string, number> | undefined, next: Record<string, number> | undefined): void;
@@ -95,6 +98,8 @@ export interface AssetInput {
   mimeType: string;
   purpose: 'body' | 'comment';
 }
+
+type FreezeHolder = 'load' | 'unmount' | 'remove';
 
 const KNOWN_WRITE_KINDS = new Set(['saved', 'conflict', 'failed', 'notFound', 'notEditable']);
 const EMPTY_INTENTS: MossMetaIntents = { frontmatterMetaUpdates: {}, commentColors: {} };
@@ -163,6 +168,9 @@ export class EditorSession {
   private preparations = 0;
   /** Counts in-place loads, so one a later load overtook within its frame neither re-enables editing nor reports. */
   private loads = 0;
+  /** Who holds input frozen: the newest in-place load, an unmount waiting for its final write, a removal's commit. */
+  private readonly frozenBy: Record<FreezeHolder, boolean> = { load: false, unmount: false, remove: false };
+  private frozenAs: 'full' | 'input' | null = null;
   private markGone: () => void = () => undefined;
   /** Settles at teardown, so a preparation still waiting for its views lets go at once. */
   private readonly gone = new Promise<void>((resolve) => {
@@ -270,7 +278,8 @@ export class EditorSession {
           this.intentsOverride = draft.intents;
           this.forceWrite = true;
           status = 'dirty';
-          // The live comments carry the receipt's colors, which the save takes over the disk's.
+          // The save writes the live comments' colors over the disk's; moss hydrates them from each comment's source,
+          // as the receipt's were.
           content = { ...content, commentColors: draft.intents.commentColors };
         }
       } else {
@@ -619,16 +628,32 @@ export class EditorSession {
     this.emit({ kind: 'conflict', noteId: this.noteId, status: 'conflict', cause, preserved });
   }
 
+  /**
+   * Drafts commit while still editable, so the removed note's draft keeps them (as beginApply); input freezes in the
+   * same step. 'removed' is reported once the commit settles and its edits are counted, unless an unmount tore down.
+   */
   private remove(reason: 'notFound' | MossNotEditableReason): void {
     if (this.status === 'removed' || this.status === 'unmounted') return;
-    // Drafts commit while still editable, so the removed note's draft keeps them (as beginApply).
-    void Promise.resolve(this.surface.commit?.()).catch(() => undefined);
+    const committing = Promise.resolve(this.surface.commit?.()).catch(() => undefined);
+    this.surface.setEditable(false);
+    this.hold('remove', true);
     this.clearIdle();
     this.removedReason = reason;
-    const hadUnsavedEdits = this.dirty;
-    this.surface.setEditable(false);
     this.setStatus('removed');
-    this.emit({ kind: 'removed', noteId: this.noteId, status: 'removed', reason, hadUnsavedEdits });
+    void committing.then(() => {
+      this.hold('remove', false);
+      if (this.status !== 'removed') return;
+      this.emit({ kind: 'removed', noteId: this.noteId, status: 'removed', reason, hadUnsavedEdits: this.dirty });
+    });
+  }
+
+  /** Sets one holder's freeze; input is frozen while any holds it, fully (focus let go) while an unmount does. */
+  private hold(holder: FreezeHolder, frozen: boolean): void {
+    this.frozenBy[holder] = frozen;
+    const as = this.frozenBy.unmount ? 'full' : this.frozenBy.load || this.frozenBy.remove ? 'input' : null;
+    if (as === this.frozenAs) return;
+    this.frozenAs = as;
+    this.surface.freeze?.(as !== null, as === 'input' ? { keepFocus: true } : undefined);
   }
 
   // ---- external changes ---------------------------------------------------------------------------------------
@@ -705,18 +730,25 @@ export class EditorSession {
    */
   private async beginApply(preparation: number, revision: number, base: NoteRead | null, discard: boolean): Promise<number | 'stale' | 'edited'> {
     const load = ++this.loads;
-    // commit() flushes the drafts synchronously; the edits they cause are counted once it settles.
+    // commit() flushes the drafts synchronously; the edits they cause are counted once it settles. Comment input
+    // (moss's composer and replies) is not governed by setEditable, so it is frozen until the load settles.
     const committing = this.surface.commit?.();
     this.surface.setEditable(false);
+    this.hold('load', true);
     await committing;
     const outcome = !this.current(preparation) ? 'stale' : !discard && (this.revision !== revision || this.read !== base) ? 'edited' : load;
     if (typeof outcome !== 'number') this.giveBack(load);
     return outcome;
   }
 
-  /** Makes the editor editable again after load `load`, unless a later load, removal or unmount owns it now. */
+  /**
+   * Gives input and editing back after load `load`, unless a later load owns the editor now; editing stays off while
+   * an unmount or a removal owns it (each holds its own freeze).
+   */
   private giveBack(load: number): void {
-    if (load === this.loads && this.unmounting === null && this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
+    if (load !== this.loads) return;
+    this.hold('load', false);
+    if (!this.frozenBy.unmount && this.status !== 'removed' && this.status !== 'unmounted') this.surface.setEditable(true);
   }
 
   /**
@@ -951,7 +983,7 @@ export class EditorSession {
     // then go read-only and frozen in the same synchronous step.
     const committing = this.surface.commit?.();
     this.surface.setEditable(false);
-    this.surface.freeze?.(true);
+    this.hold('unmount', true);
     await committing;
     let flush = await this.flush();
     // An edit that landed while the final write was pending is flushed too; teardown leaves nothing unsaved.
@@ -961,8 +993,9 @@ export class EditorSession {
     }
     if ((flush.kind === 'clean' || flush.kind === 'saved') && this.dirty) flush = this.failureResult();
     if (flush.kind === 'clean' || flush.kind === 'saved' || flush.kind === 'notLoaded' || options.discardUnsaved) return this.teardown(flush);
-    this.surface.freeze?.(false);
-    if (this.status !== 'removed') this.surface.setEditable(true);
+    this.hold('unmount', false);
+    // A load still settling gives editing back itself.
+    if (this.status !== 'removed' && !this.frozenBy.load) this.surface.setEditable(true);
     return { kind: 'kept', flush };
   }
 

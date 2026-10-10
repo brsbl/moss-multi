@@ -6,11 +6,13 @@ import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
-import { readFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
+import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { serverWrite } from '../../src/server-doc.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
+/** Wall time, taken before the fake timers replace the clock. */
+const clock = performance.now.bind(performance);
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -200,6 +202,64 @@ describe('server writes', () => {
     const markdown = `---\nlarge: ${'x'.repeat(5_000)}\n---\n\nSmall body`;
     await expect(opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown })).rejects.toThrow('doc-cap');
     expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+  });
+});
+
+describe('frontmatter at scale', () => {
+  // A server import or an editor's push of many flat keys is admitted or refused in time linear in the keys: for
+  // 4x the keys, well under the 16x a quadratic step would cost.
+  const flat = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${String(i).padStart(6, '0')}`, 0]));
+  const capped = (bytes: number) => class extends DocDO {
+    static override limits = { ...DocDO.limits, stateCapBytes: bytes };
+  };
+  /** The encoded state of `count` flat keys alone; a cap a little above it fits them, a little below refuses them. */
+  function stateOf(count: number): number {
+    const doc = new Y.Doc();
+    updateFrontmatter(doc, null, flat(count), 'measure');
+    const bytes = Y.encodeStateAsUpdate(doc).byteLength;
+    doc.destroy();
+    return bytes;
+  }
+
+  async function imported(count: number, cap: number): Promise<{ ms: number; refused: boolean }> {
+    const opened = await start(openDoc(new Backing(), capped(cap) as never));
+    const markdown = `---\n${Object.keys(flat(count)).map((key) => `${key}: 0`).join('\n')}\n---\n\nBody`;
+    let refused = false;
+    const started = clock();
+    try {
+      await opened.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown });
+    } catch (error) {
+      expect(String(error)).toContain('doc-cap');
+      refused = true;
+    }
+    const ms = clock() - started;
+    expect(Object.keys(readFrontmatter(opened.dobj.document) ?? {})).toHaveLength(refused ? 0 : count);
+    return { ms, refused };
+  }
+
+  async function pushed(count: number, cap: number): Promise<{ ms: number; refused: boolean }> {
+    const opened = openDoc(new Backing(), capped(cap) as never);
+    const editor = await editorOn(opened);
+    const started = clock();
+    updateFrontmatter(editor.doc, readFrontmatter(editor.doc), flat(count), 'test');
+    await editor.flush();
+    const ms = clock() - started;
+    const refused = editor.events.some((event) => event.t === 'write-refused' && event.reason === 'doc-cap');
+    expect(Object.keys(readFrontmatter(opened.dobj.document) ?? {})).toHaveLength(refused ? 0 : count);
+    return { ms, refused };
+  }
+
+  it.each([
+    ['imports', imported, 1.25, false],
+    ['refuses an import of', imported, 0.9, true],
+    ['admits a push of', pushed, 1.25, false],
+    ['refuses a push of', pushed, 0.9, true],
+  ] as const)('%s tens of thousands of flat keys near the state cap in time linear in the keys', { timeout: 600_000 }, async (_, run, factor, refused) => {
+    await run(2_000, Math.round(stateOf(2_000) * factor));
+    const small = await run(8_000, Math.round(stateOf(8_000) * factor));
+    const large = await run(32_000, Math.round(stateOf(32_000) * factor));
+    expect([small.refused, large.refused]).toEqual([refused, refused]);
+    expect(large.ms, `8,000 keys took ${small.ms.toFixed(0)} ms, 32,000 took ${large.ms.toFixed(0)} ms`).toBeLessThanOrEqual(7 * small.ms + 250);
   });
 });
 

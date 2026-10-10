@@ -1185,9 +1185,11 @@ export class DocDO extends YServer<SyncEnv> {
       };
       if (this.#refused(connection, attachment, overCap, missing)) return;
       payloads.addReaders(id, [attachment.principalId]);
-      const doc = payloads.doc(id);
-      Y.applyUpdate(doc, data, connection);
-      this.#acks.schedule(connection, deletes, id, coverage(doc, data));
+      if (!payloads.applyFrame(id, data, connection)) {
+        this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+        return;
+      }
+      this.#acks.schedule(connection, deletes, id, coverage(payloads.doc(id), data));
     } catch {
       // A frame that does not decode is dropped like an unknown one.
     }
