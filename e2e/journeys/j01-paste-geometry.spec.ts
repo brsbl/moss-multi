@@ -31,7 +31,7 @@ test('j01-paste-geometry: a multi-batch plain paste lands whole when its batches
   const want = await wants(ada, stack);
   // Ben's caret is in "Tail.", so Ada's screen paints it in every batch.
   await ui.body(ben, docId).locator('p').filter({ hasText: /^Tail\.$/ }).click();
-  await expect(ui.body(ada, docId).locator('[data-remote-caret]'), 'Ada sees Ben’s caret').toHaveCount(1, { timeout: 30_000 });
+  await expect(ada.page.locator('[data-remote-caret]'), 'Ada sees Ben’s caret').toHaveCount(1, { timeout: 30_000 });
   // Cursor paint throws whenever it runs synchronously inside a task (a paste batch's geometry hook); the paints the
   // interval, awareness and edits schedule run in microtasks and are left alone.
   await ada.page.evaluate(() => {
@@ -83,7 +83,7 @@ test('j01-paste-geometry: a multi-batch plain paste lands whole while a viewer w
     const user = { principalId: principal.id, name: principal.name, isAgent: false, color: 'var(--chart-blue)', colorSettled: true, slot: 0 };
     provider.awareness.setLocalState({ name: user.name, color: user.color, user, focusing: true, anchorPos: {}, focusPos: {} });
     await ui.body(ben, docId).locator('p').filter({ hasText: /^Tail\.$/ }).click();
-    await expect(ui.body(ada, docId).locator('[data-remote-caret]'), 'Ada sees Ben’s caret').toHaveCount(1, { timeout: 30_000 });
+    await expect(ada.page.locator('[data-remote-caret]'), 'Ada sees Ben’s caret').toHaveCount(1, { timeout: 30_000 });
     await ui.body(ada, docId).locator('p').filter({ hasText: /^Top\.$/ }).click();
     await ada.page.keyboard.press('End');
     await ada.page.keyboard.press('Enter');
