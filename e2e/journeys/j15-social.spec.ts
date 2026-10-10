@@ -179,6 +179,8 @@ test('j15-social: a non-author sees no Edit or Delete, and a raw delete or edit 
   await expect(ben.page.getByRole('menuitem', { name: /^Edit / }), 'no Edit for a non-author').toHaveCount(0);
   await expect(ben.page.getByRole('menuitem', { name: /^Delete / }), 'no Delete for a non-author').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
+  await expect(ben.page.getByRole('menu'), 'Escape closes the actions menu').toHaveCount(0);
+  await expect(thread(ben).getByText('Only Ada may change this'), 'and leaves the thread open').toBeVisible();
 
   const commentId = await gutter(ben).first().getAttribute('data-comment-gutter-id');
   expect(commentId).toBeTruthy();

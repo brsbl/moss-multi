@@ -366,6 +366,8 @@ test('j01 registers: when both people retarget the same reference and one draft 
   await expect(popover(ada)).toHaveCount(0);
   for (const actor of [ada, ben]) await expect.poll(async () => (await total(actor))[0], { message: `${actor.label}: the total refers to A`, timeout: PEER_TIMEOUT }).toMatch(refersTo(a));
   await openTotal(ada);
+  await expect(popover(ada), "the total's editor opens again").toBeVisible();
+  await expect(formulaInput(ada), 'and takes input').toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
   await expect(formulaInput(ada)).toHaveValue('cost+2', { timeout: PEER_TIMEOUT });
   // An unfinished name holds Ada's draft unwritten.
   await nameInput(ada).fill('1');
