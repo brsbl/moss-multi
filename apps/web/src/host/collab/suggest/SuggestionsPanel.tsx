@@ -105,7 +105,7 @@ const REASONS: Record<string, string> = {
 };
 const reasonText = (reason: string) => REASONS[reason] ?? 'It could not be applied.';
 
-async function call(url: string, body?: unknown): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> {
+async function call(url: string, body?: unknown): Promise<{ ok: boolean; status: number; json: Record<string, unknown>; retryAfter: string | null }> {
   // A role that comes from a share link travels with every call, as the comment API's does.
   const share = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share');
   const headers: Record<string, string> = { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) };
@@ -113,7 +113,7 @@ async function call(url: string, body?: unknown): Promise<{ ok: boolean; status:
     ? { method: 'GET', credentials: 'same-origin', headers }
     : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  return { ok: response.ok, status: response.status, json };
+  return { ok: response.ok, status: response.status, json, retryAfter: response.headers.get('retry-after') };
 }
 
 /** The record's preview, fetched again when its ops change or `refresh` is called (the body moved under it). */
@@ -276,6 +276,36 @@ function SuggestionCard({ docId, record, me, role, active }: { docId: string; re
   );
 }
 
+/** The panel's cards: the open ones newest first, then the latest reviewed. */
+export function SuggestionList({ docId, open, reviewed, me, role, active }: {
+  docId: string;
+  open: SuggestionRecord[];
+  reviewed: SuggestionRecord[];
+  me: string | null;
+  role: Role;
+  active: string | null;
+}): ReactNode {
+  return (
+    <div className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto p-2">
+      {open.length === 0 && reviewed.length === 0 ? (
+        <div className="px-3 py-6 text-center">
+          <p className="text-xs text-ink-default">No suggestions</p>
+          <p className="mt-1 text-micro text-ink-faint">
+            {can(role, 'suggest') ? 'Switch to Suggest mode to propose changes. Your edits appear here for review.' : 'Suggested changes appear here for review.'}
+          </p>
+        </div>
+      ) : null}
+      {open.map((record) => (
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} />
+      ))}
+      {reviewed.length ? <p className="mt-1 px-1 text-micro font-medium uppercase tracking-wide text-ink-faint">Reviewed</p> : null}
+      {reviewed.map((record) => (
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} />
+      ))}
+    </div>
+  );
+}
+
 /** In the top bar: the count of open suggestions, opening the panel of cards. */
 export function SuggestionsButton({ docId, source }: { docId: string; source: SuggestionsSource }): ReactNode {
   const records = useRecords(source);
@@ -311,23 +341,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
           <span className="text-xs font-medium text-ink-default">Suggestions</span>
           {open.length ? <span className="text-micro text-ink-faint">{open.length} open</span> : null}
         </div>
-        <div className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto p-2">
-          {open.length === 0 && reviewed.length === 0 ? (
-            <div className="px-3 py-6 text-center">
-              <p className="text-xs text-ink-default">No suggestions</p>
-              <p className="mt-1 text-micro text-ink-faint">
-                {can(role, 'suggest') ? 'Switch to Suggest mode to propose changes. Your edits appear here for review.' : 'Suggested changes appear here for review.'}
-              </p>
-            </div>
-          ) : null}
-          {open.map((record) => (
-            <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} />
-          ))}
-          {reviewed.length ? <p className="mt-1 px-1 text-micro font-medium uppercase tracking-wide text-ink-faint">Reviewed</p> : null}
-          {reviewed.map((record) => (
-            <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} />
-          ))}
-        </div>
+        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
