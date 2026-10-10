@@ -23,6 +23,7 @@ import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
+import { SuggestCooldowns } from './doc/suggest-cooldown.ts';
 import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
 import {
   acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
@@ -167,6 +168,17 @@ export interface SearchFeed {
 /** When a socket reaches DOC_SOCKET_MAX_MS from its admission here. */
 const agesAt = (attachment: Attachment) => (attachment.admittedAt ?? 0) + DOC_SOCKET_MAX_MS;
 const aged = (attachment: Attachment, now: number) => agesAt(attachment) <= now;
+
+/**
+ * Until when the connection's last suggest refusal was for want of room (`doc-cap`, `ops-cap`); 0 when it is not. In
+ * the socket's attachment, so a wake keeps it; a grant, an ack or the end of one refusal window ends it.
+ */
+const noRoomUntil = (connection: Connection) => (connection.state as { noRoomUntil?: number } | null)?.noRoomUntil ?? 0;
+function noRoom(connection: Connection, until: number): void {
+  if (noRoomUntil(connection) === until) return;
+  // Functional setState only, as attach does: the object form would wipe the rest of the attachment.
+  (connection as unknown as Connection<Record<string, unknown>>).setState((previous) => ({ ...(previous ?? {}), noRoomUntil: until }));
+}
 
 /** The trashes holding the doc closed, each with when the alarm may settle it. */
 function holdsOf(store: DocStore): Map<string, number> {
@@ -323,14 +335,8 @@ export class DocDO extends YServer<SyncEnv> {
    */
   #idleAt: number | null = null;
   readonly #idleChecked = new Map<string, number>();
-  /** Suggest refusals per principal in the last window, and principals cooling down (until when). In memory. */
-  readonly #refusals = new Map<string, number[]>();
-  readonly #cooldowns = new Map<string, number>();
-  /**
-   * Connections whose last suggest refusal was for want of room (`doc-cap`, `ops-cap`), and until when: a grant, an
-   * ack or the end of one refusal window ends it.
-   */
-  readonly #noRoom = new Map<string, number>();
+  /** Suggest refusals per principal in the last window, and principals cooling down (until when). In storage. */
+  #cooldowns: SuggestCooldowns | null = null;
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -382,6 +388,7 @@ export class DocDO extends YServer<SyncEnv> {
       store.setMeta('suggestions-client', String(client));
     }
     this.#suggestions = new SuggestionsWriter(this.document, client);
+    this.#cooldowns = new SuggestCooldowns(this.ctx.storage.sql);
     this.#ingest = new SuggestIngest(this.document, {
       stateCap: this.#limits.stateCapBytes,
       registry: nodeRegistry(),
@@ -735,7 +742,7 @@ export class DocDO extends YServer<SyncEnv> {
     // After a refusal for want of room (`doc-cap`, `ops-cap`), every growth frame the client had in flight, and a
     // rebuilt fork's lease, is refused alike in O(1) with no admission work and not counted, so a fast typist on a
     // full note stays connected. Every refusal that does reach admission counts toward the cooldown, room or not.
-    if (request !== null && GROWTH.has(request.t) && this.#roomless(connection.id)) {
+    if (request !== null && GROWTH.has(request.t) && this.#roomless(connection)) {
       const record = request.t === 'suggest-merge' ? request.into : request.t === 'suggest-lease' ? null : request.record;
       const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
       this.sendCustomMessage(connection, JSON.stringify(reply));
@@ -745,19 +752,18 @@ export class DocDO extends YServer<SyncEnv> {
     const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
     this.sendCustomMessage(connection, JSON.stringify(reply));
     if (reply.t !== 'suggest-refused') {
-      this.#noRoom.delete(connection.id);
+      noRoom(connection, 0);
       return;
     }
-    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') this.#noRoom.set(connection.id, Date.now() + SUGGEST_LIMITS.refusals.windowMs);
+    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') noRoom(connection, Date.now() + SUGGEST_LIMITS.refusals.windowMs);
     this.#countRefusal(attachment.principalId);
   }
 
   /** Whether the connection is still in its no-room window: at most one counted room refusal per window. */
-  #roomless(connectionId: string): boolean {
-    const until = this.#noRoom.get(connectionId);
-    if (until === undefined) return false;
+  #roomless(connection: Connection): boolean {
+    const until = noRoomUntil(connection);
     if (until > Date.now()) return true;
-    this.#noRoom.delete(connectionId);
+    if (until) noRoom(connection, 0);
     return false;
   }
 
@@ -767,7 +773,6 @@ export class DocDO extends YServer<SyncEnv> {
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
-    this.#noRoom.delete(connection.id);
     this.#acks.cancel(connection);
   }
 
@@ -1518,23 +1523,12 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   #coolingDown(principalId: string): boolean {
-    const until = this.#cooldowns.get(principalId);
-    if (until === undefined) return false;
-    if (until > Date.now()) return true;
-    this.#cooldowns.delete(principalId);
-    return false;
+    return this.#cooldowns?.coolingDown(principalId) ?? false;
   }
 
   /** `SUGGEST_LIMITS.refusals.max` refusals a window: every socket of the principal closes 4429 a while. */
   #countRefusal(principalId: string): void {
-    const now = Date.now();
-    const { max, windowMs } = SUGGEST_LIMITS.refusals;
-    const recent = (this.#refusals.get(principalId) ?? []).filter((at) => now - at < windowMs);
-    recent.push(now);
-    this.#refusals.set(principalId, recent);
-    if (recent.length < max) return;
-    this.#refusals.delete(principalId);
-    this.#cooldowns.set(principalId, now + SUGGEST_LIMITS.cooldownMs);
+    if (!this.#cooldowns?.count(principalId)) return;
     for (const connection of this.#all()) {
       if (attachmentOf(connection)?.principalId === principalId) connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
     }
