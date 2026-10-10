@@ -7,7 +7,7 @@ import { writeSyncStep1 } from 'y-protocols/sync';
 import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
@@ -58,6 +58,8 @@ export interface DocLimits {
   accessDeadlineMs: number;
   /** Full-state answers per principal: `docs` whole states at once, refilled over `windowMs` (T3.S14). */
   answerBudget: { docs: number; windowMs: number };
+  /** Open anonymous sockets from one share link and client address (T3.B25). */
+  anonymousSocketsPerAddress: number;
   /** The bytes of step 1s one socket may have waiting for that budget; past it one waits without its vector. */
   waitingAnswerBytesPerConnection: number;
 }
@@ -192,13 +194,12 @@ function send(connection: Connection, message: Uint8Array): void {
 /** A state vector naming no client: the whole doc is missing. */
 const EMPTY_VECTOR = Y.encodeStateVector(new Map());
 
-/** The budget a step 1 draws on: its principal's, or for an anonymous link viewer its socket's (T3.S14). */
-function budgetKey(connection: Connection, attachment: Attachment): string {
-  return attachment.kind === 'anonymous' ? socketKey(connection) : attachment.principalId;
-}
-
-function socketKey(connection: Connection): string {
-  return `\u0000socket:${connection.id}`;
+/**
+ * The budget a step 1 draws on: its principal's, or for an anonymous link viewer its link's at its client address, so
+ * reconnecting or opening sockets in parallel does not multiply it (T3.S14, T3.B25).
+ */
+function budgetKey(attachment: Attachment): string {
+  return attachment.kind === 'anonymous' ? `\u0000link:${attachment.shareToken ?? ''}\u0000${attachment.address ?? ''}` : attachment.principalId;
 }
 
 /** A sync step 1's state vector, a view into `message`. */
@@ -246,6 +247,7 @@ export class DocDO extends YServer<SyncEnv> {
     inboxBytes: 8 * 1024 * 1024,
     accessDeadlineMs: ACCESS_DEADLINE_MS,
     answerBudget: ANSWER_BUDGET,
+    anonymousSocketsPerAddress: ANONYMOUS_SOCKETS_PER_ADDRESS,
     waitingAnswerBytesPerConnection: 128 * 1024,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
@@ -407,6 +409,10 @@ export class DocDO extends YServer<SyncEnv> {
     });
     if (code !== null || !attachment) {
       connection.close(code ?? CLOSE.noPrincipal, 'refused');
+      return;
+    }
+    if (attachment.kind === 'anonymous' && this.#anonymousSockets(budgetKey(attachment)) >= this.#limits.anonymousSocketsPerAddress) {
+      connection.close(CLOSE.connectionLimit, 'refused');
       return;
     }
     const check = this.#accessCheck();
@@ -624,12 +630,21 @@ export class DocDO extends YServer<SyncEnv> {
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
     this.#waitingAnswers.delete(connection);
-    this.#answerBudgets.delete(socketKey(connection));
-    // A full budget is the same as none.
+    // A full budget is the same as none; a spent one stays until it refills, so reconnecting does not refill it.
     const now = Date.now();
     for (const key of [...this.#answerBudgets.keys()]) {
       if (this.#budget(key, now).left >= this.#limits.answerBudget.docs) this.#answerBudgets.delete(key);
     }
+  }
+
+  /** Open admitted anonymous sockets drawing on the budget `key`. */
+  #anonymousSockets(key: string): number {
+    let count = 0;
+    for (const connection of this.#all()) {
+      const attachment = attachmentOf(connection);
+      if (attachment?.kind === 'anonymous' && isOpen(connection) && budgetKey(attachment) === key) count += 1;
+    }
+    return count;
   }
 
   /** A budget now, refilled since it was last read. */
@@ -643,15 +658,15 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * Whether a step 1 for `target` ('' the note, else a payload id; its doc and stored `bytes`) is answered now, checked
-   * before any encode. A signed-in principal has one budget across its sockets; each anonymous socket has its own,
-   * since every link viewer shares the id 'anonymous'. An answer costs the share of the stored state it sends, from the
-   * clocks `vector` lacks, and at least MIN_TARGET_SHARE of its target, so a synced client's resync costs little and a
-   * fresh one a whole target. It is answered while the budget is above zero; otherwise it waits as the socket's latest
-   * step 1 for `target` and is answered once the budget refills, so an honest reconnect or resync is late, never
-   * unanswered (T3.S14).
+   * before any encode. A signed-in principal has one budget across its sockets; anonymous sockets, which all share the
+   * id 'anonymous', have one per share link and client address, kept across reconnects (T3.B25). An answer costs the
+   * share of the stored state it sends, from the clocks `vector` lacks, and at least MIN_TARGET_SHARE of its target, so
+   * a synced client's resync costs little and a fresh one a whole target. It is answered while the budget is above
+   * zero; otherwise it waits as the socket's latest step 1 for `target` and is answered once the budget refills, so an
+   * honest reconnect or resync is late, never unanswered (T3.S14).
    */
   #mayAnswer(connection: Connection, attachment: Attachment, target: string, bytes: number, vector: Uint8Array, doc: () => Y.Doc): boolean {
-    const budget = this.#budget(budgetKey(connection, attachment), Date.now());
+    const budget = this.#budget(budgetKey(attachment), Date.now());
     if (budget.left <= 0) {
       this.#wait(connection, target, vector);
       return false;
@@ -704,7 +719,7 @@ export class DocDO extends YServer<SyncEnv> {
     let due = Infinity;
     for (const connection of this.#waitingAnswers.keys()) {
       const attachment = attachmentOf(connection);
-      if (attachment) due = Math.min(due, Math.max(0, (-this.#budget(budgetKey(connection, attachment), now).left * windowMs) / docs));
+      if (attachment) due = Math.min(due, Math.max(0, (-this.#budget(budgetKey(attachment), now).left * windowMs) / docs));
     }
     if (due === Infinity) return;
     this.#answerTimer = setTimeout(() => {

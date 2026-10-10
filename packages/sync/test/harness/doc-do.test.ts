@@ -710,6 +710,10 @@ describe('answers', () => {
     class Budgeted extends DocDO {
       static override limits = { ...DocDO.limits, answerBudget: BUDGET };
     }
+    const CAP = 3;
+    class Capped extends DocDO {
+      static override limits = { ...DocDO.limits, answerBudget: BUDGET, anonymousSocketsPerAddress: CAP };
+    }
     /** The full-state answers a socket was sent since `from`: each ends in exactly one step 2. */
     const answers = (client: TestClient, from: number) =>
       client.socket.sent.slice(from).filter((frame) => typeof frame !== 'string' && frame[0] === 0 && frame[1] === 1).length;
@@ -764,23 +768,96 @@ describe('answers', () => {
       expect(Y.encodeStateVector(back.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
     });
 
-    it('anonymous link viewers each get their own budget, and their up-to-date resyncs cost little', async () => {
+    it('anonymous link viewers at different addresses each get their own budget, and their up-to-date resyncs cost little', async () => {
       const opened = await start(openDoc(new Backing(), Budgeted as never));
       const editor = await editorOn(opened);
       await typeTitle(editor, 'Shared by link');
       const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1' } as const;
       const viewers: TestClient[] = [];
       for (let i = 0; i < 6; i += 1) {
-        const viewer = await connect(opened, anonymous);
+        const viewer = await connect(opened, { ...anonymous, address: `198.51.100.${i + 1}` });
         await viewer.hello();
         viewers.push(viewer);
       }
       // The client's 4 s heartbeat resync: a step 1 from a synced doc, whose answer is only the delete set.
       for (let round = 0; round < 10; round += 1) for (const viewer of viewers) await viewer.hello();
       for (const viewer of viewers) expect(answers(viewer, 0), 'every step 1 answered at once').toBe(11);
-      const stranger = await connect(opened, anonymous);
+      const stranger = await connect(opened, { ...anonymous, address: '203.0.113.9' });
       await stranger.hello();
       expect(title(stranger.doc), 'a new stranger opens the note at once').toBe('Shared by link');
+    });
+
+    it('an anonymous viewer reconnecting within the window draws a bounded number of encodes, then converges (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Reconnect');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '198.51.100.7' } as const;
+      let encodes = 0;
+      for (let i = 0; i < 24; i += 1) {
+        const viewer = await connect(opened, anonymous);
+        await viewer.hello();
+        encodes += answers(viewer, 0);
+        await viewer.drop();
+      }
+      // The budget, plus the one answer that may run it into debt.
+      expect(encodes, 'reconnecting does not refill the budget').toBeLessThanOrEqual(BUDGET.docs + 1);
+      // An honest viewer's first sync is late, never unanswered, and a resync on it converges.
+      const honest = await connect(opened, anonymous);
+      await honest.hello();
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await honest.pump();
+      expect(honest.closed).toBeNull();
+      expect(title(honest.doc), 'the first sync converges').toBe('Reconnect');
+      await typeTitle(editor, ' again');
+      await honest.hello();
+      expect(title(honest.doc), 'a resync converges').toBe('Reconnect again');
+    });
+
+    it('parallel anonymous sockets from one address share one budget, and their number is capped (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Capped as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Parallel');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '2001:db8:1:2::/64' } as const;
+      const sockets: TestClient[] = [];
+      for (let i = 0; i < CAP; i += 1) sockets.push(await connect(opened, anonymous));
+      for (const socket of sockets) expect(socket.closed).toBeNull();
+      const extra = await connect(opened, anonymous);
+      expect(extra.closed?.code, 'past the cap a socket from that link and address is refused').toBe(CLOSE.connectionLimit);
+      const empty = step1(new Y.Doc());
+      for (let round = 0; round < 4; round += 1) for (const socket of sockets) await socket.deliver(empty);
+      const encodes = sockets.reduce((sum, socket) => sum + answers(socket, 0), 0);
+      expect(encodes, 'one budget across the sockets').toBeLessThanOrEqual(BUDGET.docs + 1);
+      // Another address, and the same address on another link, have budgets and sockets of their own.
+      for (const other of [{ ...anonymous, address: '203.0.113.5' }, { ...anonymous, share: 'tok-2' }]) {
+        const viewer = await connect(opened, other);
+        expect(viewer.closed).toBeNull();
+        await viewer.hello();
+        expect(title(viewer.doc), 'answered at once').toBe('Parallel');
+      }
+      // A closed socket frees its place; the budget it spent stays spent.
+      await sockets[0].drop();
+      const next = await connect(opened, anonymous);
+      expect(next.closed).toBeNull();
+      await next.hello();
+      expect(answers(next, 0), 'still over budget, it waits').toBe(0);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await next.pump();
+      expect(title(next.doc)).toBe('Parallel');
+    });
+
+    it('signed-in readers keep one budget across sockets, uncapped by address (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Capped as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Members');
+      const tabs: TestClient[] = [];
+      for (let i = 0; i < CAP + 2; i += 1) tabs.push(await connect(opened, { role: 'viewer', id: 'reader-many', address: '198.51.100.8' }));
+      for (const tab of tabs) expect(tab.closed).toBeNull();
+      const empty = step1(new Y.Doc());
+      for (const tab of tabs) await tab.deliver(empty);
+      expect(tabs.reduce((sum, tab) => sum + answers(tab, 0), 0), 'one principal, one budget').toBeLessThanOrEqual(BUDGET.docs + 1);
+      const other = await connect(opened, { role: 'viewer', id: 'reader-other', address: '198.51.100.8' });
+      await other.hello();
+      expect(title(other.doc), 'another principal at that address is answered at once').toBe('Members');
     });
 
     it('a signed-in reader\'s visible tabs resyncing up to date stay answered at once', async () => {
