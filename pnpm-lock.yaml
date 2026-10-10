@@ -381,7 +381,7 @@ importers:
         version: 4.3.0
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       lib0:
         specifier: 0.2.119
         version: 0.2.119
