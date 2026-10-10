@@ -71,8 +71,7 @@ async function insertDoc(env: DocsEnv, db: Db, actor: WriteActor,
 async function refuseInsert(env: DocsEnv, db: Db, principal: Principal, actor: WriteActor, folderId: string): Promise<Response> {
   if (!(await actorLive(env.DB, actor))) return unauthenticated();
   const folder = await resolveFolderAccess(db, principal, folderId, actor.shareToken);
-  if (!folder || folder.deleted) return notFound();
-  if (!roleAtLeast(folder.role, 'editor')) {
+  if (folder && !folder.deleted && !roleAtLeast(folder.role, 'editor')) {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
   }
   return folderNotFound();
