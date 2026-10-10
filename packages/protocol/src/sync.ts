@@ -179,6 +179,8 @@ export const TRUSTED = {
   resolvedAt: 'x-moss-resolved-at',
   /** The doc's access epoch, read before the role was resolved: a DocDO re-resolves a socket admitted under an older one. */
   epoch: 'x-moss-epoch',
+  /** An anonymous socket's client address bucket at upgrade (A§7): its answer budget and socket cap are per link and address. */
+  address: 'x-moss-address',
 } as const;
 
 export const PRINCIPAL_KINDS = ['user', 'agent', 'anonymous'] as const;
