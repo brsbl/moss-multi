@@ -673,6 +673,17 @@ class Rows {
   /** One changed stretch of a payload's text: the lines after it, and the lines before it in the note. */
   lines(group: Changed, lines: { b: LineCounter; a: LineCounter }): void {
     const kind = group.removed.length && group.added.length ? 'change' : group.added.length ? 'insert' : 'delete';
+    // Text removed and added again at the stretch's end (an edit written from the caret) reads as unchanged.
+    const lastRemoved = group.removed.at(-1);
+    const lastAdded = group.added.at(-1);
+    if (lastRemoved && lastAdded && lastRemoved.at + lastRemoved.len === group.b[1] && lastAdded.at + lastAdded.len === group.a[1]) {
+      const most = Math.min(trailing(group.removed), trailing(group.added));
+      let same = 0;
+      while (same < most && lines.b.text.charCodeAt(group.b[1] - 1 - same) === lines.a.text.charCodeAt(group.a[1] - 1 - same)) same += 1;
+      if (same > 0 && isLowSurrogate(lines.b.text, group.b[1] - same)) same -= 1;
+      group.b[1] -= same;
+      group.a[1] -= same;
+    }
     // A removal reads the old lines and what they are now; anything else the new lines and what they were.
     const removal = kind === 'delete';
     const shownSide = removal ? lines.b : lines.a;
@@ -696,6 +707,16 @@ interface Changed {
   added: Piece[];
   b: [number, number];
   a: [number, number];
+}
+
+/** How many characters end `list` contiguously: the run of its last pieces with no gap between them. */
+function trailing(list: readonly Piece[]): number {
+  let total = 0;
+  for (let k = list.length - 1; k >= 0; k--) {
+    if (k < list.length - 1 && list[k].at + list[k].len !== list[k + 1].at) break;
+    total += list[k].len;
+  }
+  return total;
 }
 
 const WORD = /[\p{L}\p{N}_$]/u;

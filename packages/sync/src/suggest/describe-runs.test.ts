@@ -70,13 +70,13 @@ describe('T5.S7 rows are built once per preview hash @p:mean-2 @p:R17', () => {
 });
 
 /** A payload hunk for code `before` edited to `after` by a character diff, as the register input writes it. */
-function codeEdit(before: string, after: string): Hunk {
+function codeEdit(before: string, after: string, delta = diffText(before, after)): Hunk {
   const doc = new Y.Doc();
   doc.clientID = 1;
   doc.getText('payload').insert(0, before);
   const was = payloadValueOf(doc);
   doc.clientID = 9;
-  doc.getText('payload').applyDelta(diffText(before, after));
+  doc.getText('payload').applyDelta(delta);
   return { kind: 'payload', id: 'p', op: 'changed', before: was, after: payloadValueOf(doc) };
 }
 
@@ -100,6 +100,14 @@ describe('T5.S7 a code edit reads as its changed line, before and after @p:mean-
   it('edits on two separate lines read as two rows, top to bottom', () => {
     const rows = describeHunks([codeEdit('let a = 1;\nkeep();\nlet b = 2;', 'let alpha = 1;\nkeep();\nlet b = 3;')]);
     expect(rows.map((row) => row.text), shown(rows)).toEqual(['let alpha = 1;', 'let b = 3;']);
+  });
+
+  it('text removed and added again after the change (an edit written from the caret) reads as unchanged', () => {
+    const before = 'console.log(x)\nreturn total;';
+    const rows = describeHunks([codeEdit(before, 'console.debug(y)\nreturn total;', [{ retain: 8 }, { delete: before.length - 8 }, { insert: 'debug(y)\nreturn total;' }])]);
+    expect(rows, shown(rows)).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: 'change', text: 'console.debug(y)' });
+    expect(rows[0].note, shown(rows)).toContain('line 1; was "console.log(x)"');
   });
 
   it('a removal keeps the old line as its text and says what the line is now', () => {
