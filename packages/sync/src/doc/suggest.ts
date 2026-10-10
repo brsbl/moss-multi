@@ -13,7 +13,8 @@ import {
 } from '@moss-multi/core/suggest/apply';
 import { payloadDocsFor } from '../payload-docs.ts';
 import {
-  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partsOf, patchMeta, readMeta, readRecord, recordIds, suggestionsWriter, writeSuggestions,
+  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partBytes, partsOf, patchMeta, readMeta, readRecord, recordBytes, recordIds, suggestionsWriter,
+  writeSuggestions,
 } from '../suggest/records.ts';
 
 /** Who sends a suggest frame: the principal, its live role, and the connection (a server-minted nonce). */
@@ -163,14 +164,11 @@ export class SqlLeases implements LeaseStore {
 }
 
 export const SUGGEST_CAPS = {
-  /** Bytes of ops (and delete parts) per record. */
-  recordOpsBytes: 256 * 1024,
-  openPerPrincipal: 20,
-  /** All open records' ops, as a share of the state cap. */
-  openOpsShare: 0.25,
-  /** Spans per delete part, and items a part may name. */
-  partSpans: 1024,
-  partItems: 20_000,
+  recordOpsBytes: SUGGEST_LIMITS.recordOpsBytes,
+  openPerPrincipal: SUGGEST_LIMITS.openPerPrincipal,
+  openOpsShare: SUGGEST_LIMITS.openOpsShare,
+  partSpans: SUGGEST_LIMITS.partSpans,
+  partItems: SUGGEST_LIMITS.partItems,
 } as const;
 
 /** `sv`: each of the record's leases' acknowledged clock in `doc`, the doc the frame wrote. */
@@ -218,8 +216,6 @@ interface Info {
 /** `reserved`: the lease whose minted id a new record takes; the record binds it, whatever the frame holds. */
 type Target = { ok: true; id: string; create: boolean; continues?: string; base: string; reserved?: Lease } | { ok: false; reason: SuggestRefusal };
 
-const partBytes = (part: DeletePart) => part.id.length + part.quote.length * 2 + part.targets.length * 24 + 16;
-
 export class SuggestIngest {
   readonly leases: LeaseStore;
   /** Every record, so a frame never reads another record's meta. */
@@ -240,7 +236,7 @@ export class SuggestIngest {
       const record = readRecord(doc, id);
       if (!record) continue;
       const open = record.meta.status === 'open';
-      const bytes = open ? record.ops.reduce((sum, op) => sum + op.update.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0) : 0;
+      const bytes = open ? recordBytes(record) : 0;
       this.#track(id, record.meta.author, bytes, open);
       if (open) {
         for (const op of record.ops) {

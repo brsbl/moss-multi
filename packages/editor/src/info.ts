@@ -2,7 +2,7 @@
 import type { MossEditorApiVersion, MossEditorInfo } from './contract';
 import { MOSS_EDITOR_INFO as HOST_INFO } from './host/moss-editor-host.js';
 
-export const MOSS_EDITOR_API: MossEditorApiVersion = 1;
+export const MOSS_EDITOR_API: MossEditorApiVersion = 2;
 
 export const MOSS_EDITOR_INFO: MossEditorInfo = Object.freeze({
   api: MOSS_EDITOR_API,

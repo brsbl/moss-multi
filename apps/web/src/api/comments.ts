@@ -4,7 +4,8 @@
 // After a create or reply the Worker writes the bell's rows: mentioned people and the thread's author on a reply, each
 // a user re-checked against their live access, never the actor and never an agent.
 import { getServerByName } from 'partyserver';
-import { COMMENT_OP_RATE } from '@moss-multi/protocol/limits';
+import { MAX_QUOTE } from '@moss-multi/core/anchor-frame';
+import { COMMENT_OP_RATE, COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
 import type { CommentActor, CommentDeleteScope, CommentListing, CommentResult } from '@moss-multi/sync';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -14,7 +15,10 @@ import { json } from '../worker/route.ts';
 import { resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { notify } from './invites.ts';
-import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
+import { JSON_BODY_MAX_BYTES, NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
+
+/** A create or edit body: the longest text and quote the DocDO takes, every UTF-16 unit escaped, plus the fields. */
+export const COMMENT_BODY_MAX_BYTES = (COMMENT_TEXT_MAX + MAX_QUOTE) * 6 + JSON_BODY_MAX_BYTES;
 
 /** Moss's marker ids, which the client proposes so its composer can show the comment before the record arrives. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -48,7 +52,7 @@ async function admit(request: Request, env: DocsEnv, docId: string): Promise<{ p
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to comment' }, 401, NO_STORE);
   // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
-  const body: Record<string, unknown> = request.method === 'DELETE' ? {} : ((await readJsonObject(request)) ?? {});
+  const body: Record<string, unknown> = request.method === 'DELETE' ? {} : ((await readJsonObject(request, COMMENT_BODY_MAX_BYTES)) ?? {});
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
   if (!roleAtLeast(access.role, 'commenter')) return json({ error: 'forbidden', message: "You can't comment on this note." }, 403, NO_STORE);

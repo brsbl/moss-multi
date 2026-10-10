@@ -181,11 +181,6 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
 
 // The notes list's context-menu item, which the folder "Share…" slot renders (T2.4).
 declare module '@moss/shared/components/ui/context-menu' {
-  import type { ComponentType, HTMLAttributes } from 'react';
-  export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
-}
-
-declare module '@moss/shared/components/ui/context-menu' {
   import type { ComponentType, ForwardRefExoticComponent, HTMLAttributes, ReactElement, ReactNode, RefAttributes } from 'react';
   export const ContextMenu: ComponentType<{ children: ReactNode }>;
   export const ContextMenuTrigger: ForwardRefExoticComponent<{ render?: ReactElement } & RefAttributes<HTMLElement>>;
