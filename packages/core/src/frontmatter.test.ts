@@ -120,6 +120,31 @@ describe('structured property regressions', () => {
   });
 });
 
+describe('non-finite and null property values', () => {
+  const values: [string, number | null][] = [['null', null], ['.nan', NaN], ['.inf', Infinity], ['-.inf', -Infinity]];
+  const shapes: [string, (yaml: string) => string, (value: unknown) => unknown][] = [
+    ['top-level', (v) => `limit: ${v}\n`, (data) => (data as { limit: unknown }).limit],
+    ['nested', (v) => `outer:\n  limit: ${v}\n  list:\n    - ${v}\n`, (data) => (data as { outer: { list: unknown[] } }).outer.list[0]],
+  ];
+  const transitions = shapes.flatMap(([shape, yaml, pick]) => values.flatMap(([from, a]) =>
+    values.filter(([to]) => to !== from).map(([to, b]) => [shape, from, to, yaml, pick, a, b] as const)));
+
+  it.each(transitions)('%s %s -> %s round-trips and is detected as a change', (_shape, from, to, yaml, pick, a, b) => {
+    const { a: doc, b: peer, sync } = apart(yaml(from));
+    expect(readField(doc, 'frontmatter')).toBe(yaml(from));
+    expect(Object.is(pick(readFrontmatter(peer)), a)).toBe(true);
+    expect(writeField(doc, 'frontmatter', yaml(to), LOCAL)).toBe(true);
+    expect(readField(doc, 'frontmatter')).toBe(yaml(to));
+    sync();
+    expect(readField(peer, 'frontmatter')).toBe(yaml(to));
+    expect(Object.is(pick(readFrontmatter(peer)), b)).toBe(true);
+    expect(writeField(doc, 'frontmatter', yaml(to), LOCAL)).toBe(false);
+    const edited = readFrontmatter(peer);
+    expect(updateFrontmatter(peer, edited, jsYaml.load(yaml(from), { json: true }) as Record<string, unknown>, LOCAL)).toBe(true);
+    expect(readField(peer, 'frontmatter')).toBe(yaml(from));
+  });
+});
+
 it.each(['---\n# no fields yet\n---\n', '---\n---\n'])('imports an empty YAML block as no properties: %s', (yaml) => {
   const doc = new Y.Doc();
   writeField(doc, 'frontmatter', yaml, 'import');
