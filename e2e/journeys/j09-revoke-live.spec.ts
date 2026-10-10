@@ -11,7 +11,7 @@ import {
   TERMINAL_REASON_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { IDLE_MS, inductionProblems } from '../lib/hibernate.ts';
+import { idleWake, inductionProblems } from '../lib/hibernate.ts';
 import { visibility } from '../lib/idle.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -195,8 +195,8 @@ test('j09 sign-out: signing out in one window ends the same session in the other
   expect((await ben.context.request.get('/api/me')).status()).toBe(200);
 });
 
-// local-only: reads the DO instances through the loopback hook, against workerd's calibrated idle window.
-test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @local-only @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
+// On staging the instances are read through the owner-only route after the run's idle (idleWake).
+test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
   test.setTimeout(300_000);
   // Ada works over the API only: an open shell shows the most recently edited note, so the holders' typing would
   // switch her window between their notes and keep their DOs awake.
@@ -230,18 +230,20 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
   }
   await actors.requireDistinct(2);
 
-  const baseline = await Promise.all(holders.map((h) => stack.docInstance(h.docId)));
+  const { probe, idleMs, skewMs } = idleWake(stack, ada.principal as Principal);
+  const baseline = await Promise.all(holders.map((h) => probe(h.docId)));
   // Every window goes quiet: a visible tab's resync keeps its DO awake.
   for (const holder of holders) await visibility(holder.actor, true);
-  await new Promise((resolve) => setTimeout(resolve, IDLE_MS));
+  await new Promise((resolve) => setTimeout(resolve, idleMs));
 
   const decisiveAt = Date.now();
   expect((await ada.context.request.delete(`/api/docs/${docId}/links/${docToken}`, { headers })).status()).toBe(200);
   expect((await ada.context.request.delete(`/api/folders/${folderId}/links/${folderToken}`, { headers })).status()).toBe(200);
+  const decisiveEnd = Date.now();
   for (const [index, holder] of holders.entries()) {
-    const after = await stack.docInstance(holder.docId);
+    const after = await probe(holder.docId);
     await info.attach(`cold-${index}-instance.json`, { body: JSON.stringify({ base: baseline[index], after, decisiveAt }), contentType: 'application/json' });
-    expect(inductionProblems(baseline[index], after, decisiveAt), 'the revocation met a woken DO').toEqual([]);
+    expect(inductionProblems(baseline[index], after, decisiveAt, decisiveEnd, skewMs), 'the revocation met a woken DO').toEqual([]);
   }
 
   for (const holder of holders) {

@@ -3,7 +3,7 @@
 import type { Actor, Actors } from '../lib/actors.ts';
 import { acceptInvite } from '../lib/grants.ts';
 import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
-import { IDLE_MS, induce, inductionProblems, ownerProbe } from '../lib/hibernate.ts';
+import { idleWake, induce, inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { awarenessFrames, visibility } from '../lib/idle.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -77,8 +77,8 @@ test('j04-hibernation: after an idle the peer reopens the note non-empty from a 
   expect(proof.after.instanceId).not.toBe(proof.base.instanceId);
 });
 
-// local-only: reads both DO instances through the loopback hook, against workerd's calibrated idle window.
-test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @local-only @p:col-6 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
+// On staging the instances are read through the owner-only route after the run's idle (idleWake).
+test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @p:col-6 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
   test.setTimeout(240_000);
   info.annotations.push({ type: 'quiescence', description: 'simulated document visibility; real surviving WebSocket' });
   const owner = await actors.principal('ada');
@@ -90,13 +90,14 @@ test('j04-hibernation: reopen and warm creator with a cold peer after shared idl
   const incoming = awarenessFrames(joiner);
   await expect.poll(() => warm.frames.sent.size).toBe(1);
   const [creatorId] = warm.frames.sent.keys();
-  const baseline = await Promise.all([stack.docInstance(closed.docId), stack.docInstance(warm.docId)]);
+  const { probe, idleMs, skewMs } = idleWake(stack, owner);
+  const baseline = await Promise.all([probe(closed.docId), probe(warm.docId)]);
   await closed.actor.page.close();
   await visibility(warm.actor, true);
   const socket = warm.actor.telemetry.sockets.find((s) => s.docId === warm.docId);
   expect(socket).toBeDefined();
   const clock = warm.frames.sent.get(creatorId);
-  await new Promise((resolve) => setTimeout(resolve, IDLE_MS));
+  await new Promise((resolve) => setTimeout(resolve, idleMs));
   expect(socket?.closedAt, 'the warm creator socket survives idle').toBeNull();
   expect(warm.frames.sent.get(creatorId), 'hidden presence does not keep the DO awake').toBe(clock);
 
@@ -104,10 +105,11 @@ test('j04-hibernation: reopen and warm creator with a cold peer after shared idl
     const decisiveAt = Date.now();
     await actor.goto(`/d/${scenario.docId}`);
     await live(actor, scenario.docId);
-    const after = await stack.docInstance(scenario.docId);
-    const proof = { docId: scenario.docId, base: baseline[index], after, decisiveAt, idleMs: IDLE_MS };
+    const decisiveEnd = Date.now();
+    const after = await probe(scenario.docId);
+    const proof = { docId: scenario.docId, base: baseline[index], after, decisiveAt, idleMs };
     await info.attach(`idle-${index}-instance.json`, { body: JSON.stringify(proof), contentType: 'application/json' });
-    expect(inductionProblems(baseline[index], after, decisiveAt), 'hibernation must be induced').toEqual([]);
+    expect(inductionProblems(baseline[index], after, decisiveAt, decisiveEnd, skewMs), 'hibernation must be induced').toEqual([]);
     expect(after.instanceId).not.toBe(baseline[index].instanceId);
   }
   await visibility(warm.actor, false);

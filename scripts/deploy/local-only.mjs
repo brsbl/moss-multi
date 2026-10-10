@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Which journey legs the staging suite leaves out (A§21, T8.2). Staging has no test hooks and no stack this run owns,
-// so a leg that probes or resets a DO through a hook, or pauses or restarts the stack, is tagged @local-only, with a
-// `// local-only: <reason>` line above it. The staging projects in e2e/playwright.config.ts drop those legs.
+// so a leg that resets a DO, pauses or restarts the stack, or serves a page beside it is tagged @local-only, with a
+// `// local-only: <reason>` line above it. Reading a DO's instance is not one of them: the owner-only instance route
+// answers it on staging (hibernate.ts instanceProbe), so a leg that only reads one runs there. The staging projects in
+// e2e/playwright.config.ts drop the tagged legs.
 //   node scripts/deploy/local-only.mjs        lists each @local-only leg and fails on an untagged or unexplained one
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,11 +14,18 @@ import { JOURNEY_DIR } from '../ci/journeys.mjs';
 export const LOCAL_ONLY = /@local-only\b/;
 const REASON = /^\/\/\s*local-only:\s*\S/;
 
-/** What only a local stack offers: the loopback hooks, the stack levers, and induce()'s default hook probe. */
+/** What an untagged leg must not touch directly: the loopback hooks, the stack levers, and induce()'s default probe. */
 const NEEDS = [
   { what: 'a test hook or a stack lever', test: (body) => /\bstack\.(?:docInstance|resetDoc|pause|resume|restart)\(/.test(body) },
   { what: "a restart or reset lever", test: (body) => /\blever:\s*'(?:restart|reset)'/.test(body) },
   { what: "induce() with the hook probe", test: (body) => /\binduce\(/.test(body) && !/\bprobe:/.test(body) },
+];
+
+/** What only a local stack offers, so a tagged leg must use one: a stack lever, or a page served beside the stack. */
+const LEVERS = [
+  (body) => /\bstack\.(?:resetDoc|pause|resume|restart)\(/.test(body),
+  (body) => /\blever:\s*'(?:restart|reset)'/.test(body),
+  (body) => /\bservePage\(/.test(body),
 ];
 
 /**
@@ -63,6 +72,8 @@ export function localOnlyProblems(text, file = 'spec.ts') {
       for (const need of NEEDS) if (need.test(leg.body)) problems.push(`${file}:${leg.line} uses ${need.what} but is not tagged @local-only`);
     } else if (!leg.comments.some((comment) => REASON.test(comment))) {
       problems.push(`${file}:${leg.line} is @local-only with no "// local-only: <reason>" line above it`);
+    } else if (!LEVERS.some((uses) => uses(leg.body))) {
+      problems.push(`${file}:${leg.line} is @local-only but uses no local-only lever (a DO instance read runs on staging through the owner-only route)`);
     }
   }
   return problems;

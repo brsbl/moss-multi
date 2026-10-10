@@ -3,6 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 import type { APIRequestContext, Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
+import { isLoopback } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor } from './detectors.js';
@@ -78,9 +79,9 @@ export class Actor implements ActorView {
   }
 }
 
-/** Whether a test may capture screenshots against `stack`. */
-export function recordsScreens(_stack: Pick<Stack, 'baseUrl'> | null): boolean {
-  return true;
+/** Screenshots are taken against a loopback stack or a fixture page only: off loopback nothing is recorded (T8.Ds). */
+export function recordsScreens(stack: Pick<Stack, 'baseUrl'> | null): boolean {
+  return !stack || isLoopback(stack.baseUrl);
 }
 
 // Per worker process, so every principal minted in a run has its own email.
@@ -225,7 +226,7 @@ export class Actors {
   /** Invariants 5, 6 and 9 on every actor now; captures a 2x PNG for `@evidence` tests. */
   async checkpoint(name: string): Promise<void> {
     const findings = (await Promise.all(this.list.map((actor) => domFindings(actor)))).flat();
-    if (this.testInfo.tags.includes('@evidence')) {
+    if (this.testInfo.tags.includes('@evidence') && recordsScreens(this.options.stack)) {
       for (const actor of this.list.filter((a) => !a.page.isClosed())) {
         await this.testInfo.attach(`${name}-${actor.label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });
       }
@@ -272,7 +273,7 @@ export class Actors {
     await this.testInfo.attach(`${where}-census.json`, { body: JSON.stringify({ findings, census }, null, 2), contentType: 'application/json' });
     for (const label of new Set(findings.map((f) => f.actor))) {
       const actor = this.list.find((a) => a.label === label);
-      if (actor && !actor.page.isClosed()) {
+      if (actor && !actor.page.isClosed() && recordsScreens(this.options.stack)) {
         await this.testInfo.attach(`${where}-${label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });
       }
     }

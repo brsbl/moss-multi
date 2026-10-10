@@ -118,6 +118,11 @@ export class RequestBudget {
   }
 }
 
+/** Charges a WebSocket this process opens itself (the ws library, not fetch) to the running budget, if any. */
+export function chargeSocket(url: string): void {
+  node.budget?.charge(url);
+}
+
 /** The environment a child process (the CLI) needs for its requests to count against the running budget, if any. */
 export function childBudgetEnv(): Record<string, string> {
   return node.budget?.childEnv() ?? {};

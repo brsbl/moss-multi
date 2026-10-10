@@ -165,6 +165,16 @@ jobs:
           D1_ID: ${{ steps.d1.outputs.id }}
           STAGING_URL: ${{ secrets.STAGING_URL }}
         run: node scripts/deploy/staging-config.mjs write apps/web/dist --d1-id "$D1_ID" --url "$STAGING_URL"
+      # A§21: nothing reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
+      - name: Staging has room for a full suite
+        if: inputs.suite == 'full'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node "$WRANGLER" d1 execute moss-multi-staging --remote --json --config apps/web/dist/server/wrangler.json \
+            --command "SELECT (SELECT count(*) FROM docs) AS docs, (SELECT count(*) FROM user) AS users" > "$RUNNER_TEMP/growth.json"
+          node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json"
       # Before the deploy, so the new bytes never meet an old schema. wrangler applies them in file-name order and the
       # upload guard checked that order against the drizzle journal.
       - name: D1 migrations

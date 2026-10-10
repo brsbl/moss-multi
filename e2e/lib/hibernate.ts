@@ -62,6 +62,17 @@ export function ownerProbe(stack: Stack, owner: Principal): (docId: string) => P
 }
 
 /**
+ * Where a natural-idle leg reads a doc's instance and how long it idles: the owner-only route, the run's idle and
+ * Cloudflare's clock on a Worker with no hooks (staging, T8.2); the loopback hook and workerd's calibrated window on
+ * a local stack.
+ */
+export function idleWake(stack: Stack, owner: Principal): { probe: (docId: string) => Promise<Instance>; idleMs: number; skewMs: number } {
+  const canary = stack.canary;
+  if (canary) return { probe: ownerProbe(stack, owner), idleMs: canary.idleMs, skewMs: 2_000 };
+  return { probe: (docId) => stack.docInstance(docId), idleMs: IDLE_MS, skewMs: CLOCK_SKEW_MS };
+}
+
+/**
  * Baseline, quiesce, evict, act, then probe. Nothing probes between the idle and the decisive action, because
  * the probe itself would wake the DO.
  */

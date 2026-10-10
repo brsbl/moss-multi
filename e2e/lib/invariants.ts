@@ -78,11 +78,14 @@ export function stampProblems(stamps: StampEntry[], version: Provenance | null):
   ]);
 }
 
-/** Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. */
+/**
+ * Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. A socket's
+ * document is the one the page reported constructing it, else the navigation count when it was seen.
+ */
 export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>): string[] {
   const groups = new Map<string, SocketEntry[]>();
   for (const socket of sockets) {
-    const key = `${socket.epoch}\u0000${socket.docId}`;
+    const key = `${socket.document ? `doc:${socket.document}` : `epoch:${socket.epoch}`}\u0000${socket.docId}`;
     groups.set(key, [...(groups.get(key) ?? []), socket]);
   }
   const problems: string[] = [];
