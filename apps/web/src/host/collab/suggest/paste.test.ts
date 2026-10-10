@@ -111,10 +111,10 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
   };
   pump();
   editor.update(() => $getRoot().getLastChildOrThrow().selectEnd(), { discrete: true });
-  /** A real paste command of `lines`, as plain text, run to its end. */
-  const paste = (lines: string[]) => {
+  /** A real paste command of `lines`, as plain text, committed at once (the browser commits it in a microtask). */
+  const paste = (lines: string[]) => editor.update(() => {
     editor.dispatchCommand(PASTE_COMMAND, { clipboardData: plainClipboard(lines.join('\n')), preventDefault: () => {} } as unknown as ClipboardEvent);
-  };
+  }, { discrete: true });
   return {
     fork,
     live,
