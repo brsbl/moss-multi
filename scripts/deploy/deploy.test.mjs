@@ -480,9 +480,16 @@ describe('canary recording', () => {
       expect(output).toMatch(/SYNTHETIC-CALLLOG/);
     }, 120_000);
 
-    it("prints a failure's suite source lines and invariant numbers, and nothing else of the error", async () => {
+    it("prints a failure's suite source lines, kind and invariant facts, and no text of the error", async () => {
       const { failureTrace } = await import('./canary-reporter.mjs');
-      const message = `invariants: 2 finding(s)\n  invariant 1 [ada] GET ${URL_STAGING}/s/SHARE-TOKEN 403\n  invariant 3 [ben] cookie: ${SESSION}`;
+      const message = [
+        'invariants: 5 finding(s)',
+        `  invariant 1 [ada] HTTP 404 GET ${URL_STAGING}/s/Zq9SHARE-TOKEN7x/assets/9f8e7d6c-5b4a-4321-8fed-cba987654321 (undeclared)`,
+        `  invariant 1 [ada] console error: Failed to load resource (${URL_STAGING}/api/me?token=SECRET)`,
+        `  invariant 3 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321: 2 socket opens in one document, 1 allowed`,
+        '  invariant 7 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321 title: "Suggest refusal" appears 0 time(s), typed 1',
+        `  invariant 2 [cy] cookie: ${SESSION}`,
+      ].join('\n');
       const stack = [
         `Error: ${message}`,
         `    at Actors.fail (/__w/moss-multi/moss-multi/e2e/lib/actors.ts:260:11)`,
@@ -490,8 +497,15 @@ describe('canary recording', () => {
         `    at fetch (${URL_STAGING}/api/me?token=SECRET:1:1)`,
       ].join('\n');
       const lines = failureTrace({ errors: [{ message, stack }] });
-      expect(lines).toEqual(['at e2e/lib/actors.ts:260 < e2e/journeys/j09-revoke-live.spec.ts:121', 'invariants 1, 3']);
-      expect(lines.join('\n')).not.toMatch(/SYNTHETIC|SHARE-TOKEN|SECRET|workers\.dev/);
+      expect(lines).toEqual([
+        'at e2e/lib/actors.ts:260 < e2e/journeys/j09-revoke-live.spec.ts:121',
+        'invariant 1 [ada] HTTP 404 GET /s/:id/assets/:id',
+        'invariant 1 [ada] console error',
+        'invariant 3 [ben] 2 socket opens, 1 allowed',
+        'invariant 7 [ben] title appears 0, typed 1',
+        'invariant 2 [cy]',
+      ]);
+      expect(lines.join('\n')).not.toMatch(/SYNTHETIC|SHARE-TOKEN|SECRET|Suggest refusal|workers\.dev|9f8e7d6c/);
       expect(failureTrace({ status: 'passed' })).toEqual([]);
       const timedOut = { message: `expect(locator).toHaveAttribute(expected) failed\nLocator: a[href="${URL_STAGING}/s/SHARE-TOKEN"]\nTimeout 10000ms exceeded`, stack: '' };
       expect(failureTrace({ errors: [timedOut] })).toEqual(['kind timeout, expect']);

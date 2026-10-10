@@ -557,4 +557,6 @@ test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2
   await ben.page.keyboard.press('Escape');
   await expect(ben.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" in a vault at an unknown role').toHaveCount(0);
   await actors.requireDistinct(2);
+  // A listing still in flight when the context closes must not fail the next test.
+  await ben.page.unrouteAll({ behavior: 'ignoreErrors' });
 });

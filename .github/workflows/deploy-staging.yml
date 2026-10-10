@@ -24,7 +24,7 @@ on:
         options: [canary, full]
         default: canary
       suite_request_budget:
-        description: 'Worker requests each full-suite shard may make (12 shards)'
+        description: 'Worker requests each full-suite shard may make (16 shards)'
         type: number
         default: 5000
 
@@ -251,10 +251,10 @@ jobs:
           if-no-files-found: ignore
 
   # The full suite on staging (A§21, T8.2), after a green canary: every journey but the @local-only legs (test hooks or
-  # stack control), in both engines, sharded six ways. Per-run @example.invalid principals, so no pool secret; each
+  # stack control), in both engines, sharded eight ways. Per-run @example.invalid principals, so no pool secret; each
   # shard has its own request budget; the wake is j04's owner-route leg. The canary's log and artifact policy holds.
   suite:
-    name: suite (${{ matrix.browser }}, ${{ matrix.shard }}/6)
+    name: suite (${{ matrix.browser }}, ${{ matrix.shard }}/8)
     needs: [preflight, deploy, canary]
     if: inputs.suite == 'full'
     runs-on: ubuntu-latest
@@ -266,7 +266,7 @@ jobs:
       fail-fast: false
       matrix:
         browser: [chromium, webkit]
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}-${{ matrix.shard }}
     defaults:
@@ -305,7 +305,7 @@ jobs:
           SHARD: ${{ matrix.shard }}
           E2E_GLOBAL_TIMEOUT_MIN: '50'
           MOSS_MULTI_NO_OPEN: '1'
-        run: pnpm exec playwright test --project=staging-"$BROWSER" --shard="$SHARD/6"
+        run: pnpm exec playwright test --project=staging-"$BROWSER" --shard="$SHARD/8"
       - name: A credential-free summary
         if: always()
         run: |
