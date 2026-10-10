@@ -13,8 +13,8 @@ import {
 } from '@moss-multi/core/suggest/apply';
 import { payloadDocsFor } from '../payload-docs.ts';
 import {
-  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partBytes, partsOf, patchMeta, readMeta, readRecord, recordBytes, recordIds, suggestionsWriter,
-  writeSuggestions,
+  chainHead, closeRecord, createRecord, landingOf, metaBytes, onRecordClosed, opsOf, partBytes, partsOf, patchMeta, readMeta, readRecord, recordBytes,
+  recordIds, suggestionsWriter, writeSuggestions,
 } from '../suggest/records.ts';
 
 /** Who sends a suggest frame: the principal, its live role, and the connection (a server-minted nonce). */
@@ -480,13 +480,12 @@ export class SuggestIngest {
 
   /** The record a chain of continuations and merges ends at. */
   #head(id: string): string {
-    let head = id;
-    const path: string[] = [];
-    for (let next = this.#next.get(head); next !== undefined; next = this.#next.get(head)) {
-      path.push(head);
-      head = next;
+    const head = chainHead(id, (step) => this.#next.get(step));
+    for (let step = id; step !== head;) {
+      const next = this.#next.get(step)!;
+      this.#next.set(step, head);
+      step = next;
     }
-    for (const step of path) this.#next.set(step, head);
     return head;
   }
 
@@ -508,8 +507,9 @@ export class SuggestIngest {
     const head = this.#head(record);
     const meta = readMeta(this.doc, head);
     if (!meta || meta.author !== who.id) return refused('not-author');
-    if (meta.status === 'open') return { ok: true, id: head, create: false, base: head };
-    if (meta.status === 'accepted') return { ok: true, id: this.#mint(), create: true, continues: head, base: head };
+    const landing = landingOf(meta.status);
+    if (landing === 'head') return { ok: true, id: head, create: false, base: head };
+    if (landing === 'continuation') return { ok: true, id: this.#mint(), create: true, continues: head, base: head };
     return refused('record-closed');
   }
 

@@ -116,7 +116,7 @@ import { TabExitPlugin } from './plugins/TabExitPlugin';
 import { TabSelectionScopePlugin } from './plugins/TabSelectionScopePlugin';
 import { CollapsibleHeadingPlugin } from './plugins/CollapsibleHeadingPlugin';
 import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
-import { SafePastePlugin, shouldForcePlainTextPaste } from './plugins/SafePastePlugin';
+import { SafePastePlugin } from './plugins/SafePastePlugin';
 import { MediaDropPlugin } from './plugins/MediaDropPlugin';
 import { ExternalImagePastePlugin } from './plugins/ExternalImagePastePlugin';
 import { VideoPastePlugin } from './plugins/VideoPastePlugin';
@@ -155,7 +155,7 @@ import { TRASH_COPY } from '@moss-multi/host/retention';
 import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
 // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole in batches, or is refused whole
 import { createEditor } from 'lexical';
-import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, planPlainText, registerWholePaste, type PastePlan } from '@moss-multi/host/large-paste';
+import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, pastesInBatches, planPlainText, type PastePlan } from '@moss-multi/host/large-paste';
 import { $withDocumentImport } from './markdown/fixes';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, unescapeHtmlEntities } from './markdown/normalize';
@@ -815,7 +815,9 @@ export const shouldDeferToRichClipboardPaste = (
 const captureSelectionForPaste = (editor: LexicalEditor): SavedPasteSelection | null => {
   let saved: SavedPasteSelection | null = null;
 
-  editor.getEditorState().read(() => {
+  // moss-multi seam: suggest-paste (T5.S10): the selection as the paste's own update leaves it (Suggest mode's routing
+  // struck the selection and put the caret at its end).
+  (editor._pendingEditorState ?? editor.getEditorState()).read(() => {
     const selection = $getSelection();
     if ($isRangeSelection(selection)) {
       saved = {
@@ -1169,31 +1171,6 @@ const $insertFileLinkInline = (editor: LexicalEditor, payload: MossNoteLinkClipb
   });
 };
 
-// moss-multi seam: whole-paste (T3.S6): whether the paste handlers (SafePaste's, then this file's) land `event` through
-// pasteLarge, by the same tests in the same order. Suggest mode's routing then strikes a selection only inside the
-// paste's own landing, once the paste is admitted whole.
-const takesWholePaste = (event: unknown): boolean => {
-  const clipboardData = (event as Partial<ClipboardEvent> | null)?.clipboardData;
-  if (!clipboardData) return false;
-  const htmlPayload = clipboardData.getData('text/html') ?? '';
-  const plainTextPayload = clipboardData.getData('text/plain') ?? '';
-  if (shouldForcePlainTextPaste(htmlPayload, plainTextPayload)) return false;
-  if (parseMossNoteLinkClipboardPayload(clipboardData.getData(MOSS_NOTE_LINK_CLIPBOARD_MIME) ?? '') ?? parseMossNoteLinkPayloadFromHtml(htmlPayload)) {
-    return false;
-  }
-  if (MOSS_ASSET_URL_IN_HTML_RE.test(htmlPayload)) return false;
-  const lexicalPayload = clipboardData.getData(LEXICAL_CLIPBOARD_MIME) ?? '';
-  const markdownPayload = clipboardData.getData('text/markdown') ?? '';
-  if (shouldDeferToRichClipboardPaste(htmlPayload, lexicalPayload, markdownPayload)) return false;
-  const hasExplicitMarkdownPayload = markdownPayload.trim().length > 0;
-  const pastedMarkdownCandidate = hasExplicitMarkdownPayload ? markdownPayload : plainTextPayload;
-  if (parseWikiLinkFromPlainText(pastedMarkdownCandidate)) return false;
-  const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
-  const imports = hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate);
-  if ((forcedPlainText || !imports) && shouldChunkMarkdownPaste(forcedPlainText ? pastedMarkdownCandidate : plainTextPayload)) return true;
-  return !forcedPlainText && imports && shouldChunkMarkdownPaste(pastedMarkdownCandidate);
-};
-
 export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => void) => {
   let activeChunkedPasteJobId = 0;
 
@@ -1268,12 +1245,13 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
       }
 
       // moss-multi seam: whole-paste (T3.S6): a large plain-text paste lands whole in batches, as Lexical's own paste
-      // would place it (forced: as insertRawText would), or is refused whole.
+      // would place it (forced: as insertRawText would), or is refused whole. Suggest mode (T5.S10) pastes it natively.
       const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
       const plainText = forcedPlainText ? pastedMarkdownCandidate : plainTextPayload;
       if (
         (forcedPlainText || !(hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate))) &&
         shouldChunkMarkdownPaste(plainText) &&
+        pastesInBatches(editor) &&
         insertLargePaste(editor, () => planPlainText(MARKDOWN_EDITOR_NODES, normalizeClipboardLineEndings(plainText), forcedPlainText))
       ) {
         event.preventDefault();
@@ -1296,8 +1274,8 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
         event.preventDefault();
         event.stopPropagation();
         // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole, in batches, never in
-        // text chunks, so nothing is dropped and one undo removes it.
-        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
+        // text chunks, so nothing is dropped and one undo removes it. Suggest mode (T5.S10) pastes it in one update.
+        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate) && pastesInBatches(editor)) {
           return insertLargeMarkdownPaste(editor, pastedMarkdownCandidate);
         }
         return insertMarkdownFromPaste(editor, pastedMarkdownCandidate);
@@ -1325,13 +1303,9 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
     COMMAND_PRIORITY_HIGH
   );
 
-  // moss-multi seam: whole-paste (T3.S6)
-  const stopWholePaste = registerWholePaste(editor, takesWholePaste);
-
   return () => {
     activeChunkedPasteJobId += 1;
     unregister();
-    stopWholePaste();
   };
 };
 

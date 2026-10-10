@@ -13,7 +13,7 @@ import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
 import { registerFork } from './forks.ts';
-import { openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds } from './records.ts';
+import { chainHead, landingOf, openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds, successorIn } from './records.ts';
 import { bindCheck } from './review.ts';
 
 export { openRecords };
@@ -891,9 +891,15 @@ export class SuggestFork {
       const record = readRecord(this.body, id);
       return (record ? recordBytes(record) : 0) + (pending.get(id) ?? 0);
     };
-    const stored = readRecord(this.body, lease.record);
-    let total = held(lease.record) + adds;
-    for (const other of this.#mergedBy(lease.record, blocks ?? { from: this.#caretBlock, to: this.#caretBlock })) total += held(other);
+    // The record the edit lands in, found as the DocDO finds it: a lease's own record, the head its chain of merges and
+    // continuations ends at, or a new continuation of an accepted head (holding what is still owed to it).
+    const head = chainHead(lease.record, successorIn(this.body));
+    const meta = readMeta(this.body, head);
+    const landing = meta ? landingOf(meta.status) : 'head';
+    if (landing === 'closed') return 'record-closed';
+    const continues = landing === 'continuation';
+    let total = (continues ? (pending.get(lease.record) ?? 0) : held(head) + (head === lease.record ? 0 : (pending.get(lease.record) ?? 0))) + adds;
+    for (const other of this.#mergedBy(head, blocks ?? { from: this.#caretBlock, to: this.#caretBlock })) total += held(other);
     if (total > SUGGEST_LIMITS.recordOpsBytes * 0.9) return 'record-cap';
     let open = [...pending.values()].reduce((sum, add) => sum + add, 0);
     for (const id of recordIds(this.body)) {
@@ -901,7 +907,7 @@ export class SuggestFork {
       if (record) open += recordBytes(record);
     }
     if (open + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.openOpsShare) return 'ops-cap';
-    const creates = !stored && !pending.has(lease.record);
+    const creates = (!meta || continues) && !pending.has(lease.record);
     // Records still being created count as open too.
     const creating = [...pending.keys()].filter((id) => !readRecord(this.body, id)).length;
     if (creates && openRecords(this.body, this.options.me).length + creating >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';

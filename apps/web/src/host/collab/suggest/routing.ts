@@ -17,9 +17,10 @@ import {
   type LexicalEditor, type LexicalNode, type RangeSelection, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
-import { registerSuggestPasteRoute, takesWholePaste } from '../../large-paste.ts';
+import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
 import { charAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
+import { $admitPaste, clipboardBound } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -531,7 +532,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
    * A non-collapsed selection: body items in it become one delete part, the author's own text in it is removed
    * natively, and the caret goes to its end (its start with `toStart`, for a backward word or line delete).
    * `own`: only the author's own text, which deletes natively. `skip`: nothing left to strike; the caret still moves.
-   * `joined`: the binding step that follows is the same edit (a whole paste), so its undo and redo take the strike too.
+   * `joined`: the binding step that follows is the same edit (a paste), so its undo and redo take the strike too.
    */
   const $routeRange = (toStart = false, joined = false): Routed => {
     const selection = $getSelection();
@@ -725,21 +726,23 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       $routeRange();
       return false;
     }, P),
-    // A whole paste (large-paste.ts) strikes the selection inside its own landing, once the paste is admitted.
+    // A paste (paste.ts): admitted whole before anything changes, or refused with the selection kept. Admitted, it
+    // strikes the selection and Lexical's own paste goes in at its end, in this update: one undo step with the strike.
     editor.registerCommand(PASTE_COMMAND, (event) => {
-      if (!takesWholePaste(editor, event)) $routeRange();
+      const data = 'clipboardData' in event ? event.clipboardData : 'dataTransfer' in event ? event.dataTransfer : null;
+      const bound = clipboardBound(data);
+      const selection = $getSelection();
+      const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
+      const notice = $admitPaste(fork, bound, range ? toSpans(range.body) : []);
+      if (notice) {
+        event.preventDefault();
+        refuseInput(notice);
+        return true;
+      }
+      // Nothing in it the bound reads (files): the paste may make no step of its own to join.
+      $routeRange(false, bound > 0);
       return false;
     }, P),
-    registerSuggestPasteRoute(editor, {
-      $targets: () => {
-        const selection = $getSelection();
-        const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
-        return range ? toSpans(range.body) : [];
-      },
-      $route: () => {
-        $routeRange(false, true);
-      },
-    }),
     editor.registerCommand(CUT_COMMAND, (event) => {
       const selection = $getSelection();
       if (!$isRangeSelection(selection) || selection.isCollapsed()) return false;

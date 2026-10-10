@@ -7,16 +7,15 @@
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import type { IdSpan, SuggestRefusal } from '@moss-multi/protocol/suggest';
 import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
-import { forkOf, type ForkView } from '@moss-multi/sync/suggest/forks';
+import { forkOf } from '@moss-multi/sync/suggest/forks';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
-  $isDecoratorNode, $isElementNode, $isNodeSelection, $isRangeSelection, $isRootOrShadowRoot, $isTextNode, $parseSerializedNode, $setSelection,
+  $isDecoratorNode, $isElementNode, $isNodeSelection, $isRangeSelection, $isTextNode, $parseSerializedNode, $setSelection,
   COMMAND_PRIORITY_CRITICAL, createEditor, REDO_COMMAND, UNDO_COMMAND, type BaseSelection, type ElementNode,
   type Klass, type LexicalEditor, type LexicalNode, type NodeKey, type PointType, type SerializedElementNode, type SerializedLexicalNode,
 } from 'lexical';
@@ -113,10 +112,12 @@ function gcBytes(update: Uint8Array): number {
  * tree names, so the payloads count as the larger of the DocDO's last word and what this tab holds.
  */
 function heldBytes(editor: LexicalEditor): number | null {
-  const bound = noteDoc(editor);
-  if (!bound) return null;
-  // In Suggest mode the editor writes the fork F; the DocDO counts the body it forks, whose session knows its payloads.
-  const doc = forkOf(bound)?.body ?? bound;
+  const doc = noteDoc(editor);
+  return doc ? noteBytes(doc) : null;
+}
+
+/** `doc` and its payload docs as the DocDO counts them against the cap (heldBytes). */
+export function noteBytes(doc: Y.Doc): number {
   let payloads = 0;
   for (const payload of payloadDocsFor(doc).docs.values()) payloads += Y.encodeStateAsUpdate(payload).byteLength;
   return gcBytes(Y.encodeStateAsUpdate(doc)) + Math.max(payloads, countedPayloadBytes(doc));
@@ -768,31 +769,6 @@ function* rehearse(request: PasteRequest, max: number): Generator<void, { bytes:
   return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
 }
 
-/** Suggest mode refuses a paste whole, with the cap it would pass. */
-const SUGGEST_PASTE_REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
-  default: 'This paste is too large for one suggestion, so none of it was added.',
-  'open-cap': 'You have too many open suggestions on this note, so none of the paste was added.',
-  'record-closed': 'Suggesting stopped before the paste went in, so none of it was added.',
-  lease: 'Suggesting stopped before the paste went in, so none of it was added.',
-};
-
-/** Suggest mode's routing of a selection a whole paste replaces (routing.ts). */
-export interface SuggestPasteRoute {
-  /** The body items the selection would strike, read without striking them. */
-  $targets(): IdSpan[];
-  /** Strikes the selection (the author's own text in it goes natively), the caret at its end. */
-  $route(): void;
-}
-
-const suggestRoutes = new WeakMap<LexicalEditor, SuggestPasteRoute>();
-
-export function registerSuggestPasteRoute(editor: LexicalEditor, route: SuggestPasteRoute): () => void {
-  suggestRoutes.set(editor, route);
-  return () => {
-    if (suggestRoutes.get(editor) === route) suggestRoutes.delete(editor);
-  };
-}
-
 /** Lands `request`: its scratch replay, then its batches or its refusal. */
 function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void> {
   const { editor } = job;
@@ -806,13 +782,6 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     return;
   }
   yield;
-  // Suggest mode: the paste is one suggestion's edit, never batched (landSuggested).
-  const doc = noteDoc(editor);
-  const fork = doc ? forkOf(doc) : undefined;
-  if (fork) {
-    landSuggested(editor, request, fork, bytes);
-    return;
-  }
 
   // 2. The paste itself: the first batch at the caret, then the rest, all one undo step.
   const undo = collabUndo(editor);
@@ -859,75 +828,6 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     step.stamp = stamp;
     pasted.set(stamp, max);
   }
-}
-
-const utf8 = new TextEncoder();
-/** A node's own properties as the binding writes them (its JSON, children apart), plus an item header. */
-const nodeBytes = (node: LexicalNode, text?: string): number => {
-  const json = JSON.stringify({ ...node.exportJSON(), ...(text === undefined ? {} : { text }) });
-  return utf8.encode(json).byteLength + 32;
-};
-const treeBytes = (node: LexicalNode): number =>
-  nodeBytes(node) + ($isElementNode(node) ? node.getChildren().reduce((sum, child) => sum + treeBytes(child), 0) : 0);
-
-/**
- * What the paste re-creates under the suggester's client besides the clipboard: a split moves the rest of the block
- * after the selection into a new element, and the binding writes it as new items, the same bytes again. Counted to the
- * end of the selection's top-level block (its following siblings at every level), with the elements that hold it.
- */
-function $splitBytes(selection: BaseSelection | null): number {
-  if (!$isRangeSelection(selection)) return 0;
-  const end = selection.isBackward() ? selection.anchor : selection.focus;
-  const node = end.getNode();
-  if ($isRootOrShadowRoot(node)) return 0;
-  let bytes = 0;
-  if ($isTextNode(node)) bytes += nodeBytes(node, node.getTextContent().slice(end.offset));
-  else if ($isElementNode(node)) bytes += nodeBytes(node) + node.getChildren().slice(end.offset).reduce((sum, child) => sum + treeBytes(child), 0);
-  // Up to the block that sits in the root (or a table cell): its siblings stay where they are.
-  for (let at: LexicalNode = node, parent = at.getParent(); parent && !$isRootOrShadowRoot(parent); at = parent, parent = at.getParent()) {
-    for (let next = at.getNextSibling(); next; next = next.getNextSibling()) bytes += treeBytes(next);
-    bytes += nodeBytes(parent);
-  }
-  return bytes;
-}
-
-/**
- * A paste in Suggest mode: admitted against every suggestion cap with the strike of the selection it replaces, before
- * anything changes, then the strike and the whole paste in one update (one transaction, one op, one undo step), or
- * refused whole with nothing changed, the selection kept. Batches would each be an op the DocDO could refuse alone.
- */
-function landSuggested(editor: LexicalEditor, request: PasteRequest, fork: ForkView, bytes: number): void {
-  const route = suggestRoutes.get(editor);
-  const undo = collabUndo(editor);
-  const outcome: { refusal: SuggestRefusal | null } = { refusal: null };
-  // A pending update (a peer's) would take the paste into it, and an update so tagged never reaches the doc.
-  if (!editor._updating) editor.read(noop);
-  const live = editor.getEditorState()._selection;
-  undo?.stopCapturing();
-  editor.update(() => {
-    if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
-    // Inside the update: a flush from a command's update queues this one.
-    // The blocks it spans: an older open record of the author's it builds on merges into its record.
-    const selection = $getSelection();
-    const tops = $isRangeSelection(selection) ? [selection.anchor, selection.focus].map((point) => point.getNode().getTopLevelElement()?.getIndexWithinParent() ?? -1) : [-1];
-    const adds = bytes + $splitBytes(selection);
-    if (!fits(editor, adds, 0)) {
-      outcome.refusal = 'doc-cap';
-      refuseInput(WRITE_REFUSED['doc-cap']);
-      return;
-    }
-    outcome.refusal = fork.admit(adds, route?.$targets(), { from: Math.min(...tops), to: Math.max(...tops) });
-    if (outcome.refusal) {
-      refuseInput(SUGGEST_PASTE_REFUSED[outcome.refusal] ?? SUGGEST_PASTE_REFUSED.default);
-      return;
-    }
-    route?.$route();
-    new Placer(request.plan, true).$first(Number.POSITIVE_INFINITY, request.$insert);
-  }, { discrete: true });
-  undo?.stopCapturing();
-  if (outcome.refusal || editor._updating) return;
-  void editor.getRootElement()?.offsetHeight;
-  runBatchGeometry(editor);
 }
 
 /** The steps of pastes that landed in batches, by the token each is stamped with, and the batch cap they paced with. */
@@ -982,10 +882,6 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   const stamp = undo?.redone?.at(-1)?.stamp;
   const max = typeof stamp === 'object' && stamp !== null ? pasted.get(stamp) : undefined;
   if (max === undefined || !undo?.redoInSlices) return false;
-  // Suggest mode redoes it in one transaction, one op the DocDO takes or refuses whole: a refusal between slices would
-  // close F, and the slices after it would be neither saved nor offered back.
-  const doc = noteDoc(editor);
-  if (doc && forkOf(doc)) return false;
   const slices = undo.redoInSlices(stamp);
   if (!slices) return false;
   const job = new PasteJob(editor, (each) => redoSlices(each, slices, max));
@@ -994,18 +890,14 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   return true;
 }
 
-/** Each editor's test of whether its paste handler lands a paste through pasteLarge (the MarkdownEditor seam's). */
-const wholePastes = new WeakMap<LexicalEditor, (event: unknown) => boolean>();
-
-export function registerWholePaste(editor: LexicalEditor, takes: (event: unknown) => boolean): () => void {
-  wholePastes.set(editor, takes);
-  return () => {
-    if (wholePastes.get(editor) === takes) wholePastes.delete(editor);
-  };
+/**
+ * Whether `editor` lands a large paste through pasteLarge. Not in Suggest mode (the editor writes a fork, forks.ts):
+ * there a paste is Lexical's own, one update, admitted whole first (collab/suggest/paste.ts).
+ */
+export function pastesInBatches(editor: LexicalEditor): boolean {
+  const doc = noteDoc(editor);
+  return !doc || !forkOf(doc);
 }
-
-/** Whether `editor`'s paste handler lands `event` through pasteLarge. */
-export const takesWholePaste = (editor: LexicalEditor, event: unknown): boolean => wholePastes.get(editor)?.(event) ?? false;
 
 /** Lands `request` in batches, after its scratch replay fits; a paste still landing in `editor` lands first. */
 export function pasteLarge(editor: LexicalEditor, request: PasteRequest): void {
