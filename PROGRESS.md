@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 53% done** (105 of 200 planned tasks verified)
+**Overall: 52% done** (106 of 205 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 13 / 13 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 14 / 14 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -126,6 +126,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T5.S7 verified: a reviewer's suggestion card now shows a code block edit as its changed line before and after, keeps re-added text at a stretch's end as unchanged, and builds its rows quickly on large suggestions.
 - 2026-10-09 — T5.S4 verified: suggestions and leases now fit inside a bounded share of a note's room, so a busy suggester can no longer fill a note and lock editors out of body and payload edits.
 - 2026-10-10 — T5.S8 verified: the Suggestions panel fetches previews only for cards on screen, expanded or active (two at a time), reuses them when reopened on an unchanged note, and waits out a 429's Retry-After before asking again.
+- 2026-10-10 — T5.S12 verified: every refused suggestion frame now counts toward the refusal cooldown, a connection refused for lack of room gets cheap refusals for its growth frames for a while, and suggestion leases pay the write rate, so a suggester can no longer spin the server with refused frames.
 
 ## T1.1s identity audit
 
