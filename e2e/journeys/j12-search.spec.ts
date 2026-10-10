@@ -105,7 +105,7 @@ test('j12-search: Ben finds a note shared with him by its body text, with a text
   await actors.checkpoint('private-hidden');
 });
 
-test('j12-search: wiki links resolve by title and stem, an unresolved one shows its state, and backlinks survive an edit @p:note-7 @p:note-1 @p:R3 @evidence', async ({ actors }) => {
+test('j12-search: wiki links resolve by title and stem, an unresolved one shows its state, and backlinks survive an edit @p:note-7 @p:note-1@3 @p:R3@3 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const ben = await actors.principal('ben');
   const run = token();

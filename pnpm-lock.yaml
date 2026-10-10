@@ -46,7 +46,7 @@ patchedDependencies:
     hash: f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571
     path: patches/lexical@0.48.0.patch
   wrangler@4.113.0:
-    hash: 8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597
+    hash: 8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27
     path: patches/wrangler@4.113.0.patch
   y-partyserver@2.2.0:
     hash: 59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b
@@ -282,7 +282,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 1.46.0
-        version: 1.46.0(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.23.15))(wrangler@4.113.0(patch_hash=8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597)(@cloudflare/workers-types@4.20260702.1))
+        version: 1.46.0(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.23.15))(wrangler@4.113.0(patch_hash=8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27)(@cloudflare/workers-types@4.20260702.1))
       '@cloudflare/workers-types':
         specifier: 4.20260702.1
         version: 4.20260702.1
@@ -330,7 +330,7 @@ importers:
         version: 8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.23.15)
       wrangler:
         specifier: 4.113.0
-        version: 4.113.0(patch_hash=8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597)(@cloudflare/workers-types@4.20260702.1)
+        version: 4.113.0(patch_hash=8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27)(@cloudflare/workers-types@4.20260702.1)
 
   e2e:
     devDependencies:
@@ -505,7 +505,7 @@ importers:
         version: 5.9.3
       wrangler:
         specifier: 4.113.0
-        version: 4.113.0(patch_hash=8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597)(@cloudflare/workers-types@4.20260702.1)
+        version: 4.113.0(patch_hash=8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27)(@cloudflare/workers-types@4.20260702.1)
 
   packages/viewer:
     devDependencies:
@@ -4700,14 +4700,14 @@ snapshots:
     optionalDependencies:
       workerd: 1.20260721.1
 
-  '@cloudflare/vite-plugin@1.46.0(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.23.15))(wrangler@4.113.0(patch_hash=8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597)(@cloudflare/workers-types@4.20260702.1))':
+  '@cloudflare/vite-plugin@1.46.0(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.23.15))(wrangler@4.113.0(patch_hash=8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27)(@cloudflare/workers-types@4.20260702.1))':
     dependencies:
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260721.1)
       miniflare: 4.20260721.0
       unenv: 2.0.0-rc.24
       vite: 8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.23.15)
       workerd: 1.20260721.1
-      wrangler: 4.113.0(patch_hash=8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597)(@cloudflare/workers-types@4.20260702.1)
+      wrangler: 4.113.0(patch_hash=8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27)(@cloudflare/workers-types@4.20260702.1)
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
@@ -4721,7 +4721,7 @@ snapshots:
       esbuild: 0.28.1
       miniflare: 4.20260721.0
       vitest: 4.1.10(@types/node@24.13.3)(happy-dom@20.14.5)(jsdom@26.1.0)(vite@8.3.2(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15))
-      wrangler: 4.113.0(patch_hash=8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597)(@cloudflare/workers-types@4.20260702.1)
+      wrangler: 4.113.0(patch_hash=8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27)(@cloudflare/workers-types@4.20260702.1)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cloudflare/workers-types'
@@ -8343,7 +8343,7 @@ snapshots:
       '@cloudflare/workerd-linux-arm64': 1.20260721.1
       '@cloudflare/workerd-windows-64': 1.20260721.1
 
-  wrangler@4.113.0(patch_hash=8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597)(@cloudflare/workers-types@4.20260702.1):
+  wrangler@4.113.0(patch_hash=8ab8797fcee768c980d29ee6b0413017e82856204f97db05fa667234ac6ddb27)(@cloudflare/workers-types@4.20260702.1):
     dependencies:
       '@cloudflare/kv-asset-handler': 0.5.0
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260721.1)

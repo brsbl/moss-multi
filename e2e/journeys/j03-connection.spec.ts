@@ -279,7 +279,7 @@ test('j03-connection: a healthy socket idle for 20 s shows no banner and opens n
 const OPENING_4 = 'Waiting on a slow first sync';
 const FIRST_SYNC_HOLD_MS = 10_000;
 
-test('j03-connection: a first sync held back 10 s shows retrying and still connecting, then binds in place with no remount @p:R10', async ({ actors }) => {
+test('j03-connection: a first sync held back 10 s shows retrying and still connecting, then binds in place with no remount @p:R10@1', async ({ actors }) => {
   const shared = await sharedNote(actors, OPENING_4);
   const { docId } = shared;
   const bea = await windowFor(actors, shared.peer, { label: 'ben', severable: true });
@@ -460,7 +460,7 @@ test('j03-connection: failed sign-out preserves offline edits and cancelling uns
   await ui.expectNoRemount(bea, docId, 'failed sign-out');
 });
 
-test('j03-connection: a real Settings chunk load failure preserves the shell and offline edits @p:R10', async ({ actors }) => {
+test('j03-connection: a real Settings chunk load failure preserves the shell and offline edits @p:R10@1', async ({ actors }) => {
   const shared = await sharedNote(actors, 'A failed import leaves the editor here');
   const { ada, docId } = shared;
   const bea = await peerWindow(actors, shared, true);

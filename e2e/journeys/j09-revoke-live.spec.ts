@@ -190,7 +190,7 @@ test('j09 link: revoking a link closes everyone who opened the note through it, 
   await actors.checkpoint('link-revoked');
 });
 
-test('j09 sign-out: signing out in one window ends the same session in the other (session-ended) @p:ppl-2 @p:ppl-1', async ({ actors }) => {
+test('j09 sign-out: signing out in one window ends the same session in the other (session-ended) @p:ppl-2 @p:ppl-1@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const ben = await openShell(actors, 'ben');

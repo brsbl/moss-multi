@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Trace check: every BUILDPLAN trace row needs a leg tagged @p:<id> by the milestone it is due,
-// and every tag must name a row. Legs are *.spec.* and *.test.* files.
+// Trace check: every milestone a BUILDPLAN trace row lists needs a tagged leg once the gate reaches it: the first
+// milestone a plain @p:<id> (or @p:<id>@<k>), each later one @p:<id>@<k>. Every tag must name a row and one of its
+// milestones. Legs are *.spec.* and *.test.* files; tags inside comments do not count.
 // Usage: node scripts/ci/trace.mjs [--milestone <k>] [--plan BUILDPLAN.md] [--root <dir>]...
 // The gate defaults to $TRACE_MILESTONE (from plan.mjs); with no gate it reports without failing on missing legs.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -11,7 +12,7 @@ const REPO = fileURLToPath(new URL('../..', import.meta.url));
 const DEFAULT_ROOTS = ['e2e', 'apps', 'packages', 'scripts'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'fixtures', 'vendor', '.git', '.wrangler', 'test-results']);
 const LEG_FILE = /\.(spec|test)\.[cm]?[jt]sx?$/;
-const TAG = /@p:([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)/g;
+const TAG = /@p:([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*(?:@\d+)?)/g;
 
 function parseMilestones(cell) {
   const milestones = [];
@@ -56,10 +57,36 @@ export function parseTrace(markdown) {
   return { rows, problems };
 }
 
+/** The source with its // and /* */ comments blanked; strings and template literals are kept. */
+export function stripComments(text) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quote) {
+      out += char;
+      if (char === '\\') out += text[(i += 1)] ?? '';
+      else if (char === quote || (char === '\n' && quote !== '`')) quote = null;
+    } else if (char === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i += 1;
+      out += '\n';
+    } else if (char === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      out += text.slice(i, end < 0 ? text.length : end + 2).replace(/[^\n]/g, ' ');
+      i = end < 0 ? text.length : end + 1;
+    } else {
+      if (char === "'" || char === '"' || char === '`') quote = char;
+      out += char;
+    }
+  }
+  return out;
+}
+
+/** Tag -> files carrying it, keyed `id` for a plain tag and `id@k` for a milestone tag. */
 export function collectTags(files) {
   const tags = new Map();
   for (const { path, text } of files) {
-    for (const [, id] of text.matchAll(TAG)) {
+    for (const [, id] of stripComments(text).matchAll(TAG)) {
       if (!tags.has(id)) tags.set(id, []);
       if (!tags.get(id).includes(path)) tags.get(id).push(path);
     }
@@ -86,13 +113,21 @@ export function listLegFiles(roots) {
 export function checkTrace({ rows, tags, milestone }) {
   const problems = [];
   const ids = new Set(rows.map((row) => row.id));
+  const byId = new Map(rows.map((row) => [row.id, row]));
   if (milestone !== null) {
     for (const row of rows) {
-      if (row.due <= milestone && !tags.has(row.id)) problems.push(`${row.id} (due M${row.due}) has no tagged leg`);
+      for (const m of row.milestones.filter((k) => k <= milestone)) {
+        if (tags.has(`${row.id}@${m}`) || (m === row.due && tags.has(row.id))) continue;
+        problems.push(m === row.due ? `${row.id} (due M${m}) has no tagged leg` : `${row.id} (due M${m}) has no leg tagged @p:${row.id}@${m}`);
+      }
     }
   }
-  for (const [id, paths] of tags) {
-    if (!ids.has(id)) problems.push(`${id} is tagged in ${paths.join(', ')} but is not a trace row`);
+  for (const [tag, paths] of tags) {
+    const [id, at] = tag.split('@');
+    if (!ids.has(id)) problems.push(`${tag} is tagged in ${paths.join(', ')} but is not a trace row`);
+    else if (at !== undefined && !byId.get(id).milestones.includes(Number(at))) {
+      problems.push(`${tag} is tagged in ${paths.join(', ')} but ${id} is not due at M${at}`);
+    }
   }
   return { problems };
 }
@@ -127,7 +162,7 @@ function main(argv) {
   const files = listLegFiles(roots).map((path) => ({ path, text: readFileSync(path, 'utf8') }));
   const tags = collectTags(files);
   const { problems } = checkTrace({ rows: parsed.rows, tags, milestone });
-  const tagged = parsed.rows.filter((row) => tags.has(row.id)).length;
+  const tagged = parsed.rows.filter((row) => row.milestones.some((m) => tags.has(`${row.id}@${m}`)) || tags.has(row.id)).length;
   const gate = milestone === null ? 'no milestone gate (report only)' : `gate M${milestone}`;
   console.log(`trace: ${parsed.rows.length} rows, ${tagged} tagged, ${files.length} leg files; ${gate}`);
   const all = [...parsed.problems, ...problems];

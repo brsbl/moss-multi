@@ -320,7 +320,7 @@ async function newPane(actor: Actor, before: string[]): Promise<string> {
   return docId ?? '';
 }
 
-test('j02-title: @tierA the title takes no focus and no input before data-title-binding=live, and takes focus once it is @p:R2 @p:note-6 @p:col-6', async ({ actors }) => {
+test('j02-title: @tierA the title takes no focus and no input before data-title-binding=live, and takes focus once it is @p:R2@1 @p:note-6 @p:col-6', async ({ actors }) => {
   const ada = await actors.session(await actors.principal('ada'), { severable: true });
   await ada.context.addInitScript(recordClosedTitles, { title: TITLE_BINDING_ATTR });
   await ada.goto('/');
@@ -407,7 +407,7 @@ function recordKeys({ title, refusalAttr }: { title: string; refusalAttr: string
   );
 }
 
-test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at once makes one note, and every key lands in its title or is refused visibly @p:note-6 @p:R2', async ({ actors }) => {
+test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at once makes one note, and every key lands in its title or is refused visibly @p:note-6@1 @p:R2@1', async ({ actors }) => {
   const ada = await actors.session(await actors.principal('ada'));
   await ada.context.addInitScript(recordKeys, { title: TITLE_BINDING_ATTR, refusalAttr: INPUT_REFUSAL_ATTR });
   await ada.goto('/');
@@ -449,7 +449,7 @@ test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at on
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'one new row').toHaveCount(rows + 1);
 });
 
-test('j02-title: @tierA Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2 @p:col-5', async ({ actors }) => {
+test('j02-title: @tierA Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2@1 @p:col-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -473,7 +473,7 @@ test('j02-title: @tierA Rename in a row menu focuses the bound title, and the na
 });
 
 for (const check of ['typing', 'navigation'] as const) {
-  test(`j02-title: @tierA Rename on the open note preserves ${check} focus @p:R2 @p:note-6`, async ({ actors }) => {
+  test(`j02-title: @tierA Rename on the open note preserves ${check} focus @p:R2@1 @p:note-6`, async ({ actors }) => {
     const ada = await openShell(actors, 'ada');
     await openShell(actors, 'ben');
     await actors.requireDistinct(2);
@@ -514,7 +514,7 @@ test('j02-title: @tierA an empty refusal band preserves the note layout @p:note-
     'an empty band adds no space below the top bar').toBe(0);
 });
 
-test('j02-title: @tierA a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6 @macos', async ({ actors }) => {
+test('j02-title: @tierA a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6@1 @macos', async ({ actors }) => {
   const ada = await openShell(actors, 'ada', { severable: true });
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);

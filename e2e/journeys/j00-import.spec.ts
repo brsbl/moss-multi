@@ -46,7 +46,7 @@ for (const mime of ['text/markdown', 'text/plain']) {
 }
 
 for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).sort()) {
-  test(`j00 G1: ${name} server import equals UI paste @p:tech-4 @p:note-1`, async ({ actors, stack }) => {
+  test(`j00 G1: ${name} server import equals UI paste @p:tech-4@1 @p:note-1`, async ({ actors, stack }) => {
     const markdown = readFileSync(new URL(name, fixtures), 'utf8');
     const imported = await actors.session(await actors.principal('imported'));
     const pasted = await actors.session(await actors.principal('pasted'));
