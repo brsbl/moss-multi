@@ -57,7 +57,7 @@ export function parseTrace(markdown) {
   return { rows, problems };
 }
 
-/** The source with its // and /* */ comments blanked; strings and template literals are kept. */
+/** The source with its line and block comments blanked; strings and template literals are kept. */
 export function stripComments(text) {
   let out = '';
   let quote = null;
