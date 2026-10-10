@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { DocDO } from '../../../../packages/sync/src/doc-do.ts';
-import { Backing, openDoc } from '../../../../packages/sync/test/harness/do-harness.ts';
+import { Backing, openDoc, start, wake, type Opened } from '../../../../packages/sync/test/harness/do-harness.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, SECRET, signedUpUser, unmeteredPrincipals, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
@@ -16,13 +16,13 @@ class CapDocDO extends DocDO {
   static override searchFeed = () => null;
 }
 
-const opened = new Map<string, DocDO>();
+const opened = new Map<string, Opened>();
 const docNs = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => {
-    let dobj = opened.get(id.name);
-    if (!dobj) opened.set(id.name, (dobj = openDoc(new Backing(id.name), CapDocDO as never).dobj));
-    return dobj;
+    let doc = opened.get(id.name);
+    if (!doc) opened.set(id.name, (doc = openDoc(new Backing(id.name), CapDocDO as never)));
+    return doc.dobj;
   },
 };
 
@@ -63,7 +63,8 @@ describe('note creation at the body cap', () => {
     const text = await response.clone().text();
     expect(response.status, text.slice(0, 500)).toBe(201);
     const { doc } = JSON.parse(text) as { doc: { id: string } };
-    const dobj = opened.get(doc.id)!;
+    // Read back from a fresh instance over the same storage, so what persisted is checked, not the live doc.
+    const { dobj } = await start(wake(opened.get(doc.id)!));
     expect(dobj.document.getText('title').toString()).toBe('Imported');
     const exported = await dobj.exportMarkdown();
     expect(exported, 'the markers became a comment').not.toContain('%%m:');

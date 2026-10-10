@@ -1129,14 +1129,14 @@ export class DocDO extends YServer<SyncEnv> {
    * session ended (4402) or key was revoked (4403), and re-resolves each socket admitted under an older epoch, closing
    * it on a lowered or lost role (4403) or a doc in Trash (4410). A socket that keeps its role takes the new epoch.
    * Throws, closing nothing, when D1 cannot answer. `actor`, a comment writer, is judged in the same read as a socket
-   * would be and its verdict returned; with no socket open its own earlier read stands, and null is returned.
+   * would be and its verdict returned, so the last D1 read before its write confirms it even with no socket open.
    */
   async #validate(check: AccessCheck, only?: Connection[], actor?: Attachment): Promise<number | Resolved | null> {
     const sockets = (only ?? [...this.#all()]).flatMap((connection) => {
       const attachment = attachmentOf(connection);
       return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
     });
-    if (sockets.length === 0) return null;
+    if (sockets.length === 0 && !actor) return null;
     const subjects = actor ? [...sockets, { attachment: actor }] : sockets;
     const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, subjects, race));
     for (const [i, { connection, attachment }] of sockets.entries()) {
@@ -1159,7 +1159,8 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * Each socket's verdict: null to keep it as admitted, its access when re-resolved and kept, or the code that closes
-   * it. Every D1 read goes through `race`, the validation's deadline.
+   * it. Every D1 read goes through `race`, the validation's deadline. When a resolve ran, the stamp is read again after
+   * it and must be unchanged, so nothing judged on the first read lost access unseen; three changed reads throw.
    */
   async #verdicts(
     check: AccessCheck,
@@ -1167,26 +1168,34 @@ export class DocDO extends YServer<SyncEnv> {
     race: <R>(read: Promise<R>) => Promise<R>,
   ): Promise<{ stamp: Stamp; verdicts: (number | Resolved | null)[] }> {
     const unique = (ids: (string | null)[]) => [...new Set(ids.filter((id): id is string => id !== null))];
-    const stamp = await race(check.stamp(
-      this.name,
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null))),
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null))),
-    ));
-    const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
-    const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
-      if (attachment.kind === 'user' && attachment.sessionId !== null && !stamp.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
-      if (attachment.kind === 'agent' && !stamp.agents.has(attachment.principalId)) return CLOSE.revoked;
-      if (stamp.key && attachment.epoch === stamp.key) return null;
-      const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
-      let access = resolved.get(who);
-      if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
-      const now = await access;
-      if (now === 'deleted') return CLOSE.deleted;
-      if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
-      // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
-      return { role: attachment.role, presence: now.presence };
-    })));
-    return { stamp, verdicts };
+    const sessions = unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null)));
+    const agents = unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null)));
+    let stamp = await race(check.stamp(this.name, sessions, agents));
+    for (let pass = 1; ; pass += 1) {
+      const current = stamp;
+      const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
+      const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
+        if (attachment.kind === 'user' && attachment.sessionId !== null && !current.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
+        if (attachment.kind === 'agent' && !current.agents.has(attachment.principalId)) return CLOSE.revoked;
+        if (current.key && attachment.epoch === current.key) return null;
+        const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
+        let access = resolved.get(who);
+        if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
+        const now = await access;
+        if (now === 'deleted') return CLOSE.deleted;
+        if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
+        // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
+        return { role: attachment.role, presence: now.presence };
+      })));
+      if (resolved.size === 0) return { stamp, verdicts };
+      // A subject judged on the stamp may have lost access while the resolves awaited D1: a last read confirms the
+      // epoch and every live credential held, else the verdicts are taken again under the new stamp.
+      const again = await race(check.stamp(this.name, sessions, agents));
+      const held = again.key === stamp.key && [...stamp.sessions].every((id) => again.sessions.has(id)) && [...stamp.agents].every((id) => again.agents.has(id));
+      if (held) return { stamp, verdicts };
+      if (pass === 3) throw new Error('access kept changing while the sockets were validated');
+      stamp = again;
+    }
   }
 
   #liveness(): TrashedInD1 | null {
