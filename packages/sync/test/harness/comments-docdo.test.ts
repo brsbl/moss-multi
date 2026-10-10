@@ -1114,6 +1114,28 @@ describe('a comment write leaves no await between its last socket check and the 
     expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
     expect(ben.socket.sent.length, 'no frame of a write reached the reader').toBe(benBefore);
   });
+
+  it.each([
+    // D1 bumps the epoch in the same statement as a grant removal (access-epoch.ts).
+    ['grant is removed', 403, () => { epoch = 'e3'; gone.add('ada'); }],
+    ['session ends', 401, () => { ended.add('sess-ada'); }],
+  ] as const)('an actor whose %s while another socket is re-resolved, its kick missed, is refused and nothing lands', async (_case, status, revoke) => {
+    const opened = await opening();
+    const ben = await connect(opened, who('ben', 'viewer'));
+    await ben.hello();
+    const benBefore = ben.socket.sent.length;
+    // The actor resolves at e2 and passes the socket check at once; Ben, admitted at e1, is re-resolved and held.
+    epoch = 'e2';
+    pause = 'ben';
+    const write = opened.dobj.createComment({ actor: ADA, author: 'ada', id: 'r9', text: 'after my revoke', parentId: 'c1' });
+    await until(() => resume !== null);
+    revoke();
+    resume!();
+    expect(await write).toMatchObject({ ok: false, status });
+    expect(json(opened)['c:r9'], 'nothing landed').toBeUndefined();
+    expect(ben.closed, 'the kept socket stays').toBeNull();
+    expect(ben.socket.sent.length, 'no frame of a write reached the reader').toBe(benBefore);
+  });
 });
 
 describe('a comment write on a doc closed without a hold confirms it is live within the deadline @p:mean-1', () => {
