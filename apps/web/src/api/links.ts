@@ -12,8 +12,9 @@ import { resolvePrincipal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { shareLinks } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
+import { liveAndManaged } from './access.ts';
 import { accessTo, manages, randomToken, type MemberTarget } from './members.ts';
-import { NO_STORE, notFound, overDailyBound, readJsonObject, unauthenticated } from './respond.ts';
+import { changed, NO_STORE, notFound, overDailyBound, readJsonObject, unauthenticated } from './respond.ts';
 
 export interface ShareLink {
   token: string;
@@ -37,6 +38,9 @@ async function listLinks(db: Db, target: MemberTarget): Promise<ShareLink[]> {
 /** `/api/{docs,folders}/:id/links` (GET, POST) and `/api/{docs,folders}/:id/links/:token` (DELETE). */
 export type LinksEnv = AuthEnv & Partial<Pick<AppEnv, 'DocDO'>>;
 
+const forbidden = (target: MemberTarget) =>
+  json({ error: 'forbidden', message: `Only the owner can manage links to this ${target.type === 'doc' ? 'note' : 'folder'}.` }, 403, NO_STORE);
+
 const KICK_FAILED = 'The link is revoked, but some open windows haven’t closed yet. Try again.';
 
 export async function handleLinks(request: Request, env: LinksEnv, target: MemberTarget, token: string | null): Promise<Response> {
@@ -49,13 +53,19 @@ export async function handleLinks(request: Request, env: LinksEnv, target: Membe
   const db = createDb(env.DB);
   const access = await accessTo(db, principal, target);
   if (!access) return notFound();
-  if (access.role !== 'owner') {
-    return json({ error: 'forbidden', message: `Only the owner can manage links to this ${target.type === 'doc' ? 'note' : 'folder'}.` }, 403, NO_STORE);
-  }
+  if (access.role !== 'owner') return forbidden(target);
   if (request.method === 'GET') return json({ links: await listLinks(db, target) }, 200, NO_STORE);
   if (request.method === 'DELETE') {
     const tokenOf = and(eq(shareLinks.targetType, target.type), eq(shareLinks.targetId, target.id), eq(shareLinks.token, token ?? ''));
-    await db.update(shareLinks).set({ revokedAt: Date.now() }).where(and(tokenOf, isNull(shareLinks.revokedAt)));
+    // The caller must still manage the live target, so a demotion that commits first wins.
+    const revoked = await env.DB.prepare(`UPDATE share_links SET revoked_at = ?1
+      WHERE target_type = ?2 AND target_id = ?3 AND token = ?4 AND revoked_at IS NULL AND ${liveAndManaged(target.type, 3, 5)}`)
+      .bind(Date.now(), target.type, target.id, token ?? '', principal.id).run();
+    if (!changed(revoked)) {
+      const now = await accessTo(db, principal, target);
+      if (!now) return notFound();
+      if (now.role !== 'owner') return forbidden(target);
+    }
     // A retry after a failed kick finds the link already revoked and kicks again.
     const [row] = await db.select({ token: shareLinks.token }).from(shareLinks).where(tokenOf).limit(1);
     if (!row) return notFound();
@@ -86,7 +96,7 @@ export async function handleLinks(request: Request, env: LinksEnv, target: Membe
     if (!now) return notFound();
     // Still the owner, so the day's links ran out.
     if (now.role === 'owner') return overDailyBound(`You can make ${SHARE_LINK_DAILY} share links a day. Try again later.`);
-    return json({ error: 'forbidden', message: `Only the owner can manage links to this ${target.type === 'doc' ? 'note' : 'folder'}.` }, 403, NO_STORE);
+    return forbidden(target);
   }
   return json({ link }, 201, NO_STORE);
 }

@@ -24,8 +24,8 @@ import { docs, folders } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import {
-  actingAs, actingUserId, editsFolder, folderChain, managesDoc, managesFolder, MAX_FOLDER_DEPTH, reapDeadInvites, resolveDocAccess, resolveFolderAccess,
-  type FolderAccess,
+  actingAs, actingUserId, actorLive, editsFolder, editsLiveFolder, folderChain, liveLink, managesDoc, managesFolder, MAX_FOLDER_DEPTH, reapDeadInvites,
+  resolveDocAccess, resolveFolderAccess, writeActor, writeActorArgs, type FolderAccess, type WriteActor,
 } from './access.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
@@ -133,6 +133,21 @@ async function liveFolder(db: Db, principal: Principal, id: unknown, shareToken:
   return access && !access.deleted ? access : null;
 }
 
+/**
+ * Why an edit in folder `id` whose checks passed wrote nothing, when the caller's credential or access went away in
+ * between; null when they still stand.
+ */
+async function lostEdit(env: FoldersEnv, db: Db, principal: Principal, actor: WriteActor, id: unknown, verb: string): Promise<Response | null> {
+  if (!(await actorLive(env.DB, actor))) return unauthenticated();
+  const folder = await liveFolder(db, principal, id, actor.shareToken);
+  if (!folder) return folderNotFound();
+  return roleAtLeast(folder.role, 'editor') ? null : refuse(403, 'forbidden', `You can view this folder but not ${verb}.`);
+}
+
+/** The last live vault is never trashed. */
+export const lastVault = () =>
+  refuse(409, 'last-vault', 'This is your only vault, so it can’t be moved to Trash. Create another vault first.');
+
 const folderRecord = async (db: Db, id: string) => {
   const [row] = await db.select({ id: folders.id, name: folders.name, parentId: folders.parentId, createdAt: folders.createdAt })
     .from(folders).where(eq(folders.id, id)).limit(1);
@@ -168,16 +183,21 @@ async function createFolder(request: Request, env: FoldersEnv): Promise<Response
   const id = crypto.randomUUID();
   const now = Date.now();
   const userId = actingUserId(principal) ?? principal.id;
+  const actor = writeActor(principal, shareTokenOf(request))!;
   try {
+    // The caller must still be able to edit the parent, so a revocation that commits first wins.
     const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
       INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at)
       SELECT ?2, ?3, ?4, ?5, 'folder', ?1, ?6
-      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH} AND ${foldersToday(8, 6)} < ${FOLDER_CREATE_DAILY}`)
-      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, now, chain.at(-1), userId).run();
-    // The day's folders ran out, or the parent was trashed or nested deeper in the meantime.
+      WHERE ${liveIn(7)} AND (SELECT count(*) FROM up) < ${MAX_FOLDER_DEPTH} AND ${foldersToday(8, 6)} < ${FOLDER_CREATE_DAILY}
+        AND ${editsLiveFolder(1, 9)}`)
+      .bind(body.parentId, id, parent.ownerUserId, principal.id, named.name, now, chain.at(-1), userId, ...writeActorArgs(actor, now)).run();
+    // Access went away, the day's folders ran out, or the parent was trashed or nested deeper in the meantime.
     if (!changed(inserted)) {
+      const lost = await lostEdit(env, db, principal, actor, body.parentId, 'add folders to it');
+      if (lost) return lost;
       if (await outOfFolders(env.DB, userId, now)) return tooManyFolders();
-      return (await liveFolder(db, principal, body.parentId, shareTokenOf(request))) ? tooDeep() : folderNotFound();
+      return tooDeep();
     }
   } catch (error) {
     if (isUnique(error)) return exists(named.name);
@@ -233,7 +253,11 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   let raced = false;
   try {
     if (!moving) {
-      if (newName !== null) await db.update(folders).set({ name: newName }).where(and(eq(folders.id, id), isNull(folders.deletedAt)));
+      // The caller must still be able to edit the folder, so a revocation that commits first wins.
+      const actor = writeActor(principal, shareTokenOf(request))!;
+      const renamed = newName === null ? null : await env.DB.prepare(`UPDATE folders SET name = ?1 WHERE id = ?2 AND ${editsLiveFolder(2, 3)}`)
+        .bind(newName, id, ...writeActorArgs(actor, Date.now())).run();
+      if (renamed && !changed(renamed)) return (await lostEdit(env, db, principal, actor, id, 'change it')) ?? folderNotFound();
     } else {
       // The target's live ancestry, the cycle check and the depth bound (trashed descendants included) hold at the
       // moment of the write, the parent is still the one `reach` was read under, and the caller still manages the
@@ -271,7 +295,11 @@ async function updateFolder(request: Request, env: FoldersEnv, id: string): Prom
   const unkicked = moving && !raced ? await kickMoved(env, reach)
     : raced || retried ? await kickRetried(env, await docsOf(env.DB, { type: 'folder', id })) : null;
   if (unkicked) return unkicked;
-  return json({ folder: await folderRecord(db, id) }, 200, NO_STORE);
+  const record = await folderRecord(db, id);
+  // A link holder renaming the folder it was handed never learns the folder above it.
+  const link = folder.linkOnly ? await liveLink(db, shareTokenOf(request)) : null;
+  const linkRoot = link?.targetType === 'folder' && link.targetId === id;
+  return json({ folder: linkRoot ? { id: record.id, name: record.name, createdAt: record.createdAt } : record }, 200, NO_STORE);
 }
 
 /** Why a move whose checks passed changed nothing: the tree or the caller's access changed between the read and the write. */
@@ -342,7 +370,10 @@ export async function trashFolder(request: Request, env: FoldersEnv, id: string,
       return cannot();
     }
     const now = Date.now();
-    // The subtree is read inside the write, so a folder created or a note moved in just before is in the batch.
+    // The subtree is read inside the write, so a folder created or a note moved in just before is in the batch. A
+    // vault goes only while its owner keeps another live one, so two trashes racing can't both take the last two.
+    const otherVault = kind === 'vault' ? ` AND EXISTS (SELECT 1 FROM folders o WHERE o.kind = 'vault' AND o.deleted_at IS NULL AND o.id <> ?3
+              AND o.owner_user_id = (SELECT owner_user_id FROM folders WHERE id = ?3))` : '';
     let stamped: D1Result;
     try {
       [stamped] = await env.DB.batch([
@@ -350,7 +381,7 @@ export async function trashFolder(request: Request, env: FoldersEnv, id: string,
             SELECT id, 1 FROM folders WHERE id = ?3 AND deleted_at IS NULL
             UNION ALL SELECT f.id, s.depth + 1 FROM folders f JOIN sub s ON f.parent_id = s.id
               WHERE f.deleted_at IS NULL AND s.depth <= ${MAX_FOLDER_DEPTH}
-          ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub) AND ${managesFolder(3, 4)}`)
+          ) UPDATE folders SET deleted_at = ?1, trash_batch_id = ?2 WHERE id IN (SELECT id FROM sub) AND ${managesFolder(3, 4)}${otherVault}`)
           .bind(now, batch, id, principal.id),
         env.DB.prepare('UPDATE docs SET deleted_at = ?1, trash_batch_id = ?2 WHERE folder_id IN (SELECT id FROM folders WHERE trash_batch_id = ?2) AND deleted_at IS NULL')
           .bind(now, batch),
@@ -361,11 +392,13 @@ export async function trashFolder(request: Request, env: FoldersEnv, id: string,
       await release(env, held, batch);
       return cannot();
     }
-    // The caller stopped managing the folder before the write (a demotion that committed first wins).
+    // The caller stopped managing the folder before the write (a demotion that committed first wins), or this was
+    // the owner's last live vault by then.
     if (!changed(stamped)) {
       await release(env, held, batch);
       const now = await resolveFolderAccess(db, principal, id);
-      return now && !now.deleted ? refuse(403, 'forbidden', 'Only the owner can move this folder to Trash.') : folderNotFound();
+      if (!now || now.deleted) return folderNotFound();
+      return kind === 'vault' && now.role === 'owner' ? lastVault() : refuse(403, 'forbidden', 'Only the owner can move this folder to Trash.');
     }
   }
   const [docIds, folderIds] = await Promise.all([
@@ -411,8 +444,9 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
       const taken = await db.select({ filename: docs.filename }).from(docs)
         .where(and(eq(docs.folderId, folderId as string), isNull(docs.deletedAt), sql`${docs.id} <> ${docId}`));
       const occupied = new Set(taken.map((row) => row.filename));
-      // The title projection owns filenames; a move only steps aside from a name the folder already holds.
-      const filename = occupied.has(doc.filename) ? filenameFor(doc.title, occupied) : doc.filename;
+      // The title projection owns filenames; a move only steps aside from a name the folder already holds, and then
+      // only while the filename is still the one it read, so a retitle landing in between is never undone.
+      const filename = occupied.has(doc.filename) ? filenameFor(doc.title, occupied) : null;
       try {
         // The destination must still be live in the vault when the note lands (a trash may be under way), and the
         // note must still be where this request last saw it.
@@ -420,9 +454,9 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
         // demotion that commits first changes nothing.
         // Whoever managed the note only through its old folder loses manage, and their open invites die (A§8).
         const [moved] = await env.DB.batch([env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
-          UPDATE docs SET folder_id = ?1, filename = ?2 WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)} AND folder_id = ?5
-            AND ${managesDoc(3, 6)} AND ${editsFolder(1, 6)}`)
-          .bind(folderId, filename, docId, vault, from, principal.id), reapDeadInvites(env.DB, Date.now(), { docId })]);
+          UPDATE docs SET folder_id = ?1, filename = coalesce(?2, filename) WHERE id = ?3 AND deleted_at IS NULL AND ${liveIn(4)} AND folder_id = ?5
+            AND (?2 IS NULL OR filename = ?7) AND ${managesDoc(3, 6)} AND ${editsFolder(1, 6)}`)
+          .bind(folderId, filename, docId, vault, from, principal.id, doc.filename), reapDeadInvites(env.DB, Date.now(), { docId })]);
         if (changed(moved)) break;
         const still = await resolveDocAccess(db, principal, docId);
         if (!still || !can(still.role, 'manage')) return ownerMoves('notes');
@@ -430,7 +464,9 @@ export async function moveDoc(request: Request, env: FoldersEnv, docId: string, 
         if (!into) return folderNotFound();
         if (!roleAtLeast(into.role, 'editor')) return refuse(403, 'forbidden', 'You can view that folder but not move notes into it.');
         const [now] = await db.select({ folderId: docs.folderId, deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
-        if (!now || now.deletedAt !== null || now.folderId === from || attempt >= 5) return folderNotFound();
+        if (!now || now.deletedAt !== null || attempt >= 5) return folderNotFound();
+        // Still where it was: its filename changed under the write, so read it again.
+        if (now.folderId === from) continue;
         raced = true;
         from = now.folderId;
       } catch (error) {

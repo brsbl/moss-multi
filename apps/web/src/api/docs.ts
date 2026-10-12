@@ -9,14 +9,16 @@ import {
   CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
 } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { isDocCapError } from '@moss-multi/protocol/sync';
+import { isDocCapError, renameRefusalOf } from '@moss-multi/protocol/sync';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { actingUserId, liveLink, liveNotesBy, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
+import {
+  actingUserId, actorLive, editsLiveFolder, liveLink, liveNotesBy, resolveDocAccess, resolveFolderAccess, writeActor, writeActorArgs, type WriteActor,
+} from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
@@ -45,22 +47,34 @@ export interface DocRecord {
 }
 
 /**
- * Inserts the row only while its folder is still live in its vault (a trash may be under way) and the acting user has
- * fewer than LIVE_NOTE_CAP live notes, both in the one statement; null when the folder is gone, `full` at the cap. The
- * cap is the creator's, never the vault's, so a collaborator cannot fill an owner's vault shut.
+ * Inserts the row only while its folder is still live in its vault (a trash may be under way), `actor` can still edit
+ * in it, and the acting user has fewer than LIVE_NOTE_CAP live notes, all in the one statement; null when the folder
+ * or the access is gone, `full` at the cap. The cap is the creator's, never the vault's, so a collaborator cannot fill
+ * an owner's vault shut.
  */
-async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUserId: string; createdBy: string; actingUserId: string }): Promise<DocRecord | 'full' | null> {
+async function insertDoc(env: DocsEnv, db: Db, actor: WriteActor,
+  row: { folderId: string; ownerUserId: string; createdBy: string; actingUserId: string }): Promise<DocRecord | 'full' | null> {
   const id = crypto.randomUUID();
   const now = Date.now();
   const doc = { id, folderId: row.folderId, title: '', filename: `pending-${id}.md`, createdAt: now, updatedAt: now };
   const vault = await vaultOf(db, row.folderId);
   const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
     INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at)
-    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND ${liveNotesBy(8)} < ${LIVE_NOTE_CAP}`)
-    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault, row.actingUserId).run();
+    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND ${liveNotesBy(8)} < ${LIVE_NOTE_CAP} AND ${editsLiveFolder(1, 9)}`)
+    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault, row.actingUserId, ...writeActorArgs(actor, now)).run();
   if ((inserted.meta?.changes ?? 0) > 0) return doc;
   const live = await env.DB.prepare(`SELECT ${liveNotesBy(1)} AS n`).bind(row.actingUserId).first<{ n: number }>();
   return (live?.n ?? 0) >= LIVE_NOTE_CAP ? 'full' : null;
+}
+
+/** Why a note insert whose checks passed wrote nothing: the caller's credential or access to the folder went first. */
+async function refuseInsert(env: DocsEnv, db: Db, principal: Principal, actor: WriteActor, folderId: string): Promise<Response> {
+  if (!(await actorLive(env.DB, actor))) return unauthenticated();
+  const folder = await resolveFolderAccess(db, principal, folderId, actor.shareToken);
+  if (folder && !folder.deleted && !roleAtLeast(folder.role, 'editor')) {
+    return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
+  }
+  return folderNotFound();
 }
 
 const noteCap = () => refuse(409, 'note-cap',
@@ -120,9 +134,10 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
   }
   const title = typeof body.title === 'string' ? body.title.trim() : '';
-  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
+  const actor = writeActor(principal, shareTokenOf(request))!;
+  const doc = await insertDoc(env, db, actor, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
   if (doc === 'full') return noteCap();
-  if (!doc) return folderNotFound();
+  if (!doc) return refuseInsert(env, db, principal, actor, folderId);
   const stub = await getServerByName(env.DocDO, doc.id);
   return seeded(db, doc, folder.role, async () => {
     await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
@@ -157,15 +172,15 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
-  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
+  const actor = writeActor(principal, shareTokenOf(request))!;
+  const doc = await insertDoc(env, db, actor, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
   if (doc === 'full') return noteCap();
-  if (!doc) return folderNotFound();
+  if (!doc) return refuseInsert(env, db, principal, actor, folderId);
   const owner = folder.ownerUserId;
-  const actor = writeActor(principal, shareTokenOf(request));
   return seeded(db, doc, folder.role, async () => {
     // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16), placed only
     // while the caller can still edit the copy.
-    if (!actor || !(await copyMedia(env.DB, docId, doc.id, actor))) throw new Error('media-refused');
+    if (!(await copyMedia(env.DB, docId, doc.id, actor))) throw new Error('media-refused');
     const target = await getServerByName(env.DocDO, doc.id);
     await target.createFromSnapshot({ folderId, ownerId: owner, title }, snapshot.state, snapshot.payloads);
   });
@@ -197,6 +212,13 @@ async function patchDoc(request: Request, env: DocsEnv, docId: string): Promise<
   return renameDoc(request, env, docId, body);
 }
 
+/** Who renames, as the DocDO re-resolves a socket: a signed-in caller carries a link only when it lifted the role. */
+function renameCaller(principal: Principal, liftingLink: string | null) {
+  if (principal.type === 'anonymous') return { kind: 'anonymous' as const, principalId: principal.id, sessionId: null, shareToken: principal.shareToken };
+  if (principal.type === 'agent') return { kind: 'agent' as const, principalId: principal.id, sessionId: null, shareToken: liftingLink };
+  return { kind: 'user' as const, principalId: principal.id, sessionId: principal.sessionId, shareToken: liftingLink };
+}
+
 async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Record<string, unknown> | null): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal) return unauthenticated();
@@ -211,9 +233,12 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
       return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(REST_WRITE_RATE.windowMs / 1000) });
     }
     const stub = await getServerByName(env.DocDO, docId);
-    await stub.renameTitle(body.title);
+    // The DocDO re-resolves this caller in the turn that writes, so a revocation or trash that commits meanwhile wins.
+    await stub.renameTitle(body.title, renameCaller(principal, access.viaLink ? shareTokenOf(request) : null));
     return readDoc(request, env, docId);
-  } catch {
+  } catch (error) {
+    if (isDocCapError(error)) return docCap();
+    if (renameRefusalOf(error)) return notFound();
     return json({ error: 'unavailable' }, 503, NO_STORE);
   }
 }

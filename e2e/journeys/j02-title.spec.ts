@@ -208,6 +208,18 @@ test('j02-title: @tierA renames from Ada and then Ben reach Cy in order, with no
   expect(nonMonotonic(log.title), `Cy's title went ${JSON.stringify(log.title)}`).toEqual([]);
   expect(nonMonotonic(log.row), `Cy's sidebar row went ${JSON.stringify(log.row)}`).toEqual([]);
   expect(nonMonotonic(log.crumb), `Cy's breadcrumb went ${JSON.stringify(log.crumb)}`).toEqual([]);
+  // Negative controls: each fault the check exists for, injected alone into Cy's real traces, is flagged.
+  for (const [surface, values] of Object.entries(log)) {
+    const faults: Record<string, string[]> = {
+      'an older name after the newer one': [...values, first],
+      'a placeholder after a name': [...values, UNTITLED],
+      'an emptied name after a name': [...values, ''],
+      'a name that does not continue the last': [...values, `Other ${tok}`],
+    };
+    for (const [fault, trace] of Object.entries(faults)) {
+      expect(nonMonotonic(trace).length, `the control: ${fault} in Cy's ${surface} is flagged`).toBeGreaterThan(0);
+    }
+  }
   for (const actor of [ada, ben, cy]) await ui.expectNoRemount(actor, docId, 'after two renames');
 });
 
@@ -251,6 +263,28 @@ test('j02-title: @tierA concurrent renames merge character by character, and a t
   await expect(ui.title(ben, docId), "Ben's title keeps focus through Ada's edits").toBeFocused();
   expect(await caretIn(ui.title(ben, docId)), "Ben's caret stays right after what Ben typed").toBe(south.length);
   expect(await caretIn(ui.title(ada, docId)), "Ada's caret stays at the end").toBe(merged.length);
+  // Negative controls: a moved caret reads differently, and so would a title that lost either side's typing.
+  await ben.page.keyboard.press('End');
+  expect(await caretIn(ui.title(ben, docId)), "the control: Ben's caret reads at the end once moved there").toBe(merged.length);
+  await ada.page.keyboard.press('Home');
+  expect(await caretIn(ui.title(ada, docId)), "the control: Ada's caret reads at the start once moved there").toBe(0);
+  // A real clobber, injected through a REST rename that drops each side in turn: the merge check must flag it.
+  // Restoring the merged title afterwards leaves both sides' recorded typing in place.
+  const origin = new URL(ada.page.url()).origin;
+  const renameTo = async (title: string) => {
+    const response = await ada.context.request.patch(`${origin}/api/docs/${docId}`, {
+      headers: { origin, 'content-type': 'application/json' }, data: { title }, timeout: 15_000,
+    });
+    expect(response.status(), `PATCH title ${await response.text()}`).toBe(200);
+  };
+  for (const clobbered of [`${south}${base}`, `${base}${north}`]) {
+    await renameTo(clobbered);
+    await expect.poll(() => ui.fieldText(ben, docId, 'title'), { message: 'the clobber reaches Ben', timeout: RENAME_MS }).toBe(clobbered);
+    expect(await ui.fieldText(ben, docId, 'title'), 'the control: a clobbered title fails the merge check').not.toBe(merged);
+    await renameTo(merged);
+    await expect.poll(() => ui.fieldText(ben, docId, 'title'), { message: 'the merged title is restored', timeout: RENAME_MS }).toBe(merged);
+  }
+  await expect.poll(() => ui.fieldText(ada, docId, 'title'), { timeout: RENAME_MS }).toBe(merged);
   await ui.expectNoRemount(ada, docId, 'after concurrent renames');
   await ui.expectNoRemount(ben, docId, 'after concurrent renames');
 });
@@ -277,11 +311,24 @@ test('j02-title: @tierA emptying a title and typing it again keeps the filename;
   expect(await listed(ada, docId), 'an empty title never projects: the D1 title and filename keep their values')
     .toEqual({ title: `Filename keeper ${tok}`, filename });
 
-  // The same name with one capital: the projection runs (the title column changes) and keeps the filename.
+  // The same name with one capital: the projection runs (the title column changes) and keeps the filename. Typed
+  // without recording: the control below replaces it.
   const again = `Filename Keeper ${tok}`;
-  await ui.typeTitle(ada, docId, again);
-  await expect.poll(() => listed(ada, docId), { message: 'the retyped title projects', timeout: RENAME_MS }).toEqual({ title: again, filename });
+  await ui.title(ada, docId).click();
+  await ada.page.keyboard.press('End');
+  await ada.page.keyboard.type(again);
+  await ui.waitAcked(ada, docId);
+  // The negative control for the empty check: a title typed the same way is in the listing after the same wait.
+  await ada.page.waitForTimeout(PROJECTION_SETTLED_MS);
+  expect(await listed(ada, docId), 'the retyped title projected within the wait the empty check gave').toEqual({ title: again, filename });
   await expect.poll(() => ui.fieldText(ben, docId, 'title'), { timeout: RENAME_MS }).toBe(again);
+
+  // The negative control for the kept filename: a name with another slug does move it.
+  await clearTitle(ada, docId);
+  const moved = `Moved keeper ${tok}`;
+  await ui.typeTitle(ada, docId, moved);
+  await expect.poll(() => listed(ada, docId), { message: 'a new slug projects a new filename', timeout: RENAME_MS })
+    .toEqual({ title: moved, filename: `moved-keeper-${tok}.md` });
 });
 
 /** Init script: every moment a title that is not live is editable, focusable or focused. */
@@ -320,7 +367,7 @@ async function newPane(actor: Actor, before: string[]): Promise<string> {
   return docId ?? '';
 }
 
-test('j02-title: @tierA the title takes no focus and no input before data-title-binding=live, and takes focus once it is @p:R2 @p:note-6 @p:col-6', async ({ actors }) => {
+test('j02-title: @tierA the title takes no focus and no input before data-title-binding=live, and takes focus once it is @p:R2@1 @p:note-6 @p:col-6', async ({ actors }) => {
   const ada = await actors.session(await actors.principal('ada'), { severable: true });
   await ada.context.addInitScript(recordClosedTitles, { title: TITLE_BINDING_ATTR });
   await ada.goto('/');
@@ -407,7 +454,7 @@ function recordKeys({ title, refusalAttr }: { title: string; refusalAttr: string
   );
 }
 
-test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at once makes one note, and every key lands in its title or is refused visibly @p:note-6 @p:R2', async ({ actors }) => {
+test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at once makes one note, and every key lands in its title or is refused visibly @p:note-6@1 @p:R2@1', async ({ actors }) => {
   const ada = await actors.session(await actors.principal('ada'));
   await ada.context.addInitScript(recordKeys, { title: TITLE_BINDING_ATTR, refusalAttr: INPUT_REFUSAL_ATTR });
   await ada.goto('/');
@@ -449,7 +496,7 @@ test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at on
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'one new row').toHaveCount(rows + 1);
 });
 
-test('j02-title: @tierA Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2 @p:col-5', async ({ actors }) => {
+test('j02-title: @tierA Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2@1 @p:col-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -473,7 +520,7 @@ test('j02-title: @tierA Rename in a row menu focuses the bound title, and the na
 });
 
 for (const check of ['typing', 'navigation'] as const) {
-  test(`j02-title: @tierA Rename on the open note preserves ${check} focus @p:R2 @p:note-6`, async ({ actors }) => {
+  test(`j02-title: @tierA Rename on the open note preserves ${check} focus @p:R2@1 @p:note-6`, async ({ actors }) => {
     const ada = await openShell(actors, 'ada');
     await openShell(actors, 'ben');
     await actors.requireDistinct(2);
@@ -504,6 +551,44 @@ for (const check of ['typing', 'navigation'] as const) {
   });
 }
 
+/** Dispatches a keydown on the title as the browser reports one; whether it was consumed and the title kept focus. */
+const titleKey = (actor: Actor, docId: string, key: string, isComposing: boolean) =>
+  ui.title(actor, docId).evaluate(async (el, init) => {
+    const event = new KeyboardEvent('keydown', { ...init, code: init.key, bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    await new Promise((done) => setTimeout(done, 100));
+    return { prevented: event.defaultPrevented, focusKept: el.contains(document.activeElement) };
+  }, { key, isComposing });
+
+const composition = (actor: Actor, docId: string, type: 'compositionstart' | 'compositionend') =>
+  ui.title(actor, docId).evaluate((el, kind) => { el.dispatchEvent(new CompositionEvent(kind, { bubbles: true, data: '' })); }, type);
+
+test('j02-title: @tierA an IME composition keeps Enter and ArrowDown in the title until it ends, then they move to the body @p:R2 @p:note-6', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const docId = await ui.createNote(ada);
+  const name = `Composed ${token()}`;
+  await ui.typeTitle(ada, docId, name);
+  await ui.waitAcked(ada, docId);
+
+  await composition(ada, docId, 'compositionstart');
+  for (const key of ['Enter', 'ArrowDown']) {
+    expect(await titleKey(ada, docId, key, true), `a composing ${key} is the IME's: not consumed, focus kept`)
+      .toEqual({ prevented: false, focusKept: true });
+  }
+  await expect(ui.title(ada, docId)).toBeFocused();
+  expect(await ui.fieldText(ada, docId, 'title'), 'nothing committed early').toBe(name);
+  await composition(ada, docId, 'compositionend');
+
+  // Once the composition ends, the same keys navigate.
+  expect(await titleKey(ada, docId, 'ArrowDown', false), 'ArrowDown on the last line moves to the body').toEqual({ prevented: true, focusKept: false });
+  await ui.title(ada, docId).click();
+  await ada.page.keyboard.press('End');
+  expect(await titleKey(ada, docId, 'Enter', false), 'Enter moves to the body').toEqual({ prevented: true, focusKept: false });
+  expect(await ui.fieldText(ada, docId, 'title')).toBe(name);
+});
+
 test('j02-title: @tierA an empty refusal band preserves the note layout @p:note-6', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await openShell(actors, 'ben');
@@ -514,7 +599,7 @@ test('j02-title: @tierA an empty refusal band preserves the note layout @p:note-
     'an empty band adds no space below the top bar').toBe(0);
 });
 
-test('j02-title: @tierA a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6 @macos', async ({ actors }) => {
+test('j02-title: @tierA a bare Backspace with nothing focused keeps the URL, while the doc binds and once it is live @p:note-6@1 @macos', async ({ actors }) => {
   const ada = await openShell(actors, 'ada', { severable: true });
   await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -593,6 +678,49 @@ test('j02-title: @tierA two people add different properties at once, both keep t
     await expect(header.getByRole('textbox', { name: 'reviewer', exact: true }), `${actor.label}: after reload`).toHaveValue(adaValue);
     await expect(header.getByRole('textbox', { name: 'deadline', exact: true }), `${actor.label}: after reload`).toHaveValue(benValue);
   }
+
+  // The negative control: a property lost from the doc is missing from the header these checks read.
+  const peer = await openDocClient(new URL(ada.page.url()).origin, docId,
+    (await ada.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; '));
+  try {
+    await peer.synced;
+    writeFrontmatterKey(peer.doc, 'deadline', undefined, 'control');
+    await peer.acked();
+  } finally { peer.close(); }
+  const header = PROPERTIES(ada).locator('section[aria-label="Frontmatter properties"]');
+  await expect(header.getByRole('textbox', { name: 'deadline', exact: true }), 'the control: a lost property leaves the header').toHaveCount(0, { timeout: RENAME_MS });
+  await expect(header.getByRole('textbox', { name: 'reviewer', exact: true })).toHaveValue(adaValue);
+});
+
+test("j02-title: @tierA Properties shows no empty state before the note binds, then the note's own properties @p:tech-2 @p:R2", async ({ actors }) => {
+  const ada = await openShell(actors, 'ada', { severable: true });
+  await openShell(actors, 'ben');
+  await actors.requireDistinct(2);
+  const sever = ada.sever;
+  if (!sever) throw new Error('ada is not severable');
+  const docId = await ui.createNote(ada);
+  const value = `draft-${token()}`;
+  await (await addPropertyUpToValue(ada, 'status', value)).press('Enter');
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true })).toHaveValue(value);
+  await ui.waitAcked(ada, docId);
+
+  // The doc socket goes nowhere, so the note cannot bind: its properties are unknown, not empty.
+  ada.observations.clear();
+  sever.blackhole();
+  await ada.goto(`/d/${docId}`);
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await expect(ui.pane(ada, docId)).toHaveAttribute(DOC_STATE_ATTR, 'binding', { timeout: BIND_TIMEOUT });
+  const show = ada.page.getByRole('button', { name: 'Show actions panel', exact: true });
+  if (await show.isVisible()) await show.click();
+  await PROPERTIES(ada).getByRole('tab', { name: 'Properties', exact: true }).click();
+  await ada.page.waitForTimeout(PROJECTION_SETTLED_MS);
+  await expect(ui.pane(ada, docId), 'the note is still binding').toHaveAttribute(DOC_STATE_ATTR, 'binding');
+  await expect(PROPERTIES(ada).getByText('No properties yet', { exact: true }), 'no empty state while the note binds').toHaveCount(0);
+  await expect(PROPERTIES(ada).getByRole('button', { name: 'Add field' }), 'nor an Add field offer').toHaveCount(0);
+
+  sever.restore();
+  await ui.waitLive(ada, docId);
+  await expect(PROPERTIES(ada).getByRole('textbox', { name: 'status', exact: true }), 'the bound note shows its own property').toHaveValue(value);
 });
 
 test('j02-title: @tierA disconnected additions of the same property converge and survive reload and later edits @evidence @p:tech-2 @p:col-1 @p:col-4', async ({ actors }) => {

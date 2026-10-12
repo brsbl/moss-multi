@@ -3,7 +3,7 @@
 // or trashes; a member gets 403 and a stranger the one 404; the last live vault is never trashed.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { agentKey, BASE, insertDoc, insertFolder, insertGrant, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const trashed: string[] = [];
@@ -124,6 +124,26 @@ describe('PATCH /api/vaults/:id', () => {
     await expectSentence(await call(ada, 'PATCH', `/api/vaults/${id}`, { name: 'TAKEN' }), 409, /already have a vault/);
     await expectSentence(await call(ada, 'PATCH', `/api/vaults/${id}`, { name: '' }), 400);
     expect(await row(id)).toMatchObject({ name: 'Shared space' });
+  });
+});
+
+describe('an agent key never renames or trashes a vault', () => {
+  const asAgent = (key: string, method: string, path: string, body?: unknown) =>
+    handleApi(new Request(`${BASE}${path}`, {
+      method,
+      headers: { origin: BASE, 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }), env);
+
+  it('the owner’s own live agent is refused a rename with 403 and the name stays; the owner still renames', async () => {
+    const id = await newVault(ada, 'Agent proof');
+    const key = await agentKey(d1.db, ada);
+    await expectSentence(await asAgent(key, 'PATCH', `/api/vaults/${id}`, { name: 'Agent named' }), 403, /owner/);
+    expect(await row(id)).toMatchObject({ name: 'Agent proof' });
+    await expectSentence(await asAgent(key, 'DELETE', `/api/vaults/${id}`), 403, /owner/);
+    expect((await row(id))?.deleted_at).toBeNull();
+    expect((await call(ada, 'PATCH', `/api/vaults/${id}`, { name: 'Owner named' })).status).toBe(200);
+    expect(await row(id)).toMatchObject({ name: 'Owner named' });
   });
 });
 

@@ -40,7 +40,7 @@ async function fingerprint(actor: Actor, path: string) {
   };
 }
 
-test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'s sidebar @p:ppl-2 @evidence', async ({ actors, stack }) => {
+test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'s sidebar @p:ppl-2@2 @evidence', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
   await ada.goto('/');
@@ -111,7 +111,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await actors.checkpoint('folder-link-landing');
 });
 
-test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2 @p:note-4 @evidence', async ({ actors }) => {
+test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2@2 @p:note-4 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
@@ -150,7 +150,7 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   await actors.checkpoint('vault-shared');
 });
 
-test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no create, rename or trash @p:ppl-2', async ({ actors }) => {
+test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no create, rename or trash @p:ppl-2@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const cyPrincipal = await actors.principal('cy');
   const cy = await actors.session(cyPrincipal);
@@ -184,7 +184,7 @@ test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no cr
   await expect(cy.page.getByRole('button', { name: 'Vault actions', exact: true }), "only the vault's owner renames or trashes it").toHaveCount(0);
 });
 
-test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2 @evidence', async ({ actors, browserName }) => {
+test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2@2 @evidence', async ({ actors, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const dialog = await ui.openShare(ada, docId);
@@ -221,7 +221,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   expect(await ui.fieldText(stranger, docId, 'body')).toBe(TEXT);
 });
 
-test('j08 link: an editor link is viewer signed out, editor signed in without a grant, and the max with a grant @p:ppl-2', async ({ actors }) => {
+test('j08 link: an editor link is viewer signed out, editor signed in without a grant, and the max with a grant @p:ppl-2@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const cyPrincipal = await actors.principal('cy');
@@ -250,7 +250,7 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   await actors.requireDistinct(3);
 });
 
-test('j08 link: an editor folder link lifts a viewer grant to editor, and lands a signed-in visitor without a grant on the folder @p:ppl-2', async ({ actors, stack }) => {
+test('j08 link: an editor folder link lifts a viewer grant to editor, and lands a signed-in visitor without a grant on the folder @p:ppl-2@2', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
   const headers = { origin: stack.baseUrl };
@@ -285,7 +285,7 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   await actors.requireDistinct(3);
 });
 
-test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2 @evidence', async ({ actors }) => {
+test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2@2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const otherId = await ui.createNote(ada);
@@ -331,7 +331,7 @@ test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s
   await actors.requireDistinct(2);
 });
 
-test('j08 privacy: an email with no account answers like one with an account, and non-owners see no emails @p:ppl-2', async ({ actors, stack }) => {
+test('j08 privacy: an email with no account answers like one with an account, and non-owners see no emails @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
@@ -423,7 +423,7 @@ async function offered(actor: Actor, docId: string): Promise<string[]> {
   return [...row, ...more, ...share].sort();
 }
 
-test('j08 ranks: menus grow with rank from viewer to owner, and only the owner trashes or shares @p:ppl-2', async ({ actors, stack }) => {
+test('j08 ranks: menus grow with rank from viewer to owner, and only the owner trashes or shares @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const ranks = [['ben', 'viewer'], ['cy', 'commenter'], ['dee', 'editor']] as const;
@@ -466,7 +466,7 @@ function writeFrames(actor: Actor): { count: () => number } {
   return { count: () => writes };
 }
 
-test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block controls are inert and send no frame @p:ppl-2', async ({ actors, stack }) => {
+test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block controls are inert and send no frame @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const box = (actor: Actor) => ui.body(actor, docId).locator('li[role="checkbox"]').filter({ hasText: 'ranked task' });
@@ -536,7 +536,7 @@ test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block co
   await actors.requireDistinct(4);
 });
 
-test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2', async ({ actors, stack }) => {
+test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const benPrincipal = await actors.principal('ben');

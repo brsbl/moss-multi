@@ -166,6 +166,21 @@ export function writeActor(principal: Principal, shareToken: string | null): Wri
 export const writeActorArgs = (actor: WriteActor, now: number) =>
   [actor.kind, actor.id, actor.userId, actor.sessionId, actor.shareToken, now] as const;
 
+/** SQL that holds while the actor bound at `?{at}`… (writeActorArgs) still has a live session or agent key. */
+const liveCredential = (at: number) => {
+  const [kind, id, user, session, now] = [0, 1, 2, 3, 5].map((n) => `?${at + n}`);
+  return `(CASE ${kind}
+    WHEN 'user' THEN EXISTS (SELECT 1 FROM session WHERE id = ${session} AND user_id = ${id} AND expires_at > ${now})
+    WHEN 'agent' THEN EXISTS (SELECT 1 FROM agents WHERE id = ${id} AND owner_user_id = ${user} AND revoked_at IS NULL)
+    ELSE 0 END)`;
+};
+
+/** Whether `actor`'s session or agent key is still live, read now (a request resolves its principal once). */
+export async function actorLive(db: D1Database, actor: WriteActor): Promise<boolean> {
+  const row = await db.prepare(`SELECT ${liveCredential(1)} AS ok`).bind(...writeActorArgs(actor, Date.now())).first<{ ok: number }>();
+  return row?.ok === 1;
+}
+
 /**
  * SQL that holds while doc `?{doc}` is live and the actor bound at `?{at}`… (writeActorArgs) can still edit it (A§8):
  * its session or key is live, and it owns the vault, holds an editor or owner grant on the doc or a folder of its
@@ -173,18 +188,36 @@ export const writeActorArgs = (actor: WriteActor, now: number) =>
  * demotion or a trash that commits first, whatever was resolved before the write's body arrived.
  */
 export const editsLiveDoc = (doc: Arg, at: number) => {
-  const [kind, id, user, session, token, now] = [0, 1, 2, 3, 4, 5].map((n) => `?${at + n}`);
+  const [id, user, token] = [1, 2, 4].map((n) => `?${at + n}`);
   const d = arg(doc);
   return `(EXISTS (SELECT 1 FROM docs WHERE id = ${d} AND deleted_at IS NULL)
-  AND (CASE ${kind}
-    WHEN 'user' THEN EXISTS (SELECT 1 FROM session WHERE id = ${session} AND user_id = ${id} AND expires_at > ${now})
-    WHEN 'agent' THEN EXISTS (SELECT 1 FROM agents WHERE id = ${id} AND owner_user_id = ${user} AND revoked_at IS NULL)
-    ELSE 0 END)
+  AND ${liveCredential(at)}
   AND (EXISTS (SELECT 1 FROM docs WHERE id = ${d} AND owner_user_id = ${user})
     OR EXISTS (SELECT 1 FROM doc_members WHERE doc_id = ${d} AND principal_id IN (${id}, ${user}) AND role IN ('editor', 'owner'))
     OR EXISTS (SELECT 1 FROM share_links WHERE token = ${token} AND revoked_at IS NULL AND role = 'editor' AND target_type = 'doc' AND target_id = ${d})
     OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
         SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs ON docs.folder_id = f.id WHERE docs.id = ${d}
+        UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+          WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+      ) SELECT 1 FROM chain WHERE
+        EXISTS (SELECT 1 FROM folder_members m WHERE m.folder_id = chain.id AND m.principal_id IN (${id}, ${user}) AND m.role IN ('editor', 'owner'))
+        OR EXISTS (SELECT 1 FROM share_links l WHERE l.token = ${token} AND l.revoked_at IS NULL AND l.role = 'editor'
+          AND l.target_type = 'folder' AND l.target_id = chain.id))))`;
+};
+
+/**
+ * editsLiveDoc for a folder: SQL that holds while folder `?{folder}` is live and the actor bound at `?{at}`… can still
+ * edit in it, through ownership, an editor or owner grant on it or an ancestor, or a live editor link on one of them.
+ * Creating a folder or note in it and renaming it condition on this in their own statement.
+ */
+export const editsLiveFolder = (folder: Arg, at: number) => {
+  const [id, user, token] = [1, 2, 4].map((n) => `?${at + n}`);
+  const f = arg(folder);
+  return `(EXISTS (SELECT 1 FROM folders WHERE id = ${f} AND deleted_at IS NULL)
+  AND ${liveCredential(at)}
+  AND (EXISTS (SELECT 1 FROM folders WHERE id = ${f} AND owner_user_id = ${user})
+    OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+        SELECT id, parent_id, 1 FROM folders WHERE id = ${f}
         UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
           WHERE chain.depth < ${MAX_FOLDER_DEPTH}
       ) SELECT 1 FROM chain WHERE
