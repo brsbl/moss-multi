@@ -95,7 +95,7 @@ test('j01-large: typing in the middle of a 40,000-line note stays within budget 
     const events: { name: string; ph: string; dur?: number; args?: { data?: { type?: string; functionName?: string; url?: string; lineNumber?: number } } }[] = [];
     cdp.on('Tracing.dataCollected', ({ value }) => { events.push(...(value as typeof events)); });
     const done = new Promise((resolve) => cdp.once('Tracing.tracingComplete', resolve));
-    await cdp.send('Tracing.start', { categories: 'devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.invalidationTracking', transferMode: 'ReportEvents' });
+    await cdp.send('Tracing.start', { categories: 'devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.invalidationTracking,disabled-by-default-devtools.timeline.stack', transferMode: 'ReportEvents' });
     const alone = await typeTimed(ada, large, LINES / 2 - 10);
     await cdp.send('Tracing.end');
     await done;
@@ -114,6 +114,11 @@ test('j01-large: typing in the middle of a 40,000-line note stays within budget 
     }
     for (const e of events) {
       const a = ((e as any).args?.data ?? {}) as Record<string, any>;
+      if (e.name === 'ScheduleStyleRecalculation' || e.name === 'StyleRecalcInvalidationTracking' || e.name === 'StyleInvalidatorInvalidationTracking') {
+        const st = (a.stackTrace ?? (e as any).args?.beginData?.stackTrace ?? []).slice(0, 4).map((f: any) => `${f.functionName}@${String(f.url).split('/').pop()}:${f.lineNumber}`).join(' < ');
+        const k2 = `SSR ${e.name} ${a.reason ?? ''} ${a.nodeName ?? ''} ${st}`;
+        agg[k2] = (agg[k2] ?? 0) + 1;
+      }
       if (!/Invalidat/.test(e.name)) continue;
       const k = `INV ${e.name} ${a.reason ?? ''} ${a.nodeName ?? ''} ${(a.invalidationList ?? []).map((i: any) => JSON.stringify(i)).join(',').slice(0, 120)}`;
       agg[k] = (agg[k] ?? 0) + 1;
