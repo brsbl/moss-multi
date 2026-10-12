@@ -15,11 +15,12 @@ const LINES = 40_000;
 const CONTROL_LINES = 400;
 const TYPED = 'abcdefghijklmnopqrst';
 /**
- * Calibrated on CI runners (T3.B13; runs 38299751021, 38299754653, 38301848192, 38301850762): the large note's median
- * keystroke painted in 176-192 ms before the binding patch and 152-168 ms after (Event Timing rounds to 8 ms); the
- * control's in 16-48 ms.
+ * Calibrated on CI runners (T3.B13; runs 38299751021, 38299754653, 38301848192, 38301850762, 38311128561): the large
+ * note's median keystroke painted in 176-232 ms before the binding patch and 152-176 ms after (Event Timing rounds to
+ * 8 ms); the control's in 16-48 ms. The two overlap, so this is a regression guard over the patched range, and
+ * binding-scale.test is the patch's exact proof.
  */
-const INPUT_TO_PAINT_MS = 172;
+const INPUT_TO_PAINT_MS = 240;
 const CONTROL_INPUT_TO_PAINT_MS = 64;
 
 const lines = (count: number) => Array.from({ length: count }, (_, i) => `Line ${i} of the note.`).join('\n\n');
