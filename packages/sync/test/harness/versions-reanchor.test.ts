@@ -129,12 +129,13 @@ describe('a restore re-anchors a detached comment on the item it restored @p:mea
     expect(anchorOf(opened.dobj.document, 'c1')?.status, 'deleting the second foo detaches its comment').toBe('orphaned');
 
     const base = captureRestoreBase(ada.doc, ada.payloads);
-    edit(ben, (text) => `foo bar ${text}`);
+    // An 8-unit insert at the start (no shared prefix, so the splice lands there) puts the first foo at the version's ordinals.
+    edit(ben, (text) => `zz foo, ${text}`);
     await settle(ben);
     expect(await opened.dobj.restoreVersion({ id, reviewer: ADA, base: { ...base, age: 0 } })).toMatchObject({ ok: true });
     await settle(ben, ada);
 
-    expect(ben.paragraphs()).toEqual(['foo bar foo bar foo']);
+    expect(ben.paragraphs()).toEqual(['zz foo, foo bar foo']);
     const doc = opened.dobj.document;
     expect(anchorText(doc, anchorOf(doc, 'c1')!)).toBe('foo');
     expect(sits(doc, 'c1'), 'the comment is on the foo the restore brought back, the last one').toEqual([16, 18]);
@@ -143,22 +144,30 @@ describe('a restore re-anchors a detached comment on the item it restored @p:mea
     expect(sits(woken.dobj.document, 'c1'), 'still there after a restart').toEqual([16, 18]);
   });
 
-  it('leaves a comment detached when the text the restore would put it on was deleted after the base', async () => {
+  it('leaves a comment detached when the item the restore would put it on was deleted after the base, even with the same text at its ordinals', async () => {
     const { opened, ada, ben } = await note('foo bar foo\n');
-    await commentOn(opened, 'c1', 'bar foo', 0, 'text');
-    const id = await save(opened, 'Bar foo');
+    await commentOn(opened, 'c1', 'foo', 1, 'text');
+    const id = await save(opened, 'Two foos');
 
-    edit(ada, () => 'foo bar');
+    // Ada deletes the second foo (the comment detaches) and types it again: the base holds her new foo.
+    edit(ada, () => 'foo bar ');
+    await settle(ada, ben);
+    expect(anchorOf(opened.dobj.document, 'c1')?.status).toBe('orphaned');
+    edit(ada, (text) => `${text}foo`);
     await settle(ada, ben);
     expect(anchorOf(opened.dobj.document, 'c1')?.status).toBe('orphaned');
 
+    // After the base, Ben deletes Ada's foo and types his own in its place.
     const base = captureRestoreBase(ada.doc, ada.payloads);
-    edit(ben, (text) => text.replace('bar', ''));
+    edit(ben, () => 'foo bar ');
+    await settle(ben);
+    edit(ben, (text) => `${text}foo`);
     await settle(ben);
     expect(await opened.dobj.restoreVersion({ id, reviewer: ADA, base: { ...base, age: 0 } })).toMatchObject({ ok: true });
     await settle(ben, ada);
 
-    expect(anchorOf(opened.dobj.document, 'c1')?.status, 'the restored span starts on a word the peer deleted').toBe('orphaned');
+    expect(ben.paragraphs()).toEqual(['foo bar foo']);
+    expect(anchorOf(opened.dobj.document, 'c1')?.status, "the restored foo is gone; Ben's is not the version's").toBe('orphaned');
     const woken = await start(wake(opened));
     expect(anchorOf(woken.dobj.document, 'c1')?.status).toBe('orphaned');
   });
