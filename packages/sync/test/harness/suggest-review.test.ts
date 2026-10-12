@@ -3,7 +3,7 @@
 // record; reject and withdraw change only the record, so the body stays byte-identical; a stale hash, a closed record
 // and a reviewer below the role floor are refused with nothing applied; the working export adds every valid open
 // record while the default export stays clean; and a new live suggestion notifies.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
 import { applyRecord } from '@moss-multi/core/suggest/apply';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -307,5 +307,68 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     const sam = await on(opened, SAM);
     const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
     expect(notices).toEqual([{ docId: opened.backing.docId, author: SUGGESTER.id, record: id }]);
+  });
+});
+
+describe('T5.S9 a review heals a missed restore settle from D1', () => {
+  /** D1's answer to the DocDO's liveness reads: trashed or not, and whether it answers at all. */
+  function liveness(): { deleted: boolean; fails: boolean } {
+    const d1 = { deleted: false, fails: false };
+    const original = DocDO.liveness;
+    DocDO.liveness = () => async () => {
+      if (d1.fails) throw new Error('D1 unavailable');
+      return d1.deleted;
+    };
+    onTestFinished(() => { DocDO.liveness = original; });
+    return d1;
+  }
+
+  /** A doc with one open record (and its preview), trashed and settled; D1 then restores it, but that settle is lost. */
+  async function missedRestore(d1: { deleted: boolean }) {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const shown = await preview(opened, id);
+    await opened.dobj.trash('hold-1');
+    d1.deleted = true;
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    d1.deleted = false;
+    return { opened: await start(wake(opened)), id, shown };
+  }
+
+  it('the next preview recovers, and so does the next accept', async () => {
+    const d1 = liveness();
+    const viewed = await missedRestore(d1);
+    expect(await viewed.opened.dobj.previewSuggestion({ id: viewed.id, reviewer: EDITOR })).toMatchObject({ ok: true, hash: viewed.shown.hash });
+
+    const pushed = await missedRestore(d1);
+    expect(await pushed.opened.dobj.acceptSuggestion({ id: pushed.id, reviewer: EDITOR, previewHash: pushed.shown.hash, digest: pushed.shown.digest }))
+      .toEqual({ ok: true });
+    expect(body(pushed.opened.dobj.document)).toContain('More words.');
+  });
+
+  it('a held doc and a doc D1 still trashes stay refused', async () => {
+    const d1 = liveness();
+    const held = await seeded();
+    const sam = await on(held, SAM);
+    const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    await held.dobj.trash('hold-1');
+    expect(await held.dobj.previewSuggestion({ id, reviewer: EDITOR })).toEqual({ ok: false, status: 404, reason: 'trashed' });
+
+    d1.deleted = true;
+    await held.dobj.settle('hold-1');
+    const woken = await start(wake(held));
+    expect(await woken.dobj.previewSuggestion({ id, reviewer: EDITOR })).toEqual({ ok: false, status: 404, reason: 'trashed' });
+    expect(await woken.dobj.rejectSuggestion({ id, reviewer: EDITOR })).toEqual({ ok: false, status: 404, reason: 'trashed' });
+  });
+
+  it('a liveness read that fails answers 503 and changes nothing; the next one recovers', async () => {
+    const d1 = liveness();
+    const { opened, id } = await missedRestore(d1);
+    d1.fails = true;
+    expect(await opened.dobj.rejectSuggestion({ id, reviewer: EDITOR })).toEqual({ ok: false, status: 503, reason: 'unconfirmed' });
+    expect(readMeta(opened.dobj.document, id)).toMatchObject({ status: 'open' });
+    d1.fails = false;
+    expect(await opened.dobj.rejectSuggestion({ id, reviewer: EDITOR })).toEqual({ ok: true });
   });
 });
