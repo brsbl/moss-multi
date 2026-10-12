@@ -539,6 +539,9 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
       const before = [...blocks, SENTINEL].join('\n\n');
       const live = docOf(before);
       const targetDoc = docOf([...perm.map((i) => blocks[i]!), SENTINEL].join('\n\n'));
+      // Only true reorders: adjacent lists of one kind merge in markdown, which changes the blocks themselves.
+      const sigs = (doc: Y.Doc) => children(bodyState(doc)).map(stableStringify).sort();
+      fc.pre(stableStringify(sigs(live)) === stableStringify(sigs(targetDoc)));
       const items = blockItems(live);
       const vector = Y.encodeStateVector(live);
       try {
