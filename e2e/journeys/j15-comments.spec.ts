@@ -528,6 +528,7 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
   await firstBlock.scrollIntoViewIfNeeded();
   await firstBlock.hover();
   await expect(blockCommentButton(firstBlock), 'a commenter is offered Add comment until access ends').toHaveCount(1);
+  dan.expectHttp(404, /\/api\/docs\/[^/]+\/access/);
   const removed = await ada.context.request.delete(`/api/docs/${id}/members`, { headers: { origin: stack.baseUrl }, data: { principalId: danPrincipal.id } });
   expect(removed.ok(), 'the owner removes the commenter').toBe(true);
   await expect(ui.pane(dan, id), 'the note ends for the removed commenter in place').toHaveAttribute(TERMINAL_REASON_ATTR, 'revoked', { timeout: PEER_TIMEOUT });
@@ -571,12 +572,15 @@ test("j15-comments: a commenter's composers keep what the server did not take; a
   const cookie = (await ada.context.cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
   const stored = (message: string) => expect.poll(() => storedTexts(stack.baseUrl, id, cookie), { message, timeout: PEER_TIMEOUT });
 
-  // Cara's create and reply POSTs: `lose` lets the server take the write and loses its answer, `fail` never sends it,
-  // `hold` keeps the next one waiting until the test releases it.
+  // Cara's create and reply POSTs: `lose` lets the server take the write and loses its answer, `fail` never sends it
+  // (both answer a declared 408 timeout), `hold` keeps the next one waiting until the test releases it.
   let mode: 'pass' | 'lose' | 'fail' | 'hold' = 'pass';
   const sent: string[] = [];
   const held: (() => void)[] = [];
-  await cara.page.route((url) => url.pathname === `/api/docs/${id}/comments`, async (route) => {
+  const createPath = `/api/docs/${id}/comments`;
+  cara.expectHttp(408, createPath);
+  const timedOut = { status: 408, contentType: 'application/json', body: JSON.stringify({ error: 'timeout' }) };
+  await cara.page.route((url) => url.pathname === createPath, async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     sent.push((route.request().postDataJSON() as { text: string }).text);
     const now = mode;
@@ -586,9 +590,9 @@ test("j15-comments: a commenter's composers keep what the server did not take; a
     }
     if (now === 'lose') {
       await route.fetch();
-      return route.abort('failed');
+      return route.fulfill(timedOut);
     }
-    if (now === 'fail') return route.abort('failed');
+    if (now === 'fail') return route.fulfill(timedOut);
     return route.fallback();
   });
   const composer = cara.page.getByRole('dialog', { name: 'Add comment' });
