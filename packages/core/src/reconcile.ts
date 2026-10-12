@@ -2,12 +2,23 @@
 // tree-markdown reconcile. Run inside an update of an editor bound to the live doc's mirror, it edits the existing
 // tree into the target tree in place: a child whose whole subtree matches is untouched, a child whose identity
 // matches is updated in place (text by a character diff in the same Yjs items), and only children the target
-// lacks or adds are removed or created. The V1 binding then emits ops for what changed alone, so untouched items,
+// lacks or adds are removed or created (an unchanged child moved across another is refused). The V1 binding then emits ops for what changed alone, so untouched items,
 // the comment anchors on them and a peer's concurrent insert into them survive. The caller verifies the result.
 import { $getNodeByKey, $getRoot, $isElementNode, $isTextNode, $parseSerializedNode, type ElementNode, type LexicalNode, type NodeKey } from 'lexical';
 import { diffText, SERVER_CELL_BUDGET } from './text-diff.ts';
 
 export type SerializedNode = Record<string, unknown>;
+
+/**
+ * A crossing move: an unchanged subtree the order-keeping pairs cannot keep, which would be removed and created anew,
+ * losing its items, the anchors on them and a peer's insert into them. Thrown before anything is written.
+ */
+export class CrossingMove extends Error {
+  constructor() {
+    super('an unchanged block moved past another; a move cannot keep its identity');
+    this.name = 'CrossingMove';
+  }
+}
 
 /** A decorator whose payload lives outside the tree (A§10.10): its JSON keys, and how to write them in place. */
 export interface PayloadReconciler {
@@ -244,7 +255,9 @@ function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], opti
   const live = parent.getChildren();
 
   // Tier 1: children whose whole subtree already matches stay untouched.
-  const exact = align(live.map($fullOfNode), targets.map(fullOf));
+  const liveFull = live.map($fullOfNode);
+  const targetFull = targets.map(fullOf);
+  const exact = align(liveFull, targetFull);
 
   // Tier 2: in each gap between exact matches, children with the same identity reconcile in place, preferring the
   // pairs whose text is most alike so an edited block keeps its own items.
@@ -279,6 +292,10 @@ function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], opti
     prevL = li;
     prevT = ti;
   }
+
+  // A live subtree left unpaired that equals a target subtree left unmatched moved across a pair: refuse it.
+  const created = new Set(targetFull.filter((_, ti) => !match.has(ti)));
+  if (created.size && liveFull.some((full, li) => !paired.has(li) && created.has(full))) throw new CrossingMove();
 
   // Place the target's children in order: paired ones stay where they are (pairs never cross), new ones are created.
   let prev: LexicalNode | null = null;
