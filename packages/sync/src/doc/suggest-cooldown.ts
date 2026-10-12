@@ -14,16 +14,22 @@ interface Entry {
  */
 export class SuggestCooldowns {
   readonly #cache = new Map<string, Entry>();
+  /** Whether the table exists; made by the first refusal, so a note nobody is refused on gets no write. */
+  #table: boolean | null = null;
 
-  constructor(private readonly sql: SqlStorage) {
-    sql.exec(`CREATE TABLE IF NOT EXISTS suggest_refusals (principal_id TEXT PRIMARY KEY, refusals TEXT NOT NULL,
-      until INTEGER NOT NULL, expires INTEGER NOT NULL)`);
+  constructor(private readonly sql: SqlStorage) {}
+
+  #hasTable(): boolean {
+    this.#table ??= this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'suggest_refusals'").toArray().length > 0;
+    return this.#table;
   }
 
   #entry(principalId: string, now: number): Entry {
     let entry = this.#cache.get(principalId);
     if (!entry) {
-      const row = this.sql.exec<{ refusals: string; until: number }>('SELECT refusals, until FROM suggest_refusals WHERE principal_id = ?', principalId).toArray()[0];
+      const row = this.#hasTable()
+        ? this.sql.exec<{ refusals: string; until: number }>('SELECT refusals, until FROM suggest_refusals WHERE principal_id = ?', principalId).toArray()[0]
+        : undefined;
       entry = row ? { refusals: JSON.parse(row.refusals) as number[], until: Number(row.until) } : { refusals: [], until: 0 };
       this.#cache.set(principalId, entry);
     }
@@ -47,6 +53,11 @@ export class SuggestCooldowns {
       entry.until = now + SUGGEST_LIMITS.cooldownMs;
     }
     const expires = Math.max(entry.until, (entry.refusals.at(-1) ?? 0) + windowMs);
+    if (!this.#hasTable()) {
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS suggest_refusals (principal_id TEXT PRIMARY KEY, refusals TEXT NOT NULL,
+        until INTEGER NOT NULL, expires INTEGER NOT NULL)`);
+      this.#table = true;
+    }
     this.sql.exec('DELETE FROM suggest_refusals WHERE expires <= ?', now);
     for (const [id, cached] of this.#cache) {
       if (id !== principalId && cached.until <= now && cached.refusals.every((at) => now - at >= windowMs)) this.#cache.delete(id);
