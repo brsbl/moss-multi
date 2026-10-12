@@ -641,8 +641,15 @@ export const STEPS = {
       await selectInEditor(page, docId, root.quote);
       await chord(page, MOD, 'Shift', 'KeyA');
       const composer = await dialogNamed(page, 'Add comment');
-      await pause(200);
+      // Keys typed before the composer's editor holds focus are lost, and the comment is saved without its first words.
+      const typed = () => composer.evaluate((dialog) => {
+        const field = document.activeElement;
+        if (!dialog.contains(field) || !(field.isContentEditable || field.tagName === 'TEXTAREA')) return null;
+        return (field.value ?? field.textContent ?? '').trim();
+      });
+      await until('the composer takes focus', async () => (await typed()) !== null);
       await page.keyboard.type(root.text);
+      await until('the composer holds the whole comment', async () => (await typed()) === root.text, 5_000);
       await chord(page, MOD, 'Enter');
       await until('the composer closes', async () => !(await composer.isVisible().catch(() => false)));
       await until(`"${root.text}" is saved`, async () => (await listing()).some((c) => c.text.trim() === root.text));
