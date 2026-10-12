@@ -450,13 +450,19 @@ test('j01 editing: a composition cancelled below a node-selected chart leaves th
   await start();
   await expect.poll(() => blocks(ben)).toBe(withTwo + 1);
   const box = await root(ben).evaluate((element) => {
+    element.lastElementChild!.scrollIntoView({ block: 'center' });
     const rect = element.lastElementChild!.getBoundingClientRect();
     return { x: rect.left + 4, y: rect.top + rect.height / 2 };
   });
   await ben.page.mouse.click(box.x, box.y);
   await ben.page.keyboard.press('End');
   await ben.page.keyboard.type('Peer');
-  await expect.poll(() => lastBlock(ada), 'the peer\'s text reaches the composing paragraph').toContain('Peer');
+  await expect.poll(() => lastBlock(ben), 'the peer types into the composing paragraph').toContain('Peer');
+  await expect.poll(() => root(ada).evaluate((element) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const state = editor.getEditorState();
+    return state.read(() => state._nodeMap.get('root')!.getTextContent());
+  }), 'the peer\'s text reaches the composing editor').toContain('Peer');
   await end('');
   await ui.waitAcked(ben, id);
   for (const actor of [ada, ben]) {

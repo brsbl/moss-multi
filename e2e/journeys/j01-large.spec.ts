@@ -55,9 +55,12 @@ async function typeTimed(actor: Actor, id: string, line: number) {
     events.observe({ type: 'event', durationThreshold: 16 } as PerformanceObserverInit);
     probe.__b13Observers = [tasks, events];
   });
+  // Each keystroke waits for the one before it to paint and settle, so a slow keystroke is measured alone rather than
+  // batched with the keys queued behind it.
   for (const key of TYPED) {
     await actor.page.keyboard.type(key);
-    await actor.page.waitForTimeout(150);
+    await actor.page.evaluate(() => new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0))));
+    await actor.page.waitForTimeout(250);
   }
   await actor.page.waitForTimeout(1_000);
   const { longTasks, keys } = await actor.page.evaluate(() => (window as unknown as { __b13: { longTasks: number[]; keys: number[] } }).__b13);
