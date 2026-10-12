@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 53% done** (123 of 230 planned tasks verified)
+**Overall: 54% done** (124 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 10 / 10 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 11 / 11 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 12 / 12 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -144,6 +144,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-10 — T6.S9 verified: a stranger or viewer who sends a large restore body is now turned away (404 or 403) before the body is read, the restore's write token is charged to the person rather than the agent key, and a revocation, demotion or trash during a slow upload still wins.
 - 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
 - 2026-10-12 — T7.R verified: agent sync now sits on the final M6, and a push carrying a maximal 2 MB note lands while an oversized push body is refused 413 before it is read, after the pusher's rate token is charged.
+- 2026-10-12 — T7.S5 verified: an agent key now spends its owner's allowance for renames, comments, suggestion previews and reviews, working exports, remote fetches and media uploads, so a person with a session and two keys gets 429 on the third key instead of a fresh window per key.
 
 ## T1.1s identity audit
 
@@ -176,6 +177,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S5's checker (fc7d6d4, 2026-10-12)
+
+- T7.S5 checker P2 (the new acceptance test stubs the Durable Objects instead of running the real Worker): agent-rate-buckets.test.ts calls handleApi with a Map-backed PrincipalDO (allowance 3) and canned DocDO answers, so it proves which window each route draws from but not the built Worker with real persisted windows; the checker's real-stack run covered renames and comments.
+- T7.S5 checker P2 (the upload case had no valid red-first run): in red run 38295114055 the upload case failed 411 for a missing Content-Length rather than on the third-key assertion; the old admitMedia keyed on principal.id so the corrected test would fail on it, but no CI run shows that failure.
 
 ### From T7.R's checker (5561ce4, 2026-10-12)
 
