@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 58% done** (121 of 210 planned tasks verified)
+**Overall: 53% done** (123 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,8 +10,8 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 9 / 9 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 10 / 10 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 11 / 11 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -142,6 +142,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
 - 2026-10-09 — T6.R verified: history now sits on the final M5, and restoring a version of a note with thousands of payloads is accepted instead of refused 413, because the restore base has its own cap sized from the state cap and its write token is charged before the body is read.
 - 2026-10-10 — T6.S9 verified: a stranger or viewer who sends a large restore body is now turned away (404 or 403) before the body is read, the restore's write token is charged to the person rather than the agent key, and a revocation, demotion or trash during a slow upload still wins.
+- 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
+- 2026-10-12 — T7.R verified: agent sync now sits on the final M6, and a push carrying a maximal 2 MB note lands while an oversized push body is refused 413 before it is read, after the pusher's rate token is charged.
 
 ## T1.1s identity audit
 
@@ -174,6 +176,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.R's checker (5561ce4, 2026-10-12)
+
+- T7.R checker P2 (the streamed-oversize test does not check that the push token is taken before the body is read): push.harness.test.ts checks the final charge count, status and unchanged content but not step order, so moving takePushToken after readCapped would still pass and let a rate-limited caller make the Worker read about 25 MB; push.ts:54-62 orders it correctly today.
+- T7.R checker P2 (the long-line landPush timing legs ignore the result and catch every exception): the spaces, image-run and bold-around-spaces legs reuse T7.S1's helper, so an early unrelated failure would also pass; inherited from T7.S1 (see its entry below).
+- T7.R checker P2 (origin/m6 moved after the restack): t/T7.R merged m6 at 6d52c7f8, not T6.S8's 83d08b25; merged into m7 at integration (PROGRESS.md was the only conflict).
 
 ### From T6.S9's checker (7b03b34, 2026-10-10)
 
