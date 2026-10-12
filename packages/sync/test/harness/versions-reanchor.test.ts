@@ -144,7 +144,7 @@ describe('a restore re-anchors a detached comment on the item it restored @p:mea
     expect(sits(woken.dobj.document, 'c1'), 'still there after a restart').toEqual([16, 18]);
   });
 
-  it('leaves a comment detached when the item the restore would put it on was deleted after the base, even with the same text at its ordinals', async () => {
+  it("lands a text comment on the occurrence the restore wrote, not on a peer's same text left at the version's ordinals, across a restart", async () => {
     const { opened, ada, ben } = await note('foo bar foo\n');
     await commentOn(opened, 'c1', 'foo', 1, 'text');
     const id = await save(opened, 'Two foos');
@@ -152,12 +152,11 @@ describe('a restore re-anchors a detached comment on the item it restored @p:mea
     // Ada deletes the second foo (the comment detaches) and types it again: the base holds her new foo.
     edit(ada, () => 'foo bar ');
     await settle(ada, ben);
-    expect(anchorOf(opened.dobj.document, 'c1')?.status).toBe('orphaned');
     edit(ada, (text) => `${text}foo`);
     await settle(ada, ben);
     expect(anchorOf(opened.dobj.document, 'c1')?.status).toBe('orphaned');
 
-    // After the base, Ben deletes Ada's foo and types his own in its place.
+    // After the base, Ben deletes Ada's foo and types his own in its place, at the version's ordinals.
     const base = captureRestoreBase(ada.doc, ada.payloads);
     edit(ben, () => 'foo bar ');
     await settle(ben);
@@ -166,9 +165,10 @@ describe('a restore re-anchors a detached comment on the item it restored @p:mea
     expect(await opened.dobj.restoreVersion({ id, reviewer: ADA, base: { ...base, age: 0 } })).toMatchObject({ ok: true });
     await settle(ben, ada);
 
-    expect(ben.paragraphs()).toEqual(['foo bar foo']);
-    expect(anchorOf(opened.dobj.document, 'c1')?.status, "the restored foo is gone; Ben's is not the version's").toBe('orphaned');
+    // A deletion after the base is kept as a change since it, so the restore writes the version's foo again after Ben's.
+    expect(ben.paragraphs()).toEqual(['foo bar foofoo']);
+    expect(sits(opened.dobj.document, 'c1'), "on the restored foo, not Ben's").toEqual([11, 13]);
     const woken = await start(wake(opened));
-    expect(anchorOf(woken.dobj.document, 'c1')?.status).toBe('orphaned');
+    expect(sits(woken.dobj.document, 'c1'), 'still there after a restart').toEqual([11, 13]);
   });
 });
