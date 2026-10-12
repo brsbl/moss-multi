@@ -175,6 +175,7 @@ const aged = (attachment: Attachment, now: number) => agesAt(attachment) <= now;
  */
 const noRoomUntil = (connection: Connection) => (connection.state as { noRoomUntil?: number } | null)?.noRoomUntil ?? 0;
 function noRoom(connection: Connection, until: number): void {
+  if (noRoomUntil(connection) === until) return;
   // Functional setState only, as attach does: the object form would wipe the rest of the attachment.
   (connection as unknown as Connection<Record<string, unknown>>).setState((previous) => ({ ...(previous ?? {}), noRoomUntil: until }));
 }
