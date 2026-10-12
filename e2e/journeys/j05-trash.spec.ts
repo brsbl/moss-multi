@@ -334,6 +334,8 @@ test('j05-trash: a note trashed while open and then restored comes back live in 
 
   // Her other window trashes the note under this open pane, then restores it (declared setup: that window's API calls).
   const origin = new URL(ada.page.url()).origin;
+  // A backlinks read this pane sent just before the trash lands answers 404; the bridge then stops reading them.
+  ada.expectHttp(404, `/api/docs/${docId}/backlinks`);
   expect((await ada.context.request.delete(`${origin}/api/docs/${docId}`, { headers: { origin } })).status()).toBe(200);
   await expect(ui.pane(ada, docId), 'the open note goes terminal in place').toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_MS });
   ada.expectReconnects(1, docId);
