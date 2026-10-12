@@ -526,7 +526,7 @@ export class SuggestFork {
 
   readonly #suggestionsGrew = (update: Uint8Array, _origin: unknown, _doc: Y.Doc, tr: Y.Transaction): void => {
     if (this.#room === null) return;
-    const suggestions: Y.AbstractType<unknown> = this.body.getMap(SUGGESTIONS);
+    const suggestions: unknown = this.body.getMap(SUGGESTIONS);
     for (const type of tr.changedParentTypes.keys()) {
       if (type !== suggestions) continue;
       this.#grown += update.byteLength;
