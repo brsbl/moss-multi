@@ -26,32 +26,43 @@ export function useNoteBound(noteId: string): boolean {
 }
 
 /**
- * The selection minted when the composer opened, per editor, so peers' edits meanwhile cannot move it (null when the
- * open minted nothing). Every open mints anew, and a submit leaves it, so a resubmit from the same composer (a retry or
- * a revision) comments on the same words.
+ * What the composer opened on, per editor: the selection minted at open (null when that minted nothing), or a block.
+ * Every open replaces it, and a submit leaves it, so a resubmit from the same composer (a retry or a revision) comments
+ * on the same words or the same block, and peers' edits meanwhile cannot move it.
  */
-const stashed = new WeakMap<LexicalEditor, Minted | null>();
+type Target = { text: Minted | null } | { block: string };
+const stashed = new WeakMap<LexicalEditor, Target>();
 
 /** The composer is opening on the current selection: mint it now (comments.md §4 "mints at open"). */
 export function stashCommentSelection(editor: LexicalEditor): void {
   const painter = painterOf(editor);
-  stashed.set(editor, painter ? mintCurrent(editor, painter.binding) : null);
+  stashed.set(editor, { text: painter ? mintCurrent(editor, painter.binding) : null });
+}
+
+/** The composer is opening on the block `nodeKey` (a block header's Add comment). */
+export function stashCommentBlock(editor: LexicalEditor, nodeKey: string): void {
+  stashed.set(editor, { block: nodeKey });
 }
 
 /**
- * CREATE_COMMENT_COMMAND (CommentPlugin's seam), inside the command's update: a block comment on `nodeKey`, or a
- * text comment on the selection minted at open (else the current one). True when the comment was sent; null for an editor with no binding (moss's own path then
- * runs). The server's answer reaches the composer through `submitted(noteId, 'root')`.
+ * CREATE_COMMENT_COMMAND (CommentPlugin's seam), inside the command's update: a block comment on `nodeKey` or the block
+ * the composer opened on, else a text comment on the selection minted at open (else the current one). True when the
+ * comment was sent; null for an editor with no binding (moss's own path then runs). The server's answer reaches the
+ * composer through `submitted(noteId, 'root')`.
  */
 export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean | null {
   if (!isShared(editor)) return null;
   const painter = painterOf(editor);
   if (!painter) return false;
   if (!payload.text.trim() || !canComment(painter.docId)) return false;
-  const minted = payload.nodeKey ? $mintNode(painter.binding, payload.nodeKey) : (stashed.get(editor) ?? mintCurrent(editor, painter.binding));
+  const target = stashed.get(editor);
+  const nodeKey = payload.nodeKey ?? (target && 'block' in target ? target.block : undefined);
+  const minted = nodeKey
+    ? $mintNode(painter.binding, nodeKey)
+    : ((target && 'text' in target ? target.text : null) ?? mintCurrent(editor, painter.binding));
   if (!minted) return false;
   createComment(painter.docId, painter.binding.doc, minted, payload.text);
-  if (!payload.nodeKey && editor.isEditable()) editor.update($collapseToFocus);
+  if (!nodeKey && editor.isEditable()) editor.update($collapseToFocus);
   return true;
 }
 

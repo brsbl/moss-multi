@@ -58,10 +58,12 @@ export function CommentOnlyTools({ noteId }: { noteId: string }): ReactNode {
     const range = selectionIn(editor.getRootElement());
     if (!range) return;
     stashCommentSelection(editor);
+    // moss's composer keys its draft on the target, as the editable editor sets it (open stays moss's own state).
+    store.set(commentInputStateAtom(noteId), { open: false, anchorRect: null, selectedText: range.toString().slice(0, 50) });
     if (typeof CSS !== 'undefined' && CSS.highlights) CSS.highlights.set(SELECTION, new Highlight(range.cloneRange()));
     setBar(null);
     setComposer({ rect: rectOf(range) });
-  }, [editor]);
+  }, [editor, noteId, store]);
 
   const close = useCallback((next: boolean) => {
     if (next) return;
@@ -76,11 +78,12 @@ export function CommentOnlyTools({ noteId }: { noteId: string }): ReactNode {
       const block = editor.getRootElement()?.querySelector(`[data-block-decorator-key="${CSS.escape(nodeKey)}"]`);
       if (!block) return false;
       const rect = block.getBoundingClientRect();
+      store.set(commentInputStateAtom(noteId), { open: false, anchorRect: null, targetNodeKey: nodeKey });
       setBar(null);
       setComposer({ rect: { x: rect.right, y: rect.top, width: 0, height: 0 }, nodeKey });
       return true;
     }, COMMAND_PRIORITY_HIGH);
-  }, [allowed, editor]);
+  }, [allowed, editor, noteId, store]);
 
   useEffect(() => {
     if (!allowed) return;

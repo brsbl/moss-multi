@@ -492,6 +492,13 @@ function CommentMessage({
   );
 }
 
+/** moss-multi seam: comments: the reply box's text with a failed reply's `text` after it, unless it already holds it. */
+function withFailed(current: string, text: string): string {
+  const kept = current.trim();
+  if (kept.includes(text)) return current;
+  return kept ? `${kept}\n\n${text}` : text;
+}
+
 export function CommentPopover({
   open,
   onOpenChange,
@@ -875,22 +882,22 @@ export function CommentPopover({
       const rootId = root.id;
       void answer?.then((result) => {
         if (result.ok || replyRootRef.current !== rootId) return;
-        const current = replyTextRef.current.trim();
-        if (current.includes(text)) return;
-        setReplyText(current ? `${current}\n\n${text}` : text);
-        if (!current) setReplyImageUrls(images);
+        if (!replyTextRef.current.trim()) setReplyImageUrls(images);
+        // An updater, so replies that fail in the same tick all come back
+        setReplyText(current => withFailed(current, text));
         setReplyResetSignal(s => s + 1);
       });
     },
     [noteId, onReply, replyText, replyImageUrls, resetReplyComposer, root.id, shared]
   );
 
-  // moss-multi seam: comments: an empty reply box of a bound thread that opens offers the replies that failed in it
+  // moss-multi seam: comments: the reply box of a bound thread that opens offers the replies that failed in it, as a
+  // resubmit from it replaces them
   useEffect(() => {
-    if (!open || !shared || replyTextRef.current.trim()) return;
+    if (!open || !shared) return;
     const failed = failedDraftText(noteId, `reply:${root.id}`);
-    if (!failed) return;
-    setReplyText(failed);
+    if (!failed || replyTextRef.current.includes(failed)) return;
+    setReplyText(current => withFailed(current, failed));
     setReplyResetSignal(s => s + 1);
   }, [noteId, open, root.id, shared]);
 

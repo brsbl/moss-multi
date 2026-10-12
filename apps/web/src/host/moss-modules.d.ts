@@ -126,7 +126,12 @@ declare module '@moss-desktop/renderer/editor/components/CommentInputPopover' {
 declare module '@moss-desktop/renderer/editor/plugins/CommentPlugin' {
   import type { PrimitiveAtom } from 'jotai';
   import type { LexicalCommand } from 'lexical';
-  export function commentInputStateAtom(noteId: string): PrimitiveAtom<{ open: boolean; anchorRect: { x: number; y: number; width: number; height: number } | null }>;
+  export function commentInputStateAtom(noteId: string): PrimitiveAtom<{
+    open: boolean;
+    anchorRect: { x: number; y: number; width: number; height: number } | null;
+    targetNodeKey?: string;
+    selectedText?: string;
+  }>;
   export const OPEN_BLOCK_COMMENT_COMMAND: LexicalCommand<{ nodeKey: string }>;
 }
 

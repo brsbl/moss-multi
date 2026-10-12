@@ -173,14 +173,33 @@ export async function resolveThread(docId: string, rootId: string, resolved: boo
 
 const commentPath = (docId: string, id: string) => `/api/docs/${encodeURIComponent(docId)}/comments/${encodeURIComponent(id)}`;
 
-/** Rewrites the caller's own comment; the new text arrives with the record. */
+/** Each comment's last edit save, which the next one waits for: the server keeps whichever text arrives last. */
+const editTail = new Map<string, Promise<Completion>>();
+
+/**
+ * Rewrites the caller's own comment; the new text arrives with the record. Saves of one comment go out one at a time, in
+ * the order they were made, so an older revision never lands after a newer one, and a save that lands supersedes the
+ * comment's earlier failed ones.
+ */
 export function editComment(docId: string, id: string, text: string): Promise<Completion> {
-  return submit(docId, `edit:${id}`, { id, text }, async () => {
+  const slot: DraftSlot = `edit:${id}`;
+  const key = draftKey(docId, slot);
+  const before = editTail.get(key);
+  const { done } = submit(docId, slot, { id, text }, async () => {
+    if (before) await before;
     const result = await post(commentPath(docId, id), { text }, 'PATCH');
-    if (result.ok) return { ok: true };
+    if (result.ok) {
+      for (const old of failedDrafts(docId, slot)) place(docId, slot, old, true);
+      return { ok: true };
+    }
     refuseInput(REFUSED[result.error ?? ''] ?? "That comment couldn't be edited. Try again.");
     return { ok: false, error: result.error ?? 'failed' };
-  }, () => true).done;
+  }, () => true);
+  editTail.set(key, done);
+  void done.then(() => {
+    if (editTail.get(key) === done) editTail.delete(key);
+  });
+  return done;
 }
 
 /** Deletes the caller's own comment, or with `thread` their whole thread; the deletion arrives with the records. */
