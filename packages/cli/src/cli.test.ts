@@ -1,7 +1,8 @@
 // The CLI against a fake server (T7.1): raw `cat`, doc references, `url`, `rm` copy and JSON, exit codes, key and
 // device sign-in, pull and push state, and the comments and suggestions read commands (T7.3). @p:agt-1
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
@@ -1087,5 +1088,42 @@ describe('sync: moss notes, the H1 and doc identity (T7.4 checker)', () => {
     expect(readFileSync(join(dir, 'watering.md'), 'utf8')).toContain('Water daily.');
     expect(existsSync(join(dir, 'plan.md')), 'the blocked rename happens once the name is free').toBe(false);
     expect(readFileSync(join(dir, 'vegetable-plan.md'), 'utf8')).toContain('Beans, then peas');
+  });
+});
+
+describe('one sync at a time per workspace (T7.S7)', () => {
+  const FIRST = '77777777-7777-4777-8777-777777777777';
+  const SECOND = '88888888-8888-4888-8888-888888888888';
+  const creates = () => server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs');
+  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.'));
+  const untrackedNote = () => {
+    mkdirSync(join(dir, 'Pea trellis'));
+    writeFileSync(join(dir, 'Pea trellis', 'Pea trellis.md'), '# Pea trellis\n\nTwine, not wire.\n');
+    server.state.createNew = { id: FIRST, filename: 'pea-trellis.md' };
+    // Every create makes a new doc, as the server does.
+    server.state.onCreate = () => { server.state.createNew = { id: SECOND, filename: 'pea-trellis.md' }; };
+  };
+
+  it('two overlapping passes adopt a new file into exactly one doc and one record', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    untrackedNote();
+    const [one, two] = await Promise.all([cli(['sync', '--json']), cli(['sync', '--json'])]);
+    expect(one.code, one.err).toBe(0);
+    expect(two.code, two.err).toBe(0);
+    expect(creates(), 'one doc').toHaveLength(1);
+    expect(records(), 'one record').toEqual([FIRST]);
+    expect(existsSync(join(dir, '.moss-multi', '.lock')), 'the lock is let go').toBe(false);
+  });
+
+  it('a lock left by a process that is gone is taken over', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    untrackedNote();
+    const gone = spawnSync(process.execPath, ['-e', '']).pid;
+    writeFileSync(join(dir, '.moss-multi', '.lock'), JSON.stringify({ pid: gone, host: hostname(), nonce: 'old', at: 0 }));
+    const result = await cli(['sync', '--json']);
+    expect(result.code, result.err).toBe(0);
+    expect(creates()).toHaveLength(1);
+    expect(records()).toEqual([FIRST]);
+    expect(existsSync(join(dir, '.moss-multi', '.lock'))).toBe(false);
   });
 });

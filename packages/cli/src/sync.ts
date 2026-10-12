@@ -11,7 +11,7 @@ import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import {
-  confined, type DocMeta, isAllowedName, isWorkspace, localName, readBase, readConfined, recordBase, recordPull, recordSynced,
+  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, readBase, readConfined, recordBase, recordPull, recordSynced,
   renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
@@ -399,8 +399,19 @@ function followLocalRenames(root: string, metas: DocMeta[], untracked: string[],
 
 /** One sync pass over the workspace at `ctx.root`, which must already hold a state directory. */
 export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
-  const { root, client, folds } = ctx;
+  const { root } = ctx;
   if (!isWorkspace(root)) throw new CliError(1, `${root} is not a moss-multi workspace`);
+  // Held from classification until every file is recorded, so two passes never adopt one file twice.
+  const lock = await lockWorkspace(root);
+  try {
+    return await pass(ctx, lock.touch);
+  } finally {
+    lock.release();
+  }
+}
+
+async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> {
+  const { root, client, folds } = ctx;
   const rows = new Map((await client.listDocs()).map((row) => [row.id, row]));
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
@@ -412,6 +423,7 @@ export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
 
   for (const tracked of metas) {
     if (held.has(tracked.docId)) continue;
+    touch();
     try {
       const row = rows.get(tracked.docId);
       const { meta, result } = followServerName(ctx, tracked, row, trackedMetas(root));
@@ -424,6 +436,7 @@ export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
   }
   for (const rel of untracked) {
     if (heldFiles.has(rel)) continue;
+    touch();
     try {
       results.push((await adopt(ctx, rel)).result);
     } catch (error) {
