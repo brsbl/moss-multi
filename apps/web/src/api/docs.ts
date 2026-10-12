@@ -248,8 +248,8 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
   if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
   if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
   try {
-    // Per identity, not per doc: a rename diffs caller text, so one principal cannot spread a flood across docs.
-    const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+    // Per person, not per doc: a rename diffs caller text, so one person (and their agents) cannot spread a flood across docs.
+    const principalDO = await getServerByName(env.PrincipalDO, actingUserId(principal) ?? principal.id);
     if (!(await principalDO.takeWriteToken())) {
       return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(REST_WRITE_RATE.windowMs / 1000) });
     }

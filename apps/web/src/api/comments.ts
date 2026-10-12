@@ -12,7 +12,7 @@ import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principa
 import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess } from './access.ts';
+import { actingUserId, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { notify } from './invites.ts';
 import { JSON_BODY_MAX_BYTES, NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
@@ -59,8 +59,9 @@ async function admit(request: Request, env: DocsEnv, docId: string): Promise<{ p
   return { principal, actor: actorOf(principal, request), body };
 }
 
+/** One comment token from the acting person's window: an agent spends its owner's, so keys add no rate. */
 async function takeToken(env: DocsEnv, principal: Actor): Promise<Response | null> {
-  const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+  const principalDO = await getServerByName(env.PrincipalDO, actingUserId(principal) ?? principal.id);
   if (await principalDO.takeCommentToken()) return null;
   return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(COMMENT_OP_RATE.windowMs / 1000) });
 }
