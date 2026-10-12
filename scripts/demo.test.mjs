@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { changedSuggestions, commentGaps, hasVersion, panelProblems, pendingBy, planNotes, signatureProblems, verifiedShot } from '../e2e/qa/demo.js';
-import { commentPasses, demoConfig, demoPrincipals, ensurePrincipal, NOTES, stepScript, STEPS, THREADS, writeDemoRun } from './demo.mjs';
+import { censusDiff, changedSuggestions, commentGaps, demoProblems, EVERY_NODE_FAMILIES, familyProblems, hasVersion, markdownBlocks, notePlan, panelProblems, partialMarkdown, pendingBy, planNotes, seenDiff, signatureProblems, verifiedShot } from '../e2e/qa/demo.js';
+import { acquireDemoLock, AGENT, buildDemo, commentPasses, demoConfig, demoPrincipals, ensurePrincipal, NOTES, PEOPLE, stepScript, STEPS, THREADS, writeDemoRun } from './demo.mjs';
+import { resumeProblems } from './demo-smoke.mjs';
+import { returningLast } from './qa-puppeteer.mjs';
 
 const VERSION = { commit: 'c'.repeat(40), bundleHash: 'b'.repeat(64), clientHash: 'e'.repeat(64) };
 
@@ -321,5 +323,279 @@ describe('docs/DEPLOY.md', () => {
     expect(text).toMatch(/^## Demo content$/m);
     expect(text).toContain('node scripts/demo.mjs --url');
     expect(text).toContain('MOSS_DEMO_SECRET');
+  });
+});
+
+describe('the every-node note (B372)', () => {
+  const every = NOTES.find((note) => note.key === 'every');
+
+  it('holds a heading four, an embed pill and a web embed of a reserved example.com page', () => {
+    expect(every.markdown).toMatch(/^#### \S/m);
+    expect(every.markdown).toMatch(/ https:\/\/example\.com\/\w+ /);
+    expect(every.markdown).toMatch(/^!\[\]\(https:\/\/example\.com\/\)$/m);
+  });
+
+  it('has the everyNode step require those families, and the media, by their rendered markers', () => {
+    const selectors = Object.fromEntries(EVERY_NODE_FAMILIES.map((f) => [f.family, f.selector]));
+    expect(selectors['heading 4']).toBe('h4');
+    expect(selectors['embed pill']).toBe('[data-embed-pill-node-key]');
+    expect(selectors['web embed']).toBe('[data-web-embed-node]');
+    expect(selectors.image).toBe('img[src*="/assets/"]');
+    expect(selectors.video).toBe('[data-video-node-kind="local"]');
+    const all = Object.fromEntries(EVERY_NODE_FAMILIES.map((f) => [f.family, 1]));
+    expect(familyProblems(all)).toEqual([]);
+    expect(familyProblems({ ...all, 'heading 4': 0, 'web embed': 0, errors: 1 })).toEqual(['no heading 4', 'no web embed', '1 blocks show their error placeholder']);
+  });
+});
+
+describe('resuming a note (B370)', () => {
+  const every = NOTES.find((note) => note.key === 'every');
+  const media = every.media;
+
+  it('splits markdown at blank lines but never inside a fence or a ::: container', () => {
+    const blocks = markdownBlocks('A\n\n```ts\nx\n\ny\n```\n\n:::tabs\n=== One\n\nbody\n:::\n\nB');
+    expect(blocks).toEqual(['A', '```ts\nx\n\ny\n```', ':::tabs\n=== One\n\nbody\n:::', 'B']);
+  });
+
+  it('interrupts a paste at a block boundary, before the last line', () => {
+    const partial = partialMarkdown(every.markdown);
+    expect(every.markdown.startsWith(partial)).toBe(true);
+    expect(partial.length).toBeLessThan(every.markdown.length);
+    expect(partial).not.toContain(every.doneText);
+    for (const fence of ['```', ':::']) expect(partial.split('\n').filter((line) => line.startsWith(fence)).length % 2).toBe(0);
+  });
+
+  it('pastes everything into a body that has only its title', () => {
+    expect(notePlan({ empty: true, done: false, images: 0, videos: 0 }, { media })).toEqual({ clear: false, paste: true, media });
+  });
+
+  it('clears a partial paste and pastes it whole, with its media', () => {
+    expect(notePlan({ empty: false, done: false, images: 0, videos: 0 }, { media })).toEqual({ clear: true, paste: true, media });
+  });
+
+  it('adds only the media a finished paste lacks', () => {
+    expect(notePlan({ empty: false, done: true, images: 1, videos: 0 }, { media }).media.map((f) => f.name)).toEqual(['clip.mp4']);
+    expect(notePlan({ empty: false, done: true, images: 0, videos: 1 }, { media }).media.map((f) => f.name)).toEqual(['pattern.png']);
+  });
+
+  it('changes nothing on a finished note, even one with later edits', () => {
+    expect(notePlan({ empty: false, done: true, images: 1, videos: 1 }, { media, later: true })).toEqual({ clear: false, paste: false, media: [] });
+  });
+
+  it('refuses to clear a note that lacks its last line but has comments, suggestions or versions', () => {
+    expect(() => notePlan({ empty: false, done: false, images: 0, videos: 0 }, { media, later: true })).toThrow(/edited after it was built/);
+  });
+
+  it('names each way a resumed note falls short of the uninterrupted one', () => {
+    const census = { h1: 1, image: 1, video: 1, errors: 0 };
+    const ok = {
+      stop: 'paste',
+      first: { id: 'd1', stopped: 'paste', changed: ['title', 'body'] },
+      resumed: { id: 'd1', created: false, changed: ['body'] },
+      again: { id: 'd1', created: false, changed: [] },
+      reference: census,
+      census,
+      after: census,
+    };
+    expect(resumeProblems(ok)).toEqual([]);
+    expect(resumeProblems({ ...ok, resumed: { id: 'd2', created: true, changed: ['title'] } }).join()).toMatch(/another note/);
+    expect(resumeProblems({ ...ok, again: { id: 'd1', changed: ['clip.mp4'] } }).join()).toMatch(/changed clip\.mp4/);
+    expect(resumeProblems({ ...ok, census: { ...census, h1: 2 } }).join()).toMatch(/h1: 1, got 2/);
+    expect(resumeProblems({ ...ok, first: { ...ok.first, stopped: undefined } }).join()).toMatch(/stopped at the end/);
+  });
+
+  it('diffs two censuses by family', () => {
+    expect(censusDiff({ a: 1, b: 2 }, { a: 1, b: 2 })).toEqual([]);
+    expect(censusDiff({ a: 1, b: 2 }, { a: 2, c: 1 })).toEqual(['a: 1, got 2', 'b: 2, got 0', 'c: 0, got 1']);
+  });
+});
+
+/** What a complete, duplicate-free demo looks like to the verify step. */
+const COMPLETE = {
+  titles: Object.fromEntries(NOTES.map((n) => [n.title, 1])),
+  comments: Object.fromEntries(THREADS.flatMap((t) => [t.text, ...t.replies.map((r) => r.text)]).map((text) => [text, 1])),
+  reactions: Object.fromEntries(THREADS.flatMap((t) => t.reactions).map((r) => [`${r.emoji} ${r.on}`, 1])),
+  pending: { [PEOPLE.ben]: 1, [AGENT]: 1 },
+  versions: { 'First outline': 1, 'Ready for review': 1 },
+  viewLinks: 1,
+  families: { ...Object.fromEntries(EVERY_NODE_FAMILIES.map((f) => [f.family, 1])), errors: 0 },
+};
+const WANT = {
+  titles: NOTES.map((n) => n.title),
+  comments: Object.keys(COMPLETE.comments),
+  reactions: THREADS.flatMap((t) => t.reactions),
+  pending: [PEOPLE.ben, AGENT],
+  versions: ['First outline', 'Ready for review'],
+  mediaNote: 'Every node family',
+};
+
+describe('demoProblems (B371)', () => {
+  it('passes a demo holding exactly one of each thing it makes', () => {
+    expect(demoProblems(COMPLETE, WANT)).toEqual([]);
+  });
+
+  it('names a duplicate or a missing note, comment, reaction, suggestion, version, link or media file', () => {
+    const seen = {
+      ...COMPLETE,
+      titles: { ...COMPLETE.titles, 'Launch plan': 2 },
+      comments: { ...COMPLETE.comments, [THREADS[0].replies[0].text]: 2 },
+      reactions: {},
+      pending: { [PEOPLE.ben]: 1 },
+      versions: { 'First outline': 1 },
+      viewLinks: 0,
+      families: { ...COMPLETE.families, video: 0 },
+    };
+    const problems = demoProblems(seen, WANT).join('\n');
+    const expected = [
+      'note "Launch plan": 2',
+      `comment "${THREADS[0].replies[0].text}": 2`,
+      '👍',
+      `pending suggestion by ${AGENT}: none`,
+      'version "Ready for review": 0',
+      'view link to the folder: 0',
+      'video in "Every node family": 0',
+      'no video',
+    ];
+    for (const text of expected) expect(problems).toContain(text);
+  });
+
+  it('takes one edit kept as several suggestion records, and flags a rerun that changed any tally', () => {
+    const twice = { ...COMPLETE, pending: { [PEOPLE.ben]: 2, [AGENT]: 1 } };
+    expect(demoProblems(twice, WANT)).toEqual([]);
+    expect(seenDiff(twice, twice)).toEqual([]);
+    expect(seenDiff(twice, { ...twice, pending: { [PEOPLE.ben]: 4, [AGENT]: 1 }, viewLinks: 2 })).toEqual([`pending ${PEOPLE.ben}: 2, got 4`, 'viewLinks: 1, got 2']);
+  });
+});
+
+describe('the run lock (B373)', () => {
+  const runsDir = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'demo-lock-'));
+    dirs.push(dir);
+    return dir;
+  };
+
+  it('lets one holder in at a time, and frees the lock on release', () => {
+    const dir = runsDir();
+    const release = acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'demo' });
+    expect(() => acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'other' })).toThrow(/another demo run holds demo-x \(pid \d+ on .+, prefix demo/);
+    expect(() => acquireDemoLock({ runsDir: dir, runId: 'demo-y', prefix: 'demo' })()).not.toThrow();
+    release();
+    expect(existsSync(join(dir, 'demo-x.lock'))).toBe(false);
+    acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'other' })();
+  });
+
+  it("takes over a lock whose process on this host is gone, but not a live one's or another host's", () => {
+    const dir = runsDir();
+    const path = join(dir, 'demo-x.lock');
+    writeFileSync(path, JSON.stringify({ pid: 4242, host: 'here', prefix: 'demo', startedAt: 'then' }));
+    expect(() => acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'demo', host: 'here', alive: () => true })).toThrow(/pid 4242/);
+    expect(() => acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'demo', host: 'elsewhere', alive: () => false })).toThrow(/pid 4242/);
+    const release = acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'demo', host: 'here', pid: 7, alive: () => false });
+    expect(JSON.parse(readFileSync(path, 'utf8')).pid).toBe(7);
+    release();
+  });
+
+  it('treats an unreadable lock as held', () => {
+    const dir = runsDir();
+    writeFileSync(join(dir, 'demo-x.lock'), '{');
+    expect(() => acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'demo' })).toThrow(/unreadable lock/);
+  });
+
+  it('never removes a lock another run holds when it releases', () => {
+    const dir = runsDir();
+    const release = acquireDemoLock({ runsDir: dir, runId: 'demo-x', prefix: 'demo' });
+    writeFileSync(join(dir, 'demo-x.lock'), JSON.stringify({ pid: 1, host: 'elsewhere', prefix: 'demo', startedAt: 'now' }));
+    release();
+    expect(existsSync(join(dir, 'demo-x.lock'))).toBe(true);
+  });
+});
+
+/**
+ * A stack and `bb browser-automation` faked in-process for buildDemo: `/api/version` and sign-in answer, each step
+ * returns what it returns on a complete demo, and `gate` holds the first step open.
+ */
+function fakeStack({ gate = null, seen = { ...COMPLETE, pending: { [PEOPLE.ben]: 1 } } } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    calls.push(`fetch ${path}`);
+    const body = path === '/api/version' ? VERSION : { user: { id: `u-${JSON.parse(init.body).email}` } };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const results = {
+    folder: { folderId: 'f1', created: true },
+    note: { id: 'd1', created: true, changed: ['title', 'body'] },
+    version: { created: true },
+    share: { shared: true, invite: null, link: 'http://127.0.0.1:8851/f/f1?share=t', linkCreated: true },
+    comments: { roots: 1, replies: 1, reactions: 1 },
+    suggest: { created: true },
+    signature: { shot: 'signature.png' },
+    everyNode: { shots: ['every.png'], census: seen.families },
+    review: { shots: [] },
+    history: { shot: 'history.png' },
+    visitor: { shot: 'link.png' },
+    verify: { seen },
+  };
+  const bb = async (args) => {
+    calls.push(args[0]);
+    if (args[0] === 'open') return { id: 'session-1' };
+    if (args[0] === 'list') return [];
+    if (args[0] === 'close') return { closed: args[1] };
+    const script = readFileSync(args[args.indexOf('--script-file') + 1], 'utf8');
+    const name = /await STEPS\["(\w+)"\]/.exec(script.trimEnd().split('\n').at(-1))[1];
+    if (gate && name === 'folder') await gate;
+    return { text: JSON.stringify(results[name]), exitCode: 0 };
+  };
+  return { calls, fetchImpl, bb };
+}
+
+describe('buildDemo against one stack (B373)', () => {
+  const STACK_URL = 'http://127.0.0.1:8851';
+  const RUN = 'demo-127.0.0.1-8851';
+  const run = (stack, runsDir, prefix) => buildDemo({ url: STACK_URL, prefix, 'skip-agent': true }, { runsDir, secret: 's', fetch: stack.fetchImpl, bb: stack.bb, log: () => {} });
+
+  it('lets one of two overlapping runs proceed; the other, with either prefix, fails without touching its state or session', async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), 'demo-runs-'));
+    dirs.push(runsDir);
+    let open;
+    const first = fakeStack({ gate: new Promise((resolve) => (open = resolve)) });
+    const running = run(first, runsDir, 'demo');
+    for (let i = 0; i < 250 && !first.calls.includes('run'); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(first.calls).toContain('run');
+    const files = ['state.json', 'principals.json', 'qa.json'];
+    const snapshot = () => files.map((name) => readFileSync(join(runsDir, RUN, name), 'utf8'));
+    const before = snapshot();
+
+    for (const prefix of ['other', 'demo']) {
+      const second = fakeStack();
+      await expect(run(second, runsDir, prefix)).rejects.toThrow(/another demo run holds demo-127\.0\.0\.1-8851/);
+      expect(second.calls, `prefix ${prefix}: no request and no session`).toEqual([]);
+    }
+    expect(snapshot()).toEqual(before);
+
+    open();
+    expect((await running).changes.length).toBeGreaterThan(0);
+    expect(first.calls.filter((c) => c === 'close')).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(runsDir, RUN, 'state.json'), 'utf8')).status).toBe('done');
+
+    const later = fakeStack();
+    await expect(run(later, runsDir, 'other')).resolves.toMatchObject({ baseUrl: STACK_URL, folderLink: 'http://127.0.0.1:8851/f/f1?share=t' });
+    expect(existsSync(join(runsDir, `${RUN}.lock`))).toBe(false);
+  });
+
+  it('fails a run whose demo holds a duplicate, and releases the lock', async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), 'demo-runs-'));
+    dirs.push(runsDir);
+    const doubled = fakeStack({ seen: { ...COMPLETE, pending: { [PEOPLE.ben]: 1 }, comments: { ...COMPLETE.comments, [THREADS[0].text]: 2 } } });
+    await expect(run(doubled, runsDir, 'demo')).rejects.toThrow(/exactly one of each thing it makes: comment .*: 2, not 1/);
+    expect(existsSync(join(runsDir, `${RUN}.lock`))).toBe(false);
+  });
+});
+
+describe('the puppeteer driver', () => {
+  it("returns a script's last expression, as bb prints it", () => {
+    expect(returningLast('const a = 1;\nawait STEPS["note"]({"x":1})\n')).toBe('const a = 1;\nreturn (await STEPS["note"]({"x":1}));');
+    expect(returningLast('const page = 1;\n({ url: 1 })')).toBe('const page = 1;\nreturn (({ url: 1 }));');
+    expect(returningLast('const a = 1;\n}')).toBe('const a = 1;\n}');
   });
 });

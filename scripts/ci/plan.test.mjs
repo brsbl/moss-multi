@@ -341,6 +341,7 @@ describe('ciOk', () => {
       editor: { result: results.editor ?? results.viewer ?? 'skipped' },
       'editor-host': { result: results['editor-host'] ?? results.checks ?? 'skipped' },
       canary: { result: results.canary ?? 'skipped' },
+      demo: { result: results.demo ?? 'skipped' },
     };
   }
 
@@ -432,9 +433,34 @@ describe('the canary rehearsal (T8.D)', () => {
       plan: { result: 'success', outputs: { plan: JSON.stringify(plan) } },
       checks: { result: 'success' }, build: { result: 'success' }, e2e: { result: 'success' }, macos: { result: 'skipped' },
       oracle: { result: 'success' }, parity: { result: 'success' }, viewer: { result: 'success' }, editor: { result: 'success' },
-      'editor-host': { result: 'success' }, canary: { result: canary },
+      'editor-host': { result: 'success' }, canary: { result: canary }, demo: { result: 'success' },
     });
     expect(ciOk(needs('success')).ok).toBe(true);
     expect(ciOk(needs('skipped')).problems).toEqual(['canary: skipped (planned to run)']);
+  });
+});
+
+describe('the demo smoke (T8.B2)', () => {
+  it('rides every full Chromium lane and a grep naming the demo, never a checks-only run or the nightly', () => {
+    expect(dispatch({}).demo).toBe(true);
+    expect(pr().demo).toBe(true);
+    expect(dispatch({ grep: 'demo', browsers: 'chromium' }).demo).toBe(true);
+    expect(dispatch({ grep: 'j01', browsers: 'chromium' }).demo).toBe(false);
+    expect(dispatch({ browsers: 'webkit' }).demo).toBe(false);
+    expect(push('t/T8.B2').demo).toBe(false);
+    expect(nightly().demo).toBe(false);
+    expect(toOutputs(dispatch({}))).toMatch(/^demo=true$/m);
+  });
+
+  it('is required by ci-ok when planned', () => {
+    const plan = dispatch({});
+    const needs = (demo) => ({
+      plan: { result: 'success', outputs: { plan: JSON.stringify(plan) } },
+      checks: { result: 'success' }, build: { result: 'success' }, e2e: { result: 'success' }, macos: { result: 'skipped' },
+      oracle: { result: 'success' }, parity: { result: 'success' }, viewer: { result: 'success' }, editor: { result: 'success' },
+      'editor-host': { result: 'success' }, canary: { result: 'success' }, demo: { result: demo },
+    });
+    expect(ciOk(needs('success')).ok).toBe(true);
+    expect(ciOk(needs('failure')).problems).toEqual(['demo: failure (planned to run)']);
   });
 });
