@@ -251,6 +251,33 @@ function payloadTextOf(own: SerializedNode, options: ReconcileOptions): string |
   return payload.keys.map((key) => (typeof own[key] === 'string' ? own[key] : stableStringify(own[key]))).join('\n');
 }
 
+/**
+ * Whether an unchanged subtree moved across an exact pair: a full signature the exact tier left unpaired on both sides
+ * in different gaps, beyond what each gap could pair on its own (counting duplicates). Checked before tier 2, which
+ * could take one end of such a move by identity alone.
+ */
+function crossesExact(liveFull: readonly string[], targetFull: readonly string[], exact: ReadonlyArray<[number, number]>): boolean {
+  // Per signature, per gap: live leftovers minus target leftovers.
+  const balance = new Map<string, Map<number, number>>();
+  const tally = (sides: readonly string[], side: 0 | 1, sign: number) => {
+    let gap = 0;
+    sides.forEach((full, k) => {
+      while (gap < exact.length && exact[gap]![side] < k) gap++;
+      if (gap < exact.length && exact[gap]![side] === k) return;
+      const gaps = balance.get(full) ?? new Map<number, number>();
+      gaps.set(gap, (gaps.get(gap) ?? 0) + sign);
+      balance.set(full, gaps);
+    });
+  };
+  tally(liveFull, 0, 1);
+  tally(targetFull, 1, -1);
+  for (const gaps of balance.values()) {
+    const counts = [...gaps.values()];
+    if (counts.some((c) => c > 0) && counts.some((c) => c < 0)) return true;
+  }
+  return false;
+}
+
 function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], options: ReconcileOptions, pending: PendingText): void {
   const live = parent.getChildren();
 
@@ -258,6 +285,7 @@ function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], opti
   const liveFull = live.map($fullOfNode);
   const targetFull = targets.map(fullOf);
   const exact = align(liveFull, targetFull);
+  if (crossesExact(liveFull, targetFull, exact)) throw new CrossingMove();
 
   // Tier 2: in each gap between exact matches, children with the same identity reconcile in place, preferring the
   // pairs whose text is most alike so an edited block keeps its own items.
@@ -293,7 +321,7 @@ function $reconcileChildren(parent: ElementNode, targets: SerializedNode[], opti
     prevT = ti;
   }
 
-  // A live subtree left unpaired that equals a target subtree left unmatched moved across a pair: refuse it.
+  // Within a gap too: a live subtree left unpaired that equals a target subtree left unmatched would be recreated.
   const created = new Set(targetFull.filter((_, ti) => !match.has(ti)));
   if (created.size && liveFull.some((full, li) => !paired.has(li) && created.has(full))) throw new CrossingMove();
 

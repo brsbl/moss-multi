@@ -531,6 +531,28 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     expect(inlineItems(live)[0] === formulaItem).toBe(false);
   });
 
+  it('any reorder of unchanged blocks keeps every block item, or is refused writing nothing (B332)', () => {
+    const order = fc.array(block, { minLength: 2, maxLength: 6 }).chain((base) =>
+      fc.tuple(fc.constant(base), fc.shuffledSubarray(base.map((_, i) => i), { minLength: base.length, maxLength: base.length })));
+    fc.assert(fc.property(order, ([base, perm]) => {
+      const blocks = base.map((b, i) => render(b.kind, `k${i}x`, b.words, ''));
+      const before = [...blocks, SENTINEL].join('\n\n');
+      const live = docOf(before);
+      const targetDoc = docOf([...perm.map((i) => blocks[i]!), SENTINEL].join('\n\n'));
+      const items = blockItems(live);
+      const vector = Y.encodeStateVector(live);
+      try {
+        reconcileBody(live, bodyState(targetDoc), RESTORE);
+        expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+      } catch (error) {
+        expect(error).toBeInstanceOf(ReconcileRefused);
+        expect(Y.encodeStateVector(live)).toEqual(vector);
+        expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf(before)));
+      }
+      items.forEach((item, i) => expect(item.deleted, `block ${i} keeps its item`).toBe(false));
+    }), { numRuns: 40 });
+  });
+
   // Each block is unique and unchanged; the target only reorders them. The four-block permutation lets tier 2 take one
   // end of a crossing move (Charlie reconciled into Alpha), so the guard must see the move before tier 2 runs.
   it.each([
