@@ -13,7 +13,7 @@ import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
 import { registerFork } from './forks.ts';
-import { chainHead, landingOf, openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds, successorIn } from './records.ts';
+import { chainHead, landingOf, metaBytes, openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds, SUGGESTIONS, successorIn } from './records.ts';
 import { bindCheck } from './review.ts';
 
 export { openRecords };
@@ -451,6 +451,9 @@ export function touchedBlocks(doc: Y.Doc, ops: readonly RecordOp[], spans: reado
   return [...found].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }
 
+/** What a frame's meta rewrite may add to retained suggestion state beside the meta itself: clients, a lease's clocks. */
+const META_ROOM = 256;
+
 let partSeq = 0;
 const partId = () => `p${Date.now().toString(36)}${(partSeq += 1).toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -493,6 +496,10 @@ export class SuggestFork {
   readonly #touched = new Map<number, number>();
   #lastBlock = -1;
   #caretBlock = -1;
+  /** The DocDO's last word on what suggestion state may still grow by (a reply's `room`); null until it says. */
+  #room: number | null = null;
+  /** What the body's suggestions grew by since that word: other authors' writes, and ours before their reply. */
+  #grown = 0;
   /** Names this fork to the DocDO, so it can resume its leases from a new socket while the old one looks open there. */
   readonly #id = `f${[...crypto.getRandomValues(new Uint32Array(3))].map((n) => n.toString(36)).join('')}`;
 
@@ -514,7 +521,12 @@ export class SuggestFork {
     this.doc.on('afterTransaction', this.#keepStrikes);
     this.doc.on('update', this.#forwardBody);
     body.on('update', this.#fromBody);
+    body.on('update', this.#suggestionsGrew);
   }
+
+  readonly #suggestionsGrew = (update: Uint8Array, _origin: unknown, _doc: Y.Doc, tr: Y.Transaction): void => {
+    if (this.#room !== null && tr.changedParentTypes.has(this.body.getMap(SUGGESTIONS))) this.#grown += update.byteLength;
+  };
 
   /** F's payload docs. */
   get payloads(): PayloadDocs {
@@ -602,6 +614,10 @@ export class SuggestFork {
     if (this.#disposed) return;
     const entry = this.#inflight.shift();
     const resumed = entry?.request.t === 'suggest-lease' && entry.request.resume !== undefined;
+    if (reply.t !== 'suggest-refused' && typeof reply.room === 'number') {
+      this.#room = reply.room;
+      this.#grown = 0;
+    }
     if (reply.t === 'suggest-leased') {
       if (resumed) {
         const fresh = new Map(reply.leases.map((lease) => [lease.client, lease]));
@@ -714,6 +730,7 @@ export class SuggestFork {
     this.#disposed = true;
     this.#closed = true;
     this.body.off('update', this.#fromBody);
+    this.body.off('update', this.#suggestionsGrew);
     this.doc.off('beforeTransaction', this.#before);
     this.doc.off('afterTransaction', this.#keepStrikes);
     this.doc.off('update', this.#forwardBody);
@@ -869,11 +886,12 @@ export class SuggestFork {
    * Whether an edit adding `bytes` of ops, and with `strike` a delete part of those targets, fits every cap the DocDO
    * checks it against, counted as it counts them: the record the edit writes (what the body shows of it and what is
    * still unanswered, and the same of every older open record of the author's it would merge), all open records' ops,
-   * the author's open records, the part's spans. `blocks`: the top-level blocks the edit spans (the caret's by
-   * default). Null when it fits, else the refusal it would meet. Some headroom on the record: an edit's ops encode a
-   * little larger than a replay measures.
+   * the room the DocDO last said retained suggestion state has (less what it grew by since), the author's open
+   * records, the part's spans. `blocks`: the top-level blocks the edit spans (the caret's by default); `payloads`: the
+   * payload docs it writes. Null when it fits, else the refusal it would meet. Some headroom on the record: an edit's
+   * ops encode a little larger than a replay measures.
    */
-  admit(bytes: number, strike?: readonly IdSpan[], blocks?: { from: number; to: number }): SuggestRefusal | null {
+  admit(bytes: number, strike?: readonly IdSpan[], blocks?: { from: number; to: number }, payloads: readonly Y.Doc[] = []): SuggestRefusal | null {
     if (!this.#ready || this.#closed) return 'record-closed';
     const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
     if (!lease) return 'lease';
@@ -900,15 +918,25 @@ export class SuggestFork {
     if (landing === 'closed') return 'record-closed';
     const continues = landing === 'continuation';
     let total = (continues ? (pending.get(lease.record) ?? 0) : held(head) + (head === lease.record ? 0 : (pending.get(lease.record) ?? 0))) + adds;
-    for (const other of this.#mergedBy(head, blocks ?? { from: this.#caretBlock, to: this.#caretBlock })) total += held(other);
+    const merged = this.#mergedBy(head, blocks ?? { from: this.#caretBlock, to: this.#caretBlock }, payloads);
+    for (const other of merged) total += held(other);
     if (total > SUGGEST_LIMITS.recordOpsBytes * 0.9) return 'record-cap';
-    let open = [...pending.values()].reduce((sum, add) => sum + add, 0);
+    const owed = [...pending.values()].reduce((sum, add) => sum + add, 0);
+    let open = owed;
     for (const id of recordIds(this.body)) {
       const record = readMeta(this.body, id)?.status === 'open' ? readRecord(this.body, id) : null;
       if (record) open += recordBytes(record);
     }
     if (open + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.openOpsShare) return 'ops-cap';
     const creates = (!meta || continues) && !pending.has(lease.record);
+    if (this.#room !== null) {
+      // Each frame also rewrites its record's meta (a new one's twice), and a merge both records' metas: a few frames'
+      // worth, as an edit's transactions in the body and its payloads go one frame each.
+      const write = metaBytes(this.body, head) + META_ROOM;
+      let retains = this.#grown + owed + (this.#inflight.length + this.#waiting.length) * write + adds + 4 * write + (creates ? 2 * write : 0);
+      for (const other of merged) retains += metaBytes(this.body, other) + write;
+      if (retains > this.#room) return 'doc-cap';
+    }
     // Records still being created count as open too.
     const creating = [...pending.keys()].filter((id) => !readRecord(this.body, id)).length;
     if (creates && openRecords(this.body, this.options.me).length + creating >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';
@@ -920,7 +948,7 @@ export class SuggestFork {
    * and so merge into its record (#forward): any holding an item of those blocks, or an item of the root from the block
    * before them to the block after. Every block when the blocks are unknown.
    */
-  #mergedBy(into: string, { from, to }: { from: number; to: number }): Set<string> {
+  #mergedBy(into: string, { from, to }: { from: number; to: number }, payloads: readonly Y.Doc[] = []): Set<string> {
     const found = new Set<string>();
     const mine = this.#openMine();
     for (const record of openRecords(this.body, this.options.me)) for (const client of record.meta.clients) mine.set(client, record.meta.id);
@@ -948,6 +976,13 @@ export class SuggestFork {
       if (!every && (at < from - 1 || at > to + 1)) continue;
       see(item);
       if (block && (every || (index >= from && index <= to))) walk((item.content as Y.ContentType).type as Y.AbstractType<unknown>);
+    }
+    // In a payload doc an edit may name any of its items: every record writing there.
+    for (const doc of payloads) {
+      for (const client of doc.store.clients.keys()) {
+        const record = mine.get(client);
+        if (record && record !== into) found.add(record);
+      }
     }
     return found;
   }

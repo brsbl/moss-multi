@@ -139,7 +139,7 @@ const REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
  * (the redo re-creates the paste), the rest of the block it lands in once for the paste and once more, as restored
  * copies (stepBytes), for each of its undo and its redo, the strike twice (the redo strikes again), and the own text once (the undo restores it). It
  * counts them against the record cap with what the record it lands in already holds (client.ts admit, which finds
- * that record as the DocDO does), the open records' ops, the open-suggestion cap, and the share of the note's cap
+ * that record as the DocDO does), the open records' ops, the room the DocDO last gave retained suggestion state, the open-suggestion cap, and the share of the note's cap
  * suggestions may fill (the rest is kept for edits) with the payloads the DocDO counts for the body. Every undo and redo is admitted again on its own (admitStep).
  */
 export function $admitPaste(fork: ForkView, bound: number, targets: IdSpan[], owned = 0): string | null {
@@ -200,13 +200,15 @@ function eachItem(doc: Y.Doc, set: StackItem['deletions'], visit: (item: Y.Item,
 /**
  * The most ops replaying `steps` (an undo or a redo) adds: each deleted item a step deleted comes back as a new copy
  * with its content (yjs redoItem), and what it inserted goes in a delete set. BodyUndo replays from the top until a
- * step changes something, so steps count until one has an item to restore or remove.
+ * step changes something, so steps count until one has an item to restore or remove. With the docs those steps write.
  */
-export function stepBytes(steps: readonly UndoStep[]): number {
+export function stepBytes(steps: readonly UndoStep[]): { bytes: number; docs: Set<Y.Doc> } {
   let bytes = 0;
+  const docs = new Set<Y.Doc>();
   for (let at = steps.length - 1; at >= 0; at -= 1) {
     let live = false;
     for (const { manager, item } of steps[at].entries) {
+      docs.add(manager.doc);
       eachItem(manager.doc, item.deletions, (struct, offset, len) => {
         if (!struct.deleted) return;
         live = true;
@@ -220,7 +222,7 @@ export function stepBytes(steps: readonly UndoStep[]): number {
     }
     if (live) break;
   }
-  return bytes;
+  return { bytes, docs };
 }
 
 /**
@@ -272,11 +274,14 @@ function stepRefused(kind: 'undo' | 'redo', refusal: SuggestRefusal | 'doc-cap')
 export function admitStep(
   fork: ForkView, kind: 'undo' | 'redo', root: Y.XmlText, steps: readonly UndoStep[], extra: number, targets: IdSpan[],
 ): string | null {
-  const adds = stepBytes(steps) + extra;
+  const replay = stepBytes(steps);
+  const adds = replay.bytes + extra;
   if (adds === 0 && targets.length === 0) return null;
   const strike = targets.length ? pendingPartBytes(targets) : 0;
   if (noteBytes(fork.body) + adds + strike > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return stepRefused(kind, 'doc-cap');
-  const refusal = fork.admit(adds, targets, stepBlocks(root, steps));
+  // A payload doc's items it names may be an older record's of the author's, which merges too (client.ts #forward).
+  const payloads = [...replay.docs].filter((doc) => doc !== root.doc);
+  const refusal = fork.admit(adds, targets, stepBlocks(root, steps), payloads);
   return refusal ? stepRefused(kind, refusal) : null;
 }
 

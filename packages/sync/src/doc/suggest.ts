@@ -347,6 +347,11 @@ export class SuggestIngest {
     return this.#retained;
   }
 
+  /** What suggestion growth may still add (#room), as each lease and ack reply tells the fork. */
+  get room(): number {
+    return Math.max(0, Math.floor(this.#room()));
+  }
+
   /** Measures the retained state afresh: O(the doc's structs + stored leases), so for a wake, not a frame. */
   remeasure(): void {
     this.#retained = suggestionStateBytes(this.doc) + this.leases.storedBytes();
@@ -866,7 +871,7 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
     case 'suggest-lease': {
       const fork = typeof request.fork === 'string' && FORK_ID.test(request.fork) ? request.fork : null;
       const leased = ingest.lease(who, request.resume ?? [], SUGGEST_LIMITS.leaseBatch, fork);
-      return leased.ok ? { t: 'suggest-leased', leases: leased.leases } : refuse(null, leased.reason);
+      return leased.ok ? { t: 'suggest-leased', leases: leased.leases, room: ingest.room } : refuse(null, leased.reason);
     }
     case 'suggest-ops': {
       requested = request.record;
@@ -900,6 +905,6 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
       return refuse(null, 'malformed');
   }
   return result.ok
-    ? { t: 'suggest-ack', record: result.record, requested: result.requested, doc: result.doc, sv: result.sv, parts: result.parts }
+    ? { t: 'suggest-ack', record: result.record, requested: result.requested, doc: result.doc, sv: result.sv, parts: result.parts, room: ingest.room }
     : refuse(requested, result.reason);
 }
