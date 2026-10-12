@@ -645,6 +645,31 @@ it('a paste at a collapsed caret is its own undo step: typing just before or aft
   }
 });
 
+it('a paste over only the suggester\'s own text is its own undo step: typing just before or after it is not taken back with it', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    pane.type(' mine');
+    pane.select('Closing line', 24, 28);
+    expect(pane.selected(), 'only his own text is selected').toBe('mine');
+    pane.paste(['pasted']);
+    vi.runAllTimers();
+    pane.type('Y');
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.text()).toContain('too. pastedY');
+    pane.undo();
+    vi.runAllTimers();
+    expect(pane.text(), 'the first undo takes the typing after the paste').toContain('too. pasted');
+    expect(pane.text()).not.toContain('Y');
+    pane.undo();
+    vi.runAllTimers();
+    expect(pane.text(), 'the second undo takes the paste back, not the typing before it').toContain('too. mine');
+    expect(pane.text()).not.toContain('pasted');
+  } finally {
+    pane.dispose();
+  }
+});
+
 it('a short paste replacing the suggester\'s own large suggestion counts what its undo restores: refused whole, or its undo is stored in one step', { timeout: 120_000 }, () => {
   const pane = suggesting('Ada original line.\n\nSecond line.\n');
   try {
@@ -847,6 +872,47 @@ it('every undo and redo of a paste is admitted against the room left under the s
       }
     }
     expect(refused, 'a redo past the room is refused, not stored').not.toBe('');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste that would merge an older open record counts the copy the merge adds to the note against its reserve: past it, refused whole before anything changes', { timeout: 120_000 }, () => {
+  // The note's state as the DocDO counts it (persistence.ts): every update appended since the pane opened, plus `base`.
+  let base = 0;
+  let appended = 0;
+  const pane = suggesting(undefined, (ingest) => {
+    ingest.doc.on('update', (update: Uint8Array) => {
+      appended += update.byteLength;
+    });
+    ingest.options.stateBytes = () => base + appended;
+  });
+  try {
+    pane.paste([`first ${'x'.repeat(40_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the first paste is stored').toBe(false);
+    const record = pane.fork.record!;
+    // Other edits take the note to some 20 KB short of its reserve, less than the first record holds; a keystroke's
+    // ack tells the fork.
+    base = STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare - appended - 20_000;
+    pane.type('!');
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the keystroke is stored').toBe(false);
+    expect(recordBytes(pane, record), 'the merge would copy more than the reserve has left').toBeGreaterThan(20_000);
+    // Past the idle gap a small paste at the same caret builds on the first record, which its record merges: the
+    // merge copies the first record's ops into the note, past its reserve.
+    pane.idle(GROUP_IDLE_MS + 1_000);
+    const text = pane.text();
+    const before = pane.changes();
+    pane.paste(['small words']);
+    expect(noticed(), 'refused visibly').not.toBe('');
+    expect(pane.changes(), 'nothing was sent, no merge either').toBe(before);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+    expect(openRecords(pane.live, SUGGESTER.id).map((open) => open.meta.id), 'the first record alone').toEqual([record]);
   } finally {
     pane.dispose();
   }
