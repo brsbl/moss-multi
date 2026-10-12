@@ -253,22 +253,27 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      previewImageUrl,
      preloadImageUrl,
      previewImageFailed,
-@@ -671,6 +637,14 @@ function MossHtmlPreviewComponent({
+@@ -671,6 +637,19 @@ function MossHtmlPreviewComponent({
      0.001,
      (notePreviewViewportWidth ?? noteFrameSize.width) / htmlDisplayIntrinsicSize.width
    );
-+  // moss-multi seam: content-height (T3.B13): a default-height live preview is as tall as its content, plus room below
-+  // it for the Live badge, which would otherwise sit over a short block's text.
++  // moss-multi seam: content-height (T3.B13): a default-height live preview's viewport is its content's size, and its
++  // frame keeps room below that for the Live badge, which would otherwise sit over a short block's text. The room is
++  // outside the viewport, so content as tall as the viewport (100vh) settles instead of growing by it on every report.
 +  const handleStaticRenderedSize = useCallback((size: HtmlPreviewRenderedSize) => {
-+    const height = size.height + Math.ceil(LIVE_BADGE_RESERVE_PX / noteDisplayScale);
 +    setPreviewImageIntrinsicSize((current) =>
-+      current?.width === size.width && current.height === height ? current : { width: size.width, height }
++      current?.width === size.width && current.height === size.height ? current : size
 +    );
-+  }, [noteDisplayScale]);
++  }, []);
++  const reservesLiveBadge = livePreview && htmlIntrinsicSize.heightSource === 'default' && previewImageIntrinsicSize !== null;
++  const noteFrameSizeWithBadge = useMemo(
++    () => reservesLiveBadge ? { ...noteFrameSize, height: noteFrameSize.height + LIVE_BADGE_RESERVE_PX } : noteFrameSize,
++    [noteFrameSize, reservesLiveBadge]
++  );
    const handleRenderedContentSize = useCallback((size: HtmlPreviewRenderedSize) => {
      setRenderedContentSize((current) =>
        current?.width === size.width && current.height === size.height
-@@ -715,7 +689,7 @@ function MossHtmlPreviewComponent({
+@@ -715,7 +694,7 @@ function MossHtmlPreviewComponent({
    }, [retryPreviewImage]);
  
    useEffect(() => {
@@ -277,7 +282,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        setLocalRawHtml(rawHtml);
      }
    }, [rawHtml, isEditing]);
-@@ -766,8 +740,8 @@ function MossHtmlPreviewComponent({
+@@ -766,8 +745,8 @@ function MossHtmlPreviewComponent({
      e.preventDefault();
      e.stopPropagation();
      activatePreview();
@@ -288,7 +293,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
  
    const selectNode = useCallback(() => {
      clearSelection();
-@@ -801,7 +775,7 @@ function MossHtmlPreviewComponent({
+@@ -801,7 +780,7 @@ function MossHtmlPreviewComponent({
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isHtmlBlockquoteNode(node)) {
@@ -297,7 +302,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        }
      });
      setHasTextSelection(false);
-@@ -825,7 +799,7 @@ function MossHtmlPreviewComponent({
+@@ -825,7 +804,7 @@ function MossHtmlPreviewComponent({
    }, [commitRawHtml, editor._key, isEditing, nodeKey]);
  
    const cancelEdit = useCallback(() => {
@@ -306,7 +311,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      setHasTextSelection(false);
      setIsEditing(false);
    }, [rawHtml]);
-@@ -855,7 +829,7 @@ function MossHtmlPreviewComponent({
+@@ -855,7 +834,7 @@ function MossHtmlPreviewComponent({
          <div className="flex items-center gap-1">
            <MediaHeaderButton
              icon={X}
@@ -315,7 +320,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
              onClick={() => cancelEdit()}
            />
            <MediaHeaderButton
-@@ -884,6 +858,7 @@ function MossHtmlPreviewComponent({
+@@ -884,6 +863,7 @@ function MossHtmlPreviewComponent({
          </pre>
          <textarea
            ref={textareaRef}
@@ -323,7 +328,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
            value={localRawHtml}
            onChange={(e) => {
              setLocalRawHtml(e.target.value);
-@@ -911,11 +886,11 @@ function MossHtmlPreviewComponent({
+@@ -911,11 +891,11 @@ function MossHtmlPreviewComponent({
          <span className="inline-flex items-center gap-1 align-middle">
            <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
          </span>{' '}
@@ -337,7 +342,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        </div>
      </div>
    );
-@@ -924,6 +899,25 @@ function MossHtmlPreviewComponent({
+@@ -924,6 +904,25 @@ function MossHtmlPreviewComponent({
      <div
        className={`moss-html-preview-scroll absolute inset-0 overflow-auto bg-ink-inverse ${stablePreviewLayerVisibilityClass}`}
      >
@@ -363,7 +368,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        {shouldRenderPreviewImage ? (
          <img
            src={previewImageUrl}
-@@ -1021,7 +1015,7 @@ function MossHtmlPreviewComponent({
+@@ -1021,7 +1020,7 @@ function MossHtmlPreviewComponent({
  
    const previewOverlay = (
      <>
@@ -372,7 +377,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
          <div
            className="pointer-events-none absolute left-0 right-0 top-0 z-20 flex items-center justify-end px-2 py-1.5 opacity-0 transition-opacity group-hover/decorator:pointer-events-auto group-hover/decorator:opacity-100 group-focus-within/decorator:pointer-events-auto group-focus-within/decorator:opacity-100"
            onClick={(e) => e.stopPropagation()}
-@@ -1069,12 +1063,12 @@ function MossHtmlPreviewComponent({
+@@ -1062,19 +1061,19 @@ function MossHtmlPreviewComponent({
+     <SharedPreviewFrame
+       nodeKey={nodeKey}
+       selected={isSelected}
+-      frameSize={noteFrameSize}
++      frameSize={noteFrameSizeWithBadge /* moss-multi seam: content-height (T3.B13) */}
+       beforeLabel="Insert paragraph before HTML block"
+       afterLabel="Insert paragraph after HTML block"
+       onGapClick={handleGapClick}
        hostRef={noteFrameHostRef}
        rootClassName="my-4"
        onRootClick={handleContainerClick}
@@ -387,7 +400,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                !isInteractive ? 'cursor-pointer' : ''
              }`,
              viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },
-@@ -1084,11 +1078,14 @@ function MossHtmlPreviewComponent({
+@@ -1084,11 +1083,14 @@ function MossHtmlPreviewComponent({
                  onDelete={handleDelete}
                  onFullscreen={enterFullscreen}
                >
@@ -402,7 +415,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                </MediaNodeHeader>
              ) : null,
              activationBadge: !isInteractive ? (
-@@ -1108,204 +1105,14 @@ function MossHtmlPreviewComponent({
+@@ -1108,204 +1110,14 @@ function MossHtmlPreviewComponent({
    );
  }
  

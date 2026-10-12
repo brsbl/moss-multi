@@ -638,14 +638,19 @@ function MossHtmlPreviewComponent({
     0.001,
     (notePreviewViewportWidth ?? noteFrameSize.width) / htmlDisplayIntrinsicSize.width
   );
-  // moss-multi seam: content-height (T3.B13): a default-height live preview is as tall as its content, plus room below
-  // it for the Live badge, which would otherwise sit over a short block's text.
+  // moss-multi seam: content-height (T3.B13): a default-height live preview's viewport is its content's size, and its
+  // frame keeps room below that for the Live badge, which would otherwise sit over a short block's text. The room is
+  // outside the viewport, so content as tall as the viewport (100vh) settles instead of growing by it on every report.
   const handleStaticRenderedSize = useCallback((size: HtmlPreviewRenderedSize) => {
-    const height = size.height + Math.ceil(LIVE_BADGE_RESERVE_PX / noteDisplayScale);
     setPreviewImageIntrinsicSize((current) =>
-      current?.width === size.width && current.height === height ? current : { width: size.width, height }
+      current?.width === size.width && current.height === size.height ? current : size
     );
-  }, [noteDisplayScale]);
+  }, []);
+  const reservesLiveBadge = livePreview && htmlIntrinsicSize.heightSource === 'default' && previewImageIntrinsicSize !== null;
+  const noteFrameSizeWithBadge = useMemo(
+    () => reservesLiveBadge ? { ...noteFrameSize, height: noteFrameSize.height + LIVE_BADGE_RESERVE_PX } : noteFrameSize,
+    [noteFrameSize, reservesLiveBadge]
+  );
   const handleRenderedContentSize = useCallback((size: HtmlPreviewRenderedSize) => {
     setRenderedContentSize((current) =>
       current?.width === size.width && current.height === size.height
@@ -1057,7 +1062,7 @@ function MossHtmlPreviewComponent({
     <SharedPreviewFrame
       nodeKey={nodeKey}
       selected={isSelected}
-      frameSize={noteFrameSize}
+      frameSize={noteFrameSizeWithBadge /* moss-multi seam: content-height (T3.B13) */}
       beforeLabel="Insert paragraph before HTML block"
       afterLabel="Insert paragraph after HTML block"
       onGapClick={handleGapClick}

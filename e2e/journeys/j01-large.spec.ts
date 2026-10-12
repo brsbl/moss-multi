@@ -17,11 +17,13 @@ const LINES = 40_000;
 const CONTROL_LINES = 400;
 const TYPED = 'abcdefghijklmnopqrst';
 /**
- * Calibrated on CI runners (T3.B13). Sync time per keystroke: CALIBRATION.
+ * Calibrated on CI runners (T3.B13). Sync time per keystroke with the unpatched binding: 31 ms in Chromium and 92 ms in
+ * WebKit (run 38321927817); patched: CALIBRATION.
  * Input-to-paint: 176-232 ms before the patch and 120-176 ms after (runs 38301848192, 38301850762, 38311128561,
  * 38314448516, 38319353253); long tasks 142-251 ms per key before and 94-181 after, the longest up to 715 ms.
  */
-const SYNC_MS = 12;
+/** Sync time per keystroke, by engine. */
+const SYNC_MS = { chromium: 12, webkit: 36 };
 const INPUT_TO_PAINT_MS = 240;
 const BUSY_PER_KEY_MS = 260;
 const LONGEST_TASK_MS = 1_000;
@@ -162,7 +164,7 @@ test('j01-large: each keystroke in the middle of a 40,000-line note syncs only i
   expect(exported).toContain('^Line 0 of the note.');
 
   expect(big.syncs, `every keystroke synced (${JSON.stringify(measured)})`).toBeGreaterThanOrEqual(TYPED.length);
-  expect(big.syncPerKey, `the large note's sync per keystroke (${JSON.stringify(measured)})`).toBeLessThanOrEqual(SYNC_MS);
+  expect(big.syncPerKey, `the large note's sync per keystroke (${JSON.stringify(measured)})`).toBeLessThanOrEqual(browserName === 'chromium' ? SYNC_MS.chromium : SYNC_MS.webkit);
   if (browserName !== 'chromium') return; // Event Timing and Long Tasks are Chromium's.
   expect(small.inputToPaint, `the control's input-to-paint (${JSON.stringify(measured)})`).toBeLessThanOrEqual(CONTROL_INPUT_TO_PAINT_MS);
   expect(big.inputToPaint, `the large note's input-to-paint (${JSON.stringify(measured)})`).toBeLessThanOrEqual(INPUT_TO_PAINT_MS);

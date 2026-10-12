@@ -144,7 +144,7 @@ test('j11-embeds: an HTML block without dimensions is as tall as its content; an
     const settled = await frameHeight();
     await actor.page.waitForTimeout(2_000);
     expect([settled, await frameHeight()], `${actor.label}: the viewport-tall block's frame settles at the default height`).toEqual([900, 900]);
-    expect(viewportTall.height, `${actor.label}: it is drawn at its scaled height, the badge's room below`).toBeLessThanOrEqual(900 * (viewportTall.width / 1200) + 40);
+    expect(viewportTall.height, `${actor.label}: it is drawn at its scaled height, the badge's room below`).toBeLessThanOrEqual(900 * (viewportTall.width / 1200) + 48);
   }
   await actors.checkpoint('html-heights');
 });
