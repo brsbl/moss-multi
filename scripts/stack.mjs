@@ -18,7 +18,7 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:net';
 import os from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProvenance } from './provenance.mjs';
 
@@ -294,18 +294,35 @@ async function waitServing(baseUrl, expected, alive) {
 
 // ---------- start, restart, stop ----------
 
-function wranglerArgs(state, secrets) {
+/** The run's 0600 env file of secret bindings, beside secrets.json. */
+export const secretEnvPath = (state) => join(dirname(state.secretsPath), 'secrets.env');
+
+export function removeSecretEnv(state) {
+  if (state.secretsPath) rmSync(secretEnvPath(state), { force: true });
+}
+
+/**
+ * wrangler's argv for the run. Secrets go in the run's private env file, rewritten on every launch, since an argv
+ * shows in any process listing; the other vars stay --var.
+ */
+export function wranglerArgs(state, secrets) {
   const wrangler = bin('wrangler/bin/wrangler.js');
-  const vars = {
+  const secretVars = {
     BETTER_AUTH_SECRET: secrets.betterAuthSecret,
+    ...(state.hooks ? { MOSS_TEST_HOOKS_SECRET: secrets.testHooksSecret } : {}),
+  };
+  const envFile = secretEnvPath(state);
+  writeFileSync(envFile, Object.entries(secretVars).map(([name, value]) => `${name}=${value}\n`).join(''), { mode: 0o600 });
+  chmodSync(envFile, 0o600);
+  const vars = {
     BETTER_AUTH_URL: state.baseUrl,
-    ...(state.hooks ? { MOSS_TEST_HOOKS: '1', MOSS_TEST_HOOKS_SECRET: secrets.testHooksSecret } : {}),
+    ...(state.hooks ? { MOSS_TEST_HOOKS: '1' } : {}),
     ...Object.fromEntries(BLANK_VARS.map((name) => [name, ''])),
   };
   return [
     wrangler, 'dev', '--config', join(state.buildDir, 'server/wrangler.json'), '--local', '--ip', '127.0.0.1',
     '--port', String(state.port), '--inspector-port', String(state.port + 1000), '--persist-to', state.persistDir,
-    '--show-interactive-dev-session=false', '--log-level', 'info',
+    '--show-interactive-dev-session=false', '--log-level', 'info', '--env-file', envFile,
     ...Object.entries(vars).flatMap(([name, value]) => ['--var', `${name}:${value}`]),
   ];
 }
@@ -339,6 +356,7 @@ async function launch(run, event) {
   if (problems.length > 0) {
     await killGroup(child.pid);
     unregister(run);
+    removeSecretEnv(run.state);
     saveState(run, { status: 'failed', problems });
     fail(`run ${run.id} never served the expected build:\n  ${problems.join('\n  ')}\n--- ${run.state.logPath} (tail)\n${logTail(run.state.logPath)}`);
   }
@@ -386,6 +404,7 @@ async function start(opts) {
 async function stop(run, { purge = false } = {}) {
   if (run.state.pgid && ownsGroup(run)) await killGroup(run.state.pgid);
   unregister(run);
+  removeSecretEnv(run.state);
   recordHost(run, 'stop');
   saveState(run, { status: 'stopped', stoppedAt: new Date().toISOString() });
   if (purge) rmSync(run.state.persistDir, { recursive: true, force: true });
@@ -467,7 +486,11 @@ export async function reap({ ttl = '4h', dryRun = false, quiet = false, purgeSho
     for (const { pgid, runDir } of reaped) {
       await killGroup(pgid);
       const statePath = join(runDir, 'state.json');
-      if (existsSync(statePath)) writePrivate(statePath, { ...readJson(statePath), status: 'reaped', reapedAt: new Date().toISOString() });
+      if (existsSync(statePath)) {
+        const state = readJson(statePath);
+        removeSecretEnv(state);
+        writePrivate(statePath, { ...state, status: 'reaped', reapedAt: new Date().toISOString() });
+      }
       for (const entry of registryEntries()) if (entry.pgid === pgid || entry.runDir === runDir) rmSync(entry.path, { force: true });
     }
     pruneRuns(new Set(kept.map((k) => k.runDir)), purgeShots);
