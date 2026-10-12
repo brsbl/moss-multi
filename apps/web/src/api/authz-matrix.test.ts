@@ -167,9 +167,19 @@ const UNAUTHENTICATED: Denial = [401, 'unauthenticated'];
 const FORBIDDEN: Denial = [403, 'forbidden'];
 const NOT_FOUND: Denial = [404, 'not-found'];
 
-/** What is wrong with `answer` as the refusal `expected`, or null when it is that refusal. */
-function denialProblem(_method: string, answer: { status: number; text: string }, expected: Denial): string | null {
-  return answer.status >= 400 ? null : `${answer.status}, expected ${expected[0]} ${expected[1]}`;
+/** What is wrong with `answer` as the refusal `expected`, or null when it is that refusal. A HEAD answer has no body. */
+function denialProblem(method: string, answer: { status: number; text: string }, expected: Denial): string | null {
+  const [status, error] = expected;
+  if (answer.status !== status) return `${answer.status}, expected ${status} ${error}`;
+  if (method === 'HEAD') return null;
+  let body: { error?: unknown; reason?: unknown } | null = null;
+  try {
+    body = JSON.parse(answer.text) as typeof body;
+  } catch {
+    // not JSON
+  }
+  const named = body?.error ?? body?.reason;
+  return named === error ? null : `${status} naming ${named === undefined ? 'no JSON error' : JSON.stringify(named)}, expected ${error}`;
 }
 
 /** Each caller route's refusal [with no live credential, with only a forged or revoked link]; null is search's 200. */
@@ -250,8 +260,33 @@ const AGENT_ADMIN: [Row, Denial][] = [
 const rowKey = ([method, path, body]: Row) => `${method} ${path} ${body instanceof Uint8Array ? [...body].join(',') : JSON.stringify(body ?? null)}`;
 const PLACEHOLDER = /:(doc|trashed|folder|plain|vault)\b/g;
 
-/** Each route pattern in api/*.ts that no row's path matches. */
+const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
+
+/**
+ * Each route pattern in api/*.ts that no row's path matches, then each method a listed path serves without a row of
+ * its own. A method is served unless the route answers it 405; the probe is a stranger with a body that does not
+ * parse, at missing ids, so it changes nothing.
+ */
 async function unlisted(rows: Row[]): Promise<string[]> {
+  const missing = unmatchedPatterns(rows);
+  const listed = new Set(rows.map(([method, path]) => `${method} ${path.split('?')[0]}`));
+  const probed = new Set<string>();
+  for (const [, template] of rows) {
+    const path = template.split('?')[0];
+    if (probed.has(path)) continue;
+    probed.add(path);
+    for (const method of METHODS) {
+      if (listed.has(`${method} ${path}`)) continue;
+      const body = method === 'GET' || method === 'HEAD' ? undefined : '{';
+      const response = await handleApi(request(method, `${path.replace(PLACEHOLDER, MISSING)}${template.slice(path.length)}`, { cookie: ben.cookie, origin: BASE }, body), env);
+      if (response.status !== 405) missing.push(`${method} ${path}`);
+    }
+  }
+  return missing;
+}
+
+/** Each route pattern in api/*.ts that no row's path matches. */
+function unmatchedPatterns(rows: Row[]): string[] {
   const dir = new URL('./', import.meta.url);
   const paths = rows.map(([, path]) => path.split('?')[0].replace(PLACEHOLDER, MISSING));
   const missing: string[] = [];

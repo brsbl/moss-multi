@@ -59,90 +59,142 @@ export function isLoopback(baseUrl) {
   return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(baseUrl).hostname);
 }
 
+/** The JSON `error` of a body, or null. */
+function errorOf(body) {
+  try {
+    const error = JSON.parse(body)?.error;
+    return typeof error === 'string' ? error : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * A raw WebSocket upgrade: 'open' when the server keeps it open and talks, else the close code it sends, or the HTTP
- * status when it never upgrades. Node's WebSocket cannot send a Cookie or Origin, so this speaks the handshake itself.
+ * True when `answer` ({status, type, body}) is the Worker's own body-cap refusal (route.ts tooLarge, assets.ts): a
+ * 413 JSON body naming `too-large`. An edge or proxy 413 is not the Worker refusing.
  */
-export function rawSocket(base, path, headers = {}) {
+export function workerTooLarge(answer) {
+  return answer.status === 413 && /^application\/json\b/i.test(answer.type ?? '') && errorOf(answer.body ?? '') === 'too-large';
+}
+
+/** An answer as a check's detail: status, content type and JSON error, never the body text. */
+const describeAnswer = (answer) => `${answer.status} ${answer.type || '-'} ${errorOf(answer.body ?? '') ?? '(no JSON error)'}`;
+
+/** A masked client text frame (payload under 126 bytes). */
+function clientText(text) {
+  const payload = Buffer.from(text);
+  const mask = randomBytes(4);
+  const frame = Buffer.alloc(6 + payload.length);
+  frame[0] = 0x81;
+  frame[1] = 0x80 | payload.length;
+  mask.copy(frame, 2);
+  for (let i = 0; i < payload.length; i += 1) frame[6 + i] = payload[i] ^ mask[i % 4];
+  return frame;
+}
+
+/**
+ * A raw WebSocket that reports admission apart from its end. `admitted` settles 'admitted' once the server shows it let
+ * the socket in, after its own checks: with ready 'sync', the DocDO's first sync frame (binary, message type 0), sent
+ * only once admission validated the socket; with 'pong', the workspace channel's 'pong' to a 'ping', which it answers
+ * only for a live credential. Otherwise it settles with how the socket ended first ('close N', 'ended', 'http N',
+ * 'error …' or 'timeout' after `timeoutMs`). `closed` settles with how it ended at all; `destroy` ends it.
+ */
+export function openSocket(base, path, headers = {}, { ready = 'sync', timeoutMs = TIMEOUT_MS } = {}) {
   const url = new URL(path, base);
   const client = url.protocol === 'https:' ? https : http;
-  return new Promise((done) => {
-    const request = client.request(url, {
-      headers: {
-        connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13',
-        'sec-websocket-key': randomBytes(16).toString('base64'), ...headers,
-      },
-      timeout: TIMEOUT_MS,
-    });
-    const timer = setTimeout(() => {
-      request.destroy();
-      done('timeout');
-    }, TIMEOUT_MS);
-    request.on('response', (response) => {
-      clearTimeout(timer);
-      response.resume();
-      done(`http ${response.statusCode}`);
-    });
-    request.on('error', (error) => {
-      clearTimeout(timer);
-      done(`error ${error.code ?? error.message}`);
-    });
-    request.on('upgrade', (_response, stream, head) => {
-      // The first frames can arrive with the 101 itself, in `head`.
-      let buffer = Buffer.from(head);
-      let settled = false;
-      const finish = (verdict) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        clearTimeout(quiet);
-        stream.destroy();
-        done(verdict);
-      };
-      // A socket the server admits stays open; one it refuses is closed at once after the upgrade.
-      const quiet = setTimeout(() => finish('open'), 3_000);
-      const parse = () => {
-        while (buffer.length >= 2) {
-          const opcode = buffer[0] & 0x0f;
-          let length = buffer[1] & 0x7f;
-          let offset = 2;
-          if (length === 126) {
-            if (buffer.length < 4) return;
-            length = buffer.readUInt16BE(2);
-            offset = 4;
-          } else if (length === 127) {
-            if (buffer.length < 10) return;
-            length = Number(buffer.readBigUInt64BE(2));
-            offset = 10;
-          }
-          if (buffer.length < offset + length) return;
-          if (opcode === 0x8) return finish(length >= 2 ? `close ${buffer.readUInt16BE(offset)}` : 'close');
-          buffer = buffer.subarray(offset + length);
+  let admit;
+  let end;
+  const admitted = new Promise((resolve) => {
+    admit = resolve;
+  });
+  const closed = new Promise((resolve) => {
+    end = resolve;
+  });
+  let stream = null;
+  let settled = false;
+  const request = client.request(url, {
+    headers: {
+      connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13',
+      'sec-websocket-key': randomBytes(16).toString('base64'), ...headers,
+    },
+  });
+  const finish = (verdict) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    stream?.destroy();
+    request.destroy();
+    admit(verdict);
+    end(verdict);
+  };
+  const timer = setTimeout(() => finish('timeout'), timeoutMs);
+  request.on('response', (response) => {
+    response.resume();
+    finish(`http ${response.statusCode}`);
+  });
+  request.on('error', (error) => finish(`error ${error.code ?? error.message}`));
+  request.on('upgrade', (_response, socket, head) => {
+    stream = socket;
+    // The first frames can arrive with the 101 itself, in `head`.
+    let buffer = Buffer.from(head);
+    const parse = () => {
+      while (buffer.length >= 2) {
+        const opcode = buffer[0] & 0x0f;
+        let length = buffer[1] & 0x7f;
+        let offset = 2;
+        if (length === 126) {
+          if (buffer.length < 4) return;
+          length = buffer.readUInt16BE(2);
+          offset = 4;
+        } else if (length === 127) {
+          if (buffer.length < 10) return;
+          length = Number(buffer.readBigUInt64BE(2));
+          offset = 10;
         }
-      };
-      stream.on('data', (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
-        parse();
-      });
-      stream.on('close', () => finish('ended'));
-      stream.on('error', () => finish('ended'));
+        if (buffer.length < offset + length) return;
+        const payload = buffer.subarray(offset, offset + length);
+        if (opcode === 0x8) return finish(length >= 2 ? `close ${payload.readUInt16BE(0)}` : 'close');
+        const ok = ready === 'pong' ? opcode === 0x1 && payload.toString() === 'pong' : opcode === 0x2 && payload[0] === 0;
+        if (ok) {
+          clearTimeout(timer);
+          admit('admitted');
+        }
+        buffer = buffer.subarray(offset + length);
+      }
+    };
+    socket.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
       parse();
     });
-    request.end();
+    socket.on('close', () => finish('ended'));
+    socket.on('error', () => finish('ended'));
+    if (ready === 'pong') socket.write(clientText('ping'));
+    parse();
   });
+  request.end();
+  return { admitted, closed, destroy: () => finish('destroyed') };
 }
 
-/** True when `answer` ({status, type, body}) is the Worker's own body-cap refusal. */
-export function workerTooLarge(answer) {
-  return answer.status === 413;
-}
-
-/** Opens a socket, revokes what admitted it, and reports whether it then closed with `code`. */
-export async function closesOnRevoke(base, { path, headers = {}, revoke }) {
-  const verdict = rawSocket(base, path, headers);
-  const revoked = await revoke();
-  const result = await verdict;
-  return { ok: /^close 44\d\d$|^ended$/.test(result), detail: result, revoked };
+/**
+ * Opens a socket and waits until the server admitted it (see openSocket), then runs `revoke` and requires the socket
+ * to close with `code` within `closeMs`. A socket refused or never admitted before the revocation, one that stays
+ * open, and one dropped without that close code all fail. `revoke` always runs; its result is returned.
+ */
+export async function closesOnRevoke(base, { path, headers = {}, ready = 'sync', code, revoke, admitMs = TIMEOUT_MS, closeMs = TIMEOUT_MS }) {
+  const socket = openSocket(base, path, headers, { ready, timeoutMs: admitMs });
+  let timer;
+  try {
+    const admission = await socket.admitted;
+    const revoked = await revoke();
+    if (admission !== 'admitted') return { ok: false, detail: `not admitted before the revocation: ${admission}`, revoked };
+    const result = await Promise.race([socket.closed, new Promise((resolve) => {
+      timer = setTimeout(() => resolve(`still open after ${closeMs} ms`), closeMs);
+    })]);
+    return { ok: result === `close ${code}`, detail: `${result}, expected close ${code}`, revoked };
+  } finally {
+    clearTimeout(timer);
+    socket.destroy();
+  }
 }
 
 export function createSweep(baseUrl) {
@@ -186,14 +238,21 @@ export function createSweep(baseUrl) {
   }
 
   const bearer = (token) => ({ headers: { authorization: `Bearer ${token}` } });
-  const socket = (path, headers = {}) => rawSocket(base, path, headers);
+  /** How a socket's opening ends: 'admitted' (see openSocket), else its close code, 'ended', 'http N' or 'timeout'. */
+  async function socket(path, headers = {}) {
+    const opened = openSocket(base, path, headers);
+    const verdict = await opened.admitted;
+    opened.destroy();
+    return verdict;
+  }
   const docSocket = (docId, query = '') => `/parties/doc-d-o/${docId}?protocol=999${query}`;
 
   /**
-   * The status an oversized request gets, on a connection of its own (a server that answers before reading the body
-   * closes it): with `body`, sent whole; without, it declares `length` bytes and sends none, so the refusal must
-   * come from the header. Off loopback Cloudflare's edge holds a request until its whole body has arrived, so there
-   * the declared bytes are sent (spaces) and the Worker's answer to the whole body counts.
+   * The answer ({status, type, body}) an oversized request gets, on a connection of its own (a server that answers
+   * before reading the body closes it): with `body`, sent whole; without, it declares `length` bytes and sends none,
+   * so the refusal must come from the header. Off loopback Cloudflare's edge holds a request until its whole body has
+   * arrived, so there the declared bytes are sent (spaces) and the Worker's answer to the whole body counts. The
+   * answer's body is kept up to 4 KiB, and the timeout holds until it has ended.
    */
   function oversized(method, path, headers, length, body) {
     const url = new URL(path, base);
@@ -201,19 +260,34 @@ export function createSweep(baseUrl) {
     if (!body && edge) body = Buffer.alloc(length, 0x20);
     return new Promise((done) => {
       const request = client.request(url, { method, agent: false, headers: { ...headers, 'content-length': String(length) } });
+      let answered = false;
       const timer = setTimeout(() => {
         request.destroy();
-        done('no answer');
+        done({ status: answered ? 'no whole answer' : 'no answer' });
       }, edge ? 60_000 : 15_000);
       request.on('response', (response) => {
-        clearTimeout(timer);
-        response.resume();
-        request.destroy();
-        done(response.statusCode);
+        answered = true;
+        const chunks = [];
+        let size = 0;
+        response.on('data', (chunk) => {
+          if (size < 4096) chunks.push(chunk);
+          size += chunk.length;
+        });
+        const settle = () => {
+          clearTimeout(timer);
+          request.destroy();
+          const answer = { status: response.statusCode, type: response.headers['content-type'] ?? '', body: Buffer.concat(chunks).subarray(0, 4096).toString('utf8') };
+          done(response.complete ? answer : { ...answer, status: `${answer.status} (cut off)` });
+        };
+        response.on('end', settle);
+        response.on('close', settle);
+        response.on('error', () => {});
       });
       request.on('error', (error) => {
+        // Once the answer has begun, its end (or the timeout) decides.
+        if (answered) return;
         clearTimeout(timer);
-        done(`error ${error.code ?? error.message}`);
+        done({ status: `error ${error.code ?? error.message}` });
       });
       if (body) request.end(body);
       else request.flushHeaders();
@@ -354,7 +428,7 @@ export function createSweep(baseUrl) {
     const signedInComments = await call('GET', `/api/docs/${doc.id}/comments?share=${link}`, { headers: ben.headers });
     if (signedInComments.status !== 200) threaded.push(`signed-in /comments: ${signedInComments.status}`);
     check('tokens', 'a viewer link reads the note, its content, media and role by query or header, and comments once signed in', threaded.length === 0, threaded.join('; '));
-    check('tokens', "a viewer link's socket is admitted", (await socket(docSocket(doc.id, `&share=${link}`))) === 'open');
+    check('tokens', "a viewer link's socket is admitted", (await socket(docSocket(doc.id, `&share=${link}`))) === 'admitted');
     const linkWrites = [];
     for (const [method, suffix, body] of [['PATCH', '', { title: 'pwned' }], ['POST', '/comments', { body: 'x' }], ['POST', '/push', { newText: 'x', baseHash: '0'.repeat(64) }], ['GET', '/members'], ['GET', '/links'], ['DELETE', ''], ['POST', '/assets/from-url', { url: 'https://example.com/a.png' }]]) {
       const response = await call(method, `/api/docs/${doc.id}${suffix}?share=${link}`, { body });
@@ -368,9 +442,12 @@ export function createSweep(baseUrl) {
     const titleAfter = (await call('GET', `/api/docs/${doc.id}`, { headers: ada.headers })).json?.doc?.title;
     check('tokens', 'the note was not renamed by any refused write', titleAfter !== 'pwned', titleAfter);
 
-    // Revoking the link: every path answers as a forged token does, and its socket closes.
-    const linkSocket = socket(docSocket(doc.id, `&share=${link}`));
-    const revoked = await call('DELETE', `/api/docs/${doc.id}/links/${link}`, { headers: write(ada) });
+    // Revoking the link: every path answers as a forged token does, and a socket it admitted closes 4403 (A§8).
+    const linkClose = await closesOnRevoke(base, {
+      path: docSocket(doc.id, `&share=${link}`), code: 4403,
+      revoke: () => call('DELETE', `/api/docs/${doc.id}/links/${link}`, { headers: write(ada) }),
+    });
+    const revoked = linkClose.revoked;
     check('revocation', 'the owner revokes the link', revoked.status === 200, `${revoked.status} ${revoked.text.slice(0, 120)}`);
     const dead = [];
     for (const suffix of reads) {
@@ -380,7 +457,7 @@ export function createSweep(baseUrl) {
     }
     check('revocation', 'a revoked link answers exactly as a forged one on every read', dead.length === 0, dead.join('; '));
     check('revocation', 'a revoked link cannot open a socket (4404)', (await socket(docSocket(doc.id, `&share=${link}`))) === 'close 4404');
-    check('revocation', 'a socket open on the link closes when it is revoked', /^close 44\d\d$|^ended$/.test(await linkSocket), await linkSocket);
+    check('revocation', 'a socket admitted on the link closes 4403 when it is revoked', linkClose.ok, linkClose.detail);
 
     // Agent keys: the key acts for its owner up to editor, administers nothing, and stops at revocation.
     const key = bearer(agentKey);
@@ -388,24 +465,27 @@ export function createSweep(baseUrl) {
     check('tokens', 'an agent key cannot mint agents or manage links', (await call('POST', '/api/agents', { ...key, body: { name: 'x' } })).status === 403
       && (await call('POST', `/api/docs/${doc.id}/links`, { ...key, body: { role: 'viewer' } })).status === 403);
     const agentId = agent.json.agent.id;
-    const agentSocket = socket(docSocket(doc.id), { authorization: `Bearer ${agentKey}` });
-    await new Promise((r) => setTimeout(r, 500));
-    const revokedKey = await call('DELETE', `/api/agents/${agentId}`, { headers: write(ada) });
-    check('revocation', 'the owner revokes the agent key', revokedKey.status === 200, `${revokedKey.status}`);
+    const keyClose = await closesOnRevoke(base, {
+      path: docSocket(doc.id), headers: { authorization: `Bearer ${agentKey}` }, code: 4403,
+      revoke: () => call('DELETE', `/api/agents/${agentId}`, { headers: write(ada) }),
+    });
+    check('revocation', 'the owner revokes the agent key', keyClose.revoked.status === 200, `${keyClose.revoked.status}`);
     check('revocation', 'a revoked agent key is a 401 everywhere', (await call('GET', '/api/me', key)).status === 401 && (await call('GET', `/api/docs/${doc.id}`, key)).status === 401);
-    check('revocation', "a revoked key's open socket closes", /^close 44\d\d$|^ended$/.test(await agentSocket), await agentSocket);
+    check('revocation', 'a socket admitted on the key closes 4403 when it is revoked', keyClose.ok, keyClose.detail);
     check('revocation', 'a revoked agent key cannot open a socket (4401)', (await socket(docSocket(doc.id), { authorization: `Bearer ${agentKey}` })) === 'close 4401');
 
     // Sign-out ends the session for its cookie, its bearer form and its sockets.
     const grant = await call('POST', `/api/docs/${doc.id}/members`, { headers: write(ada), body: { email: cy.email, role: 'viewer' } });
     check('setup', 'the owner shares with cy', grant.status < 300, `${grant.status} ${grant.text.slice(0, 120)}`);
-    const cySocket = socket('/api/workspace/ws', { cookie: cy.cookie, origin: base });
-    await new Promise((r) => setTimeout(r, 500));
-    const out = await call('POST', '/api/auth/sign-out', { headers: write(cy), body: {} });
-    check('sign-out', 'sign-out answers 200', out.status === 200, `${out.status}`);
+    // The workspace channel sends nothing on connect; it answers a ping only for a live session.
+    const cyClose = await closesOnRevoke(base, {
+      path: '/api/workspace/ws', headers: { cookie: cy.cookie, origin: base }, ready: 'pong', code: 4402,
+      revoke: () => call('POST', '/api/auth/sign-out', { headers: write(cy), body: {} }),
+    });
+    check('sign-out', 'sign-out answers 200', cyClose.revoked.status === 200, `${cyClose.revoked.status}`);
     check('sign-out', "the signed-out session's cookie and bearer are a 401", (await call('GET', '/api/me', { headers: cy.headers })).status === 401
       && (await call('GET', '/api/me', bearer(cy.token))).status === 401);
-    check('sign-out', "the signed-out session's workspace socket closes", /^close 44\d\d$|^ended$/.test(await cySocket), await cySocket);
+    check('sign-out', 'a workspace socket admitted on the session closes 4402 at sign-out', cyClose.ok, cyClose.detail);
     check('sign-out', 'the signed-out cookie cannot open a socket (4401)', (await socket(docSocket(doc.id), { cookie: cy.cookie, origin: base })) === 'close 4401');
 
     // ---- SSRF: every internal target is refused before any fetch, on both fetch paths
@@ -421,19 +501,20 @@ export function createSweep(baseUrl) {
 
     if (!limits) return results;
 
-    // ---- body caps: an oversized JSON body is refused 413 before it is read, signed in or not
+    // ---- body caps: an oversized body is refused before it is read, signed in or not, by the Worker itself: its JSON
+    // too-large 413, not an edge or proxy 413
     const capped = [];
     const how = edge ? 'once the edge has the whole body' : 'from its Content-Length';
     for (const [path, headers] of [['/api/unfurl', {}], ['/api/unfurl', write(ada)], ['/api/feedback', write(ada)], [`/api/docs/${doc.id}/comments`, write(ada)], ['/api/auth/sign-in/email', { origin: base }]]) {
-      const status = await oversized('POST', path, { ...headers, 'content-type': 'application/json' }, 64 * 1024 * 1024);
-      if (status !== 413) capped.push(`${path}: ${status}`);
+      const answer = await oversized('POST', path, { ...headers, 'content-type': 'application/json' }, 64 * 1024 * 1024);
+      if (!workerTooLarge(answer)) capped.push(`${path}: ${describeAnswer(answer)}`);
     }
-    check('limits', `a 64 MiB JSON body is refused 413 ${how} on /api and /api/auth`, capped.length === 0, capped.join('; '));
+    check('limits', `a 64 MiB JSON body is the Worker's too-large 413 ${how} on /api and /api/auth`, capped.length === 0, capped.join('; '));
     const over = Buffer.from(JSON.stringify({ pad: 'x'.repeat(JSON_BODY_CAP) }));
     const streamed = await oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, over.byteLength, over);
-    check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is a 413`, streamed === 413, `${streamed}`);
+    check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is the Worker's too-large 413`, workerTooLarge(streamed), describeAnswer(streamed));
     const huge = await oversized('POST', `/api/docs/${doc.id}/assets?filename=big.png`, { ...write(ada), 'content-type': 'image/png' }, 10 * 1024 * 1024 + 1);
-    check('limits', `an image over 10 MB is refused 413 ${how}`, huge === 413, `${huge}`);
+    check('limits', `an image over 10 MB is the Worker's too-large 413 ${how}`, workerTooLarge(huge), describeAnswer(huge));
 
     // ---- rate limits: each answers 429 past its window
     const until429 = async (max, send) => {
