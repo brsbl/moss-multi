@@ -117,6 +117,29 @@ test('j11-embeds: a moss-html block runs its script live in an opaque-origin san
   await actors.checkpoint('html-block');
 });
 
+test('j11-embeds: an HTML block without dimensions is as tall as its content; an explicitly sized one keeps its size @p:note-2 @p:note-8', async ({ actors }) => {
+  // T3.B13 (B227): the size report counted the frame's own viewport, so moss's 900px default height was a floor and a
+  // one-line block rendered 900px tall (scaled to the note's width).
+  const markdown = '```moss-html\n<p id="short">One line of HTML.</p>\n```\n\nBetween.\n\n```moss-html\n<style>body{margin:0;height:600px;background:#eee}</style>\n<p id="sized">Sized to 600px.</p>\n```';
+  const { ada, ben, docId } = await sharedNote(actors, 'HTML sizes', markdown);
+  for (const actor of [ada, ben]) {
+    const viewports = ui.body(actor, docId).locator('[data-moss-html-preview-viewport]');
+    await expect(viewports, `${actor.label}: both HTML blocks render`).toHaveCount(2, { timeout: LOAD_TIMEOUT });
+    await expect(viewports.nth(0).frameLocator('iframe').locator('#short'), `${actor.label}: the short block runs`).toHaveText('One line of HTML.', { timeout: LOAD_TIMEOUT });
+    const sizes = () => viewports.evaluateAll((elements) => elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }));
+    await expect.poll(async () => {
+      const [short] = await sizes();
+      return short.height < 0.4 * 900 * (short.width / 1200);
+    }, { message: `${actor.label}: the one-line block is well under the scaled 900px default`, timeout: LOAD_TIMEOUT }).toBe(true);
+    const [, sized] = await sizes();
+    expect(Math.abs(sized.height - 600 * (sized.width / 1200)), `${actor.label}: the 600px block keeps its size`).toBeLessThanOrEqual(4);
+  }
+  await actors.checkpoint('html-heights');
+});
+
 test('j11-embeds: a web embed card shows the unfurled page; the in-app browser is a sandboxed iframe with a working "Open in new tab" and no back, forward or find @p:note-2 @p:R4 @evidence', async ({ actors }) => {
   const { ada, ben, docId } = await sharedNote(actors, 'Web embed', `![](${EMBED_URL})`, ({ context }) =>
     context.route(`${EMBED_URL}**`, (route) =>
