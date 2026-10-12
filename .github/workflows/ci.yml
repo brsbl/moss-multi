@@ -69,6 +69,7 @@ jobs:
       parity: ${{ steps.plan.outputs.parity }}
       viewer: ${{ steps.plan.outputs.viewer }}
       canary: ${{ steps.plan.outputs.canary }}
+      demo: ${{ steps.plan.outputs.demo }}
       grep: ${{ steps.plan.outputs.grep }}
       repeat: ${{ steps.plan.outputs.repeat }}
       slow: ${{ steps.plan.outputs.slow }}
@@ -702,9 +703,62 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The demo generator on the build job's bytes (T8.B2): scripts/demo-smoke.mjs resumes the note step after each
+  # interruption, then runs scripts/demo.mjs twice on a stack with no test hooks, the rerun adding nothing. Its
+  # browser steps run in the image's Chromium through puppeteer-core, standing in for bb Browser Automation.
+  demo:
+    needs: [plan, build]
+    if: needs.plan.outputs.demo == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    env:
+      RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-demo
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - run: command -v ps > /dev/null || (apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null)
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The agent's suggestion is pushed with the built moss-multi CLI.
+      - name: Build the CLI
+        run: pnpm --filter @moss-multi/cli build
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+      - run: mkdir -p .local-stack/prebuilt && tar -xzf web-dist.tgz -C .local-stack/prebuilt
+      - name: Boot a production-mode stack (no test hooks) on the built bytes
+        run: >
+          node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --state-dir /dev/shm/moss-stack
+          --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
+      - name: The demo smoke
+        timeout-minutes: 25
+        run: |
+          chrome=$(cd e2e && node -e "import('@playwright/test').then(({ chromium }) => console.log(chromium.executablePath()))")
+          node scripts/demo-smoke.mjs --run-id "$RUN_ID" --driver puppeteer --chrome "$chrome"
+      - name: Stop the stack
+        if: always()
+        run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true
+      - name: Upload the stack log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-${{ github.run_attempt }}
+          path: .local-stack/runs/*/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, canary]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, canary, demo]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
