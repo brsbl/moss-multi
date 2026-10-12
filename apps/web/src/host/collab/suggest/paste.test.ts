@@ -89,7 +89,15 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
     // Lexical's own Backspace, which the routing leaves his own text to.
     editor.registerCommand(DELETE_CHARACTER_COMMAND, (backward) => {
       const selection = $getSelection();
-      if ($isRangeSelection(selection)) selection.deleteCharacter(backward);
+      if (!$isRangeSelection(selection)) return true;
+      // Headless, a caret's character is selected by offset (Lexical's own uses the DOM's selection.modify).
+      const { anchor } = selection;
+      if (selection.isCollapsed() && anchor.type === 'text') {
+        const offset = backward ? anchor.offset - 1 : anchor.offset + 1;
+        if (offset < 0 || offset > anchor.getNode().getTextContentSize()) return true;
+        selection.focus.set(anchor.key, offset, 'text');
+      }
+      selection.removeText();
       return true;
     }, COMMAND_PRIORITY_EDITOR),
     // Lexical's own plain-text paste: each line break (CR, LF or CRLF, as the paste handler normalizes them) a
