@@ -475,6 +475,17 @@ async function storedAnchors(baseUrl: string, docId: string, cookie: string, tex
   }
 }
 
+/** Makes `actor`'s comment POSTs on `id` answer a declared 408 while `on` is set; they never reach the server. */
+async function failableCommentPosts(actor: Actor, id: string): Promise<{ on: boolean }> {
+  const path = `/api/docs/${id}/comments`;
+  const state = { on: false };
+  actor.expectHttp(408, path);
+  await actor.page.route((url) => url.pathname === path, (route) => route.request().method() === 'POST' && state.on
+    ? route.fulfill({ status: 408, contentType: 'application/json', body: JSON.stringify({ error: 'timeout' }) })
+    : route.fallback());
+  return state;
+}
+
 test('j15-comments: a commenter comments on code, chart, canvas and image blocks; a viewer and a trashed note offer no block composer @p:mean-1 @p:ppl-2', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
@@ -516,6 +527,56 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
     .toEqual(BLOCK_TYPES.map((type) => ({ text: `On the ${type}`, kind: 'block', type })).sort((a, b) => a.text.localeCompare(b.text)));
   await expect(gutter(ada), 'the owner sees a thread on each block').toHaveCount(BLOCK_TYPES.length, { timeout: PEER_TIMEOUT });
   expect(await bodyText(ada, id), 'the body is unchanged').toBe(before);
+
+  // A failed block comment keeps its block. The owner (editable body) comments on text, then on the code block; the
+  // block comment fails and its retry from the same composer still lands on the code block.
+  const adaFails = await failableCommentPosts(ada, id);
+  await select(ada, id, 'comment on');
+  await comment(ada, 'Ada on the words');
+  const [, code] = (await blocksByType(ada, id))[0]!;
+  await code.scrollIntoViewIfNeeded();
+  await code.hover();
+  adaFails.on = true;
+  await blockCommentButton(code).click();
+  const adaComposer = ada.page.getByRole('dialog', { name: 'Add comment' });
+  await expect(adaComposer.getByRole('textbox').first()).toBeFocused();
+  await ada.page.keyboard.type('Ada on the code');
+  await ada.page.keyboard.press(SUBMIT);
+  await expect(ada.page.getByText(/couldn't be saved/).first(), 'the failure is announced').toBeVisible({ timeout: PEER_TIMEOUT });
+  await expect(adaComposer.getByRole('textbox').first(), 'the failed block comment stays in the composer').toHaveText('Ada on the code');
+  adaFails.on = false;
+  await ada.page.keyboard.press(SUBMIT);
+  await expect(adaComposer, 'the retry is taken').toBeHidden({ timeout: PEER_TIMEOUT });
+
+  // A commenter's failed block comment is kept as the block's draft when the composer closes, and reopening the
+  // composer there offers the text again.
+  const caraFails = await failableCommentPosts(cara, id);
+  const [, chart] = (await blocksByType(cara, id))[1]!;
+  await chart.scrollIntoViewIfNeeded();
+  await chart.hover();
+  caraFails.on = true;
+  await blockCommentButton(chart).click({ force: true });
+  const caraComposer = cara.page.getByRole('dialog', { name: 'Add comment' });
+  await expect(caraComposer.getByRole('textbox').first()).toBeFocused();
+  await cara.page.keyboard.type('Cara again on the chart');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect(cara.page.getByText(/couldn't be saved/).first(), 'the failure is announced').toBeVisible({ timeout: PEER_TIMEOUT });
+  await cara.page.keyboard.press('Escape');
+  await expect(caraComposer).toBeHidden();
+  caraFails.on = false;
+  await chart.hover();
+  await blockCommentButton(chart).click({ force: true });
+  await expect(caraComposer.getByRole('textbox').first(), "reopening the block's composer offers the failed draft").toHaveText('Cara again on the chart');
+  await caraComposer.getByRole('textbox').first().focus();
+  await cara.page.keyboard.press(SUBMIT);
+  await expect(caraComposer).toBeHidden({ timeout: PEER_TIMEOUT });
+  await expect.poll(() => storedAnchors(stack.baseUrl, id, cookie, ['Ada on the code', 'Ada on the words', 'Cara again on the chart']), {
+    message: 'each retried comment is stored once, on its own target', timeout: PEER_TIMEOUT,
+  }).toEqual([
+    { text: 'Ada on the code', kind: 'block', type: 'code-block' },
+    { text: 'Ada on the words', kind: 'text', type: null },
+    { text: 'Cara again on the chart', kind: 'block', type: 'chart' },
+  ]);
 
   for (const [type, block] of await blocksByType(vic, id)) {
     await block.scrollIntoViewIfNeeded();
@@ -660,4 +721,38 @@ test("j15-comments: a commenter's composers keep what the server did not take; a
   await cara.page.keyboard.press(SUBMIT);
   await stored('the retried reply lands once')
     .toEqual(['Held root', 'Held root plus more', 'Lost reply', 'Quick reply B', 'Slow reply A', 'Version one', 'Version two']);
+
+  // Two replies whose failures arrive in the same tick both come back to the box, and resubmitting it keeps both.
+  await cara.page.evaluate((path) => {
+    const w = window as unknown as { fetch: typeof fetch; holdReplies: boolean; heldReplies: (() => void)[] };
+    const real = w.fetch.bind(window);
+    w.holdReplies = true;
+    w.heldReplies = [];
+    w.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (!w.holdReplies || url.pathname !== path || init?.method !== 'POST') return real(input, init);
+      return new Promise<Response>((resolve) => w.heldReplies.push(() =>
+        resolve(new Response(JSON.stringify({ error: 'timeout' }), { status: 408, headers: { 'content-type': 'application/json' } }))));
+    };
+  }, createPath);
+  const heldCount = () => cara.page.evaluate(() => (window as unknown as { heldReplies: unknown[] }).heldReplies.length);
+  await expect(replyBox).toBeFocused();
+  await cara.page.keyboard.type('Twin reply A');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect.poll(heldCount, { message: 'the first reply is held' }).toBe(1);
+  await cara.page.keyboard.type('Twin reply B');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect.poll(heldCount, { message: 'the second reply is held' }).toBe(2);
+  await cara.page.evaluate(() => {
+    const w = window as unknown as { holdReplies: boolean; heldReplies: (() => void)[] };
+    w.holdReplies = false;
+    for (const release of w.heldReplies.splice(0)) release();
+  });
+  await expect(replyBox, 'the first failed reply is back').toContainText('Twin reply A', { timeout: PEER_TIMEOUT });
+  await expect(replyBox, 'and so is the second').toContainText('Twin reply B');
+  await replyBox.click();
+  await cara.page.keyboard.press(SUBMIT);
+  await expect.poll(async () => (await storedTexts(stack.baseUrl, id, cookie)).filter((text) => text.includes('Twin reply')), {
+    message: "the resubmit stores both failed replies' text", timeout: PEER_TIMEOUT,
+  }).toEqual([expect.stringMatching(/Twin reply A[\s\S]*Twin reply B/)]);
 });

@@ -219,6 +219,47 @@ it('an edit that fails keeps its text for its comment, and the retry saves it', 
   expect(server.edits).toEqual([{ id: 'c1', text: 'Better words' }]);
 });
 
+it("overlapping saves of one comment's edit reach the server in order, so the later text is what it stores", async () => {
+  const { editor } = boundEditor('doc-edit-order');
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision A' });
+  const a = submitted('doc-edit-order', 'edit:c1');
+  server.gate = null;
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision B' });
+  const b = submitted('doc-edit-order', 'edit:c1');
+  await Promise.resolve();
+  expect(server.calls.filter((call) => call.method === 'PATCH').length, 'B waits for A to be answered').toBe(1);
+  open();
+  expect(await a).toEqual({ ok: true });
+  expect(await b).toEqual({ ok: true });
+  expect(server.edits.map((edit) => edit.text), 'the server stores A, then B').toEqual(['Revision A', 'Revision B']);
+  expect(draftOf('doc-edit-order', 'edit:c1')).toBeUndefined();
+});
+
+it("a later save that lands supersedes an earlier failed edit of the same comment", async () => {
+  const { editor } = boundEditor('doc-edit-supersede');
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  // Revision A waits, then fails on the network; anything else reaches the server.
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(init?.body).includes('Revision A')) {
+      await gate;
+      throw new TypeError('Failed to fetch');
+    }
+    return server.fetch(input, init);
+  });
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision A' });
+  const a = submitted('doc-edit-supersede', 'edit:c1');
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision B' });
+  const b = submitted('doc-edit-supersede', 'edit:c1');
+  open();
+  expect(await a).toEqual({ ok: false, error: 'network' });
+  expect(await b).toEqual({ ok: true });
+  expect(server.edits.map((edit) => edit.text)).toEqual(['Revision B']);
+  expect(failedDraftText('doc-edit-supersede', 'edit:c1'), 'no stale revision is offered after B landed').toBeNull();
+});
+
 it('a successful save clears only its own draft', async () => {
   const { doc, editor } = boundEditor('doc-own');
   server.mode = 'refuse:rate-limited';
