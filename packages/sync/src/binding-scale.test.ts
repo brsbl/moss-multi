@@ -3,7 +3,7 @@
 // it on a peer or on undo), and Yjs merged the deleted structs of an undo one splice at a time. Each step here, for
 // 4x the blocks, must cost well under the 16x a quadratic step would (patches/@lexical__yjs@0.48.0.patch,
 // patches/yjs@13.6.31.patch).
-import { $createParagraphNode, $createTextNode, $getRoot, createEditor, type LexicalEditor, type LexicalNode, type TextNode } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getRoot, createEditor, type LexicalEditor, type ElementNode, type LexicalNode, type TextNode } from 'lexical';
 import { expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createBinding, createUndoManager, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
@@ -104,7 +104,7 @@ it('syncs a one-block edit through that block alone, and a peer converges on edi
     return original.apply(this, args);
   };
   try {
-    ada.update(() => ($getRoot().getChildAtIndex(1_000)!.getFirstChild() as TextNode).setTextContent('p1000 edited'), { discrete: true });
+    ada.update(() => (($getRoot().getChildAtIndex(1_000) as ElementNode).getFirstChild() as TextNode).setTextContent('p1000 edited'), { discrete: true });
   } finally {
     element._syncChildFromLexical = original;
   }
@@ -115,8 +115,8 @@ it('syncs a one-block edit through that block alone, and a peer converges on edi
   expect(text(ben)).toContain('p1000 edited');
   ada.update(() => {
     const root = $getRoot();
-    (root.getChildAtIndex(5)!.getFirstChild() as TextNode).setTextContent('five');
-    (root.getChildAtIndex(1_500)!.getFirstChild() as TextNode).setTextContent('fifteen hundred');
+    ((root.getChildAtIndex(5) as ElementNode).getFirstChild() as TextNode).setTextContent('five');
+    ((root.getChildAtIndex(1_500) as ElementNode).getFirstChild() as TextNode).setTextContent('fifteen hundred');
     root.getChildAtIndex(10)!.insertAfter(root.getChildAtIndex(1_999)!);
     root.getChildAtIndex(20)!.remove();
   }, { discrete: true });
