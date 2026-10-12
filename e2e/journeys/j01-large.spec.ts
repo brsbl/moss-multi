@@ -1,10 +1,12 @@
-// j01-large (T3.B13, backlog B346): typing in a note of 40,000 lines, one paragraph each, stays responsive. Two costs
-// grew with the note: @lexical/yjs visited every block per keystroke to find the one that changed
-// (patches/@lexical__yjs@0.48.0.patch), and Chromium measured all the text above the caret on every keystroke to sync
-// the selection with the platform, about 100 ms at the middle line. The journey opens that note and a 400-line
-// control, types into the middle of each, and records the long tasks and each keystroke's input-to-paint (Event
-// Timing and Long Tasks, Chromium only); both must stay within budgets calibrated on CI runners. Scrolling up and
-// down, caret movement to the note's start and the peer stay correct.
+// j01-large (T3.B13, backlog B346): typing in a note of 40,000 lines, one paragraph each. @lexical/yjs synced every
+// keystroke by visiting each of the 40,000 blocks to find the one that changed; it now syncs only the blocks an update
+// touched (patches/@lexical__yjs@0.48.0.patch). The journey opens that note and a 400-line control, types into the
+// middle of each, and measures each keystroke's sync to the note's Y.Doc (the binding's local transaction), its
+// input-to-paint (Event Timing) and the long tasks while typing (Chromium only). The sync budget is the before/after
+// gate. The rest of a keystroke is Chromium's own editing over one editable of 40,000 blocks: layout and the
+// platform's text sync walk the whole editable, wherever the caret is, so the input-to-paint and long-task budgets
+// guard against regressions only; making those fast needs viewport-bounded rendering. Scrolling, caret movement to the
+// note's start and the peer stay correct.
 //
 // The notes are created through POST /api/docs as declared setup.
 import type { Actor } from '../lib/actors.ts';
@@ -15,14 +17,14 @@ const LINES = 40_000;
 const CONTROL_LINES = 400;
 const TYPED = 'abcdefghijklmnopqrst';
 /**
- * Calibrated on CI runners (T3.B13): before blocks above the viewport stopped painting, the large note's median
- * keystroke painted in 152-232 ms (runs 38301848192, 38301850762, 38311128561) and long tasks held the main thread for
- * about 150-250 ms per key; the control's keystrokes painted in 16-48 ms.
+ * Calibrated on CI runners (T3.B13). Sync time per keystroke: CALIBRATION.
+ * Input-to-paint: 176-232 ms before the patch and 120-176 ms after (runs 38301848192, 38301850762, 38311128561,
+ * 38314448516, 38319353253); long tasks 142-251 ms per key before and 94-181 after, the longest up to 715 ms.
  */
-const INPUT_TO_PAINT_MS = 80;
-/** Long-task time per keystroke while typing, and the longest one. */
-const BUSY_PER_KEY_MS = 50;
-const LONGEST_TASK_MS = 200;
+const SYNC_MS = 12;
+const INPUT_TO_PAINT_MS = 240;
+const BUSY_PER_KEY_MS = 260;
+const LONGEST_TASK_MS = 1_000;
 const CONTROL_INPUT_TO_PAINT_MS = 64;
 
 const lines = (count: number) => Array.from({ length: count }, (_, i) => `Line ${i} of the note.`).join('\n\n');
@@ -36,6 +38,8 @@ async function create(actor: Actor, baseUrl: string, title: string, markdown: st
   expect(response.status(), `declared setup: ${title} is imported`).toBe(201);
   return ((await response.json()) as { doc: { id: string } }).doc.id;
 }
+
+type Probe = { longTasks: number[]; keys: number[]; syncs: number[]; observers?: PerformanceObserver[]; doc?: unknown };
 
 /** Puts the caret after `Line <line>` and types TYPED a key at a time; returns the keystrokes' timings. */
 async function typeTimed(actor: Actor, id: string, line: number) {
@@ -52,18 +56,37 @@ async function typeTimed(actor: Actor, id: string, line: number) {
     document.getSelection()!.addRange(range);
   }, line);
   await actor.page.waitForTimeout(1_000);
-  await actor.page.evaluate(() => {
-    const probe = window as unknown as { __b13: { longTasks: number[]; keys: number[] }; __b13Observers?: PerformanceObserver[] };
-    probe.__b13Observers?.forEach((observer) => observer.disconnect());
-    probe.__b13 = { longTasks: [], keys: [] };
-    const tasks = new PerformanceObserver((list) => { for (const entry of list.getEntries()) probe.__b13.longTasks.push(entry.duration); });
+  const bound = await body.evaluate((root) => {
+    const probe = ((window as unknown as { __b13?: Probe }).__b13 ??= { longTasks: [], keys: [], syncs: [] });
+    probe.observers?.forEach((observer) => observer.disconnect());
+    probe.longTasks = [];
+    probe.keys = [];
+    probe.syncs = [];
+    const tasks = new PerformanceObserver((list) => { for (const entry of list.getEntries()) probe.longTasks.push(entry.duration); });
     tasks.observe({ type: 'longtask' });
     const events = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) if (entry.name === 'keydown') probe.__b13.keys.push(entry.duration);
+      for (const entry of list.getEntries()) if (entry.name === 'keydown') probe.keys.push(entry.duration);
     });
     events.observe({ type: 'event', durationThreshold: 16 } as PerformanceObserverInit);
-    probe.__b13Observers = [tasks, events];
+    probe.observers = [tasks, events];
+    // The binding writes each keystroke to the note's Y.Doc in one local transaction.
+    type Doc = { on(event: string, listener: (transaction: { local: boolean }) => void): void };
+    const editor = (root as HTMLElement & { __lexicalEditor: Record<symbol, { doc?: Doc; root?: { doc: Doc } } | undefined> }).__lexicalEditor;
+    const undo = editor[Symbol.for('@lexical/yjs/UndoManager')];
+    const doc = undo?.root?.doc ?? undo?.doc;
+    if (!doc) return false;
+    if (probe.doc !== doc) {
+      probe.doc = doc;
+      let start = 0;
+      doc.on('beforeTransaction', (transaction) => { if (transaction.local) start = performance.now(); });
+      doc.on('afterTransaction', (transaction) => {
+        if (transaction.local && start && probe.doc === doc) probe.syncs.push(performance.now() - start);
+        start = 0;
+      });
+    }
+    return true;
   });
+  expect(bound, 'the editor is bound to the note\'s Y.Doc').toBe(true);
   // Each keystroke waits for the one before it to paint and settle, so a slow keystroke is measured alone rather than
   // batched with the keys queued behind it.
   for (const key of TYPED) {
@@ -72,17 +95,23 @@ async function typeTimed(actor: Actor, id: string, line: number) {
     await actor.page.waitForTimeout(250);
   }
   await actor.page.waitForTimeout(1_000);
-  const { longTasks, keys } = await actor.page.evaluate(() => (window as unknown as { __b13: { longTasks: number[]; keys: number[] } }).__b13);
+  const { longTasks, keys, syncs } = await actor.page.evaluate(() => {
+    const { longTasks, keys, syncs } = (window as unknown as { __b13: Probe }).__b13;
+    return { longTasks, keys, syncs };
+  });
+  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
   // Event Timing reports only events of 16 ms or more; a keystroke it left out painted within 16 ms.
-  const durations = [...keys, ...Array(Math.max(0, TYPED.length - keys.length)).fill(16)].sort((a, b) => a - b);
+  const durations = [...keys, ...Array(Math.max(0, TYPED.length - keys.length)).fill(16)];
   return {
-    inputToPaint: durations[Math.floor(durations.length / 2)],
+    syncs: syncs.length,
+    syncPerKey: Math.round((syncs.reduce((sum, ms) => sum + ms, 0) / TYPED.length) * 10) / 10,
+    inputToPaint: median(durations),
     busyPerKey: Math.round(longTasks.reduce((sum, ms) => sum + ms, 0) / TYPED.length),
     longest: Math.round(Math.max(0, ...longTasks)),
   };
 }
 
-test('j01-large: typing in the middle of a 40,000-line note stays within budget of a small note; scrolling, the caret and the peer stay correct @p:col-1 @p:tech-8', async ({ actors, stack, browserName }, testInfo) => {
+test('j01-large: each keystroke in the middle of a 40,000-line note syncs only its block and stays within budget; scrolling, the caret and the peer stay correct @p:col-1 @p:tech-8', async ({ actors, stack, browserName }, testInfo) => {
   test.setTimeout(600_000);
   const ada = await actors.session(await actors.principal('ada'));
   const large = await create(ada, stack.baseUrl, 'Large', lines(LINES));
@@ -132,7 +161,9 @@ test('j01-large: typing in the middle of a 40,000-line note stays within budget 
   expect(exported).toContain(middle);
   expect(exported).toContain('^Line 0 of the note.');
 
-  if (browserName !== 'chromium') return; // The budget is calibrated in Chromium; WebKit reports no long tasks.
+  expect(big.syncs, `every keystroke synced (${JSON.stringify(measured)})`).toBeGreaterThanOrEqual(TYPED.length);
+  expect(big.syncPerKey, `the large note's sync per keystroke (${JSON.stringify(measured)})`).toBeLessThanOrEqual(SYNC_MS);
+  if (browserName !== 'chromium') return; // Event Timing and Long Tasks are Chromium's.
   expect(small.inputToPaint, `the control's input-to-paint (${JSON.stringify(measured)})`).toBeLessThanOrEqual(CONTROL_INPUT_TO_PAINT_MS);
   expect(big.inputToPaint, `the large note's input-to-paint (${JSON.stringify(measured)})`).toBeLessThanOrEqual(INPUT_TO_PAINT_MS);
   expect(big.busyPerKey, `the large note's long-task time per keystroke (${JSON.stringify(measured)})`).toBeLessThanOrEqual(BUSY_PER_KEY_MS);

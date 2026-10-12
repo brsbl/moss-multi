@@ -120,11 +120,11 @@ test('j11-embeds: a moss-html block runs its script live in an opaque-origin san
 test('j11-embeds: an HTML block without dimensions is as tall as its content; an explicitly sized one keeps its size @p:note-2 @p:note-8', async ({ actors }) => {
   // T3.B13 (B227): the size report counted the frame's own viewport, so moss's 900px default height was a floor and a
   // one-line block rendered 900px tall (scaled to the note's width).
-  const markdown = '```moss-html\n<p id="short">One line of HTML.</p>\n```\n\nBetween.\n\n```moss-html\n<style>body{margin:0;height:600px;background:#eee}</style>\n<p id="sized">Sized to 600px.</p>\n```';
+  const markdown = '```moss-html\n<p id="short">One line of HTML.</p>\n```\n\nBetween.\n\n```moss-html\n<style>body{margin:0;height:600px;background:#eee}</style>\n<p id="sized">Sized to 600px.</p>\n```\n\nAnd.\n\n```moss-html\n<style>body{margin:0;height:100vh;background:#def}</style>\n<div id="tall">As tall as the frame.</div>\n```';
   const { ada, ben, docId } = await sharedNote(actors, 'HTML sizes', markdown);
   for (const actor of [ada, ben]) {
     const viewports = ui.body(actor, docId).locator('[data-moss-html-preview-viewport]');
-    await expect(viewports, `${actor.label}: both HTML blocks render`).toHaveCount(2, { timeout: LOAD_TIMEOUT });
+    await expect(viewports, `${actor.label}: the three HTML blocks render`).toHaveCount(3, { timeout: LOAD_TIMEOUT });
     await expect(viewports.nth(0).frameLocator('iframe').locator('#short'), `${actor.label}: the short block runs`).toHaveText('One line of HTML.', { timeout: LOAD_TIMEOUT });
     const sizes = () => viewports.evaluateAll((elements) => elements.map((element) => {
       const rect = element.getBoundingClientRect();
@@ -134,8 +134,17 @@ test('j11-embeds: an HTML block without dimensions is as tall as its content; an
       const [short] = await sizes();
       return short.height < 0.4 * 900 * (short.width / 1200);
     }, { message: `${actor.label}: the one-line block is well under the scaled 900px default`, timeout: LOAD_TIMEOUT }).toBe(true);
-    const [, sized] = await sizes();
+    const [, sized, viewportTall] = await sizes();
     expect(Math.abs(sized.height - 600 * (sized.width / 1200)), `${actor.label}: the 600px block keeps its size`).toBeLessThanOrEqual(4);
+    // A body as tall as its frame's viewport reports that viewport back; the room kept for the Live badge is outside
+    // it, so the viewport settles at the 900px default instead of growing on every report.
+    const frameHeight = () => viewports.nth(2).locator('iframe').evaluate((frame) => Number(frame.getAttribute('height')));
+    await expect.poll(frameHeight, { message: `${actor.label}: the viewport-tall block measures`, timeout: LOAD_TIMEOUT }).toBeGreaterThan(0);
+    await actor.page.waitForTimeout(2_000);
+    const settled = await frameHeight();
+    await actor.page.waitForTimeout(2_000);
+    expect([settled, await frameHeight()], `${actor.label}: the viewport-tall block's frame settles at the default height`).toEqual([900, 900]);
+    expect(viewportTall.height, `${actor.label}: it is drawn at its scaled height, the badge's room below`).toBeLessThanOrEqual(900 * (viewportTall.width / 1200) + 40);
   }
   await actors.checkpoint('html-heights');
 });

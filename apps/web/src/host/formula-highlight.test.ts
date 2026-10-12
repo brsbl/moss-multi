@@ -1,6 +1,7 @@
 // T3.B13 (B279): typing `==marked==` latched moss's formula mode on `==marked=` (formula-runtime's
 // `highlight-delimiters` seam), which held back the == highlight shortcut; Space then made `marked` a formula and
-// dropped the word. An `=` of a `==` run, or one closing `==name=`, is a highlight delimiter; formulas still match.
+// dropped the word; `==two words=` latched it on `words=`. An `=` of a `==` run, or one after an unclosed `==` on its
+// line, is a highlight delimiter; formulas still match.
 import { describe, expect, it } from 'vitest';
 import { findFormulaPatternAtCursor } from '@moss-desktop/renderer/editor/utils/formula-runtime';
 
@@ -8,7 +9,10 @@ const at = (text: string, options = {}) => findFormulaPatternAtCursor(text, text
 
 describe('formula patterns beside == highlights', () => {
   it('finds no formula while a ==highlight== is typed', () => {
-    for (const text of ['Start. ==', 'Start. ==m', 'Start. ==marked', 'Start. ==marked=', 'Start. ==marked==', 'Start. ==marked== ']) {
+    for (const text of [
+      'Start. ==', 'Start. ==m', 'Start. ==marked', 'Start. ==marked=', 'Start. ==marked==', 'Start. ==marked== ',
+      'Start. ==two words', 'Start. ==two words=', 'Start. ==two words==', 'a ==b== and ==two more words=',
+    ]) {
       expect(at(text), text).toBeNull();
       expect(at(text, { allowEmptyExpression: true }), `${text} (draft)`).toBeNull();
     }
@@ -18,5 +22,6 @@ describe('formula patterns beside == highlights', () => {
     expect(at('price=12')).toMatchObject({ name: 'price', expression: '12' });
     expect(at('=2+3')).toMatchObject({ name: null, expression: '2+3' });
     expect(at('rate=', { allowEmptyExpression: true })).toMatchObject({ name: 'rate', expression: '' });
+    expect(at('Start ==marked== then price=12')).toMatchObject({ name: 'price', expression: '12' });
   });
 });

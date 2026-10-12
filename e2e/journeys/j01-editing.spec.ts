@@ -361,15 +361,15 @@ async function exported(actor: Actor, id: string) {
 
 test('j01 editing: inline shortcuts typed a character at a time keep their text and style, on a peer and after reload @p:col-1', async ({ actors, stack }) => {
   // T3.B13 (B279): `==marked==` then Space latched moss's formula mode, which held back the highlight shortcut and then
-  // committed `marked` as a formula, dropping the word.
+  // committed `marked` as a formula, dropping the word; `==two words=` latched it on `words=`.
   const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shortcuts:');
   await ui.body(ada, id).locator('p').filter({ hasText: /^Shortcuts:/ }).click();
   await ada.page.keyboard.press('End');
-  await ada.page.keyboard.type(' ==marked== then **bold** and *it* and ~~gone~~ and `code` end', { delay: 30 });
+  await ada.page.keyboard.type(' ==marked== then **bold** and ==two words== and *it* and ~~gone~~ and `code` end', { delay: 30 });
   const styled = async (actor: Actor) => {
     const body = ui.body(actor, id);
-    await expect(body.locator('p').filter({ hasText: /^Shortcuts:/ }), `${actor.label}: every word survives`).toHaveText('Shortcuts: marked then bold and it and gone and code end');
-    await expect(body.locator('span[style*="--obsidian-highlight"]'), `${actor.label}: only the word is highlighted`).toHaveText('marked');
+    await expect(body.locator('p').filter({ hasText: /^Shortcuts:/ }), `${actor.label}: every word survives`).toHaveText('Shortcuts: marked then bold and two words and it and gone and code end');
+    await expect(body.locator('span[style*="--obsidian-highlight"]'), `${actor.label}: only the marked words are highlighted`).toHaveText(['marked', 'two words']);
     await expect(body.locator('strong')).toHaveText('bold');
     await expect(body.locator('em')).toHaveText('it');
     await expect(body.locator('.moss-strikethrough')).toHaveText('gone');
@@ -377,7 +377,7 @@ test('j01 editing: inline shortcuts typed a character at a time keep their text 
   };
   for (const actor of [ada, ben]) await styled(actor);
   await ui.waitAcked(ada, id);
-  expect(await exported(ada, id)).toBe('Shortcuts: ==marked== then **bold** and *it* and ~~gone~~ and `code` end');
+  expect(await exported(ada, id)).toBe('Shortcuts: ==marked== then **bold** and ==two words== and *it* and ~~gone~~ and `code` end');
   await ada.page.reload();
   await ui.waitLive(ada, id); await ada.declareRemount(id);
   await styled(ada);
