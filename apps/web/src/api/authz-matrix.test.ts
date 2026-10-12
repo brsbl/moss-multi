@@ -172,13 +172,13 @@ function denialProblem(method: string, answer: { status: number; text: string },
   const [status, error] = expected;
   if (answer.status !== status) return `${answer.status}, expected ${status} ${error}`;
   if (method === 'HEAD') return null;
-  let body: { error?: unknown; reason?: unknown } | null = null;
+  let named: unknown;
   try {
-    body = JSON.parse(answer.text) as typeof body;
+    const body = JSON.parse(answer.text) as { error?: unknown; reason?: unknown } | null;
+    named = body?.error ?? body?.reason;
   } catch {
     // not JSON
   }
-  const named = body?.error ?? body?.reason;
   return named === error ? null : `${status} naming ${named === undefined ? 'no JSON error' : JSON.stringify(named)}, expected ${error}`;
 }
 

@@ -78,7 +78,7 @@ export function workerTooLarge(answer) {
 }
 
 /** An answer as a check's detail: status, content type and JSON error, never the body text. */
-const describeAnswer = (answer) => `${answer.status} ${answer.type || '-'} ${errorOf(answer.body ?? '') ?? '(no JSON error)'}`;
+export const describeAnswer = (answer) => `${answer.status} ${answer.type || '-'} ${errorOf(answer.body ?? '') ?? '(no JSON error)'}`;
 
 /** A masked client text frame (payload under 126 bytes). */
 function clientText(text) {
@@ -540,7 +540,7 @@ export function createSweep(baseUrl) {
     return results;
   }
 
-  return { run, results, check, socket, docSocket, call };
+  return { run, results, check, socket, docSocket, call, oversized };
 }
 
 function parseArgs(argv) {
