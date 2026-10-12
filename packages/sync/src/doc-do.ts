@@ -448,18 +448,15 @@ export class DocDO extends YServer<SyncEnv> {
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
     const store = await this.#ready();
     const attachment = attachmentFrom(ctx.request.headers);
-    let deleted = store.meta('deleted') === '1' || holdsOf(store).size > 0;
-    // A doc closed without a hold may have missed the settle of a restore: D1 decides, and an unanswered read admits
-    // nobody (the 101 waits for this, so no frame arrives first).
-    if (deleted && holdsOf(store).size === 0 && this.#liveness()) {
-      try {
-        deleted = (await this.#queue(() => this.#settle([], connection))).deleted || holdsOf(store).size > 0;
-      } catch (error) {
-        console.error('DocDO admission could not confirm the doc is live', error);
-        connection.close(TRY_AGAIN, 'unconfirmed');
-        return;
-      }
+    // An unanswered liveness read admits nobody (the 101 waits for it, so no frame arrives first).
+    try {
+      await this.#healMissedSettle(store, connection);
+    } catch (error) {
+      console.error('DocDO admission could not confirm the doc is live', error);
+      connection.close(TRY_AGAIN, 'unconfirmed');
+      return;
     }
+    const deleted = store.meta('deleted') === '1' || holdsOf(store).size > 0;
     const code = connectCode(attachment, {
       revoked: store.revoked,
       deleted,
@@ -878,14 +875,11 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     const comments = this.#comments;
     if (!comments) throw new Error('DocDO started without comments');
-    // A doc closed without a hold may have missed a restore's settle: D1 decides, as at admission.
-    if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && this.#liveness()) {
-      try {
-        await this.#queue(() => this.#settle([]));
-      } catch (error) {
-        console.error('DocDO comment write could not confirm the doc is live', error);
-        return UNCONFIRMED;
-      }
+    try {
+      await this.#healMissedSettle(store);
+    } catch (error) {
+      console.error('DocDO comment write could not confirm the doc is live', error);
+      return UNCONFIRMED;
     }
     const check = this.#accessCheck();
     return this.#serial(async () => {
@@ -1098,6 +1092,12 @@ export class DocDO extends YServer<SyncEnv> {
    */
   async #review<T>(input: { reviewer: Reviewer; actor?: CommentActor }, floor: Role, run: (reviewer: Reviewer) => T): Promise<T | ReviewRefusal> {
     const store = await this.#ready();
+    try {
+      await this.#healMissedSettle(store);
+    } catch (error) {
+      console.error('DocDO suggestion review could not confirm the doc is live', error);
+      return { ok: false, status: 503, reason: 'unconfirmed' };
+    }
     const check = this.#accessCheck();
     return this.#serial(async (): Promise<T | ReviewRefusal> => {
       let reviewer = input.reviewer;
@@ -1302,6 +1302,15 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /** `admitting`, a socket still in onConnect, is left for its own refusal. */
+  /**
+   * A doc closed without a hold may have missed the settle of a restore: D1 decides, before the hold and deleted
+   * guards read it. Throws, changing nothing, when D1 cannot answer.
+   */
+  async #healMissedSettle(store: DocStore, admitting?: Connection): Promise<void> {
+    if (store.meta('deleted') !== '1' || holdsOf(store).size > 0 || !this.#liveness()) return;
+    await this.#queue(() => this.#settle([], admitting));
+  }
+
   async #settle(release: string[], admitting?: Connection): Promise<{ deleted: boolean }> {
     const trashedInD1 = this.#liveness();
     if (!trashedInD1) throw new Error('DocDO has no D1 to settle from');
