@@ -410,6 +410,8 @@ describe('T5.S13 suggest refusal counts, cooldowns and the no-room window surviv
     }
     expect(sam.closed).toBeNull();
     expect(refusalRows(opened)).toEqual([]);
+    // No refusal, no storage write: the table is made by the first refusal, not by a wake.
+    expect(opened.backing.query("SELECT name FROM sqlite_master WHERE name = 'suggest_refusals'"), 'no refusal table').toEqual([]);
   });
 
   it('an honest frame after the first does no refusal storage read or write and no attachment write', { timeout: 60_000 }, async () => {
