@@ -669,6 +669,13 @@ export function findFormulaPatternAtCursor(
       continue;
     }
 
+    // moss-multi seam: highlight-delimiters (T3.B13): an `=` in a `==` run, or one closing `==name=`, belongs to a
+    // ==highlight==, not a formula. Formula mode latched on `==marked=`, which held back the highlight shortcut, and
+    // Space then committed `marked` as a formula, dropping the word.
+    if (textContent[equalsIndex - 1] === '=' || textContent[equalsIndex + 1] === '=') {
+      continue;
+    }
+
     if (codeRanges?.some(r => equalsIndex >= r.start && equalsIndex < r.end)) {
       continue;
     }
@@ -707,6 +714,9 @@ export function findFormulaPatternAtCursor(
       const beforeName = tokenStart > 0 ? textContent[tokenStart - 1] : '';
       if (tokenStart > 0 && /[A-Za-z0-9_-]/.test(beforeName)) {
         continue;
+      }
+      if (beforeName === '=') {
+        continue; // moss-multi seam: highlight-delimiters (T3.B13)
       }
 
       return {

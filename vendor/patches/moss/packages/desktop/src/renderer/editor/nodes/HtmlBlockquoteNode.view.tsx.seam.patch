@@ -18,7 +18,15 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
    useMediaFullscreen,
    useMediaNodeActions
  } from '../components/media-primitives';
-@@ -194,12 +200,16 @@ function RawHtmlBlockquoteComponent({
+@@ -46,6 +52,7 @@ export type { HtmlBlockSource, SerializedHtmlBlockquoteNode } from './HtmlBlockq
+ const LIVE_PREVIEW_SCROLL_CSS = `html,body{overflow:auto !important}
+ ${MOSS_HIDE_SCROLLBARS_CSS}`;
+ const CANVAS_PREVIEW_SHRINK_WRAP_CSS = 'html,body{min-height:0 !important}';
++const LIVE_BADGE_RESERVE_PX = 36; // moss-multi seam: content-height (T3.B13)
+ const HTML_PREVIEW_SKELETON_WIDTHS = ['80%', '100%', '60%', '90%', '45%'] as const;
+ const HTML_BLOCKQUOTE_LINK_CLASSNAME =
+   'font-medium text-ink-accent underline decoration-border-default underline-offset-2 transition-colors hover:text-accent-brand hover:decoration-accent-brand';
+@@ -194,12 +201,16 @@ function RawHtmlBlockquoteComponent({
    nodeKey
  }: HtmlBlockquoteComponentProps): JSX.Element {
    const [editor] = useLexicalComposerContext();
@@ -37,7 +45,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
    const highlightedPreRef = useRef<HTMLPreElement>(null);
    const previewContent = useMemo(
      () => parseHtmlBlockquotePreviewContent(rawHtml),
-@@ -228,7 +238,7 @@ function RawHtmlBlockquoteComponent({
+@@ -228,7 +239,7 @@ function RawHtmlBlockquoteComponent({
    }, []);
  
    useEffect(() => {
@@ -46,7 +54,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        setLocalRawHtml(rawHtml);
      }
    }, [rawHtml, isEditing]);
-@@ -288,7 +298,7 @@ function RawHtmlBlockquoteComponent({
+@@ -288,7 +299,7 @@ function RawHtmlBlockquoteComponent({
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isHtmlBlockquoteNode(node)) {
@@ -55,7 +63,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        }
      });
      setHasTextSelection(false);
-@@ -312,7 +322,7 @@ function RawHtmlBlockquoteComponent({
+@@ -312,7 +323,7 @@ function RawHtmlBlockquoteComponent({
    }, [commitRawHtml, editor._key, isEditing, nodeKey]);
  
    const cancelEdit = useCallback(() => {
@@ -64,7 +72,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      setHasTextSelection(false);
      setIsEditing(false);
    }, [rawHtml]);
-@@ -344,7 +354,7 @@ function RawHtmlBlockquoteComponent({
+@@ -344,7 +355,7 @@ function RawHtmlBlockquoteComponent({
        className="group/decorator relative my-4"
        data-block-decorator-key={nodeKey}
        onClick={handleContainerClick}
@@ -73,7 +81,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      >
        <div className="mx-auto w-full max-w-canvas-prose">
          <BlockNodeShell
-@@ -367,7 +377,7 @@ function RawHtmlBlockquoteComponent({
+@@ -367,7 +378,7 @@ function RawHtmlBlockquoteComponent({
                    <div className="flex items-center gap-1">
                      <MediaHeaderButton
                        icon={X}
@@ -82,7 +90,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                        onClick={() => cancelEdit()}
                      />
                      <MediaHeaderButton
-@@ -396,6 +406,7 @@ function RawHtmlBlockquoteComponent({
+@@ -396,6 +407,7 @@ function RawHtmlBlockquoteComponent({
                    </pre>
                    <textarea
                      ref={textareaRef}
@@ -90,7 +98,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                      value={localRawHtml}
                      onChange={(e) => {
                        setLocalRawHtml(e.target.value);
-@@ -423,11 +434,11 @@ function RawHtmlBlockquoteComponent({
+@@ -423,11 +435,11 @@ function RawHtmlBlockquoteComponent({
                    <span className="inline-flex items-center gap-1 align-middle">
                      <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                    </span>{' '}
@@ -104,7 +112,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                  </div>
                </div>
              </div>
-@@ -440,6 +451,9 @@ function RawHtmlBlockquoteComponent({
+@@ -440,6 +452,9 @@ function RawHtmlBlockquoteComponent({
                  className="absolute right-2 top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover/decorator:opacity-100 group-focus-within/decorator:opacity-100"
                  onClick={(e) => e.stopPropagation()}
                >
@@ -114,7 +122,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                  <MediaHeaderButton
                    icon={Pencil}
                    title="Edit HTML"
-@@ -450,6 +464,8 @@ function RawHtmlBlockquoteComponent({
+@@ -450,6 +465,8 @@ function RawHtmlBlockquoteComponent({
                    title="Delete HTML block"
                    onClick={handleDelete}
                  />
@@ -123,7 +131,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                </div>
                <blockquote className="border-l-2 border-border-default pl-4 pr-10">
                  <div className="space-y-3 text-body text-ink-default">
-@@ -492,15 +508,20 @@ function MossHtmlPreviewComponent({
+@@ -492,15 +509,20 @@ function MossHtmlPreviewComponent({
    nodeKey
  }: HtmlBlockquoteComponentProps): JSX.Element {
    const [editor] = useLexicalComposerContext();
@@ -146,7 +154,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
    const highlightedPreRef = useRef<HTMLPreElement>(null);
  
    const [interactivePreviewReady, setInteractivePreviewReady] = useState(false);
-@@ -534,6 +555,7 @@ function MossHtmlPreviewComponent({
+@@ -534,6 +556,7 @@ function MossHtmlPreviewComponent({
      [availableNoteWidth, previewImageIntrinsicSize, previewRawHtml, renderedContentSize, viewportSize]
    );
    const {
@@ -154,7 +162,22 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      previewImageUrl,
      preloadImageUrl,
      previewImageFailed,
-@@ -658,7 +680,7 @@ function MossHtmlPreviewComponent({
+@@ -614,6 +637,14 @@ function MossHtmlPreviewComponent({
+     0.001,
+     (notePreviewViewportWidth ?? noteFrameSize.width) / htmlDisplayIntrinsicSize.width
+   );
++  // moss-multi seam: content-height (T3.B13): a default-height live preview is as tall as its content, plus room below
++  // it for the Live badge, which would otherwise sit over a short block's text.
++  const handleStaticRenderedSize = useCallback((size: HtmlPreviewRenderedSize) => {
++    const height = size.height + Math.ceil(LIVE_BADGE_RESERVE_PX / noteDisplayScale);
++    setPreviewImageIntrinsicSize((current) =>
++      current?.width === size.width && current.height === height ? current : { width: size.width, height }
++    );
++  }, [noteDisplayScale]);
+   const handleRenderedContentSize = useCallback((size: HtmlPreviewRenderedSize) => {
+     setRenderedContentSize((current) =>
+       current?.width === size.width && current.height === size.height
+@@ -658,7 +689,7 @@ function MossHtmlPreviewComponent({
    }, [retryPreviewImage]);
  
    useEffect(() => {
@@ -163,7 +186,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        setLocalRawHtml(rawHtml);
      }
    }, [rawHtml, isEditing]);
-@@ -709,8 +731,8 @@ function MossHtmlPreviewComponent({
+@@ -709,8 +740,8 @@ function MossHtmlPreviewComponent({
      e.preventDefault();
      e.stopPropagation();
      activatePreview();
@@ -174,7 +197,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
  
    const selectNode = useCallback(() => {
      clearSelection();
-@@ -744,7 +766,7 @@ function MossHtmlPreviewComponent({
+@@ -744,7 +775,7 @@ function MossHtmlPreviewComponent({
      editor.update(() => {
        const node = $getNodeByKey(nodeKey);
        if (node && $isHtmlBlockquoteNode(node)) {
@@ -183,7 +206,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        }
      });
      setHasTextSelection(false);
-@@ -768,7 +790,7 @@ function MossHtmlPreviewComponent({
+@@ -768,7 +799,7 @@ function MossHtmlPreviewComponent({
    }, [commitRawHtml, editor._key, isEditing, nodeKey]);
  
    const cancelEdit = useCallback(() => {
@@ -192,7 +215,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
      setHasTextSelection(false);
      setIsEditing(false);
    }, [rawHtml]);
-@@ -798,7 +820,7 @@ function MossHtmlPreviewComponent({
+@@ -798,7 +829,7 @@ function MossHtmlPreviewComponent({
          <div className="flex items-center gap-1">
            <MediaHeaderButton
              icon={X}
@@ -201,7 +224,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
              onClick={() => cancelEdit()}
            />
            <MediaHeaderButton
-@@ -827,6 +849,7 @@ function MossHtmlPreviewComponent({
+@@ -827,6 +858,7 @@ function MossHtmlPreviewComponent({
          </pre>
          <textarea
            ref={textareaRef}
@@ -209,7 +232,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
            value={localRawHtml}
            onChange={(e) => {
              setLocalRawHtml(e.target.value);
-@@ -854,11 +877,11 @@ function MossHtmlPreviewComponent({
+@@ -854,11 +886,11 @@ function MossHtmlPreviewComponent({
          <span className="inline-flex items-center gap-1 align-middle">
            <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
          </span>{' '}
@@ -223,7 +246,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        </div>
      </div>
    );
-@@ -867,6 +890,25 @@ function MossHtmlPreviewComponent({
+@@ -867,6 +899,25 @@ function MossHtmlPreviewComponent({
      <div
        className={`moss-html-preview-scroll absolute inset-0 overflow-auto bg-ink-inverse ${stablePreviewLayerVisibilityClass}`}
      >
@@ -241,7 +264,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
 +            dimensionReportId={nodeKey}
 +            className="h-full w-full"
 +            mode={noteIframeMode}
-+            onRenderedSize={htmlIntrinsicSize.heightSource === 'default' ? setPreviewImageIntrinsicSize : undefined}
++            onRenderedSize={htmlIntrinsicSize.heightSource === 'default' ? handleStaticRenderedSize : undefined}
 +          />
 +        </div>
 +      ) : null}
@@ -249,7 +272,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
        {shouldRenderPreviewImage ? (
          <img
            src={previewImageUrl}
-@@ -964,7 +1006,7 @@ function MossHtmlPreviewComponent({
+@@ -964,7 +1015,7 @@ function MossHtmlPreviewComponent({
  
    const previewOverlay = (
      <>
@@ -258,7 +281,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
          <div
            className="pointer-events-none absolute left-0 right-0 top-0 z-20 flex items-center justify-end px-2 py-1.5 opacity-0 transition-opacity group-hover/decorator:pointer-events-auto group-hover/decorator:opacity-100 group-focus-within/decorator:pointer-events-auto group-focus-within/decorator:opacity-100"
            onClick={(e) => e.stopPropagation()}
-@@ -1012,12 +1054,12 @@ function MossHtmlPreviewComponent({
+@@ -1012,12 +1063,12 @@ function MossHtmlPreviewComponent({
        hostRef={noteFrameHostRef}
        rootClassName="my-4"
        onRootClick={handleContainerClick}
@@ -273,7 +296,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                !isInteractive ? 'cursor-pointer' : ''
              }`,
              viewportDataAttributes: { 'data-moss-html-preview-viewport': 'true' },
-@@ -1027,11 +1069,14 @@ function MossHtmlPreviewComponent({
+@@ -1027,11 +1078,14 @@ function MossHtmlPreviewComponent({
                  onDelete={handleDelete}
                  onFullscreen={enterFullscreen}
                >
@@ -288,7 +311,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/HtmlBlockquoteNode.view.
                </MediaNodeHeader>
              ) : null,
              activationBadge: !isInteractive ? (
-@@ -1055,7 +1100,7 @@ function MossHtmlPreviewComponent({
+@@ -1055,7 +1109,7 @@ function MossHtmlPreviewComponent({
  registerNodeView(HtmlBlockquoteNode.getType(), function decorate(this: HtmlBlockquoteNode): JSX.Element {
      return (
        <HtmlBlockquoteComponent

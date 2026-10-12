@@ -53,6 +53,7 @@ export type { HtmlBlockSource, SerializedHtmlBlockquoteNode } from './HtmlBlockq
 const LIVE_PREVIEW_SCROLL_CSS = `html,body{overflow:auto !important}
 ${MOSS_HIDE_SCROLLBARS_CSS}`;
 const CANVAS_PREVIEW_SHRINK_WRAP_CSS = 'html,body{min-height:0 !important}';
+const LIVE_BADGE_RESERVE_PX = 36; // moss-multi seam: content-height (T3.B13)
 const HTML_PREVIEW_SKELETON_WIDTHS = ['80%', '100%', '60%', '90%', '45%'] as const;
 const HTML_BLOCKQUOTE_LINK_CLASSNAME =
   'font-medium text-ink-accent underline decoration-border-default underline-offset-2 transition-colors hover:text-accent-brand hover:decoration-accent-brand';
@@ -637,6 +638,14 @@ function MossHtmlPreviewComponent({
     0.001,
     (notePreviewViewportWidth ?? noteFrameSize.width) / htmlDisplayIntrinsicSize.width
   );
+  // moss-multi seam: content-height (T3.B13): a default-height live preview is as tall as its content, plus room below
+  // it for the Live badge, which would otherwise sit over a short block's text.
+  const handleStaticRenderedSize = useCallback((size: HtmlPreviewRenderedSize) => {
+    const height = size.height + Math.ceil(LIVE_BADGE_RESERVE_PX / noteDisplayScale);
+    setPreviewImageIntrinsicSize((current) =>
+      current?.width === size.width && current.height === height ? current : { width: size.width, height }
+    );
+  }, [noteDisplayScale]);
   const handleRenderedContentSize = useCallback((size: HtmlPreviewRenderedSize) => {
     setRenderedContentSize((current) =>
       current?.width === size.width && current.height === size.height
@@ -905,7 +914,7 @@ function MossHtmlPreviewComponent({
             dimensionReportId={nodeKey}
             className="h-full w-full"
             mode={noteIframeMode}
-            onRenderedSize={htmlIntrinsicSize.heightSource === 'default' ? setPreviewImageIntrinsicSize : undefined}
+            onRenderedSize={htmlIntrinsicSize.heightSource === 'default' ? handleStaticRenderedSize : undefined}
           />
         </div>
       ) : null}
