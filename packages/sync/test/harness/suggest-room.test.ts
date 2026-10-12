@@ -418,13 +418,23 @@ describe('T5.S13 suggest refusal counts, cooldowns and the no-room window surviv
     const sam = await on(opened, SAM);
     const leased = await send(sam, { t: 'suggest-lease' });
     const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
-    expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, 4) })).toMatchObject({ t: 'suggest-ack' });
+    // The suggester's fork: each frame carries only its next keystroke, so clocks continue as a typist's do.
+    const fork = new Y.Doc();
+    Y.applyUpdate(fork, Y.encodeStateAsUpdate(opened.dobj.document));
+    fork.clientID = grant.client;
+    const keystroke = () => {
+      const sv = Y.encodeStateVector(fork);
+      firstBlock(fork).insert(0, 'z');
+      return bytesToBase64(Y.encodeStateAsUpdate(fork, sv));
+    };
+    expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: keystroke() })).toMatchObject({ t: 'suggest-ack' });
     const queries = vi.spyOn(opened.backing, 'query');
     const proto = (globalThis as unknown as { WebSocket: { prototype: { serializeAttachment(value: unknown): void } } }).WebSocket.prototype;
     const attachments = vi.spyOn(proto, 'serializeAttachment');
     for (let i = 0; i < 10; i += 1) {
-      expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, 4) })).toMatchObject({ t: 'suggest-ack' });
+      expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: keystroke() })).toMatchObject({ t: 'suggest-ack' });
     }
+    fork.destroy();
     expect(queries.mock.calls.filter(([sql]) => sql.includes('suggest_refusals')), 'no refusal-state SQL').toEqual([]);
     expect(attachments.mock.calls.length, 'no attachment write').toBe(0);
   });
