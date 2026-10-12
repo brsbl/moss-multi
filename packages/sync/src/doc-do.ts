@@ -830,22 +830,23 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * A rename from outside the doc's sockets (REST, CLI): a minimal write to Y.Text('title') that every open client
-   * merges, projected before it returns. In one serialized turn it re-validates the open sockets, re-resolves the
-   * caller's write authority (A§8) and settles a doc it last knew in Trash, then writes with nothing awaited in
-   * between. Throws RenameRefusedError for a doc in Trash or held closed, or a caller who can no longer edit, and
-   * DocCapError for a title past the state cap, changing nothing.
+   * merges, projected before it returns. In one serialized turn it settles a doc it last knew in Trash, then
+   * re-validates the open sockets and re-resolves the caller's write authority (A§8), and writes with nothing awaited
+   * after that check. Throws RenameRefusedError for a doc in Trash or held closed, or a caller who can no longer edit,
+   * and DocCapError for a title past the state cap, changing nothing.
    */
   async renameTitle(text: string, caller: SocketIdentity): Promise<void> {
     const store = await this.#ready();
     const check = this.#accessCheck();
     await this.#serial(async () => {
+      // Liveness settles first, so the caller's authority is the last thing read before the write.
+      const liveness = this.#liveness();
+      if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && liveness) await this.#queue(() => this.#settle([]));
       if (check) {
         // Every open socket hears the rename, so each must still have access (A§8 pull validation).
         await this.#validate(check);
         await this.#authorize(check, caller);
       }
-      const liveness = this.#liveness();
-      if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && liveness) await this.#queue(() => this.#settle([]));
       if (store.meta('deleted') === '1' || holdsOf(store).size > 0) throw new RenameRefusedError('deleted');
       this.#writeTitle(store, text);
     });
