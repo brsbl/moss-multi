@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 46% done** (106 of 230 planned tasks verified)
+**Overall: 47% done** (107 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 54 / 54 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 55 / 55 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -125,6 +125,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-10 — T3.B26 verified: a spent answer budget is now kept in the note's storage, so a note server that sleeps and wakes no longer hands viewers or anonymous link holders a fresh budget of full-note encodes.
 - 2026-10-12 — T3.B6 verified: a restore, folder create or rename, note insert or move, link revoke and vault trash now re-check the person's live access and land only on the state they read (a raced restore answers 409), agent keys can no longer rename or trash a vault, and a link holder renaming the link's own folder no longer learns its parent.
 - 2026-10-12 — T3.B2 verified: renaming a note is now checked against the person's live access, Trash and the note's size cap in the note server's own turn (a revoked caller or trashed note gets 404, an oversized title 413, with nothing written), a failed title update to the workspace list retries until it lands, and typing a title with an IME no longer commits or jumps early on Enter or ArrowDown.
+- 2026-10-12 — T3.B22 verified: the local and CI stacks no longer replay a lost POST (only GET and HEAD retry), keep auth and test-hook secrets out of process listings via a private env file, `qa close` keeps its session file when bb's close fails, `durations --write` refuses partial or one-engine runs, and the trace gate checks every milestone a row lists and ignores tags in comments.
 
 ## T1.1s identity audit
 
@@ -509,3 +510,7 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B6 (Folder, trash and vault write races and authority) checker P2: link revocation can make the rename response disclose the link root's parent — `updateFolder` decides whether to hide `parentId` with a fresh `liveLink()` lookup after the write, so a revoke between the rename UPDATE and that lookup returns the link root's real (opaque) parentId (narrow race) → keep the link scope that authorized the request, or fail closed.
 - T3.B2 (Serialized, admitted title writes) checker P2: a note opened from Trash with no frontmatter shows an empty, permanently busy Properties panel: the new gate (`frontmatter === null && !bound`) renders an empty aria-busy div, and the read-only Trash view never makes a collaborative binding, so it never leaves that state (before, it showed 'No properties yet') → tell 'content not loaded yet' apart from 'collab binding' on the Trash read path.
 - T3.B2 (Serialized, admitted title writes) checker P2: the j02 IME test cannot catch an early commit of composing text: it types and acknowledges the whole name before compositionstart, sends composition events with empty data, and its 'nothing committed early' check reads the same DOM text, so pushing draft composing input into the shared title before compositionend would still pass (the focus and preventDefault checks do work and were red before the fix).
+- T3.B22 (CI and local stack tooling) checker P2: `drainUnreadBody` (apps/web/src/worker/drain.ts, called from server.ts) awaits `request.arrayBuffer()` with no deadline, so a sender that declares a small Content-Length and holds the body open delays its own refusal (only its own request; no lock or DO state held) → add a short drain deadline.
+- T3.B22 (CI and local stack tooling) checker P2: the wrangler patch stamps a pooled connection idle when response headers arrive, but kj returns it to the pool only after the body is consumed, so after a long streamed body (R2 media) a POST can still land on a connection about to idle out (local and CI tooling only) → stamp idle at body completion.
+- T3.B22 (CI and local stack tooling) checker P2: `stack.mjs` writes secrets.env before spawn, so a launch that throws before `waitServing` never runs `removeSecretEnv` and leaves the 0600 file in the run dir (local hygiene) → remove it on every launch failure path.
+- T3.B22 (CI and local stack tooling) checker P2: the red run 38038553390 failed the B063 proxy, B065 stack and B042 --write legs on harness errors (headers.getAll, unexported wranglerArgs and main) rather than the named defects; the assertions would fail against the old code, so this is a process gap only.
