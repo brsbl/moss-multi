@@ -671,6 +671,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **T8.4:** MIGRATION.md.
   - **T8.5p:** a demo-content and signature-shot generator that runs against any stack.
   - **T8.3a:** an adversarial sweep against a local production build.
+  - **T8.B1** (backlog B364-B367): the sweep's body caps count only the Worker's JSON `too-large` 413, and its revocation legs revoke only an admitted socket (a sync frame, or a workspace `pong`) and require 4403 or 4402; the authz matrix checks completeness by method and path (folder-member PATCH and DELETE, asset HEAD, preview GET) and each caller-only, viewer and agent-key refusal's status and JSON error.
   - **After credentials:** T1.10/T8.2 run the suite on staging, T8.3 repeats the sweep on staging, and T8.5 builds the demo on staging.
   - **Rules:** CLI QA uses `MOSS_MULTI_NO_OPEN=1`. Test principals only. Credentials only through `bb secret request` into `/Users/brsbl/.config/moss-multi/cloudflare.env`, never printed or read by agents.
 
