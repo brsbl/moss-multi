@@ -11,11 +11,13 @@ interface Write { kind: 'title' | 'touch'; docId: string; value: string | number
 let writes: Write[] = [];
 /** Title writes still to fail, and a gate the empty name's write waits on. */
 let failTitles = 0;
+let failedAt: number[] = [];
 let emptyGate: Promise<void> | null = null;
 const target: ProjectionTarget = {
   title: async (docId, title) => {
     if (failTitles > 0) {
       failTitles -= 1;
+      failedAt.push(Date.now());
       throw new Error('D1 unavailable');
     }
     if (title === '' && emptyGate) await emptyGate;
@@ -37,6 +39,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   writes = [];
   failTitles = 0;
+  failedAt = [];
   emptyGate = null;
 });
 afterEach(() => {
@@ -121,14 +124,14 @@ describe('title projection failures', () => {
   it('a failed title write retries on its own, though a touch landed after it and nothing else was typed', async () => {
     const opened = await open();
     const client = await editor(opened);
-    failTitles = 1;
+    // Fails at ~0.75 s, ~1.75 s and ~3.75 s, so the trailing touch (~5 s) lands while the title is still failing.
+    failTitles = 3;
     await typeTitle(client, 'Retried', 10);
-    await vi.advanceTimersByTimeAsync(800);
-    expect(titles(), 'the first write failed').toEqual([]);
-    const failedAt = Date.now();
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(touches().some((w) => w.at >= failedAt), 'the trailing touch landed after the failure').toBe(true);
-    expect(titles(), 'the retry projected the title').toEqual(['Retried']);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(failedAt.length).toBe(3);
+    const landed = writes.find((w) => w.kind === 'title');
+    expect(landed?.value, 'the retry projected the title').toBe('Retried');
+    expect(touches().some((w) => w.at > failedAt[2] && w.at < landed!.at), 'a touch landed between the last failure and the retry').toBe(true);
   });
 
   it('a wake reconciles a title whose write failed before the eviction', async () => {

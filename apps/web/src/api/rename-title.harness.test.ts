@@ -2,7 +2,7 @@
 // D1, the real PrincipalDO and the one access resolver (A§5.1, A§8): a title is admitted against the state cap like a
 // body (413 doc-cap, nothing written or projected), and a rename is re-authorized in the DocDO's own serialized turn,
 // so a revocation or a trash that commits while it waits after the Worker's admission refuses it with nothing changed.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { d1Projections } from '@moss-multi/sync/projections';
 import { DocDO } from '../../../../packages/sync/src/doc-do.ts';
@@ -16,13 +16,36 @@ import { handleApi } from './router.ts';
 
 let d1: TestD1;
 
+/** Title projections still to fail before reaching D1. */
+let failD1Titles = 0;
+/** When set, the DocDO's next D1 liveness read waits on it once. */
+let livenessGate: { reached: () => void; release: Promise<void> } | null = null;
+
 /** The real DocDO, projecting into D1, settling from it and re-resolving access through the one resolver. */
 class RenameDocDO extends DocDO {
-  static override projectionTarget = () => d1Projections(d1.db);
+  static override projectionTarget = () => {
+    const real = d1Projections(d1.db);
+    return {
+      ...real,
+      title: async (docId: string, title: string) => {
+        if (failD1Titles > 0) {
+          failD1Titles -= 1;
+          throw new Error('D1 unavailable');
+        }
+        return real.title(docId, title);
+      },
+    };
+  };
   static override registry = () => null;
   static override searchFeed = () => null;
   static override access = () => docAccessCheck({ DB: d1.db });
   static override liveness = () => async (docId: string) => {
+    const gate = livenessGate;
+    livenessGate = null;
+    if (gate) {
+      gate.reached();
+      await gate.release;
+    }
     const row = await d1.db.prepare('SELECT deleted_at FROM docs WHERE id = ?').bind(docId).first<{ deleted_at: number | null }>();
     return !row || row.deleted_at !== null;
   };
@@ -281,5 +304,57 @@ describe('a rename and Trash (A§5.1, A§8)', () => {
     expect(response.status).toBe(200);
     expect(doTitle(docId)).toBe('Renamed after restore');
     expect((await row(docId))?.title).toBe('Renamed after restore');
+  });
+});
+
+describe('a rename that settles a stale Trash state first (A§8)', () => {
+  /** Trashes the note, then makes D1 live again without the DocDO hearing: a restore whose settle failed. */
+  async function restoredUnsettled(title: string): Promise<string> {
+    const docId = await newDoc(title);
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    expect((await trash(docId)).status).toBe(200);
+    await d1.db.prepare('UPDATE docs SET deleted_at = NULL WHERE id = ?').bind(docId).run();
+    return docId;
+  }
+
+  /** Starts Ben's rename, holds the DocDO's settle read, runs `meanwhile`, then lets it finish. */
+  async function settleRacedRename(docId: string, title: string, meanwhile: () => Promise<unknown>): Promise<Response> {
+    let reached = () => {};
+    let release = () => {};
+    const at = new Promise<void>((done) => { reached = done; });
+    livenessGate = { reached, release: new Promise<void>((done) => { release = done; }) };
+    const pending = rename(docId, title, as(ben));
+    await at;
+    await meanwhile();
+    release();
+    return pending;
+  }
+
+  it('lands once settled when the caller keeps access', async () => {
+    const docId = await restoredUnsettled('Unsettled kept');
+    const response = await settleRacedRename(docId, 'Renamed after settle', async () => {});
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(doTitle(docId)).toBe('Renamed after settle');
+    expect((await row(docId))?.title).toBe('Renamed after settle');
+  });
+
+  it('is refused when the caller is revoked while the settle read is in flight', async () => {
+    const docId = await restoredUnsettled('Unsettled revoked');
+    const before = await snapshot(docId);
+    const response = await settleRacedRename(docId, 'Renamed after revocation',
+      () => d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(docId, ben.id).run());
+    expect(response.status).toBe(404);
+    expect(await snapshot(docId)).toEqual(before);
+  });
+});
+
+describe('a failed title projection into D1 (A§5.1)', () => {
+  it('retries on its own until the D1 row holds the title and its filename', async () => {
+    const docId = await newDoc('Before retry');
+    failD1Titles = 1;
+    const response = await rename(docId, 'D1 retried', as(ada));
+    expect(response.status, 'the projection failed, so the rename reports it').toBe(503);
+    expect((await row(docId))?.title).toBe('Before retry');
+    await vi.waitFor(async () => expect(await row(docId)).toEqual({ title: 'D1 retried', filename: 'd1-retried.md' }), { timeout: 10_000, interval: 100 });
   });
 });

@@ -268,9 +268,23 @@ test('j02-title: @tierA concurrent renames merge character by character, and a t
   expect(await caretIn(ui.title(ben, docId)), "the control: Ben's caret reads at the end once moved there").toBe(merged.length);
   await ada.page.keyboard.press('Home');
   expect(await caretIn(ui.title(ada, docId)), "the control: Ada's caret reads at the start once moved there").toBe(0);
+  // A real clobber, injected through a REST rename that drops each side in turn: the merge check must flag it.
+  // Restoring the merged title afterwards leaves both sides' recorded typing in place.
+  const origin = new URL(ada.page.url()).origin;
+  const renameTo = async (title: string) => {
+    const response = await ada.context.request.patch(`${origin}/api/docs/${docId}`, {
+      headers: { origin, 'content-type': 'application/json' }, data: { title }, timeout: 15_000,
+    });
+    expect(response.status(), `PATCH title ${await response.text()}`).toBe(200);
+  };
   for (const clobbered of [`${south}${base}`, `${base}${north}`]) {
-    expect(await ui.fieldText(ada, docId, 'title'), 'the control: a clobbered title fails the merge check').not.toBe(clobbered);
+    await renameTo(clobbered);
+    await expect.poll(() => ui.fieldText(ben, docId, 'title'), { message: 'the clobber reaches Ben', timeout: RENAME_MS }).toBe(clobbered);
+    expect(await ui.fieldText(ben, docId, 'title'), 'the control: a clobbered title fails the merge check').not.toBe(merged);
+    await renameTo(merged);
+    await expect.poll(() => ui.fieldText(ben, docId, 'title'), { message: 'the merged title is restored', timeout: RENAME_MS }).toBe(merged);
   }
+  await expect.poll(() => ui.fieldText(ada, docId, 'title'), { timeout: RENAME_MS }).toBe(merged);
   await ui.expectNoRemount(ada, docId, 'after concurrent renames');
   await ui.expectNoRemount(ben, docId, 'after concurrent renames');
 });
