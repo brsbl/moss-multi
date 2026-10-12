@@ -68,6 +68,8 @@ export function CommentInputPopover({
   // moss-multi seam: comments: a bound submit settles later; each open or close starts a new composer session
   const shared = useNoteBound(noteId);
   const openGenerationRef = useRef(0);
+  const textRef = useRef(text);
+  textRef.current = text;
   const resolvedCollisionBoundary = useMemo(
     () => resolveCanvasCollisionBoundary(collisionBoundary, anchorRect),
     [anchorRect, collisionBoundary]
@@ -222,16 +224,20 @@ export function CommentInputPopover({
     if (!created) return;
 
     // moss-multi seam: comments (comments.md §4): on a bound note the composer keeps its text until the server takes the
-    // comment, so a refused or lost write stays here and a resubmit retries it; a success clears only this draft.
+    // comment, so a refused or lost write stays here and a resubmit retries it; a success clears only this draft, never
+    // text typed after it was sent.
     const answer = shared ? submitted(noteId, 'root') : null;
     if (answer) {
       const key = getDraftKey(store.get(commentInputStateAtom(noteId)));
       const generation = openGenerationRef.current;
       void answer.then((result) => {
         if (!result.ok) return;
+        const stillOpen = openGenerationRef.current === generation;
+        if (stillOpen && textRef.current.trim() !== trimmedText) return;
+        // A composer closed meanwhile saved its text as the draft: drop it only if it is what was sent.
         const drafts = new Map(store.get(commentDraftAtom));
-        if (key && drafts.delete(key)) store.set(commentDraftAtom, drafts);
-        if (openGenerationRef.current !== generation) return;
+        if (key && (stillOpen || drafts.get(key)?.text.trim() === trimmedText) && drafts.delete(key)) store.set(commentDraftAtom, drafts);
+        if (!stillOpen) return;
         setImageUrls([]);
         setText('');
         onOpenChange(false);

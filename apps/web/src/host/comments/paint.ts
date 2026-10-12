@@ -351,7 +351,7 @@ export function commentsAtPoint(editor: LexicalEditor, x: number, y: number): st
 
 /**
  * Hit-tests the latest pointer position over `root` at most once per animation frame and hands `onHit` the comments
- * under it. Returns the stop, which also drops a frame already queued.
+ * under it, while the editor's paint is bound. Returns the stop, which also drops a frame already queued.
  */
 export function trackCommentHover(editor: LexicalEditor, root: HTMLElement, onHit: (ids: string[]) => void): () => void {
   let frame: number | null = null;
@@ -362,7 +362,8 @@ export function trackCommentHover(editor: LexicalEditor, root: HTMLElement, onHi
     y = event.clientY;
     frame ??= requestAnimationFrame(() => {
       frame = null;
-      onHit(commentsAtPoint(editor, x, y));
+      // An unbound editor (its painter disposed) has no hover to report.
+      if (painters.has(editor)) onHit(commentsAtPoint(editor, x, y));
     });
   };
   // A pointer that left the body ends its hover (the caller's mouseout); a frame queued before must not bring it back.

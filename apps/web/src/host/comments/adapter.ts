@@ -8,7 +8,9 @@ import { $getSelection, $isRangeSelection, type LexicalEditor } from 'lexical';
 import { useSyncExternalStore } from 'react';
 import { knownRole, useDocRole, useKnownRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
-import { createComment, deleteComment, draftOf, editComment, reactTo, replyTo, resolveThread, type Completion, type DraftSlot } from './api.ts';
+import {
+  createComment, deleteComment, draftOf, editComment, failedDrafts, reactTo, replyTo, resolveThread, type Completion, type DraftSlot,
+} from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
 import {
   commentsAtPoint, isShared, noteBound, painterOf, setActive, setHover, sharedDocOf, subscribeAnyPaint, subscribePaint, trackCommentHover,
@@ -25,7 +27,8 @@ export function useNoteBound(noteId: string): boolean {
 
 /**
  * The selection minted when the composer opened, per editor, so peers' edits meanwhile cannot move it (null when the
- * open minted nothing). Cleared by the submit, so a resubmit from the same composer retries its draft.
+ * open minted nothing). Every open mints anew, and a submit leaves it, so a resubmit from the same composer (a retry or
+ * a revision) comments on the same words.
  */
 const stashed = new WeakMap<LexicalEditor, Minted | null>();
 
@@ -37,8 +40,7 @@ export function stashCommentSelection(editor: LexicalEditor): void {
 
 /**
  * CREATE_COMMENT_COMMAND (CommentPlugin's seam), inside the command's update: a block comment on `nodeKey`, or a
- * text comment on the selection minted at open (else, resubmitting the same composer, its failed draft's anchor, else
- * the current selection). True when the comment was sent; null for an editor with no binding (moss's own path then
+ * text comment on the selection minted at open (else the current one). True when the comment was sent; null for an editor with no binding (moss's own path then
  * runs). The server's answer reaches the composer through `submitted(noteId, 'root')`.
  */
 export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean | null {
@@ -46,11 +48,7 @@ export function createFromCommand(editor: LexicalEditor, payload: { text: string
   const painter = painterOf(editor);
   if (!painter) return false;
   if (!payload.text.trim() || !canComment(painter.docId)) return false;
-  const retry = draftOf(painter.docId, 'root')?.anchor;
-  const minted = payload.nodeKey
-    ? $mintNode(painter.binding, payload.nodeKey)
-    : ((stashed.has(editor) ? stashed.get(editor) : retry) ?? mintCurrent(editor, painter.binding));
-  stashed.delete(editor);
+  const minted = payload.nodeKey ? $mintNode(painter.binding, payload.nodeKey) : (stashed.get(editor) ?? mintCurrent(editor, painter.binding));
   if (!minted) return false;
   createComment(painter.docId, painter.binding.doc, minted, payload.text);
   if (!payload.nodeKey && editor.isEditable()) editor.update($collapseToFocus);
@@ -195,9 +193,19 @@ export function react(noteId: string, commentId: string, emoji: string, on: bool
 /**
  * The server's answer to the submit a bound composer just made in `slot` (CREATE_COMMENT_COMMAND or `mutate`), or
  * null when none is in flight. The composer keeps its text until the answer is a success, so a refused or lost write
- * leaves the draft in place and a resubmit retries it under the same id.
+ * leaves the draft in place and a resubmit of the same text retries it under the same id.
  */
 export function submitted(noteId: string, slot: DraftSlot): Promise<Completion> | null {
   const draft = draftOf(noteId, slot);
   return draft && draft.failed === undefined ? draft.done : null;
+}
+
+/**
+ * The text of `slot`'s failed submits, for a composer to offer again (a reply box that opens, an edit that starts): a
+ * thread's failed replies together, a comment's latest failed edit. Null when none failed.
+ */
+export function failedDraftText(noteId: string, slot: DraftSlot): string | null {
+  const failed = failedDrafts(noteId, slot);
+  if (!failed.length) return null;
+  return slot.startsWith('edit:') ? failed.at(-1)!.text : failed.map((draft) => draft.text).join('\n\n');
 }

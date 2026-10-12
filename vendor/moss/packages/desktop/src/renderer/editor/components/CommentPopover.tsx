@@ -57,7 +57,7 @@ import { dispatchCommentThreadPlaced } from '../utils/comment-entry-point';
 import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
 // moss-multi seam: comments (comments.md §12): on a bound note edit and delete are the author's, reactions and
 // @people are the web's; a file-backed note keeps moss's own
-import { isMine, submitted, useCanComment, useNoteBound } from '@moss-multi/host/comments/adapter';
+import { failedDraftText, isMine, submitted, useCanComment, useNoteBound } from '@moss-multi/host/comments/adapter';
 import { CommentReactions, QuickReactions } from '@moss-multi/host/comments/Reactions';
 import { MentionScope } from '@moss-multi/host/comments/mentions';
 
@@ -512,6 +512,8 @@ export function CommentPopover({
 }: CommentPopoverProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const editTextRef = useRef(editText); // moss-multi seam: comments: the edit's text when a bound save settles
+  editTextRef.current = editText;
   const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
   const [replyText, setReplyText] = useState('');
   // moss-multi seam: comments: the reply box's text when a bound submit settles
@@ -699,11 +701,12 @@ export function CommentPopover({
   const startEdit = useCallback(
     (target: NoteComment) => {
       pendingEditScrollTopRef.current = scrollRef.current?.scrollTop ?? null;
-      setEditText(target.text);
+      // moss-multi seam: comments: a bound comment's failed edit starts from the text that was not saved
+      setEditText((shared ? failedDraftText(noteId, `edit:${target.id}`) : null) ?? target.text);
       setEditImageUrls(target.imageUrls ?? (target.imageUrl ? [target.imageUrl] : []));
       setEditingId(target.id);
     },
-    []
+    [noteId, shared]
   );
 
   useLayoutEffect(() => {
@@ -750,11 +753,12 @@ export function CommentPopover({
       if (hasContent && (trimmedText !== target.text || urlsChanged)) {
         onUpdate(target.id, trimmedText, urlsChanged ? editImageUrls : undefined);
         // moss-multi seam: comments (comments.md §12): on a bound note edit mode holds the text until the server takes
-        // it, so a refused or lost save stays open to retry
+        // it, so a refused or lost save stays open to retry, and a revision typed meanwhile stays open to save
         const answer = shared ? submitted(noteId, `edit:${target.id}`) : null;
         if (answer) {
           void answer.then((result) => {
-            if (result.ok) setEditingId((current) => (current === target.id ? null : current));
+            if (!result.ok || editTextRef.current.trim() !== trimmedText) return;
+            setEditingId((current) => (current === target.id ? null : current));
           });
           return;
         }
@@ -864,19 +868,31 @@ export function CommentPopover({
       // otherwise keep the just-typed text) and keep focus for the next comment.
       resetReplyComposer();
       // moss-multi seam: comments (comments.md §12): the reply shows at once as pending; if the server refuses or loses
-      // it, its text and images come back to an empty reply box of the same thread, and a resubmit retries the draft
+      // it, its text comes back to the reply box of the same thread (after anything typed since), and a resubmit of
+      // that text retries the draft; a thread opened later offers its failed replies again
       const answer = shared ? submitted(noteId, `reply:${root.id}`) : null;
       const images = replyImageUrls;
       const rootId = root.id;
       void answer?.then((result) => {
-        if (result.ok || replyRootRef.current !== rootId || replyTextRef.current.trim()) return;
-        setReplyText(text);
-        setReplyImageUrls(images);
+        if (result.ok || replyRootRef.current !== rootId) return;
+        const current = replyTextRef.current.trim();
+        if (current.includes(text)) return;
+        setReplyText(current ? `${current}\n\n${text}` : text);
+        if (!current) setReplyImageUrls(images);
         setReplyResetSignal(s => s + 1);
       });
     },
     [noteId, onReply, replyText, replyImageUrls, resetReplyComposer, root.id, shared]
   );
+
+  // moss-multi seam: comments: an empty reply box of a bound thread that opens offers the replies that failed in it
+  useEffect(() => {
+    if (!open || !shared || replyTextRef.current.trim()) return;
+    const failed = failedDraftText(noteId, `reply:${root.id}`);
+    if (!failed) return;
+    setReplyText(failed);
+    setReplyResetSignal(s => s + 1);
+  }, [noteId, open, root.id, shared]);
 
   const handleDeleteConfirm = useCallback(() => {
     if (!deleteTarget) return;

@@ -71,25 +71,44 @@ export type DraftSlot = 'root' | `reply:${string}` | `edit:${string}`;
  */
 export interface Draft { id: string; text: string; anchor?: Minted; parentId?: string; failed?: string; done: Promise<Completion> }
 
-const drafts = new Map<string, Draft>();
+/** Each slot's submits, oldest first: in flight, or failed and kept until a retry or a later submit replaces them. */
+const drafts = new Map<string, Draft[]>();
 const draftKey = (docId: string, slot: DraftSlot) => `${docId}\n${slot}`;
+const held = (docId: string, slot: DraftSlot): Draft[] => drafts.get(draftKey(docId, slot)) ?? [];
 
+/** The slot's latest submit still held: in flight, or failed. */
 export function draftOf(docId: string, slot: DraftSlot): Draft | undefined {
-  return drafts.get(draftKey(docId, slot));
+  return held(docId, slot).at(-1);
 }
 
-/** Holds `draft` in `slot` while `write` runs: a success clears it, if it is still the slot's, and a failure marks it. */
-function submit(docId: string, slot: DraftSlot, draft: Omit<Draft, 'done' | 'failed'>, write: () => Promise<Completion>): Draft {
-  const key = draftKey(docId, slot);
+/** The slot's failed submits, oldest first. */
+export function failedDrafts(docId: string, slot: DraftSlot): Draft[] {
+  return held(docId, slot).filter((draft) => draft.failed !== undefined);
+}
+
+/** Puts `entry` last in its slot (the latest submit, whose answer the composer waits on), or with `remove` drops it. */
+function place(docId: string, slot: DraftSlot, entry: Draft, remove = false): void {
+  const list = held(docId, slot).filter((draft) => draft !== entry);
+  if (!remove) list.push(entry);
+  if (list.length) drafts.set(draftKey(docId, slot), list);
+  else drafts.delete(draftKey(docId, slot));
+}
+
+/**
+ * Holds `draft` in `slot` while `write` runs: a success clears it and a failure marks it. The slot's failed drafts that
+ * `replaces` matches are dropped first, as this submit carries what the composer now holds in their place.
+ */
+function submit(
+  docId: string, slot: DraftSlot, draft: Omit<Draft, 'done' | 'failed'>, write: () => Promise<Completion>, replaces: (old: Draft) => boolean,
+): Draft {
+  for (const old of failedDrafts(docId, slot)) if (replaces(old)) place(docId, slot, old, true);
   const entry: Draft = { ...draft, done: Promise.resolve<Completion>({ ok: true }) };
+  place(docId, slot, entry);
   entry.done = write().then((result) => {
-    if (drafts.get(key) === entry) {
-      if (result.ok) drafts.delete(key);
-      else entry.failed = result.error;
-    }
+    if (result.ok) place(docId, slot, entry, true);
+    else entry.failed = result.error;
     return result;
   });
-  drafts.set(key, entry);
   return entry;
 }
 
@@ -113,29 +132,36 @@ async function send(docId: string, doc: Doc, id: string, body: Record<string, un
 const sameAnchor = (a: Minted, b: Minted) => a.kind === b.kind && a.start === b.start && a.end === b.end;
 
 /**
- * Creates a root comment on `minted`; it paints at once. A retry on the same anchor reuses the id the draft proposed,
- * so a write whose answer was lost lands once, and one still in flight is not sent again.
+ * Creates a root comment on `minted`; it paints at once. A resubmit of the same text on the same anchor is the same
+ * comment: one still in flight is not sent again, and a failed one is retried under its proposed id, so a write whose
+ * answer was lost lands once. Any other text is a new comment, and replaces the anchor's failed drafts.
  */
 export function createComment(docId: string, doc: Doc, minted: Minted, text: string): string {
-  const held = draftOf(docId, 'root');
-  const same = held?.anchor !== undefined && sameAnchor(held.anchor, minted);
-  if (held && same && held.failed === undefined) return held.id;
-  const id = held && same ? held.id : crypto.randomUUID();
+  const onAnchor = (draft: Draft) => draft.anchor !== undefined && sameAnchor(draft.anchor, minted);
+  const same = held(docId, 'root').filter((draft) => onAnchor(draft) && draft.text === text);
+  const inFlight = same.find((draft) => draft.failed === undefined);
+  if (inFlight) {
+    place(docId, 'root', inFlight);
+    return inFlight.id;
+  }
+  const id = same[0]?.id ?? crypto.randomUUID();
   const anchor: Anchor = { kind: minted.kind, start: minted.start, end: minted.end, status: 'anchored', quote: minted.quote };
   modelFor(doc).addPending(id, pendingRecord(text), anchor);
   submit(docId, 'root', { id, text, anchor: minted }, () =>
-    send(docId, doc, id, { text, anchor: { kind: minted.kind, start: minted.start, end: minted.end, quote: minted.quote } }));
+    send(docId, doc, id, { text, anchor: { kind: minted.kind, start: minted.start, end: minted.end, quote: minted.quote } }), onAnchor);
   return id;
 }
 
-/** Adds a reply to the thread `parentId`; it shows at once. A retry reuses the id the failed reply proposed. */
+/**
+ * Adds a reply to the thread `parentId`; it shows at once. Each submit is its own reply, even while an earlier one is
+ * in flight. A resubmit of a failed reply's exact text retries it under its proposed id; any other text is a new reply
+ * and replaces the thread's failed drafts, whose text the reply box was offered.
+ */
 export function replyTo(docId: string, doc: Doc, parentId: string, text: string): string {
   const slot: DraftSlot = `reply:${parentId}`;
-  const held = draftOf(docId, slot);
-  if (held && held.failed === undefined) return held.id;
-  const id = held?.id ?? crypto.randomUUID();
+  const id = failedDrafts(docId, slot).find((draft) => draft.text === text)?.id ?? crypto.randomUUID();
   modelFor(doc).addPending(id, pendingRecord(text, parentId));
-  submit(docId, slot, { id, text, parentId }, () => send(docId, doc, id, { text, parentId }));
+  submit(docId, slot, { id, text, parentId }, () => send(docId, doc, id, { text, parentId }), () => true);
   return id;
 }
 
@@ -154,7 +180,7 @@ export function editComment(docId: string, id: string, text: string): Promise<Co
     if (result.ok) return { ok: true };
     refuseInput(REFUSED[result.error ?? ''] ?? "That comment couldn't be edited. Try again.");
     return { ok: false, error: result.error ?? 'failed' };
-  }).done;
+  }, () => true).done;
 }
 
 /** Deletes the caller's own comment, or with `thread` their whole thread; the deletion arrives with the records. */
