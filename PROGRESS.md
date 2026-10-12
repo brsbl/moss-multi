@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 46% done** (105 of 230 planned tasks verified)
+**Overall: 46% done** (106 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 53 / 53 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 54 / 54 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -124,6 +124,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-10 — T3.B21 verified: the converter measurement now gates search at the full 2 MB note size for every opener family, fails on any single slow search sample, checks that ordinary search still works after the adversarial bodies, and judges payload memory on settled growth after a warm-up, so its budget verdicts no longer hinge on one noisy sample.
 - 2026-10-10 — T3.B26 verified: a spent answer budget is now kept in the note's storage, so a note server that sleeps and wakes no longer hands viewers or anonymous link holders a fresh budget of full-note encodes.
 - 2026-10-12 — T3.B6 verified: a restore, folder create or rename, note insert or move, link revoke and vault trash now re-check the person's live access and land only on the state they read (a raced restore answers 409), agent keys can no longer rename or trash a vault, and a link holder renaming the link's own folder no longer learns its parent.
+- 2026-10-12 — T3.B2 verified: renaming a note is now checked against the person's live access, Trash and the note's size cap in the note server's own turn (a revoked caller or trashed note gets 404, an oversized title 413, with nothing written), a failed title update to the workspace list retries until it lands, and typing a title with an IME no longer commits or jumps early on Enter or ArrowDown.
 
 ## T1.1s identity audit
 
@@ -506,3 +507,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B21 (Converter measurement gates) checker P2: the warm-search recovery check in `searchBudgetProblems` (scripts/measure-converter.mjs) only compares the post-adversarial snippet with the baseline, so two equally empty, null or missing snippets pass; the worker checks the hit count but not the snippet → assert the known snippet for the warm fixture.
 - T3.B21 (Converter measurement gates) checker P2: the B337 near-boundary RSS samples in `measure-converter.test` are illustrative, not recorded from CI, and the sustained-growth control runs only at predicate level on made-up arrays (three unchanged remote SP2 runs at one SHA grew -9.2, 12.2 and 10.0 MB against the 64 MB budget) → add a remote control that allocates real memory through the sampler.
 - T3.B6 (Folder, trash and vault write races and authority) checker P2: link revocation can make the rename response disclose the link root's parent — `updateFolder` decides whether to hide `parentId` with a fresh `liveLink()` lookup after the write, so a revoke between the rename UPDATE and that lookup returns the link root's real (opaque) parentId (narrow race) → keep the link scope that authorized the request, or fail closed.
+- T3.B2 (Serialized, admitted title writes) checker P2: a note opened from Trash with no frontmatter shows an empty, permanently busy Properties panel: the new gate (`frontmatter === null && !bound`) renders an empty aria-busy div, and the read-only Trash view never makes a collaborative binding, so it never leaves that state (before, it showed 'No properties yet') → tell 'content not loaded yet' apart from 'collab binding' on the Trash read path.
+- T3.B2 (Serialized, admitted title writes) checker P2: the j02 IME test cannot catch an early commit of composing text: it types and acknowledges the whole name before compositionstart, sends composition events with empty data, and its 'nothing committed early' check reads the same DOM text, so pushing draft composing input into the shared title before compositionend would still pass (the focus and preventDefault checks do work and were red before the fix).
