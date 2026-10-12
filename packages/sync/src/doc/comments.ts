@@ -9,6 +9,7 @@ import { decodeRelPos, encodeRelPos, findQuote, positionAt, project, type TextQu
 import { CommentsWriter, ENGINE_SKIPPED_ORIGINS, newCommentsClient, type GuardRefusal } from './comments-guard.ts';
 import type { DocStore } from './persistence.ts';
 import type { ImportedMarks } from '../server-doc.ts';
+import type { RestoredSpans } from './version-content.ts';
 import { COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
 
 /** A comment's text, in characters (413 past it). */
@@ -395,15 +396,15 @@ export class DocComments {
 
   /**
    * After a version restore (A§14; comments.md limitation 6): each detached comment the version held anchored is
-   * minted again on the restored units at its recorded span, only when they read exactly as they did in the version
-   * and stay under OVERLAP_CAP. A server-trusted re-mint from the snapshot, never a search.
+   * minted again on the items the restore wrote for its span, only when both ends are still live, the units between
+   * them read exactly as they did in the version, and they stay under OVERLAP_CAP. Ordinals never pick the items: a
+   * three-way restore keeps inserts made after its base, which shift them. A server-trusted re-mint, never a search.
    */
-  reanchor(spans: Record<string, [first: number, last: number, kind: Anchor['kind'], text: string]>): void {
+  reanchor(spans: RestoredSpans): void {
     const comments = this.doc.getMap<unknown>('comments');
-    const wanted = Object.entries(spans).filter(([id, span]) => Array.isArray(span) && comments.has(`c:${id}`)
+    const wanted = Object.entries(spans).filter(([id]) => comments.has(`c:${id}`)
       && (comments.get(`a:${id}`) as Anchor | undefined)?.status === 'orphaned');
     if (!wanted.length) return;
-    const text = unitText(this.doc);
     const anchoredEnds: Y.ID[] = [];
     for (const [key, value] of this.doc.getMap<Anchor>('comments')) {
       if (!key.startsWith('a:') || value?.status !== 'anchored') continue;
@@ -411,18 +412,24 @@ export class DocComments {
       const e = safeItem(value.end);
       if (s && e) anchoredEnds.push(s, e);
     }
-    const ordinals = ordinalsOf(this.doc, anchoredEnds);
+    const ordinals = ordinalsOf(this.doc, [...anchoredEnds, ...wanted.flatMap(([, [start, end]]) => [start, end])]);
     const intervals: [number, number][] = [];
     for (let i = 0; i < anchoredEnds.length; i += 2) {
       const a = ordinals.get(idKey(anchoredEnds[i]));
       const b = ordinals.get(idKey(anchoredEnds[i + 1]));
       if (a !== undefined && b !== undefined && a <= b) intervals.push([a, b]);
     }
-    const fits = wanted.filter(([, [first, last, , quote]]) => Number.isInteger(first) && Number.isInteger(last) && first <= last
-      && last - first < MAX_QUOTE && text.slice(first, last + 1) === quote);
-    const units = unitsAt(this.doc, fits.flatMap(([, [first, last]]) => [first, last]));
+    const text = unitText(this.doc);
+    const fits: [string, number, number, Anchor['kind']][] = [];
+    for (const [id, [start, end, kind, quote]] of wanted) {
+      const first = ordinals.get(idKey(start));
+      const last = ordinals.get(idKey(end));
+      if (first === undefined || last === undefined || first > last || last - first >= MAX_QUOTE) continue;
+      if (text.slice(first, last + 1) === quote) fits.push([id, first, last, kind]);
+    }
+    const units = unitsAt(this.doc, fits.flatMap(([, first, last]) => [first, last]));
     const minted = new Map<string, Anchor>();
-    for (const [id, [first, last, kind]] of fits) {
+    for (const [id, first, last, kind] of fits) {
       const s = units.get(first);
       const e = units.get(last);
       if (!s || !e || maxCoverage(intervals, first, last) >= OVERLAP_CAP) continue;
