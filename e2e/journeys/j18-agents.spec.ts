@@ -124,14 +124,15 @@ test('j18-agents rate: the 61st push in a minute gets 429 with retry-after @p:ag
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: JSON.stringify({ newText: base, baseHash, baseText: base }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(90_000),
     });
-    // Ten at a time, so the minute's pushes land inside one window even at staging's round trip.
-    for (let i = 0; i < PUSHES_PER_MINUTE; i += 10) {
-      const batch = await Promise.all(Array.from({ length: Math.min(10, PUSHES_PER_MINUTE - i) }, () => push()));
-      expect(batch.map((response) => response.status), `pushes ${i + 1} to ${i + batch.length} of ${PUSHES_PER_MINUTE}`).toEqual(batch.map(() => 200));
-    }
+    // The limit is charged as a push arrives, before the doc applies it; the doc applies pushes one at a time, which on
+    // staging took longer than the window. So the minute's pushes go at once, and the 61st follows while they apply.
+    const minute = Promise.all(Array.from({ length: PUSHES_PER_MINUTE }, () => push()));
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
     const over = await push();
+    const statuses = (await minute).map((response) => response.status);
+    expect(statuses, `the minute's ${PUSHES_PER_MINUTE} pushes`).toEqual(statuses.map(() => 200));
     expect(over.status, 'the 61st push in the minute').toBe(429);
     expect(Number(over.headers.get('retry-after')), 'with retry-after').toBeGreaterThan(0);
     expect(await over.json()).toMatchObject({ ok: false, reason: 'rate-limited' });
