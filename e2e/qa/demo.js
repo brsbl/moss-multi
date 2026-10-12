@@ -557,12 +557,16 @@ export const STEPS = {
     return { id, created, changed };
   },
 
-  /** Ada's census of a freshly loaded every-node note: how many of each family it renders, once every one has. */
+  /**
+   * Ada's census of a freshly loaded every-node note: how many of each family it renders, read once every family
+   * has rendered (or after 30 s) and the counts hold still. The caller judges it.
+   */
   async census({ docId }) {
     const page = await person('ada');
     await visit(page, `/d/${docId}`);
     await openNote(page, docId);
-    let last = await everyFamily(page, docId, 'in the census');
+    let last = await census(page, docId);
+    await until('every node family renders', async () => familyProblems((last = await census(page, docId))).length === 0, 30_000).catch(() => {});
     await until('the census holds still', async () => {
       await pause(500);
       const now = await census(page, docId);

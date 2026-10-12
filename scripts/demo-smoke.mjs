@@ -5,7 +5,7 @@
 // itself checks the notes, media, comments, reactions, suggestions, versions and the view link.
 //   node scripts/demo-smoke.mjs --run-id RUN [--driver puppeteer --chrome PATH] [--skip-agent]
 import { pathToFileURL } from 'node:url';
-import { censusDiff } from '../e2e/qa/demo.js';
+import { censusDiff, familyProblems } from '../e2e/qa/demo.js';
 import { buildDemo, NOTES, noteParams, withDemoRun } from './demo.mjs';
 import { parseArgs } from './qa.mjs';
 
@@ -30,7 +30,7 @@ export async function resumeLegs(opts, deps = {}) {
     await step('folder', { folderName: RESUME_FOLDER });
     const made = await step('note', noteParams(every, RESUME_FOLDER, 'Uninterrupted'));
     const { census: reference } = await step('census', { docId: made.id });
-    const problems = [];
+    const problems = familyProblems(reference).map((p) => `the uninterrupted note: ${p}`);
     if (reference.image !== 1 || reference.video !== 1) problems.push(`the uninterrupted note holds ${reference.image} images and ${reference.video} videos, not one of each`);
     for (const stop of STOPS) {
       const params = noteParams(every, RESUME_FOLDER, `Stopped after the ${stop}`);

@@ -11,7 +11,7 @@ const SAFE_NAME = /^[\w.-]+$/;
 
 /** The script with its last line returned, when that line is an expression (bb prints the last expression's value). */
 export function returningLast(source) {
-  const lines = source.replace(/\s+$/, '').split('\n');
+  const lines = source.trimEnd().split('\n');
   const last = lines.at(-1);
   if (/^\s*(?:await\s|\(|[\w$.[\]"']+\s*\()/.test(last) && !/^\s*(?:const|let|var|if|for|while|return|throw|\})\b/.test(last)) {
     lines[lines.length - 1] = `return (${last.replace(/;\s*$/, '')});`;

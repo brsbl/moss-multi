@@ -6,6 +6,8 @@ Every node family moss renders, in one shared note. A paragraph with **bold**, *
 
 ### Heading three
 
+#### Heading four
+
 - A bullet
 - Another bullet
     - A nested bullet
@@ -16,7 +18,7 @@ Every node family moss renders, in one shared note. A paragraph with **bold**, *
 - [ ] An open task
 - [x] A finished task
 
-Inline nodes: a formula {{2+3|5}}, a named value {{timeline|6 weeks}}, a wiki link [[Launch plan]] and a color #ff8800.
+Inline nodes: a formula {{2+3|5}}, a named value {{timeline|6 weeks}}, a wiki link [[Launch plan]], an embed pill https://example.com/pill and a color #ff8800.
 
 > A quote with **bold** words.
 
@@ -64,6 +66,10 @@ const answer: number = 42;
   </script>
 </div>
 ```
+
+A web embed of a page reserved for examples (RFC 2606):
+
+![](https://example.com/)
 
 ---
 
