@@ -16,6 +16,124 @@ export function planNotes(workspace, folderName, titles) {
   return { folderId: folder?.id ?? null, ids };
 }
 
+/** Every node family the every-node note holds, as the selector its rendered form carries inside the body. */
+export const EVERY_NODE_FAMILIES = [
+  { family: 'heading 1', selector: 'h1' },
+  { family: 'heading 2', selector: 'h2' },
+  { family: 'heading 3', selector: 'h3' },
+  { family: 'heading 4', selector: 'h4' },
+  { family: 'bulleted list', selector: 'ul.list-disc' },
+  { family: 'nested list', selector: 'li > ul, li > ol' },
+  { family: 'numbered list', selector: 'ol' },
+  { family: 'checklist item', selector: 'li[role="checkbox"]' },
+  { family: 'bold', selector: 'strong' },
+  { family: 'italic', selector: 'em' },
+  { family: 'inline code', selector: 'code' },
+  { family: 'link', selector: 'a[href]' },
+  { family: 'formula', selector: '[data-formula-node-key]' },
+  { family: 'wiki link', selector: '[data-file-link-node-key]' },
+  { family: 'embed pill', selector: '[data-embed-pill-node-key]' },
+  { family: 'color code', selector: '[data-color-node-key]' },
+  { family: 'quote', selector: 'blockquote' },
+  { family: 'table', selector: 'table.moss-table' },
+  { family: 'callout', selector: '.moss-callout' },
+  { family: 'tabs', selector: '.moss-tab-group' },
+  { family: 'code block', selector: '.moss-codeblock-pre' },
+  { family: 'chart', selector: '[aria-label="Insert paragraph before chart"]' },
+  { family: 'canvas', selector: '[aria-label="Insert paragraph before canvas"]' },
+  { family: 'HTML block', selector: '[data-moss-html-preview-viewport]' },
+  { family: 'divider', selector: 'hr' },
+  { family: 'web embed', selector: '[data-web-embed-node]' },
+  { family: 'image', selector: 'img[src*="/assets/"]' },
+  { family: 'video', selector: '[data-video-node-kind="local"]' },
+];
+
+/** The families a body census lacks, and any block drawn as its error placeholder. */
+export function familyProblems(census, families = EVERY_NODE_FAMILIES) {
+  const problems = families.filter(({ family }) => !census[family]).map(({ family }) => `no ${family}`);
+  if (census.errors) problems.push(`${census.errors} blocks show their error placeholder`);
+  return problems;
+}
+
+/** Where two body censuses differ, as "family: want, got". */
+export function censusDiff(want, got) {
+  return [...new Set([...Object.keys(want), ...Object.keys(got)])]
+    .filter((key) => (want[key] ?? 0) !== (got[key] ?? 0))
+    .sort()
+    .map((key) => `${key}: ${want[key] ?? 0}, got ${got[key] ?? 0}`);
+}
+
+/** The markdown's top-level blocks: split at blank lines outside ``` fences and ::: containers. */
+export function markdownBlocks(markdown) {
+  const blocks = [];
+  let current = [];
+  let fence = null;
+  for (const line of markdown.split('\n')) {
+    if (fence) {
+      current.push(line);
+      if (line.trim() === fence) fence = null;
+      continue;
+    }
+    const open = /^(```|:::)/.exec(line);
+    if (open) fence = open[1];
+    if (!open && line.trim() === '') {
+      if (current.length) blocks.push(current.join('\n'));
+      current = [];
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length) blocks.push(current.join('\n'));
+  return blocks;
+}
+
+/** The first half of the markdown's blocks: what an interrupted paste leaves. */
+export function partialMarkdown(markdown) {
+  const blocks = markdownBlocks(markdown);
+  return blocks.slice(0, Math.ceil(blocks.length / 2)).join('\n\n');
+}
+
+export const mediaKind = (file) => (file.type.startsWith('video/') ? 'video' : 'image');
+
+/**
+ * What a note still needs, from its body as read: the whole paste when the body lacks its last line (after clearing
+ * a partial paste, unless the note has comments, suggestions or named versions, which only a finished note gets),
+ * then each media file of a kind the body holds fewer of than the note wants.
+ */
+export function notePlan(body, { media = [], later = false } = {}) {
+  const paste = !body.done;
+  if (paste && !body.empty && later) {
+    throw new Error('the note lacks its last line but has comments, suggestions or versions: it was edited after it was built, so the demo leaves it alone');
+  }
+  const have = paste ? { image: 0, video: 0 } : { image: body.images, video: body.videos };
+  const missing = media.filter((file) => {
+    const kind = mediaKind(file);
+    if (have[kind] > 0) {
+      have[kind] -= 1;
+      return false;
+    }
+    return true;
+  });
+  return { clear: paste && !body.empty, paste, media: missing };
+}
+
+/** What keeps a built demo from holding exactly one of each thing it makes: [] when it does. */
+export function demoProblems(seen, want) {
+  const problems = [];
+  const once = (what, n) => {
+    if (n !== 1) problems.push(`${what}: ${n ?? 0}, not 1`);
+  };
+  for (const title of want.titles) once(`note "${title}"`, seen.titles[title]);
+  for (const text of want.comments) once(`comment "${text}"`, seen.comments[text]);
+  for (const r of want.reactions) once(`${r.emoji} on "${r.on}"`, seen.reactions[`${r.emoji} ${r.on}`]);
+  for (const name of want.pending) once(`pending suggestion by ${name}`, seen.pending[name]);
+  for (const name of want.versions) once(`version "${name}"`, seen.versions[name]);
+  once('view link to the folder', seen.viewLinks);
+  for (const kind of ['image', 'video']) once(`${kind} in "${want.mediaNote}"`, seen.families[kind]);
+  problems.push(...familyProblems(seen.families).map((p) => `"${want.mediaNote}": ${p}`));
+  return problems;
+}
+
 /** The wanted threads' roots the note lacks, and the replies it lacks under roots it has. */
 export function commentGaps(listing, wanted) {
   const roots = [];
@@ -259,6 +377,38 @@ async function pasteFile(page, id, file) {
 
 const count = (page, selector) => page.$$eval(selector, (all) => all.length);
 
+/** How many of each node family the body renders, and how many blocks show their error placeholder. */
+const census = (page, id) => page.$eval(bodyOf(id), (root, families) => ({
+  ...Object.fromEntries(families.map(({ family, selector }) => [family, root.querySelectorAll(selector).length])),
+  errors: root.querySelectorAll('[data-node-view-error]').length,
+}), EVERY_NODE_FAMILIES);
+
+/** Waits until the body renders every family, then returns its census; fails naming what is missing. */
+async function everyFamily(page, id, when) {
+  let last = {};
+  await until(`every node family renders ${when}`, async () => familyProblems((last = await census(page, id))).length === 0, 30_000)
+    .catch((error) => { throw new Error(`${error.message}: ${familyProblems(last).join(', ')}`); });
+  return last;
+}
+
+/** The body as the note step reads it: empty, holding its last line, and its uploaded images and videos. */
+const bodyState = (page, id, doneText) => page.$eval(bodyOf(id), (root, { doneText, families }) => ({
+  empty: (root.textContent ?? '').trim() === '' && !root.querySelector('[data-lexical-decorator="true"]'),
+  done: (root.textContent ?? '').includes(doneText),
+  images: root.querySelectorAll(families.find((f) => f.family === 'image').selector).length,
+  videos: root.querySelectorAll(families.find((f) => f.family === 'video').selector).length,
+}), { doneText, families: EVERY_NODE_FAMILIES });
+
+const mediaSelector = (id, file) => `${bodyOf(id)} ${EVERY_NODE_FAMILIES.find((f) => f.family === mediaKind(file)).selector}`;
+
+/** Selects the whole body and deletes it with the keyboard, as a person clearing a botched paste does. */
+async function clearBody(page, id) {
+  await page.$eval(bodyOf(id), (root) => root.focus());
+  await chord(page, MOD, 'KeyA');
+  await page.keyboard.press('Backspace');
+  await until('the body is empty', () => page.$eval(bodyOf(id), (root) => (root.textContent ?? '').trim() === '' && !root.querySelector('[data-lexical-decorator="true"]')));
+}
+
 /** Scrolls the block holding `text` (or matching `selector`) to the middle of the editor. */
 async function center(page, id, { text, selector }) {
   await page.$eval(bodyOf(id), (root, { text, selector }) => {
@@ -344,39 +494,83 @@ export const STEPS = {
     return { folderId, created: true };
   },
 
-  /** One note in the folder: "+ Note" with the folder active, the title, Enter, a markdown paste, then media pasted at the end. */
-  async note({ folderName, title, markdown, media = [], mediaAfter = null }) {
+  /**
+   * One note in the folder: "+ Note" with the folder active, the title, Enter, a markdown paste, then media pasted at
+   * the end. A note of that title already there is read first and only what it lacks is finished: the paste when its
+   * body lacks `doneText` (a partial paste is cleared first), then each missing media file. `stopAfter` ('title',
+   * 'paste' with half the blocks, or 'media' after the first file) stops early, as an interrupted run does.
+   */
+  async note({ folderName, title, markdown, doneText, media = [], mediaAfter = null, stopAfter = null }) {
     const page = await person('ada');
     await visit(page, '/');
     const planned = planNotes(await read(page, '/api/workspace'), folderName, [title]);
     if (!planned.folderId) throw new Error(`no folder ${folderName}; run the folder step first`);
-    if (planned.ids[title]) return { id: planned.ids[title], created: false };
-    // A new note lands in the active folder: pick it in the sidebar first.
-    const row = await page.waitForSelector(folderRowOf(folderName), { visible: true });
-    await row.click();
-    await pause(300);
-    const before = await paneIds(page);
-    await press(page, 'button', 'Create new note');
-    const id = await until('the new note opens', async () => (await paneIds(page)).find((x) => x && !before.includes(x)));
-    await page.waitForSelector(`${paneOf(id)}[${DOM.DOC_STATE_ATTR}="live"] [${DOM.TITLE_BINDING_ATTR}="live"]`, { timeout: 20_000 });
-    await until('the title takes focus', () => page.$eval(titleOf(id), (el) => el.contains(document.activeElement)));
-    await page.keyboard.type(title);
-    await page.keyboard.press('Enter');
-    await until('Enter moves to the body', () => page.$eval(bodyOf(id), (el) => el.contains(document.activeElement)));
-    await pasteMarkdown(page, id, markdown);
-    await settle(page, id);
-    for (const [index, file] of media.entries()) {
-      const selector = `${bodyOf(id)} ${file.type.startsWith('video/') ? 'video' : 'img'}`;
-      const had = await count(page, selector);
-      const text = mediaAfter;
-      await selectRendered(page, id, text, text.length, 0);
-      if (!(await pasteFile(page, id, file))) throw new Error(`the editor took no paste of ${file.name}`);
-      await until(`${file.name} renders (${index + 1} of ${media.length})`, async () => (await count(page, selector)) > had, 30_000);
+    let id = planned.ids[title];
+    const created = !id;
+    const changed = [];
+    if (created) {
+      // A new note lands in the active folder: pick it in the sidebar first.
+      const row = await page.waitForSelector(folderRowOf(folderName), { visible: true });
+      await row.click();
+      await pause(300);
+      const before = await paneIds(page);
+      await press(page, 'button', 'Create new note');
+      id = await until('the new note opens', async () => (await paneIds(page)).find((x) => x && !before.includes(x)));
+      await page.waitForSelector(`${paneOf(id)}[${DOM.DOC_STATE_ATTR}="live"] [${DOM.TITLE_BINDING_ATTR}="live"]`, { timeout: 20_000 });
+      await until('the title takes focus', () => page.$eval(titleOf(id), (el) => el.contains(document.activeElement)));
+      await page.keyboard.type(title);
+      await page.keyboard.press('Enter');
+      await until('Enter moves to the body', () => page.$eval(bodyOf(id), (el) => el.contains(document.activeElement)));
+      await until('the title is listed', async () => planNotes(await read(page, '/api/workspace'), folderName, [title]).ids[title] === id, 20_000);
+      changed.push('title');
+      if (stopAfter === 'title') return { id, created, changed, stopped: stopAfter };
+    } else {
+      return { id, created, changed };
+    }
+    const body = await bodyState(page, id, doneText);
+    let later = false;
+    if (!body.done && !body.empty) {
+      const [comments, suggestions, versions] = await Promise.all(['comments', 'suggestions', 'versions'].map((what) => read(page, `/api/docs/${id}/${what}`)));
+      later = comments.comments.length > 0 || suggestions.suggestions.length > 0 || versions.versions.some((v) => v.name);
+    }
+    const plan = notePlan(body, { media, later });
+    if (plan.paste) {
+      // A new note's caret is in the body after Enter; a reused one is cleared, which also puts the caret there.
+      if (!created) await clearBody(page, id);
+      await pasteMarkdown(page, id, stopAfter === 'paste' ? partialMarkdown(markdown) : markdown);
       await settle(page, id);
+      changed.push(plan.clear ? 'body (a partial paste replaced)' : 'body');
+      if (stopAfter === 'paste') return { id, created, changed, stopped: stopAfter };
+    }
+    for (const [index, file] of plan.media.entries()) {
+      const selector = mediaSelector(id, file);
+      const had = await count(page, selector);
+      await selectRendered(page, id, mediaAfter, mediaAfter.length, 0);
+      if (!(await pasteFile(page, id, file))) throw new Error(`the editor took no paste of ${file.name}`);
+      await until(`${file.name} renders (${index + 1} of ${plan.media.length})`, async () => (await count(page, selector)) > had, 30_000);
+      await settle(page, id);
+      changed.push(file.name);
+      if (stopAfter === 'media') return { id, created, changed, stopped: stopAfter };
     }
     const where = (await read(page, '/api/workspace')).docs.find((d) => d.id === id);
     if (where?.folderPath !== `Notes/${folderName}`) throw new Error(`"${title}" landed in ${where?.folderPath}, not Notes/${folderName}`);
-    return { id, created: true };
+    return { id, created, changed };
+  },
+
+  /** Ada's census of a freshly loaded every-node note: how many of each family it renders, once every one has. */
+  async census({ docId }) {
+    const page = await person('ada');
+    await visit(page, `/d/${docId}`);
+    await openNote(page, docId);
+    let last = await everyFamily(page, docId, 'in the census');
+    await until('the census holds still', async () => {
+      await pause(500);
+      const now = await census(page, docId);
+      const same = censusDiff(last, now).length === 0;
+      last = now;
+      return same;
+    });
+    return { census: last };
   },
 
   /** The folder shared with Ben at `access` through its Share dialog, and a view link to it, reused once made. */
@@ -400,6 +594,7 @@ export const STEPS = {
     const inviteField = await dialog.$(aria('textbox', `Invite link for ${email}`));
     const invite = inviteField ? await inviteField.evaluate((el) => el.value) : null;
     let linkField = await dialog.$(aria('textbox', `${linkAccess} link`));
+    const linkCreated = !linkField;
     if (!linkField) {
       await press(await dialog.waitForSelector(aria('radiogroup', 'Link access')), 'radio', linkAccess);
       await press(dialog, 'button', 'Create link');
@@ -407,7 +602,7 @@ export const STEPS = {
     }
     const link = await linkField.evaluate((el) => el.value);
     await page.keyboard.press('Escape');
-    return { shared, invite, link };
+    return { shared, invite, link, linkCreated };
   },
 
   /** Ben follows Ada's invite, signed in as the address it was sent to, and lands on the folder. */
@@ -571,10 +766,17 @@ export const STEPS = {
     return { shot: path };
   },
 
-  /** Ada's view of the every-node note: its top, its HTML block after a click on its button, and its media. */
+  /**
+   * Ada's view of the every-node note: every family renders, live and after a reload; then shots of its top, its HTML
+   * block after a click on its button, and its media.
+   */
   async everyNode({ docId, htmlResult }) {
     const page = await person('ada');
     await openNote(page, docId);
+    await everyFamily(page, docId, 'live');
+    await visit(page, `/d/${docId}`);
+    await openNote(page, docId);
+    const reloaded = await everyFamily(page, docId, 'after a reload');
     await calm(page);
     await page.$eval(`${paneOf(docId)} [${DOM.EDITOR_CANVAS_ATTR}]`, (el) => el.scrollTo(0, 0)).catch(() => {});
     const shots = [await shot(page, 'every-node-top')];
@@ -594,7 +796,7 @@ export const STEPS = {
     shots.push(await shot(page, 'every-node-html'));
     await center(page, docId, { selector: 'video' });
     shots.push(await shot(page, 'every-node-media'));
-    return { shots };
+    return { shots, census: reloaded };
   },
 
   /** Ada's launch plan with the suggestions panel open, then with a comment thread open. */
@@ -646,5 +848,52 @@ export const STEPS = {
     await page.waitForSelector(`${pane} [${DOM.BODY_BINDING_ATTR}="live"], ${pane} [${DOM.BODY_BINDING_ATTR}="readonly"]`, { timeout: 20_000 });
     await calm(page);
     return { shot: await shot(page, 'folder-link') };
+  },
+
+  /**
+   * What the built demo holds, as Ada reads it: notes per title in the folder, each wanted comment, each reaction's
+   * count on its message, pending suggestions per author, named versions, view links to the folder and the every-node
+   * note's census. `demoProblems` turns it into the list of what is not there exactly once.
+   */
+  async verify({ folderName, titles, docId, mediaDocId, threads }) {
+    const page = await person('ada');
+    await visit(page, '/');
+    const workspace = await read(page, '/api/workspace');
+    const { folderId } = planNotes(workspace, folderName, []);
+    const tally = (items) => items.reduce((all, key) => ({ ...all, [key]: (all[key] ?? 0) + 1 }), {});
+    const docs = (workspace.docs ?? []).filter((d) => d.folderPath === `Notes/${folderName}`);
+    const listing = (await read(page, `/api/docs/${docId}/comments`)).comments;
+    const comments = tally(listing.map((c) => c.text.trim()));
+    const suggestions = (await read(page, `/api/docs/${docId}/suggestions`)).suggestions.filter((s) => !CLOSED.has(s.status));
+    const versions = (await read(page, `/api/docs/${docId}/versions`)).versions.filter((v) => v.name);
+    const links = folderId ? (await read(page, `/api/folders/${folderId}/links`)).links : [];
+    await openNote(page, docId);
+    const reactions = {};
+    for (const thread of threads) {
+      const root = listing.find((c) => c.parentId === null && c.text.trim() === thread.text);
+      if (!root || !(thread.reactions ?? []).length) continue;
+      const popover = await openThread(page, root.id, thread.text);
+      for (const reaction of thread.reactions) {
+        const message = await messageIn(popover, reaction.on);
+        const shown = await message.evaluate((m, emoji) => (m ? [...m.querySelectorAll('[data-comment-reactions] button[aria-pressed]')]
+          .map((b) => b.getAttribute('aria-label') ?? '')
+          .filter((label) => label.startsWith(`${emoji} `))
+          .reduce((sum, label) => sum + Number(label.slice(emoji.length + 1)), 0) : 0), reaction.emoji);
+        reactions[`${reaction.emoji} ${reaction.on}`] = shown;
+      }
+      await page.keyboard.press('Escape');
+    }
+    const { census: families } = await STEPS.census({ docId: mediaDocId });
+    return {
+      seen: {
+        titles: Object.fromEntries(titles.map((title) => [title, docs.filter((d) => d.title === title).length])),
+        comments,
+        reactions,
+        pending: tally(suggestions.map((s) => s.author?.name)),
+        versions: tally(versions.map((v) => v.name)),
+        viewLinks: links.filter((l) => l.role === 'viewer').length,
+        families,
+      },
+    };
   },
 };
