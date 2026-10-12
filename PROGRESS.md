@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 49% done** (112 of 230 planned tasks verified)
+**Overall: 49% done** (113 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -133,6 +133,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T6.R verified: history now sits on the final M5, and restoring a version of a note with thousands of payloads is accepted instead of refused 413, because the restore base has its own cap sized from the state cap and its write token is charged before the body is read.
 - 2026-10-10 — T6.S9 verified: a stranger or viewer who sends a large restore body is now turned away (404 or 403) before the body is read, the restore's write token is charged to the person rather than the agent key, and a revocation, demotion or trash during a slow upload still wins.
 - 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
+- 2026-10-12 — T6.S5 verified: restoring a version now puts a detached comment back on the exact text or block the restore wrote, even after a peer inserted before it or retyped it, and it survives a DocDO restart; otherwise the comment stays detached.
 
 ## T1.1s identity audit
 
