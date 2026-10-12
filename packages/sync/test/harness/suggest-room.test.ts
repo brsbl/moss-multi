@@ -319,3 +319,147 @@ describe('T5.S12 no suggest refusal escapes the cooldown except the cheap no-roo
     expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
   });
 });
+
+/** Rows of the per-principal refusal state the DocDO keeps in storage (none before the table exists). */
+function refusalRows(opened: Opened): { principal_id: string; refusals: string }[] {
+  const exists = opened.backing.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'suggest_refusals'").length > 0;
+  return exists ? opened.backing.query<{ principal_id: string; refusals: string }>('SELECT principal_id, refusals FROM suggest_refusals ORDER BY principal_id') : [];
+}
+
+/** A wake that keeps the fake clock: the harness's wake clears timers, which resets the clock to its start. */
+async function rewake(opened: Opened): Promise<Opened> {
+  const now = Date.now();
+  const next = wake(opened);
+  vi.setSystemTime(now);
+  return start(next);
+}
+
+describe('T5.S13 suggest refusal counts, cooldowns and the no-room window survive hibernation @p:mean-2', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  let refusals = 0;
+  const refuse = async (client: TestClient) => {
+    refusals += 1;
+    await client.deliver(frame({ t: 'suggest-withdraw', record: `nope-${refusals}` }));
+    await client.pump();
+  };
+
+  it('a cooled-down principal reconnecting after a wake, before the deadline, is refused 4429', { timeout: 60_000 }, async () => {
+    let opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    for (let i = 0; i < SUGGEST_LIMITS.refusals.max; i += 1) await refuse(sam);
+    expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
+    opened = await rewake(opened);
+    const back = await connect(opened, SAM);
+    expect(back.closed?.code, 'refused before the deadline').toBe(CLOSE.connectionLimit);
+    // Once the cooldown ends the principal is admitted again, across another wake.
+    await vi.advanceTimersByTimeAsync(SUGGEST_LIMITS.cooldownMs);
+    opened = await rewake(opened);
+    const later = await on(opened, SAM);
+    expect(later.closed).toBeNull();
+  });
+
+  it('refusals split across two wakes within one window still trip the cooldown', { timeout: 60_000 }, async () => {
+    let opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    await refuse(sam);
+    opened = await rewake(opened);
+    sam.opened = opened;
+    await refuse(sam);
+    expect(sam.closed).toBeNull();
+    opened = await rewake(opened);
+    sam.opened = opened;
+    await refuse(sam);
+    expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
+  });
+
+  it('the stored refusal rows stay bounded and expired ones are pruned', { timeout: 60_000 }, async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    // One principal tripping the cooldown again and again keeps one row of at most `max` timestamps.
+    for (let round = 0; round < 5; round += 1) {
+      const sam = await on(opened, SAM);
+      for (let i = 0; i < SUGGEST_LIMITS.refusals.max; i += 1) await refuse(sam);
+      expect(sam.closed?.code).toBe(CLOSE.connectionLimit);
+      await vi.advanceTimersByTimeAsync(SUGGEST_LIMITS.cooldownMs);
+    }
+    for (let i = 0; i < 20; i += 1) await refuse(await on(opened, { id: `suggester-${i}@example.invalid`, name: `S ${i}`, role: 'suggester' }));
+    const rows = refusalRows(opened);
+    expect(rows.length, 'one row per principal at most').toBeGreaterThan(0);
+    expect(rows.length, 'one row per principal at most').toBeLessThanOrEqual(21);
+    for (const row of rows) expect((JSON.parse(row.refusals) as number[]).length).toBeLessThanOrEqual(SUGGEST_LIMITS.refusals.max);
+    // Past every window and cooldown, the next refusal prunes the expired rows.
+    await vi.advanceTimersByTimeAsync(SUGGEST_LIMITS.refusals.windowMs + SUGGEST_LIMITS.cooldownMs);
+    await refuse(await on(opened, { id: 'suggester-last@example.invalid', name: 'S last', role: 'suggester' }));
+    expect(refusalRows(opened).map((row) => row.principal_id)).toEqual(['suggester-last@example.invalid']);
+  });
+
+  it('an honest suggester across wakes is unaffected and leaves no rows', { timeout: 60_000 }, async () => {
+    let opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    for (let round = 0; round < 3; round += 1) {
+      const leased = await send(sam, { t: 'suggest-lease' });
+      expect(leased.t).toBe('suggest-leased');
+      const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+      expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, 4) })).toMatchObject({ t: 'suggest-ack' });
+      opened = await rewake(opened);
+      sam.opened = opened;
+    }
+    expect(sam.closed).toBeNull();
+    expect(refusalRows(opened)).toEqual([]);
+    // No refusal, no storage write: the table is made by the first refusal, not by a wake.
+    expect(opened.backing.query("SELECT name FROM sqlite_master WHERE name = 'suggest_refusals'"), 'no refusal table').toEqual([]);
+  });
+
+  it('an honest frame after the first does no refusal storage read or write and no attachment write', { timeout: 60_000 }, async () => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    const leased = await send(sam, { t: 'suggest-lease' });
+    const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+    // The suggester's fork: each frame carries only its next keystroke, so clocks continue as a typist's do.
+    const fork = new Y.Doc();
+    Y.applyUpdate(fork, Y.encodeStateAsUpdate(opened.dobj.document));
+    fork.clientID = grant.client;
+    const keystroke = () => {
+      const sv = Y.encodeStateVector(fork);
+      firstBlock(fork).insert(0, 'z');
+      return bytesToBase64(Y.encodeStateAsUpdate(fork, sv));
+    };
+    expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: keystroke() })).toMatchObject({ t: 'suggest-ack' });
+    const queries = vi.spyOn(opened.backing, 'query');
+    const proto = (globalThis as unknown as { WebSocket: { prototype: { serializeAttachment(value: unknown): void } } }).WebSocket.prototype;
+    const attachments = vi.spyOn(proto, 'serializeAttachment');
+    for (let i = 0; i < 10; i += 1) {
+      expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: keystroke() })).toMatchObject({ t: 'suggest-ack' });
+    }
+    fork.destroy();
+    expect(queries.mock.calls.filter(([sql]) => sql.includes('suggest_refusals')), 'no refusal-state SQL').toEqual([]);
+    expect(attachments.mock.calls.length, 'no attachment write').toBe(0);
+  });
+
+  it('a wake keeps a connection in its no-room window: growth frames still short-circuit uncounted', { timeout: 60_000 }, async () => {
+    let opened = await start(openDoc(undefined, SmallDoc as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    const leased = await send(sam, { t: 'suggest-lease' });
+    const grant = (leased as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+    const big = Math.ceil(CAP * SUGGEST_LIMITS.openOpsShare) + 1024;
+    expect(await send(sam, { t: 'suggest-ops', record: grant.record, update: sized(opened.dobj.document, grant.client, big) })).toMatchObject({ t: 'suggest-refused', reason: 'ops-cap' });
+    opened = await rewake(opened);
+    sam.opened = opened;
+    const spies = (['lease', 'merge'] as const).map((name) => vi.spyOn(SuggestIngest.prototype, name));
+    const before = sam.events.length;
+    for (let i = 0; i < 4; i += 1) {
+      await sam.deliver(frame({ t: 'suggest-lease' }));
+      await sam.deliver(frame({ t: 'suggest-merge', into: grant.record, from: 'older-record' }));
+    }
+    await sam.pump();
+    expect(spies.map((spy) => spy.mock.calls.length), 'no admission work after the wake').toEqual([0, 0]);
+    expect(sam.events.slice(before).filter(isReply).map((reply) => reply.t === 'suggest-refused' && reply.reason)).toEqual(Array(8).fill('doc-cap'));
+    expect(sam.closed).toBeNull();
+  });
+});
