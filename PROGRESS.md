@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 54% done** (111 of 205 planned tasks verified)
+**Overall: 49% done** (112 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 9 / 9 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 10 / 10 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -132,6 +132,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T6.S4 verified: restoring a version on a large note now succeeds while a peer types, because its restore point is staged in DocDO SQLite in the restore's turn and moved to R2 afterwards, and a crash before the move recovers on wake.
 - 2026-10-09 — T6.R verified: history now sits on the final M5, and restoring a version of a note with thousands of payloads is accepted instead of refused 413, because the restore base has its own cap sized from the state cap and its write token is charged before the body is read.
 - 2026-10-10 — T6.S9 verified: a stranger or viewer who sends a large restore body is now turned away (404 or 403) before the body is read, the restore's write token is charged to the person rather than the agent key, and a revocation, demotion or trash during a slow upload still wins.
+- 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
 
 ## T1.1s identity audit
 
