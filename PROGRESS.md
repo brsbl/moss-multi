@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 48% done** (111 of 230 planned tasks verified)
+**Overall: 49% done** (112 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 9 / 9 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 7 / 7 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 10 / 10 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 9 / 11 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 10 / 11 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -132,6 +132,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-09 — T8.3 verified: the security sweep now runs against staging and passes all 52 checks (headers, header stripping, existence leaks, origin gate, revocation, SSRF, body caps through the edge, rate limits including spoofed client IPs), with the staging column recorded in docs/SECURITY.md.
 - 2026-10-09 — T8.5 verified: `scripts/demo.mjs` builds the demo in one run with every reply and reaction landing, logs what each step added, and checks the signature shot of a peer's caret and a pending suggestion beside rich blocks live before and after capture, retaking it if the frame is wrong.
 - 2026-10-12 — T8.B1 verified: the security sweep's body caps now count only the Worker's own JSON `too-large` 413, its revocation checks revoke only a socket the server has admitted and require a 4403 or 4402 close, and the authz matrix checks every `/api` route by method as well as path, with the exact refusal status and JSON error.
+- 2026-10-12 — T8.B2 verified: `scripts/demo.mjs` finishes a note an interrupted run left, refuses a second concurrent run through a per-stack lock, checks every node family (including a heading four, an embed pill and a web embed) live and after reload, builds exactly one of each thing it makes, and a CI `demo` job proves resume, first run and duplicate-free rerun.
 
 ## T1.1s identity audit
 
@@ -164,6 +165,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.B2's checker (f9b4e3c, 2026-10-12)
+
+- T8.B2 checker P2 (stale-lock takeover has a narrow compare-then-unlink race): acquireDemoLock (scripts/demo.mjs:212-213) checks the lock text is unchanged and unlinks in two syscalls, so another run can replace the stale lock in between and have its live lock unlinked, leaving two runs holding the stack.
+- T8.B2 checker P2 (a finished every-node note whose last-line marker was edited would be cleared and repasted): notePlan (e2e/qa/demo.js) treats a note as finished only by its 'Media uploaded from this machine:' line and the every-node note has no later-activity guard, so removing that line makes a rerun clear and repaste its body.
+- T8.B2 checker P2 (the 'live' every-family census runs after navigating back to the note, not right after the paste): everyNode calls openNote, which uses page.goto, so both censuses read a freshly loaded note and a paste-time-only render defect would pass.
 
 ### From T8.B1's checker (b1b8119, 2026-10-12)
 
