@@ -15,9 +15,3 @@
     padding-right: 1.5rem;
   }
 }
-
-/* EXPERIMENT T3.B13 */
-[data-moss-note-editor-root="true"] > * {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 2rem;
-}
