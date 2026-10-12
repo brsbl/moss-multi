@@ -1,6 +1,6 @@
 // Parity targets (A§20, S-test §5.2): a moss Ladle story at the pin against the built Worker in the same state.
 // Targets grow per milestone; M0 is the shell.
-import { RETENTION_NOTICE_ATTR } from '../../packages/protocol/src/dom-contract.ts';
+import { HISTORY_VIEW_ATTR, RETENTION_NOTICE_ATTR, VERSION_BADGE_ATTR } from '../../packages/protocol/src/dom-contract.ts';
 
 export type Theme = 'light' | 'dark';
 
@@ -37,14 +37,18 @@ export interface Target {
    *   from the Comments list. moss at the pin has no detached state, so its anchored thread is the oracle.
    * - `open-settings`: Settings is open (the story opens it; the candidate presses the sidebar's Settings), over an
    *   opaque backdrop on both sides.
+   * - `open-history`: the candidate's note, served `e2e/fixtures/history.json`'s versions and current text, opens
+   *   History from its top bar with the newest version selected in Diff vs current; the story is the reference.
    */
-  prepare?: 'trash-open-note' | 'comment-gutter' | 'open-comment-thread' | 'open-detached-thread' | 'open-settings';
+  prepare?: 'trash-open-note' | 'comment-gutter' | 'open-comment-thread' | 'open-detached-thread' | 'open-settings' | 'open-history';
   /** `e2e/fixtures/<fixture>.md` and `.comments.json`: the story note's body and threads, imported as POST /api/docs. */
   fixture?: string;
   /** Capture this element instead of the shell: an overlay or dialog, compared as itself. */
   crop?: string;
   /** Web sections the candidate takes out of layout before capture: those moss has no counterpart for. */
   withhold?: string[];
+  /** Negative controls: CSS that breaks the candidate's layout, each of which must fail the gate. */
+  controls?: { name: string; css: string }[];
 }
 
 /** moss's thread popover. */
@@ -71,6 +75,16 @@ export const TARGETS: Target[] = [
   // The thread its gutter icon opens, compared as the popover.
   { id: 'comment-popover', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-comment-thread', crop: COMMENT_POPOVER },
   // A detached thread opened from the Comments list reads as moss's thread does.
+  // History (T6.3, T6.B3): moss has no history surface, so the oracle is a stored reference story, glyphdown's history
+  // page in moss's DS. A hidden version badge or a floated version list must fail it.
+  {
+    id: 'history', story: 'history-page--default', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16,
+    prepare: 'open-history', crop: `[${HISTORY_VIEW_ATTR}]`,
+    controls: [
+      { name: 'badge hidden', css: `[${VERSION_BADGE_ATTR}] { visibility: hidden !important; }` },
+      { name: 'panel floated', css: `[${HISTORY_VIEW_ATTR}] aside { position: absolute !important; }` },
+    ],
+  },
   { id: 'comment-detached', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-detached-thread', crop: COMMENT_POPOVER },
 ];
 
