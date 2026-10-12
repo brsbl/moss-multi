@@ -59,6 +59,92 @@ export function isLoopback(baseUrl) {
   return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(baseUrl).hostname);
 }
 
+/**
+ * A raw WebSocket upgrade: 'open' when the server keeps it open and talks, else the close code it sends, or the HTTP
+ * status when it never upgrades. Node's WebSocket cannot send a Cookie or Origin, so this speaks the handshake itself.
+ */
+export function rawSocket(base, path, headers = {}) {
+  const url = new URL(path, base);
+  const client = url.protocol === 'https:' ? https : http;
+  return new Promise((done) => {
+    const request = client.request(url, {
+      headers: {
+        connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13',
+        'sec-websocket-key': randomBytes(16).toString('base64'), ...headers,
+      },
+      timeout: TIMEOUT_MS,
+    });
+    const timer = setTimeout(() => {
+      request.destroy();
+      done('timeout');
+    }, TIMEOUT_MS);
+    request.on('response', (response) => {
+      clearTimeout(timer);
+      response.resume();
+      done(`http ${response.statusCode}`);
+    });
+    request.on('error', (error) => {
+      clearTimeout(timer);
+      done(`error ${error.code ?? error.message}`);
+    });
+    request.on('upgrade', (_response, stream, head) => {
+      // The first frames can arrive with the 101 itself, in `head`.
+      let buffer = Buffer.from(head);
+      let settled = false;
+      const finish = (verdict) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(quiet);
+        stream.destroy();
+        done(verdict);
+      };
+      // A socket the server admits stays open; one it refuses is closed at once after the upgrade.
+      const quiet = setTimeout(() => finish('open'), 3_000);
+      const parse = () => {
+        while (buffer.length >= 2) {
+          const opcode = buffer[0] & 0x0f;
+          let length = buffer[1] & 0x7f;
+          let offset = 2;
+          if (length === 126) {
+            if (buffer.length < 4) return;
+            length = buffer.readUInt16BE(2);
+            offset = 4;
+          } else if (length === 127) {
+            if (buffer.length < 10) return;
+            length = Number(buffer.readBigUInt64BE(2));
+            offset = 10;
+          }
+          if (buffer.length < offset + length) return;
+          if (opcode === 0x8) return finish(length >= 2 ? `close ${buffer.readUInt16BE(offset)}` : 'close');
+          buffer = buffer.subarray(offset + length);
+        }
+      };
+      stream.on('data', (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        parse();
+      });
+      stream.on('close', () => finish('ended'));
+      stream.on('error', () => finish('ended'));
+      parse();
+    });
+    request.end();
+  });
+}
+
+/** True when `answer` ({status, type, body}) is the Worker's own body-cap refusal. */
+export function workerTooLarge(answer) {
+  return answer.status === 413;
+}
+
+/** Opens a socket, revokes what admitted it, and reports whether it then closed with `code`. */
+export async function closesOnRevoke(base, { path, headers = {}, revoke }) {
+  const verdict = rawSocket(base, path, headers);
+  const revoked = await revoke();
+  const result = await verdict;
+  return { ok: /^close 44\d\d$|^ended$/.test(result), detail: result, revoked };
+}
+
 export function createSweep(baseUrl) {
   const base = new URL(baseUrl).origin;
   const edge = !isLoopback(base);
@@ -100,80 +186,7 @@ export function createSweep(baseUrl) {
   }
 
   const bearer = (token) => ({ headers: { authorization: `Bearer ${token}` } });
-
-  /**
-   * A raw WebSocket upgrade: 'open' when the server keeps it open and talks, else the close code it sends, or the HTTP
-   * status when it never upgrades. Node's WebSocket cannot send a Cookie or Origin, so this speaks the handshake itself.
-   */
-  function socket(path, headers = {}) {
-    const url = new URL(path, base);
-    const client = url.protocol === 'https:' ? https : http;
-    return new Promise((done) => {
-      const request = client.request(url, {
-        headers: {
-          connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13',
-          'sec-websocket-key': randomBytes(16).toString('base64'), ...headers,
-        },
-        timeout: TIMEOUT_MS,
-      });
-      const timer = setTimeout(() => {
-        request.destroy();
-        done('timeout');
-      }, TIMEOUT_MS);
-      request.on('response', (response) => {
-        clearTimeout(timer);
-        response.resume();
-        done(`http ${response.statusCode}`);
-      });
-      request.on('error', (error) => {
-        clearTimeout(timer);
-        done(`error ${error.code ?? error.message}`);
-      });
-      request.on('upgrade', (_response, stream, head) => {
-        // The first frames can arrive with the 101 itself, in `head`.
-        let buffer = Buffer.from(head);
-        let settled = false;
-        const finish = (verdict) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          clearTimeout(quiet);
-          stream.destroy();
-          done(verdict);
-        };
-        // A socket the server admits stays open; one it refuses is closed at once after the upgrade.
-        const quiet = setTimeout(() => finish('open'), 3_000);
-        const parse = () => {
-          while (buffer.length >= 2) {
-            const opcode = buffer[0] & 0x0f;
-            let length = buffer[1] & 0x7f;
-            let offset = 2;
-            if (length === 126) {
-              if (buffer.length < 4) return;
-              length = buffer.readUInt16BE(2);
-              offset = 4;
-            } else if (length === 127) {
-              if (buffer.length < 10) return;
-              length = Number(buffer.readBigUInt64BE(2));
-              offset = 10;
-            }
-            if (buffer.length < offset + length) return;
-            if (opcode === 0x8) return finish(length >= 2 ? `close ${buffer.readUInt16BE(offset)}` : 'close');
-            buffer = buffer.subarray(offset + length);
-          }
-        };
-        stream.on('data', (chunk) => {
-          buffer = Buffer.concat([buffer, chunk]);
-          parse();
-        });
-        stream.on('close', () => finish('ended'));
-        stream.on('error', () => finish('ended'));
-        parse();
-      });
-      request.end();
-    });
-  }
-
+  const socket = (path, headers = {}) => rawSocket(base, path, headers);
   const docSocket = (docId, query = '') => `/parties/doc-d-o/${docId}?protocol=999${query}`;
 
   /**
