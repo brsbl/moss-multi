@@ -531,18 +531,24 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     expect(inlineItems(live)[0] === formulaItem).toBe(false);
   });
 
-  it('a swap of two unchanged blocks keeps both, their anchors and a withheld peer insert, or is refused writing nothing (B332)', () => {
-    const before = 'Intro.\n\nFirst unique block.\n\nSecond unique block.\n\nTail.';
+  // Each block is unique and unchanged; the target only reorders them. The four-block permutation lets tier 2 take one
+  // end of a crossing move (Charlie reconciled into Alpha), so the guard must see the move before tier 2 runs.
+  it.each([
+    ['a swap between fixed blocks', ['Intro', 'First', 'Second', 'Tail'], ['Intro', 'Second', 'First', 'Tail']],
+    ['two adjacent swaps', ['Alpha', 'Bravo', 'Charlie', 'Delta'], ['Bravo', 'Alpha', 'Delta', 'Charlie']],
+    ['a rotation', ['Alpha', 'Bravo', 'Charlie', 'Delta'], ['Bravo', 'Charlie', 'Delta', 'Alpha']],
+    ['a reversal', ['Alpha', 'Bravo', 'Charlie', 'Delta'], ['Delta', 'Charlie', 'Bravo', 'Alpha']],
+  ])('%s keeps every block, its anchor and a withheld peer insert, or is refused writing nothing (B332)', (_, from, to) => {
+    const body = (names: string[]) => names.map((name) => `${name} unique block.`).join('\n\n');
+    const before = body(from);
     const live = docOf(before);
-    const targetDoc = docOf('Intro.\n\nSecond unique block.\n\nFirst unique block.\n\nTail.');
-    const [, firstItem, secondItem] = blockItems(live);
-    const first = anchorOn(live, 'First unique');
-    const second = anchorOn(live, 'Second unique');
-    // The peer types into both swapped blocks, so whichever one a copy would recreate holds a withheld insert.
+    const targetDoc = docOf(body(to));
+    const items = blockItems(live);
+    const anchors = from.map((name) => anchorOn(live, `${name} unique`));
+    // The peer types into every block, so whichever one a copy would recreate holds a withheld insert.
     const peer = fork(live);
     serverWrite(peer, 'peer', () => {
-      $firstText($getRoot().getChildAtIndex(1))!.setTextContent('First PEER unique block.');
-      $firstText($getRoot().getChildAtIndex(2))!.setTextContent('Second PEER unique block.');
+      from.forEach((name, i) => $firstText($getRoot().getChildAtIndex(i))!.setTextContent(`${name} PEER unique block.`));
     });
     const vector = Y.encodeStateVector(live);
 
@@ -560,15 +566,14 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     } else {
       expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
     }
-    expect(firstItem!.deleted, 'the first block keeps its item').toBe(false);
-    expect(secondItem!.deleted, 'the second block keeps its item').toBe(false);
-    expect(anchorText(live, first)).toBe('First unique');
-    expect(anchorText(live, second)).toBe('Second unique');
+    from.forEach((name, i) => {
+      expect(items[i]!.deleted, `${name} keeps its item`).toBe(false);
+      expect(anchorText(live, anchors[i]!), `${name} keeps its anchor`).toBe(`${name} unique`);
+    });
     share(peer, live);
     share(live, peer);
     const merged = exportDocMarkdown(live);
-    expect(merged).toContain('First PEER unique block.');
-    expect(merged).toContain('Second PEER unique block.');
+    for (const name of from) expect(merged, `${name} shows the peer insert`).toContain(`${name} PEER unique block.`);
     expect(exportDocMarkdown(peer)).toBe(merged);
   });
 });
