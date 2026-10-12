@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 49% done** (113 of 230 planned tasks verified)
+**Overall: 50% done** (114 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 11 / 11 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 12 / 12 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -134,6 +134,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-10 — T6.S9 verified: a stranger or viewer who sends a large restore body is now turned away (404 or 403) before the body is read, the restore's write token is charged to the person rather than the agent key, and a revocation, demotion or trash during a slow upload still wins.
 - 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
 - 2026-10-12 — T6.S5 verified: restoring a version now puts a detached comment back on the exact text or block the restore wrote, even after a peer inserted before it or retyped it, and it survives a DocDO restart; otherwise the comment stays detached.
+- 2026-10-12 — T6.B3 verified: saving a named version or diffing against current now waits until this tab's edits are acknowledged (and refuses as unsynced after 5 s without sending anything), View strips only real frontmatter, and the History view has a parity gate in both themes.
 
 ## T1.1s identity audit
 
@@ -612,3 +613,6 @@ Local browser verification remains assigned to the independent checker under the
 - T5.3s checker P2 (whole added or removed nodes drop enclosing map-field names from the visible card row).
 - T5.S3 (No long-run work test for forward Delete) checker P2: the instrumented tests cover only Backspace past a long struck run; forward Delete uses the same per-node cache in `$routeChar` (suggest/routing.ts) and was fast in the browser (99 ms over 20,002 struck units), but no CI test bounds its work.
 - T5.S3 (Struck runs over 100,000 characters still end at the loop guard; pre-existing) checker P2: `guard < 100_000` in `$routeChar` counts struck graphemes, so a longer run in one node falls through to the native handler and the server refuses the write visibly; the guard could count nodes or jump contiguous struck intervals.
+- T6.B3 (Branch predated the m6 head; full lane must rerun on the integrated commit) checker P2: closed at integration; the BUILDPLAN conflict kept both the T6.S5 and T6.B3 lines and the full lane ran on the merged m6 head.
+- T6.B3 (History target placed between a comment and the target it describes) checker P2: in `e2e/parity/targets.ts` the `history` entry sits under the comment for the comment-detached target; move it.
+- T6.B3 (The History parity reference is a hand-written copy of the view's markup) checker P2: `e2e/parity/oracle/HistoryPage.stories.tsx` copies HistoryView's classes, labels and size, so it is a stored baseline rather than an independent glyphdown derivation; any deliberate History or shell layout change must update the story in the same commit.
