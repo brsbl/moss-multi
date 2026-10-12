@@ -13,6 +13,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as Y from 'yjs';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
 import { GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
+import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src/payload-docs.ts';
+import { REGISTER_LOCAL_ORIGIN } from '../../../../../../packages/sync/src/registers.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { closeRecord, openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
 import { nodeRegistry } from '../../../../../../packages/sync/src/suggest/review.ts';
@@ -725,6 +727,126 @@ it('every further undo and redo of a near-cap paste is admitted before it change
       }
     }
     expect(refused, 'a redo past the record cap is refused, not stored').not.toBe('');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('an undo of a payload edit that builds on an older payload-only record counts that record, which it would merge: past the cap it is refused with the history kept', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    const cap = SUGGEST_LIMITS.recordOpsBytes;
+    // An older record of the author's that holds only a payload field's text: none of its items is in the body.
+    const payload = payloadDocsFor(pane.fork.doc).hold('p-older', true);
+    payload.transact(() => payloadText(payload).insert(0, 'z'.repeat(200_000)), REGISTER_LOCAL_ORIGIN);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the payload edit is stored').toBe(false);
+    const older = pane.fork.record!;
+    expect(recordBytes(pane, older), 'a large share of the cap').toBeGreaterThan(cap * 0.7);
+    // Past the idle gap the next edit starts a new group, under the spare lease: a paste in a record of its own.
+    pane.idle(GROUP_IDLE_MS + 1_000);
+    pane.paste([`second ${'y'.repeat(50_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the paste is stored').toBe(false);
+    expect(pane.fork.record, 'in a record of its own').not.toBe(older);
+    pane.undo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the paste\'s undo is stored').toBe(false);
+    expect(payloadText(payload).length, 'the first undo takes back the paste only').toBe(200_000);
+    // The next undo deletes the older record's payload text under the active record, which merges it (#forward):
+    // together they pass the record cap, so it is refused before anything changes.
+    const before = pane.changes();
+    pane.undo();
+    const notice = refusalMessage();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'nothing the DocDO refuses').toBe(false);
+    expect(notice, 'refused visibly').toMatch(/suggestion/i);
+    expect(pane.changes(), 'nothing was sent, no merge either').toBe(before);
+    expect(payloadText(payload).length, 'the payload text is unchanged').toBe(200_000);
+    expect(readRecord(pane.live, older)?.meta.status, 'the older record stays open').toBe('open');
+  } finally {
+    pane.dispose();
+  }
+});
+
+/**
+ * A pane whose note retains suggestion state (closed records, their tombstones, stored leases) up to `room` bytes
+ * short of its share; a stored lease of another principal stands in for it. The note's own state stays far under its cap.
+ */
+function nearStateShare(room: number) {
+  return suggesting(undefined, (ingest) => {
+    const share = STATE_CAP_BYTES * SUGGEST_LIMITS.stateShare;
+    // A stored lease is charged 128 bytes plus its clocks' JSON, {"<key>":1}.
+    const key = 'p'.repeat(Math.floor(share - room - ingest.retainedBytes - 128 - 6));
+    ingest.leases.put({
+      client: 7, principal: 'someone-else', connection: 'gone', reserved: 'r-other', record: null, clocks: { [key]: 1 },
+      spent: false, expired: true, usedAt: 0, fork: null,
+    });
+    ingest.remeasure();
+    expect(Math.abs(share - ingest.retainedBytes - room), 'the room left under the share').toBeLessThan(8);
+  });
+}
+
+it('a paste past the room left under the share of retained suggestion state is refused whole before anything changes', { timeout: 120_000 }, () => {
+  const pane = nearStateShare(60_000);
+  try {
+    pane.select('Intro line', 6, 10);
+    const text = pane.text();
+    const before = pane.requests();
+    // Some 70 KB: under the record cap with its redo, the open ops' share and the note's reserve; past the room.
+    pane.paste([`big ${'x'.repeat(70_000)}`]);
+    expect(noticed(), 'refused visibly').not.toBe('');
+    expect(pane.requests(), 'nothing was sent, no strike either').toBe(before);
+    expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    expect(pane.selected(), 'the selection is kept').toBe('line');
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+    // A paste that fits the room lands.
+    pane.paste(['small words']);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the small paste is stored').toBe(false);
+    expect(pane.text()).toContain('small words');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('every undo and redo of a paste is admitted against the room left under the share of retained suggestion state: stored, or refused with the history unchanged', { timeout: 120_000 }, () => {
+  const pane = nearStateShare(45_000);
+  try {
+    pane.paste([`Tail ${'f'.repeat(10_000)}`]);
+    expect(refusalMessage(), 'the paste is admitted').toBe('');
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the paste is stored').toBe(false);
+    // Each redo re-creates the paste: retained state grows by it, far under the record cap.
+    let refused = '';
+    for (let cycle = 1; cycle <= 6 && !refused; cycle += 1) {
+      for (const action of ['undo', 'redo'] as const) {
+        const text = pane.text();
+        const before = pane.changes();
+        pane[action]();
+        refused = refusalMessage();
+        if (refused) {
+          expect(pane.changes(), `${cycle} ${action}: nothing was sent`).toBe(before);
+          expect(pane.text(), `${cycle} ${action}: F is unchanged`).toBe(text);
+          vi.runAllTimers();
+          pane.pump();
+          expect(pane.fork.closed, `${cycle} ${action}: input stays open`).toBe(false);
+          break;
+        }
+        vi.runAllTimers();
+        pane.pump();
+        expect(pane.fork.closed, `${cycle} ${action}: stored`).toBe(false);
+      }
+    }
+    expect(refused, 'a redo past the room is refused, not stored').not.toBe('');
   } finally {
     pane.dispose();
   }
