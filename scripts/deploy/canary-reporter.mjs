@@ -55,7 +55,7 @@ export function requestFacts(message) {
   const facts = [];
   const auth = /\bsign-(in|up) for \S{1,200}: (\d{3}) /.exec(message);
   if (auth) facts.push(`auth: sign-${auth[1]} answered ${auth[2]}`);
-  const call = /^\s*- → ([A-Z]{3,7}) [a-z]+:\/\/[^/\s]+(\/[^\s?#]*)/m.exec(message);
+  const call = /^[ \t]*- → ([A-Z]{3,7}) [a-z]+:\/\/[^/\s]+(\/[^\s?#]*)/m.exec(message);
   if (call) facts.push(`request: ${call[1]} ${route(call[2])}`);
   return facts;
 }
