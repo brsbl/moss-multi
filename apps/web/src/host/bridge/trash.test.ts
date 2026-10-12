@@ -171,6 +171,8 @@ it('reads no backlinks for a note its session closed as deleted or revoked, thou
   const bridge = createBridge({ pathname: () => '/', fetch: server.fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
   const reads = (id: string) => server.calls.filter((call) => call.path === `/api/docs/${id}/backlinks`).length;
   const listings = () => server.calls.filter((call) => call.path === '/api/workspace').length;
+  // The workspace channel opens with the first disk listener, as moss's notes panel adds one.
+  const off = bridge.notes.onDiskChange(() => undefined);
   await bridge.notes.getAll();
   await bridge.notes.getById('d1');
   await bridge.notes.getById('d2');
@@ -191,6 +193,7 @@ it('reads no backlinks for a note its session closed as deleted or revoked, thou
   }
   await bridge.notes.getById('d1');
   await vi.waitFor(() => expect(reads('d1'), 'live again: read again').toBe(2));
+  off();
 });
 
 it('searches trashed notes only in the trash view', async () => {
