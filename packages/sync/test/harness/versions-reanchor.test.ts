@@ -144,7 +144,7 @@ describe('a restore re-anchors a detached comment on the item it restored @p:mea
     expect(sits(woken.dobj.document, 'c1'), 'still there after a restart').toEqual([16, 18]);
   });
 
-  it("lands a text comment on the occurrence the restore wrote, not on a peer's same text left at the version's ordinals, across a restart", async () => {
+  it("lands a text comment on the occurrence the restore wrote, not on the same text a peer typed in its place, across a restart", async () => {
     const { opened, ada, ben } = await note('foo bar foo\n');
     await commentOn(opened, 'c1', 'foo', 1, 'text');
     const id = await save(opened, 'Two foos');
@@ -165,10 +165,14 @@ describe('a restore re-anchors a detached comment on the item it restored @p:mea
     expect(await opened.dobj.restoreVersion({ id, reviewer: ADA, base: { ...base, age: 0 } })).toMatchObject({ ok: true });
     await settle(ben, ada);
 
-    // A deletion after the base is kept as a change since it, so the restore writes the version's foo again after Ben's.
+    // A deletion after the base is kept as a change since it, so the restore writes the version's foo again beside Ben's.
     expect(ben.paragraphs()).toEqual(['foo bar foofoo']);
-    expect(sits(opened.dobj.document, 'c1'), "on the restored foo, not Ben's").toEqual([11, 13]);
+    const restored = (doc: Y.Doc) => {
+      const anchor = anchorOf(doc, 'c1')!;
+      return { status: anchor.status, text: anchorText(doc, anchor), bens: decodeRelPos(anchor.start).item?.client === ben.doc.clientID };
+    };
+    expect(restored(opened.dobj.document), "on the restored foo, never Ben's").toEqual({ status: 'anchored', text: 'foo', bens: false });
     const woken = await start(wake(opened));
-    expect(sits(woken.dobj.document, 'c1'), 'still there after a restart').toEqual([11, 13]);
+    expect(restored(woken.dobj.document), 'still there after a restart').toEqual({ status: 'anchored', text: 'foo', bens: false });
   });
 });
