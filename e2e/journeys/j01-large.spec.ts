@@ -15,11 +15,11 @@ const LINES = 40_000;
 const CONTROL_LINES = 400;
 const TYPED = 'abcdefghijklmnopqrst';
 /**
- * Calibrated on CI runners (T3.B13, runs 38299751021 and 38299754653, two runs each): the large note's median
- * keystroke painted in 176 ms before the binding patch and 152 ms after (Event Timing rounds to 8 ms); the control's in
- * 16-48 ms.
+ * Calibrated on CI runners (T3.B13; runs 38299751021, 38299754653, 38301848192, 38301850762): the large note's median
+ * keystroke painted in 176-192 ms before the binding patch and 152-168 ms after (Event Timing rounds to 8 ms); the
+ * control's in 16-48 ms.
  */
-const INPUT_TO_PAINT_MS = 168;
+const INPUT_TO_PAINT_MS = 172;
 const CONTROL_INPUT_TO_PAINT_MS = 64;
 
 const lines = (count: number) => Array.from({ length: count }, (_, i) => `Line ${i} of the note.`).join('\n\n');
@@ -118,7 +118,7 @@ test('j01-large: typing in the middle of a 40,000-line note stays within budget 
   const exported = await (await ada.context.request.get(`/api/docs/${large}/content`, { timeout: 120_000 })).text();
   expect(exported).toContain(middle);
 
-  if (browserName !== 'chromium') return; // WebKit has no Event Timing or long tasks.
+  if (browserName !== 'chromium') return; // The budget is calibrated in Chromium; WebKit reports no long tasks.
   expect(small.inputToPaint, `the control's input-to-paint (${JSON.stringify(measured)})`).toBeLessThanOrEqual(CONTROL_INPUT_TO_PAINT_MS);
   expect(big.inputToPaint, `the large note's input-to-paint (${JSON.stringify(measured)})`).toBeLessThanOrEqual(INPUT_TO_PAINT_MS);
 });
