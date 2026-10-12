@@ -410,7 +410,8 @@ test('j03-connection: a bundle older than the server\'s client protocol is close
   expect(rest.status).toBe(426);
   expect(rest.body.error).toBe(OUTDATED_ERROR);
 
-  // The new bundle is deployed; the banner's Reload picks it up and the note binds and writes.
+  // The new bundle is deployed; the banner's Reload picks it up and the note binds and writes. With no unsynced
+  // edits in the window, Reload loads at once without asking (the control for the next leg).
   await bea.page.evaluate((flag) => sessionStorage.setItem(flag, '1'), NEW_BUNDLE_FLAG);
   await Promise.all([bea.page.waitForEvent('load'), reload.click()]);
   await ui.waitBodyLive(bea, docId);
@@ -419,6 +420,92 @@ test('j03-connection: a bundle older than the server\'s client protocol is close
   await ui.typeBody(bea, docId, UPDATED_EDIT);
   await ui.waitAcked(bea, docId, ACK_TIMEOUT);
   await expect.poll(() => bodyText(shared.ada, docId), { timeout: RECOVER_TIMEOUT }).toBe(`${OPENING_6}${UPDATED_EDIT}`);
+});
+
+const OUTDATED_OPENING = 'An update arrives mid-sentence';
+const OUTDATED_UNSYNCED = ' typed before the update, never acked';
+
+test('j03-connection: Reload on an outdated window that holds unsynced edits asks first, and Cancel keeps the window and its edits @p:col-4', async ({ actors }) => {
+  const shared = await sharedNote(actors, OUTDATED_OPENING);
+  const { docId } = shared;
+  const ben = await peerWindow(actors, shared, true);
+  await actors.requireDistinct(2);
+  await ui.waitBodyLive(ben, docId);
+  const sever = ben.sever;
+  if (!sever) throw new Error('Ben must be severable');
+  const dialogs: string[] = [];
+  ben.page.on('dialog', (dialog) => { dialogs.push(dialog.type()); void dialog.dismiss(); });
+
+  // The edit never reaches the server, so it is not a durability promise (invariant 7).
+  sever.blackhole();
+  const body = ui.body(ben, docId);
+  await body.click();
+  await body.press('End');
+  await body.pressSequentially(OUTDATED_UNSYNCED);
+  await expect(ui.pane(ben, docId), 'the edit is unacked').toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  sever.reset(OUTDATED_CLOSE);
+  sever.restore();
+  await expect(ui.pane(ben, docId), 'the window is outdated').toHaveAttribute(TERMINAL_REASON_ATTR, 'outdated', { timeout: BIND_TIMEOUT });
+  const reload = banner(ben, docId).getByRole('button', { name: 'Reload', exact: true });
+  await ben.page.evaluate(() => { (window as unknown as { __j03Kept?: boolean }).__j03Kept = true; });
+
+  await reload.click();
+  const confirmation = ben.page.getByRole('alertdialog');
+  await expect(confirmation, 'Reload asks before discarding unsynced edits').toBeVisible();
+  await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(confirmation).toHaveCount(0);
+  await ben.page.waitForTimeout(1_000);
+  expect(await ben.page.evaluate(() => (window as unknown as { __j03Kept?: boolean }).__j03Kept), 'Cancel does not navigate').toBe(true);
+  expect(await bodyText(ben, docId), 'the unsynced edit stays on screen').toContain(OUTDATED_UNSYNCED);
+  await expect(ui.pane(ben, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '1');
+  expect(dialogs, 'and no browser prompt').toEqual([]);
+
+  // Reload anyway discards them and loads the current bundle.
+  await reload.click();
+  await Promise.all([ben.page.waitForEvent('load'), confirmation.getByRole('button', { name: 'Reload anyway', exact: true }).click()]);
+  await ui.waitBodyLive(ben, docId);
+  expect(await bodyText(ben, docId)).toBe(OUTDATED_OPENING);
+  expect(dialogs).toEqual([]);
+});
+
+test('j03-connection: an outdated bundle refused at its first access check shows Reload, and neither retries nor opens a socket @p:col-4', async ({ actors }) => {
+  actors.solo('one window\'s access gate against stubbed answers; no second person takes part');
+  const ada = await windowFor(actors, await actors.principal('ada'), { label: 'ada' });
+  const docId = `outdated-${Date.now().toString(36)}`;
+  const path = `/api/docs/${docId}`;
+  const access = (url: URL) => url.pathname === path;
+  let asks = 0;
+  let error = 'other';
+  ada.expectHttp(426, path);
+  await ada.page.route(access, async (route) => {
+    asks += 1;
+    await route.fulfill({ status: 426, contentType: 'application/json', body: JSON.stringify({ error }) });
+  });
+  const docSockets = () => ada.telemetry.sockets.filter((socket) => socket.epoch === ada.telemetry.epoch);
+
+  // Control: a 426 that is not client-outdated is transient, and the gate retries in place.
+  await ada.goto(`/d/${docId}`);
+  await expect.poll(() => asks, { message: 'an unrelated 426 is retried', timeout: BOOT_TIMEOUT }).toBeGreaterThanOrEqual(2);
+  await expect(ada.page.getByRole('status')).toContainText(/can.t reach/i);
+
+  error = OUTDATED_ERROR;
+  asks = 0;
+  await ada.goto(`/d/${docId}`);
+  const reload = ada.page.getByRole('button', { name: 'Reload', exact: true });
+  await expect(reload, 'the gate offers the update').toBeVisible({ timeout: BOOT_TIMEOUT });
+  await expect(ada.page.getByText(/has been updated/i)).toBeVisible();
+  // Past the 1 s and 2 s retries.
+  await ada.page.waitForTimeout(4_000);
+  expect(asks, 'the refusal is never retried').toBe(1);
+  expect(docSockets(), 'no socket opens').toEqual([]);
+  await actors.checkpoint('outdated-gate');
+
+  // Reload loads the deployed bundle, which asks the server once more.
+  await ada.page.unroute(access);
+  ada.expectHttp(404, path);
+  await Promise.all([ada.page.waitForEvent('load'), reload.click()]);
+  await expect(reload).toHaveCount(0, { timeout: BOOT_TIMEOUT });
 });
 
 test('j03-connection: a refused write rebinds fresh and a deleted doc locks in place @p:col-4', async ({ actors }) => {
