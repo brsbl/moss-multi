@@ -1,28 +1,74 @@
 diff --git a/wrangler-dist/ProxyWorker.js b/wrangler-dist/ProxyWorker.js
-index 274b5d17ed4fb22f33efafca76efaa9f85279fbd..64f53813478e983d57823d4fcc3c04b32a38c83e 100644
+index 274b5d17..52cc7006 100644
 --- a/wrangler-dist/ProxyWorker.js
 +++ b/wrangler-dist/ProxyWorker.js
-@@ -131,7 +131,22 @@ var ProxyWorker = class {
+@@ -49,6 +49,25 @@ var ProxyWorker_default = {
+     return inspectorProxy.fetch(req);
+   }
+ };
++// moss-multi patch (workers-sdk#14641): kj closes an idle keep-alive connection 5 s after its last use, at both the
++// Worker (server) and this pool (client), and the pool hands out the most recently returned connection first. A forward
++// that must not be replayed and would take a connection 4.5 s or more idle waits until that connection is closed
++// (5.3 s, a margin for the response body), so it opens a fresh one. `returned` models the pool: when each idle
++// connection was returned, stamped at its response headers, oldest first.
++var IDLE_CLOSE_MS = 5300;
++var IDLE_RISK_MS = 4500;
++async function takeIdle(returned, waitOutClose) {
++  for (;;) {
++    const now = Date.now();
++    while (returned.length > 0 && now - returned[0] >= IDLE_CLOSE_MS) returned.shift();
++    const age = returned.length > 0 ? now - returned[returned.length - 1] : 0;
++    if (!waitOutClose || age < IDLE_RISK_MS) {
++      returned.pop();
++      return;
++    }
++    await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_MS - age));
++  }
++}
+ var ProxyWorker = class {
+   constructor(state, env) {
+     this.state = state;
+@@ -59,6 +78,12 @@ var ProxyWorker = class {
+   proxyData;
+   requestQueue = /* @__PURE__ */ new Map();
+   requestRetryQueue = /* @__PURE__ */ new Map();
++  idle = { origin: "", returned: [] };
++  /** When each connection in the forwards' keep-alive pool to `origin` was returned, oldest first. */
++  idlePool(origin) {
++    if (this.idle.origin !== origin) this.idle = { origin, returned: [] };
++    return this.idle.returned;
++  }
+   fetch(request) {
+     if (isRequestForLiveReloadWebsocket(request)) {
+       return this.handleLiveReloadWebSocket(request);
+@@ -131,7 +156,29 @@ var ProxyWorker = class {
            headers.set(key, value);
          }
        }
 -      void fetch(userWorkerUrl, new Request(request, { headers })).then(async (res) => {
-+      // moss-multi patch (workers-sdk#14641): the Worker's side closes a pooled keep-alive connection after 5 s
-+      // idle, and a forward written to one as it closes is lost. The catch below compares the full URL with the
-+      // bare origin, so a lost GET waited in requestRetryQueue for the next request and a lost POST got a 503.
++      // moss-multi patch (workers-sdk#14641): the Worker's side closes a pooled keep-alive connection 5 s after its
++      // last response, and a forward written to one as it closes is lost. The catch below compares the full URL with
++      // the bare origin, so a lost GET waited in requestRetryQueue for the next request and a lost POST got a 503.
 +      // Replay a lost GET or HEAD at once, from an unread clone, while the Worker is unchanged. Any other method gets
-+      // one attempt: a POST lost after the Worker committed it would otherwise be applied twice.
++      // one attempt, since a POST lost after the Worker committed it would otherwise be applied twice; it avoids the
++      // race instead, waiting while the connection it would take is about to be closed (takeIdle).
++      const idle = this.idlePool(userWorkerUrl.origin);
++      const replayable = request.method === "GET" || request.method === "HEAD";
 +      let spare = request.clone();
-+      const send = (replays) => {
++      const send = async (replays) => {
++        await takeIdle(idle, !replayable);
 +        const source = spare;
 +        if (replays > 0) spare = source.clone();
-+        return fetch(userWorkerUrl, new Request(source, { headers })).catch((error) => {
++        return fetch(userWorkerUrl, new Request(source, { headers })).then((res) => {
++          if (res.status !== 101) idle.push(Date.now());
++          return res;
++        }, (error) => {
 +          const current = this.proxyData && urlFromParts(this.proxyData.userWorkerUrl);
 +          if (replays > 0 && current?.origin === userWorkerUrl.origin) return send(replays - 1);
 +          throw error;
 +        });
 +      };
-+      void send(request.method === "GET" || request.method === "HEAD" ? 3 : 0).then(async (res) => {
++      void send(replayable ? 3 : 0).then(async (res) => {
          res = new Response(res.body, res);
          rewriteUrlRelatedHeaders(res.headers, innerUrl, outerUrl);
          await checkForPreviewTokenError(res, this.env, proxyData);

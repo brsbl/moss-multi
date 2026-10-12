@@ -1,5 +1,6 @@
 // B063: patches/wrangler@4.113.0.patch replays a forward lost on a closing keep-alive connection. Only GET and HEAD
-// may be replayed: a POST lost after the Worker committed it would otherwise be applied twice.
+// may be replayed: a POST lost after the Worker committed it would otherwise be applied twice. A POST instead waits
+// out a connection that is about to idle out.
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +28,7 @@ function proxy(upstream) {
 const lost = () => Promise.reject(new TypeError('fetch failed'));
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   delete Headers.prototype.getAll;
 });
@@ -52,5 +54,30 @@ describe('the patched wrangler ProxyWorker', () => {
     const response = await worker.fetch(new Request('http://127.0.0.1:8850/api/docs', { method: 'POST', body: 'b' }));
     expect(calls).toHaveLength(1);
     expect(response.status).toBe(201);
+  });
+
+  // The Worker closes a keep-alive connection 5 s after its last response, and the pool reuses the latest one first.
+  it('holds a POST that would take a connection about to idle out until it has closed, then sends it once', async () => {
+    vi.useFakeTimers({ now: 0 });
+    const { worker, calls } = proxy(() => new Response('ok'));
+    await worker.fetch(new Request('http://127.0.0.1:8850/api/version'));
+    await vi.advanceTimersByTimeAsync(4800);
+    const posted = worker.fetch(new Request('http://127.0.0.1:8850/api/docs', { method: 'POST', body: 'b' }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(calls.map((call) => call.method)).toEqual(['GET']);
+    await vi.advanceTimersByTimeAsync(200);
+    expect((await posted).status).toBe(200);
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'POST']);
+  });
+
+  it('sends a POST at once when the connection it takes was used recently', async () => {
+    vi.useFakeTimers({ now: 0 });
+    const { worker, calls } = proxy(() => new Response('ok'));
+    await worker.fetch(new Request('http://127.0.0.1:8850/api/version'));
+    await vi.advanceTimersByTimeAsync(1000);
+    const posted = worker.fetch(new Request('http://127.0.0.1:8850/api/docs', { method: 'POST', body: 'b' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'POST']);
+    expect((await posted).status).toBe(200);
   });
 });
