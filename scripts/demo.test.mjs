@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { censusDiff, changedSuggestions, commentGaps, demoProblems, EVERY_NODE_FAMILIES, familyProblems, hasVersion, markdownBlocks, notePlan, panelProblems, partialMarkdown, pendingBy, planNotes, signatureProblems, verifiedShot } from '../e2e/qa/demo.js';
+import { censusDiff, changedSuggestions, commentGaps, demoProblems, EVERY_NODE_FAMILIES, familyProblems, hasVersion, markdownBlocks, notePlan, panelProblems, partialMarkdown, pendingBy, planNotes, seenDiff, signatureProblems, verifiedShot } from '../e2e/qa/demo.js';
 import { acquireDemoLock, AGENT, buildDemo, commentPasses, demoConfig, demoPrincipals, ensurePrincipal, NOTES, PEOPLE, stepScript, STEPS, THREADS, writeDemoRun } from './demo.mjs';
 import { resumeProblems } from './demo-smoke.mjs';
 import { returningLast } from './qa-puppeteer.mjs';
@@ -450,13 +450,20 @@ describe('demoProblems (B371)', () => {
       'note "Launch plan": 2',
       `comment "${THREADS[0].replies[0].text}": 2`,
       '👍',
-      `pending suggestion by ${AGENT}: 0`,
+      `pending suggestion by ${AGENT}: none`,
       'version "Ready for review": 0',
       'view link to the folder: 0',
       'video in "Every node family": 0',
       'no video',
     ];
     for (const text of expected) expect(problems).toContain(text);
+  });
+
+  it('takes one edit kept as several suggestion records, and flags a rerun that changed any tally', () => {
+    const twice = { ...COMPLETE, pending: { [PEOPLE.ben]: 2, [AGENT]: 1 } };
+    expect(demoProblems(twice, WANT)).toEqual([]);
+    expect(seenDiff(twice, twice)).toEqual([]);
+    expect(seenDiff(twice, { ...twice, pending: { [PEOPLE.ben]: 4, [AGENT]: 1 }, viewLinks: 2 })).toEqual([`pending ${PEOPLE.ben}: 2, got 4`, 'viewLinks: 1, got 2']);
   });
 });
 

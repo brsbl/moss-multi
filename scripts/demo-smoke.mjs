@@ -5,7 +5,7 @@
 // itself checks the notes, media, comments, reactions, suggestions, versions and the view link.
 //   node scripts/demo-smoke.mjs --run-id RUN [--driver puppeteer --chrome PATH] [--skip-agent]
 import { pathToFileURL } from 'node:url';
-import { censusDiff, familyProblems } from '../e2e/qa/demo.js';
+import { censusDiff, familyProblems, seenDiff } from '../e2e/qa/demo.js';
 import { buildDemo, NOTES, noteParams, withDemoRun } from './demo.mjs';
 import { parseArgs } from './qa.mjs';
 
@@ -67,7 +67,7 @@ async function main(argv) {
     const again = await buildDemo(opts);
     return [
       ...again.changes.map((change) => `added ${change}`),
-      ...(first ? censusDiff(first.census, again.census).map((d) => `the every-node note changed: ${d}`) : []),
+      ...(first ? seenDiff(first.seen, again.seen).map((d) => `the rerun changed what the demo holds: ${d}`) : []),
     ];
   });
   for (const problem of problems) console.error(`::error::${problem}`);

@@ -311,7 +311,7 @@ export async function withDemoRun(opts, deps, body) {
   const { baseUrl, runId } = config;
   const prefix = opts.prefix ?? 'demo';
   const principals = demoPrincipals({ prefix, secret: deps.secret ?? demoSecret(config) });
-  const release = () => {};
+  const release = acquireDemoLock({ runsDir, runId, prefix });
   const log = deps.log ?? ((line) => console.error(`demo: ${line}`));
   try {
     const fetchImpl = deps.fetch ?? fetch;
@@ -424,7 +424,7 @@ export async function buildDemo(opts, deps = {}) {
       notes: Object.fromEntries(NOTES.map((n) => [n.title, `${baseUrl}/d/${ids[n.key]}`])),
       principals: principals.map((p) => p.email),
       changes,
-      census: seen.families,
+      seen,
       shots,
     };
   });

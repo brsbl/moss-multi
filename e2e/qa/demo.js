@@ -117,7 +117,11 @@ export function notePlan(body, { media = [], later = false } = {}) {
   return { clear: paste && !body.empty, paste, media: missing };
 }
 
-/** What keeps a built demo from holding exactly one of each thing it makes: [] when it does. */
+/**
+ * What keeps a built demo from holding exactly one of each thing it makes: [] when it does. A suggestion is one edit
+ * that the server may keep as several records (a replacement is a deletion and an insertion), so each author needs
+ * at least one pending; a rerun must leave the tallies as they were (`seenDiff`).
+ */
 export function demoProblems(seen, want) {
   const problems = [];
   const once = (what, n) => {
@@ -126,12 +130,21 @@ export function demoProblems(seen, want) {
   for (const title of want.titles) once(`note "${title}"`, seen.titles[title]);
   for (const text of want.comments) once(`comment "${text}"`, seen.comments[text]);
   for (const r of want.reactions) once(`${r.emoji} on "${r.on}"`, seen.reactions[`${r.emoji} ${r.on}`]);
-  for (const name of want.pending) once(`pending suggestion by ${name}`, seen.pending[name]);
+  for (const name of want.pending) if (!seen.pending[name]) problems.push(`pending suggestion by ${name}: none`);
   for (const name of want.versions) once(`version "${name}"`, seen.versions[name]);
   once('view link to the folder', seen.viewLinks);
   for (const kind of ['image', 'video']) once(`${kind} in "${want.mediaNote}"`, seen.families[kind]);
   problems.push(...familyProblems(seen.families).map((p) => `"${want.mediaNote}": ${p}`));
   return problems;
+}
+
+/** Where two `verify` readings differ, tally by tally: a rerun that duplicated or dropped anything shows here. */
+export function seenDiff(before, after) {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])].sort().flatMap((key) => {
+    const [a, b] = [before[key], after[key]];
+    if (typeof a === 'object' || typeof b === 'object') return censusDiff(a ?? {}, b ?? {}).map((d) => `${key} ${d}`);
+    return a === b ? [] : [`${key}: ${a}, got ${b}`];
+  });
 }
 
 /** The wanted threads' roots the note lacks, and the replies it lacks under roots it has. */
@@ -525,7 +538,7 @@ export const STEPS = {
       changed.push('title');
       if (stopAfter === 'title') return { id, created, changed, stopped: stopAfter };
     } else {
-      return { id, created, changed };
+      await openNote(page, id);
     }
     const body = await bodyState(page, id, doneText);
     let later = false;

@@ -67,7 +67,8 @@ CI rehearses the same canary on every full lane, against a production-mode local
   - "Every node family": every node family moss has, including a run-on-click HTML block, plus an uploaded image and video.
 
   It also makes a view link to the folder.
-- **Re-runs.** Each step first reads what already exists, so a re-run adds only what is missing and never duplicates. Note bodies it finds are kept as they are.
+- **Re-runs.** Each step first reads what already exists, so a re-run adds only what is missing and never duplicates. A note an interrupted run left is finished: a missing or partial paste is pasted whole, then each missing media file is added. A finished note is kept as it is. The run ends by checking that the demo holds exactly one of each thing it makes, and prints what it added under `changes`.
+- **One run at a time.** A run holds `.local-stack/runs/demo-<host>.lock` from start to cleanup, so a second run against the same stack fails at once, whatever its `--prefix`. A lock left by a process that is gone is taken over.
 - **Accounts.** Both accounts are `@example.invalid` test principals. Their passwords derive from `MOSS_DEMO_SECRET`, so any machine that has the same secret signs in to the same accounts. `--prefix` names a separate set.
 
 Build the demo on staging after a deploy:
