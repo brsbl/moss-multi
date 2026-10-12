@@ -3,6 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
+import { recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { observeEditor } from './detectors.js';
 import { assertNotInfra, InfraBlocked } from './infra.ts';
@@ -200,10 +201,18 @@ export class Actors {
     this.soloReason = reason;
   }
 
-  /** Invariants 5, 6 and 9 on every actor now; captures a 2x PNG for `@evidence` tests. */
+  /**
+   * The run's recording policy (A§21): a page is captured only against a loopback target, never staging, and never
+   * when the target is unknown, because a screenshot of a signed-in page is as private as a trace.
+   */
+  private get mayCapture(): boolean {
+    return recordingFor(this.options.stack?.baseUrl).screenshot !== 'off';
+  }
+
+  /** Invariants 5, 6 and 9 on every actor now; captures a 2x PNG for `@evidence` tests where recording is allowed. */
   async checkpoint(name: string): Promise<void> {
     const findings = (await Promise.all(this.list.map((actor) => domFindings(actor)))).flat();
-    if (this.testInfo.tags.includes('@evidence')) {
+    if (this.testInfo.tags.includes('@evidence') && this.mayCapture) {
       for (const actor of this.list.filter((a) => !a.page.isClosed())) {
         await this.testInfo.attach(`${name}-${actor.label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });
       }
@@ -244,11 +253,11 @@ export class Actors {
     this.options.stack?.budget?.assert(this.journey);
   }
 
-  /** Attaches the census and a 2x PNG of each offending actor, then fails the test. */
+  /** Attaches the census and, where recording is allowed, a 2x PNG of each offending actor, then fails the test. */
   private async fail(findings: Finding[], where: string): Promise<never> {
     const census = this.list.map((actor) => ({ label: actor.label, url: actor.page.isClosed() ? null : actor.page.url(), ...actor.telemetry }));
     await this.testInfo.attach(`${where}-census.json`, { body: JSON.stringify({ findings, census }, null, 2), contentType: 'application/json' });
-    for (const label of new Set(findings.map((f) => f.actor))) {
+    for (const label of this.mayCapture ? new Set(findings.map((f) => f.actor)) : []) {
       const actor = this.list.find((a) => a.label === label);
       if (actor && !actor.page.isClosed()) {
         await this.testInfo.attach(`${where}-${label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });

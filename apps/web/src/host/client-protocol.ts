@@ -4,6 +4,8 @@
 import { CLIENT_PROTOCOL, OUTDATED_ERROR, OUTDATED_STATUS, PROTOCOL_HEADER } from '@moss-multi/protocol/client-protocol';
 
 const listeners = new Set<() => void>();
+// Once refused, this bundle stays refused for the life of the tab; only a reload loads a newer one.
+let outdated = false;
 
 /** Calls `listener` when the server says this bundle is too old; returns the unsubscriber. */
 export function onOutdated(listener: () => void): () => void {
@@ -11,13 +13,17 @@ export function onOutdated(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+export const clientOutdated = (): boolean => outdated;
+
 export function reportOutdated(): void {
+  outdated = true;
   for (const listener of [...listeners]) listener();
 }
 
 const isApi = (url: URL) => url.origin === window.location.origin && (url.pathname === '/api' || url.pathname.startsWith('/api/'));
 
-async function refusedAsOutdated(response: Response): Promise<boolean> {
+/** The server's REST refusal of this bundle: 426 with the client-outdated error. */
+export async function refusedAsOutdated(response: Response): Promise<boolean> {
   if (response.status !== OUTDATED_STATUS) return false;
   try {
     return ((await response.clone().json()) as { error?: unknown }).error === OUTDATED_ERROR;
