@@ -12,7 +12,7 @@ import {
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
-  type ServerEvent, type WriteRefusalReason,
+  type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
@@ -28,7 +28,7 @@ import { seedPayload } from './payload-docs.ts';
 import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
-import { writeTitle } from './server-title.ts';
+import { titleDiff } from './server-title.ts';
 import { splitUpdate } from './update-pieces.ts';
 
 /** How long after a wake the doc re-feeds search. */
@@ -130,6 +130,14 @@ export class DocCapError extends Error {
   constructor() {
     super('doc-cap');
     this.name = 'DocCapError';
+  }
+}
+
+/** A REST rename the DocDO refused in its serialized turn, writing nothing (A§8). */
+export class RenameRefusedError extends Error {
+  constructor(readonly reason: RenameRefusal) {
+    super(`rename-${reason}`);
+    this.name = 'RenameRefusedError';
   }
 }
 
@@ -366,7 +374,12 @@ export class DocDO extends YServer<SyncEnv> {
     this.document.on('afterAllTransactions', () => payloads.settle(() => this.#connected()));
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
-    if (target) this.#project(new Projections(this.name, target));
+    if (target) {
+      const projections = new Projections(this.name, target, store.meta('title-projected'), (title) => store.setMeta('title-projected', title));
+      this.#project(projections);
+      // A title whose projection failed before an eviction projects now.
+      projections.reconcile(this.document.getText('title').toString());
+    }
     // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
     // shape; once onStart has served the waiting frames. A doc being created is fed by the save its content triggers.
     this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
@@ -789,6 +802,9 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     this.#seed(store);
     if (store.meta('created') !== null) return;
+    const title = input.title?.trim();
+    // The body is admitted with the title's bytes, so a body and title past the cap together write neither.
+    const titleBytes = title ? (titleDiff(this.document, title)?.byteLength ?? 0) : 0;
     if (input.markdown) {
       const parts = splitFrontmatter(input.markdown);
       // Frontmatter whose aliases name far more than its text holds is refused whole, as a body past the cap is.
@@ -796,35 +812,61 @@ export class DocDO extends YServer<SyncEnv> {
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
       try {
-        importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads), frontmatter);
+        importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads, titleBytes), frontmatter);
       } catch (error) {
         // Markdown that spends the converter's whole work budget is refused whole too.
         if (error instanceof Error && (error.message === IMPORT_BUDGET_SPENT || error.message === FRONTMATTER_EXPANSION_ERROR)) throw new DocCapError();
         throw error;
       }
     }
-    const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
-    if (title) writeTitle(this.document, title, SERVER_TITLE);
+    if (title) this.#writeTitle(store, title);
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
-    if (!title) await this.#projections?.initializeEmpty();
+    if (!title) this.#projections?.initializeEmpty();
     await this.#projections?.flush();
     store.setMeta('created', '1');
   }
 
   /**
    * A rename from outside the doc's sockets (REST, CLI): a minimal write to Y.Text('title') that every open client
-   * merges, projected before it returns.
+   * merges, projected before it returns. In one serialized turn it re-validates the open sockets, re-resolves the
+   * caller's write authority (A§8) and settles a doc it last knew in Trash, then writes with nothing awaited in
+   * between. Throws RenameRefusedError for a doc in Trash or held closed, or a caller who can no longer edit, and
+   * DocCapError for a title past the state cap, changing nothing.
    */
-  async renameTitle(text: string): Promise<void> {
-    await this.#ready();
-    // Every open socket hears the rename, so each must still have access (A§8 pull validation).
+  async renameTitle(text: string, caller: SocketIdentity): Promise<void> {
+    const store = await this.#ready();
     const check = this.#accessCheck();
-    if (check) await this.#serial(() => this.#validate(check));
-    writeTitle(this.document, text, SERVER_TITLE);
+    await this.#serial(async () => {
+      if (check) {
+        // Every open socket hears the rename, so each must still have access (A§8 pull validation).
+        await this.#validate(check);
+        await this.#authorize(check, caller);
+      }
+      const liveness = this.#liveness();
+      if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && liveness) await this.#queue(() => this.#settle([]));
+      if (store.meta('deleted') === '1' || holdsOf(store).size > 0) throw new RenameRefusedError('deleted');
+      this.#writeTitle(store, text);
+    });
     this.#projections?.touch();
     await this.#projections?.flush();
+  }
+
+  /** The caller as a fresh admission would resolve it, under the validation deadline; throws unless it may edit. */
+  async #authorize(check: AccessCheck, caller: SocketIdentity): Promise<void> {
+    const attachment: Attachment = { ...caller, name: '', role: 'editor' };
+    const { verdicts: [verdict] } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, [{ attachment }], race));
+    if (verdict === CLOSE.deleted) throw new RenameRefusedError('deleted');
+    if (typeof verdict === 'number') throw new RenameRefusedError('revoked');
+  }
+
+  /** A server write of the title, admitted against the state cap first (A§5.1 Limits). */
+  #writeTitle(store: DocStore, text: string): void {
+    const diff = titleDiff(this.document, text);
+    if (!diff) return;
+    this.#admitServerWrite(store, diff, []);
+    Y.applyUpdate(this.document, diff, SERVER_TITLE);
   }
 
   /**
@@ -1181,8 +1223,9 @@ export class DocDO extends YServer<SyncEnv> {
     return base + update.byteLength > cap && base - payloads.bytesOf(id) + stateBytesAfter(doc, update) > cap;
   }
 
-  #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][]): void {
-    if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, 0))) throw new DocCapError();
+  /** `extra`: bytes a write still to come adds (create's title, admitted with its body). */
+  #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][], extra = 0): void {
+    if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, extra))) throw new DocCapError();
   }
 
   #connected(): boolean {
