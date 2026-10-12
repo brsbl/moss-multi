@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 50% done** (104 of 207 planned tasks verified)
+**Overall: 46% done** (105 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 52 / 52 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 53 / 53 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -123,6 +123,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-10 — T3.B23 verified: creating or renaming a note can no longer land its folder inside another note's folder, whether the names differ only by case folds like ß/ss, σ/ς or the Kelvin sign, or a sibling folder appears between listing and rename (a second collision reports the save as raced).
 - 2026-10-10 — T3.B21 verified: the converter measurement now gates search at the full 2 MB note size for every opener family, fails on any single slow search sample, checks that ordinary search still works after the adversarial bodies, and judges payload memory on settled growth after a warm-up, so its budget verdicts no longer hinge on one noisy sample.
 - 2026-10-10 — T3.B26 verified: a spent answer budget is now kept in the note's storage, so a note server that sleeps and wakes no longer hands viewers or anonymous link holders a fresh budget of full-note encodes.
+- 2026-10-12 — T3.B6 verified: a restore, folder create or rename, note insert or move, link revoke and vault trash now re-check the person's live access and land only on the state they read (a raced restore answers 409), agent keys can no longer rename or trash a vault, and a link holder renaming the link's own folder no longer learns its parent.
 
 ## T1.1s identity audit
 
@@ -504,3 +505,4 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B19 (Auth and sign-out flows) checker P2: the full lane was green on the task head f173cf6e, not the m3 head; closed by integration CI on the merged m3 SHA.
 - T3.B21 (Converter measurement gates) checker P2: the warm-search recovery check in `searchBudgetProblems` (scripts/measure-converter.mjs) only compares the post-adversarial snippet with the baseline, so two equally empty, null or missing snippets pass; the worker checks the hit count but not the snippet → assert the known snippet for the warm fixture.
 - T3.B21 (Converter measurement gates) checker P2: the B337 near-boundary RSS samples in `measure-converter.test` are illustrative, not recorded from CI, and the sustained-growth control runs only at predicate level on made-up arrays (three unchanged remote SP2 runs at one SHA grew -9.2, 12.2 and 10.0 MB against the 64 MB budget) → add a remote control that allocates real memory through the sampler.
+- T3.B6 (Folder, trash and vault write races and authority) checker P2: link revocation can make the rename response disclose the link root's parent — `updateFolder` decides whether to hide `parentId` with a fresh `liveLink()` lookup after the write, so a revoke between the rename UPDATE and that lookup returns the link root's real (opaque) parentId (narrow race) → keep the link scope that authorized the request, or fail closed.
