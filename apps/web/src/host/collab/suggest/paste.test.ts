@@ -7,10 +7,10 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestRequest } from '@moss-multi/protocol/suggest';
 import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
 import {
-  $getRoot, $getSelection, $isRangeSelection, COMMAND_PRIORITY_EDITOR, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
+  $getRoot, $getSelection, $isRangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
 } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type * as Y from 'yjs';
+import * as Y from 'yjs';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
 import { GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src/payload-docs.ts';
@@ -22,6 +22,7 @@ import { EDITOR, seededBody, select, spansOfText, SUGGESTER } from '../../../../
 import { refusalMessage } from '../../refusal.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
+import { stepBytes } from './paste.ts';
 import { registerSuggestRouting } from './routing.ts';
 
 /** The payload bytes the DocDO last said it counts for a doc (doc-session.ts), withheld payloads included. */
@@ -85,9 +86,16 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
       undo.redo();
       return true;
     }, COMMAND_PRIORITY_EDITOR),
-    // Lexical's own plain-text paste: each line break a paragraph break, the text inserted at the selection.
+    // Lexical's own Backspace, which the routing leaves his own text to.
+    editor.registerCommand(DELETE_CHARACTER_COMMAND, (backward) => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) selection.deleteCharacter(backward);
+      return true;
+    }, COMMAND_PRIORITY_EDITOR),
+    // Lexical's own plain-text paste: each line break (CR, LF or CRLF, as the paste handler normalizes them) a
+    // paragraph break, the text inserted at the selection.
     editor.registerCommand(PASTE_COMMAND, (event) => {
-      const text = (event as ClipboardEvent).clipboardData?.getData('text/plain') ?? '';
+      const text = ((event as ClipboardEvent).clipboardData?.getData('text/plain') ?? '').replace(/\r\n?/g, '\n');
       editor.update(() => {
         text.split('\n').forEach((line, i) => {
           const selection = $getSelection();
@@ -150,6 +158,12 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
     redo: () => editor.update(() => {
       editor.dispatchCommand(REDO_COMMAND, undefined);
     }, { discrete: true }),
+    /** Backspace, one keystroke's update. */
+    backspace: () => editor.update(() => {
+      editor.dispatchCommand(DELETE_CHARACTER_COMMAND, true);
+    }, { discrete: true }),
+    /** The next edit starts a new undo step, as after the capture interval. */
+    stopCapturing: () => undo.stopCapturing(),
     text: () => editor.getEditorState().read(() => $getRoot().getTextContent()),
     dispose: () => {
       for (const stop of stops) stop();
@@ -913,6 +927,109 @@ it('a paste that would merge an older open record counts the copy the merge adds
     pane.pump();
     expect(pane.fork.closed, 'input stays open').toBe(false);
     expect(openRecords(pane.live, SUGGESTER.id).map((open) => open.meta.id), 'the first record alone').toEqual([record]);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('an undo sizes the step the replay runs: a step whose items were created and deleted in one capture changes nothing, so the step under it counts', () => {
+  const doc = new Y.Doc();
+  const text = doc.getText('t');
+  const manager = new Y.UndoManager(text, { captureTimeout: 60_000 });
+  text.insert(0, 'a'.repeat(50_000));
+  manager.stopCapturing();
+  text.delete(0, 50_000);
+  manager.stopCapturing();
+  text.insert(0, 'x');
+  text.delete(0, 1);
+  const steps = manager.undoStack.map((item) => ({ entries: [{ manager, item }] }));
+  expect(steps, 'three steps').toHaveLength(3);
+  expect(stepBytes(steps).bytes, 'the restored deletion counts').toBeGreaterThanOrEqual(50_000);
+  manager.undo();
+  expect(text.length, 'yjs passes the empty step and restores the deletion').toBe(50_000);
+});
+
+it('an undo past a step that changes nothing (a character typed and deleted at once) counts the deletion it restores: past the cap, refused with the history kept', { timeout: 120_000 }, () => {
+  const pane = suggesting('Ada original line.\n\nSecond line.\n');
+  try {
+    pane.paste([`Tail ${'f'.repeat(90_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    pane.paste([`More ${'g'.repeat(50_000)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'both pastes are stored').toBe(false);
+    // He deletes most of his own suggestion natively; its undo restores it as new copies in the record.
+    pane.select('Second line.', 12, 12 + 5 + 90_000 + 5 + 49_999);
+    pane.backspace();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the deletion is stored').toBe(false);
+    expect(pane.text()).toContain('Second line.g');
+    pane.stopCapturing();
+    // Within one capture interval: an undo step that changes nothing.
+    pane.type('x');
+    pane.backspace();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the keystrokes are stored').toBe(false);
+    const text = pane.text();
+    expect(text).not.toContain('x');
+    const before = pane.changes();
+    pane.undo();
+    const notice = refusalMessage();
+    if (notice) {
+      expect(notice, 'refused visibly').toMatch(/nothing was undone/);
+      expect(pane.changes(), 'nothing was sent').toBe(before);
+      expect(pane.text(), 'F is unchanged').toBe(text);
+      vi.runAllTimers();
+      pane.pump();
+      expect(pane.fork.closed, 'input stays open').toBe(false);
+      return;
+    }
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'an admitted undo is stored').toBe(false);
+    expect(pane.text(), 'it restored the deletion').toContain('Tail f');
+  } finally {
+    pane.dispose();
+  }
+});
+
+/** A clipboard holding `text` as both Markdown and plain text. */
+const markdownClipboard = (text: string) => ({
+  types: ['text/markdown', 'text/plain'],
+  getData: (type: string) => (type === 'text/markdown' || type === 'text/plain' ? text : ''),
+}) as unknown as DataTransfer;
+
+it('a paste whose line breaks are carriage returns counts each as the paragraph the paste handler makes of it: past the cap, refused whole', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    const text = pane.text();
+    const before = pane.requests();
+    pane.pasteData(markdownClipboard('a\r\r'.repeat(1_000)));
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent').toBe(before);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a pasted chart counts the payload its config encodes to (two entries per array element): past the cap, refused whole', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    const config = { type: 'bar', data: [{ label: 'a', value: 1 }], options: { samples: new Array(20_000).fill(0) } };
+    const text = pane.text();
+    const before = pane.requests();
+    pane.pasteData(markdownClipboard(`\`\`\`moss-chart\n${JSON.stringify(config)}\n\`\`\`\n`));
+    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent').toBe(before);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
   } finally {
     pane.dispose();
   }
