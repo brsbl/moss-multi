@@ -245,9 +245,11 @@ it('hover stays right after an edit, a scroll, a resize and a filter change, and
   expect(hits, 'a stopped tracker never fires, even for a move already queued').toEqual([]);
 
   const again = trackCommentHover(editor, root, (ids) => hits.push(ids));
+  move(root, 250, 50);
   stop();
+  flushFrames();
   move(root, 250, 50);
   flushFrames();
-  expect(hits, 'an unbound painter hit-tests nothing').toEqual([[]]);
+  expect(hits, 'after the painter is unbound nothing fires, not even a move already queued').toEqual([]);
   again();
 });

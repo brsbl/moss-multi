@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 // A bound composer's submit is kept as a retryable draft until the server takes it (comments.md §4, §12): a failed
 // create, reply or edit keeps its text and its anchor, parent or comment, a retry reuses the proposed id so it lands
-// exactly once, and a success clears only its own draft.
+// exactly once, and a success clears only its own draft. A new submit is its own write: a second reply or a revised
+// text is sent under a new id, never folded into a draft still in flight or one whose answer was lost.
 import type { Binding } from '@lexical/yjs';
 import { createEditor } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
-import { mutate, submitted } from './adapter.ts';
+import { failedDraftText, mutate, submitted } from './adapter.ts';
 import { createComment, draftOf } from './api.ts';
 import type { Minted } from './mint.ts';
 import { modelFor } from './model.ts';
@@ -21,12 +22,15 @@ class FakeServer {
   readonly edits: { id: string; text: string }[] = [];
   readonly calls: { method: string; path: string; body: Record<string, unknown> }[] = [];
   mode: Mode = 'ok';
+  /** While set, each request waits for it before the server sees it. */
+  gate: Promise<void> | null = null;
 
   fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const path = new URL(String(input), 'http://localhost').pathname;
     const method = init?.method ?? 'GET';
     const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
     this.calls.push({ method, path, body });
+    if (this.gate) await this.gate;
     if (this.mode === 'network-before') throw new TypeError('Failed to fetch');
     if (this.mode.startsWith('refuse:')) return Response.json({ error: this.mode.slice('refuse:'.length) }, { status: 429 });
     if (method === 'POST' && path.endsWith('/comments')) {
@@ -91,8 +95,83 @@ it('a refused root comment keeps its draft; a new selection mints a new comment'
   const other: Minted = { ...MINTED, start: 'b3RoZXI=' };
   const next = createComment('doc-root-2', doc, other, 'Elsewhere');
   expect(next, 'another anchor is another comment').not.toBe(id);
-  await vi.waitFor(() => expect(draftOf('doc-root-2', 'root')).toBeUndefined());
+  await vi.waitFor(() => expect(server.landed.has(next)).toBe(true));
+  await vi.waitFor(() => expect(draftOf('doc-root-2', 'root'), 'the other anchor keeps its failed draft').toMatchObject({ id, failed: 'rate-limited' }));
   expect([...server.landed.keys()]).toEqual([next]);
+});
+
+it('a retry with revised text after a lost answer saves the revision, for a root comment and a reply', async () => {
+  const { doc, editor } = boundEditor('doc-revise');
+  server.mode = 'network-after';
+  const first = createComment('doc-revise', doc, MINTED, 'Version one');
+  await vi.waitFor(() => expect(draftOf('doc-revise', 'root')?.failed).toBe('network'));
+  server.mode = 'ok';
+  const second = createComment('doc-revise', doc, MINTED, 'Version two');
+  expect(second, 'a revised text is a new write').not.toBe(first);
+  await vi.waitFor(() => expect(draftOf('doc-revise', 'root'), 'the revision supersedes the failed draft').toBeUndefined());
+  expect(server.landed.get(second), 'the revision is stored').toMatchObject({ text: 'Version two' });
+
+  server.mode = 'network-after';
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Reply one' });
+  expect(await submitted('doc-revise', 'reply:p1')).toEqual({ ok: false, error: 'network' });
+  server.mode = 'ok';
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Reply two' });
+  expect(await submitted('doc-revise', 'reply:p1')).toEqual({ ok: true });
+  expect([...server.landed.values()].map((body) => body.text), 'every text the server was sent is stored once')
+    .toEqual(['Version one', 'Version two', 'Reply one', 'Reply two']);
+  expect(draftOf('doc-revise', 'reply:p1')).toBeUndefined();
+});
+
+it('a second reply sent while the first is in flight is its own reply, and both land', async () => {
+  const { editor } = boundEditor('doc-two-replies');
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'Slow reply A' })).toBe(true);
+  const a = submitted('doc-two-replies', 'reply:p1');
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'Quick reply B' })).toBe(true);
+  const b = submitted('doc-two-replies', 'reply:p1');
+  expect(b, 'the second submit has its own answer').not.toBe(a);
+  open();
+  expect(await a).toEqual({ ok: true });
+  expect(await b).toEqual({ ok: true });
+  const posted = server.calls.filter((call) => call.method === 'POST').map((call) => call.body);
+  expect(posted.map((body) => body.text)).toEqual(['Slow reply A', 'Quick reply B']);
+  expect(new Set(posted.map((body) => body.id)).size, 'under two ids').toBe(2);
+  expect(draftOf('doc-two-replies', 'reply:p1')).toBeUndefined();
+});
+
+it('a root resubmit while the first is in flight: the same text posts once, a revised text posts the revision', async () => {
+  const doc = new Y.Doc();
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  const id = createComment('doc-inflight', doc, MINTED, 'Held');
+  expect(createComment('doc-inflight', doc, MINTED, 'Held'), 'a double submit is one comment').toBe(id);
+  const revised = createComment('doc-inflight', doc, MINTED, 'Held plus more');
+  expect(revised).not.toBe(id);
+  open();
+  await vi.waitFor(() => expect(draftOf('doc-inflight', 'root')).toBeUndefined());
+  expect(server.calls.filter((call) => call.method === 'POST').map((call) => call.body.text)).toEqual(['Held', 'Held plus more']);
+});
+
+it("a failed reply's and edit's text stays readable for the composer until a later submit in its slot", async () => {
+  const { editor } = boundEditor('doc-recover');
+  server.mode = 'network-before';
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost A' });
+  await submitted('doc-recover', 'reply:p1');
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost B' });
+  await submitted('doc-recover', 'reply:p1');
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Lost edit' });
+  await submitted('doc-recover', 'edit:c1');
+  expect(failedDraftText('doc-recover', 'reply:p1'), 'both failed replies come back').toBe('Lost A\n\nLost B');
+  expect(failedDraftText('doc-recover', 'reply:p2')).toBeNull();
+  expect(failedDraftText('doc-recover', 'edit:c1')).toBe('Lost edit');
+  server.mode = 'ok';
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost A\n\nLost B' });
+  expect(await submitted('doc-recover', 'reply:p1')).toEqual({ ok: true });
+  expect(failedDraftText('doc-recover', 'reply:p1'), 'the resubmit took both').toBeNull();
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Found edit' });
+  expect(await submitted('doc-recover', 'edit:c1')).toEqual({ ok: true });
+  expect(failedDraftText('doc-recover', 'edit:c1')).toBeNull();
 });
 
 it('a reply that fails keeps its text and parent; the bound composer gets the answer and its retry lands once', async () => {

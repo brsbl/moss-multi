@@ -3,14 +3,16 @@
 // from the server's anchor record, so the peer sees it, bold across it never blinks it, and delete then Cmd+Z brings
 // it back. Threads open from the gutter, take replies and resolve; a commenter comments without editing; a detached
 // thread is listed with its quote. No marker reaches the DOM. A commenter also comments on blocks (code, chart, canvas,
-// image) from their headers; a viewer and a trashed note are offered none.
+// image) from their headers; a viewer, a revoked commenter and a trashed note are offered none. A composer keeps what
+// the server did not take: a lost or refused write stays to retry, a revision is sent as written, and overlapping
+// submits each land.
 import { readFileSync } from 'node:fs';
 import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { fromBase64 } from '../../packages/core/src/tree-anchor.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { BODY_BINDING_ATTR, DOC_STATE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
+import { BODY_BINDING_ATTR, DOC_STATE_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, paneSelector } from '../lib/contract.ts';
 import { openDocClient } from '../lib/doc-client.ts';
 import { grantDoc, type GrantRole } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
@@ -521,6 +523,20 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
     await expect(blockCommentButton(block), `${type}: a viewer gets no block comment`).toHaveCount(0);
   }
 
+  const { actor: dan, principal: danPrincipal } = await peer(actors, note, 'dan', 'commenter');
+  const [, firstBlock] = (await blocksByType(dan, id))[0]!;
+  await firstBlock.scrollIntoViewIfNeeded();
+  await firstBlock.hover();
+  await expect(blockCommentButton(firstBlock), 'a commenter is offered Add comment until access ends').toHaveCount(1);
+  const removed = await ada.context.request.delete(`/api/docs/${id}/members`, { headers: { origin: stack.baseUrl }, data: { principalId: danPrincipal.id } });
+  expect(removed.ok(), 'the owner removes the commenter').toBe(true);
+  await expect(ui.pane(dan, id), 'the note ends for the removed commenter in place').toHaveAttribute(TERMINAL_REASON_ATTR, 'revoked', { timeout: PEER_TIMEOUT });
+  for (const [type, block] of await blocksByType(dan, id)) {
+    await block.scrollIntoViewIfNeeded();
+    await block.hover();
+    await expect(blockCommentButton(block), `${type}: a revoked commenter gets no block comment`).toHaveCount(0);
+  }
+
   const trashed = await ada.context.request.delete(`/api/docs/${id}`, { headers: { origin: stack.baseUrl } });
   expect(trashed.status()).toBe(200);
   await expect(ui.pane(cara, id), 'the note goes terminal in place').toHaveAttribute(DOC_STATE_ATTR, 'terminal', { timeout: PEER_TIMEOUT });
@@ -530,4 +546,114 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
     await expect(blockCommentButton(block), `${type}: a trashed note offers no block comment`).toHaveCount(0);
   }
   await expect(cara.page.getByRole('dialog', { name: 'Add comment' }), 'no composer is open').toHaveCount(0);
+});
+
+/** The comment texts the server stores for the doc, sorted. */
+async function storedTexts(baseUrl: string, docId: string, cookie: string): Promise<string[]> {
+  const client = await openDocClient(baseUrl, docId, cookie);
+  try {
+    await client.synced;
+    const out: string[] = [];
+    for (const [key, value] of client.doc.getMap('comments')) {
+      const text = (value as { text?: string } | null)?.text;
+      if (key.startsWith('c:') && text) out.push(text);
+    }
+    return out.sort();
+  } finally {
+    client.close();
+  }
+}
+
+test("j15-comments: a commenter's composers keep what the server did not take; a revision and overlapping submits each land once @p:mean-1 @p:ppl-2", async ({ actors, stack }) => {
+  const note = await sharedNote(actors, stack.baseUrl);
+  const { ada, id } = note;
+  const { actor: cara } = await peer(actors, note, 'cara', 'commenter');
+  const cookie = (await ada.context.cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
+  const stored = (message: string) => expect.poll(() => storedTexts(stack.baseUrl, id, cookie), { message, timeout: PEER_TIMEOUT });
+
+  // Cara's create and reply POSTs: `lose` lets the server take the write and loses its answer, `fail` never sends it,
+  // `hold` keeps the next one waiting until the test releases it.
+  let mode: 'pass' | 'lose' | 'fail' | 'hold' = 'pass';
+  const sent: string[] = [];
+  const held: (() => void)[] = [];
+  await cara.page.route((url) => url.pathname === `/api/docs/${id}/comments`, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    sent.push((route.request().postDataJSON() as { text: string }).text);
+    const now = mode;
+    if (now === 'hold') {
+      mode = 'pass';
+      await new Promise<void>((resolve) => held.push(resolve));
+    }
+    if (now === 'lose') {
+      await route.fetch();
+      return route.abort('failed');
+    }
+    if (now === 'fail') return route.abort('failed');
+    return route.fallback();
+  });
+  const composer = cara.page.getByRole('dialog', { name: 'Add comment' });
+  const composerBox = composer.getByRole('textbox').first();
+  const replyBox = thread(cara).locator('[data-comment-reply-composer] [contenteditable="true"]');
+
+  // A lost answer keeps the composer's text; Cara revises it, and the revision is what is stored.
+  mode = 'lose';
+  await selectDom(cara, id, 'lazy dog');
+  await cara.page.keyboard.press(COMMENT_KEY);
+  await expect(composerBox).toBeFocused();
+  await cara.page.keyboard.type('Version one');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect.poll(() => sent, { message: 'the first write went out' }).toEqual(['Version one']);
+  await stored('the server took the write whose answer was lost').toEqual(['Version one']);
+  await expect(composerBox, 'the composer keeps the text the server never answered for').toHaveText('Version one');
+  mode = 'pass';
+  await cara.page.keyboard.press('ControlOrMeta+a');
+  await cara.page.keyboard.type('Version two');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect(composer, 'the revision is taken and the composer closes').toBeHidden({ timeout: PEER_TIMEOUT });
+  await stored('the lost write landed once, and the revision with its own text').toEqual(['Version one', 'Version two']);
+
+  // Text typed while a submit is in flight is not cleared by that submit's answer.
+  mode = 'hold';
+  await selectDom(cara, id, 'quick brown');
+  await cara.page.keyboard.press(COMMENT_KEY);
+  await expect(composerBox).toBeFocused();
+  await cara.page.keyboard.type('Held root');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect.poll(() => held.length, { message: 'the root POST is held' }).toBe(1);
+  await cara.page.keyboard.type(' plus more');
+  held.shift()!();
+  await stored('the held root lands').toEqual(['Held root', 'Version one', 'Version two']);
+  await expect(composerBox, 'the newer text stays in the open composer').toHaveText('Held root plus more');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect(composer).toBeHidden({ timeout: PEER_TIMEOUT });
+  await stored('the newer text lands as its own comment').toEqual(['Held root', 'Held root plus more', 'Version one', 'Version two']);
+
+  // A second reply sent while the first is still in flight is its own reply.
+  await gutter(cara).first().click();
+  await expect(replyBox, 'the reply composer autofocuses').toBeFocused();
+  mode = 'hold';
+  await cara.page.keyboard.type('Slow reply A');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect.poll(() => held.length, { message: 'the first reply is held' }).toBe(1);
+  await cara.page.keyboard.type('Quick reply B');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect.poll(() => sent.slice(-2), { message: 'the second reply is sent too' }).toEqual(['Slow reply A', 'Quick reply B']);
+  held.shift()!();
+  await stored('both replies land').toEqual(['Held root', 'Held root plus more', 'Quick reply B', 'Slow reply A', 'Version one', 'Version two']);
+
+  // A reply that never reached the server comes back to the box, and is offered again after the thread closes.
+  mode = 'fail';
+  await expect(replyBox).toBeFocused();
+  await cara.page.keyboard.type('Lost reply');
+  await cara.page.keyboard.press(SUBMIT);
+  await expect(replyBox, 'the failed reply comes back to the box').toHaveText('Lost reply', { timeout: PEER_TIMEOUT });
+  await cara.page.keyboard.press('Escape');
+  await expect(thread(cara)).toBeHidden();
+  mode = 'pass';
+  await gutter(cara).first().click();
+  await expect(replyBox, 'reopening the thread offers the failed reply again').toHaveText('Lost reply');
+  await replyBox.click();
+  await cara.page.keyboard.press(SUBMIT);
+  await stored('the retried reply lands once')
+    .toEqual(['Held root', 'Held root plus more', 'Lost reply', 'Quick reply B', 'Slow reply A', 'Version one', 'Version two']);
 });
