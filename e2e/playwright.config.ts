@@ -73,6 +73,8 @@ export default defineConfig({
       testDir: './journeys',
       ...journeys,
       grepInvert: /@local-only/,
+      // Every step waits on real round trips there: the longest legs passed in 130-150 s against the 120 s local limit.
+      timeout: 240_000,
       use: { browserName: engine, ...recordingFor(stack?.baseUrl) },
     })),
     // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.

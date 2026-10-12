@@ -243,8 +243,9 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
   expect((await ada.context.request.delete(`/api/docs/${docId}/links/${docToken}`, { headers })).status()).toBe(200);
   expect((await ada.context.request.delete(`/api/folders/${folderId}/links/${folderToken}`, { headers })).status()).toBe(200);
   const decisiveEnd = Date.now();
-  for (const [index, holder] of holders.entries()) {
-    const after = await probe(holder.docId);
+  // Both at once, before either DO can idle out again.
+  const afters = await Promise.all(holders.map((holder) => probe(holder.docId)));
+  for (const [index, after] of afters.entries()) {
     await info.attach(`cold-${index}-instance.json`, { body: JSON.stringify({ base: baseline[index], after, decisiveAt }), contentType: 'application/json' });
     expect(inductionProblems(baseline[index], after, decisiveAt, decisiveEnd, skewMs), 'the revocation met a woken DO').toEqual([]);
   }
