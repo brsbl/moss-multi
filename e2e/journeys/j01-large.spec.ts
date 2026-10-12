@@ -88,6 +88,28 @@ test('j01-large: typing in the middle of a 40,000-line note stays within budget 
   await ada.goto(`/d/${large}`);
   await ui.waitBodyLive(ada, large, 120_000);
   await ada.observeEditor(large);
+  await expect.poll(() => ui.body(ada, large).evaluate((root) => root.children.length), { timeout: 60_000 }).toBe(LINES);
+  // DIAGNOSTIC (temporary): the large note alone, traced.
+  {
+    const cdp = await ada.context.newCDPSession(ada.page);
+    const events: { name: string; ph: string; dur?: number; args?: { data?: { type?: string; functionName?: string; url?: string; lineNumber?: number } } }[] = [];
+    cdp.on('Tracing.dataCollected', ({ value }) => { events.push(...(value as typeof events)); });
+    const done = new Promise((resolve) => cdp.once('Tracing.tracingComplete', resolve));
+    await cdp.send('Tracing.start', { categories: 'devtools.timeline,disabled-by-default-devtools.timeline', transferMode: 'ReportEvents' });
+    const alone = await typeTimed(ada, large, LINES / 2 - 10);
+    await cdp.send('Tracing.end');
+    await done;
+    const agg: Record<string, number> = {};
+    for (const e of events) {
+      if (e.ph !== 'X' || !e.dur) continue;
+      const d = e.args?.data ?? {};
+      const k = e.name === 'EventDispatch' ? `ED ${d.type}` : e.name === 'FunctionCall' ? `FC ${d.functionName}@${(d.url ?? '').split('/').pop()}:${d.lineNumber}` : e.name;
+      agg[k] = (agg[k] ?? 0) + e.dur / 1000;
+    }
+    const top = Object.entries(agg).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([k, v]) => `${Math.round(v)} ${k}`);
+    testInfo.annotations.push({ type: 'large-note trace', description: JSON.stringify({ alone, top }) });
+    await cdp.detach();
+  }
   const ben = await actors.open(benPrincipal, { path: `/d/${large}` });
   await ui.waitBodyLive(ben, large, 120_000);
   await expect.poll(() => ui.body(ada, large).evaluate((root) => root.children.length), { timeout: 60_000 }).toBe(LINES);
