@@ -3,8 +3,11 @@
 // suggest limit by a bound no paste of the clipboard exceeds, or refused with nothing changed and the selection kept.
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type IdSpan, type SuggestRefusal } from '@moss-multi/protocol/suggest';
+import { isMossCanvasFenceName } from '@moss-desktop/common/markdown-fences';
+import { parseSketchBlock } from '@moss-desktop/renderer/editor/nodes/SketchNode';
+import { parseChartConfig, validateChartConfig } from '@moss-desktop/renderer/editor/utils/chartDefaults';
 import { isPayloadType } from '@moss-multi/sync/payload-docs';
-import { seedOf } from '@moss-multi/sync/registers';
+import { MAP_REGISTERS, seedOf } from '@moss-multi/sync/registers';
 import { pendingPartBytes } from '@moss-multi/sync/suggest/client';
 import type { ForkView } from '@moss-multi/sync/suggest/forks';
 import {
@@ -27,10 +30,65 @@ const MARKUP = /[*_~`=^$[|#{\t]/g;
 /** A Lexical clipboard's JSON: each property becomes a map entry whose key and header are under twice its JSON. */
 const PER_JSON_BYTE = 3;
 
-function textBound(text: string): number {
-  if (!text) return 0;
+/** A compound payload's entry: its key, its value and a map item's header. */
+const PER_ENTRY = 40;
+
+/**
+ * Bytes of ops a compound payload (a chart's config, a sketch's grid and labels) takes in its payload doc, encoded as
+ * the register writes it (map-codecs.ts): a chart writes two entries per array element, each keyed by its full path.
+ */
+function encodedBytes(type: 'chart' | 'sketch', fields: Record<string, unknown>): number {
+  let bytes = 0;
+  for (const [key, value] of MAP_REGISTERS[type].encode(fields)) bytes += (bytesOf(key) + bytesOf(JSON.stringify(value) ?? '')) * PER_BYTE + PER_ENTRY;
+  return bytes;
+}
+const chartBytes = (config: unknown): number => (config && typeof config === 'object' ? encodedBytes('chart', { __config: config }) : 0);
+function sketchBytes(text: string): number {
+  const { grid, labels } = parseSketchBlock(text);
+  return encodedBytes('sketch', { __grid: grid, __labels: labels });
+}
+
+/** A fence line, after any blockquote, list-item or indent prefix: its marker and its language. */
+const FENCE = /^((?:[ \t>]|[-+*][ \t]|\d{1,9}[.)][ \t])*)(`{3,}|~{3,})[ \t]*([^\s`]*)/;
+
+/**
+ * The compound payloads the Markdown import makes of `text`'s chart and canvas fences (normalize.ts): each block's
+ * lines, read with and without its prefix, whichever reading encodes larger.
+ */
+function fencedPayloadBytes(text: string): number {
+  const lines = text.split('\n');
+  let bytes = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const open = FENCE.exec(lines[i]);
+    if (!open) continue;
+    const [, prefix, marker, language] = open;
+    const chart = language === 'moss-chart';
+    if (!chart && !isMossCanvasFenceName(language)) continue;
+    const kept: string[] = [];
+    const trimmed: string[] = [];
+    for (i += 1; i < lines.length; i += 1) {
+      const close = FENCE.exec(lines[i]);
+      if (close && close[2][0] === marker[0] && close[2].length >= marker.length && !close[3]) break;
+      kept.push(lines[i].replace(new RegExp(`^[ \\t>]{0,${prefix.length}}`), ''));
+      trimmed.push(lines[i].replace(/^[ \t>]*/, ''));
+    }
+    const sizes = [kept.join('\n'), trimmed.join('\n')].map((body) => {
+      if (!body.trim()) return 0;
+      if (!chart) return sketchBytes(body);
+      const parsed = parseChartConfig(body);
+      return parsed.valid ? chartBytes(parsed.config) : 0;
+    });
+    bytes += Math.max(...sizes);
+  }
+  return bytes;
+}
+
+function textBound(raw: string): number {
+  if (!raw) return 0;
+  // The paste handlers read a CR or a CRLF as a line break (MarkdownEditor normalizeClipboardLineEndings).
+  const text = raw.replace(/\r\n?/g, '\n');
   const lines = text.split('\n').length;
-  return bytesOf(text) * PER_BYTE + lines * PER_LINE + (text.match(MARKUP)?.length ?? 0) * PER_MARK;
+  return bytesOf(text) * PER_BYTE + lines * PER_LINE + (text.match(MARKUP)?.length ?? 0) * PER_MARK + fencedPayloadBytes(text);
 }
 
 /**
@@ -44,10 +102,45 @@ function htmlBound(html: string): number {
   const walker = parsed.createTreeWalker(parsed.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     bound += PER_LINE;
-    if (node.nodeType === Node.TEXT_NODE) bound += bytesOf(node.nodeValue ?? '') * PER_BYTE;
-    else for (const { name, value } of (node as Element).attributes) bound += (bytesOf(name) + bytesOf(value)) * PER_BYTE + PER_MARK;
+    if (node.nodeType === Node.TEXT_NODE) {
+      bound += bytesOf(node.nodeValue ?? '') * PER_BYTE;
+      continue;
+    }
+    const element = node as Element;
+    for (const { name, value } of element.attributes) bound += (bytesOf(name) + bytesOf(value)) * PER_BYTE + PER_MARK;
+    // A chart's or a sketch's element (ChartNode, SketchNode importDOM) becomes a compound payload.
+    const config = element.getAttribute('data-chart-config');
+    if (config) {
+      try {
+        const checked = validateChartConfig(JSON.parse(config));
+        if (checked.valid) bound += chartBytes(checked.config);
+      } catch {
+        // Not JSON: no chart.
+      }
+    }
+    if (element.hasAttribute('data-sketch-grid')) bound += sketchBytes(element.getAttribute('data-sketch-grid') || element.textContent || '');
   }
   return bound;
+}
+
+/** A Lexical clipboard: its JSON, and the compound payloads its chart and sketch nodes import to. */
+function lexicalBound(json: string): number {
+  if (!json) return 0;
+  let bytes = 0;
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return;
+    const { type, config, grid, children } = node as { type?: unknown; config?: unknown; grid?: unknown; children?: unknown };
+    if (type === 'chart') bytes += chartBytes(config);
+    if (type === 'sketch' && typeof grid === 'string') bytes += sketchBytes(grid);
+    if (Array.isArray(children)) children.forEach(visit);
+  };
+  try {
+    const parsed = JSON.parse(json) as { nodes?: unknown };
+    if (Array.isArray(parsed.nodes)) parsed.nodes.forEach(visit);
+  } catch {
+    // Not a Lexical clipboard: the paste handler ignores it.
+  }
+  return bytesOf(json) * PER_JSON_BYTE + bytes;
 }
 
 /**
@@ -67,7 +160,7 @@ export function clipboardBound(data: DataTransfer | null): number {
     textBound(read('text/markdown')),
     textBound(read('text/uri-list')),
     htmlBound(read('text/html')),
-    bytesOf(read('application/x-lexical-editor')) * PER_JSON_BYTE,
+    lexicalBound(read('application/x-lexical-editor')),
   );
 }
 
@@ -197,48 +290,87 @@ function eachItem(doc: Y.Doc, set: StackItem['deletions'], visit: (item: Y.Item,
   });
 }
 
-/**
- * The most ops replaying `steps` (an undo or a redo) adds: each deleted item a step deleted comes back as a new copy
- * with its content (yjs redoItem), and what it inserted goes in a delete set. BodyUndo replays from the top until a
- * step changes something, so steps count until one has an item to restore or remove. With the docs those steps write.
- */
-export function stepBytes(steps: readonly UndoStep[]): { bytes: number; docs: Set<Y.Doc> } {
-  let bytes = 0;
-  const docs = new Set<Y.Doc>();
-  for (let at = steps.length - 1; at >= 0; at -= 1) {
-    let live = false;
-    for (const { manager, item } of steps[at].entries) {
-      docs.add(manager.doc);
-      eachItem(manager.doc, item.deletions, (struct, offset, len) => {
-        if (!struct.deleted) return;
-        live = true;
-        bytes += contentBytes(struct, offset, len) * PER_BYTE + ITEM_BYTES + bytesOf(struct.parentSub ?? '');
-      });
-      eachItem(manager.doc, item.insertions, (struct) => {
-        if (struct.deleted) return;
-        live = true;
-        bytes += 16;
-      });
-    }
-    if (live) break;
-  }
-  return { bytes, docs };
+/** Whether `struct` is in what `manager` undoes: yjs replays nothing outside its scope. */
+const inScope = (manager: Y.UndoManager, struct: Y.Item): boolean =>
+  manager.scope.some((type) => (type as unknown) === manager.doc || Y.isParentOf(type as Y.AbstractType<unknown>, struct));
+/** Whether a type holds a live item of a client other than `client`, at any depth. */
+function holdsOthers(type: Y.AbstractType<unknown>, client: number): boolean {
+  const other = (item: Y.Item): boolean => !item.deleted
+    && (item.id.client !== client || (item.content instanceof Y.ContentType && holdsOthers(item.content.type as Y.AbstractType<unknown>, client)));
+  for (let item = type._start; item; item = item.right) if (other(item)) return true;
+  for (const item of type._map.values()) if (other(item)) return true;
+  return false;
 }
 
 /**
- * The top-level blocks of the body (`root`) the top step's items sit in, numbered as client.ts #mergedBy numbers them
- * (a deleted block between the live ones beside it); undefined when none of its items is in the body.
+ * Whether replaying a step surely changes something, as yjs popStackItem and redoItem decide: a deleted item the
+ * step did not also insert comes back where its parent stands (a property value only when no later value of its key
+ * outlives the step), or a live item it inserted goes. In the body (`body`) undo.ts's deleteFilter keeps a container
+ * holding another client's items and decides a property's fate itself, so neither of those is sure.
  */
-export function stepBlocks(root: Y.XmlText, steps: readonly UndoStep[]): { from: number; to: number } | undefined {
-  const step = steps.at(-1);
-  if (!step) return undefined;
+function surelyReplays({ entries }: UndoStep, body: Y.Doc | undefined): boolean {
+  let sure = false;
+  for (const { manager, item } of entries) {
+    eachItem(manager.doc, item.deletions, (struct) => {
+      if (sure || !struct.deleted || struct.redone !== null || !inScope(manager, struct) || Y.isDeleted(item.insertions, struct.id)) return;
+      if ((struct.parent as Y.AbstractType<unknown>)._item?.deleted) return;
+      for (let right = struct.parentSub === null ? null : struct.right; right; right = right.right) {
+        if (right.redone === null && !Y.isDeleted(item.insertions, right.id)) return;
+      }
+      sure = true;
+    });
+    eachItem(manager.doc, item.insertions, (struct) => {
+      if (sure || struct.deleted || struct.redone !== null || !inScope(manager, struct)) return;
+      if (manager.doc === body) {
+        if (struct.parentSub !== null) return;
+        if (struct.content instanceof Y.ContentType && holdsOthers(struct.content.type as Y.AbstractType<unknown>, struct.id.client)) return;
+      }
+      sure = true;
+    });
+    if (sure) return true;
+  }
+  return false;
+}
+
+/**
+ * The most ops replaying `steps` (an undo or a redo) adds, with the docs and the steps it runs (`run`). BodyUndo pops
+ * from the top until a step changes something, so it counts every step down to the first that surely does (all of
+ * them when none surely does): each deleted item comes back as a new copy with its content (yjs redoItem), and what a
+ * step inserted goes in a delete set.
+ */
+export function stepBytes(steps: readonly UndoStep[], body?: Y.Doc): { bytes: number; docs: Set<Y.Doc>; run: UndoStep[] } {
+  let bytes = 0;
+  const docs = new Set<Y.Doc>();
+  const run: UndoStep[] = [];
+  for (let at = steps.length - 1; at >= 0; at -= 1) {
+    run.push(steps[at]);
+    for (const { manager, item } of steps[at].entries) {
+      docs.add(manager.doc);
+      eachItem(manager.doc, item.deletions, (struct, offset, len) => {
+        if (struct.deleted) bytes += contentBytes(struct, offset, len) * PER_BYTE + ITEM_BYTES + bytesOf(struct.parentSub ?? '');
+      });
+      eachItem(manager.doc, item.insertions, (struct) => {
+        if (!struct.deleted) bytes += 16;
+      });
+    }
+    if (surelyReplays(steps[at], body)) break;
+  }
+  return { bytes, docs, run };
+}
+
+/**
+ * The top-level blocks of the body (`root`) the items of the steps a replay runs (`run`, stepBytes) sit in, numbered
+ * as client.ts #mergedBy numbers them (a deleted block between the live ones beside it); undefined when none of their
+ * items is in the body.
+ */
+export function stepBlocks(root: Y.XmlText, run: readonly UndoStep[]): { from: number; to: number } | undefined {
   const tops = new Set<Y.Item>();
   const see = (struct: Y.Item) => {
     let at: Y.Item | null = struct;
     while (at && at.parent !== root) at = (at.parent as Y.AbstractType<unknown>)._item;
     if (at) tops.add(at);
   };
-  for (const { manager, item } of step.entries) {
+  for (const { manager, item } of run.flatMap((step) => step.entries)) {
     if (manager.doc !== root.doc) continue;
     eachItem(manager.doc, item.deletions, see);
     eachItem(manager.doc, item.insertions, see);
@@ -274,14 +406,14 @@ function stepRefused(kind: 'undo' | 'redo', refusal: SuggestRefusal | 'doc-cap')
 export function admitStep(
   fork: ForkView, kind: 'undo' | 'redo', root: Y.XmlText, steps: readonly UndoStep[], extra: number, targets: IdSpan[],
 ): string | null {
-  const replay = stepBytes(steps);
+  const replay = stepBytes(steps, root.doc ?? undefined);
   const adds = replay.bytes + extra;
   if (adds === 0 && targets.length === 0) return null;
   const strike = targets.length ? pendingPartBytes(targets) : 0;
   if (noteBytes(fork.body) + adds + strike > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return stepRefused(kind, 'doc-cap');
   // A payload doc's items it names may be an older record's of the author's, which merges too (client.ts #forward).
   const payloads = [...replay.docs].filter((doc) => doc !== root.doc);
-  const refusal = fork.admit(adds, targets, stepBlocks(root, steps), payloads);
+  const refusal = fork.admit(adds, targets, stepBlocks(root, replay.run), payloads);
   return refusal ? stepRefused(kind, refusal) : null;
 }
 
