@@ -860,6 +860,78 @@ describe('answers', () => {
       expect(title(other.doc), 'another principal at that address is answered at once').toBe('Members');
     });
 
+    /** Rows of the persisted answer budgets (0 before the table exists). */
+    const budgetRows = (backing: Backing) => {
+      const tables = backing.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'answer_budgets'");
+      return tables.length ? Number(backing.query<{ n: number }>('SELECT COUNT(*) AS n FROM answer_budgets')[0].n) : 0;
+    };
+    /** A wake with the sockets kept: every client now delivers to the fresh instance. */
+    const hibernate = async (opened: Opened, clients: TestClient[]) => {
+      const woken = await start(wake(opened));
+      for (const client of clients) client.opened = woken;
+      return woken;
+    };
+
+    it.each([
+      ['a signed-in principal', { role: 'viewer', id: 'viewer-wake' }],
+      ['an anonymous link and address', { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '198.51.100.9' }],
+    ] as const)('%s\'s spent budget survives hibernation (T3.B26)', async (_name, who) => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Hibernate');
+      const viewer = await connect(opened, who);
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 16; i += 1) await viewer.deliver(empty);
+      expect(answers(viewer, 0)).toBeLessThanOrEqual(BUDGET.docs + 1);
+      const woken = await hibernate(opened, [editor, viewer]);
+      const from = viewer.socket.sent.length;
+      await viewer.deliver(empty);
+      expect(answers(viewer, from), 'a wake does not refill a spent budget: the step 1 waits').toBe(0);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer, from), 'answered once the budget refills').toBe(1);
+      await viewer.pump();
+      expect(title(viewer.doc)).toBe(title(woken.dobj.document));
+      expect(viewer.closed).toBeNull();
+    });
+
+    it('an honest client with a full budget is answered at once after a wake (T3.B26)', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Honest');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-honest' });
+      await viewer.hello();
+      await hibernate(opened, [editor, viewer]);
+      await typeTitle(editor, ' again');
+      const from = viewer.socket.sent.length;
+      await viewer.hello();
+      expect(answers(viewer, from), 'answered with no added delay').toBe(1);
+      expect(title(viewer.doc)).toBe('Honest again');
+    });
+
+    it('persisted budgets stay bounded across many keys and wakes (T3.B26)', async () => {
+      let opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Bounded');
+      const empty = step1(new Y.Doc());
+      const KEYS = 6;
+      const t0 = Date.now();
+      for (let round = 0; round < 5; round += 1) {
+        const clients: TestClient[] = [editor];
+        for (let i = 0; i < KEYS; i += 1) {
+          const viewer = await connect(opened, { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: `198.51.${round}.${i}` });
+          for (let j = 0; j < 8; j += 1) await viewer.deliver(empty);
+          await viewer.drop();
+          clients.push(viewer);
+        }
+        expect(budgetRows(opened.backing), 'spent budgets are persisted').toBeGreaterThan(0);
+        // The editor's own small charges are persisted too.
+        expect(budgetRows(opened.backing), 'only budgets spent since they last refilled').toBeLessThanOrEqual(KEYS + 1);
+        opened = await hibernate(opened, clients);
+        // Every budget refills, with debt to spare. A harness wake resets the fake clock, so set it forward.
+        vi.setSystemTime(t0 + (round + 1) * 3 * BUDGET.windowMs);
+      }
+    });
+
     it('a signed-in reader\'s visible tabs resyncing up to date stay answered at once', async () => {
       const opened = await start(openDoc(new Backing(), Budgeted as never));
       const editor = await editorOn(opened);

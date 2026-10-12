@@ -10,7 +10,7 @@ import { createDb } from '../db/client.ts';
 import { folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, resolveFolderAccess } from './access.ts';
-import { FOLDER_NAME_MAX, foldersToday, isUnique, tooManyFolders, trashFolder, type FoldersEnv } from './folders.ts';
+import { FOLDER_NAME_MAX, foldersToday, isUnique, lastVault, tooManyFolders, trashFolder, type FoldersEnv } from './folders.ts';
 import { changed, NO_STORE, notFound, readJsonObject, refuse, unauthenticated } from './respond.ts';
 
 /** The trimmed name, or the sentence that says what is wrong with it. Same rules as a folder's. */
@@ -62,14 +62,15 @@ async function createVault(request: Request, env: FoldersEnv): Promise<Response>
   return json({ vault: { id, name: named.name, role: 'owner', owned: true } }, 201, NO_STORE);
 }
 
-/** The live vault `id` when the caller owns it, else the response that refuses them. */
+/** The live vault `id` when the caller owns it as a person, else the response that refuses them; an agent key never
+ * renames or trashes a vault. */
 async function ownedVault(request: Request, env: FoldersEnv, id: string, verb: string): Promise<{ userId: string } | Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
   const access = await resolveFolderAccess(createDb(env.DB), principal, id);
   if (!access || access.kind !== 'vault') return notFound();
   const userId = actingUserId(principal);
-  if (access.ownerUserId !== userId || !userId) {
+  if (principal.type !== 'user' || access.ownerUserId !== userId || !userId) {
     return access.deleted ? notFound() : refuse(403, 'forbidden', `Only the vault’s owner can ${verb} it.`);
   }
   return { userId };
@@ -101,9 +102,10 @@ async function trashVault(request: Request, env: FoldersEnv, id: string): Promis
   if (vault?.deletedAt === null) {
     const live = await env.DB.prepare("SELECT count(*) AS n FROM folders WHERE owner_user_id = ?1 AND kind = 'vault' AND deleted_at IS NULL")
       .bind(owned.userId).first<{ n: number }>();
-    if ((live?.n ?? 0) <= 1) return refuse(409, 'last-vault', 'This is your only vault, so it can’t be moved to Trash. Create another vault first.');
+    if ((live?.n ?? 0) <= 1) return lastVault();
   }
-  // Sharers hear about the vault going away from the folder trash's own notification.
+  // Sharers hear about the vault going away from the folder trash's own notification. Its write re-checks that another
+  // live vault remains.
   return trashFolder(request, env, id, 'vault');
 }
 

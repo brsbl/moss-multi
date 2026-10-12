@@ -198,13 +198,18 @@ const CAP = 512 * 1024;
 const UNCLOSED: [string, string][] = [['meta', '<meta '], ['link', '<LINK '], ['title without >', '<title '], ['title without </title>', '<title>']];
 const hostile = (opener: string, bytes: number) => opener.repeat(Math.ceil(bytes / opener.length)).slice(0, bytes);
 
-/** Times `run` on pages doubling to the cap: each costs at most about three times the half-size one, the cap `budgetMs`. */
+/** Times `run` on pages doubling to the cap (best of three): each costs at most about three times the half-size one, the cap `budgetMs`. */
 async function expectLinear(opener: string, run: (body: string, size: number) => Promise<void> | void, budgetMs: number, slackMs: number) {
+  // Best of three per size, so one GC pause or busy CI worker cannot fail a linear scan.
   const time = async (size: number) => {
     const body = hostile(opener, size);
-    const startedAt = performance.now();
-    await run(body, size);
-    return performance.now() - startedAt;
+    let best = Infinity;
+    for (let sample = 0; sample < 3; sample++) {
+      const startedAt = performance.now();
+      await run(body, size);
+      best = Math.min(best, performance.now() - startedAt);
+    }
+    return best;
   };
   await time(1024); // warm up
   let previous = await time(2048);
