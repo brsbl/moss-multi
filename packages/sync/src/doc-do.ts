@@ -38,7 +38,7 @@ import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { writeTitle } from './server-title.ts';
 import { splitUpdate } from './update-pieces.ts';
-import { captureContent, restoreContent, type AnchorSpans, type VersionContent } from './doc/version-content.ts';
+import { captureContent, restoreContent, type RestoredSpans, type VersionContent } from './doc/version-content.ts';
 import { ReconcileRefused } from './reconcile.ts';
 import { decodeRestoreBase, StaleBase, type DecodedBase } from './restore-base.ts';
 import {
@@ -1252,8 +1252,9 @@ export class DocDO extends YServer<SyncEnv> {
         const prepared = versions.stage(versions.prepare(this.#capture()));
         const authorIds = [...this.#versionAuthors];
         const stored: { point: VersionMeta | null } = { point: null };
+        let restored: RestoredSpans;
         try {
-          restoreContent(this.document, VERSION_RESTORE, target, (diff, payloads) => {
+          restored = restoreContent(this.document, VERSION_RESTORE, target, (diff, payloads) => {
             this.#admitServerWrite(store, diff, payloads);
             stored.point = versions.insert('restore-point', prepared, { createdBy: reviewer.id, authorIds });
             // A wake moves a staged point the instance did not.
@@ -1268,7 +1269,7 @@ export class DocDO extends YServer<SyncEnv> {
           return { ok: false, status: 503, reason: 'unstored' };
         }
         this.#comments?.flush();
-        this.#comments?.reanchor(JSON.parse(target.anchors) as AnchorSpans);
+        this.#comments?.reanchor(restored);
         this.#projections?.touch();
         return stored;
       });
