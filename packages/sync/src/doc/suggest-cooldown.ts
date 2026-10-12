@@ -33,6 +33,7 @@ export class SuggestCooldowns {
   }
 
   coolingDown(principalId: string, now = Date.now()): boolean {
+    this.#cache.delete(principalId);
     return this.#entry(principalId, now).until > now;
   }
 
