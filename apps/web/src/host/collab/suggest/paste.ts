@@ -293,6 +293,17 @@ function eachItem(doc: Y.Doc, set: StackItem['deletions'], visit: (item: Y.Item,
 /** Whether `struct` is in what `manager` undoes: yjs replays nothing outside its scope. */
 const inScope = (manager: Y.UndoManager, struct: Y.Item): boolean =>
   manager.scope.some((type) => (type as unknown) === manager.doc || Y.isParentOf(type as Y.AbstractType<unknown>, struct));
+/** Whether the delete set `set` holds every clock of `client` in [clock, clock + len). */
+function covered(set: StackItem['insertions'], client: number, clock: number, len: number): boolean {
+  const ranges = [...(set.clients.get(client) ?? [])].sort((a, b) => a.clock - b.clock);
+  let at = clock;
+  for (const range of ranges) {
+    if (range.clock > at) break;
+    at = Math.max(at, range.clock + range.len);
+    if (at >= clock + len) return true;
+  }
+  return at >= clock + len;
+}
 /** Whether a type holds a live item of a client other than `client`, at any depth. */
 function holdsOthers(type: Y.AbstractType<unknown>, client: number): boolean {
   const other = (item: Y.Item): boolean => !item.deleted
@@ -311,8 +322,10 @@ function holdsOthers(type: Y.AbstractType<unknown>, client: number): boolean {
 function surelyReplays({ entries }: UndoStep, body: Y.Doc | undefined): boolean {
   let sure = false;
   for (const { manager, item } of entries) {
-    eachItem(manager.doc, item.deletions, (struct) => {
-      if (sure || !struct.deleted || struct.redone !== null || !inScope(manager, struct) || Y.isDeleted(item.insertions, struct.id)) return;
+    eachItem(manager.doc, item.deletions, (struct, offset, len) => {
+      if (sure || !struct.deleted || struct.redone !== null || !inScope(manager, struct)) return;
+      // Yjs merges adjacent deleted items, so the overlap is checked unit by unit, as popStackItem splits it.
+      if (covered(item.insertions, struct.id.client, struct.id.clock + offset, len)) return;
       if ((struct.parent as Y.AbstractType<unknown>)._item?.deleted) return;
       for (let right = struct.parentSub === null ? null : struct.right; right; right = right.right) {
         if (right.redone === null && !Y.isDeleted(item.insertions, right.id)) return;

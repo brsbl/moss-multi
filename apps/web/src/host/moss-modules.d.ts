@@ -47,6 +47,20 @@ declare module '@moss-desktop/common/embed-iframe-policy' {
   };
 }
 
+declare module '@moss-desktop/common/markdown-fences' {
+  export function isMossCanvasFenceName(value: string | null | undefined): value is 'moss-canvas' | 'moss-sketch';
+}
+
+declare module '@moss-desktop/renderer/editor/nodes/SketchNode' {
+  export function parseSketchBlock(text: string): { grid: boolean[]; labels: { id: string; text: string; col: number; row: number }[] };
+}
+
+declare module '@moss-desktop/renderer/editor/utils/chartDefaults' {
+  export interface ChartCheck { valid: boolean; error?: string; config?: Record<string, unknown> }
+  export function validateChartConfig(config: unknown): ChartCheck;
+  export function parseChartConfig(text: string): ChartCheck;
+}
+
 declare module '@moss-desktop/common/web-embed-url' {
   export function resolveRemoteWebSurfaceUrl(text: string): string;
 }
