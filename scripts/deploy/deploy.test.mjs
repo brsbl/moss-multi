@@ -757,6 +757,8 @@ describe('staging growth (A§21) @p:R15', () => {
     expect(check, 'a growth check step').toBeGreaterThan(-1);
     expect(steps[check].if).toMatch(/inputs\.suite == 'full'/);
     expect(check).toBeLessThan(steps.findIndex((step) => /WRANGLER" deploy/.test(step.run ?? '')));
+    // The count reads docs and user, which a first deploy's fresh D1 has only once the migrations ran.
+    expect(check, 'after the D1 migrations').toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
     expect(steps[check].run).toMatch(/d1 execute moss-multi-staging --remote --json/);
   });
 });
