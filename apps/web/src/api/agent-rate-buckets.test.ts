@@ -79,15 +79,13 @@ beforeEach(() => {
 });
 
 type Auth = { cookie: string } | { bearer: string };
-const call = (method: string, path: string, auth: Auth, body?: unknown, type = 'application/json') =>
-  handleApi(new Request(`${BASE}${path}`, {
-    method,
-    headers: {
-      ...('cookie' in auth ? { cookie: auth.cookie, origin: BASE } : { authorization: `Bearer ${auth.bearer}` }),
-      ...(body === undefined ? {} : { 'content-type': type }),
-    },
-    ...(body === undefined ? {} : { body: body instanceof Uint8Array ? body : JSON.stringify(body) }),
-  }), env);
+function call(method: string, path: string, auth: Auth, body?: unknown, type = 'application/json') {
+  const headers: Record<string, string> = 'cookie' in auth ? { cookie: auth.cookie, origin: BASE } : { authorization: `Bearer ${auth.bearer}` };
+  if (body === undefined) return handleApi(new Request(`${BASE}${path}`, { method, headers }), env);
+  const bytes = body instanceof Uint8Array ? body : new TextEncoder().encode(JSON.stringify(body));
+  Object.assign(headers, { 'content-type': type, 'content-length': String(bytes.byteLength) });
+  return handleApi(new Request(`${BASE}${path}`, { method, headers, body: bytes }), env);
+}
 
 const doc = () => `/api/docs/${docId}`;
 const ROUTES: [string, (auth: Auth) => Promise<Response>][] = [
