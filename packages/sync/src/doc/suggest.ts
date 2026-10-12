@@ -352,6 +352,12 @@ export class SuggestIngest {
     return Math.max(0, Math.floor(this.#room()));
   }
 
+  /** What the note's state may still grow by short of the reserve, which a merge's copy counts against too. */
+  get reserve(): number | undefined {
+    if (this.options.stateBytes === undefined) return undefined;
+    return Math.max(0, Math.floor(this.options.stateCap * SUGGEST_LIMITS.reserveShare - this.options.stateBytes()));
+  }
+
   /** Measures the retained state afresh: O(the doc's structs + stored leases), so for a wake, not a frame. */
   remeasure(): void {
     this.#retained = suggestionStateBytes(this.doc) + this.leases.storedBytes();
@@ -862,6 +868,12 @@ function spanAt<T extends { clock: number; len: number }>(list: readonly T[], cl
   return undefined;
 }
 
+/** The room and reserve a reply reports. */
+function headroom(ingest: SuggestIngest): { room: number; reserve?: number } {
+  const reserve = ingest.reserve;
+  return reserve === undefined ? { room: ingest.room } : { room: ingest.room, reserve };
+}
+
 /** One doc-socket suggest request, validated and run; the reply is unicast to its sender. */
 export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: SuggestRequest): SuggestReply {
   const refuse = (record: unknown, reason: SuggestRefusal): SuggestReply => ({ t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason });
@@ -871,7 +883,7 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
     case 'suggest-lease': {
       const fork = typeof request.fork === 'string' && FORK_ID.test(request.fork) ? request.fork : null;
       const leased = ingest.lease(who, request.resume ?? [], SUGGEST_LIMITS.leaseBatch, fork);
-      return leased.ok ? { t: 'suggest-leased', leases: leased.leases, room: ingest.room } : refuse(null, leased.reason);
+      return leased.ok ? { t: 'suggest-leased', leases: leased.leases, ...headroom(ingest) } : refuse(null, leased.reason);
     }
     case 'suggest-ops': {
       requested = request.record;
@@ -905,6 +917,6 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
       return refuse(null, 'malformed');
   }
   return result.ok
-    ? { t: 'suggest-ack', record: result.record, requested: result.requested, doc: result.doc, sv: result.sv, parts: result.parts, room: ingest.room }
+    ? { t: 'suggest-ack', record: result.record, requested: result.requested, doc: result.doc, sv: result.sv, parts: result.parts, ...headroom(ingest) }
     : refuse(requested, result.reason);
 }

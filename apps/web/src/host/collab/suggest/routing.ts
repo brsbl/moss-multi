@@ -777,8 +777,10 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
         return true;
       }
       // Nothing in it the bound reads (files): the paste may make no step of its own to join.
-      if ($routeRange(false, bound > 0) === 'none' && bound > 0) {
-        // At a caret: the paste is its own step, apart from typing just before or after it.
+      const routed = $routeRange(false, bound > 0);
+      if ((routed === 'none' || routed === 'own') && bound > 0) {
+        // At a caret, or over his own text only (no strike to join): the paste is its own step, apart from typing
+        // just before or after it.
         manager()?.stopCapturing();
         setTimeout(() => manager()?.stopCapturing(), 0);
       }

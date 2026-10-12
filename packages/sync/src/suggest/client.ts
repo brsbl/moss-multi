@@ -498,6 +498,8 @@ export class SuggestFork {
   #caretBlock = -1;
   /** The DocDO's last word on what suggestion state may still grow by (a reply's `room`); null until it says. */
   #room: number | null = null;
+  /** Its last word on what the note's state may still grow by short of the reserve (a reply's `reserve`). */
+  #reserve: number | null = null;
   /** What the body's suggestions grew by since that word: other authors' writes, and ours before their reply. */
   #grown = 0;
   /** Names this fork to the DocDO, so it can resume its leases from a new socket while the old one looks open there. */
@@ -622,6 +624,7 @@ export class SuggestFork {
     const resumed = entry?.request.t === 'suggest-lease' && entry.request.resume !== undefined;
     if (reply.t !== 'suggest-refused' && typeof reply.room === 'number') {
       this.#room = reply.room;
+      this.#reserve = typeof reply.reserve === 'number' ? reply.reserve : null;
       this.#grown = 0;
     }
     if (reply.t === 'suggest-leased') {
@@ -892,8 +895,8 @@ export class SuggestFork {
    * Whether an edit adding `bytes` of ops, and with `strike` a delete part of those targets, fits every cap the DocDO
    * checks it against, counted as it counts them: the record the edit writes (what the body shows of it and what is
    * still unanswered, and the same of every older open record of the author's it would merge), all open records' ops,
-   * the room the DocDO last said retained suggestion state has (less what it grew by since), the author's open
-   * records, the part's spans. `blocks`: the top-level blocks the edit spans (the caret's by default); `payloads`: the
+   * the room the DocDO last said retained suggestion state has (less what it grew by since), the note's reserve with the
+   * ops every merge copies, the author's open records, the part's spans. `blocks`: the top-level blocks the edit spans (the caret's by default); `payloads`: the
    * payload docs it writes. Null when it fits, else the refusal it would meet. Some headroom on the record: an edit's
    * ops encode a little larger than a replay measures.
    */
@@ -942,6 +945,11 @@ export class SuggestFork {
       let retains = this.#grown + owed + (this.#inflight.length + this.#waiting.length) * write + adds + 4 * write + (creates ? 2 * write : 0);
       for (const other of merged) retains += metaBytes(this.body, other) + write;
       if (retains > this.#room) return 'doc-cap';
+      // A merge moves the other record's ops and parts in one write: the share is charged its metas, but the note's
+      // state counts the copy against the reserve until its next compaction (doc/suggest.ts merge).
+      let copies = 0;
+      for (const other of merged) copies += held(other);
+      if (this.#reserve !== null && retains + copies > this.#reserve) return 'doc-cap';
     }
     // Records still being created count as open too.
     const creating = [...pending.keys()].filter((id) => !readRecord(this.body, id)).length;
