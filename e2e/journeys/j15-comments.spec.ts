@@ -547,6 +547,9 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
   adaFails.on = false;
   await ada.page.keyboard.press(SUBMIT);
   await expect(adaComposer, 'the retry is taken').toBeHidden({ timeout: PEER_TIMEOUT });
+  await expect.poll(() => storedAnchors(stack.baseUrl, id, cookie, ['Ada on the code', 'Ada on the words']), {
+    message: "the owner's retried block comment is stored on the code block", timeout: PEER_TIMEOUT,
+  }).toEqual([{ text: 'Ada on the code', kind: 'block', type: 'code-block' }, { text: 'Ada on the words', kind: 'text', type: null }]);
 
   // A commenter's failed block comment is kept as the block's draft when the composer closes, and reopening the
   // composer there offers the text again.
@@ -570,13 +573,9 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
   await caraComposer.getByRole('textbox').first().focus();
   await cara.page.keyboard.press(SUBMIT);
   await expect(caraComposer).toBeHidden({ timeout: PEER_TIMEOUT });
-  await expect.poll(() => storedAnchors(stack.baseUrl, id, cookie, ['Ada on the code', 'Ada on the words', 'Cara again on the chart']), {
-    message: 'each retried comment is stored once, on its own target', timeout: PEER_TIMEOUT,
-  }).toEqual([
-    { text: 'Ada on the code', kind: 'block', type: 'code-block' },
-    { text: 'Ada on the words', kind: 'text', type: null },
-    { text: 'Cara again on the chart', kind: 'block', type: 'chart' },
-  ]);
+  await expect.poll(() => storedAnchors(stack.baseUrl, id, cookie, ['Cara again on the chart']), {
+    message: "the commenter's draft is stored once, on the chart", timeout: PEER_TIMEOUT,
+  }).toEqual([{ text: 'Cara again on the chart', kind: 'block', type: 'chart' }]);
 
   for (const [type, block] of await blocksByType(vic, id)) {
     await block.scrollIntoViewIfNeeded();
