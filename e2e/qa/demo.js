@@ -598,6 +598,14 @@ export const STEPS = {
     await row.click({ button: 'right' });
     await press(page, 'menuitem', 'Share…');
     const dialog = await dialogNamed(page, 'Share folder');
+    // The dialog loads its people and links after it opens: decide only once both are in, or a rerun shares again
+    // and makes a second link.
+    await dialog.waitForSelector('ul[aria-label="People with access"]', { visible: true });
+    const { folderId } = planNotes(await read(page, '/api/workspace'), folderName, []);
+    const role = { 'Can view': 'viewer', 'Can comment': 'commenter', 'Can edit': 'editor' }[linkAccess];
+    if ((await read(page, `/api/folders/${folderId}/links`)).links.some((l) => l.role === role)) {
+      await dialog.waitForSelector(aria('textbox', `${linkAccess} link`), { visible: true });
+    }
     const listed = () => dialog.evaluate((el, email) => [...el.querySelectorAll('li')].some((li) => li.textContent.includes(email)), email);
     let shared = false;
     if (!(await listed())) {
@@ -647,9 +655,18 @@ export const STEPS = {
         if (!dialog.contains(field) || !(field.isContentEditable || field.tagName === 'TEXTAREA')) return null;
         return (field.value ?? field.textContent ?? '').trim();
       });
-      await until('the composer takes focus', async () => (await typed()) !== null);
-      await page.keyboard.type(root.text);
-      await until('the composer holds the whole comment', async () => (await typed()) === root.text, 5_000);
+      for (let attempt = 1; ; attempt += 1) {
+        await until('the composer takes focus', async () => (await typed()) !== null);
+        if (await typed()) {
+          await chord(page, MOD, 'KeyA');
+          await page.keyboard.press('Backspace');
+        }
+        await page.keyboard.type(root.text);
+        const held = await until('the composer holds the whole comment', async () => (await typed()) === root.text, 3_000).catch(() => false);
+        if (held) break;
+        if (attempt === 3) throw new Error(`the composer holds "${await typed()}", not "${root.text}"`);
+        await pause(500);
+      }
       await chord(page, MOD, 'Enter');
       await until('the composer closes', async () => !(await composer.isVisible().catch(() => false)));
       await until(`"${root.text}" is saved`, async () => (await listing()).some((c) => c.text.trim() === root.text));
