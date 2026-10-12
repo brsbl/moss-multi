@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 54% done** (124 of 230 planned tasks verified)
+**Overall: 54% done** (125 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 10 / 10 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 12 / 12 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 13 / 13 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -145,6 +145,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
 - 2026-10-12 — T7.R verified: agent sync now sits on the final M6, and a push carrying a maximal 2 MB note lands while an oversized push body is refused 413 before it is read, after the pusher's rate token is charged.
 - 2026-10-12 — T7.S5 verified: an agent key now spends its owner's allowance for renames, comments, suggestion previews and reviews, working exports, remote fetches and media uploads, so a person with a session and two keys gets 429 on the third key instead of a fresh window per key.
+- 2026-10-12 — T7.S7 verified: sync, watch and `add` in one workspace now take turns behind a lock, so two overlapping passes adopt a new file into exactly one doc and one record instead of two.
 
 ## T1.1s identity audit
 
@@ -177,6 +178,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S7's checker (2f26c71, 2026-10-12)
+
+- T7.S7 checker P2 (stale-lock takeover has a narrow three-way race): in packages/cli/src/workspace.ts breakStale renames the stale lock aside and links it back ignoring failure, so if A takes a fresh lock, B renames A's live lock aside and C creates .lock before B links back, A and C both hold it and A's touch() silently no-ops; needs a crashed holder plus three racers.
+- T7.S7 checker P2 (overlap test runs in one process against a fake server): cli.test.ts overlaps two runCli calls with Promise.all against the in-memory server, exercising the filesystem lock across interleaved async passes but not separate OS processes; a cross-process real-stack journey would be stronger.
+- T7.S7 checker P2 (a watch waiting for the lock ignores shutdown): syncOnce waits in lockWorkspace up to 5 minutes with no AbortSignal, so SIGINT/SIGTERM during the wait is ignored and the watcher runs one full pass after the other holder releases; make the wait abortable and recheck abort before the pass.
 
 ### From T7.S5's checker (fc7d6d4, 2026-10-12)
 
