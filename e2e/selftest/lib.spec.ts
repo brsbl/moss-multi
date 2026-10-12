@@ -3,6 +3,8 @@
 // the sever, the reach sweep and the UI verbs.
 import { execFile } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,7 +13,7 @@ import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/al
 import { recordsScreens } from '../lib/actors.ts';
 import { RequestBudget } from '../lib/budget.ts';
 import { probeSocket } from '../lib/doc-client.ts';
-import { inductionProblems } from '../lib/hibernate.ts';
+import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
 import { socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
@@ -19,6 +21,7 @@ import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/princ
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
 import { unreachableControls } from '../lib/reach.js';
 import { makeSeverable } from '../lib/sever.ts';
+import type { Stack } from '../lib/stack.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
 import { expect, test } from './fixtures.ts';
@@ -154,6 +157,33 @@ test.describe('hibernation proof', () => {
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 109_000 }, 100_000, 110_000)).toEqual([]);
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 99_000 }, 100_000, 110_000)).not.toEqual([]);
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 110_500 }, 100_000, 110_000)).not.toEqual([]);
+  });
+  // Off the hook stack sign-ins are paced at 10 a minute, so a probe that signed in each time could wait out the
+  // window after the decisive action while the woken DO idled out again; the probe itself then built the instance.
+  test('the owner probe signs in once, so a probe after the decisive action never waits on the sign-in limit', async () => {
+    let signIns = 0;
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/api/auth/sign-in/email') {
+        signIns += 1;
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `session=s${signIns}; Path=/; HttpOnly` });
+        res.end('{}');
+        return;
+      }
+      const doc = /^\/api\/docs\/([^/]+)\/instance$/.exec(req.url ?? '');
+      const ok = doc && req.headers.cookie === 'session=s1';
+      res.writeHead(ok ? 200 : 404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(ok ? { instanceId: `i-${doc[1]}`, constructedAt: 1 } : { error: 'not-found' }));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const probe = ownerProbe({ baseUrl } as Stack, { label: 'ada', name: 'Ada', email: 'mm-selftest-ada-1@example.invalid', password: 'p', id: null });
+      expect(await Promise.all([probe('d1'), probe('d2')])).toEqual([{ instanceId: 'i-d1', constructedAt: 1 }, { instanceId: 'i-d2', constructedAt: 1 }]);
+      expect(await probe('d1')).toEqual({ instanceId: 'i-d1', constructedAt: 1 });
+      expect(signIns, 'one sign-in for every probe').toBe(1);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
   });
 });
 
