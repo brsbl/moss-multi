@@ -574,6 +574,21 @@ describe('canary recording', () => {
       expect(failureTrace({ errors: [induced] })).toEqual(['induction: the same instance serves the doc']);
     });
 
+    it("prints a refused sign-in's status and a failed request's method and route, never the address, body or cookie", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const signUp = { message: 'Error: sign-up for mm-SYNTHETIC-ada-1@example.invalid: 503 {"message":"SECRET"}', stack: '' };
+      expect(failureTrace({ errors: [signUp] })).toEqual(['kind auth', 'auth: sign-up answered 503']);
+      const timedOut = { message: [
+        'apiRequestContext.post: Timeout 30000ms exceeded.',
+        'Call log:',
+        `  - → POST ${URL_STAGING}/api/docs/9f8e7d6c-5b4a-4321-8fed-cba987654321/links?share=SECRET`,
+        '  - cookie: better-auth.session_token=SECRET',
+      ].join('\n'), stack: '' };
+      const lines = failureTrace({ errors: [timedOut] });
+      expect(lines).toEqual(['kind timeout, request', 'request: POST /api/docs/:id/links']);
+      expect([...lines, ...failureTrace({ errors: [signUp] })].join('\n')).not.toMatch(/SECRET|SYNTHETIC|workers\.dev|9f8e7d6c/);
+    });
+
     it('withholds a run-level error and test output off loopback', async () => {
       const { default: CanaryReporter } = await import('./canary-reporter.mjs');
       const lines = [];
