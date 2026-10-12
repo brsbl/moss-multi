@@ -675,8 +675,21 @@ export const STEPS = {
     for (const reply of commentGaps(await listing(), threads).replies.filter((r) => r.by === me)) {
       const popover = await openThread(page, reply.rootId, reply.root);
       const box = await popover.waitForSelector('[data-comment-reply-composer] [contenteditable="true"]', { visible: true });
-      await box.click();
-      await page.keyboard.type(reply.text);
+      // As with a root: keys typed before the reply box holds focus are lost, so check what it holds and retype.
+      const held = () => box.evaluate((el) => el.textContent.trim());
+      for (let attempt = 1; ; attempt += 1) {
+        await box.click();
+        await until('the reply box takes focus', () => box.evaluate((el) => el.contains(document.activeElement)));
+        if (await held()) {
+          await chord(page, MOD, 'KeyA');
+          await page.keyboard.press('Backspace');
+        }
+        await page.keyboard.type(reply.text);
+        const whole = await until('the reply box holds the whole reply', async () => (await held()) === reply.text, 3_000).catch(() => false);
+        if (whole) break;
+        if (attempt === 3) throw new Error(`the reply box holds "${await held()}", not "${reply.text}"`);
+        await pause(500);
+      }
       await chord(page, MOD, 'Enter');
       await until(`"${reply.text}" is saved`, async () => (await listing()).some((c) => c.text.trim() === reply.text));
       await page.keyboard.press('Escape');
