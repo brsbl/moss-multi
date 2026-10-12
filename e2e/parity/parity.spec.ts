@@ -380,7 +380,7 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     for (const control of target.controls ?? []) {
       const style = await page.addStyleTag({ content: control.css });
       controls.push({ name: control.name, png: await capture(page, target) });
-      await style.evaluate((element) => element.remove());
+      await style.evaluate((element) => (element as HTMLElement).remove());
     }
     return { png, masks, controls };
   } finally {
