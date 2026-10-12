@@ -53,8 +53,8 @@ export const GROUPS = {
   // Comments, suggestions, history, agents.
   meaning: ['j15', 'j16', 'j17', 'j18'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
-  // frames (meaning's WebKit shard is full).
-  social: ['j15-social', 'j08-agents', 'j15-comments-guard'],
+  // frames and offline comments (meaning's WebKit shard is full).
+  social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],
 };
 
 /**

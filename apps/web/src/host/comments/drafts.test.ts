@@ -155,11 +155,17 @@ it('a root resubmit while the first is in flight: the same text posts once, a re
 
 it("a failed reply's and edit's text stays readable for the composer until a later submit in its slot", async () => {
   const { editor } = boundEditor('doc-recover');
+  // Two replies in flight together, then both fail.
   server.mode = 'network-before';
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
   mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost A' });
-  await submitted('doc-recover', 'reply:p1');
+  const a = submitted('doc-recover', 'reply:p1');
   mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost B' });
-  await submitted('doc-recover', 'reply:p1');
+  const b = submitted('doc-recover', 'reply:p1');
+  open();
+  await Promise.all([a, b]);
+  server.gate = null;
   mutate(editor, { type: 'edit', id: 'c1', text: 'Lost edit' });
   await submitted('doc-recover', 'edit:c1');
   expect(failedDraftText('doc-recover', 'reply:p1'), 'both failed replies come back').toBe('Lost A\n\nLost B');
