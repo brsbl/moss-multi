@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- The load-timing host page (T3.12): the stylesheet as a host links it, then load.js imports the bundle and mounts
+     the note the test set in window.__load, under the same CSP as index.html. -->
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>moss editor load</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/editor/moss-editor.css" />
+    <link rel="stylesheet" href="/fixture/fixture.css" />
+  </head>
+  <body>
+    <div id="editor"></div>
+    <script type="module" src="/fixture/load.js"></script>
+  </body>
+</html>

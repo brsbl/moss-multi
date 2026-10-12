@@ -55,6 +55,10 @@ window.editorFixture = {
       (error) => ({ ok: false, code: error.code, status: state.handle.status }),
     );
   },
+  /** The user opens a note in the host (a viewer tab), so the host may copy media out of it. */
+  open(noteId) {
+    state.host.open?.(noteId);
+  },
   setTheme(theme) {
     document.documentElement.dataset.theme = theme;
     state.handle.setTheme(theme);

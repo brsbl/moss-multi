@@ -8,7 +8,7 @@ import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
 import { resolveDocAccess } from './access.ts';
 import { readPrefix, remoteFetch, REMOTE_TIMEOUT_MS, takeFetchToken, type RemoteFetchEnv } from './remote.ts';
-import { NO_STORE, notFound, readJsonObject } from './respond.ts';
+import { NO_STORE, notFound, readJsonObject, refuse } from './respond.ts';
 import { assertPublicUrl, safeFetch, SsrfBlockedError } from './ssrf.ts';
 
 export type UnfurlEnv = RemoteFetchEnv;
@@ -29,9 +29,6 @@ export interface Unfurled {
 const PAGE_PREFIX_BYTES = 512 * 1024;
 const CACHE_SECONDS = 86_400;
 const USER_AGENT = 'Mozilla/5.0 (compatible; moss-multi-unfurl/1.0)';
-
-const refuse = (status: number, error: string, message: string, headers: Record<string, string> = {}) =>
-  json({ error, message }, status, { ...NO_STORE, ...headers });
 
 const blockedUrl = () => refuse(422, 'blocked-url', 'That address can’t be previewed.');
 

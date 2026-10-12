@@ -99,6 +99,27 @@ describe.each(KINDS)('T1.F2 payload docs, %s @p:col-1 @p:col-3', (kind) => {
     } finally { ada.dispose(); ben.dispose(); }
   });
 
+  it('tells each client the payload bytes the cap counts, withheld ones too, on connect and in its acks (T3.S6)', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened);
+    try {
+      ada.insert(kind, 'x'.repeat(20_000));
+      await syncAll(ada);
+      ada.remove(0);
+      await syncAll(ada);
+      const pb = (await acks(ada)).at(-1)?.pb ?? 0;
+      expect(pb, 'the deleted block\'s withheld text still counts').toBeGreaterThanOrEqual(20_000);
+      const late = await LiveClient.open(opened);
+      try {
+        expect(late.texts(), 'the late joiner holds none of it').toEqual([]);
+        expect(late.socket.events.filter((event) => event.t === 'usage')).toEqual([{ t: 'usage', pb }]);
+      } finally {
+        await late.socket.drop();
+        late.dispose();
+      }
+    } finally { ada.dispose(); }
+  });
+
   it('the deleter\'s undo brings back block and text, a peer\'s characters included, with their original items', async () => {
     const opened = await seeded();
     const ada = await LiveClient.open(opened);

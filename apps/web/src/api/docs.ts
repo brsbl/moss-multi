@@ -7,15 +7,17 @@
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { liftTitleLine } from '@moss-multi/sync/title-line';
-import { MARKDOWN_CAP_BYTES, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
+import {
+  CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
+} from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
-import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
+import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { accessibleDocs, accessibleFolders, liveLink, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { accessibleDocs, accessibleFolders, actingUserId, liveLink, liveNotesBy, resolveDocAccess, resolveFolderAccess, writeActor } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { createComment, deleteComment, editComment, listDocComments, reactComment, resolveComment } from './comments.ts';
 import { admitWorkingExport, handleSuggestion, listSuggestions, SUGGESTION_ROUTE, SUGGESTIONS_ROUTE, workingRateLimited } from './suggestions.ts';
@@ -26,7 +28,7 @@ import { handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
 import { handlePush, PUSH_ROUTE } from './push.ts';
 import { handleVersions, VERSIONS_ROUTE } from './versions.ts';
-import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
+import { NO_STORE, notFound, parseJsonObject, readCapped, readJsonObject, refuse, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
 
 export type DocsEnv = AuthEnv & Pick<AppEnv, 'DocDO' | 'PrincipalDO'> & MembersEnv & Partial<Pick<AppEnv, 'ASSETS'>>;
@@ -51,52 +53,83 @@ export interface DocRecord {
   updatedAt: number;
 }
 
-/** Inserts the row only while its folder is still live in its vault (a trash may be under way); null when it isn't. */
-async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUserId: string; createdBy: string }): Promise<DocRecord | null> {
+/**
+ * Inserts the row only while its folder is still live in its vault (a trash may be under way) and the acting user has
+ * fewer than LIVE_NOTE_CAP live notes, both in the one statement; null when the folder is gone, `full` at the cap. The
+ * cap is the creator's, never the vault's, so a collaborator cannot fill an owner's vault shut.
+ */
+async function insertDoc(env: DocsEnv, db: Db, row: { folderId: string; ownerUserId: string; createdBy: string; actingUserId: string }): Promise<DocRecord | 'full' | null> {
   const id = crypto.randomUUID();
   const now = Date.now();
   const doc = { id, folderId: row.folderId, title: '', filename: `pending-${id}.md`, createdAt: now, updatedAt: now };
   const vault = await vaultOf(db, row.folderId);
   const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
     INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at)
-    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)}`)
-    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault).run();
-  return (inserted.meta?.changes ?? 0) > 0 ? doc : null;
+    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND ${liveNotesBy(8)} < ${LIVE_NOTE_CAP}`)
+    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault, row.actingUserId).run();
+  if ((inserted.meta?.changes ?? 0) > 0) return doc;
+  const live = await env.DB.prepare(`SELECT ${liveNotesBy(1)} AS n`).bind(row.actingUserId).first<{ n: number }>();
+  return (live?.n ?? 0) >= LIVE_NOTE_CAP ? 'full' : null;
 }
+
+const noteCap = () => refuse(409, 'note-cap',
+  `You have ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, the limit. Move some to Trash to make new ones.`);
+
+const docCap = () => json({ error: 'doc-cap' }, 413, NO_STORE);
 
 /**
  * Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}, plus
  * `content` when `run` answers the created revision's export.
  */
-async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<string | void>): Promise<Response> {
-  let content: string | void;
+async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
+  let content: unknown;
   try {
     content = await run();
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
-    if (error instanceof Error && error.message === 'doc-cap') return json({ error: 'doc-cap' }, 413, NO_STORE);
+    if (error instanceof Error && error.message === 'doc-cap') return docCap();
+    if (error instanceof Error && error.message === 'media-refused') return notFound();
     throw error;
   }
   const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
   return json({ doc: projected, role, ...(typeof content === 'string' ? { content } : {}) }, 201, NO_STORE);
 }
 
+/**
+ * One note minted by the acting user (an agent's owner, so their keys share it), taken before any row, DocDO or media
+ * work (A§5.2, A§18); the 429 to send past DOC_CREATE_RATE or DOC_CREATE_DAILY.
+ */
+async function takeCreateToken(env: DocsEnv, principal: Exclude<Principal, { type: 'anonymous' }>): Promise<Response | null> {
+  const userId = actingUserId(principal)!;
+  const taken = await (await getServerByName(env.PrincipalDO, userId)).takeCreateToken();
+  if (taken === true) return null;
+  const waitMs = Number(taken);
+  const message = waitMs > DOC_CREATE_RATE.windowMs
+    ? 'You’ve made a lot of new notes today. Try again later.'
+    : 'Too many new notes at once. Wait a minute and try again.';
+  return json({ error: 'rate-limited', message }, 429, { ...NO_STORE, 'retry-after': String(Math.max(1, Math.ceil(waitMs / 1000))) });
+}
+
 async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
   const userId = principal.type === 'agent' ? principal.ownerUserId : principal.id;
-  const body = await readJsonObject(request);
+  // The token is charged before the body is read, and an oversized body is refused before either.
+  if (Number(request.headers.get('content-length') ?? 0) > CREATE_BODY_MAX_BYTES) return docCap();
+  const throttled = await takeCreateToken(env, principal);
+  if (throttled) return throttled;
+  const text = await readCapped(request, CREATE_BODY_MAX_BYTES);
+  if (text === 'too-large') return docCap();
+  const body = text === null ? null : parseJsonObject(text);
   if (!body) return json({ error: 'bad-request' }, 400);
   if ('markdown' in body && typeof body.markdown !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
-  if (typeof body.markdown === 'string' && new TextEncoder().encode(body.markdown).byteLength > MARKDOWN_CAP_BYTES) {
-    return json({ error: 'doc-cap' }, 413, NO_STORE);
-  }
+  if (typeof body.markdown === 'string' && new TextEncoder().encode(body.markdown).byteLength > MARKDOWN_CAP_BYTES) return docCap();
   // Moss interchange: a comments.json sidecar for the markdown's `%%m:` markers (comments.md §13).
   const sidecar = body.comments;
   if (sidecar !== undefined && (typeof sidecar !== 'object' || sidecar === null || Array.isArray(sidecar) || typeof body.markdown !== 'string')) {
     return json({ error: 'bad-request' }, 400, NO_STORE);
   }
-  if (sidecar !== undefined && new TextEncoder().encode(JSON.stringify(sidecar)).byteLength > MARKDOWN_CAP_BYTES) return json({ error: 'doc-cap' }, 413, NO_STORE);
+  if (sidecar !== undefined && new TextEncoder().encode(JSON.stringify(sidecar)).byteLength > MARKDOWN_CAP_BYTES) return docCap();
   const db = createDb(env.DB);
   const folderId = typeof body.folderId === 'string' ? body.folderId : await ensureDefaultVault(db, userId);
   // Editors create in a shared folder or vault; the vault's owner owns the doc and created_by records who made it.
@@ -113,7 +146,8 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
     markdown = lifted.markdown;
     title = lifted.title ?? '';
   }
-  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
+  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
+  if (doc === 'full') return noteCap();
   if (!doc) return folderNotFound();
   const stub = await getServerByName(env.DocDO, doc.id);
   // `content`: the created revision's export, the base the CLI adopts a file against (A§17).
@@ -143,6 +177,8 @@ async function listDocs(request: Request, env: DocsEnv): Promise<Response> {
 async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
+  const throttled = await takeCreateToken(env, principal);
+  if (throttled) return throttled;
   const db = createDb(env.DB);
   const access = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
@@ -164,12 +200,15 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const original = await getServerByName(env.DocDO, docId);
   const snapshot = await original.snapshotForDuplicate();
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
-  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id });
+  const doc = await insertDoc(env, db, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
+  if (doc === 'full') return noteCap();
   if (!doc) return folderNotFound();
   const owner = folder.ownerUserId;
+  const actor = writeActor(principal, shareTokenOf(request));
   return seeded(db, doc, folder.role, async () => {
-    // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16).
-    await copyMedia(env.DB, docId, doc.id);
+    // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16), placed only
+    // while the caller can still edit the copy.
+    if (!actor || !(await copyMedia(env.DB, docId, doc.id, actor))) throw new Error('media-refused');
     const target = await getServerByName(env.DocDO, doc.id);
     await target.createFromSnapshot({ folderId, ownerId: owner, title }, snapshot.state, snapshot.payloads);
   });

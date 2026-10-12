@@ -8,6 +8,7 @@ import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { packageCaching, type CacheMode, type Served } from '../lib/package-cache.ts';
 
 export const VIEWER_DIST = fileURLToPath(new URL('../../packages/viewer/dist', import.meta.url));
 export const FIXTURE_DIR = fileURLToPath(new URL('./fixture', import.meta.url));
@@ -41,6 +42,10 @@ export interface ViewerServer {
   media: MediaRequest[];
   /** /svc/ paths streamed slowly. */
   slow: Set<string>;
+  /** Every response from /viewer/, with its status and body size (T3.12). */
+  served: Served[];
+  /** How /viewer/ is cached: `no-store` (the default) or as a host should (lib/package-cache.ts). */
+  cache: CacheMode;
   close: () => Promise<void>;
 }
 
@@ -63,6 +68,8 @@ function trickle(file: string, start: number, end: number, response: ServerRespo
 export async function serveViewer(): Promise<ViewerServer> {
   const media: MediaRequest[] = [];
   const slow = new Set<string>();
+  const served: Served[] = [];
+  const settings: { cache: CacheMode } = { cache: 'no-store' };
   const server: Server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://viewer').pathname);
     const prefix = Object.keys(ROOTS).find((root) => pathname.startsWith(root));
@@ -83,6 +90,15 @@ export async function serveViewer(): Promise<ViewerServer> {
     }
     const size = statSync(file).size;
     const headers: Record<string, string> = { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store', 'accept-ranges': 'bytes' };
+    if (prefix === '/viewer/') {
+      const caching = packageCaching(settings.cache, pathname.slice(prefix.length), file, request);
+      Object.assign(headers, caching.headers);
+      served.push({ path: pathname, status: caching.status, bytes: caching.status === 304 ? 0 : size });
+      if (caching.status === 304) {
+        response.writeHead(304, headers).end();
+        return;
+      }
+    }
     if (prefix === '/viewer/' && pathname === `/viewer/${FRAME_FILE}`) headers['content-security-policy'] = FRAME_POLICY;
     const send = (start: number, end: number) =>
       slow.has(pathname) ? trickle(file, start, end, response) : createReadStream(file, { start, end }).pipe(response);
@@ -111,6 +127,13 @@ export async function serveViewer(): Promise<ViewerServer> {
     url: `http://127.0.0.1:${port}`,
     media,
     slow,
+    served,
+    get cache() {
+      return settings.cache;
+    },
+    set cache(mode: CacheMode) {
+      settings.cache = mode;
+    },
     close: () =>
       new Promise((done) => {
         server.closeAllConnections();

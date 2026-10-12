@@ -7,11 +7,13 @@ import * as Y from 'yjs';
 import {
   BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, type Inserted, type RecordOp, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
+import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
-import { openRecords, readMeta } from './records.ts';
+import { registerFork } from './forks.ts';
+import { openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds } from './records.ts';
 import { bindCheck } from './review.ts';
 
 export { openRecords };
@@ -451,6 +453,10 @@ export function touchedBlocks(doc: Y.Doc, ops: readonly RecordOp[], spans: reado
 
 let partSeq = 0;
 const partId = () => `p${Date.now().toString(36)}${(partSeq += 1).toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/** A delete part's bytes as the DocDO will store it, before it reads the quote (at most 1,024 characters). */
+const pendingPartBytes = (targets: readonly IdSpan[]): number =>
+  partBytes({ id: partId(), kind: 'delete', targets: [...targets], quote: '' }) + 2 * Math.min(1024, targets.reduce((sum, span) => sum + span.len, 0));
 /**
  * The fork F. `begin()` asks for leases; their reply fills F (bind the editor first, so it reconciles F like a first
  * sync) and starts forwarding. Replies arrive in request order through `receive`.
@@ -497,6 +503,7 @@ export class SuggestFork {
     readonly body: Y.Doc,
     readonly options: ForkOptions,
   ) {
+    registerFork(this.doc, this);
     this.#payloads = derivedPayloads(body, this.doc, SHIM_BODY_APPLY);
     this.#payloads.host.onHold((id, doc) => {
       doc.clientID = this.doc.clientID;
@@ -844,13 +851,98 @@ export class SuggestFork {
     for (const part of this.#parts.values()) if (part.record === from) part.record = to;
   }
 
-  #maybeRotate(): void {
+  /** Whether the next edit starts a new group: idle, or more than one block from the last. */
+  #rotates(): boolean {
     const active = this.#leases[0];
-    if (!active || !this.#used.has(active.client) || this.#leases.length < 2) return;
+    if (!active || !this.#used.has(active.client) || this.#leases.length < 2) return false;
     const idle = this.#now() - this.#lastEdit > GROUP_IDLE_MS;
     const away = this.#caretBlock >= 0 && this.#lastBlock >= 0 && Math.abs(this.#caretBlock - this.#lastBlock) > 1;
-    if (!idle && !away) return;
-    this.#rotate();
+    return idle || away;
+  }
+
+  #maybeRotate(): void {
+    if (this.#rotates()) this.#rotate();
+  }
+
+  /**
+   * Whether an edit adding `bytes` of ops, and with `strike` a delete part of those targets, fits every cap the DocDO
+   * checks it against, counted as it counts them: the record the edit writes (what the body shows of it and what is
+   * still unanswered, and the same of every older open record of the author's it would merge), all open records' ops,
+   * the author's open records, the part's spans. `blocks`: the top-level blocks the edit spans (the caret's by
+   * default). Null when it fits, else the refusal it would meet. Some headroom on the record: an edit's ops encode a
+   * little larger than a replay measures.
+   */
+  admit(bytes: number, strike?: readonly IdSpan[], blocks?: { from: number; to: number }): SuggestRefusal | null {
+    if (!this.#ready || this.#closed) return 'record-closed';
+    const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
+    if (!lease) return 'lease';
+    let adds = bytes;
+    if (strike?.length) {
+      const items = strike.reduce((sum, span) => sum + span.len, 0);
+      if (strike.length > SUGGEST_LIMITS.partSpans || items > SUGGEST_LIMITS.partItems) return 'target';
+      adds += pendingPartBytes(strike);
+    }
+    const pending = new Map<string, number>();
+    for (const { request, op } of [...this.#inflight, ...this.#waiting]) {
+      if (request.t === 'suggest-ops' && op) pending.set(request.record, (pending.get(request.record) ?? 0) + op.update.byteLength);
+      if (request.t === 'suggest-delete') pending.set(request.record, (pending.get(request.record) ?? 0) + pendingPartBytes(request.part.targets));
+    }
+    const held = (id: string) => {
+      const record = readRecord(this.body, id);
+      return (record ? recordBytes(record) : 0) + (pending.get(id) ?? 0);
+    };
+    const stored = readRecord(this.body, lease.record);
+    let total = held(lease.record) + adds;
+    for (const other of this.#mergedBy(lease.record, blocks ?? { from: this.#caretBlock, to: this.#caretBlock })) total += held(other);
+    if (total > SUGGEST_LIMITS.recordOpsBytes * 0.9) return 'record-cap';
+    let open = [...pending.values()].reduce((sum, add) => sum + add, 0);
+    for (const id of recordIds(this.body)) {
+      const record = readMeta(this.body, id)?.status === 'open' ? readRecord(this.body, id) : null;
+      if (record) open += recordBytes(record);
+    }
+    if (open + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.openOpsShare) return 'ops-cap';
+    const creates = !stored && !pending.has(lease.record);
+    // Records still being created count as open too.
+    const creating = [...pending.keys()].filter((id) => !readRecord(this.body, id)).length;
+    if (creates && openRecords(this.body, this.options.me).length + creating >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';
+    return null;
+  }
+
+  /**
+   * The author's open records other than `into` that an edit in top-level blocks `from`..`to` may build on or delete,
+   * and so merge into its record (#forward): any holding an item of those blocks, or an item of the root from the block
+   * before them to the block after. Every block when the blocks are unknown.
+   */
+  #mergedBy(into: string, { from, to }: { from: number; to: number }): Set<string> {
+    const found = new Set<string>();
+    const mine = this.#openMine();
+    for (const record of openRecords(this.body, this.options.me)) for (const client of record.meta.clients) mine.set(client, record.meta.id);
+    if (mine.size === 0) return found;
+    const see = (item: Y.Item) => {
+      const record = mine.get(item.id.client);
+      if (record && record !== into) found.add(record);
+    };
+    const walk = (type: Y.AbstractType<unknown>) => {
+      const visit = (item: Y.Item) => {
+        see(item);
+        if (item.content instanceof Y.ContentType) walk(item.content.type as Y.AbstractType<unknown>);
+      };
+      for (let item = type._start; item; item = item.right) visit(item);
+      for (const last of type._map.values()) for (let item: Y.Item | null = last; item; item = item.left) visit(item);
+    };
+    const root = this.doc.get('root', Y.XmlText);
+    const every = from < 0 || to < 0;
+    let index = -1;
+    for (let item = root._start; item; item = item.right) {
+      const block = !item.deleted && item.content instanceof Y.ContentType;
+      if (block) index += 1;
+      // A tombstone or a format between blocks sits after the block before it.
+      const at = block ? index : index + 0.5;
+      if (!every && (at < from - 1 || at > to + 1)) continue;
+      see(item);
+      if (block && (every || (index >= from && index <= to))) walk((item.content as Y.ContentType).type as Y.AbstractType<unknown>);
+    }
+    return found;
   }
 
   /** The next group: the spare lease becomes active, and a new spare is asked for. */

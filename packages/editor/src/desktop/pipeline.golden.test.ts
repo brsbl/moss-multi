@@ -276,23 +276,15 @@ describe('the editor writes what Moss desktop writes', () => {
         expect(plan.write.ops.at(-1)?.file).toBe('meta');
       }
 
-      if (scenario.caseInsensitive) {
-        expect(markdownEntryCase(editorVolume.snapshot('/Moss'))).toEqual(markdownEntryCase(desktopVolume.snapshot('/Moss')));
-      } else {
-        expect(editorVolume.snapshot('/Moss')).toEqual(desktopVolume.snapshot('/Moss'));
-      }
+      // Every path is compared with its spelling, on both volumes: API 2's host keeps a same-file markdown entry's
+      // spelling, as desktop's rename of a temp over the path does on APFS.
+      expect(editorVolume.snapshot('/Moss')).toEqual(desktopVolume.snapshot('/Moss'));
     });
   }
 });
 
-// API 1's MossNoteWrite step 4 has the host respell a same-inode markdown entry to exactly `<folderName>.md`, while
-// desktop's rename of a temp over the path keeps the entry's old spelling on APFS. The bytes and every other name
-// are the same; on a case-insensitive volume only the letter case of that one entry may differ.
-const markdownEntryCase = (snapshot: Record<string, string>) =>
-  Object.fromEntries(Object.entries(snapshot).map(([path, text]) => [path.endsWith('.md') ? path.replace(/(?<![^/])[^/]+$/, (name) => name.toLowerCase()) : path, text]));
-
-describe('the fixture host follows API 1 on a case-insensitive volume', () => {
-  it('a case-only retitle respells the markdown entry to <folderName>.md', async () => {
+describe('the fixture host follows API 2 on a case-insensitive volume', () => {
+  it('a case-only retitle keeps the markdown entry spelled as it was, and reports the candidate spelling', async () => {
     const scenario = SCENARIOS.find((candidate) => candidate.name === 'a case-only retitle on a case-insensitive volume')!;
     const volume = seedVolume(scenario);
     const host = new MemoryHost({ volume });
@@ -300,7 +292,7 @@ describe('the fixture host follows API 1 on a case-insensitive volume', () => {
     const plan = planSave(read, snapshotOf(scenario.edit({ content: read.content, commentMetadata: read.commentMetadata, layoutMetadata: read.layoutMetadata, commentColors: read.commentColors })), { now: NOW });
     if (plan.kind !== 'write') throw new Error('expected a write');
     await expect(host.write(ID, plan.write)).resolves.toMatchObject({ kind: 'saved', location: { folderName: 'plan', markdownName: 'plan.md' } });
-    expect(Object.keys(volume.snapshot('/Moss')).filter((path) => path.endsWith('.md'))).toEqual(['/Moss/Notes/Projects/plan/plan.md']);
+    expect(Object.keys(volume.snapshot('/Moss')).filter((path) => path.endsWith('.md'))).toEqual(['/Moss/Notes/Projects/plan/Plan.md']);
   });
 });
 

@@ -1,0 +1,1639 @@
+import {
+  $convertFromMarkdownString as $lexicalConvertFromMarkdownString,
+  type ElementTransformer,
+  type MultilineElementTransformer,
+  TRANSFORMERS,
+  type TextFormatTransformer,
+  type TextMatchTransformer,
+  type Transformer,
+} from '@lexical/markdown';
+import {
+  $createTextNode,
+  $getEditor,
+  $getRoot,
+  $getSelection,
+  $isRangeSelection,
+  $isTextNode,
+  type ElementNode,
+  type LexicalNode,
+  TEXT_TYPE_TO_FORMAT,
+  type TextFormatType,
+  TextNode,
+} from 'lexical';
+import {
+  COLOR_TRANSFORMER_IMPORT_REGEXP,
+  isAfterUnclosedBacktick as isAfterUnclosedBacktickIn,
+  isInsideInlineCodeSpan as isInsideInlineCodeSpanIn,
+} from '../utils/color-codes';
+import { $isInsideColorSuppressedRawContext as $isInsideColorSuppressedRawContextIn } from '../utils/colorPickerTriggers';
+import { LINEAR_REGEXP_KEYS, setTableCellCharge } from './linear-match';
+import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
+
+// Lexical's markdown import with a linear inline pass (A§12; SP2). @lexical/markdown 0.48 imports each line's text
+// by finding the outermost format or text match over the whole text, splitting there and recursing on each part:
+// every match rescans the rest of the line, recurses once (about 10k matches overflow the stack) and pays
+// TextNode.splitText's walk from the paragraph's first child, so one line of many matches costs O(matches × length)
+// and moss's replace callbacks add their own scans of the text. Here Lexical still parses blocks; its inline pass
+// gets a single driver transformer, which runs the same algorithm on an explicit stack: the same matches, in the
+// same order, through the same transformer callbacks, so the tree is the one Lexical builds. What changes is cost:
+// a part after a match is a suffix of the text already scanned, so each text-match regex keeps its next match and is
+// rerun only once that match is passed; the format search decides from a short prefix when the rest cannot change
+// the answer, and reuses its answer until the parts pass the emphasis or code span it found; the split links the new
+// nodes in place, and the nodes made in this update are read and written through their fields ($fresh). The work is
+// charged with what it costs, never with where in the line it happens, against budgets (LINEAR_IMPORT_LIMITS) that
+// ordinary notes stay under; a line past one keeps its whole text as literal text.
+// linear-import.golden.test.ts holds this to Lexical's own import over the corpus and fuzz.
+
+/**
+ * Budgets, all fixed by a line's own text, never by timing. Work is in units of about a nanosecond of workerd CPU
+ * (the costs below are fitted to it; Lexical's node work, the bulk of a converted line, is NODE_COST per node made).
+ * - lineChars: a line longer than this skips moss's import normalization and the inline pass, and keeps its text as
+ *   literal text (ordinary lines are a small fraction of it).
+ * - perChar × the line's length + base: the work a line may take. Linear in the line, so a note of any lines costs
+ *   at most about perChar units per byte besides the import's work per byte that no line is charged (moss's
+ *   normalization and Lexical's blocks, a few hundred): 8% more than the ordinary paragraph that takes the most, one
+ *   of short links each followed by bold (`x [a](b) **c**`), needs, and less than one dense in shorter links or in
+ *   short wiki links.
+ * - perLine: the most work one line may take, whatever its length (about SP2's per-line share of workerd CPU,
+ *   scripts/measure-converter.mjs).
+ * - matches: the most matches one line may convert. Every node of a paragraph costs Lexical's collab binding a walk
+ *   of its siblings, so this bounds what a paragraph costs the DocDO beyond the converter.
+ * - tabs: the most tabs of one line Lexical makes tab nodes of; a line with more, or whose tab nodes alone take its
+ *   work, keeps them, and its text, literally.
+ * - perImport: over one import (nested imports, such as table cells, share their outer import's), the work that grows
+ *   faster than its line in moss's own import (moss's callbacks that read the whole paragraph or text per match),
+ *   each line paying only what passes what is left of its own work, so a note of many such lines stays within SP2.
+ * - perNote: over one import, all the work its lines are charged, LINE_COST a line and TABLE_CELL_COST a table cell
+ *   (the empty cells a row is padded with included), so a note of any lines, however short, stays within SP2: once
+ *   it is spent, each line after keeps its text as literal text and each table row after is not a table row. The densest ordinary notes take 4% less at 2 MB.
+ */
+export const LINEAR_IMPORT_LIMITS = {
+  lineChars: 1 << 17,
+  perLine: 100_000_000,
+  matches: 6_000,
+  tabs: 4_096,
+  perChar: 1_950,
+  base: 1 << 17,
+  perImport: 1 << 28,
+  perNote: 4_000_000_000,
+};
+/**
+ * Over all imports: lines whose budget ran out (kept as literal text), the work charged, and the largest share
+ * of its budget a line, and an import, has used.
+ */
+export const linearImportStats = { cut: 0, spent: 0, peakLineShare: 0, peakImportShare: 0 };
+
+// Costs, fitted to workerd CPU over the converter cases and the ordinary notes (scripts/measure-converter.mjs): visiting
+// a node; applying a match (splitting the node and the transformer's callback), besides the nodes it makes; each node
+// made (a split part, the transformer's nodes; with what Lexical's commit then does with it); a tab node.
+const VISIT_COST = 320;
+const APPLY_COST = 2_700;
+// A text-match callback besides moss's color one (which reads only its match and sets one style): unescapes, styles and
+// replaces.
+const CALLBACK_COST = 3_000;
+// moss's link callback besides: it appends the label's text to the link and replaces the matched text with it.
+const LINK_CALLBACK_COST = 3_000;
+const NODE_COST = 2_200;
+const TAB_COST = 6_144;
+// A tab a numeric entity decodes to: moss's normalization wraps the entity in zero-width spaces, which the tab split
+// leaves as text nodes beside the tab node.
+const ENTITY_TAB_COST = 2 * TAB_COST;
+// Each line Lexical imports as a block (its paragraph, text node and joins, and moss's normalization of it), charged
+// to the import's perNote only.
+const LINE_COST = 4_000;
+// A read of the paragraph's text and children, per character.
+const PARAGRAPH_READ = 20;
+// Native regex and string scans take about a unit per character; the format search's scans take several.
+const NATIVE = 1;
+// Each character moss's normalization added to a line (its passes ran over the longer text).
+const NORMALIZED = 256;
+// The same characters again, to the import's perNote only, cut or not: moss's normalization passes and Lexical's block
+// work ran over the longer line, which a note of such lines pays on every line.
+const NORMALIZED_NOTE = 1_024;
+// A scan of linear-match.ts run again on the rest of a text once its match is passed: its pre-scan tests each
+// candidate opener and closer (a regex call apiece), several units per character, and a run of matches that starts
+// where its match does (wiki links inside one link label) passes and re-runs it once per match.
+const LINEAR_RESCAN = 16;
+const FORMAT_SCAN = 5;
+// Each format search over a prefix, besides its characters: its slices, scans and arrays.
+const FORMAT_CALL = 400;
+// Each delimiter run past one per DELIMITER_SPACING characters of the text the format search reads: its flanking
+// checks and its turn in Lexical's emphasis pass, which FORMAT_SCAN covers at ordinary densities.
+const DELIMITER = 130;
+// Each opener Lexical's emphasis pass looks back at for a closer.
+const OPENER_LOOK = 200;
+const DELIMITER_SPACING = 4;
+// The first prefix the format search tries, grown fourfold.
+const FIRST_WINDOW = 16;
+
+/** Lexical's $convertFromMarkdownString, with the inline pass made linear. */
+export function $convertFromMarkdownString(
+  markdown: string,
+  transformers: Transformer[] = TRANSFORMERS,
+  node?: ElementNode,
+  shouldPreserveNewLines = false,
+  shouldMergeAdjacentLines = false,
+): void {
+  const outer = importBudget;
+  const outerLong = longLines;
+  importBudget ??= { left: LINEAR_IMPORT_LIMITS.perImport, work: LINEAR_IMPORT_LIMITS.perNote };
+  // A line longer than lineChars goes through Lexical's line loop as a short marker line, which no block transformer
+  // takes, so it imports as a paragraph line whose text the inline pass puts back literally.
+  const long = markLongLines(markdown);
+  longLines = long;
+  const outerOrigins = lineOrigins;
+  const origins = !outer && pendingOrigins?.prepared === markdown ? pendingOrigins : null;
+  if (!outer) pendingOrigins = null;
+  lineOrigins = origins && { lines: (long ? long.marked : markdown).split('\n'), lengths: origins.lengths, cursor: 0, current: null };
+  const outerTabs = heldTabs;
+  heldTabs = [];
+  try {
+    const list = long ? guardedTransformers(transformers) : importTransformers(transformers);
+    $lexicalConvertFromMarkdownString(long ? long.marked : markdown, list, node, shouldPreserveNewLines, shouldMergeAdjacentLines);
+    // Lexical has made a tab node of every tab it saw; the lines with too many get theirs back as text. A nested import
+    // (a table cell's) runs before its outer import's tab pass, which would split them again: the outer import gives
+    // them back after its own pass.
+    if (outer) for (const held of heldTabs) outerTabs.push(held);
+    else {
+      const container = node ?? $getRoot();
+      for (const [held, text] of heldTabs) if (container.isParentOf(held)) held.setTextContent(text);
+    }
+  } finally {
+    if (!outer) {
+      const share = 1 - importBudget.left / LINEAR_IMPORT_LIMITS.perImport;
+      if (share > linearImportStats.peakImportShare) linearImportStats.peakImportShare = share;
+    }
+    importBudget = outer;
+    longLines = outerLong;
+    lineOrigins = outerOrigins;
+    heldTabs = outerTabs;
+  }
+}
+
+/**
+ * `prepare` (moss's import normalization) over the markdown, except on lines longer than lineChars, which get
+ * `prepareLong` alone and stand in as short marker lines while `prepare` runs.
+ */
+export function prepareMarkdown(markdown: string, prepare: (md: string) => string, prepareLong: (line: string) => string): string {
+  const long = markLongLines(markdown);
+  const prepared = long ? prepare(long.marked).replace(long.pattern, (_, i: string) => prepareLong(long.lines[Number(i)])) : prepare(markdown);
+  pendingOrigins = prepared.length > markdown.length ? originsOf(markdown, prepared) : null;
+  return prepared;
+}
+
+// moss's normalization can lengthen a line (rich text inside a highlight gets the highlight's delimiters around each
+// formatted part, 2.3 times the bytes for some lines). A line's budget counts the bytes the markdown gave it, not the
+// normalized ones: when normalization kept the number of lines, the import that follows looks each line up (the first
+// element transformer, which matches nothing, sees every line Lexical imports as a block) and budgets the shorter.
+let pendingOrigins: { prepared: string; lengths: number[] } | null = null;
+let lineOrigins: { lines: string[]; lengths: number[]; cursor: number; current: number | null } | null = null;
+
+function originsOf(markdown: string, prepared: string): { prepared: string; lengths: number[] } | null {
+  const lengths = markdown.split('\n').map((line) => line.length);
+  let lines = 1;
+  for (let i = prepared.indexOf('\n'); i >= 0; i = prepared.indexOf('\n', i + 1)) lines += 1;
+  return lines === lengths.length ? { prepared, lengths } : null;
+}
+
+class LineOriginSpy extends RegExp {
+  // Lexical's block import runs `line.match(regExp)` for each element transformer in turn, this one first.
+  override exec(text: string): RegExpExecArray | null {
+    if (importBudget) {
+      importBudget.work -= LINE_COST;
+      linearImportStats.spent += LINE_COST;
+    }
+    const origins = lineOrigins;
+    if (origins) {
+      let j = origins.cursor;
+      while (j < origins.lines.length && origins.lines[j] !== text) j += 1;
+      if (j < origins.lines.length) {
+        origins.current = origins.lengths[j];
+        origins.cursor = j + 1;
+      } else {
+        // Not a line of the split: the lookup stops for this import.
+        origins.current = null;
+        origins.cursor = origins.lines.length;
+      }
+    }
+    return null;
+  }
+}
+
+const LINE_ORIGIN: ElementTransformer = { dependencies: [], export: () => null, regExp: new LineOriginSpy('(?!)'), replace: () => {}, type: 'element' };
+
+interface LongLines {
+  /** The markdown with each long line replaced by `${marker}${index}${marker}`. */
+  marked: string;
+  marker: string;
+  pattern: RegExp;
+  lines: string[];
+  /** Lexical's split of `marked`, and that split with the long lines back. */
+  split?: string[];
+  restored?: string[];
+}
+
+// The long lines of the import running, if it has any.
+let longLines: LongLines | null = null;
+// Lines of the import running with more than LINEAR_IMPORT_LIMITS.tabs tabs, and the literal text each gets back.
+let heldTabs: [TextNode, string][] = [];
+
+// Control characters moss's normalization and Lexical's block transformers leave alone; the first one the markdown
+// lacks marks its long lines (none: they import as they are).
+const MARKERS = ['\u0001', '\u0002', '\u0003', '\u0004', '\u0005', '\u0006', '\u0007', '\u000e', '\u000f'];
+
+function markLongLines(markdown: string): LongLines | null {
+  const limit = LINEAR_IMPORT_LIMITS.lineChars;
+  if (markdown.length <= limit) return null;
+  const ranges: [number, number][] = [];
+  for (let start = 0; start <= markdown.length; ) {
+    const newline = markdown.indexOf('\n', start);
+    const end = newline < 0 ? markdown.length : newline;
+    if (end - start > limit) ranges.push([start, end]);
+    start = end + 1;
+  }
+  const marker = ranges.length > 0 ? MARKERS.find((char) => !markdown.includes(char)) : undefined;
+  if (marker === undefined) return null;
+  let marked = '';
+  let cursor = 0;
+  ranges.forEach(([start, end], i) => {
+    marked += `${markdown.slice(cursor, start)}${marker}${i}${marker}`;
+    cursor = end;
+  });
+  marked += markdown.slice(cursor);
+  return { marked, marker, pattern: new RegExp(`${marker}(\\d+)${marker}`, 'g'), lines: ranges.map((range) => markdown.slice(...range)) };
+}
+
+function restoreLongLines(long: LongLines, text: string): string {
+  return text.includes(long.marker) ? text.replace(long.pattern, (_, i: string) => long.lines[Number(i)]) : text;
+}
+
+const GUARDED_LISTS = new WeakMap<Transformer[], Transformer[]>();
+
+// importTransformers' list, with each multiline transformer (a code fence, moss's HTML, tab and table blocks) given
+// the long lines back: the lines it reads and the lines between its fences.
+function guardedTransformers(transformers: Transformer[]): Transformer[] {
+  let list = GUARDED_LISTS.get(transformers);
+  if (!list) {
+    list = importTransformers(transformers).map((t): Transformer => {
+      if (t.type !== 'multiline-element') return t;
+      const { handleImportAfterStartMatch, replace } = t;
+      return {
+        ...t,
+        replace: (rootNode, children, startMatch, endMatch, linesInBetween, isImport) =>
+          replace(rootNode, children, startMatch, endMatch, longLines && linesInBetween ? linesInBetween.map((line) => restoreLongLines(longLines!, line)) : linesInBetween, isImport),
+        handleImportAfterStartMatch: handleImportAfterStartMatch && ((args) => handleImportAfterStartMatch({ ...args, lines: restoredSplit(args.lines) })),
+      };
+    });
+    GUARDED_LISTS.set(transformers, list);
+  }
+  return list;
+}
+
+function restoredSplit(lines: string[]): string[] {
+  const long = longLines;
+  if (!long) return lines;
+  if (long.split !== lines) {
+    long.split = lines;
+    long.restored = lines.map((line) => restoreLongLines(long, line));
+  }
+  return long.restored!;
+}
+
+// What the import running, if any, has left of its budget for work past its lines' own (`left`) and for all work.
+let importBudget: { left: number; work: number } | null = null;
+
+// A table cell: moss imports its markdown as a note of its own and makes the cell, paragraph and text nodes, about
+// 25 µs of workerd CPU in all; its line's LINE_COST and its text's work are charged as any line's are.
+const TABLE_CELL_COST = 21_000;
+
+// Whether the import running can pay for a table row's cells; it pays for them if so.
+setTableCellCharge((cells) => {
+  if (!importBudget) return true;
+  const cost = cells * TABLE_CELL_COST;
+  if (cost > importBudget.work) {
+    importBudget.work = Math.min(importBudget.work, 0);
+    return false;
+  }
+  importBudget.work -= cost;
+  linearImportStats.spent += cost;
+  return true;
+});
+
+// moss's raw-URL and color callbacks call these once per match, on the text of the match's part. Neither can be
+// true without a backtick before the offset, so that is looked for first and the scan of the whole text skipped.
+export function isInsideInlineCodeSpan(text: string, offset: number): boolean {
+  return backtickBefore(text, offset) && isInsideInlineCodeSpanIn(text, offset);
+}
+
+export function isAfterUnclosedBacktick(text: string, offset: number): boolean {
+  return backtickBefore(text, offset) && isAfterUnclosedBacktickIn(text, offset);
+}
+
+function backtickBefore(text: string, offset: number): boolean {
+  const target = Math.max(0, Math.min(offset, text.length));
+  return target > 0 && text.lastIndexOf('`', target - 1) >= 0;
+}
+
+// moss's color callback asks this once per color, and it reads the whole paragraph each time. Each of its checks
+// needs a backtick, a bracket or a brace in the paragraph's text; a line alone in its parent and free of them (and
+// of numeric entities, which unescape to them) stays free of them while it imports, since every node made from it
+// takes its text from the line. Then only the node's own checks can be true.
+const FORMULA_DRAFT_CHIP_STYLE_MARKER = '--formula-draft-chip: 1';
+const FORMULA_EDIT_ID_STYLE_MARKER = '--formula-edit-id:';
+
+export function $isInsideColorSuppressedRawContext(node: TextNode, offset: number): boolean {
+  const line = activeLine;
+  if (line?.plain && node.getParent()?.getKey() === line.parentKey) {
+    const style = node.getStyle();
+    return node.hasFormat('code') || style.includes(FORMULA_DRAFT_CHIP_STYLE_MARKER) || style.includes(FORMULA_EDIT_ID_STYLE_MARKER);
+  }
+  // About six scans of the paragraph, which holds the line's text and roughly one child per match so far: moss's own
+  // cost, which pristine moss pays too, so it counts against the import's budget only.
+  if (line) line.budget.chargeImport(PARAGRAPH_READ * (line.length + line.applied));
+  return $isInsideColorSuppressedRawContextIn(node, offset);
+}
+
+interface ActiveLine {
+  parentKey: string | undefined;
+  /** The line is its parent's only child and holds no backtick, bracket, brace or numeric entity. */
+  plain: boolean;
+  budget: Budget;
+  length: number;
+  applied: number;
+}
+
+// The line the inline pass is importing, if any.
+let activeLine: ActiveLine | null = null;
+
+const IMPORT_LISTS = new WeakMap<Transformer[], Transformer[]>();
+
+// The block transformers as given, then one text-match driver for the inline pass. Lexical's own inline pass then
+// sees no formats and one match covering each line's text, and hands that text to the driver.
+function importTransformers(transformers: Transformer[]): Transformer[] {
+  let list = IMPORT_LISTS.get(transformers);
+  if (!list) {
+    const formats = transformers.filter((t): t is TextFormatTransformer => t.type === 'text-format');
+    const matchers = transformers.filter((t): t is TextMatchTransformer => t.type === 'text-match');
+    const index = formatIndex(formats, matchers);
+    const driver: TextMatchTransformer = {
+      dependencies: [],
+      importRegExp: /[\s\S]+/,
+      regExp: /(?!)$/,
+      replace: (textNode) => {
+        $importInline(textNode, index, matchers);
+      },
+      type: 'text-match',
+    };
+    list = [LINE_ORIGIN, ...transformers.filter((t) => t.type !== 'text-format' && t.type !== 'text-match').map(budgetedScan), driver];
+    IMPORT_LISTS.set(transformers, list);
+  }
+  return list;
+}
+
+// moss's multiline transformers scan on from their opener for its closer (a tab group's `:::`, a blockquote's closing
+// tag, a moss-html fence), and a scan that finds none reads to the end of the markdown, so a note of unclosed openers
+// cost its lines squared. The lines that scans read and then give up on are counted per markdown (per split into
+// lines); once they pass SCAN_PER_LINE per line of it plus SCAN_BASE, a scan sees only the lines left of that
+// allowance. A scan that finds its closer is not counted: its lines become its block.
+const SCAN_PER_LINE = 8;
+const SCAN_BASE = 1 << 16;
+const SCANS_LEFT = new WeakMap<string[], { left: number }>();
+
+function budgetedScan(transformer: Transformer): Transformer {
+  if (transformer.type !== 'multiline-element' || !transformer.handleImportAfterStartMatch) return transformer;
+  const handle = transformer.handleImportAfterStartMatch;
+  const budgeted: MultilineElementTransformer = {
+    ...transformer,
+    handleImportAfterStartMatch: (args) => {
+      const { lines, startLineIndex } = args;
+      let scans = SCANS_LEFT.get(lines);
+      if (!scans) {
+        scans = { left: SCAN_PER_LINE * lines.length + SCAN_BASE };
+        SCANS_LEFT.set(lines, scans);
+      }
+      const visible = Math.min(lines.length, startLineIndex + 1 + Math.max(0, scans.left));
+      let read = startLineIndex;
+      const view = new Proxy(lines, {
+        get(target, key, receiver) {
+          if (key === 'length') return visible;
+          if (typeof key === 'string') {
+            const index = Number(key);
+            if (Number.isInteger(index) && index >= 0) {
+              if (index >= visible) return undefined;
+              if (index > read) read = index;
+            }
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      const result = handle({ ...args, lines: view });
+      if (!result) scans.left -= read - startLineIndex;
+      return result;
+    },
+  };
+  return budgeted;
+}
+
+// ---- Budget ----
+
+const OVER_BUDGET = Symbol('over budget');
+
+// A line's budget, and what its import has left when the line starts.
+class Budget {
+  left: number;
+  allowance: number;
+  importLeft: number;
+  /** Work that grows faster than the line in pristine moss; the import's budget pays what passes the line's own. */
+  importSpent = 0;
+  /** All the line's work, held to perLine. */
+  work = 0;
+  /** The import's budget for all work (perNote), which every charge spends too. */
+  note: { work: number };
+  constructor(total: number, imported: { left: number; work: number } | null) {
+    this.left = total;
+    this.allowance = total;
+    this.importLeft = imported?.left ?? Infinity;
+    this.note = imported ?? { work: Infinity };
+  }
+  /** Spends work the import's budget pays once it passes what is left of the line's own. */
+  chargeImport(cost: number): void {
+    this.importSpent += cost;
+    this.work += cost;
+    this.note.work -= cost;
+    linearImportStats.spent += cost;
+  }
+  /** Spends from the line's budget without stopping; the next check stops. */
+  charge(cost: number): void {
+    this.left -= cost;
+    this.work += cost;
+    this.note.work -= cost;
+    linearImportStats.spent += cost;
+  }
+  /** Spends, and stops the line once its budget, perLine, or its import's budgets are gone. */
+  spend(cost: number): void {
+    this.charge(cost);
+    if (this.left < 0 || this.work > LINEAR_IMPORT_LIMITS.perLine || this.note.work < 0 || this.importExcess() > this.importLeft) throw OVER_BUDGET;
+  }
+  /** What the line takes from its import's budget. */
+  importExcess(): number {
+    return Math.max(0, this.importSpent - Math.max(0, this.left));
+  }
+}
+
+// ---- The inline pass (Lexical's importTextTransformers, on an explicit stack) ----
+
+interface Visit {
+  node: LexicalNode | undefined;
+  /** The text this node's text is a suffix of, when known. */
+  context: Context | null;
+  offset: number;
+  top?: boolean;
+  /** The node is a plain TextNode made in this update, as the node map holds it ($fresh). */
+  fresh?: boolean;
+}
+type Frame = Visit | { unescape: TextNode; fresh: boolean };
+
+interface Split {
+  transformedNode?: TextNode;
+  nodeBefore: TextNode | undefined;
+  nodeAfter: TextNode | undefined;
+  /** nodeBefore and nodeAfter, and a format's transformedNode, are fresh. */
+  fresh: boolean;
+}
+
+// Lexical's outer call already unescapes the top node after the driver returns, so the top gets no unescape here.
+function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTransformer[]): void {
+  const lineLength = top.getTextContentSize();
+  // A long line (a marker line, or text that long from elsewhere), or a line of more tabs than Lexical should make
+  // tab nodes of (each costs microseconds of node work, and about 60k overflow its split), keeps its text literally.
+  const long = longLines;
+  const marked = long !== null && top.getTextContent().includes(long.marker);
+  const literal = marked ? restoreLongLines(long, top.getTextContent()) : top.getTextContent();
+  const own = lineOrigins?.current ?? null;
+  if (own !== null && lineLength > own && importBudget) {
+    const cost = NORMALIZED_NOTE * (lineLength - own);
+    importBudget.work -= cost;
+    linearImportStats.spent += cost;
+  }
+  const allowance = LINEAR_IMPORT_LIMITS.perChar * (own === null ? lineLength : Math.min(lineLength, own)) + LINEAR_IMPORT_LIMITS.base;
+  const [rawTabs, entityTabs] = countTabs(literal, LINEAR_IMPORT_LIMITS.tabs);
+  const tabCount = rawTabs + entityTabs;
+  const tabCost = rawTabs * TAB_COST + entityTabs * ENTITY_TAB_COST;
+  // Lexical makes a tab node of each tab after this pass, those numeric entities decode to included: the line pays for
+  // them first.
+  const tabs = tabCount > LINEAR_IMPORT_LIMITS.tabs || tabCost > allowance;
+  if (marked || tabs || lineLength > LINEAR_IMPORT_LIMITS.lineChars) {
+    linearImportStats.cut += 1;
+    if (tabs) {
+      holdTabs(top, literal);
+    } else if (marked) {
+      top.setTextContent(literal);
+    }
+    return;
+  }
+  const original = { text: top.getTextContent(), format: top.getFormat(), style: top.getStyle(), detail: top.getDetail(), mode: top.getMode() };
+  const bounds = { before: top.getPreviousSibling(), after: top.getNextSibling() };
+  const budget = new Budget(allowance, importBudget);
+  budget.charge(tabCost);
+  // The normalization that lengthened the line was work too.
+  if (own !== null && lineLength > own) budget.charge(NORMALIZED * (lineLength - own));
+  const parent = top.getParent();
+  const line: ActiveLine = {
+    parentKey: parent?.getKey(),
+    plain: parent !== null && parent.getChildrenSize() === 1 && !/[`[\]{}]|&#/.test(top.getTextContent()),
+    budget,
+    length: lineLength,
+    applied: 0,
+  };
+  const outerLine = activeLine;
+  activeLine = line;
+  // What each replace callback reads besides its match, by the transformer's kind (REPLACE_READS). Reads of the
+  // part's text before the match add up to the line's length; reads of the whole text or paragraph per match are
+  // moss's own cost, which pristine moss pays too, so they count against the import's budget only.
+  const chargeReplace = (transformer: TextMatchTransformer, match: RegExpMatchArray) => {
+    const start = match.index ?? 0;
+    const input = match.input ?? '';
+    const read = REPLACE_READS.get(transformer.importRegExp?.source ?? '');
+    budget.charge((read === 'match' ? match[0].length : start + match[0].length) / NATIVE + (read === 'color' ? start : 0));
+    // Past a backtick, the raw-URL and color callbacks scan the whole text twice.
+    if ((read === 'backticks' || read === 'color') && backtickBefore(input, start)) budget.chargeImport(4 * input.length);
+    // Others may read the whole paragraph several times over: its text, and its children (about one per match so far).
+    if (read === undefined) budget.chargeImport(PARAGRAPH_READ * (lineLength + line.applied));
+  };
+  const stack: Frame[] = [{ node: top, context: null, offset: 0, top: true }];
+  try {
+    while (stack.length > 0) {
+      const frame = stack.pop()!;
+      if ('unescape' in frame) {
+        const fresh = frame.fresh ? frame.unescape : $fresh(frame.unescape);
+        const text = fresh ? fresh.__text : frame.unescape.getTextContent();
+        budget.charge(text.length / NATIVE);
+        // Only a backslash or a numeric entity unescapes to something else.
+        if (text.includes('\\') || text.includes('&#')) {
+          if (fresh) fresh.__text = unescapeText(text);
+          else frame.unescape.setTextContent(unescapeText(text));
+        }
+        continue;
+      }
+      const node = frame.node;
+      const fresh = frame.fresh ? (node as TextNode) : $isTextNode(node) ? $fresh(node) : null;
+      if (!frame.top && !(fresh ? (fresh.__format & CODE) === 0 : canContainTransformableMarkdown(node))) continue;
+      const textNode = node as TextNode;
+      budget.spend(VISIT_COST);
+      const text = fresh ? fresh.__text : textNode.getTextContent();
+      let context = frame.context;
+      let offset = frame.offset;
+      if (context === null || context.base.length - offset !== text.length) {
+        context = newContext(text, index.triggers);
+        budget.charge(text.length / NATIVE);
+        offset = 0;
+      }
+      // No character any format or match needs: Lexical's search finds nothing here.
+      if (context.mask === 0) {
+        if (!frame.top) stack.push({ unescape: textNode, fresh: fresh !== null });
+        continue;
+      }
+      let foundFormat = context.mask & index.triggers.formats ? findFormat(text, context, offset, index, budget) : null;
+      let foundMatch = findMatch(textNode, text, context, offset, matchers, budget, index.triggers);
+
+      if (foundFormat && foundMatch) {
+        if (foundFormat.isCodeSpan) {
+          if (foundMatch.startIndex <= foundFormat.startIndex && foundMatch.endIndex >= foundFormat.endIndex) foundFormat = null;
+          else foundMatch = null;
+        } else if (
+          (foundFormat.startIndex <= foundMatch.startIndex && foundFormat.endIndex >= foundMatch.endIndex) ||
+          foundMatch.startIndex > foundFormat.endIndex
+        ) {
+          foundMatch = null;
+        } else {
+          foundFormat = null;
+        }
+      }
+
+      let result: Split;
+      let endIndex: number;
+      if (foundFormat || foundMatch) {
+        line.applied += 1;
+        if (line.applied > LINEAR_IMPORT_LIMITS.matches) throw OVER_BUDGET;
+      }
+      const made = nodesMade();
+      let prepaid = 0;
+      if (foundFormat) {
+        result = $importFormat(textNode, text, foundFormat, fresh !== null);
+        endIndex = foundFormat.endIndex;
+      } else if (foundMatch) {
+        chargeReplace(foundMatch.transformer, foundMatch.match);
+        // A callback whose nodes grow with its match is paid for before it runs.
+        prepaid = nodesAtMost(foundMatch.transformer, foundMatch.match);
+        budget.spend(NODE_COST * prepaid + callbackCost(foundMatch.transformer));
+        result = $importMatch(textNode, text, foundMatch, fresh !== null);
+        endIndex = foundMatch.endIndex;
+      } else {
+        if (!frame.top) stack.push({ unescape: textNode, fresh: fresh !== null });
+        continue;
+      }
+      budget.charge(APPLY_COST + NODE_COST * Math.max(0, nodesMade() - made - prepaid));
+      // Lexical recurses into the part after, the part before and the transformed node, then unescapes this node.
+      if (!frame.top) stack.push({ unescape: textNode, fresh: fresh !== null });
+      stack.push({ node: result.transformedNode, context: null, offset: 0, fresh: result.fresh && foundFormat !== null });
+      stack.push({ node: result.nodeBefore, context: null, offset: 0, fresh: result.fresh });
+      stack.push({ node: result.nodeAfter, context, offset: offset + endIndex, fresh: result.fresh });
+    }
+  } catch (error) {
+    if (error !== OVER_BUDGET) throw error;
+    linearImportStats.cut += 1;
+    $restoreLine(top, original, bounds, parent);
+    // A literal line's tabs stay text, as a line past the tab cap's do: the tab nodes were never paid for.
+    if (tabCount > 0) holdTabs(top, original.text);
+  } finally {
+    activeLine = outerLine;
+    if (importBudget) importBudget.left -= budget.importExcess();
+    const share = 1 - budget.left / budget.allowance;
+    if (share > linearImportStats.peakLineShare) linearImportStats.peakLineShare = share;
+  }
+}
+
+// Free of tabs and of anything Lexical's unescape would make one of until Lexical's tab pass is over, then the text
+// Lexical's unescape would give the line.
+function holdTabs(top: TextNode, literal: string): void {
+  top.setTextContent(literal.replace(/[\t&\\]/g, ' '));
+  heldTabs.push([top, unescapeText(literal)]);
+}
+
+// A cut line goes back to the one text node it came in as: its whole text literal, which the outer import then
+// decodes as it decodes any line, so no part of it depends on where the cut fell.
+function $restoreLine(
+  top: TextNode,
+  original: { text: string; format: number; style: string; detail: number; mode: ReturnType<TextNode['getMode']> },
+  bounds: { before: LexicalNode | null; after: LexicalNode | null },
+  parent: ElementNode | null,
+): void {
+  if (parent === null) return;
+  if ($restoreLineDirectly(top, original, bounds, parent)) return;
+  const made: LexicalNode[] = [];
+  for (let node = bounds.before ? bounds.before.getNextSibling() : parent.getFirstChild(); node !== null && !node.is(bounds.after); node = node.getNextSibling()) {
+    made.push(node);
+  }
+  for (const node of made) node.remove(true);
+  top.setTextContent(original.text).setFormat(original.format).setStyle(original.style).setDetail(original.detail).setMode(original.mode);
+  if (bounds.before) bounds.before.insertAfter(top, false);
+  else if (bounds.after) bounds.after.insertBefore(top, false);
+  else parent.append(top);
+}
+
+// $restoreLine through the nodes' fields when the parent, the nodes around the line and every node made from it were
+// made in this update (as $split links them): each made node is unlinked, and Lexical's commit collects it as it
+// collects a removed node. False, having changed nothing, otherwise.
+function $restoreLineDirectly(
+  top: TextNode,
+  original: { text: string; format: number; style: string; detail: number; mode: ReturnType<TextNode['getMode']> },
+  bounds: { before: LexicalNode | null; after: LexicalNode | null },
+  parent: ElementNode,
+): boolean {
+  const editor = $getEditor();
+  const nodes = editor._pendingEditorState?._nodeMap;
+  const made = editor._cloneNotNeeded;
+  const fresh = (node: LexicalNode | null) => node === null || (made.has(node.__key) && nodes?.get(node.__key) === node);
+  if (!nodes || $isRangeSelection($getSelection()) || !fresh(parent) || !fresh(bounds.before) || !fresh(bounds.after) || !fresh(top)) return false;
+  const afterKey = bounds.after?.__key ?? null;
+  const line: LexicalNode[] = [];
+  for (let key = bounds.before ? bounds.before.__next : parent.__first; key !== null && key !== afterKey; ) {
+    const node = nodes.get(key);
+    if (!node || !fresh(node)) return false;
+    line.push(node);
+    key = node.__next;
+  }
+  for (const node of line) {
+    node.__parent = null;
+    node.__prev = null;
+    node.__next = null;
+  }
+  top.__text = original.text;
+  top.__format = original.format;
+  top.__style = original.style;
+  top.__detail = original.detail;
+  top.setMode(original.mode);
+  top.__parent = parent.__key;
+  top.__prev = bounds.before?.__key ?? null;
+  top.__next = afterKey;
+  if (bounds.before) bounds.before.__next = top.__key;
+  else parent.__first = top.__key;
+  if (bounds.after) bounds.after.__prev = top.__key;
+  else parent.__last = top.__key;
+  parent.__size += 1 - line.length;
+  return true;
+}
+
+// Nodes made or marked changed so far in the update running: a count of Lexical's node work.
+function nodesMade(): number {
+  const editor = $getEditor();
+  return editor._dirtyLeaves.size + editor._dirtyElements.size;
+}
+
+// The tabs in the text, and the tabs Lexical's unescape would decode numeric entities to (`&#9;`, `&#0009;`, and with
+// an escaped `&`, `#` or `;`), together counted up to one past `limit`. Every candidate is counted wherever it falls, a
+// code span included, so the count is at least what the import makes. One pass over the text.
+function countTabs(text: string, limit: number): [number, number] {
+  let raw = 0;
+  for (let i = text.indexOf('\t'); i >= 0 && raw <= limit; i = text.indexOf('\t', i + 1)) raw += 1;
+  let entity = 0;
+  if (raw > limit || !text.includes('&')) return [raw, entity];
+  const unescaped = unescapeBackslashes(text);
+  ENTITY_TAB.lastIndex = 0;
+  while (raw + entity <= limit && ENTITY_TAB.test(unescaped)) entity += 1;
+  return [raw, entity];
+}
+
+const ENTITY_TAB = /&#0*9;/g;
+
+function canContainTransformableMarkdown(node: LexicalNode | undefined): node is TextNode {
+  return $isTextNode(node) && !node.hasFormat('code');
+}
+
+const CODE = TEXT_TYPE_TO_FORMAT.code;
+
+// A plain TextNode made in the update running, as the node map holds it, else null. Lexical's getWritable hands such
+// a node back as it is, so the pass reads and writes its fields directly, as splitText sets a new part's, instead of
+// through getters and setters that each look it up in the node map (the bulk of a dense line's work).
+function $fresh(node: TextNode): TextNode | null {
+  if (node.constructor !== TextNode) return null;
+  const editor = $getEditor();
+  const key = node.__key;
+  return editor._cloneNotNeeded.has(key) && editor._pendingEditorState?._nodeMap.get(key) === node ? node : null;
+}
+
+// Lexical's unescapeText.
+function unescapeText(value: string): string {
+  return unescapeBackslashes(value).replace(/&#(\d+);/g, (_, codePoint) => String.fromCodePoint(Number(codePoint)));
+}
+
+function unescapeBackslashes(value: string): string {
+  return value.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+}
+
+// TextNode.splitText(...offsets) on `text`, the node's text, for a node in a parent with no range selection: the same
+// nodes, linked in after the first part instead of spliced at the node's index (splitText walks to it from the first
+// child). When the node, its parent and its next sibling were all made in this update, the parts are linked through
+// their fields; otherwise through insertAfter.
+function $split(node: TextNode, text: string, offsets: number[], fresh: boolean): { parts: TextNode[]; fresh: boolean } {
+  const selection = $getSelection();
+  if ($isRangeSelection(selection) || (node as unknown as { __state?: unknown }).__state !== undefined) return { parts: node.splitText(...offsets), fresh: false };
+  const editor = $getEditor();
+  const nodes = editor._pendingEditorState?._nodeMap;
+  const made = editor._cloneNotNeeded;
+  const parentKey = node.__parent;
+  const nextKey = node.__next;
+  // Mode 0 is normal: neither token nor segmented.
+  const direct =
+    nodes !== undefined &&
+    node.__mode === 0 &&
+    parentKey !== null &&
+    (fresh || $fresh(node) !== null) &&
+    made.has(parentKey) &&
+    (nextKey === null || made.has(nextKey));
+  if (!direct && (node.getParent() === null || node.isSegmented())) return { parts: node.splitText(...offsets), fresh: false };
+  if (text === '') return { parts: [], fresh: direct };
+  const ends = [...offsets].sort((a, b) => a - b);
+  ends.push(text.length);
+  const parts: string[] = [];
+  for (let start = 0, i = 0; start < text.length && i < ends.length; i += 1) {
+    if (ends[i] > start) {
+      parts.push(text.slice(start, ends[i]));
+      start = ends[i];
+    }
+  }
+  if (parts.length === 1) return { parts: [node], fresh: direct };
+  if (direct) {
+    const parent = nodes.get(parentKey) as ElementNode;
+    const next = nextKey === null ? null : nodes.get(nextKey)!;
+    const format = node.__format;
+    const style = node.__style;
+    const detail = node.__detail;
+    node.__text = parts[0];
+    const split = [node];
+    let previous: TextNode = node;
+    for (let i = 1; i < parts.length; i += 1) {
+      const sibling = $createTextNode(parts[i]);
+      sibling.__format = format;
+      sibling.__style = style;
+      sibling.__detail = detail;
+      sibling.__parent = parentKey;
+      sibling.__prev = previous.__key;
+      previous.__next = sibling.__key;
+      split.push(sibling);
+      previous = sibling;
+    }
+    previous.__next = nextKey;
+    if (next) next.__prev = previous.__key;
+    else parent.__last = previous.__key;
+    parent.__size += parts.length - 1;
+    // As getWritable does.
+    if (selection !== null) selection.setCachedNodes(null);
+    // A text node replacement registered on the editor would make the new parts some other class.
+    return { parts: split, fresh: previous.constructor === TextNode };
+  }
+  const format = node.getFormat();
+  const style = node.getStyle();
+  const detail = node.getDetail();
+  const first = node.setTextContent(parts[0]);
+  const split = [first];
+  let previous = first;
+  for (let i = 1; i < parts.length; i += 1) {
+    const sibling = $createTextNode(parts[i]);
+    // A new text node has no format, style or detail; each setter costs a writable lookup.
+    if (format !== 0) sibling.setFormat(format);
+    if (style !== '') sibling.setStyle(style);
+    if (detail !== 0) sibling.setDetail(detail);
+    previous.insertAfter(sibling, false);
+    split.push(sibling);
+    previous = sibling;
+  }
+  return { parts: split, fresh: false };
+}
+
+// The formats a toggle turns off besides its own (TextNode.toggleFormat): the pass sets the others' bits directly.
+const EXCLUSIVE_FORMATS = new Set<TextFormatType>(['subscript', 'superscript', 'lowercase', 'uppercase', 'capitalize']);
+
+// Lexical's importTextFormatTransformer, on `textContent`, the node's text.
+function $importFormat(textNode: TextNode, textContent: string, found: FoundFormat, isFresh: boolean): Split {
+  const { startIndex, endIndex, transformer, match } = found;
+  let transformedNode: TextNode;
+  let nodeAfter: TextNode | undefined;
+  let nodeBefore: TextNode | undefined;
+  let split = { parts: [textNode], fresh: isFresh };
+  if (match[0] === textContent) {
+    transformedNode = textNode;
+  } else if (startIndex === 0) {
+    split = $split(textNode, textContent, [endIndex], isFresh);
+    [transformedNode, nodeAfter] = split.parts;
+  } else {
+    split = $split(textNode, textContent, [startIndex, endIndex], isFresh);
+    [nodeBefore, transformedNode, nodeAfter] = split.parts;
+  }
+  const fresh = split.fresh ? transformedNode : $fresh(transformedNode);
+  if (fresh) fresh.__text = match[2];
+  else transformedNode.setTextContent(match[2]);
+  if (transformer) {
+    for (const format of transformer.format) {
+      if (fresh && !EXCLUSIVE_FORMATS.has(format)) fresh.__format |= TEXT_TYPE_TO_FORMAT[format];
+      else if (!transformedNode.hasFormat(format)) transformedNode.toggleFormat(format);
+    }
+  }
+  return { nodeAfter, nodeBefore, transformedNode, fresh: fresh !== null && split.fresh };
+}
+
+function callbackCost(transformer: TextMatchTransformer): number {
+  const source = transformer.importRegExp?.source;
+  return source === COLOR_TRANSFORMER_IMPORT_REGEXP.source ? 0 : source === MOSS_LINK_SOURCE ? CALLBACK_COST + LINK_CALLBACK_COST : CALLBACK_COST;
+}
+
+// moss's link callback (appendFormattedLinkText) makes a text node for each formatted run of its label, so a label of
+// many delimiters makes that many nodes in one callback: at most one per delimiter character, the link and the rest.
+const MOSS_LINK_SOURCE = String.raw`(?:\[([^[\]]+)\])(?:\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:\s"((?:[^"]*\\")*[^"]*)")?\))`;
+
+function nodesAtMost(transformer: TextMatchTransformer, match: RegExpMatchArray): number {
+  if (transformer.importRegExp?.source !== MOSS_LINK_SOURCE) return 0;
+  const label = match[1] ?? '';
+  let delimiters = 0;
+  for (let i = 0; i < label.length; i += 1) {
+    const code = label.charCodeAt(i);
+    if (code === 42 || code === 96 || code === 126) delimiters += 1;
+  }
+  return delimiters + 2;
+}
+
+// Lexical's importFoundTextMatchTransformer (every listed transformer has a replace), on `text`, the node's text.
+function $importMatch(textNode: TextNode, text: string, found: FoundMatch, isFresh: boolean): Split {
+  const { startIndex, endIndex, transformer, match } = found;
+  let transformedNode: TextNode;
+  let nodeAfter: TextNode | undefined;
+  let nodeBefore: TextNode | undefined;
+  const split = $split(textNode, text, startIndex === 0 ? [endIndex] : [startIndex, endIndex], isFresh);
+  if (startIndex === 0) [transformedNode, nodeAfter] = split.parts;
+  else [nodeBefore, transformedNode, nodeAfter] = split.parts;
+  const replaced = transformer.replace!(transformedNode, match);
+  return { nodeAfter, nodeBefore, transformedNode: replaced || undefined, fresh: split.fresh };
+}
+
+// ---- Contexts: what is known about a text whose suffixes are imported in turn ----
+
+interface CachedMatch {
+  /** The offset it was searched from; no match starts between it and `at`. */
+  from: number;
+  /** Where the match starts in the base, or -1 for none. */
+  at: number;
+  match: RegExpMatchArray | null;
+  /** getEndIndex minus the start, once asked. */
+  endDelta?: number | false;
+}
+
+interface Context {
+  base: string;
+  /** The trigger characters (Triggers) the base holds, a bit apiece; each suffix of it holds a subset. */
+  mask: number;
+  /** Per text-match transformer, by its index in the list, its cached match. */
+  matches: (CachedMatch | undefined)[];
+  scan?: ContextScan;
+  /**
+   * The last format search computed, by the offset it was computed at, and `stable`: no emphasis and no code span
+   * starts in the base between `at` and it.
+   */
+  format?: { at: number; result: FoundFormat | null; stable: number };
+}
+
+interface ContextScan {
+  /** Last index of a delimiter character or backtick, or -1. */
+  lastRelevant: number;
+  /** Last index of an unescaped backtick run with a later run of the same length, or -1. */
+  lastSpanOpener: number;
+  /** Per backtick run length, the index of the last run of that length. */
+  lastRunOfLength: Map<number, number>;
+}
+
+const newContext = (base: string, triggers: Triggers): Context => ({ base, mask: maskOf(base, triggers), matches: [] });
+
+// Characters a format or a text match cannot do without: a text holding none of a matcher's has no match of it, and
+// one holding no backtick and no first character of a format tag has no format.
+interface Triggers {
+  /** Per ASCII code, its bit or 0; null when some matcher's regex is not known here (then every text is searched). */
+  bits: Int32Array | null;
+  /** The bits of the backtick and the format tags' first characters. */
+  formats: number;
+  /** Per text-match transformer, the bits of the characters of which each match holds at least one. */
+  matchers: number[];
+}
+
+function triggersOf(formats: TextFormatTransformer[], matchers: TextMatchTransformer[]): Triggers {
+  const bits = new Int32Array(128);
+  let next = 0;
+  const bitsOf = (chars: string) => {
+    let mask = 0;
+    for (const char of chars) {
+      const code = char.charCodeAt(0);
+      if (code >= 128 || next > 30) return -1;
+      if (bits[code] === 0) bits[code] = 1 << next++;
+      mask |= bits[code];
+    }
+    return mask;
+  };
+  const all = { bits: null, formats: -1, matchers: matchers.map(() => -1) };
+  const formatMask = bitsOf(`\`${formats.map((t) => t.tag[0]).join('')}`);
+  const masks: number[] = [];
+  for (const t of matchers) {
+    const required = t.importRegExp ? REQUIRED_CHARS.get(t.importRegExp.source) : '';
+    if (required === undefined) return all;
+    const mask = bitsOf(required);
+    if (mask === -1) return all;
+    masks.push(mask);
+  }
+  return formatMask === -1 ? all : { bits, formats: formatMask, matchers: masks };
+}
+
+function maskOf(text: string, triggers: Triggers): number {
+  const bits = triggers.bits;
+  if (bits === null) return -1;
+  let mask = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 128) mask |= bits[code];
+  }
+  return mask;
+}
+
+// ---- Text matches (Lexical's findOutermostTextMatchTransformer) ----
+
+interface FoundMatch {
+  startIndex: number;
+  endIndex: number;
+  transformer: TextMatchTransformer;
+  match: RegExpMatchArray;
+}
+
+function findMatch(
+  node: TextNode,
+  text: string,
+  context: Context,
+  offset: number,
+  matchers: TextMatchTransformer[],
+  budget: Budget,
+  triggers: Triggers,
+): FoundMatch | null {
+  const kinds = kindsOf(matchers);
+  const entries = context.matches;
+  // The outermost match so far: its transformer's index, where it starts and ends, and its match when it was run
+  // here (else it is the cached entry's, moved to this text).
+  let best = -1;
+  let bestStart = 0;
+  let bestEnd = 0;
+  let bestMatch: RegExpMatchArray | null = null;
+  let bestEntry: CachedMatch | undefined;
+  for (let i = 0; i < matchers.length; i += 1) {
+    const transformer = matchers[i];
+    const kind = kinds[i];
+    if (kind === null || (context.mask & triggers.matchers[i]) === 0) continue;
+    let start: number;
+    let length: number;
+    let match: RegExpMatchArray | null = null;
+    let entry: CachedMatch | undefined;
+    if (kind.suffixSafe) {
+      entry = entries[i];
+      if (!entry || entry.from > offset || (entry.at >= 0 && entry.at < offset)) {
+        budget.spend(0);
+        match = matchText(text, transformer.importRegExp!);
+        const perChar = entry && kind.linear ? LINEAR_RESCAN : 1 / NATIVE;
+        budget.charge((match ? (match.index ?? 0) + match[0].length : text.length) * perChar + 1);
+        entry = { from: offset, at: match ? offset + (match.index ?? 0) : -1, match };
+        entries[i] = entry;
+      }
+      if (entry.at < 0 || !entry.match) continue;
+      start = entry.at - offset;
+      length = entry.match[0].length;
+    } else {
+      budget.spend(0);
+      match = matchText(text, transformer.importRegExp!);
+      const scanned = kind.firstLiteral !== null && text[0] !== kind.firstLiteral ? 1 : text.length / NATIVE;
+      budget.charge((match ? match[0].length / NATIVE : scanned) + 1);
+      if (!match) continue;
+      start = match.index || 0;
+      length = match[0].length;
+    }
+    // Only a match starting before the one found can replace it, and moss's getEndIndex reads only its match.
+    if (best >= 0 && start >= bestStart) continue;
+    let end: number | false;
+    if (transformer.getEndIndex) {
+      // moss's getEndIndex reads only the match, so its answer moves with the match.
+      if (entry) {
+        if (entry.endDelta === undefined) {
+          const found = transformer.getEndIndex(node, match ?? rebase(entry.match!, start, text));
+          budget.charge(length / NATIVE);
+          entry.endDelta = found === false ? false : found - start;
+        }
+        end = entry.endDelta === false ? false : start + entry.endDelta;
+      } else {
+        end = transformer.getEndIndex(node, match!);
+      }
+    } else {
+      end = start + length;
+    }
+    if (end === false) continue;
+    if (best < 0 || end > bestEnd || end <= bestStart) {
+      best = i;
+      bestStart = start;
+      bestEnd = end;
+      bestMatch = match ?? null;
+      if (!bestMatch) bestEntry = entry!;
+    }
+  }
+  if (best < 0) return null;
+  return { startIndex: bestStart, endIndex: bestEnd, transformer: matchers[best], match: bestMatch ?? rebase(bestEntry!.match!, bestStart, text) };
+}
+
+// The parts around each match are often a few characters, and the same few (a space, a comma): their matches are
+// remembered, per regex, for texts up to SHORT_TEXT long. A regex here is neither global nor sticky, so its match
+// depends on the text alone (a global or sticky one is not remembered); the work charged is the same either way.
+const SHORT_TEXT = 16;
+const SHORT_TEXTS = 4096;
+const SHORT_MATCHES = new WeakMap<RegExp, Map<string, RegExpMatchArray | null>>();
+
+function matchText(text: string, re: RegExp): RegExpMatchArray | null {
+  if (text.length > SHORT_TEXT || re.global || re.sticky) return text.match(re);
+  let known = SHORT_MATCHES.get(re);
+  if (!known) {
+    known = new Map();
+    SHORT_MATCHES.set(re, known);
+  }
+  let match = known.get(text);
+  if (match === undefined) {
+    match = text.match(re);
+    if (known.size >= SHORT_TEXTS) known.clear();
+    known.set(text, match);
+  }
+  return match && rebase(match, match.index ?? 0, text);
+}
+
+function rebase(match: RegExpMatchArray, index: number, input: string): RegExpMatchArray {
+  const copy = [...match] as RegExpMatchArray;
+  copy.index = index;
+  copy.input = input;
+  copy.groups = match.groups;
+  return copy;
+}
+
+const MATCHER_KINDS = new WeakMap<TextMatchTransformer[], (RegExpKind | null)[]>();
+
+// Each transformer's regex kind, or null for one Lexical skips (no replace or no importRegExp).
+function kindsOf(matchers: TextMatchTransformer[]): (RegExpKind | null)[] {
+  let kinds = MATCHER_KINDS.get(matchers);
+  if (!kinds) {
+    kinds = matchers.map((t) => (t.replace && t.importRegExp ? regExpKind(t.importRegExp) : null));
+    MATCHER_KINDS.set(matchers, kinds);
+  }
+  return kinds;
+}
+
+interface RegExpKind {
+  /** Matching at a position reads nothing before it, so a suffix matches where the whole text does. */
+  suffixSafe: boolean;
+  /** Matched by linear-match.ts's pre-scan. */
+  linear: boolean;
+  /** For a `^`-anchored regex, the literal character it starts with, if any. */
+  firstLiteral: string | null;
+}
+
+const KINDS = new WeakMap<RegExp, RegExpKind>();
+// moss's serif span: its `^` follows `<span style="`, so it never matches.
+const SERIF_SPAN_SOURCE = new RegExp(`<span style="(${SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN})">([^<]+)<\\/span>`, 'i').source;
+// The color regex's `\b` follows its hex digits, so it never reads before the match.
+const SUFFIX_SAFE = new Set([COLOR_TRANSFORMER_IMPORT_REGEXP.source, SERIF_SPAN_SOURCE]);
+const SPECIAL = new Set([...'\\^$.|?*+()[]{}']);
+
+// Suffix-safe: no `^`, no `\b` or `\B`, no lookbehind, not global, sticky or multiline.
+function regExpKind(re: RegExp): RegExpKind {
+  let kind = KINDS.get(re);
+  if (kind) return kind;
+  const source = re.source;
+  let unsafe = re.global || re.sticky || re.multiline;
+  let carets = 0;
+  let depth = 0;
+  let topLevelAlternative = false;
+  let inClass = false;
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === '\\') {
+      if (!inClass && (source[i + 1] === 'b' || source[i + 1] === 'B')) unsafe = true;
+      i += 1;
+    } else if (inClass) {
+      if (char === ']') inClass = false;
+    } else if (char === '[') {
+      inClass = true;
+      if (source[i + 1] === '^') i += 1;
+    } else if (char === '(') {
+      if (source.startsWith('(?<=', i) || source.startsWith('(?<!', i)) unsafe = true;
+      depth += 1;
+    } else if (char === ')') {
+      depth -= 1;
+    } else if (char === '|' && depth === 0) {
+      topLevelAlternative = true;
+    } else if (char === '^') {
+      carets += 1;
+    }
+  }
+  const anchored = !unsafe && carets === 1 && source[0] === '^' && !topLevelAlternative;
+  const first = source[1];
+  kind = {
+    suffixSafe: (!unsafe && carets === 0) || (SUFFIX_SAFE.has(source) && !re.global && !re.sticky),
+    firstLiteral: anchored && first !== undefined && !SPECIAL.has(first) ? first : null,
+    linear: LINEAR_REGEXP_KEYS.includes(`/${source}/${re.flags}`),
+  };
+  KINDS.set(re, kind);
+  return kind;
+}
+
+// What a replace callback reads besides the match: nothing ('match'); the text before the match back to a backtick,
+// and the whole text past one ('backticks', the raw-URL callback); that and the text before the match ('color').
+// Others are charged scans of the paragraph.
+const READS_MATCH = [
+  String.raw`<u(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/u>`,
+  String.raw`<mark data-color="(\w+)"(?:\s+style="([^"]*font-family\s*:[^"]*serif[^"]*)")?>([^<]+)<\/mark>`,
+  String.raw`==(?:<span style="([^"]*font-family\s*:[^"]*serif[^"]*)">([^<]+)<\/span>|([^=\n]+))==`,
+  String.raw`\{\{([^{}\n]+)\}\}`,
+  String.raw`\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`,
+  String.raw`(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)(?:(\?\[((?:\\.|[^\]\\])*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\))|(https?:\/\/[^\s<>{}|\\^[\]` +
+    '`' +
+    String.raw`*~]+))(~~\*\*\*|\*\*\*~~|~~\*\*|\*\*~~|~~\*|\*~~|\*\*\*|\*\*|~~|\*)`,
+  String.raw`\[((?:https?:\/\/[^\]\s]+))\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`,
+  String.raw`\[\[((?:[^\]]|\](?!\]))+)\]\]`,
+  String.raw`(?:\[([^[\]]+)\])(?:\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:\s"((?:[^"]*\\")*[^"]*)")?\))`,
+  String.raw`(?:\[(.+?)\])(?:\((?:([^()\s]+)(?:\s"((?:[^"]*\\")*[^"]*)"\s*)?)\))`,
+];
+const REPLACE_READS = new Map<string, 'match' | 'backticks' | 'color'>([
+  ...READS_MATCH.map((source) => [source, 'match'] as const),
+  [SERIF_SPAN_SOURCE, 'match'],
+  [String.raw`https?:\/\/[^\s<>{}|\\^[\]` + '`' + ']+', 'backticks'],
+  [COLOR_TRANSFORMER_IMPORT_REGEXP.source, 'color'],
+]);
+
+// Per known import regex, characters of which every match holds at least one (Triggers).
+const REQUIRED_CHARS = new Map<string, string>([
+  ['(?!)', ''],
+  [READS_MATCH[0], '<'],
+  [READS_MATCH[1], '<'],
+  [READS_MATCH[2], '='],
+  [READS_MATCH[3], '{'],
+  [READS_MATCH[4], '?'],
+  [READS_MATCH[5], '*~'],
+  [READS_MATCH[6], '['],
+  [READS_MATCH[7], '['],
+  [READS_MATCH[8], '['],
+  [READS_MATCH[9], '['],
+  [SERIF_SPAN_SOURCE, '<'],
+  [String.raw`^!\[.*\]\(.*\)$`, '!'],
+  [String.raw`https?:\/\/[^\s<>{}|\\^[\]` + '`' + ']+', ':'],
+  [COLOR_TRANSFORMER_IMPORT_REGEXP.source, '#('],
+]);
+
+// ---- Formats (Lexical's findOutermostTextFormatTransformer) ----
+
+interface FormatIndex {
+  byTag: Record<string, TextFormatTransformer>;
+  triggers: Triggers;
+  code: TextFormatTransformer | undefined;
+  delimiterChars: Set<string>;
+  /** Per ASCII code, 1 for a delimiter character (others are looked up in delimiterChars). */
+  delimiterCodes: Uint8Array;
+  /** Per delimiter character, its tags longest first (ties in index order). */
+  tagsByChar: Map<string, string[]>;
+}
+
+function formatIndex(formats: TextFormatTransformer[], matchers: TextMatchTransformer[]): FormatIndex {
+  const byTag: Record<string, TextFormatTransformer> = {};
+  for (const transformer of formats) byTag[transformer.tag] = transformer;
+  const tags = Object.keys(byTag);
+  const delimiterChars = new Set(tags.filter((tag) => tag[0] !== '`').map((tag) => tag[0]));
+  const tagsByChar = new Map<string, string[]>();
+  for (const char of delimiterChars) {
+    tagsByChar.set(
+      char,
+      tags.filter((tag) => tag[0] === char).sort((a, b) => b.length - a.length),
+    );
+  }
+  const delimiterCodes = new Uint8Array(128);
+  for (const char of delimiterChars) if (char.charCodeAt(0) < 128) delimiterCodes[char.charCodeAt(0)] = 1;
+  return { byTag, code: byTag['`'], delimiterChars, delimiterCodes, tagsByChar, triggers: triggersOf(formats, matchers) };
+}
+
+interface FoundFormat {
+  startIndex: number;
+  endIndex: number;
+  transformer: TextFormatTransformer;
+  match: RegExpMatchArray;
+  isCodeSpan: boolean;
+}
+
+interface Span {
+  startIndex: number;
+  endIndex: number;
+  content: string;
+}
+
+interface Delimiter {
+  index: number;
+  char: string;
+  length: number;
+  canOpen: boolean;
+  canClose: boolean;
+  active: boolean;
+}
+
+interface Emphasis {
+  startIndex: number;
+  endIndex: number;
+  tag: string;
+  content: string;
+}
+
+const isDelimiter = (index: FormatIndex, char: string) => {
+  if (char === undefined) return false;
+  const code = char.charCodeAt(0);
+  return code < 128 ? index.delimiterCodes[code] === 1 : index.delimiterChars.has(char);
+};
+const isRelevant = (index: FormatIndex, char: string) => char === '`' || isDelimiter(index, char);
+
+// The search on `text`, the base from `offset`, answered (in order) by: no delimiter or backtick left; the last
+// answer, while no emphasis or code span it saw starts before `offset` and the cut at `offset` changes no delimiter
+// or backtick run; a prefix whose answer the rest cannot change; the whole text.
+function findFormat(text: string, context: Context, offset: number, index: FormatIndex, budget: Budget): FoundFormat | null {
+  const scan = contextScan(context, index, budget);
+  if (scan.lastRelevant < offset) return null;
+  const last = context.format;
+  if (last && last.at <= offset && offset <= last.stable && (offset === last.at || cleanCut(context.base, offset, index))) {
+    return last.result && moved(last.result, -offset, text);
+  }
+  let result: Answer | undefined;
+  for (let window = FIRST_WINDOW; result === undefined && window < text.length; window *= 4) {
+    const cut = neutralCut(text, window, index, budget);
+    if (cut > 0) result = fromPrefix(text, cut, scan, offset, index, budget);
+  }
+  result ??= fromPrefix(text, text.length, scan, offset, index, budget, true)!;
+  context.format = { at: offset, result: result.found && moved(result.found, offset, context.base), stable: offset + result.stable };
+  return result.found;
+}
+
+// Whether the search on the base from `offset` sees the same delimiter and backtick runs, with the same flanking
+// and escapes, as the search from an earlier offset sees there. Delimiters dropped before it that took part in no
+// emphasis then change nothing after it: they paired with nothing, and nothing paired across them.
+function cleanCut(base: string, offset: number, index: FormatIndex): boolean {
+  const char = base[offset];
+  const before = base[offset - 1];
+  // A run's flanking reads the character before it; at a part's start that is none, which reads like whitespace.
+  if (isWhitespace(before)) return true;
+  if (char === '`') return before !== '`' && before !== '\\';
+  return !isDelimiter(index, char) && char !== '\\';
+}
+
+// `found` with its indices shifted by `shift`, as a match on `input`.
+function moved(found: FoundFormat, shift: number, input: string): FoundFormat {
+  const startIndex = found.startIndex + shift;
+  const endIndex = found.endIndex + shift;
+  const match = [input.slice(startIndex, endIndex), found.match[1], found.match[2]] as RegExpMatchArray;
+  match.index = startIndex;
+  match.input = input;
+  return { ...found, startIndex, endIndex, match };
+}
+
+// The first cut at or after `window` whose previous character is no delimiter, backtick or backslash, so no run
+// and no escape straddles it; 0 when there is none within another window.
+function neutralCut(text: string, window: number, index: FormatIndex, budget: Budget): number {
+  const end = Math.min(text.length, window * 2);
+  for (let cut = window; cut < end; cut += 1) {
+    const char = text[cut - 1];
+    if (!isRelevant(index, char) && char !== '\\') {
+      budget.charge((cut - window) + 1);
+      return cut;
+    }
+  }
+  budget.charge(end - window);
+  return 0;
+}
+
+interface Answer {
+  found: FoundFormat | null;
+  /** No emphasis and no code span starts before this index of the text. */
+  stable: number;
+}
+
+// Lexical's search on text.slice(0, cut). With `whole` it is the answer; otherwise it is the whole text's answer
+// only when the rest cannot change it, else undefined. The rest can only add code spans from runs after the cut (or
+// pair a run before the cut that found no closer with one after it), and emphasis from closers after the cut, which
+// pair with openers still open at the cut or after it.
+function fromPrefix(
+  text: string,
+  cut: number,
+  scan: ContextScan,
+  offset: number,
+  index: FormatIndex,
+  budget: Budget,
+  whole = false,
+): Answer | undefined {
+  const prefix = cut === text.length ? text : text.slice(0, cut);
+  budget.spend(FORMAT_CALL + FORMAT_SCAN * cut);
+  const { spans, unclosed } = index.code ? scanCodeSpans(prefix, budget) : { spans: [], unclosed: [] };
+  const delimiters = scanDelimiters(prefix, index, spans);
+  budget.spend(DELIMITER * Math.max(0, delimiters.length - cut / DELIMITER_SPACING));
+  const emphasis = delimiters.length > 0 ? processEmphasis(prefix, delimiters, index, budget) : null;
+  const code = spans[0];
+  if (!whole) {
+    for (const run of unclosed) if ((scan.lastRunOfLength.get(run.length) ?? -1) >= offset + cut) return undefined;
+    let firstOpen = Infinity;
+    for (const d of delimiters) if (d.active && d.canOpen && d.length > 0 && d.index < firstOpen) firstOpen = d.index;
+    if (code) {
+      if (firstOpen <= (emphasis ? emphasis.startIndex : code.startIndex)) return undefined;
+    } else {
+      if (!emphasis || firstOpen <= emphasis.startIndex) return undefined;
+      // No backtick run before the cut can open a span, so the whole text has one only if a run after it does.
+      if (index.code && scan.lastSpanOpener >= offset + cut) return undefined;
+    }
+  }
+  // Decided from a prefix with a code span and no emphasis, any emphasis starts after the first open delimiter,
+  // which is after the span.
+  return { found: outermost(text, code, emphasis, index), stable: Math.min(emphasis?.startIndex ?? Infinity, code?.startIndex ?? Infinity) };
+}
+
+function outermost(text: string, code: Span | undefined, emphasis: Emphasis | null, index: FormatIndex): FoundFormat | null {
+  const codeMatch = code ? { content: code.content, endIndex: code.endIndex, startIndex: code.startIndex, tag: '`' } : null;
+  let resultMatch: Emphasis | null = null;
+  let resultTransformer: TextFormatTransformer | undefined;
+  if (codeMatch && emphasis) {
+    if (emphasis.startIndex <= codeMatch.startIndex && emphasis.endIndex >= codeMatch.endIndex) {
+      resultMatch = emphasis;
+      resultTransformer = index.byTag[emphasis.tag];
+    } else {
+      resultMatch = codeMatch;
+      resultTransformer = index.code;
+    }
+  } else if (codeMatch) {
+    resultMatch = codeMatch;
+    resultTransformer = index.code;
+  } else if (emphasis) {
+    resultMatch = emphasis;
+    resultTransformer = index.byTag[emphasis.tag];
+  }
+  if (!resultMatch || !resultTransformer) return null;
+  const match = [text.slice(resultMatch.startIndex, resultMatch.endIndex), resultMatch.tag, resultMatch.content] as RegExpMatchArray;
+  match.index = resultMatch.startIndex;
+  match.input = text;
+  return {
+    endIndex: resultMatch.endIndex,
+    isCodeSpan: resultTransformer === index.code,
+    match,
+    startIndex: resultMatch.startIndex,
+    transformer: resultTransformer,
+  };
+}
+
+function contextScan(context: Context, index: FormatIndex, budget: Budget): ContextScan {
+  if (context.scan) return context.scan;
+  const base = context.base;
+  budget.spend(base.length / NATIVE);
+  let lastRelevant = base.length - 1;
+  while (lastRelevant >= 0 && !isRelevant(index, base[lastRelevant])) lastRelevant -= 1;
+  let lastSpanOpener = -1;
+  const lastRunOfLength = new Map<number, number>();
+  if (index.code) {
+    const runs = backtickRuns(base);
+    for (const run of runs) lastRunOfLength.set(run.length, run.index);
+    const later = new Set<number>();
+    for (let r = runs.length - 1; r >= 0; r -= 1) {
+      const run = runs[r];
+      if (later.has(run.length) && !isEscaped(base, run.index)) {
+        lastSpanOpener = run.index;
+        break;
+      }
+      later.add(run.length);
+    }
+  }
+  context.scan = { lastRelevant, lastSpanOpener, lastRunOfLength };
+  return context.scan;
+}
+
+function isEscaped(text: string, index: number): boolean {
+  let count = 0;
+  for (let i = index - 1; i >= 0 && text[i] === '\\'; i -= 1) count += 1;
+  return count % 2 === 1;
+}
+
+function backtickRuns(text: string): { index: number; length: number }[] {
+  const runs: { index: number; length: number }[] = [];
+  for (let i = text.indexOf('`'); i >= 0; i = text.indexOf('`', i)) {
+    let length = 1;
+    while (i + length < text.length && text[i + length] === '`') length += 1;
+    runs.push({ index: i, length });
+    i += length;
+  }
+  return runs;
+}
+
+// Lexical's scanCodeSpans, each opener's closer found in one pass; also the openers that found no closer.
+function scanCodeSpans(text: string, budget: Budget): { spans: Span[]; unclosed: { index: number; length: number }[] } {
+  const runs = backtickRuns(text);
+  budget.spend(runs.length);
+  const closer = new Int32Array(runs.length);
+  const next = new Map<number, number>();
+  for (let r = runs.length - 1; r >= 0; r -= 1) {
+    closer[r] = next.get(runs[r].length) ?? -1;
+    next.set(runs[r].length, r);
+  }
+  const spans: Span[] = [];
+  const unclosed: { index: number; length: number }[] = [];
+  let openIdx = 0;
+  while (openIdx < runs.length) {
+    const opener = runs[openIdx];
+    if (isEscaped(text, opener.index)) {
+      openIdx += 1;
+      continue;
+    }
+    const closeIdx = closer[openIdx];
+    if (closeIdx === -1) {
+      unclosed.push(opener);
+      openIdx += 1;
+      continue;
+    }
+    const close = runs[closeIdx];
+    let content = text.slice(opener.index + opener.length, close.index);
+    if (content.length >= 2 && content.startsWith(' ') && content.endsWith(' ') && /[^ ]/.test(content)) content = content.slice(1, -1);
+    spans.push({ content, endIndex: close.index + close.length, startIndex: opener.index });
+    openIdx = closeIdx + 1;
+  }
+  return { spans, unclosed };
+}
+
+const PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~]/;
+const WHITESPACE = /\s/;
+// The two regexes' answers per ASCII code: 1 punctuation, 2 whitespace. PUNCTUATION holds only ASCII; past it,
+// WHITESPACE itself answers.
+const ASCII_CLASS = new Uint8Array(128);
+for (let code = 0; code < 128; code += 1) {
+  const char = String.fromCharCode(code);
+  ASCII_CLASS[code] = PUNCTUATION.test(char) ? 1 : WHITESPACE.test(char) ? 2 : 0;
+}
+// WHITESPACE.test and PUNCTUATION.test on one character, or on undefined (which they read as 'undefined').
+function isWhitespace(char: string | undefined): boolean {
+  if (char === undefined) return false;
+  const code = char.charCodeAt(0);
+  return code < 128 ? ASCII_CLASS[code] === 2 : WHITESPACE.test(char);
+}
+function isPunctuation(char: string | undefined): boolean {
+  if (char === undefined) return false;
+  const code = char.charCodeAt(0);
+  return code < 128 && ASCII_CLASS[code] === 1;
+}
+
+// Lexical's scanDelimiters; the excluded ranges (code spans, in order) are walked with the scan.
+function scanDelimiters(text: string, index: FormatIndex, spans: Span[]): Delimiter[] {
+  const delimiters: Delimiter[] = [];
+  let range = 0;
+  let i = 0;
+  while (i < text.length) {
+    const char = text[i];
+    if (!isDelimiter(index, char) || isEscaped(text, i)) {
+      i += 1;
+      continue;
+    }
+    while (range < spans.length && spans[range].endIndex <= i) range += 1;
+    if (range < spans.length && spans[range].startIndex <= i) {
+      i += 1;
+      continue;
+    }
+    let length = 1;
+    while (i + length < text.length && text[i + length] === char) length += 1;
+    const canOpen = canEmphasis(char, text, i, length, true);
+    const canClose = canEmphasis(char, text, i, length, false);
+    if (canOpen || canClose) delimiters.push({ active: true, canClose, canOpen, char, index: i, length });
+    i += length;
+  }
+  return delimiters;
+}
+
+// Lexical's processEmphasis.
+function processEmphasis(text: string, delimiters: Delimiter[], index: FormatIndex, budget: Budget): Emphasis | null {
+  const openersBottom: Record<string, number> = {};
+  let currentPos = 0;
+  let result: Emphasis | null = null;
+  // Openers looked at, charged in batches.
+  let looked = 0;
+  while (currentPos < delimiters.length) {
+    const closer = delimiters[currentPos];
+    if (!closer.active || !closer.canClose || closer.length === 0) {
+      currentPos += 1;
+      continue;
+    }
+    const bottomKey = `${closer.char}${closer.canOpen}${closer.length % 3}`;
+    const bottom = openersBottom[bottomKey] ?? -1;
+    let foundOpener = false;
+    for (let openIdx = currentPos - 1; openIdx > bottom; openIdx -= 1) {
+      if (++looked === 1024) {
+        budget.spend(OPENER_LOOK * looked);
+        looked = 0;
+      }
+      const opener = delimiters[openIdx];
+      if (!opener.active || !opener.canOpen || opener.length === 0 || opener.char !== closer.char) continue;
+      if (opener.canClose || closer.canOpen) {
+        const sum = opener.length + closer.length;
+        if (sum % 3 === 0 && opener.length % 3 !== 0 && closer.length % 3 !== 0) continue;
+      }
+      const maxLen = Math.min(opener.length, closer.length);
+      const matchedTag = (index.tagsByChar.get(opener.char) ?? []).find((tag) => tag.length <= maxLen);
+      if (!matchedTag) continue;
+      foundOpener = true;
+      const matchLen = matchedTag.length;
+      const match = {
+        content: text.slice(opener.index + opener.length, closer.index),
+        endIndex: closer.index + matchLen,
+        startIndex: opener.index + (opener.length - matchLen),
+        tag: matchedTag,
+      };
+      if (!result || match.startIndex < result.startIndex || (match.startIndex === result.startIndex && match.endIndex > result.endIndex)) {
+        result = match;
+      }
+      budget.spend(currentPos - openIdx);
+      for (let j = openIdx + 1; j < currentPos; j += 1) delimiters[j].active = false;
+      opener.length -= matchLen;
+      closer.length -= matchLen;
+      opener.active = opener.length > 0;
+      if (closer.length > 0) {
+        closer.index += matchLen;
+      } else {
+        closer.active = false;
+        currentPos += 1;
+      }
+      break;
+    }
+    if (!foundOpener) {
+      openersBottom[bottomKey] = currentPos - 1;
+      if (!closer.canOpen) closer.active = false;
+      currentPos += 1;
+    }
+  }
+  budget.charge(OPENER_LOOK * looked);
+  return result;
+}
+
+function canEmphasis(char: string, text: string, index: number, length: number, isOpen: boolean): boolean {
+  if (!isFlanking(text, index, length, isOpen)) return false;
+  if (char === '*') return true;
+  if (char === '_') {
+    if (!isFlanking(text, index, length, !isOpen)) return true;
+    const adjacentChar = isOpen ? text[index - 1] : text[index + length];
+    return adjacentChar !== undefined && isPunctuation(adjacentChar);
+  }
+  return true;
+}
+
+function isFlanking(text: string, index: number, length: number, isLeft: boolean): boolean {
+  const charBefore = text[index - 1];
+  const charAfter = text[index + length];
+  const [primary, secondary] = isLeft ? [charAfter, charBefore] : [charBefore, charAfter];
+  if (primary === undefined || isWhitespace(primary)) return false;
+  if (!isPunctuation(primary)) return true;
+  return secondary === undefined || isWhitespace(secondary) || isPunctuation(secondary);
+}

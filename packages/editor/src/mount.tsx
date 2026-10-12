@@ -15,15 +15,13 @@ import {
   SKIP_SCROLL_INTO_VIEW_TAG,
   type LexicalEditor,
 } from 'lexical';
-import { $convertFromMarkdownString, $convertToMarkdownString } from '@lexical/markdown';
+import { $convertToMarkdownString } from '@lexical/markdown';
 import {
   $collectTabGroupLayoutMetadata,
   $collectTableLayoutMetadata,
   $postImportNormalize,
   MARKDOWN_EDITOR_TRANSFORMERS,
   MarkdownEditor,
-  escapeHtmlEntities,
-  normalizeMarkdownForImport,
   type MarkdownEditorHandle,
 } from '@moss-desktop/renderer/editor/MarkdownEditor';
 import { CanvasArea } from '@moss/shared/components/layout/CanvasArea';
@@ -38,6 +36,8 @@ import {
   DIRTY_TRACKER_IGNORED_TAGS,
   hasTrackedEditorUpdateTag,
 } from '@moss-desktop/renderer/editor/utils/editorUpdateTags';
+import { $convertFromMarkdownString } from '@moss-desktop/renderer/editor/markdown/linear-import';
+import { prepareNoteMarkdown } from '@moss-desktop/renderer/editor/markdown/pipeline';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
 import { linesBeforeBody, offsetLines, readSelection } from '@moss-multi/host/selection.ts';
 import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
@@ -46,7 +46,8 @@ import { assembleContent, type EditorContent, type RendererSnapshot } from './de
 import { noteIdKey } from './host/moss-editor-host.js';
 import { installEditorElectronApi } from './electron-api';
 import { installEditorHooks } from './hooks';
-import { MOSS_EDITOR_INFO } from './info';
+import { preloadNodeViews } from './lazy-views';
+import { MOSS_EDITOR_API, MOSS_EDITOR_INFO } from './info';
 import { markActive, registerEditor } from './registry';
 import { $holdSelection, $restoreSelection, type HeldSelection } from './selection-map';
 import { MOSS_EXPORT, finishBody } from './selection';
@@ -92,7 +93,7 @@ class FrameSurface implements SessionSurface {
   private held: { selection: HeldSelection | null; focused: boolean } | null = null;
   /** What to select once the editor is editable again after an in-place load. */
   private restore: { selection: HeldSelection; focused: boolean } | null = null;
-  private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null }, editable: false, frozen: false };
+  private state: PaneState = { content: null, version: 0, view: { status: 'loading', conflict: null, overwritten: false, error: null, removed: null, unavailable: null }, editable: false, frozen: false };
   private listeners = new Set<() => void>();
 
   constructor(
@@ -121,6 +122,11 @@ class FrameSurface implements SessionSurface {
 
   private hydrateComments(content: EditorContent) {
     this.store.set(noteCommentsMapAtom(this.noteId), hydrateComments(content.commentMetadata, content.commentColors));
+  }
+
+  /** The views of the lazy families `content` holds, loaded before it shows so it opens with no placeholder. */
+  prepare(content: EditorContent): Promise<void> | null {
+    return preloadNodeViews(content.body);
   }
 
   async load(content: EditorContent, options: { keepView: boolean }): Promise<void> {
@@ -174,7 +180,7 @@ class FrameSurface implements SessionSurface {
           $addUpdateTag(SKIP_SCROLL_INTO_VIEW_TAG);
           if ($getSelection() !== null) $setSelection(null);
           $getRoot().clear();
-          $convertFromMarkdownString(escapeHtmlEntities(normalizeMarkdownForImport(content.body)), MARKDOWN_EDITOR_TRANSFORMERS);
+          $convertFromMarkdownString(prepareNoteMarkdown(content.body), MARKDOWN_EDITOR_TRANSFORMERS);
           $postImportNormalize(content.commentMetadata, undefined, { layoutMetadata: content.layoutMetadata });
         },
         { tag: 'agent-content-update' },
@@ -547,7 +553,9 @@ function EditorPane({ surface, session, noteId, onNavigateToNote, onShare }: {
         <Banner view={view} session={session} />
         {view.status === 'notLoaded' ? (
           <div data-moss-editor-unavailable="" className="mx-auto w-full max-w-canvas-prose rounded-md border border-status-error-border bg-status-error-surface p-4 text-small text-status-error-text">
-            This note can&apos;t be opened for editing.
+            {view.unavailable === 'apiMismatch'
+              ? `This note can't be opened for editing: this editor needs a host for editor API ${MOSS_EDITOR_API}.`
+              : "This note can't be opened for editing."}
           </div>
         ) : content ? (
           <div className="relative">
@@ -629,7 +637,7 @@ export function mountMossEditor(element: HTMLElement, options: MossEditorOptions
   const surface = new FrameSurface(store, noteId, host);
   const session = new EditorSession({ noteId: options.noteId, bridge: options.bridge, surface, onEvent: options.onEvent, restoreDraft: options.restoreDraft });
   surface.session = session;
-  const unregister = registerEditor({ noteId, bridge: options.bridge, services, htmlFrameUrl: options.htmlFrameUrl ?? null, session });
+  const unregister = registerEditor({ noteId, bridge: options.bridge, services, htmlFrameUrl: options.htmlFrameUrl ?? null, session, element: host, ran: new Set() });
   let live = true;
   const own: MossEditorNote = { id: noteId, title: '' };
   setNotes(store, [own]);

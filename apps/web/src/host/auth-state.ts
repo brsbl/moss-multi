@@ -107,6 +107,7 @@ const BY_CODE: Record<string, string> = {
   PASSWORD_TOO_SHORT: 'That password is too short. Choose a longer one.',
   PASSWORD_TOO_LONG: 'That password is too long. Choose a shorter one.',
   INVALID_EMAIL: 'That doesn’t look like an email address.',
+  TOO_MANY_SIGN_UPS: 'Too many sign-ups from this network today. Try again tomorrow.',
 };
 
 const BY_STATUS: Record<number, string> = { 401: MISMATCH, 422: EXISTS, 429: TOO_MANY };

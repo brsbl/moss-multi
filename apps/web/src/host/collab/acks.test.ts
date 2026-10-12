@@ -20,6 +20,23 @@ it('a stale vector cannot acknowledge a later delete; reconnect coverage can', (
   doc.destroy();
 });
 
+it('each acked write leaves the ledger as its ack arrives, so a resync resends only the writes still in flight (T3.S6)', () => {
+  const doc = new Y.Doc();
+  const ledger = new AckLedger();
+  doc.on('update', (update: Uint8Array) => ledger.wrote(update));
+  const text = doc.getText('body');
+  text.insert(0, 'first batch, ');
+  const firstSv = bytesToBase64(Y.encodeStateVector(doc));
+  text.insert(text.length, 'second batch');
+  expect(ledger.acked({ t: 'ack', sv: firstSv }), 'the second batch is still in flight').toBe(false);
+  const resent = ledger.pendingUpdate();
+  expect(resent).not.toBeNull();
+  expect(Y.parseUpdateMeta(resent!).from.get(doc.clientID), 'the acked first batch is not resent').toBe('first batch, '.length);
+  expect(ledger.acked({ t: 'ack', sv: bytesToBase64(Y.encodeStateVector(doc)) })).toBe(true);
+  expect(ledger.pendingUpdate()).toBeNull();
+  doc.destroy();
+});
+
 it('a payload write stays unacked until an ack names that payload and covers it', () => {
   const note = new Y.Doc();
   const code = new Y.Doc();

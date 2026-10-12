@@ -3,7 +3,7 @@
 // write, runs the gates, and lands the mirrors' diffs only when every gate passes; reject and withdraw write only the
 // record.
 import type { Binding } from '@lexical/yjs';
-import { $getNodeByKey } from 'lexical';
+import { $getNodeByKey, $getRoot } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
@@ -86,6 +86,9 @@ export function bindCheck(doc: Y.Doc, inserted: Inserted, deleted: readonly IdSp
       },
       { discrete: true },
     );
+    // Every block reads its payload, as an editor showing the note does; one no editor can decode throws here. Lexical
+    // no longer walks the text on each commit without a text-content listener (patches/lexical@0.48.0.patch).
+    bound.editor.getEditorState().read(() => $getRoot().getTextContent());
     return body() === before;
   } catch {
     return false;

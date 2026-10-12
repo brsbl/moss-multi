@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
+import { encodeSyncFrame } from '@moss-multi/protocol/sync';
 
 const sockets: FakeSocket[] = [];
 class FakeSocket extends EventTarget {
@@ -49,6 +50,45 @@ it('detaches a half-open socket without its close event and ignores its late clo
   expect(session.state.connection).toBe('online');
   expect(session.doc.getText('title').toString()).toBe('kept');
   expect(hasUnacked()).toBe(true);
+});
+it('keeps the socket while a busy main thread holds the heartbeat back, then detaches once it is idle and still silent', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  // A collaborator's large paste applied here: every 1 s tick runs about 2.5 s late, and no frame is read for 30 s.
+  for (let i = 0; i < 12; i += 1) {
+    vi.setSystemTime(Date.now() + 1_500);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(socket.closes, 'a busy tab is not a silent socket').not.toContain(4408);
+  await vi.advanceTimersByTimeAsync(13_500);
+  expect(socket.closes, 'idle and still silent: half-open').toContain(4408);
+});
+it('sends no step 1 while the last is unanswered and frames still arrive, and keeps the 4 s step 1 once answered or silent', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const step1s = () => socket.sent.filter((frame) => frame instanceof Uint8Array && frame[0] === 0 && frame[1] === 0).length;
+  let n = 0;
+  const receive = (step: number) => {
+    const peer = new Y.Doc();
+    peer.getText('peer').insert(0, `${n++}`);
+    socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(step, Y.encodeStateAsUpdate(peer)).slice().buffer }));
+    // lib0 read Date.now before the fake clock replaced it: stamp the frame on the fake clock, as the provider would.
+    session.provider.wsLastMessageReceived = Date.now();
+  };
+  expect(step1s(), 'the step 1 on open').toBe(1);
+  // A peer behind a large paste: its pieces arrive about once a second, and the answer is queued behind them.
+  for (let i = 0; i < 10; i += 1) {
+    receive(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(step1s(), 'no second step 1 while its answer is on its way').toBe(1);
+  receive(1);
+  for (let i = 0; i < 5; i += 1) {
+    receive(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(step1s(), 'answered: the 4 s step 1 resumes').toBe(2);
+  await vi.advanceTimersByTimeAsync(9_000);
+  expect(step1s(), 'nothing arriving: the step 1 keeps frames flowing').toBeGreaterThanOrEqual(3);
+  expect(socket.closes).toEqual([]);
 });
 it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4429, 'conn-limit']] as const)(
   'stops reconnecting synchronously on %s', async (code, reason) => {

@@ -3,7 +3,7 @@
 // cubic in a run of blanks (any `\s`, newlines included) after a marker opener; their scans (comment-marker-scan.ts,
 // golden-equal in converter/comment-markers.golden.test.ts) are linear up to the 2 MB push cap through landPush and
 // importBody. converter/comment-markers.linear.test.ts holds each scan, and moss's formatted-whitespace callback, to
-// linear time on the shapes whose rest of the push path is linear only with the converter's linear import (T3.S4).
+// linear time at the function; with the converter's linear import (T3.S4) the long single-line shapes hold here too.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
@@ -17,6 +17,10 @@ const ATTACKS: Record<string, (n: number) => string> = {
   // COMMENT_WRAPPED_ATX_HEADING_LINE and COMMENT_WRAPPED_IMAGE: an opener, then blanks.
   // (A legacy `{%c:` opener takes the same scan; converter/comment-markers.linear.test.ts runs it.)
   'a marker opener and blank lines': (n) => `%%m:${'\n'.repeat(n - 5)}!`,
+  // The long single-line legs T7.S1 deferred to T3.S4's linear import (T7.R).
+  'a marker opener and spaces on one line': (n) => `%%m:${' '.repeat(n - 5)}!`,
+  'a run of images after a marker': (n) => `%%m:a:start%%${'![a](b)c'.repeat(n / 8)}`,
+  'bold text around spaces': (n) => `**a${' '.repeat(n - 6)}b**`,
 };
 
 function expectLinear(run: (text: string) => void, attack: (n: number) => string): void {

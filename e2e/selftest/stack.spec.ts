@@ -6,6 +6,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { DOC_CREATE_RATE } from '../../packages/protocol/src/limits.ts';
 import { Actors } from '../lib/actors.ts';
 import { Stack } from '../lib/stack.ts';
 import { expect, test } from './fixtures.ts';
@@ -83,8 +84,12 @@ test('the stack keeps answering writes while the runner disk flushes a backlog @
   const ballast = testInfo.outputPath('ballast.bin');
   mkdirSync(dirname(ballast), { recursive: true });
   try {
-    // Signed in first, so every counted write is a POST that started and finished while dd was still flushing.
-    const actor = await actors.session(await actors.principal('writer'));
+    // Signed in first, so every counted write is a POST that started and finished while dd was still flushing. Each
+    // writer stays inside its note creation budget (DOC_CREATE_RATE), so the writes take turns.
+    const writers = await Promise.all(['writer', 'scribe', 'typist', 'clerk'].map(async (label) => actors.session(await actors.principal(label))));
+    const spacing = (DOC_CREATE_RATE.windowMs / DOC_CREATE_RATE.max) * 1.1;
+    const lastStart = writers.map(() => -Infinity);
+    let turn = 0;
     const writer = spawn('dd', ['if=/dev/zero', `of=${ballast}`, 'bs=1M', 'count=2048', 'conv=fsync'], { stdio: 'ignore' });
     const flushed = new Promise<number | null>((resolve) => writer.on('exit', (code) => resolve(code)));
     try {
@@ -92,8 +97,10 @@ test('the stack keeps answering writes while the runner disk flushes a backlog @
       let overlapped = 0;
       const until = Date.now() + 120_000;
       while (Date.now() < until && writer.exitCode === null) {
-        const started = Date.now();
-        const response = await actor.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: {}, timeout: 15_000 });
+        const index = turn++ % writers.length;
+        await sleep(Math.max(0, lastStart[index] + spacing - Date.now()));
+        const started = (lastStart[index] = Date.now());
+        const response = await writers[index].context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: {}, timeout: 15_000 });
         const ms = Date.now() - started;
         expect(response.status()).toBe(201);
         if (ms > 2_000) slow.push(`POST /api/docs ${ms} ms`);

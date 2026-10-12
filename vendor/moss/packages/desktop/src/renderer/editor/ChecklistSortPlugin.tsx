@@ -12,6 +12,8 @@ import { useEffect, useRef } from 'react';
 import { $isListItemNode, $isListNode, ListItemNode } from '@lexical/list';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $getNodeByKey } from 'lexical';
+// moss-multi seam: whole-paste (T3.S6): a large paste or its redo lands in batches.
+import { isLanding } from '@moss-multi/host/collab/landing';
 
 import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
 
@@ -39,7 +41,8 @@ export function ChecklistSortPlugin(): null {
 
   useEffect(() => {
     const unregister = editor.registerMutationListener(ListItemNode, (mutations, { updateTags }) => {
-      if (!editor.isEditable() || hasIgnoredSortTag(updateTags)) {
+      // A batch of a large paste or its redo adds items to a list placed earlier: not a toggle, never sorted.
+      if (!editor.isEditable() || hasIgnoredSortTag(updateTags) || isLanding(editor)) {
         return;
       }
 

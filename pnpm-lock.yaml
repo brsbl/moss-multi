@@ -36,12 +36,24 @@ overrides:
   '@lexical/yjs>yjs': 13.6.31
 
 patchedDependencies:
+  '@lexical/markdown@0.48.0':
+    hash: f6ba2196c90dd0ceb1fc45879571b2c0e5a6cefbec0a4cda9988797bc4c97b96
+    path: patches/@lexical__markdown@0.48.0.patch
+  '@lexical/yjs@0.48.0':
+    hash: 8c4504fbafc170bb0b08ff9844d1ba0cc7a95ebeebe79a82b37c5502f25f4f42
+    path: patches/@lexical__yjs@0.48.0.patch
+  lexical@0.48.0:
+    hash: f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571
+    path: patches/lexical@0.48.0.patch
   wrangler@4.113.0:
     hash: 8a37e7d39b3e06c049196ef483747f3b2a01005c035f879c6cac460fd6d85597
     path: patches/wrangler@4.113.0.patch
   y-partyserver@2.2.0:
     hash: 59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b
     path: patches/y-partyserver@2.2.0.patch
+  yjs@13.6.31:
+    hash: 51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc
+    path: patches/yjs@13.6.31.patch
 
 importers:
 
@@ -82,10 +94,10 @@ importers:
         version: 0.48.0(typescript@5.9.3)
       '@lexical/markdown':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f6ba2196c90dd0ceb1fc45879571b2c0e5a6cefbec0a4cda9988797bc4c97b96)(typescript@5.9.3)
       '@lexical/react':
         specifier: 0.48.0
-        version: 0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       '@lexical/rich-text':
         specifier: 0.48.0
         version: 0.48.0(typescript@5.9.3)
@@ -100,7 +112,7 @@ importers:
         version: 0.48.0(typescript@5.9.3)
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=8c4504fbafc170bb0b08ff9844d1ba0cc7a95ebeebe79a82b37c5502f25f4f42)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       '@mdx-js/mdx':
         specifier: 3.1.1
         version: 3.1.1
@@ -121,7 +133,7 @@ importers:
         version: 4.3.0
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       lucide-react:
         specifier: 0.577.0
         version: 0.577.0(react@19.3.0)
@@ -154,7 +166,7 @@ importers:
         version: 2.6.1
       yjs:
         specifier: 13.6.31
-        version: 13.6.31
+        version: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 0.18.7
@@ -218,10 +230,10 @@ importers:
         version: 5.3.0
       '@lexical/react':
         specifier: 0.48.0
-        version: 0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=8c4504fbafc170bb0b08ff9844d1ba0cc7a95ebeebe79a82b37c5502f25f4f42)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       '@moss-multi/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -248,7 +260,7 @@ importers:
         version: 0.45.2(@cloudflare/workers-types@4.20260702.1)(kysely@0.29.6)
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       partyserver:
         specifier: 0.5.8
         version: 0.5.8(@cloudflare/workers-types@4.20260702.1)
@@ -263,13 +275,13 @@ importers:
         version: 19.3.0(react@19.3.0)
       y-partyserver:
         specifier: 2.2.0
-        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       y-protocols:
         specifier: 1.0.7
-        version: 1.0.7(yjs@13.6.31)
+        version: 1.0.7(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       yjs:
         specifier: 13.6.31
-        version: 13.6.31
+        version: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 1.46.0
@@ -277,6 +289,12 @@ importers:
       '@cloudflare/workers-types':
         specifier: 4.20260702.1
         version: 4.20260702.1
+      '@lexical/list':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
+      '@lexical/table':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
@@ -324,7 +342,7 @@ importers:
         version: 0.48.0(typescript@5.9.3)
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=8c4504fbafc170bb0b08ff9844d1ba0cc7a95ebeebe79a82b37c5502f25f4f42)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       '@playwright/test':
         specifier: 1.61.1
         version: 1.61.1
@@ -339,7 +357,7 @@ importers:
         version: 8.18.2
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       pixelmatch:
         specifier: 7.2.0
         version: 7.2.0
@@ -354,10 +372,10 @@ importers:
         version: 8.21.0
       y-partyserver:
         specifier: 2.2.0
-        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       yjs:
         specifier: 13.6.31
-        version: 13.6.31
+        version: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
 
   packages/cli:
     dependencies:
@@ -388,13 +406,13 @@ importers:
         version: 4.3.0
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       lib0:
         specifier: 0.2.119
         version: 0.2.119
       yjs:
         specifier: 13.6.31
-        version: 13.6.31
+        version: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
     devDependencies:
       '@types/js-yaml':
         specifier: 4.0.9
@@ -419,7 +437,7 @@ importers:
         version: 5.3.0
       '@lexical/markdown':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f6ba2196c90dd0ceb1fc45879571b2c0e5a6cefbec0a4cda9988797bc4c97b96)(typescript@5.9.3)
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
@@ -446,7 +464,7 @@ importers:
         version: 2.20.2(@babel/core@7.29.7)(@babel/template@7.29.7)(@types/react@19.3.0)(react@19.3.0)
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       postcss:
         specifier: 8.5.25
         version: 8.5.25
@@ -478,10 +496,10 @@ importers:
         version: 0.48.0(typescript@5.9.3)
       '@lexical/markdown':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f6ba2196c90dd0ceb1fc45879571b2c0e5a6cefbec0a4cda9988797bc4c97b96)(typescript@5.9.3)
       '@lexical/yjs':
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)(yjs@13.6.31)
+        version: 0.48.0(patch_hash=8c4504fbafc170bb0b08ff9844d1ba0cc7a95ebeebe79a82b37c5502f25f4f42)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       '@moss-multi/core':
         specifier: workspace:*
         version: link:../core
@@ -490,7 +508,7 @@ importers:
         version: link:../protocol
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       lib0:
         specifier: 0.2.119
         version: 0.2.119
@@ -499,13 +517,13 @@ importers:
         version: 0.5.8(@cloudflare/workers-types@4.20260702.1)
       y-partyserver:
         specifier: 2.2.0
-        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31)
+        version: 2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       y-protocols:
         specifier: 1.0.7
-        version: 1.0.7(yjs@13.6.31)
+        version: 1.0.7(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
       yjs:
         specifier: 13.6.31
-        version: 13.6.31
+        version: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 4.20260702.1
@@ -557,7 +575,7 @@ importers:
         version: 2.20.2(@babel/core@7.29.7)(@babel/template@7.29.7)(@types/react@19.3.0)(react@19.3.0)
       lexical:
         specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        version: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       postcss:
         specifier: 8.5.25
         version: 8.5.25
@@ -5286,7 +5304,7 @@ snapshots:
     dependencies:
       '@lexical/extension': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5299,7 +5317,7 @@ snapshots:
       '@lexical/selection': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
       '@types/trusted-types': 2.0.7
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5309,7 +5327,7 @@ snapshots:
       '@lexical/html': 0.48.0(typescript@5.9.3)
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5317,7 +5335,7 @@ snapshots:
     dependencies:
       '@lexical/code-core': 0.48.0(typescript@5.9.3)
       '@lexical/extension': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       prismjs: 1.30.0
     optionalDependencies:
       typescript: 5.9.3
@@ -5327,7 +5345,7 @@ snapshots:
       '@lexical/code-core': 0.48.0(typescript@5.9.3)
       '@lexical/code-prism': 0.48.0(typescript@5.9.3)
       '@lexical/extension': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5338,7 +5356,7 @@ snapshots:
       '@lexical/mark': 0.48.0(typescript@5.9.3)
       '@lexical/table': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
     optionalDependencies:
@@ -5347,7 +5365,7 @@ snapshots:
   '@lexical/dragon@0.48.0(typescript@5.9.3)':
     dependencies:
       '@lexical/extension': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5356,7 +5374,7 @@ snapshots:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
       '@preact/signals-core': 1.14.4
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5364,7 +5382,7 @@ snapshots:
     dependencies:
       '@lexical/text': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5372,7 +5390,7 @@ snapshots:
     dependencies:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       happy-dom: 20.14.5
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
     transitivePeerDependencies:
@@ -5383,7 +5401,7 @@ snapshots:
     dependencies:
       '@lexical/extension': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5393,7 +5411,7 @@ snapshots:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/selection': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5407,7 +5425,7 @@ snapshots:
       '@lexical/html': 0.48.0(typescript@5.9.3)
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5417,18 +5435,18 @@ snapshots:
       '@lexical/html': 0.48.0(typescript@5.9.3)
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/mark@0.48.0(typescript@5.9.3)':
     dependencies:
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
-  '@lexical/markdown@0.48.0(typescript@5.9.3)':
+  '@lexical/markdown@0.48.0(patch_hash=f6ba2196c90dd0ceb1fc45879571b2c0e5a6cefbec0a4cda9988797bc4c97b96)(typescript@5.9.3)':
     dependencies:
       '@lexical/code-core': 0.48.0(typescript@5.9.3)
       '@lexical/internal': 0.48.0(typescript@5.9.3)
@@ -5438,13 +5456,13 @@ snapshots:
       '@lexical/selection': 0.48.0(typescript@5.9.3)
       '@lexical/text': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/overflow@0.48.0(typescript@5.9.3)':
     dependencies:
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5455,11 +5473,11 @@ snapshots:
       '@lexical/extension': 0.48.0(typescript@5.9.3)
       '@lexical/selection': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
-  '@lexical/react@0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31)':
+  '@lexical/react@0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))':
     dependencies:
       '@floating-ui/react': 0.27.20(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@lexical/a11y': 0.48.0(typescript@5.9.3)
@@ -5472,20 +5490,20 @@ snapshots:
       '@lexical/link': 0.48.0(typescript@5.9.3)
       '@lexical/list': 0.48.0(typescript@5.9.3)
       '@lexical/mark': 0.48.0(typescript@5.9.3)
-      '@lexical/markdown': 0.48.0(typescript@5.9.3)
+      '@lexical/markdown': 0.48.0(patch_hash=f6ba2196c90dd0ceb1fc45879571b2c0e5a6cefbec0a4cda9988797bc4c97b96)(typescript@5.9.3)
       '@lexical/overflow': 0.48.0(typescript@5.9.3)
       '@lexical/plain-text': 0.48.0(typescript@5.9.3)
       '@lexical/rich-text': 0.48.0(typescript@5.9.3)
       '@lexical/table': 0.48.0(typescript@5.9.3)
       '@lexical/text': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      '@lexical/yjs': 0.48.0(typescript@5.9.3)(yjs@13.6.31)
-      lexical: 0.48.0(typescript@5.9.3)
+      '@lexical/yjs': 0.48.0(patch_hash=8c4504fbafc170bb0b08ff9844d1ba0cc7a95ebeebe79a82b37c5502f25f4f42)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
     optionalDependencies:
       typescript: 5.9.3
-      yjs: 13.6.31
+      yjs: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
 
   '@lexical/rich-text@0.48.0(typescript@5.9.3)':
     dependencies:
@@ -5495,14 +5513,14 @@ snapshots:
       '@lexical/html': 0.48.0(typescript@5.9.3)
       '@lexical/selection': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/selection@0.48.0(typescript@5.9.3)':
     dependencies:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5513,14 +5531,14 @@ snapshots:
       '@lexical/html': 0.48.0(typescript@5.9.3)
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/text@0.48.0(typescript@5.9.3)':
     dependencies:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -5528,16 +5546,16 @@ snapshots:
     dependencies:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/selection': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
-  '@lexical/yjs@0.48.0(typescript@5.9.3)(yjs@13.6.31)':
+  '@lexical/yjs@0.48.0(patch_hash=8c4504fbafc170bb0b08ff9844d1ba0cc7a95ebeebe79a82b37c5502f25f4f42)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))':
     dependencies:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/selection': 0.48.0(typescript@5.9.3)
-      lexical: 0.48.0(typescript@5.9.3)
-      yjs: 13.6.31
+      lexical: 0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3)
+      yjs: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -7053,7 +7071,7 @@ snapshots:
       prelude-ls: 1.2.1
       type-check: 0.4.0
 
-  lexical@0.48.0(typescript@5.9.3):
+  lexical@0.48.0(patch_hash=f67ee540c5c513c4b81e1bcd9eb696bc8c01cd8f329d4f9b21c2da9b1c9c7571)(typescript@5.9.3):
     dependencies:
       '@lexical/internal': 0.48.0(typescript@5.9.3)
     optionalDependencies:
@@ -8514,24 +8532,24 @@ snapshots:
 
   xmlchars@2.2.0: {}
 
-  y-partyserver@2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31):
+  y-partyserver@2.2.0(patch_hash=59f26a9e2dfe2a17c286b60beb4de43d9b1db10bab7828c60fa92f36657cfb2b)(@cloudflare/workers-types@4.20260702.1)(partyserver@0.5.8(@cloudflare/workers-types@4.20260702.1))(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)):
     dependencies:
       '@cloudflare/workers-types': 4.20260702.1
       lib0: 0.2.119
       lodash.debounce: 4.0.8
       nanoid: 5.1.16
       partyserver: 0.5.8(@cloudflare/workers-types@4.20260702.1)
-      y-protocols: 1.0.7(yjs@13.6.31)
-      yjs: 13.6.31
+      y-protocols: 1.0.7(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))
+      yjs: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
 
-  y-protocols@1.0.7(yjs@13.6.31):
+  y-protocols@1.0.7(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)):
     dependencies:
       lib0: 0.2.119
-      yjs: 13.6.31
+      yjs: 13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc)
 
   yallist@3.1.1: {}
 
-  yjs@13.6.31:
+  yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc):
     dependencies:
       lib0: 0.2.119
 

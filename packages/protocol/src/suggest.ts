@@ -71,4 +71,13 @@ export const SUGGEST_LIMITS = {
   cooldownMs: 60_000,
   /** A string frame larger than this is refused unparsed (base64 of a full record plus framing). */
   frameChars: 400 * 1024,
+  /** Bytes of ops (and delete parts) one record may hold. */
+  recordOpsBytes: 256 * 1024,
+  /** Open records one principal may author. */
+  openPerPrincipal: 20,
+  /** All open records' ops, as a share of the state cap. */
+  openOpsShare: 0.25,
+  /** Spans one delete part may name, and items. */
+  partSpans: 1024,
+  partItems: 20_000,
 } as const;

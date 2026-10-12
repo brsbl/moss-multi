@@ -47,6 +47,16 @@ export function actingUserId(principal: Principal): string | null {
   return principal.type === 'user' ? principal.id : principal.type === 'agent' ? principal.ownerUserId : null;
 }
 
+/**
+ * SQL rows: user `?{user}` and every agent that acts or acted for them (through `agents_owner_idx`), the `created_by`
+ * values a per-person bound charges to that user (A§18).
+ */
+export const actingAs = (user: number) => `(SELECT ?${user} UNION ALL SELECT id FROM agents WHERE owner_user_id = ?${user})`;
+
+/** Live notes made by acting user `?{user}` or their agents, anywhere, through `docs_created_by_idx`. */
+export const liveNotesBy = (user: number) =>
+  `(SELECT count(*) FROM docs WHERE created_by IN ${actingAs(user)} AND deleted_at IS NULL)`;
+
 /** The ids a grant row may name for this principal: the user, or the agent and the user it acts for. */
 export function grantees(principal: Principal): string[] {
   return principal.type === 'user' ? [principal.id] : principal.type === 'agent' ? [principal.id, principal.ownerUserId] : [];
@@ -119,6 +129,56 @@ export async function managesLive(db: D1Database, type: 'doc' | 'folder', id: st
 /** SQL that holds while user `?{user}` may edit in folder `?{folder}`: it owns the vault, or holds an `editor` or
  * `owner` grant on the folder or an ancestor. A move re-checks its destination with it in the same statement. */
 export const editsFolder = (folder: number, user: number) => chainHolds(folder, user, "IN ('editor', 'owner')");
+
+/** Who a write stands for, bound into the write's own statement so its guard re-checks it there (editsLiveDoc). */
+export interface WriteActor {
+  kind: 'user' | 'agent';
+  /** The person, or the agent. */
+  id: string;
+  /** The user whose access it exercises. */
+  userId: string;
+  /** A person's session; null for an agent, whose credential is its key row. */
+  sessionId: string | null;
+  shareToken: string | null;
+}
+
+/** The actor for a signed-in principal and the link it presented; a share token alone never writes. */
+export function writeActor(principal: Principal, shareToken: string | null): WriteActor | null {
+  if (principal.type === 'user') return { kind: 'user', id: principal.id, userId: principal.id, sessionId: principal.sessionId, shareToken };
+  if (principal.type === 'agent') return { kind: 'agent', id: principal.id, userId: principal.ownerUserId, sessionId: null, shareToken };
+  return null;
+}
+
+/** editsLiveDoc's six parameters, in order, from `?{at}`. */
+export const writeActorArgs = (actor: WriteActor, now: number) =>
+  [actor.kind, actor.id, actor.userId, actor.sessionId, actor.shareToken, now] as const;
+
+/**
+ * SQL that holds while doc `?{doc}` is live and the actor bound at `?{at}`… (writeActorArgs) can still edit it (A§8):
+ * its session or key is live, and it owns the vault, holds an editor or owner grant on the doc or a folder of its
+ * chain, or presents a live editor link covering the doc. A write that conditions on it loses to a revocation, a
+ * demotion or a trash that commits first, whatever was resolved before the write's body arrived.
+ */
+export const editsLiveDoc = (doc: Arg, at: number) => {
+  const [kind, id, user, session, token, now] = [0, 1, 2, 3, 4, 5].map((n) => `?${at + n}`);
+  const d = arg(doc);
+  return `(EXISTS (SELECT 1 FROM docs WHERE id = ${d} AND deleted_at IS NULL)
+  AND (CASE ${kind}
+    WHEN 'user' THEN EXISTS (SELECT 1 FROM session WHERE id = ${session} AND user_id = ${id} AND expires_at > ${now})
+    WHEN 'agent' THEN EXISTS (SELECT 1 FROM agents WHERE id = ${id} AND owner_user_id = ${user} AND revoked_at IS NULL)
+    ELSE 0 END)
+  AND (EXISTS (SELECT 1 FROM docs WHERE id = ${d} AND owner_user_id = ${user})
+    OR EXISTS (SELECT 1 FROM doc_members WHERE doc_id = ${d} AND principal_id IN (${id}, ${user}) AND role IN ('editor', 'owner'))
+    OR EXISTS (SELECT 1 FROM share_links WHERE token = ${token} AND revoked_at IS NULL AND role = 'editor' AND target_type = 'doc' AND target_id = ${d})
+    OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
+        SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs ON docs.folder_id = f.id WHERE docs.id = ${d}
+        UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+          WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+      ) SELECT 1 FROM chain WHERE
+        EXISTS (SELECT 1 FROM folder_members m WHERE m.folder_id = chain.id AND m.principal_id IN (${id}, ${user}) AND m.role IN ('editor', 'owner'))
+        OR EXISTS (SELECT 1 FROM share_links l WHERE l.token = ${token} AND l.revoked_at IS NULL AND l.role = 'editor'
+          AND l.target_type = 'folder' AND l.target_id = chain.id))))`;
+};
 
 /** Grants on the folders of `chain`, and on the doc when there is one. */
 async function grantRoles(db: Db, ids: string[], chain: string[], docId: string | null): Promise<Role[]> {

@@ -143,6 +143,9 @@ describe('the auth store (the single auth-state writer)', () => {
     expect(await auth.signIn({ email: 'ada@example.invalid', password: 'nope' })).toEqual({ ok: false, message: 'That email and password don’t match an account.' });
     expect(refusalMessage(null, 422)).toMatch(/already exists/);
     expect(refusalMessage({ code: 'SOMETHING_NEW' }, 500)).toBe('Something went wrong. Try again.');
+    // The day-long sign-up limit never tells the person to wait a moment.
+    expect(refusalMessage({ code: 'TOO_MANY_SIGN_UPS' }, 429)).toMatch(/today/);
+    expect(refusalMessage({ code: 'TOO_MANY_SIGN_UPS' }, 429)).not.toMatch(/moment/);
   });
 
   it('signs a new account in, deriving a name from the email when none is given', async () => {
