@@ -9,7 +9,7 @@ import {
   CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
 } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { isDocCapError } from '@moss-multi/protocol/sync';
+import { isDocCapError, renameRefusalOf } from '@moss-multi/protocol/sync';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -212,6 +212,13 @@ async function patchDoc(request: Request, env: DocsEnv, docId: string): Promise<
   return renameDoc(request, env, docId, body);
 }
 
+/** Who renames, as the DocDO re-resolves a socket: a signed-in caller carries a link only when it lifted the role. */
+function renameCaller(principal: Principal, liftingLink: string | null) {
+  if (principal.type === 'anonymous') return { kind: 'anonymous' as const, principalId: principal.id, sessionId: null, shareToken: principal.shareToken };
+  if (principal.type === 'agent') return { kind: 'agent' as const, principalId: principal.id, sessionId: null, shareToken: liftingLink };
+  return { kind: 'user' as const, principalId: principal.id, sessionId: principal.sessionId, shareToken: liftingLink };
+}
+
 async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Record<string, unknown> | null): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal) return unauthenticated();
@@ -226,9 +233,12 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
       return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(REST_WRITE_RATE.windowMs / 1000) });
     }
     const stub = await getServerByName(env.DocDO, docId);
-    await stub.renameTitle(body.title);
+    // The DocDO re-resolves this caller in the turn that writes, so a revocation or trash that commits meanwhile wins.
+    await stub.renameTitle(body.title, renameCaller(principal, access.viaLink ? shareTokenOf(request) : null));
     return readDoc(request, env, docId);
-  } catch {
+  } catch (error) {
+    if (isDocCapError(error)) return docCap();
+    if (renameRefusalOf(error)) return notFound();
     return json({ error: 'unavailable' }, 503, NO_STORE);
   }
 }
