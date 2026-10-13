@@ -695,6 +695,19 @@ describe('RPC', () => {
     await Promise.resolve();
     expect(opened.backing.alarm, 'the hold still settles on its alarm').not.toBeNull();
   });
+
+  it("keeps a replacement socket's alarm when a stale socket with the same connection id closes", async () => {
+    liveness();
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { id: 'ada', role: 'editor' }, undefined, 'reused-alarm');
+    const fresh = await connect(opened, { id: 'ada', role: 'editor' }, undefined, 'reused-alarm');
+    await fresh.hello();
+    expect(opened.backing.alarm).not.toBeNull();
+    await stale.drop();
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(fresh.closed).toBeNull();
+    expect(opened.backing.alarm, 'the replacement keeps its access tick and age alarm').not.toBeNull();
+  });
 });
 
 describe('answers', () => {
