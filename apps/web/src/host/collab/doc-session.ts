@@ -346,6 +346,12 @@ export class DocSession {
       open: () => this.provider.wsconnected && !this.#ended,
       wrote: (id, update) => this.#wrote(update, id),
       remote: this.provider,
+      note: this.doc,
+      // A payload made and deleted offline waits, kept, for its tree to name it again; it is not an unsaved edit.
+      parked: (id, parked) => {
+        this.#ledger.park(id, parked);
+        if (this.#ledger.unacked !== this.#state.unacked) this.#set({ unacked: this.#ledger.unacked });
+      },
     });
     // A step 2 from the server answers the last step 1.
     const sync = this.provider.messageHandlers[0];
@@ -682,7 +688,7 @@ export class DocSession {
 
   #wrote(update: Uint8Array, payload?: string): void {
     this.#ledger.wrote(update, payload);
-    if (!this.#state.unacked) this.#set({ unacked: true });
+    if (!this.#state.unacked && this.#ledger.unacked) this.#set({ unacked: true });
   }
 
   #onServerEvent(message: string): void {
