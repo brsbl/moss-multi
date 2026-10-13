@@ -346,7 +346,15 @@ export async function expectRefusedPaste(
   const speedBefore = await runnerSlowdown(ada);
   await watchStalls(ada);
   await pastePlain(ada, docId, pasted);
-  await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
+  // The admission's own figures (what the paste adds, what the tab counts as held), so a paste admitted that should
+  // not have been says why.
+  const admission = () => ada.page.evaluate(() => performance.getEntriesByName('moss-paste-admission').map((mark) => (mark as PerformanceMark).detail));
+  try {
+    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
+  } catch (error) {
+    throw new Error(`${(error as Error).message}\nadmission: ${JSON.stringify(await admission().catch(() => 'unreadable'))}; socket closes: ${wire.closes.join(', ') || 'none seen'}`);
+  }
+  console.log(`paste admission: ${JSON.stringify(await admission())}`);
   const stall = await longestStall(ada);
   const runner = slower(speedBefore, await runnerSlowdown(ada));
   const bound = Math.round(MAX_STALL_MS * runner.factor);

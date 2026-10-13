@@ -547,8 +547,12 @@ test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2
   // (GET /api/docs/:id), which the tab also remembers: its real role, answered after the listing, is the likely way
   // the row menu offered an editor's actions in WebKit (runs 38060395030, 38278446839, 38283893079).
   const unknownRole = async (route: Route) => {
-    const response = await route.fetch();
-    await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
+    try {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
+    } catch {
+      // The page gave up on the request (a superseded read); nothing reaches it to rewrite.
+    }
   };
   await ben.page.route('**/api/workspace**', unknownRole);
   await ben.page.route(`**/api/docs/${docId}`, unknownRole);
