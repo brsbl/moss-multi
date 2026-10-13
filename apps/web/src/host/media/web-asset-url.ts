@@ -4,7 +4,7 @@
 // desktop derives beside a note, which the web never has.
 
 import { isDesktopDerived } from '@moss-multi/protocol/media';
-import { rememberPastedShare } from './pasted-shares.ts';
+import { forgetPastedShare, rememberPastedShare } from './pasted-shares.ts';
 
 export interface WebAsset {
   /** The URL as it appeared. */
@@ -74,6 +74,7 @@ export function webAssetsInHtml(html: string): WebAsset[] {
     seen.add(url);
     const share = new URLSearchParams(/\?([^#]*)/.exec(url.replace(/&amp;/g, '&'))?.[1] ?? '').get('share');
     if (share) rememberPastedShare(asset.noteId, asset.relativePath, share);
+    else forgetPastedShare(asset.noteId, asset.relativePath);
     found.push(asset);
   }
   return found;

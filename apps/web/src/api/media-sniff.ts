@@ -44,20 +44,39 @@ export function isSvgDocument(bytes: Uint8Array<ArrayBuffer>): boolean {
       continue;
     }
     if (text.slice(i, i + 9).toUpperCase() === '<!DOCTYPE') {
-      let subset = false;
-      let j = i + 9;
-      for (; j < text.length; j += 1) {
-        if (text[j] === '[') subset = true;
-        else if (text[j] === ']') subset = false;
-        else if (text[j] === '>' && !subset) break;
-      }
-      if (j >= text.length) return false;
-      i = j + 1;
+      i = doctypeEnd(text, i);
+      if (i < 0) return false;
       continue;
     }
     break;
   }
-  return /^<(?:[A-Za-z_][\w.-]*:)?svg(?=[\s/>])/i.test(text.slice(i, i + 256));
+  // A namespace prefix is any XML name (Unicode included, any length) before the colon.
+  const root = /<(?:[^\s:/<>!?"'=]+:)?svg(?=[\s/>])/iy;
+  root.lastIndex = i;
+  return root.test(text);
+}
+
+/**
+ * The index just past the doctype opening at `start`, or -1: quoted literals, and comments and processing
+ * instructions in the internal subset, may hold brackets and `>`.
+ */
+function doctypeEnd(text: string, start: number): number {
+  let subset = false;
+  for (let j = start + 9; j < text.length; j += 1) {
+    const char = text[j];
+    let close = '';
+    if (char === '"' || char === "'") close = char;
+    else if (subset && text.startsWith('<!--', j)) close = '-->';
+    else if (subset && text.startsWith('<?', j)) close = '?>';
+    if (close) {
+      const end = text.indexOf(close, j + (close === '-->' ? 4 : close.length === 1 ? 1 : 2));
+      if (end < 0) return -1;
+      j = end + close.length - 1;
+    } else if (char === '[') subset = true;
+    else if (char === ']') subset = false;
+    else if (char === '>' && !subset) return j + 1;
+  }
+  return -1;
 }
 
 /** Whether `bytes` are a file of `contentType`, one of moss's media types; false for any other type. */

@@ -343,7 +343,7 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
     return refuse(400, 'bad-request', 'Name the note and the file to copy.');
   }
   const token = shareTokenOf(request);
-  const sourceToken = sourceShare || token;
+  const sourceToken = sourceShare ?? token;
   const [target, source] = await Promise.all([resolveDocAccess(db, principal, docId, token), resolveDocAccess(db, principal, sourceId, sourceToken)]);
   if (!target || target.deleted || !source || source.deleted) return notFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');

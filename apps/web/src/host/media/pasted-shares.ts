@@ -15,3 +15,8 @@ export function rememberPastedShare(noteId: string, relativePath: string, share:
 
 /** The link the last pasted URL for this note's file carried, or null. */
 export const pastedShareOf = (noteId: string, relativePath: string): string | null => shares.get(keyOf(noteId, relativePath)) ?? null;
+
+/** A later paste of the same file without a link: its copy goes through the page's link or membership, as for any other. */
+export function forgetPastedShare(noteId: string, relativePath: string): void {
+  shares.delete(keyOf(noteId, relativePath));
+}
