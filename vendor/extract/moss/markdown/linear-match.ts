@@ -290,7 +290,7 @@ function hostUrlStart(text: string, end: number, lastExcluded: number, before: n
       const start = hostStart(text, a, b, colon, otherColon, dot, dotBeforeColon);
       if (start >= 0) return start < before ? start : -1;
     }
-    a = b + 1;
+    a += 1; // RED PROOF (T3.B27): each run rescanned from its next character, quadratic in a run.
   }
   return -1;
 }
