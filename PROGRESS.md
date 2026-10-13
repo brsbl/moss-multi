@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 47% done** (108 of 230 planned tasks verified)
+**Overall: 47% done** (109 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 56 / 56 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 57 / 57 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -127,6 +127,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T3.B2 verified: renaming a note is now checked against the person's live access, Trash and the note's size cap in the note server's own turn (a revoked caller or trashed note gets 404, an oversized title 413, with nothing written), a failed title update to the workspace list retries until it lands, and typing a title with an IME no longer commits or jumps early on Enter or ArrowDown.
 - 2026-10-12 — T3.B22 verified: the local and CI stacks no longer replay a lost POST (only GET and HEAD retry), keep auth and test-hook secrets out of process listings via a private env file, `qa close` keeps its session file when bb's close fails, `durations --write` refuses partial or one-engine runs, and the trace gate checks every milestone a row lists and ignores tags in comments.
 - 2026-10-12 — T3.B13 verified: cancelling an empty IME composition below a selected block no longer leaves a stray empty paragraph, typing ==marked== highlights the word without turning a later `=` into a formula, a default-height HTML block's live preview is as tall as its content, and each keystroke in a 40,000-line note syncs to Yjs in a fraction of the old time.
+- 2026-10-12 — T3.B7 verified: a note server now gives a newly admitted socket the presence its own check installed, closes a sender whose frame waits past the access deadline without applying any of its frames, and after a trash or restore hold ends with the note live it tells the signed-in people the hold shut out (including folder-link holders whose link still reaches the note) to reopen it, retrying until that lands.
 
 ## T1.1s identity audit
 
@@ -519,3 +520,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B13 (Editor vendor seams) checker P2: B346 ships the binding fix only; the brief's offscreen-rendering fix (content-visibility/containment) and its input-to-paint gate are not delivered — j01-large's input-to-paint and long-task limits (240/260/1000 ms) also pass unpatched and the leg has no comment-anchor assertion; viewport-bounded rendering is deferred to the owner.
 - T3.B13 (Editor vendor seams) checker P2: a `==` inside inline code counts as a highlight opener (highlightRunStarts, formula-runtime.ts:655-660 ignores codeRanges), so after `a==b` a later ` price=12` is not detected as a formula (narrow regression from the pin).
 - T3.B13 (Editor vendor seams) checker P2: a default-height HTML block whose body sets its own height (600px) gets no Live-badge room, so the badge overlays the bottom of its content (cosmetic; size is correct).
+- T3.B7 (DocDO admission revalidation and trash-hold recovery) checker P2: a recovery counts as delivered even when PrincipalDO drops it after a failed credential read — DocDO `#recover` (packages/sync/src/doc-do.ts) clears the holders and retry marker once `publishReopened` resolves, but `PrincipalDO.publish` also resolves when its credential read fails (it closes workspace sockets 1013 and sends nothing), and on reconnect the client sees only `{type:'vaults'}`, so a held-out pane stays terminal (downgraded from Codex P1) → have publish report failure so the DocDO keeps the holders and retries.
+- T3.B7 (DocDO admission revalidation and trash-hold recovery) checker P2: `MAX_HOLDERS=256` silently drops the oldest holders still owed a recovery — `#keepHolders` truncates with `slice(-MAX_HOLDERS)` and holders refused at admission are recorded without the 50-connection cap, so more than 256 distinct principal/token pairs during one hold can evict an early link-only holder that never hears the recovery (pathological) → bound differently or fall back to a broad recovery when truncated.
