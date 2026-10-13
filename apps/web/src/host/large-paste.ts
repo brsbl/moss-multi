@@ -97,8 +97,14 @@ const varUint = (n: number): number[] => {
  * live client's length, a few bytes.
  */
 export function scratchDoc(live: Y.Doc | undefined): Y.Doc {
-  void live; void varUint;
-  return new Y.Doc();
+  const doc = new Y.Doc();
+  if (!live) return doc;
+  const clock = Y.getState(live.store, live.clientID);
+  // One client, one struct (a GC run from clock 0), no delete set (update format v1).
+  if (clock > 0) Y.applyUpdate(doc, Uint8Array.from([1, 1, ...varUint(live.clientID), 0, 0, ...varUint(clock), 0]));
+  // After the update: Yjs gives a doc a new id when a remote update writes its own.
+  doc.clientID = live.clientID;
+  return doc;
 }
 
 const scratchEditor = (nodes: readonly Klass<LexicalNode>[]) => createEditor({

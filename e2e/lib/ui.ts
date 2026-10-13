@@ -63,6 +63,16 @@ export const pane = (actor: Actor, docId: string): Locator => actor.page.locator
 export const title = (actor: Actor, docId: string): Locator => pane(actor, docId).locator(`[${TITLE_BINDING_ATTR}]`);
 export const body = (actor: Actor, docId: string): Locator => pane(actor, docId).locator(`[${BODY_BINDING_ATTR}]`);
 
+/**
+ * Opens an HTML block's source with its header's Edit. The header takes the pointer only while the block is hovered,
+ * and a block still sizing to its content (T3.B13) moved out from under a pointer resting at its middle: the click then
+ * hit the preview, 10 s at a time (WebKit, CI). The pointer rests at the block's top corner, which the sizing keeps.
+ */
+export async function openHtmlSource(actor: Actor, docId: string): Promise<void> {
+  await body(actor, docId).locator('[data-moss-html-preview-viewport]').hover({ position: { x: 4, y: 4 } });
+  await body(actor, docId).getByTitle('Edit HTML', { exact: true }).click();
+}
+
 /** Waits until the doc's pane is live with both fields bound. */
 export async function waitLive(actor: Actor, docId: string): Promise<void> {
   await actor.page.locator(`${paneSelector(docId)}[${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: BIND_TIMEOUT });

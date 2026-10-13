@@ -663,10 +663,7 @@ const PAYLOAD_KINDS: Record<string, PayloadKind> = {
   HTML: {
     markdown: 'Intro.\n\n```moss-html\n<p>seed</p>\n```', type: 'html-block', getter: 'getRawHtml', seed: '<p>seed</p>',
     // The preview is a live sandboxed frame (T3.2) that takes its own clicks, so the header's Edit opens the source.
-    open: async (actor, id) => {
-      await ui.body(actor, id).locator('[data-moss-html-preview-viewport]').hover();
-      await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
-    },
+    open: ui.openHtmlSource,
     input: (actor, id) => ui.body(actor, id).locator('textarea.moss-codeblock-textarea'),
   },
   formula: {
