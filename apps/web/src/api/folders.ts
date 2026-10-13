@@ -328,16 +328,12 @@ async function eachDoc(env: FoldersEnv, docIds: string[], what: string, call: (s
 }
 
 /**
- * A folder trash that did not commit: its held docs settle open again from D1, and everyone who could open them hears
- * they changed, so a pane the hold left terminal re-asks REST and reopens without a reload (T2.3s).
+ * A folder trash that did not commit: its held docs settle open again from D1. Each DocDO that opens tells everyone
+ * who could open it, and each signed-in link holder its hold closed, so a terminal pane re-asks REST and reopens
+ * without a reload (T2.3s). A doc whose settle failed, or that another trash still holds, is told by its alarm (A§8).
  */
 async function release(env: FoldersEnv, held: string[], batch: string): Promise<void> {
   await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
-  try {
-    await notify(env, await collectRecipients(env.DB, { docIds: held }));
-  } catch (error) {
-    console.error('workspace folder notification failed', error);
-  }
 }
 
 /** DELETE /api/folders/:id, and DELETE /api/vaults/:id with `kind` vault: the subtree goes to Trash as one batch. */

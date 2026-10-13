@@ -74,8 +74,8 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
       await stub.trash(batch);
     } catch (error) {
       console.error('DocDO trash failed', error);
+      // A doc that settles open tells the editors its hold closed itself (A§8).
       await settleQuietly(stub, batch);
-      await notify(env, docId);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     let stamped: D1Result;
@@ -89,18 +89,16 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
       ]);
     } catch (error) {
       console.error('trash write failed', error);
+      // The hold closed every editor 4410; if the note is still live, its DocDO tells them to re-ask and reopen.
       await settleQuietly(stub, batch);
-      // The hold closed every editor 4410; if the note is still live, the change tells them to re-ask and reopen.
-      await notify(env, docId);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     if (!changed(stamped)) {
       const [row] = await db.select({ deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
       if (row && row.deletedAt === null) {
         // Still live, so manage went away before the write: reopen the note and answer as the caller now stands.
-        // The hold closed every editor 4410, so the change tells each of them to re-ask REST and reopen.
+        // The hold closed every editor 4410; the settle's DocDO tells each of them to re-ask REST and reopen.
         await settleQuietly(stub, batch);
-        await notify(env, docId);
         return (await resolveDocAccess(db, principal, docId, shareTokenOf(request))) ? ownerTrashes() : notFound();
       }
     }
