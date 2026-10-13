@@ -350,9 +350,9 @@ function breakStale(path: string, raw: string): void {
 
 /**
  * Takes the workspace lock with an exclusive create, waiting up to `waitMs` for another holder and taking over a
- * stale one.
+ * stale one. An aborted `signal` ends the wait.
  */
-export async function lockWorkspace(root: string, waitMs = 5 * 60_000): Promise<WorkspaceLock> {
+export async function lockWorkspace(root: string, waitMs = 5 * 60_000, signal?: AbortSignal): Promise<WorkspaceLock> {
   const path = noLinks(root, LOCK);
   const nonce = randomBytes(8).toString('hex');
   const body = JSON.stringify({ pid: process.pid, host: hostname(), nonce, at: Date.now() });
@@ -378,6 +378,7 @@ export async function lockWorkspace(root: string, waitMs = 5 * 60_000): Promise<
       breakStale(path, held.raw);
       continue;
     }
+    if (signal?.aborted) throw new CliError(1, 'stopped while waiting for the workspace lock');
     if (Date.now() >= deadline) {
       throw new CliError(1, `another moss-multi process${held.owner ? ` (pid ${held.owner.pid})` : ''} is syncing ${root}; try again once it finishes`);
     }

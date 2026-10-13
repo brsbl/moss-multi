@@ -36,7 +36,17 @@ export interface SyncContext {
   client: Api;
   folds: boolean;
   force: boolean;
+  /** Stops the pass (`watch` on Ctrl+C): no write starts after it, and every write already confirmed is recorded. */
+  signal?: AbortSignal;
 }
+
+/** The pass was stopped before a write; what it recorded so far stands. */
+class Stopped extends Error {}
+
+/** Called before every write to the server. */
+const beforeWrite = (signal: AbortSignal | undefined) => {
+  if (signal?.aborted) throw new Stopped('stopped');
+};
 
 /** A pass stopped by the server's rate limit; `watch` waits this long before the next one. */
 export class RateLimited extends CliError {
@@ -51,7 +61,8 @@ const decoder = new TextDecoder('utf-8', { fatal: false });
 export const decode = (bytes: Uint8Array): string => decoder.decode(bytes);
 
 /** A push that resends the base when the server's base cache has lost it. */
-export async function pushWithBase(client: Api, root: string, meta: DocMeta, request: PushRequest): Promise<PushResponse> {
+export async function pushWithBase(client: Api, root: string, meta: DocMeta, request: PushRequest, signal?: AbortSignal): Promise<PushResponse> {
+  beforeWrite(signal);
   const response = await client.push(meta.docId, request);
   if (response.ok || response.reason !== 'base-missing') return response;
   return client.push(meta.docId, { ...request, baseText: decode(readBase(root, meta.docId)) });
@@ -207,10 +218,10 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
     newText: toLf(decode(local)),
     baseHash: meta.baseHash,
     ...(ctx.force ? { force: true } : {}),
-  });
+  }, ctx.signal);
   if (!response.ok) return refused(meta, response);
   if (response.mode === 'suggest') return { ...id, action: 'suggested', message: `landed as suggestion ${response.suggestionId}; the file keeps your text` };
-  const merged = await client.content(meta.docId);
+  const merged = await client.content(meta.docId, true);
   const action: SyncAction = remoteHash === meta.baseHash ? 'pushed' : 'merged';
   // As glyphdown does, the file and base converge on the doc so web edits keep arriving; rejected text is kept first.
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
@@ -240,6 +251,7 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   let message: string | undefined;
   // Adopted with no title, and the rename to the file's stem never finished: finish it.
   if (meta.title === undefined && !title) {
+    beforeWrite(ctx.signal);
     title = (await client.rename(meta.docId, basename(meta.file, extname(meta.file)))).title;
     meta = { ...meta, title };
     writeMeta(root, meta);
@@ -247,6 +259,7 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   }
   // A title line edited here renames the doc; one the web renamed is rewritten below.
   if (localChanged && note.title && note.title !== meta.title && note.title !== title) {
+    beforeWrite(ctx.signal);
     title = (await client.rename(meta.docId, note.title)).title;
     message = `renamed the doc to "${title}"`;
   }
@@ -269,10 +282,10 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
     newText: note.clean,
     baseHash: meta.baseHash,
     ...(ctx.force ? { force: true } : {}),
-  });
+  }, ctx.signal);
   if (!response.ok) return refused(meta, response);
   if (response.mode === 'suggest') return done('suggested', { message: `landed as suggestion ${response.suggestionId}; the file keeps your text` });
-  const merged = await client.content(meta.docId);
+  const merged = await client.content(meta.docId, true);
   const action: SyncAction = remoteHash === meta.baseHash ? 'pushed' : 'merged';
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
   try {
@@ -325,7 +338,7 @@ export interface AdoptOptions {
  * content), and the file takes the doc's filename and text. A moss note goes through the moss interchange path: its
  * title line names the doc, its comments.json comes too, and the file is left in moss form.
  */
-export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc }> {
+export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc }> {
   const { root, client, folds } = ctx;
   const bytes = readConfined(root, rel);
   const text = toLf(decode(bytes));
@@ -333,20 +346,22 @@ export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds'>,
   const folder = options.folderId ? { folderId: options.folderId } : {};
   if (options.moss ?? isMossNote(rel, text)) {
     const comments = readSidecar(root, rel);
+    beforeWrite(ctx.signal);
     const created = await client.create({ ...(options.title !== undefined ? { title: options.title } : {}), markdown: text, titleLine: true, ...(comments ? { comments } : {}), ...folder });
     let doc = created.doc;
     // Tracked at once, the file as it is, against the created revision's body: a later edit on the server reaches the
     // file through the next pass's three-way reconcile, and nothing failing below can make a second doc. With no
     // title yet, the title is left unrecorded so the next pass finishes the rename below.
-    const base = created.content !== undefined ? Buffer.from(created.content) : await client.content(doc.id);
+    const base = created.content !== undefined ? Buffer.from(created.content) : await client.content(doc.id, true);
     const meta = recordBase(root, doc.id, rel, base, folds, { mode: 'moss', ...(doc.title.trim() ? { title: doc.title } : {}), localHash: sha256Hex(bytes) });
-    // A moss note with no title line takes its file's stem.
-    if (!doc.title.trim()) {
+    // A moss note with no title line takes its file's stem; stopped, the next pass finishes the rename.
+    if (!doc.title.trim() && !ctx.signal?.aborted) {
       doc = { ...doc, ...(await client.rename(doc.id, stem)) };
       writeMeta(root, { ...meta, title: doc.title });
     }
     return { result: { docId: doc.id, file: rel, action: 'created' }, doc };
   }
+  beforeWrite(ctx.signal);
   const { doc } = await client.create({ title: options.title ?? stem, markdown: text, ...(options.titleLine ? { titleLine: true } : {}), ...folder });
   const to = options.keepName ? rel : join(dirname(rel), localName(doc.filename, doc.title));
   const moved = to !== rel && renameInside(root, rel, to, folds);
@@ -355,7 +370,7 @@ export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds'>,
   const filename = options.keepName ? {} : { filename: moved || to === rel ? doc.filename : '' };
   // Tracked at once, so nothing failing below can turn this file into a second doc.
   recordBase(root, doc.id, file, bytes, folds, filename);
-  const merged = await client.content(doc.id);
+  const merged = await client.content(doc.id, true);
   try {
     recordPull(root, doc.id, file, merged, sha256Hex(bytes), folds);
   } catch (error) {
@@ -401,8 +416,15 @@ function followLocalRenames(root: string, metas: DocMeta[], untracked: string[],
 export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
   const { root } = ctx;
   if (!isWorkspace(root)) throw new CliError(1, `${root} is not a moss-multi workspace`);
+  if (ctx.signal?.aborted) return [];
   // Held from classification until every file is recorded, so two passes never adopt one file twice.
-  const lock = await lockWorkspace(root);
+  let lock: Awaited<ReturnType<typeof lockWorkspace>>;
+  try {
+    lock = await lockWorkspace(root, undefined, ctx.signal);
+  } catch (error) {
+    if (ctx.signal?.aborted) return [];
+    throw error;
+  }
   try {
     return await pass(ctx, lock.touch);
   } finally {
@@ -412,7 +434,16 @@ export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
 
 async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> {
   const { root, client, folds } = ctx;
-  const rows = new Map((await client.listDocs()).map((row) => [row.id, row]));
+  /** Stopped: the rest of the pass is dropped, and what it recorded so far stands. */
+  const stopped = (error?: unknown) => error instanceof Stopped || Boolean(ctx.signal?.aborted);
+  let listed: DocRow[];
+  try {
+    listed = await client.listDocs();
+  } catch (error) {
+    if (stopped(error)) return [];
+    throw error;
+  }
+  const rows = new Map(listed.map((row) => [row.id, row]));
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
 
@@ -423,6 +454,7 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
 
   for (const tracked of metas) {
     if (held.has(tracked.docId)) continue;
+    if (stopped()) return results;
     touch();
     try {
       const row = rows.get(tracked.docId);
@@ -430,16 +462,19 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       if (result) results.push(result);
       results.push(await reconcile(ctx, meta, row));
     } catch (error) {
+      if (stopped(error)) return results;
       if (error instanceof RateLimited) throw error;
       results.push({ docId: tracked.docId, file: tracked.file, action: 'failed', message: failure(error) });
     }
   }
   for (const rel of untracked) {
     if (heldFiles.has(rel)) continue;
+    if (stopped()) return results;
     touch();
     try {
       results.push((await adopt(ctx, rel)).result);
     } catch (error) {
+      if (stopped(error)) return results;
       if (error instanceof CliError && error.status === 429) throw new RateLimited(60);
       results.push({ file: rel, action: 'failed', message: failure(error) });
     }
@@ -519,7 +554,7 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
       const seen = changes;
       let limitedMs = 0;
       try {
-        for (const result of await syncOnce(ctx)) {
+        for (const result of await syncOnce({ ...ctx, signal })) {
           if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) err(describe(result));
           else if (result.action !== 'up-to-date') out(describe(result));
         }
