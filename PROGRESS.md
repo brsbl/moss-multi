@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 54% done** (125 of 230 planned tasks verified)
+**Overall: 55% done** (126 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 10 / 10 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 13 / 13 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 14 / 14 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -146,6 +146,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T7.R verified: agent sync now sits on the final M6, and a push carrying a maximal 2 MB note lands while an oversized push body is refused 413 before it is read, after the pusher's rate token is charged.
 - 2026-10-12 — T7.S5 verified: an agent key now spends its owner's allowance for renames, comments, suggestion previews and reviews, working exports, remote fetches and media uploads, so a person with a session and two keys gets 429 on the third key instead of a fresh window per key.
 - 2026-10-12 — T7.S7 verified: sync, watch and `add` in one workspace now take turns behind a lock, so two overlapping passes adopt a new file into exactly one doc and one record instead of two.
+- 2026-10-12 — T7.B1 verified: an agent push that would empty a note or delete most of it is refused even when the note drifted, thousands of slightly changed lines merge as edits rather than a deletion, a person's trailing empty paragraph stays hers to type into, and a `--suggest` push notifies once, only after every op lands.
 
 ## T1.1s identity audit
 
@@ -178,6 +179,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.B1's checker (e3ac7c6, 2026-10-12)
+
+- T7.B1 checker P2 (B354 owner-confirmation gate was not obtained): drifted pushes that would empty the doc or delete over 60% now refuse 409 (CLI exit 3) unless --force, where they used to land 200; matches A§17 step 3 and nothing has shipped, but the owner never confirmed the rule as the brief asked.
+- T7.B1 checker P2 (B344 only covers trailing empty paragraphs, not interior ones): push.ts keeps only end-of-note empty paragraphs out of reconciliation, so an interior empty paragraph at the insert point can be paired with the pushed paragraph by reconcile tier 2 and a person's in-flight typing can land inside the agent's paragraph.
+- T7.B1 checker P2 (coarseRuns can hide a strict-budget overrun): coarseRuns runs tokenRuns with strict=false on its own capped budget and charges the outer budget a clamped had - own.work, so on the forced strict path a merge can spend its whole aggregate budget without the strict exhaustion check firing; CPU stays bounded by the cap.
 
 ### From T7.S7's checker (2f26c71, 2026-10-12)
 
