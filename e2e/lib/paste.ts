@@ -20,10 +20,11 @@ export const MAX_STALL_MS = process.env.CI ? 5_000 : 2_000;
 /** The most `runnerSlowdown` scales a stall bound by: past it, a stall fails however loaded the runner is. */
 export const MAX_SLOWDOWN = 2.5;
 /**
- * The calibration's median on an unloaded CI runner, per engine, in ms (`calibrationMs`; T3.B27 measured these from the
- * first runs that logged them). Locally the bound is not scaled.
+ * The calibration (`calibrationMs`) on an ordinary CI runner, per engine, in ms: about the 75th percentile of the
+ * paste shards of full lane 38325253546 (chromium 17-44 ms, median 31; WebKit 26-76 ms, median 39), so ordinary noise
+ * scales nothing. Locally the bound is not scaled.
  */
-export const CALIBRATION_REFERENCE_MS: Record<string, number> = { chromium: 60, webkit: 90 };
+export const CALIBRATION_REFERENCE_MS: Record<string, number> = { chromium: 40, webkit: 45 };
 export const UNDO = 'ControlOrMeta+z';
 export const REDO = 'ControlOrMeta+Shift+z';
 
@@ -282,6 +283,7 @@ export async function pasteAndCheck(
   const runner = slower(speedBefore, await runnerSlowdown(ada));
   const scaled = (bound: number) => Math.round(bound * runner.factor);
   const speed = `the runner ran the calibration in ${runner.ms.toFixed(0)} ms, ${runner.factor.toFixed(2)}x the reference`;
+  console.log(`paste stall: ${stall.ms} ms of ${scaled(maxStallMs)} allowed, busy ${Math.round(busyMs)} ms (${speed}; during: ${stall.during})`);
   expect(busyMs, `the paste keeps the tab responsive (${speed})`).toBeLessThan(scaled(maxBusyMs));
   expect(stall.ms, `the tab is never held longer than ${scaled(maxStallMs)} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during}; socket closes: ${wire?.closes.join(', ') || 'none seen'}; ${speed})`).toBeLessThanOrEqual(scaled(maxStallMs));
   const pastedPrint = await fingerprint(ada, docId);
@@ -348,6 +350,7 @@ export async function expectRefusedPaste(
   const stall = await longestStall(ada);
   const runner = slower(speedBefore, await runnerSlowdown(ada));
   const bound = Math.round(MAX_STALL_MS * runner.factor);
+  console.log(`paste stall: ${stall.ms} ms of ${bound} allowed, refused paste (${runner.factor.toFixed(2)}x; during: ${stall.during})`);
   expect(stall.ms, `the refused paste never holds the tab longer than ${bound} ms at a time (during: ${stall.during}; the runner ran the calibration in ${runner.ms.toFixed(0)} ms, ${runner.factor.toFixed(2)}x the reference)`).toBeLessThanOrEqual(bound);
   await ui.waitAcked(ada, docId, 30_000);
   expect(await fingerprint(ada, docId), 'nothing of the paste is in the editor').toEqual(print);

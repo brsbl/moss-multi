@@ -237,7 +237,9 @@ export class Actors {
     for (const label of new Set(findings.map((f) => f.actor))) {
       const actor = this.list.find((a) => a.label === label);
       if (actor && !actor.page.isClosed()) {
-        await this.testInfo.attach(`${where}-${label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });
+        // Evidence only: a capture Chromium refuses ("Unable to capture screenshot") must not replace the findings.
+        const shot = await actor.page.screenshot().catch(() => null);
+        if (shot) await this.testInfo.attach(`${where}-${label}.png`, { body: shot, contentType: 'image/png' });
       }
     }
     const lines = findings.map((f) => `  invariant ${f.invariant} [${f.actor}] ${f.detail}`);
