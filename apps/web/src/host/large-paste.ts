@@ -910,6 +910,9 @@ export function pasteLarge(editor: LexicalEditor, request: PasteRequest): void {
     editor.registerCommand(REDO_COMMAND, () => $redoInSlices(editor), COMMAND_PRIORITY_CRITICAL);
   }
   if (request.plan.units.length === 0) return;
+  // RED PROOF (T3.B27): the paste holds the tab 7 s before its first paint.
+  const until = performance.now() + 7_000;
+  while (performance.now() < until) { /* held */ }
   const job = new PasteJob(editor, (each) => landPaste(each, request));
   jobs.set(editor, job);
   job.start();
