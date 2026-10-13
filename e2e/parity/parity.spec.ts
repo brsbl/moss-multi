@@ -10,7 +10,7 @@ import { APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '../lib/contrac
 import { InfraBlocked } from '../lib/infra.ts';
 import { mintPrincipal, signIn } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
-import { compare, type Rect } from './compare.ts';
+import { compare, type Metrics, type Rect } from './compare.ts';
 import { serveStatic, type StaticServer } from './serve-static.ts';
 import { CROP, FONT_FACES, STORY_NOW, TARGETS, THEMES, type Target, type Theme } from './targets.ts';
 
@@ -195,7 +195,10 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
   }
 }
 
-async function captureCandidate(browser: Browser, target: Target, theme: Theme, oracleState: OracleCapture): Promise<{ png: Buffer; masks: Rect[] }> {
+/** A change the selftest makes to the candidate once it is prepared, before anything is measured or captured. */
+type Mutation = (page: Page) => Promise<void>;
+
+async function captureCandidate(browser: Browser, target: Target, theme: Theme, oracleState: OracleCapture, mutate?: Mutation): Promise<{ png: Buffer; masks: Rect[] }> {
   const { listing } = oracleState;
   const page = await newPage(browser, theme);
   try {
@@ -245,6 +248,7 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     }
     if (target.prepare === 'trash-open-note') await trashOpenNote(page);
     if (target.prepare === 'open-settings') await openSettings(page, target);
+    await mutate?.(page);
     await audit(page, theme, 'candidate', target.crop);
     const masks = await maskRects(page, target.crop ?? CROP, target.masks);
     return { png: await capture(page, target), masks };
@@ -253,18 +257,53 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
   }
 }
 
+interface Measured { first: OracleCapture; candidate: { png: Buffer; masks: Rect[] }; comparison: ReturnType<typeof compare> }
+
+/** Two oracle captures, which must agree, then the candidate (changed by `mutate`, if given), compared. */
+async function measure(browser: Browser, target: Target, theme: Theme, mutate?: Mutation): Promise<Measured> {
+  if (!stories.has(target.story)) throw new InfraBlocked(`the oracle has no story ${target.story}`);
+  const first = await captureOracle(browser, target, theme);
+  const second = await captureOracle(browser, target, theme);
+  const noise = compare(first.png, second.png).metrics;
+  if (noise.diffPixels > 0 || noise.sizeDelta.dw || noise.sizeDelta.dh) {
+    throw new InfraBlocked(`two oracle captures of ${target.story} differ by ${noise.diffPixels} px`);
+  }
+  const candidate = await captureCandidate(browser, target, theme, first, mutate);
+  return { first, candidate, comparison: compare(first.png, candidate.png, candidate.masks) };
+}
+
+/** Every gate a target's comparison misses; none means it passes. */
+function misses(target: Target, metrics: Metrics): string[] {
+  return [
+    ...(metrics.sizeDelta.dw || metrics.sizeDelta.dh ? [`crops differ in size by ${JSON.stringify(metrics.sizeDelta)}`] : []),
+    ...(metrics.maskedPct > 3 ? [`masks cover ${metrics.maskedPct.toFixed(2)}% of the crop, over 3%`] : []),
+    ...(metrics.diffPct > target.floor ? [`diff ${metrics.diffPct.toFixed(4)}% over ${target.floor}%`] : []),
+    ...(metrics.maxBlob > target.maxBlob ? [`largest blob ${metrics.maxBlob} px² over ${target.maxBlob}`] : []),
+  ];
+}
+
+// Selftest (A§20: only the web chrome's own rects are masked, so displaced moss chrome still fails). Settings' web
+// sections stay in layout: spacing that moves the chrome around them fails, a repaint inside them stays masked.
+test('settings parity fails a web section that displaces chrome and masks a repaint inside it', async ({ browser }) => {
+  const target = TARGETS.find((t) => t.id === 'settings')!;
+  const account = '[role="dialog"] [data-collab-chrome]';
+  const displaced = await measure(browser, target, 'light', (page) => page.locator(account).first().evaluate((el) => {
+    el.style.setProperty('margin-top', '40px', 'important');
+  }));
+  expect(misses(target, displaced.comparison.metrics), 'spacing on a web section fails parity').not.toEqual([]);
+  const repainted = await measure(browser, target, 'light', (page) => page.locator(account).first().evaluate((el) => {
+    for (const node of [el, ...el.querySelectorAll<HTMLElement>('*')]) {
+      node.style.setProperty('color', 'rgb(255, 0, 0)', 'important');
+      node.style.setProperty('background-color', 'rgb(0, 200, 0)', 'important');
+    }
+  }));
+  expect(misses(target, repainted.comparison.metrics), 'a repaint inside a web section stays masked').toEqual([]);
+});
+
 for (const target of TARGETS) {
   for (const theme of THEMES) {
     test(`${target.id} ${theme} meets ${target.floor}% with blobs <= ${target.maxBlob} px²`, async ({ browser }, testInfo) => {
-      if (!stories.has(target.story)) throw new InfraBlocked(`the oracle has no story ${target.story}`);
-      const first = await captureOracle(browser, target, theme);
-      const second = await captureOracle(browser, target, theme);
-      const noise = compare(first.png, second.png).metrics;
-      if (noise.diffPixels > 0 || noise.sizeDelta.dw || noise.sizeDelta.dh) {
-        throw new InfraBlocked(`two oracle captures of ${target.story} differ by ${noise.diffPixels} px`);
-      }
-      const candidate = await captureCandidate(browser, target, theme, first);
-      const { metrics, diff, triptych } = compare(first.png, candidate.png, candidate.masks);
+      const { first, candidate, comparison: { metrics, diff, triptych } } = await measure(browser, target, theme);
 
       const dir = join(OUT, `${target.id}-${theme}`);
       mkdirSync(dir, { recursive: true });
@@ -277,11 +316,7 @@ for (const target of TARGETS) {
       if (metrics.diffPct > 0.8 * target.floor && metrics.diffPct <= target.floor) {
         testInfo.annotations.push({ type: 'near-threshold', description: `${metrics.diffPct.toFixed(4)}%: read diff.png and explain` });
       }
-
-      expect(metrics.sizeDelta, 'oracle and candidate crops are the same size').toEqual({ dw: 0, dh: 0 });
-      expect(metrics.maskedPct, 'masks cover at most 3% of the crop').toBeLessThanOrEqual(3);
-      expect(metrics.diffPct, `${target.id} ${theme} diff %`).toBeLessThanOrEqual(target.floor);
-      expect(metrics.maxBlob, `${target.id} ${theme} largest blob (px²)`).toBeLessThanOrEqual(target.maxBlob);
+      expect(misses(target, metrics), `${target.id} ${theme}`).toEqual([]);
     });
   }
 }
