@@ -257,10 +257,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     return fetcher(path, { credentials: 'same-origin', ...init,
       headers: { accept: 'application/json', ...(token ? { 'x-moss-share': token } : {}), ...init.headers } });
   };
-  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a workspace read in flight (its
-   * body included) is aborted as the page leaves and held; if the page stays (the navigation was cancelled), it is
-   * sent again. */
-  const listingRequest = async (path: string): Promise<WorkspaceListing> => {
+  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a background read in flight (its
+   * body included, through `read`) is aborted as the page leaves and held; if the page stays (the navigation was
+   * cancelled), it is sent again. */
+  const heldRequest = async <T>(path: string, read: (response: Response) => Promise<T>): Promise<T> => {
     for (;;) {
       const leave = leaving?.();
       if (leave?.signal.aborted) {
@@ -268,15 +268,17 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         continue;
       }
       try {
-        const response = await request(path, leave ? { signal: leave.signal } : {});
-        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-        return (await response.json()) as WorkspaceListing;
+        return await read(await request(path, leave ? { signal: leave.signal } : {}));
       } catch (error) {
         if (!leave?.signal.aborted) throw error;
         await leave.stayed;
       }
     }
   };
+  const listingRequest = (path: string): Promise<WorkspaceListing> => heldRequest(path, async (response) => {
+    if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
+    return (await response.json()) as WorkspaceListing;
+  });
   /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
   const withShare = (path: string) => {
     const token = share();
@@ -407,12 +409,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   const watched: string[] = [];
   const readBacklinks = async (id: string) => {
     try {
-      const response = await request(`/api/docs/${encodeURIComponent(id)}/backlinks`);
-      if (!response.ok) {
-        if (response.status === 404) unwatch(id);
+      const { status, answer } = await heldRequest(`/api/docs/${encodeURIComponent(id)}/backlinks`, async (response) => ({
+        status: response.status,
+        answer: response.ok ? await response.json() as { backlinks?: ApiDoc[] } : null,
+      }));
+      if (!answer) {
+        if (status === 404) unwatch(id);
         return;
       }
-      const answer = await response.json() as { backlinks?: ApiDoc[] };
       if (!Array.isArray(answer.backlinks)) return;
       const links = answer.backlinks.map((row): NoteLink => {
         const live = liveTitle(row.id);
