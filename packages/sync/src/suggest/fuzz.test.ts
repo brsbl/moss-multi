@@ -9,7 +9,7 @@ import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
-  canonical, deleteUpdate, hydrate, previewHash, projectDoc, projectionDiff, recordDigest, type DeletePart, type RecordMeta, type RecordOp,
+  canonical, deleteUpdate, hydrate, PAYLOAD_ID, previewHash, projectDoc, projectionDiff, recordDigest, type DeletePart, type RecordMeta, type RecordOp,
 } from '@moss-multi/core/suggest/apply';
 import { importMarkdown } from '../converter/index.ts';
 import { handleSuggest, SuggestIngest, type IngestResult } from '../doc/suggest.ts';
@@ -149,10 +149,7 @@ function unitsOf(doc: Y.Doc, writer: number | null): unknown[] {
   for (const [client, structs] of [...doc.store.clients].sort(([a], [b]) => a - b)) {
     if (client === writer) continue;
     for (const struct of structs) {
-      if (!(struct instanceof Y.Item) || struct.deleted) {
-        for (let at = 0; at < struct.length; at += 1) units.push([client, struct.id.clock + at, 'deleted']);
-        continue;
-      }
+      if (!(struct instanceof Y.Item) || struct.deleted) continue; // T5.B5 RED MUTANT: the oracle skips the delete set
       let top = struct.parent as Y.AbstractType<unknown> | null;
       while (top?._item) top = top._item.parent as Y.AbstractType<unknown>;
       const root = names.get(top) ?? '?';
@@ -173,7 +170,7 @@ function unitsOf(doc: Y.Doc, writer: number | null): unknown[] {
 function viewOf(doc: Y.Doc, writer: number, read: (id: string) => Uint8Array | null, ids: readonly string[]): string {
   const payloads = ids.map((id) => {
     const state = read(id);
-    if (!state) return [id, null];
+    if (id || !state) return [id, null]; // T5.B5 RED MUTANT: the oracle skips payloads
     const copy = new Y.Doc({ gc: false });
     try {
       Y.applyUpdate(copy, state);
@@ -403,37 +400,95 @@ const heldBy = (doc: Y.Doc) => canonical({ doc: Array.from(Y.encodeStateAsUpdate
 
 interface IngestRun {
   results: IngestResult[];
+  /** What each op should get, read off its final bytes; null where they settle only the invariants. */
+  expected: (Expected | null)[];
   /** Ops the leased record holds after the run. */
   stored: number;
   problems: string[];
 }
 
+type Expected = 'ok' | 'malformed' | 'lease' | 'clock-gap' | 'clock-overlap' | 'channel';
+
+/** The roots a record may write, per doc kind (suggestions.md §4.4). */
+const WRITABLE_ROOTS = { body: new Set(['root']), payload: new Set(['payload', 'payload-map']) };
+
+/**
+ * The outcome an op must get, from its final bytes, however many mutations stacked on it: a bad doc name or an
+ * undecodable frame is malformed; a client other than the granted one is refused at the lease gate; the lease's
+ * first clock in a doc must continue where its admitted frames there ended; past those gates (and the caps, which no
+ * fuzz frame nears), a Skip, a GC no delete covers, or an item under a root the doc kind does not write is refused by
+ * placement. Null when the bytes alone do not settle it.
+ */
+function expectedOf(op: RecordOp, lease: number, next: ReadonlyMap<string, number>, honest: boolean): Expected | null {
+  if (honest) return 'ok';
+  if (typeof op.doc !== 'string' || (op.doc !== 'body' && !PAYLOAD_ID.test(op.doc))) return 'malformed';
+  let from: Map<number, number>;
+  let decoded: ReturnType<typeof Y.decodeUpdate>;
+  try {
+    from = Y.parseUpdateMeta(op.update).from;
+    decoded = Y.decodeUpdate(op.update);
+  } catch {
+    return 'malformed';
+  }
+  for (const [client, clock] of from) {
+    if (client !== lease) return 'lease';
+    const at = next.get(op.doc) ?? 0;
+    if (clock > at) return 'clock-gap';
+    if (clock < at) return 'clock-overlap';
+  }
+  const roots = WRITABLE_ROOTS[op.doc === 'body' ? 'body' : 'payload'];
+  const ds = (decoded.ds as unknown as { clients: Map<number, { clock: number; len: number }[]> }).clients;
+  const covered = (gc: Y.GC) => (ds.get(gc.id.client) ?? []).some(({ clock, len }) => clock <= gc.id.clock && gc.id.clock + gc.length <= clock + len);
+  for (const struct of decoded.structs) {
+    if (struct instanceof Y.Skip) return 'channel';
+    if (struct instanceof Y.GC && !covered(struct)) return 'channel';
+    if (struct instanceof Y.Item && typeof struct.parent === 'string' && !roots.has(struct.parent)) return 'channel';
+  }
+  return null;
+}
+
 /**
  * Ingest of `build`'s ops, as the author's `suggest-ops` on a copy of the note, under the lease the ingest grants.
- * Each op is stored (the record grows by one) or refused with nothing held changed; none throws.
+ * Each op gets the outcome its bytes call for; an admitted one is stored (the record grows by one), a refused one
+ * leaves everything held unchanged, and none throws.
  */
-function ingestRun(base: Note, build: (doc: Y.Doc, lease: number) => RecordOp[]): IngestRun {
+function ingestRun(
+  base: Note,
+  build: (doc: Y.Doc, lease: number) => { ops: RecordOp[]; honest: boolean },
+  /** Negative controls only: what the checks see in place of ingest's result. */
+  tamper: (result: IngestResult) => IngestResult = (result) => result,
+): IngestRun {
   const doc = copyNote(base);
   const problems: string[] = [];
   const results: IngestResult[] = [];
+  const expected: (Expected | null)[] = [];
   try {
     const ingest = new SuggestIngest(doc, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => 'ingested' });
     const who = { ...SUGGESTER, role: 'suggester', connection: 'ingest' };
     const leased = ingest.lease(who, [], 1);
-    if (!leased.ok) return { results, stored: 0, problems: [`lease refused: ${leased.reason}`] };
+    if (!leased.ok) return { results, expected, stored: 0, problems: [`lease refused: ${leased.reason}`] };
     const [grant] = leased.leases;
     const stored = () => readRecord(doc, grant.record)?.ops.length ?? 0;
-    for (const op of build(doc, grant.client)) {
+    // Where the lease's admitted frames end, per doc.
+    const next = new Map<string, number>();
+    const { ops, honest } = build(doc, grant.client);
+    for (const [i, op] of ops.entries()) {
+      const expect = expectedOf(op, grant.client, next, honest);
+      expected.push(expect);
       const before = heldBy(doc);
       const count = stored();
-      const result = ingest.ops(who, grant.record, op);
+      const result = tamper(ingest.ops(who, grant.record, op));
       results.push(result);
-      if (result.ok && stored() !== count + 1) problems.push('an admitted op was not appended to the record');
-      if (!result.ok && heldBy(doc) !== before) problems.push(`refused ${result.reason}, yet the doc or a payload changed`);
+      const got = result.ok ? 'ok' : result.reason;
+      if (expect !== null && got !== expect) problems.push(`op ${i} should get ${expect}, got ${got}`);
+      if (expect === null && got === 'lease') problems.push(`op ${i} was refused at the lease gate, though built under the granted lease`);
+      if (result.ok && stored() !== count + 1) problems.push(`op ${i} was admitted but not appended to the record`);
+      if (!result.ok && heldBy(doc) !== before) problems.push(`op ${i} was refused ${result.reason}, yet the doc or a payload changed`);
+      if (result.ok) next.set(op.doc, Y.parseUpdateMeta(op.update).to.get(grant.client) ?? next.get(op.doc) ?? 0);
     }
-    return { results, stored: stored(), problems };
+    return { results, expected, stored: stored(), problems };
   } catch (error) {
-    return { results, stored: 0, problems: [...problems, `ingest threw: ${(error as Error).message}`] };
+    return { results, expected, stored: 0, problems: [...problems, `ingest threw: ${(error as Error).message}`] };
   } finally {
     payloadDocsFor(doc).destroy();
     doc.destroy();
@@ -443,34 +498,29 @@ function ingestRun(base: Note, build: (doc: Y.Doc, lease: number) => RecordOp[])
 const reasons = (run: IngestRun) => run.results.flatMap((result) => (result.ok ? [] : [result.reason]));
 
 /**
- * The fuzz's ingest leg: the seed's record rebuilt under the lease ingest grants. An honest case is admitted whole;
- * a forged one is refused past the lease gate unless it forged a client.
+ * The fuzz's ingest leg: the seed's record rebuilt under the lease ingest grants, each op held to the outcome its
+ * bytes call for (an honest case is admitted whole). Also returns the refusals it predicted, so a batch shows it
+ * checked reasons and not only the invariants.
  */
-function ingestLeg({ seed, base }: Case): string[] {
-  const seen = { story: [] as string[], honest: false };
-  const run = ingestRun(base, (doc, lease) => {
-    const forged = forgedRecord(seed, doc, lease);
-    seen.story = forged.story;
-    seen.honest = forged.honest;
-    return forged.ops;
-  });
-  const { story, honest } = seen;
-  const problems = [...run.problems];
-  if (honest && (reasons(run).length || run.stored !== run.results.length)) problems.push(`an honest record was refused: ${reasons(run).join(', ')}`);
-  if (reasons(run).includes('lease') && !story.some((step) => step.startsWith('use a client the record does not lease'))) {
-    problems.push('refused at the lease gate, though built under the granted lease');
-  }
-  return problems.map((problem) => `ingest: ${problem}`);
+function ingestLeg({ seed, base }: Case): { problems: string[]; predicted: Expected[] } {
+  const run = ingestRun(base, (doc, lease) => forgedRecord(seed, doc, lease));
+  return {
+    problems: run.problems.map((problem) => `ingest: ${problem}`),
+    predicted: run.expected.filter((e): e is Expected => e !== null && e !== 'ok'),
+  };
 }
 
 describe('T5.4 struct-level fuzz over records built from real peer frames @p:mean-2 @p:R17', () => {
   it.each([0, 1, 2, 3, 4, 5])('accept refuses with nothing applied or lands exactly the hashed preview (batch %i)', (batch) => {
     const failures: string[] = [];
     const seen = new Map<string, number>();
+    const predicted = new Map<string, number>();
     for (const seed of seedsFrom(1_000 + batch * 25, 25)) {
       const fuzz = fuzzCase(seed);
       try {
-        const problems = [...ingestLeg(fuzz), ...serverLeg(fuzz)];
+        const ingested = ingestLeg(fuzz);
+        for (const reason of ingested.predicted) predicted.set(reason, (predicted.get(reason) ?? 0) + 1);
+        const problems = [...ingested.problems, ...serverLeg(fuzz)];
         const outcome = readMeta(fuzz.live, FUZZ_ID)?.status === 'accepted' ? 'accepted' : 'refused';
         seen.set(outcome, (seen.get(outcome) ?? 0) + 1);
         for (const problem of problems) failures.push(`seed ${seed} [${fuzz.story.join('; ')}]: ${problem}`);
@@ -479,8 +529,10 @@ describe('T5.4 struct-level fuzz over records built from real peer frames @p:mea
         fuzz.live.destroy();
       }
     }
-    console.log(`T5.4 fuzz batch ${batch}: ${[...seen].map(([k, v]) => `${v} ${k}`).join(', ')}`);
+    const counts = (map: Map<string, number>) => [...map].map(([k, v]) => `${v} ${k}`).join(', ');
+    console.log(`T5.4 fuzz batch ${batch}: ${counts(seen)}; ingest refusals predicted and met: ${counts(predicted)}`);
     expect(failures).toEqual([]);
+    if (!process.env.FUZZ_SEED) expect(predicted.size, 'the batch checks refusal reasons, not only the invariants').toBeGreaterThan(0);
   }, 120_000);
 });
 
@@ -572,34 +624,46 @@ describe('T5.B5 the ingest leg builds under the lease ingest grants and reaches 
   const census = (name: string) => CENSUS.find((op) => op.name === name)!;
 
   it.each(CENSUS.map((op) => op.name))('an unmutated census case is admitted and appended: %s', (name) => {
-    const run = ingestRun(baseNote(), (doc, lease) => honestOps(doc, lease, census(name)));
+    const run = ingestRun(baseNote(), (doc, lease) => ({ ops: honestOps(doc, lease, census(name)), honest: true }));
     expect(run.problems).toEqual([]);
     expect(reasons(run)).toEqual([]);
     expect(run.results.length).toBeGreaterThan(0);
     expect(run.stored, 'every op appended to the record').toBe(run.results.length);
   });
 
+  /** The duplicated-word frames under `lease`, the last one also writing the title root. */
+  const titleWrite = (doc: Y.Doc, lease: number) => {
+    const ops = honestOps(doc, lease, census('a duplicated word'));
+    const last = ops[ops.length - 1];
+    const frame = decodeFrame(last.update);
+    const next = Math.max(...frame.structs.filter((struct) => struct.id.client === lease).map((struct) => struct.id.clock + struct.length));
+    frame.structs.push(new Y.Item(Y.createID(lease, next), null, null, null, null, 'title' as never, null, new Y.ContentString('forged')));
+    last.update = encodeFrame(frame);
+    return { ops, honest: false };
+  };
+
   it('a frame under the granted client that writes outside the body is refused by placement, nothing held changed', () => {
-    const run = ingestRun(baseNote(), (doc, lease) => {
-      const ops = honestOps(doc, lease, census('a duplicated word'));
-      const last = ops[ops.length - 1];
-      const frame = decodeFrame(last.update);
-      const next = Math.max(...frame.structs.filter((struct) => struct.id.client === lease).map((struct) => struct.id.clock + struct.length));
-      frame.structs.push(new Y.Item(Y.createID(lease, next), null, null, null, null, 'title' as never, null, new Y.ContentString('forged')));
-      last.update = encodeFrame(frame);
-      return ops;
-    });
+    const run = ingestRun(baseNote(), titleWrite);
     expect(run.problems).toEqual([]);
+    expect(run.expected.at(-1), 'its bytes call for a placement refusal').toBe('channel');
     expect(reasons(run)).toEqual(['channel']);
     expect(run.stored).toBe(run.results.length - 1);
   });
 
   it('negative control: the same frames under a client ingest never granted are refused at the lease gate', () => {
-    const run = ingestRun(baseNote(), (doc) => honestOps(doc, LEASED, census('a duplicated word')));
+    const run = ingestRun(baseNote(), (doc) => ({ ops: honestOps(doc, LEASED, census('a duplicated word')), honest: false }));
     expect(run.problems).toEqual([]);
     expect(run.results.length).toBeGreaterThan(0);
+    expect(new Set(run.expected)).toEqual(new Set(['lease']));
     expect(new Set(reasons(run))).toEqual(new Set(['lease']));
     expect(run.stored).toBe(0);
+  });
+
+  it('negative controls: an ingest that admitted the title write, or refused it for another reason, is caught', () => {
+    const admitted = ingestRun(baseNote(), titleWrite, (result) => (result.ok ? result : { ok: true, record: 'x', requested: 'x', doc: 'body', sv: {}, parts: [] }));
+    expect(admitted.problems).toContain(`op ${admitted.results.length - 1} should get channel, got ok`);
+    const relabelled = ingestRun(baseNote(), titleWrite, (result) => (result.ok ? result : { ok: false, reason: 'node-type' }));
+    expect(relabelled.problems).toContain(`op ${relabelled.results.length - 1} should get channel, got node-type`);
   });
 });
 
