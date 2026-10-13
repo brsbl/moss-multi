@@ -6,6 +6,7 @@
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
 import { createHash, randomBytes } from 'node:crypto';
+import type { Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { acceptInvite, grant, grantDoc } from '../lib/grants.ts';
@@ -542,11 +543,15 @@ test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, docId, benPrincipal, 'editor');
   const ben = await actors.session(benPrincipal);
-  // Every role the workspace listing names becomes one this client has never heard of.
-  await ben.page.route('**/api/workspace**', async (route) => {
+  // Every role the server names becomes one this client has never heard of: the listing's, and the note's own read
+  // (GET /api/docs/:id), which the tab also remembers: its real role, answered after the listing, is the likely way
+  // the row menu offered an editor's actions in WebKit (runs 38060395030, 38278446839, 38283893079).
+  const unknownRole = async (route: Route) => {
     const response = await route.fetch();
     await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
-  });
+  };
+  await ben.page.route('**/api/workspace**', unknownRole);
+  await ben.page.route(`**/api/docs/${docId}`, unknownRole);
   await ben.goto('/');
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
