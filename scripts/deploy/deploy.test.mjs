@@ -17,6 +17,9 @@ import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
 import { gateProblems, runProblems } from './run-gate.mjs';
 import { forbiddenFiles, migrationProblems, parseJsonc, readStagingEnv, stagingConfig } from './staging-config.mjs';
+
+// The staging D1 lives in WNAM (wrangler d1 info): an AWS region beside it.
+const STAGING_PLACEMENT = { mode: 'targeted', region: 'aws:us-west-1' };
 import { testedRunProblems } from './tested-run.mjs';
 
 const COMMIT = 'c'.repeat(40);
@@ -74,6 +77,12 @@ describe('staging config', () => {
     });
     expect(config.rules).toEqual(BUILT.rules);
     expect(BUILT.name, 'the input is not mutated').toBe('moss-multi');
+  });
+
+  it('places the staging Worker, and the DOs it creates, beside the staging D1 (WNAM), not beside each caller', () => {
+    const config = stagingConfig(BUILT, readStagingEnv(), { d1Id: D1_ID, url: URL_STAGING });
+    expect(config.placement).toEqual(STAGING_PLACEMENT);
+    expect(BUILT.placement, 'the local build stays unplaced').toBeUndefined();
   });
 
   it('refuses a loopback or non-https URL, a placeholder D1 id outside a dry run, and renamed resources', () => {
