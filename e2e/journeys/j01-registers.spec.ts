@@ -732,6 +732,22 @@ test("j01 registers: a caret or range inside a reference's name keeps its place 
   await roDump(ada);
 });
 
+// DIAG (temporary, T3.B15): Ben's edits grow and shrink Ada's open popover; count WebKit's ResizeObserver loop errors.
+test('DIAGRO popover growth @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(180_000);
+  const { ada, ben } = await boundReference(actors, stack.baseUrl);
+  await formulaInput(ben).press('End');
+  for (let i = 0; i < 25; i += 1) {
+    await ben.page.keyboard.type('+1111');
+    await expect(formulaInput(ada)).toHaveValue('price+2+3+1111', { timeout: PEER_TIMEOUT });
+    for (let k = 0; k < 5; k += 1) await ben.page.keyboard.press('Backspace');
+    await expect(formulaInput(ada)).toHaveValue('price+2+3', { timeout: PEER_TIMEOUT });
+  }
+  const loops = await ada.page.evaluate(() => ((window as unknown as { __ro?: unknown[][] }).__ro ?? []).filter(l => l[1] === 'LOOP').length);
+  console.log(`DIAGRO loops ${loops} in 50 width changes`);
+  await roDump(ada);
+});
+
 test("j01 registers: a caret inside a reference's name goes to where it stood when Ben replaces the reference @p:col-1", async ({ actors, stack }) => {
   const { ada, ben, id } = await boundReference(actors, stack.baseUrl);
   await formulaInput(ada).evaluate(element => (element as HTMLInputElement).setSelectionRange(2, 2));
