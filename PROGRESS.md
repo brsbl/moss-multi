@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 55% done** (127 of 230 planned tasks verified)
+**Overall: 56% done** (128 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 10 / 10 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 15 / 15 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 16 / 16 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -148,6 +148,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T7.S7 verified: sync, watch and `add` in one workspace now take turns behind a lock, so two overlapping passes adopt a new file into exactly one doc and one record instead of two.
 - 2026-10-12 — T7.B1 verified: an agent push that would empty a note or delete most of it is refused even when the note drifted, thousands of slightly changed lines merge as edits rather than a deletion, a person's trailing empty paragraph stays hers to type into, and a `--suggest` push notifies once, only after every op lands.
 - 2026-10-12 — T7.S8 verified: pressing Ctrl+C during `watch` now stops the pass promptly, aborting a read in flight and starting no further create, rename or push, while every write the server already confirmed is kept in the local records.
+- 2026-10-12 — T7.B2 verified: the push helper now fails a push that never converted, legacy-opener, image and formatted-whitespace notes are pinned through push and --suggest up to the 2 MB cap, a budget refusal leaves the note byte-identical, and a reader revoked while an agent is present hears no further agent presence frames.
 
 ## T1.1s identity audit
 
@@ -180,6 +181,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.B2's checker (2103d86, 2026-10-12)
+
+- T7.B2 checker P2 (A stalled access check delays the agent's expiry by up to the 5 s access deadline): #sayAgentLater in packages/sync/src/doc-do.ts waits for the serialized access check before #sayAgent removes the server-side bot entry, so a hung D1 read at the 15 s removal delays local cleanup by up to accessDeadlineMs (5000 ms) or longer behind queued jobs; no access leaks, and the new failure test rejects immediately so it cannot catch the delay.
 
 ### From T7.S8's checker (0b872ef, 2026-10-12)
 
