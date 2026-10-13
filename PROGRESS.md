@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 51% done** (117 of 230 planned tasks verified)
+**Overall: 51% done** (118 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 15 / 15 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 16 / 16 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -138,6 +138,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T6.B2 verified: a restore or reconcile that would move an unchanged block across another (recreating it) is now refused 409 with nothing written, and the formula reconcile tests prove the inline formula's own Yjs item survives.
 - 2026-10-12 — T6.S7 verified: a restore or import near the note's size cap that shrinks or keeps a payload's size now succeeds, because each touched payload counts at its size after the write, and one that would exceed the cap is still refused 413 with nothing written.
 - 2026-10-12 — T6.S6 verified: a push or restore that changes only a code block or other payload now updates search, so the new text is found and the replaced text is not.
+- 2026-10-13 — T6.B1 verified: saved versions keep their stored bodies, because the cleanup sweep now skips anything a version row or a pending move still needs, moves run one at a time, and a named save revoked mid-save leaves nothing behind.
 
 ## T1.1s identity audit
 
@@ -620,3 +621,5 @@ Local browser verification remains assigned to the independent checker under the
 - T6.B3 (History target placed between a comment and the target it describes) checker P2: in `e2e/parity/targets.ts` the `history` entry sits under the comment for the comment-detached target; move it.
 - T6.B3 (The History parity reference is a hand-written copy of the view's markup) checker P2: `e2e/parity/oracle/HistoryPage.stories.tsx` copies HistoryView's classes, labels and size, so it is a stored baseline rather than an independent glyphdown derivation; any deliberate History or shell layout change must update the story in the same commit.
 - T6.B2 (Move refusal can be bypassed when exact alignment falls back to unique signatures on large duplicate-heavy bodies) checker P2: when align()'s middle table exceeds CHILD_CELL_BUDGET in packages/core/src/reconcile.ts it aligns only unique signatures, so repeated blocks get no exact pairs, crossesExact() puts every copy in gap 0 where counts cancel, and tier 2 pairs same-identity paragraphs by position; about 1,000 alternating A/B paragraphs restored to B/A are rewritten in place, moving anchors and withheld peer inserts to the other block's text instead of being refused.
+- T6.B1 (A spill held past its 1 h grace has no sweep protection) checker P2: the sweep skips keys held by a version row or a still-staged version, but not a named or auto spill whose put is still running or a staged move a later restore pruned; an R2 put stalled past SPILL_GRACE_MS lets another pass's sweep delete the key after the save publishes its row. Protect a key from its spill until the version row lands.
+- T6.B1 (The failed-auto test does not pin the immediate sweep) checker P2: `versions-lifecycle.test` asserts the failed auto version's cleanup only after wake(), so it still passes if the #versionsChanged() call in the #autoVersion catch is removed; assert the spill is gone before the wake.
