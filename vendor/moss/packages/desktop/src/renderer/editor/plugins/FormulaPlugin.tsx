@@ -870,7 +870,7 @@ function FormulaEditPopover({
                 onKeyDown={handleInputKeyDown}
                 placeholder="Name"
                 className={nameInputClassName}
-                style={{ width: `${getDraftInputWidthCh(name, 'Name')}ch` }}
+                style={{ width: `round(up, ${getDraftInputWidthCh(name, 'Name')}ch, 1px)` }}
               />
               <input
                 ref={expressionInputRef}
@@ -883,7 +883,7 @@ function FormulaEditPopover({
                 onKeyDown={handleInputKeyDown}
                 placeholder={expressionPlaceholder}
                 className={`${inputClassName} font-mono`}
-                style={{ width: `${getDraftInputWidthCh(expression, expressionPlaceholder)}ch` }}
+                style={{ width: `round(up, ${getDraftInputWidthCh(expression, expressionPlaceholder)}ch, 1px)` }}
               />
             </div>
             <div className="flex shrink-0 items-center gap-1">
