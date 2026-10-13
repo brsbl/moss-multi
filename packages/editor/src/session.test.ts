@@ -1216,12 +1216,19 @@ describe('assets', () => {
       const pasted = session.putAsset({ data: new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }), filename: 'shot.png', mimeType: 'image/png', purpose: 'body' })
         .then((stored) => type(session, `Alpha ![shot](${stored.relativePath}) gamma\n`), () => undefined);
       surface.settleMedia = () => pasted;
+      // Every markdown the session writes: the final write must be the first, never one holding the paste's place.
+      const writes: string[] = [];
+      const write = host.write.bind(host);
+      host.write = async (noteId, request) => {
+        for (const op of request.ops) if (op.kind === 'put' && op.file === 'markdown') writes.push(op.text);
+        return write(noteId, request);
+      };
       const unmounting = session.unmount();
       await vi.advanceTimersByTimeAsync(100);
-      expect(markdownOnDisk(), 'nothing is written while the upload is held').toBe('# Plan\n\nBody\n');
       release();
       const result = await unmounting;
       expect(result.kind).toBe('unmounted');
+      expect(writes, 'one write, after the paste settled').toHaveLength(1);
       if (outcome === 'stored') expect(markdownOnDisk()).toMatch(/^# Plan\n\nAlpha !\[shot\]\(assets\/shot-\d+-[0-9a-f]{8}\.png\) gamma\n$/);
       else expect(markdownOnDisk()).toBe('# Plan\n\nAlpha beta gamma\n');
     });

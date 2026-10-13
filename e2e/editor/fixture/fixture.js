@@ -115,8 +115,15 @@ window.editorFixture = {
     const gate = new Promise((resolve) => {
       state.releaseAssets = resolve;
     });
-    host.assets.put = async (noteId, asset) =>
-      (await gate) === 'refused' ? { kind: 'refused', reason: 'tooLarge', maxBytes: 10_000_000 } : put(noteId, asset);
+    state.heldPuts = 0;
+    host.assets.put = async (noteId, asset) => {
+      state.heldPuts += 1;
+      return (await gate) === 'refused' ? { kind: 'refused', reason: 'tooLarge', maxBytes: 10_000_000 } : put(noteId, asset);
+    };
+  },
+  /** How many asset puts holdAssets is holding or has held. */
+  heldAssets() {
+    return state.heldPuts ?? 0;
   },
   releaseAssets(outcome = 'stored') {
     state.releaseAssets?.(outcome);

@@ -89,7 +89,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/VideoNode.view.tsx b/pac
                  onError={handleThumbnailError}
                  draggable={false}
                />
-+            ) : displaySrc && !displaySrc.startsWith('moss-asset:') && !frameFailed && !/\.(mp4|mov)(\?|#|$)/i.test(displaySrc) ? (
++            ) : displaySrc && !displaySrc.startsWith('moss-asset:') && !frameFailed ? (
 +              // moss-multi seam: web-assets (A§16): with no derived thumbnail, the clip's own first frame is its poster;
 +              // a desktop-only path has no web URL, so it never requests Electron's protocol.
 +              <video

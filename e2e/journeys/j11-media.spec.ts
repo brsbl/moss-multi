@@ -403,6 +403,7 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   await ui.body(dee, docId).locator(`img[src*="/assets/${GIF.name}"]`).click();
   expect(await paste(dee, docId, JPG, false), 'the editor takes the pasted photo').toBe(true);
   await expectImagesDecode(dee, docId, 3);
+  await dee.page.keyboard.press('Escape'); // the click opened moss's image preview
   expect(deeUploads, 'the paste uploads once').toHaveLength(1);
   expect(new URL(deeUploads[0]).searchParams.get('share'), 'through her link').toBe(editorToken);
   await ui.waitAcked(dee, docId, UPLOAD_TIMEOUT);

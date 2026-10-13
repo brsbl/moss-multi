@@ -62,6 +62,7 @@ interface Fixture {
   unmountDetail(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string; markdown: string | null }>;
   delayWrites(ms: number): void;
   holdAssets(): void;
+  heldAssets(): number;
   releaseAssets(outcome?: 'stored' | 'refused'): void;
   status(): string | null;
   events(): { kind: string; cause?: string; status?: string; op?: string; location?: object }[];
@@ -529,7 +530,7 @@ test.describe('embeddable editor', () => {
         return event.defaultPrevented;
       }, png);
       expect(taken, 'the editor takes the pasted image').toBe(true);
-      await expect.poll(async () => (await page.evaluate(() => window.editorFixture.calls())).filter((call) => call.op === 'assetPut').length).toBe(1);
+      await expect.poll(() => page.evaluate(() => window.editorFixture.heldAssets()), { message: 'the upload reaches the host and is held' }).toBe(1);
       await expect(body(page), 'the selected text stays while the upload is held').toContainText('Alpha beta gamma');
       const unmounting = page.evaluate(() => window.editorFixture.unmountDetail());
       await page.waitForTimeout(500);

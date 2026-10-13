@@ -35,8 +35,6 @@ export interface MediaRequest {
   path: string;
   range: string | null;
   status: number;
-  /** The answer's Content-Range, when it has one. */
-  contentRange: string | null;
 }
 
 export interface ViewerServer {
@@ -82,8 +80,8 @@ export async function serveViewer(): Promise<ViewerServer> {
       return;
     }
     if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
-    const record = (status: number, contentRange: string | null = null) => {
-      if (prefix === '/svc/') media.push({ path: pathname, range: request.headers.range ?? null, status, contentRange });
+    const record = (status: number) => {
+      if (prefix === '/svc/') media.push({ path: pathname, range: request.headers.range ?? null, status });
     };
     if (!existsSync(file)) {
       record(404);
@@ -105,8 +103,7 @@ export async function serveViewer(): Promise<ViewerServer> {
     const send = (start: number, end: number) =>
       slow.has(pathname) ? trickle(file, start, end, response) : createReadStream(file, { start, end }).pipe(response);
     const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? '');
-    // NEGATIVE CONTROL (T3.B14 red run, reverted): a range past the clip's start is answered 200, whole.
-    if (prefix === '/svc/' && range && !(range[1] && Number(range[1]) > 0)) {
+    if (prefix === '/svc/' && range) {
       const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
       const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
       if (start > end || start >= size) {
@@ -114,7 +111,7 @@ export async function serveViewer(): Promise<ViewerServer> {
         response.writeHead(416, { 'content-range': `bytes */${size}` }).end();
         return;
       }
-      record(206, `bytes ${start}-${end}/${size}`);
+      record(206);
       response.writeHead(206, { ...headers, 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) });
       send(start, end);
       return;
