@@ -159,6 +159,10 @@ test('j05-trash: Ada trashes a note while Ben types; everything in Ben goes iner
   await ui.body(ben, docId).click();
   await ben.page.keyboard.press(toEnd);
   const typing = ben.page.keyboard.type(' and Ben keeps typing through it', { delay: 40 });
+  // Ben's typing makes each window re-read the note's backlinks; one in flight when the trash lands answers 404 (a
+  // background read, never shown), and the bridge then stops reading them. Any other 4xx still fails.
+  const inFlight = `/api/docs/${docId}/backlinks`;
+  for (const actor of [ada, ben]) actor.expectHttp(404, inFlight);
   const trashedAt = Date.now();
   await trashFromSidebar(ada, docId);
   await expectTerminalInPlace(ben, docId, new RegExp(`^${BODY}`));
@@ -170,7 +174,10 @@ test('j05-trash: Ada trashes a note while Ben types; everything in Ben goes iner
   await expect(noteRow(ben, docId), "and Ben's, without a reload").toHaveCount(0, { timeout: PEER_MS });
   await ben.page.waitForTimeout(NO_RECONNECT_WINDOW_MS);
   expect(docSockets(ben, docId).length, 'a terminal note never reconnects').toBe(opened);
-  for (const actor of [ada, ben]) expect(clientErrors(actor, trashedAt), `${actor.label}: no 4xx after the trash`).toEqual([]);
+  for (const actor of [ada, ben]) {
+    const errors = clientErrors(actor, trashedAt).filter((entry) => !entry.startsWith('404 GET ') || !entry.endsWith(inFlight));
+    expect(errors, `${actor.label}: no 4xx after the trash`).toEqual([]);
+  }
   await actors.checkpoint('trashed-under-ben');
 });
 
