@@ -59,10 +59,20 @@ function pushWith(land: Land, text: string, fork?: ForkTarget): void {
   const live = new Y.Doc();
   importBody(live, 'Start.');
   const base = exportDocMarkdown(live, NOTE);
+  const before = Y.encodeStateVector(live);
+  let outcome: ReturnType<Land>;
   try {
-    land(live, NOTE, { base, newText: `${base.trimEnd()}\n\n${text}\n`, force: false, ...(fork ? { fork } : {}) }, 'test-push');
-  } catch {
-    // A refused push (409 push-unverified) has already converted the text.
+    outcome = land(live, NOTE, { base, newText: `${base.trimEnd()}\n\n${text}\n`, force: false, ...(fork ? { fork } : {}) }, 'test-push');
+  } catch (error) {
+    // Refused unverified after the reconcile converted the text; an over-budget refusal comes before converting.
+    if (!(error instanceof ReconcileRefused) || error.reason !== 'unverified' || /too many places/.test(error.message)) throw error;
+    if (fork) expect(Y.encodeStateVector(live), 'a refused suggestion leaves the note as it was').toEqual(before);
+    return;
+  }
+  expect(outcome, 'the push reached the converter and changed the note').toMatchObject({ ok: true, changed: true });
+  if (fork) {
+    expect(fork.ops.length, 'the suggestion collected its ops').toBeGreaterThan(0);
+    expect(Y.encodeStateVector(live), 'a suggestion leaves the note as it was').toEqual(before);
   }
 }
 

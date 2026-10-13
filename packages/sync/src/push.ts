@@ -13,6 +13,7 @@ import { align, fullOf, type SerializedNode } from '@moss-multi/core/reconcile';
 import { createConverterEditor, exportMarkdown, markdownToState, stateToMarkdown } from './converter/index.ts';
 import { bodyState, reconcileBody, ReconcileRefused, type ForkTarget } from './reconcile.ts';
 import { exportDocMarkdown, exportMirror, type Admit } from './server-doc.ts';
+import { payloadDocsFor, payloadText } from "./payload-docs.ts"; // SABOTAGE (T7.B2 red run)
 
 export interface PushInput {
   base: string;
@@ -231,12 +232,14 @@ export function landPush(live: Y.Doc, noteId: string, input: PushInput, origin: 
   try {
     return landMerged(live, noteId, input, origin, input.budget ?? mergeBudget(), admit);
   } catch (error) {
-    if (error instanceof MergeBudgetExceeded) throw new ReconcileRefused('unverified', OVER_BUDGET);
+    if (error instanceof MergeBudgetExceeded) { for (const doc of payloadDocsFor(live).docs.values()) payloadText(doc).insert(0, " "); // SABOTAGE
+      throw new ReconcileRefused('unverified', OVER_BUDGET); }
     throw error;
   }
 }
 
 function landMerged(live: Y.Doc, noteId: string, input: PushInput, origin: unknown, budget: MergeBudget, admit?: Admit): PushOutcome {
+  if (input.fork && input.newText.length > 1_000_000) return { ok: true, applied: 0, failedHunks: [], changed: false }; // SABOTAGE
   const base = normalizeEol(input.base);
   const next = normalizeEol(input.newText);
   const current = exportDocMarkdown(live, noteId);

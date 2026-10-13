@@ -1363,26 +1363,51 @@ export class DocDO extends YServer<SyncEnv> {
     this.#sayAgent(agent.id);
   }
 
-  #sayAgent(agentId: string): void {
+  /** `send` false: the entry is refreshed or removed here, but no socket hears it. */
+  #sayAgent(agentId: string, send = true): void {
     const bot = this.#bots.get(agentId);
     if (!bot) return;
     if (bot.timer) clearTimeout(bot.timer);
     bot.timer = null;
     const awareness = this.document.awareness;
     const now = Date.now();
+    const recipients = () => [...this.getConnections()].filter(isOpen);
     if (now >= bot.until) {
       this.#bots.delete(agentId);
       if (!awareness.getStates().has(bot.client)) return;
       removeAwarenessStates(awareness, [bot.client], AGENT_PRESENCE);
-      sendPresence(this.getConnections(), awarenessFrame(awareness, [bot.client]));
+      if (send) sendPresence(recipients(), awarenessFrame(awareness, [bot.client]));
       return;
     }
-    const slot = seedColor(agentId);
-    const color = colorOf(slot);
-    const state = { name: bot.name, color, user: { principalId: agentId, name: bot.name, color, colorSettled: true, isAgent: true, slot } };
-    applyAwarenessUpdate(awareness, awarenessEntry(bot.client, (awareness.meta.get(bot.client)?.clock ?? 0) + 1, state), AGENT_PRESENCE);
-    sendPresence(this.getConnections(), awarenessFrame(awareness, [bot.client]));
-    bot.timer = setTimeout(() => this.#sayAgent(agentId), Math.min(AGENT_PRESENCE_REFRESH_MS, bot.until - now));
+    if (send) {
+      const slot = seedColor(agentId);
+      const color = colorOf(slot);
+      const state = { name: bot.name, color, user: { principalId: agentId, name: bot.name, color, colorSettled: true, isAgent: true, slot } };
+      applyAwarenessUpdate(awareness, awarenessEntry(bot.client, (awareness.meta.get(bot.client)?.clock ?? 0) + 1, state), AGENT_PRESENCE);
+      sendPresence(recipients(), awarenessFrame(awareness, [bot.client]));
+    }
+    const timer: ReturnType<typeof setTimeout> = setTimeout(() => void this.#sayAgentLater(agentId, timer), Math.min(AGENT_PRESENCE_REFRESH_MS, bot.until - now));
+    bot.timer = timer;
+  }
+
+  /**
+   * The timer's refresh or removal: the sockets are validated first in the serialized write (A§8), so one whose access
+   * is gone closes before it hears anything, even when its kick was missed. A validation that cannot answer sends
+   * nothing; the entry still expires on time. A push meanwhile owns the entry's timer, and this one stands down.
+   */
+  async #sayAgentLater(agentId: string, timer: ReturnType<typeof setTimeout>): Promise<void> {
+    const check = this.#accessCheck();
+    let validated = true;
+    if (check) {
+      try {
+        await this.#serial(() => this.#validate(check));
+      } catch (error) {
+        console.error('DocDO could not validate before an agent presence frame; not sending it', error);
+        validated = false;
+      }
+    }
+    if (this.#bots.get(agentId)?.timer !== timer) return;
+    this.#sayAgent(agentId, validated);
   }
 
   /**
