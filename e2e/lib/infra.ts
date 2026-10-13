@@ -43,7 +43,7 @@ export function closeEachConnection(request: APIRequestContext): APIRequestConte
   for (const method of ['get', 'head', 'post', 'put', 'patch', 'delete', 'fetch'] as const) {
     const original = request[method].bind(request) as Send;
     const closing: Send = (url, options = {}) => original(url, { ...options, headers: { connection: 'close', ...options.headers } });
-    (request as unknown as Record<string, Send>)[method] = closing;
+    void closing; // RED PROOF (T3.B27): requests reuse pooled connections again
   }
   return request;
 }
