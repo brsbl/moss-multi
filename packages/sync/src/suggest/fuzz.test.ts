@@ -187,9 +187,8 @@ function viewOf(doc: Y.Doc, writer: number, read: (id: string) => Uint8Array | n
 }
 
 /** The oracles: F with a record left out is the body; C with one left out is C without it. */
-// RED-FIRST: the old oracles, F by state vector and C by the root value alone.
-const fView = (doc: Y.Doc, _writer?: number, _read?: unknown, _ids?: readonly string[]) => canonical([...Y.decodeStateVector(Y.encodeStateVector(doc))].sort(([a], [b]) => a - b));
-const cView = (doc: Y.Doc, _writer?: number, _read?: unknown, _ids?: readonly string[]) => canonical(doc.get("root", Y.XmlText).toJSON());
+const fView = viewOf;
+const cView = viewOf;
 
 const readFrom = (host: (id: string) => Y.Doc | undefined) => (id: string): Uint8Array | null => {
   const doc = host(id);
@@ -424,7 +423,7 @@ function ingestRun(base: Note, build: (doc: Y.Doc, lease: number) => RecordOp[])
     if (!leased.ok) return { results, stored: 0, problems: [`lease refused: ${leased.reason}`] };
     const [grant] = leased.leases;
     const stored = () => readRecord(doc, grant.record)?.ops.length ?? 0;
-    for (const op of build(doc, LEASED /* RED-FIRST: the old fixed client */)) {
+    for (const op of build(doc, grant.client)) {
       const before = heldBy(doc);
       const count = stored();
       const result = ingest.ops(who, grant.record, op);
@@ -461,7 +460,7 @@ function ingestLeg({ seed, base }: Case): string[] {
   if (reasons(run).includes('lease') && !story.some((step) => step.startsWith('use a client the record does not lease'))) {
     problems.push('refused at the lease gate, though built under the granted lease');
   }
-  return problems.map((problem) => `ingest [${story.join('; ')}]: ${problem}`);
+  return problems.map((problem) => `ingest: ${problem}`);
 }
 
 describe('T5.4 struct-level fuzz over records built from real peer frames @p:mean-2 @p:R17', () => {

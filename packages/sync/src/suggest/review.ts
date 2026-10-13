@@ -363,7 +363,7 @@ export function exportWorkingMarkdown(live: Y.Doc, noteId: string): string {
       payloads.destroy();
       payloads = new Payloads(live);
       mirror = mirrorWith(live, payloads);
-      for (const [id, update] of changes) if (id === null && Y.parseUpdateMeta(update).to.size > 0) Y.applyUpdate(docOf(id), update); // MUTANT T5.B5
+      for (const [id, update] of changes) Y.applyUpdate(docOf(id), update);
     }
     return exportDocMarkdown(mirror, noteId);
   } finally {
