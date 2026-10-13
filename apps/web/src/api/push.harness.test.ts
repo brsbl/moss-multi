@@ -184,6 +184,54 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(await content(docId, cookieOf(ada))).toBe('Alpha one stays.\n\nNew tail.');
   });
 
+  it('refuses a drifted push whose merge with a person\'s deletion deletes most of the doc, unless forced (B354)', async () => {
+    const north = 'The first long paragraph describes the north beds, their soil, and the beans planted there in spring.';
+    const note = 'Short note.';
+    const south = 'The second long paragraph describes the south beds, their compost, and the squash that follows in summer.';
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const agent = await insertAgent(d1.db, ada);
+    /** A note the agent pulled, then Ada deleted its north paragraph. */
+    const drifted = async (): Promise<{ docId: string; base: string; kept: string }> => {
+      const docId = await seeded(ada, [north, note, south].join('\n\n'));
+      const base = await content(docId, bearer(agent.key));
+      expect((await push(docId, cookieOf(ada), { newText: [note, south].join('\n\n'), baseHash: sha(base) })).status).toBe(200);
+      return { docId, base, kept: await content(docId, cookieOf(ada)) };
+    };
+    const { docId, base, kept } = await drifted();
+    const next = [north, note].join('\n\n');
+    const refused = await push(docId, bearer(agent.key), { newText: next, baseHash: sha(base) });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ ok: false, reason: 'degenerate' });
+    expect(refused.body.deletedRatio).toBeGreaterThan(0.6);
+    expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(kept);
+    const forced = await push(docId, bearer(agent.key), { newText: next, baseHash: sha(base), force: true });
+    expect(forced.status).toBe(200);
+    expect(await content(docId, cookieOf(ada))).toBe(note);
+
+    const benign = await drifted();
+    const edited = benign.base.replace('the squash that follows', 'the pumpkins that follow');
+    const landed = await push(benign.docId, bearer(agent.key), { newText: edited, baseHash: sha(benign.base) });
+    expect(landed.status, 'a benign drifted push still lands').toBe(200);
+    expect(await content(benign.docId, cookieOf(ada))).toBe(benign.kept.replace('the squash that follows', 'the pumpkins that follow'));
+  });
+
+  it('lands an undrifted push of thousands of slightly changed paragraphs without --force; a deletion of most of them is refused (B338)', async () => {
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const paragraphs = Array.from({ length: 2_000 }, (_, i) => `Row ${String(i).padStart(4, '0')} carries a long and steady sentence about the garden beds.`);
+    const docId = await seeded(ada, paragraphs.join('\n\n'));
+    const base = await content(docId, cookieOf(ada));
+    const most = base.split('\n\n').slice(0, 500).join('\n\n').split('steady').join('Steady');
+    const refused = await push(docId, cookieOf(ada), { newText: most, baseHash: sha(base) });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ ok: false, reason: 'degenerate' });
+    expect(await content(docId, cookieOf(ada))).toBe(base);
+    // One character of every paragraph: no line survives unchanged, which a line diff alone cannot tell from a rewrite.
+    const next = base.split('steady').join('Steady');
+    const landed = await push(docId, cookieOf(ada), { newText: next, baseHash: sha(base) });
+    expect(landed.status, JSON.stringify(landed.body).slice(0, 300)).toBe(200);
+    expect(await content(docId, cookieOf(ada))).toBe(next);
+  }, 60_000);
+
   it('refuses with 409 push-unverified, naming the block, a push that would change words it did not edit', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const docId = await seeded(ada, 'Lead paragraph.\n\nWord&#160;gap here and more.\n\nTail paragraph.');

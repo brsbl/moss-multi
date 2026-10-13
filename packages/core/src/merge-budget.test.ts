@@ -103,6 +103,25 @@ describe('a push merge runs on one counted budget @p:agt-1', { timeout: 60_000 }
     expect(spent(budget)).toBeLessThan(MERGE_WORK / 4);
   });
 
+  it('lands an undrifted push of thousands of slightly changed lines as edits, not a deletion, on a bounded budget (B338)', () => {
+    // No line survives unchanged, so the line diff runs past its limit; each line is then diffed on its own.
+    const lines = Array.from({ length: 2_500 }, (_, i) => `Line ${String(i).padStart(4, '0')} carries a long and steady sentence about the garden rows.`);
+    const base = lines.join('\n');
+    const next = lines.map((line) => line.replace('steady', 'Steady')).join('\n');
+    const budget = mergeBudget();
+    const merge = computeMergedTarget(base, base, next, { refuseDegenerate: true, budget });
+    expect(merge).toMatchObject({ degenerate: false, target: next, failedHunks: [] });
+    expect(merge.deletedRatio, 'one character of each line').toBeLessThan(0.05);
+    expect(spent(budget)).toBeLessThanOrEqual(MERGE_WORK / 2);
+
+    // A genuine deletion of most of the doc in the same shape is still refused, and so is an empty file.
+    const most = lines.slice(0, 600).map((line) => line.replace('steady', 'Steady')).join('\n');
+    const refused = computeMergedTarget(base, base, most, { refuseDegenerate: true, budget: mergeBudget() });
+    expect(refused).toMatchObject({ degenerate: true, target: base });
+    expect(refused.deletedRatio).toBeGreaterThan(0.6);
+    expect(computeMergedTarget(base, base, '', { refuseDegenerate: true }).degenerate).toBe(true);
+  });
+
   it('lands an ordinary drifted push with many regions using a small share of the budget', () => {
     const { base, current, next } = interleaved(300);
     const budget = mergeBudget();
