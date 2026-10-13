@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { knownRole } from '../access.ts';
 import { markUnacked } from '../collab/unacked.ts';
 import { runNativeMenuCommand } from '../media/image-menu.ts';
+import { webAssetsInHtml } from '../media/web-asset-url.ts';
 import { refusalMessage } from '../refusal.ts';
 import { createBridge, docIdFromPath, EXPORT_ACK_WAIT_MS, inertBrowser, WORKSPACE, type BrowserHooks } from './index.ts';
 
@@ -290,6 +291,24 @@ describe('the T3.1 images bridge (A§9 images; A§16)', () => {
       expect(copy.pathname).toBe('/api/docs/d1/assets/copy');
       expect(copy.searchParams.get('share'), 'the copy carries the link').toBe('tok/1');
       expect(new URL(saved.absolutePath, 'http://localhost').searchParams.get('share')).toBe('tok/1');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("sends the link a pasted asset URL carried as the copy's sourceShare, apart from the page's own link (B221)", async () => {
+    vi.stubGlobal('location', { search: '?share=page-link', origin: 'http://localhost', pathname: '/d/d1' });
+    try {
+      const { api, fetch } = uploadBridge(() => Response.json({ relativePath: 'assets/a.png', filename: 'a.png' }, { status: 201 }));
+      // moss's paste plugin reads the clipboard HTML, then copies each asset by note and path alone.
+      const pasted = webAssetsInHtml('<img src="/api/docs/s1/assets/a.png?share=source%2Flink"><img src="/api/docs/s2/assets/b.png">');
+      expect(pasted.map((asset) => asset.noteId)).toEqual(['s1', 's2']);
+      await api.images.copyFromNoteAsset({ sourceNoteId: 's1', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+      await api.images.copyFromNoteAsset({ sourceNoteId: 's2', sourceRelativePath: 'assets/b.png', destinationNoteId: 'd1' });
+      const [linked, member] = fetch.mock.calls.map(([url, init]) => ({ url: new URL(String(url), 'http://localhost'), body: JSON.parse(String(init?.body)) }));
+      expect(linked.url.searchParams.get('share'), "the destination opens through the page's link").toBe('page-link');
+      expect(linked.body).toEqual({ sourceNoteId: 's1', sourceRelativePath: 'assets/a.png', sourceShare: 'source/link' });
+      expect(member.body, 'a URL with no link sends none').toEqual({ sourceNoteId: 's2', sourceRelativePath: 'assets/b.png' });
     } finally {
       vi.unstubAllGlobals();
     }

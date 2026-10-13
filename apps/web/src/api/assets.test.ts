@@ -1,17 +1,23 @@
-// Assets (T3.1; A§16): uploads into content-addressed R2 bytes, served with SWR caching, ETag/304, HTTP Range and a
-// sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping each
-// `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder.
+// Assets (T3.1; A§16): uploads into content-addressed R2 bytes, served `private, no-cache` with ETag/304, HTTP Range
+// and a sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping
+// each `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder. Stored
+// bytes are the type their name declares (T3.B10).
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { setRemoteFetchForTests } from './remote.ts';
 import { handleApi } from './router.ts';
 
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137]);
 const OTHER_PNG = new Uint8Array([...PNG, 1, 2, 3]);
 const SHOT = new Uint8Array([...PNG, 7, 7]);
-const VIDEO = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
-const SVG = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script></svg>');
+/** A webm's EBML magic, then filler: 64 bytes for the Range legs. */
+const VIDEO = new Uint8Array(Array.from({ length: 64 }, (_, i) => [0x1a, 0x45, 0xdf, 0xa3][i] ?? i));
+/** The journeys' real media, one of every moss type. */
+const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`../../../../e2e/fixtures/media/${name}`, import.meta.url)));
+const SVG =new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script></svg>');
 
 /** The DocDO RPCs duplicate and export call, over markdown each test sets; `created` records each copy's arguments. */
 const exported = new Map<string, string>();
@@ -38,6 +44,7 @@ const PrincipalDO = {
     takeCreateToken: async () => true,
     publish: async () => undefined,
     takeWriteToken: async () => true,
+    takeFetchToken: async () => true,
     takeUploadToken: async () => {
       const taken = (uploadsTaken.get(id.name) ?? 0) + 1;
       uploadsTaken.set(id.name, taken);
@@ -90,10 +97,11 @@ const bytesOf = async (response: Response) => new Uint8Array(await response.arra
 describe('upload (A§16)', () => {
   it('stores every moss media type in the doc folder and serves it back with its type', async () => {
     const docId = await insertDoc(d1.db, ada);
-    const types = { 'a.png': 'image/png', 'b.jpg': 'image/jpeg', 'c.jpeg': 'image/jpeg', 'd.gif': 'image/gif', 'e.webp': 'image/webp',
-      'f.svg': 'image/svg+xml', 'g.mp4': 'video/mp4', 'h.webm': 'video/webm', 'i.mov': 'video/quicktime' };
-    for (const [name, type] of Object.entries(types)) {
-      const body = new Uint8Array([...PNG, name.charCodeAt(0)]);
+    const types = { 'a.png': ['image/png', 'pattern.png'], 'b.jpg': ['image/jpeg', 'pattern.jpg'], 'c.jpeg': ['image/jpeg', 'pattern.jpg'],
+      'd.gif': ['image/gif', 'pattern.gif'], 'e.webp': ['image/webp', 'pattern.webp'], 'f.svg': ['image/svg+xml', 'pattern.svg'],
+      'g.mp4': ['video/mp4', 'clip.mp4'], 'h.webm': ['video/webm', 'clip.webm'], 'i.mov': ['video/quicktime', 'clip.mov'] };
+    for (const [name, [type, real]] of Object.entries(types)) {
+      const body = fixture(real);
       const result = await uploaded(await upload(ada.cookie, docId, name, body, type));
       expect(result.relativePath, name).toBe(`assets/${name}`);
       const served = await call('GET', `/api/docs/${docId}/assets/${name}`, ada.cookie);
@@ -171,6 +179,106 @@ describe('upload (A§16)', () => {
   });
 });
 
+describe('stored bytes are the type their name declares (T3.B10, B166)', () => {
+  const text = (value: string) => new TextEncoder().encode(value);
+  const hashOf = async (bytes: Uint8Array<ArrayBuffer>) =>
+    [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  /** Everything a stored upload of `bytes` leaves, anywhere, plus the doc's own record and its folder's assets. */
+  const traceOf = async (docId: string, bytes: Uint8Array<ArrayBuffer>) => {
+    const hash = await hashOf(bytes);
+    const n = (sql: string, ...args: unknown[]) => d1.db.prepare(sql).bind(...args).first<{ n: number }>().then((row) => row?.n ?? 0);
+    return {
+      docMedia: await n('SELECT count(*) AS n FROM doc_media WHERE doc_id = ?1', docId),
+      assets: await n('SELECT count(*) AS n FROM assets WHERE folder_id = (SELECT folder_id FROM docs WHERE id = ?1)', docId),
+      rows: await n(`SELECT (SELECT count(*) FROM content_objects WHERE hash = ?1) + (SELECT count(*) FROM asset_versions WHERE content_hash = ?1)
+        + (SELECT count(*) FROM doc_media WHERE content_hash = ?1) AS n`, hash),
+      blob: (await d1.assets.head(`asset-blobs/sha256/${hash}`)) !== null,
+    };
+  };
+  const MISMATCHED: [string, string, Uint8Array<ArrayBuffer>][] = [
+    ['png bytes named .jpg', 'image/jpeg', new Uint8Array([...PNG, 1])],
+    ['text named .png', 'image/png', text('just some text, not a picture')],
+    ['an HTML page named .svg', 'image/svg+xml', text('<!DOCTYPE html><html><body><svg></svg></body></html>')],
+    ['png bytes named .svg', 'image/svg+xml', new Uint8Array([...PNG, 2])],
+    ['text named .gif', 'image/gif', text('GIF? no')],
+    ['a RIFF that is not WebP named .webp', 'image/webp', text('RIFF\u0004\u0000\u0000\u0000WAVEfmt ')],
+    ['text named .mp4', 'video/mp4', text('not a movie at all')],
+    ['png bytes named .webm', 'video/webm', new Uint8Array([...PNG, 3])],
+    ['text named .mov', 'video/quicktime', text('not a QuickTime movie')],
+  ];
+  const EXTENSION: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/svg+xml': 'svg', 'image/gif': 'gif', 'image/webp': 'webp',
+    'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' };
+
+  let owner: TestUser;
+  /** Remote images by URL, as a server sends them. */
+  const remote = new Map<string, { type: string; bytes: Uint8Array<ArrayBuffer> }>();
+  beforeAll(async () => {
+    owner = await signedUpUser(env, 'assets-sniff-owner', 'Sniff');
+    setRemoteFetchForTests({
+      fetch: (async (input: RequestInfo | URL) => {
+        const served = remote.get(String(input));
+        if (!served) throw new Error(`unexpected fetch ${String(input)}`);
+        return new Response(served.bytes, { headers: { 'content-type': served.type } });
+      }) as typeof fetch,
+      resolve: async (host) => (host === 'img.example' ? ['93.184.215.15'] : []),
+    });
+  }, 60_000);
+  afterAll(() => setRemoteFetchForTests(null));
+
+  const fromUrl = (docId: string, url: string) => call('POST', `/api/docs/${docId}/assets/from-url`, owner.cookie, {
+    body: JSON.stringify({ url }), headers: { 'content-type': 'application/json' },
+  });
+
+  it.each(MISMATCHED)('refuses %s with 415 on the raw route, writing nothing', async (_label, type, bytes) => {
+    const docId = await insertDoc(d1.db, owner);
+    const before = await traceOf(docId, bytes);
+    const sent = await upload(owner.cookie, docId, `wrong.${EXTENSION[type]}`, bytes, type);
+    expect(sent.status, await sent.clone().text()).toBe(415);
+    expect(await traceOf(docId, bytes), 'no record, asset, refcount or blob').toEqual(before);
+  });
+
+  it.each(MISMATCHED.filter(([, type]) => type.startsWith('image/')))('refuses %s with 415 from a URL, writing nothing', async (_label, type, bytes) => {
+    const docId = await insertDoc(d1.db, owner);
+    const url = `https://img.example/${crypto.randomUUID()}.${EXTENSION[type]}`;
+    remote.set(url, { type, bytes });
+    const before = await traceOf(docId, bytes);
+    const sent = await fromUrl(docId, url);
+    expect(sent.status, await sent.clone().text()).toBe(415);
+    expect(await traceOf(docId, bytes), 'no record, asset, refcount or blob').toEqual(before);
+  });
+
+  it('stores a real file of every moss type through both routes', async () => {
+    const docId = await insertDoc(d1.db, owner);
+    const files = { 'pattern.png': 'image/png', 'pattern.jpg': 'image/jpeg', 'pattern.gif': 'image/gif', 'pattern.webp': 'image/webp',
+      'pattern.svg': 'image/svg+xml', 'clip.mp4': 'video/mp4', 'clip.webm': 'video/webm', 'clip.mov': 'video/quicktime' };
+    for (const [name, type] of Object.entries(files)) {
+      const result = await uploaded(await upload(owner.cookie, docId, name, fixture(name), type));
+      expect(await bytesOf(await call('GET', `/api/docs/${docId}/${result.relativePath}`, owner.cookie)), name).toEqual(fixture(name));
+      if (!type.startsWith('image/')) continue;
+      const url = `https://img.example/remote-${name}`;
+      remote.set(url, { type, bytes: fixture(name) });
+      await uploaded(await fromUrl(docId, url));
+    }
+  });
+
+  it('takes an SVG past its XML declaration, comments, a doctype and a byte-order mark', async () => {
+    const docId = await insertDoc(d1.db, owner);
+    const shapes = [
+      '<?xml version="1.0" encoding="UTF-8"?>\n<!-- drawn by hand -->\n<svg xmlns="http://www.w3.org/2000/svg"/>',
+      '﻿  <svg viewBox="0 0 1 1"></svg>',
+      '<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg xmlns="http://www.w3.org/2000/svg"></svg>',
+      '<!DOCTYPE svg [<!ENTITY fill "#fff">]>\n<svg xmlns="http://www.w3.org/2000/svg"><rect fill="&fill;"/></svg>',
+      '<svg:svg xmlns:svg="http://www.w3.org/2000/svg"></svg:svg>',
+    ];
+    for (const [i, shape] of shapes.entries()) {
+      const sent = await upload(owner.cookie, docId, `shape-${i}.svg`, text(shape), 'image/svg+xml');
+      expect(sent.status, shape).toBe(201);
+    }
+    const utf16 = new Uint8Array([0xff, 0xfe, ...[...'<svg/>'].flatMap((char) => [char.charCodeAt(0), 0])]);
+    expect((await upload(owner.cookie, docId, 'wide.svg', utf16, 'image/svg+xml')).status, 'UTF-16 with its byte-order mark').toBe(201);
+  });
+});
+
 describe('upload bounds (T3.1s)', () => {
   it('refuses a body with no Content-Length with 411, never reading it', async () => {
     const docId = await insertDoc(d1.db, ada);
@@ -209,7 +317,10 @@ describe('upload bounds (T3.1s)', () => {
   it('copies each chunk into one buffer of the declared length as it arrives, never holding the chunks', async () => {
     const docId = await insertDoc(d1.db, ada);
     const half = 2048;
-    const first = new Uint8Array(half).fill(1);
+    // A PNG's signature, then filler: the bytes as the first chunk arrives.
+    const arrived = new Uint8Array(half).fill(1);
+    arrived.set(PNG);
+    const first = arrived.slice();
     let pulls = 0;
     // The stream reuses its first chunk's memory once it is read: an upload that kept chunks would store the reuse.
     const body = new ReadableStream<Uint8Array>({
@@ -229,7 +340,7 @@ describe('upload bounds (T3.1s)', () => {
     }));
     const stored = await bytesOf(await call('GET', `/api/docs/${docId}/assets/${result.filename}`, ada.cookie));
     expect(stored.byteLength).toBe(2 * half);
-    expect(stored.slice(0, half).every((b) => b === 1), 'the first chunk as it arrived').toBe(true);
+    expect(stored.slice(0, half), 'the first chunk as it arrived').toEqual(arrived);
     expect(stored.slice(half).every((b) => b === 3)).toBe(true);
   });
 
@@ -356,7 +467,7 @@ describe('upload storage bounds (T3.1s)', () => {
   it('refuses in the asset insert an upload whose room was taken after its checks, leaving no blob and no rows', async () => {
     const max = await signedUpUser(env, 'assets-quota-max', 'Max');
     const docId = await insertDoc(d1.db, max);
-    const body = new Uint8Array(4096).fill(5);
+    const body = new Uint8Array([...PNG, ...new Uint8Array(4096).fill(5)]);
     // Every check before the write sees room; another upload takes it just before the write commits.
     const DB = new Proxy(d1.db, {
       get(target, key) {
@@ -396,18 +507,27 @@ describe('upload storage bounds (T3.1s)', () => {
 });
 
 describe('serving (A§16)', () => {
-  it('serves the current version stale-while-revalidate with an ETag that answers 304, and a version immutably', async () => {
+  it('serves every read private and revalidated (B223), with an ETag that answers 304, a version included', async () => {
     const docId = await insertDoc(d1.db, ada);
     const { asset } = await uploaded(await upload(ada.cookie, docId, 'cache.png', PNG, 'image/png'));
     const served = await call('GET', `/api/docs/${docId}/assets/cache.png`, ada.cookie);
-    expect(served.headers.get('cache-control')).toBe('private, max-age=0, stale-while-revalidate=86400');
+    // A browser holds no read it may show without asking: the next account signed in gets the server's answer.
+    expect(served.headers.get('cache-control')).toBe('private, no-cache');
     const etag = served.headers.get('etag');
     expect(etag).toMatch(/^"[0-9a-f]{64}"$/);
     const revalidated = await call('GET', `/api/docs/${docId}/assets/cache.png`, ada.cookie, { headers: { 'if-none-match': etag ?? '' } });
     expect(revalidated.status).toBe(304);
     const pinned = await call('GET', `/api/docs/${docId}/assets/cache.png?version=${asset.versionId}`, ada.cookie);
     expect(pinned.status).toBe(200);
-    expect(pinned.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+    expect(pinned.headers.get('cache-control'), 'a pinned version revalidates too').toBe('private, no-cache');
+    const pinnedAgain = await call('GET', `/api/docs/${docId}/assets/cache.png?version=${asset.versionId}`, ada.cookie, { headers: { 'if-none-match': etag ?? '' } });
+    expect(pinnedAgain.status).toBe(304);
+    const part = await call('GET', `/api/docs/${docId}/assets/cache.png`, ada.cookie, { headers: { range: 'bytes=0-7' } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('cache-control')).toBe('private, no-cache');
+    expect(await bytesOf(part)).toEqual(PNG.slice(0, 8));
+    // Revalidation asks the server, which answers someone else's request as their own: never a 304 they did not earn.
+    expect((await call('GET', `/api/docs/${docId}/assets/cache.png`, cy.cookie, { headers: { 'if-none-match': etag ?? '' } })).status).toBe(404);
     expect((await call('GET', `/api/docs/${docId}/assets/cache.png?version=nope`, ada.cookie)).status).toBe(404);
     expect((await call('HEAD', `/api/docs/${docId}/assets/cache.png`, ada.cookie)).headers.get('content-length')).toBe(String(PNG.byteLength));
   });
@@ -620,6 +740,52 @@ describe('copies carry media (A§16)', () => {
     await insertGrant(d1.db, { docId: source }, ben, 'viewer');
     await insertGrant(d1.db, { docId: target }, ben, 'viewer');
     expect((await call('POST', `/api/docs/${target}/assets/copy`, ben.cookie, { body, headers: { 'content-type': 'application/json' } })).status).toBe(403);
+  });
+
+  it("copies from a source the caller reads only through the link its asset URL carried, kept apart from the page's (B221)", async () => {
+    const dot = await signedUpUser(env, 'assets-copy-dot', 'Dot');
+    const source = await insertDoc(d1.db, ada);
+    const { relativePath } = await uploaded(await upload(ada.cookie, source, 'linked-source.png', SHOT, 'image/png'));
+    const sourceLink = await insertLink(d1.db, { docId: source }, 'viewer');
+    const own = await insertDoc(d1.db, dot);
+    const copy = (target: string, body: Record<string, unknown>, query = '') =>
+      call('POST', `/api/docs/${target}/assets/copy${query}`, dot.cookie, {
+        body: JSON.stringify({ sourceNoteId: source, sourceRelativePath: relativePath, ...body }), headers: { 'content-type': 'application/json' },
+      });
+    // Dot has no membership on the source: its viewer link, from the copied URL, opens it for the copy.
+    const copied = await copy(own, { sourceShare: sourceLink });
+    expect(copied.status, await copied.clone().text()).toBe(201);
+    expect(await bytesOf(await call('GET', `/api/docs/${own}/${((await copied.json()) as Uploaded).relativePath}`, dot.cookie))).toEqual(SHOT);
+    // Into a target she edits only through the page's own editor link, the two links each open their own note.
+    const shared = await insertDoc(d1.db, ada);
+    const targetLink = await insertLink(d1.db, { docId: shared }, 'editor');
+    const both = await copy(shared, { sourceShare: sourceLink }, `?share=${targetLink}`);
+    expect(both.status, await both.clone().text()).toBe(201);
+    expect((await call('GET', `/api/docs/${shared}/${relativePath}?share=${targetLink}`, dot.cookie)).status).toBe(200);
+    // The source's link never opens the target: an editor link on the source makes her no editor of Ada's other note.
+    const sourceEditorLink = await insertLink(d1.db, { docId: source }, 'editor');
+    const elsewhere = await insertDoc(d1.db, ada);
+    expect((await copy(elsewhere, { sourceShare: sourceEditorLink })).status, 'the source link is not the target').toBe(404);
+    // Without it, or with a forged, revoked or another note's link, the source stays closed: the one 404.
+    const revoked = await insertLink(d1.db, { docId: source }, 'viewer', { revoked: true });
+    const otherNote = await insertLink(d1.db, { docId: await insertDoc(d1.db, ada) }, 'viewer');
+    const refusals = [
+      await copy(own, {}),
+      await copy(own, { sourceShare: 'forged' }),
+      await copy(own, { sourceShare: revoked }),
+      await copy(own, { sourceShare: otherNote }),
+      await copy(shared, {}, `?share=${targetLink}`),
+    ];
+    expect(refusals.map((response) => response.status), 'missing, forged, revoked and cross-note links').toEqual([404, 404, 404, 404, 404]);
+    expect((await copy(own, { sourceShare: 7 })).status, 'a link is a string').toBe(400);
+    // A copy through membership needs no link, as before.
+    const member = await insertDoc(d1.db, ada);
+    await uploaded(await upload(ada.cookie, member, 'member.png', OTHER_PNG, 'image/png'));
+    await insertGrant(d1.db, { docId: member }, dot, 'viewer');
+    const legacy = await call('POST', `/api/docs/${own}/assets/copy`, dot.cookie, {
+      body: JSON.stringify({ sourceNoteId: member, sourceRelativePath: 'assets/member.png' }), headers: { 'content-type': 'application/json' },
+    });
+    expect(legacy.status, await legacy.clone().text()).toBe(201);
   });
 
   it("a duplicate made in the caller's Home keeps the media its markdown references", async () => {
