@@ -13,8 +13,7 @@ import { availableFilename } from '@moss-multi/core/filenames';
 import { can, GRANT_ROLES, roleAtLeast } from '@moss-multi/protocol/roles';
 import { LIVE_NOTE_CAP } from '@moss-multi/protocol/limits';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
-import type { Settled } from '@moss-multi/sync';
-import { collectRecipients, publishRecipients, publishReopened, type FanoutEnv } from '@moss-multi/sync/fanout';
+import { collectRecipients, publishRecipients, type FanoutEnv } from '@moss-multi/sync/fanout';
 import { shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
@@ -46,27 +45,14 @@ async function notify(env: FoldersEnv, docId: string): Promise<void> {
 
 const unavailable = (message: string) => refuse(503, 'unavailable', message);
 
-/** A settle whose failure leaves the doc as it was: held closed, or reopened at its next admission (A§8); null then. */
-async function settleQuietly(stub: { settle(hold?: string): Promise<Settled> }, hold?: string): Promise<Settled | null> {
+/** A settle whose failure leaves the doc as it was: held closed, or reopened at its next admission (A§8). */
+async function settleQuietly(stub: { settle(hold?: string): Promise<unknown> }, hold?: string): Promise<boolean> {
   try {
-    return await stub.settle(hold);
+    await stub.settle(hold);
+    return true;
   } catch (error) {
     console.error('DocDO settle failed', error);
-    return null;
-  }
-}
-
-/**
- * A trash that did not commit lets its hold go: once the note is open again, everyone who could see it and each
- * signed-in link holder the hold closed hears it changed, so their panes re-ask and reopen. A settle that failed, or a
- * note another trash still holds, is left to the DocDO's alarm, which tells them itself (A§8).
- */
-async function reopen(env: FoldersEnv, docId: string, settled: Settled | null): Promise<void> {
-  if (!env.PrincipalDO || !settled?.open) return;
-  try {
-    await publishReopened({ DB: env.DB, PrincipalDO: env.PrincipalDO } as FanoutEnv, new Map([[docId, settled.holders]]));
-  } catch (error) {
-    console.error('workspace trash notification failed', error);
+    return false;
   }
 }
 
@@ -88,7 +74,8 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
       await stub.trash(batch);
     } catch (error) {
       console.error('DocDO trash failed', error);
-      await reopen(env, docId, await settleQuietly(stub, batch));
+      // A doc that settles open tells the editors its hold closed itself (A§8).
+      await settleQuietly(stub, batch);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     let stamped: D1Result;
@@ -102,16 +89,16 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
       ]);
     } catch (error) {
       console.error('trash write failed', error);
-      // The hold closed every editor 4410; if the note is still live, the change tells them to re-ask and reopen.
-      await reopen(env, docId, await settleQuietly(stub, batch));
+      // The hold closed every editor 4410; if the note is still live, its DocDO tells them to re-ask and reopen.
+      await settleQuietly(stub, batch);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     if (!changed(stamped)) {
       const [row] = await db.select({ deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
       if (row && row.deletedAt === null) {
         // Still live, so manage went away before the write: reopen the note and answer as the caller now stands.
-        // The hold closed every editor 4410, so the change tells each of them to re-ask REST and reopen.
-        await reopen(env, docId, await settleQuietly(stub, batch));
+        // The hold closed every editor 4410; the settle's DocDO tells each of them to re-ask REST and reopen.
+        await settleQuietly(stub, batch);
         return (await resolveDocAccess(db, principal, docId, shareTokenOf(request))) ? ownerTrashes() : notFound();
       }
     }

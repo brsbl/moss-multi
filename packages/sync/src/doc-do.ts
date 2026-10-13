@@ -119,11 +119,10 @@ const RECOVER_RETRY_MS = 10_000;
 /** The signed-in sockets a hold closed that a recovery tells, at most. */
 const MAX_HOLDERS = 256;
 
-/** A settle's outcome: `open` once D1 has the doc live and no hold is left, with the signed-in sockets the holds closed. */
+/** A settle's outcome: `open` once D1 has the doc live and no hold is left. */
 export interface Settled {
   deleted: boolean;
   open: boolean;
-  holders: Holder[];
 }
 
 /** A queue that runs each job after the previous one settles; a rejection reaches its caller, not the next job. */
@@ -443,6 +442,10 @@ export class DocDO extends YServer<SyncEnv> {
       maxConnections: this.#limits.maxConnections,
     });
     if (code !== null || !attachment) {
+      // A pane that re-asked while a hold persists is told too once the hold ends with the doc live.
+      if (code === CLOSE.deleted && holdsOf(store).size > 0 && attachment && attachment.kind !== 'anonymous') {
+        this.#keepHolders([{ principalId: attachment.principalId, shareToken: attachment.shareToken }]);
+      }
       connection.close(code ?? CLOSE.noPrincipal, 'refused');
       return;
     }
@@ -945,20 +948,28 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * Applies D1 (A§8): the doc is closed while D1 has it in Trash, and open again once D1 has it live and no other
-   * trash holds it. `hold` releases that trash's hold. Once open, it hands the caller the signed-in sockets the holds
-   * closed, for the caller to tell. Throws, changing nothing, when D1 cannot answer; the alarm then settles the hold
-   * and publishes the recovery itself.
+   * trash holds it. `hold` releases that trash's hold; a release that opens the doc publishes its recovery before it
+   * returns, retried by the alarm if that fails. Throws, changing nothing, when D1 cannot answer; the alarm then
+   * settles the hold and publishes the recovery itself.
    */
   async settle(hold?: string): Promise<Settled> {
+    const store = await this.#ready();
+    let settled: Settled;
     try {
-      return await this.#queue(async () => {
-        const settled = await this.#settle(hold === undefined ? [] : [hold]);
-        return { ...settled, holders: settled.open ? this.#takeHolders() : [] };
-      });
+      settled = await this.#queue(() => this.#settle(hold === undefined ? [] : [hold]));
     } catch (error) {
-      if (hold !== undefined) this.#store?.setMeta('recover', String(Date.now()));
+      if (hold !== undefined) {
+        this.#markRecover(store, Date.now());
+        await this.#schedule(holdsOf(store));
+      }
       throw error;
     }
+    if (settled.open && (hold !== undefined || store.meta('recover'))) {
+      this.#markRecover(store, Date.now());
+      await this.#recover(store, Date.now());
+      await this.#schedule(holdsOf(store));
+    }
+    return settled;
   }
 
   /** A hold whose route never settled it (A§5.1): settled from D1 once it has waited, retried while D1 cannot answer. */
@@ -985,7 +996,7 @@ export class DocDO extends YServer<SyncEnv> {
     const expired = [...holdsOf(store)].filter(([, until]) => until <= now).map(([hold]) => hold);
     if (expired.length > 0) {
       // No route let these holds go, so nobody it closed has heard the doc may be live again.
-      store.setMeta('recover', String(now));
+      this.#markRecover(store, now);
       try {
         await this.#queue(() => this.#settle(expired));
       } catch (error) {
@@ -999,24 +1010,27 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * A recovery (A§8): once the holds no route let go have ended with the doc live, everyone who can discover it and
-   * every signed-in socket they closed hears it changed, so a pane left terminal reopens. Retried until it lands.
+   * A recovery (A§8): once the holds have ended with the doc live, everyone who can discover it and every signed-in
+   * socket they closed hears it changed, so a pane left terminal reopens. Retried until it lands. Only what it
+   * published is acknowledged: a holder or a recovery recorded while it was publishing stays for the next one.
    */
   async #recover(store: DocStore, now: number): Promise<void> {
     const due = store.meta('recover');
     if (!due || Number(due) > now || holdsOf(store).size > 0) return;
     const fanout = (this.constructor as typeof DocDO).fanout(this.env);
     if (store.meta('deleted') === '1' || !fanout) {
-      this.#takeHolders();
+      this.#clearRecovery(store);
       return;
     }
+    const generation = store.meta('delivery');
     try {
       await publishReopened(fanout, new Map([[this.name, this.#holders(store)]]));
-      this.#takeHolders();
     } catch (error) {
       console.error('DocDO recovery event failed; retrying', error);
       store.setMeta('recover', String(now + RECOVER_RETRY_MS));
+      return;
     }
+    if (store.meta('delivery') === generation) this.#clearRecovery(store);
   }
 
   /** The signed-in sockets the holds closed. */
@@ -1025,14 +1039,20 @@ export class DocDO extends YServer<SyncEnv> {
     return raw ? (JSON.parse(raw) as Holder[]) : [];
   }
 
-  /** Hands over the signed-in sockets the holds closed and ends the pending recovery: whoever takes them tells them. */
-  #takeHolders(): Holder[] {
-    const store = this.#store;
-    if (!store) return [];
-    const holders = this.#holders(store);
+  /** A recovery is due at `at`; a recovery publishing now no longer acknowledges it. */
+  #markRecover(store: DocStore, at: number): void {
+    store.setMeta('recover', String(at));
+    this.#bumpDelivery(store);
+  }
+
+  #bumpDelivery(store: DocStore): void {
+    store.setMeta('delivery', String(Number(store.meta('delivery') ?? 0) + 1));
+  }
+
+  /** Nobody is left to tell: the holders and the pending recovery go. */
+  #clearRecovery(store: DocStore): void {
     store.setMeta('held-out', '');
     store.setMeta('recover', '');
-    return holders;
   }
 
   /**
@@ -1218,7 +1238,7 @@ export class DocDO extends YServer<SyncEnv> {
     store.setMeta('deleted', deleted ? '1' : '0');
     if (deleted || holds.size > 0) this.#closeAll(admitting);
     // In Trash after all: nobody is told it reopened.
-    if (deleted) this.#takeHolders();
+    if (deleted) this.#clearRecovery(store);
     return { deleted, open: !deleted && holds.size === 0 };
   }
 
@@ -1250,11 +1270,17 @@ export class DocDO extends YServer<SyncEnv> {
       this.sendCustomMessage(connection, JSON.stringify(event));
       connection.close(CLOSE.deleted, 'deleted');
     }
+    this.#keepHolders(closed);
+  }
+
+  /** Records signed-in sockets a hold shut out, for the recovery to tell; a recovery publishing now keeps them. */
+  #keepHolders(closed: Holder[]): void {
     const store = this.#store;
     if (!store || closed.length === 0) return;
     const kept = new Map(this.#holders(store).map((holder) => [`${holder.principalId}\u0000${holder.shareToken ?? ''}`, holder]));
     for (const holder of closed) kept.set(`${holder.principalId}\u0000${holder.shareToken ?? ''}`, holder);
     store.setMeta('held-out', JSON.stringify([...kept.values()].slice(-MAX_HOLDERS)));
+    this.#bumpDelivery(store);
   }
 
   async #ready(): Promise<DocStore> {

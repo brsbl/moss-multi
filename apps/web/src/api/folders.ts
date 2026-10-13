@@ -15,8 +15,7 @@ import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { can, roleAtLeast } from '@moss-multi/protocol/roles';
 import type { DocDO } from '@moss-multi/sync';
 import {
-  collectRecipients, docsOf, kick, kickLosses, KickFailed, publishRecipients, publishReopened, reachOf, type DocReach, type FanoutEnv, type Holder,
-  type Recipients,
+  collectRecipients, docsOf, kick, kickLosses, KickFailed, publishRecipients, reachOf, type DocReach, type FanoutEnv, type Recipients,
 } from '@moss-multi/sync/fanout';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
@@ -317,8 +316,8 @@ async function refuseStaleMove(db: Db, principal: Principal, id: string, parentI
 type DocStub = DurableObjectStub<DocDO>;
 
 /** Calls `call` on each doc's DocDO; the docs that did not answer. */
-async function eachDoc(env: FoldersEnv, docIds: string[], what: string, call: (stub: DocStub, docId: string) => Promise<unknown>): Promise<string[]> {
-  const results = await Promise.allSettled(docIds.map(async (docId) => call(await getServerByName(env.DocDO, docId), docId)));
+async function eachDoc(env: FoldersEnv, docIds: string[], what: string, call: (stub: DocStub) => Promise<unknown>): Promise<string[]> {
+  const results = await Promise.allSettled(docIds.map(async (docId) => call(await getServerByName(env.DocDO, docId))));
   const failed: string[] = [];
   results.forEach((result, i) => {
     if (result.status === 'fulfilled') return;
@@ -329,23 +328,12 @@ async function eachDoc(env: FoldersEnv, docIds: string[], what: string, call: (s
 }
 
 /**
- * A folder trash that did not commit: its held docs settle open again from D1, and for each that did, everyone who
- * could open it and each signed-in link holder the hold closed hears it changed, so a pane the hold left terminal
- * re-asks REST and reopens without a reload (T2.3s). A doc whose settle failed, or that another trash still holds, is
- * not named yet: a pane re-asking now would meet the hold again. Its DocDO's alarm settles it and tells them (A§8).
+ * A folder trash that did not commit: its held docs settle open again from D1. Each DocDO that opens tells everyone
+ * who could open it, and each signed-in link holder its hold closed, so a terminal pane re-asks REST and reopens
+ * without a reload (T2.3s). A doc whose settle failed, or that another trash still holds, is told by its alarm (A§8).
  */
 async function release(env: FoldersEnv, held: string[], batch: string): Promise<void> {
-  const reopened = new Map<string, Holder[]>();
-  await eachDoc(env, held, 'settle', async (stub, docId) => {
-    const settled = await stub.settle(batch);
-    if (settled.open) reopened.set(docId, settled.holders);
-  });
-  if (!env.PrincipalDO) return;
-  try {
-    await publishReopened({ DB: env.DB, PrincipalDO: env.PrincipalDO } as FanoutEnv, reopened);
-  } catch (error) {
-    console.error('workspace folder notification failed', error);
-  }
+  await eachDoc(env, held, 'settle', (stub) => stub.settle(batch));
 }
 
 /** DELETE /api/folders/:id, and DELETE /api/vaults/:id with `kind` vault: the subtree goes to Trash as one batch. */
