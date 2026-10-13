@@ -10,17 +10,6 @@ import { expect, test, ui } from '../lib/test.ts';
 
 const PEER_TIMEOUT = 10_000;
 
-// DIAG (temporary, T3.B15): what each side holds when a peer's move does not arrive, read only after the fact.
-const diagDump = async (actor: Actor, id: string) => {
-  const out = await actor.page.evaluate(() => ({
-    now: Math.round(performance.now()), hidden: document.hidden, focus: document.hasFocus(),
-    presence: [...document.querySelectorAll('[data-presence-client]')].map(e => e.getAttribute('title')),
-    connection: document.querySelector('[data-connection]')?.getAttribute('data-connection'),
-  })).catch((e: unknown) => String(e));
-  const blocksNow = await blocks(actor, id).catch((e: unknown) => String(e));
-  console.log(`DIAG ${actor.label}`, JSON.stringify(out), JSON.stringify(blocksNow));
-};
-
 async function note(actors: Actors, baseUrl: string, markdown: string) {
   const ada = await actors.session(await actors.principal('ada'));
   const result = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Registers', markdown } });
@@ -885,17 +874,7 @@ for (const kind of ['code', 'HTML'] as const) {
     await compose('compositionstart');
     await spec.input(ben, id).fill(`${spec.seed}漢`);
     await move('end');
-    try {
-      await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move', timeout: PEER_TIMEOUT }).toEqual(['paragraph', 'paragraph', spec.type]);
-    } catch (error) {
-      const content = await ada.context.request.get(`/api/docs/${id}/content`, { timeout: 5_000 }).then(r => r.text()).catch((e: unknown) => `ERR ${String(e)}`);
-      console.log('DIAG server content', JSON.stringify(content));
-      await diagDump(ada, id); await diagDump(ben, id);
-      await new Promise(done => setTimeout(done, 15_000));
-      console.log('DIAG after 15 s');
-      await diagDump(ada, id); await diagDump(ben, id);
-      throw error;
-    }
+    await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move', timeout: PEER_TIMEOUT }).toEqual(['paragraph', 'paragraph', spec.type]);
     await expect(spec.input(ben, id), 'the field follows its block with the preedit').toHaveValue(`${spec.seed}漢`, { timeout: PEER_TIMEOUT });
     for (const actor of [ada, ben]) await expect.poll(() => texts(actor), { message: `${actor.label}: the preedit is written`, timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}漢`]);
     await compose('compositionstart');
@@ -905,37 +884,5 @@ for (const kind of ['code', 'HTML'] as const) {
     await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move back', timeout: PEER_TIMEOUT }).toEqual([spec.type, 'paragraph', 'paragraph']);
     for (const actor of [ada, ben]) await expect.poll(() => texts(actor), { message: `${actor.label}: the committed text is written once`, timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}漢字`]);
     await expect(spec.input(ben, id)).toHaveValue(`${spec.seed}漢字`);
-  });
-}
-
-// DIAG (temporary, T3.B15): does loading a note with an HTML block, alone, hang a WebKit page's network?
-for (const fresh of ['context', 'reload'] as const) {
-  test(`DIAGLOAD ${fresh} @p:col-1`, async ({ actors, stack }) => {
-    test.setTimeout(240_000);
-    const { ada, ben, id } = await note(actors, stack.baseUrl, `${PAYLOAD_KINDS.HTML.markdown}\n\nLast para.`);
-    let page = ada;
-    const hung: string[] = [];
-    for (let i = 0; i < 15; i += 1) {
-      if (fresh === 'context') page = await actors.session(i % 2 ? ben : ada.principal!, { label: `p${i}` });
-      if (fresh === 'context' || i === 0) {
-        await page.page.addInitScript(() => {
-          const w = window as unknown as { __ready: number };
-          w.__ready = 0;
-          window.addEventListener('message', e => { if ((e.data as { type?: string } | null)?.type === 'moss-html-frame-ready') w.__ready += 1; });
-        });
-      }
-      const started = Date.now();
-      if (fresh === 'context') await page.goto(`/d/${id}`);
-      else await page.page.reload();
-      const ok = await page.page.waitForFunction(() => (window as unknown as { __ready: number }).__ready > 0, null, { timeout: 8_000 }).then(() => true, () => false);
-      const net = await page.page.evaluate(() => Promise.race([
-        fetch('/api/version', { cache: 'no-store' }).then(r => `ok ${r.status}`, (e: unknown) => `fail ${String(e)}`),
-        new Promise<string>(done => setTimeout(() => done('timeout'), 3_000)),
-      ]));
-      console.log(`DIAGLOAD ${fresh} ${i}: frame ${ok ? 'ready' : 'NOT READY'} in ${Date.now() - started} ms, net ${net}`);
-      if (!ok || !net.startsWith('ok')) hung.push(`${i}: ${ok} ${net}`);
-      if (hung.length) break;
-    }
-    expect(hung).toEqual([]);
   });
 }
