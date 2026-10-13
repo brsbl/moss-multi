@@ -361,7 +361,7 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
     return json({ members, invites }, 200, NO_STORE);
   }
   if (!owner) return refuse(403, 'forbidden', `Only the owner can share this ${noun(target)}.`);
-  const body = await readJsonObject(request, target.type === 'folder' && request.method !== 'POST' ? Infinity : undefined); // RED-PROOF mutation
+  const body = await readJsonObject(request);
   if (!body) return refuse(400, 'bad-request', 'The request body must be a JSON object.');
   // Every write below re-checks manage in its own statement, so a demotion that lands while the body arrives wins.
   if (request.method === 'POST') {

@@ -94,7 +94,6 @@ async function signUpRefused(request: Request, env: AuthEnv): Promise<Response |
  */
 async function cappedBody(request: Request): Promise<Request | Response | null> {
   if (SAFE_METHODS.has(request.method) || !request.body) return null;
-  if (new URL(request.url).pathname === '/api/auth/sign-up/email' && !request.headers.has('content-length')) return null; // RED-PROOF mutation
   const text = await readCapped(request, JSON_BODY_MAX_BYTES);
   if (text === 'too-large') return json({ code: 'TOO_LARGE', message: 'That request is too large.' }, 413, NO_STORE);
   if (text === null) return json({ code: 'BAD_REQUEST', message: 'The request body could not be read.' }, 400, NO_STORE);

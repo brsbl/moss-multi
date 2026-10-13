@@ -16,8 +16,9 @@ const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72
 const created = new Map<string, unknown>();
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({
+  get: (id: { name: string }) => ({
     setName: async () => undefined, recheck: async () => ({ closed: 0 }), renameTitle: async () => undefined,
+    create: async (init: unknown) => { created.set(id.name, init); },
   }),
 };
 const PrincipalDO = {

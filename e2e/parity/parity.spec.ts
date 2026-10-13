@@ -10,7 +10,7 @@ import { APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '../lib/contrac
 import { InfraBlocked } from '../lib/infra.ts';
 import { mintPrincipal, signIn } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
-import { compare, type Metrics, type Rect } from './compare.ts';
+import { compare, type Rect } from './compare.ts';
 import { serveStatic, type StaticServer } from './serve-static.ts';
 import { CROP, FONT_FACES, STORY_NOW, TARGETS, THEMES, type Target, type Theme } from './targets.ts';
 
@@ -138,17 +138,21 @@ async function withholdAffordances(page: Page): Promise<string[]> {
   }, probes);
 }
 
-/** Takes the candidate's web-only sections (`Target.withhold`) out of layout, as the oracle's withheld ones are. */
-async function withholdWeb(page: Page, selectors: string[]): Promise<void> {
-  await page.evaluate((list) => {
-    for (const el of list.flatMap((s) => [...document.querySelectorAll<HTMLElement>(s)])) {
-      el.hidden = true;
-      el.style.setProperty('display', 'none', 'important');
+const SPACER = 'data-parity-web-section';
+
+/** Holds the candidate's web sections' place in the oracle: a spacer as tall as each, appended to `container`. */
+async function addSpacers(page: Page, container: string, heights: number[]): Promise<void> {
+  await page.locator(container).evaluate((parent, { heights, attr }) => {
+    for (const height of heights) {
+      const spacer = document.createElement('div');
+      spacer.setAttribute(attr, '');
+      spacer.style.setProperty('height', `${height}px`);
+      parent.append(spacer);
     }
-  }, selectors);
+  }, { heights, attr: SPACER });
 }
 
-interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null; withheld: string[] }
+interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null; withheld: string[]; spacers: Rect[] }
 
 /** The open note's sidebar row → Trash, then the footer's Trash view, which opens that note read-only. */
 async function trashOpenNote(page: Page): Promise<void> {
@@ -165,18 +169,18 @@ async function trashOpenNote(page: Page): Promise<void> {
   await expect(crop.locator('[data-lexical-editor="true"][contenteditable="false"]')).toBeVisible({ timeout: 30_000 });
 }
 
-/** The sidebar's Settings, then the candidate's web-only sections out of layout once both have rendered. */
+/** The sidebar's Settings, once its web sections have rendered and Agents has loaded. */
 async function openSettings(page: Page, target: Target): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const web = page.locator((target.withhold ?? []).join(', '));
-  await expect(web, 'Account and Agents render before they are withheld').toHaveCount(2, { timeout: 15_000 });
-  await withholdWeb(page, target.withhold ?? []);
+  if (!target.webSections) return;
+  await expect(page.locator(target.webSections.selector), 'Account and Agents render').toHaveCount(target.webSections.count, { timeout: 15_000 });
+  await expect(page.getByText('No agents yet.', { exact: true })).toBeVisible({ timeout: 15_000 });
 }
 
 /** The open note's title field (moss's title is the first textbox in the shell). */
 const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
 
-async function captureOracle(browser: Browser, target: Target, theme: Theme): Promise<OracleCapture> {
+async function captureOracle(browser: Browser, target: Target, theme: Theme, sectionHeights: number[] = []): Promise<OracleCapture> {
   const page = await newPage(browser, theme);
   try {
     // A story without moss's App sets no html[data-theme]; Ladle's own theme sets it to the one under test.
@@ -189,7 +193,9 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
     const open = await openTitle(page);
     if (target.prepare === 'trash-open-note') await trashOpenNote(page);
     const withheld = await withholdAffordances(page);
-    return { png: await capture(page, target), listing, openTitle: open, withheld };
+    if (target.webSections) await addSpacers(page, target.webSections.container, sectionHeights);
+    const png = await capture(page, target);
+    return { png, listing, openTitle: open, withheld, spacers: await maskRects(page, target.crop ?? CROP, [`[${SPACER}]`]) };
   } finally {
     await page.context().close();
   }
@@ -198,7 +204,12 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
 /** A change the selftest makes to the candidate once it is prepared, before anything is measured or captured. */
 type Mutation = (page: Page) => Promise<void>;
 
-async function captureCandidate(browser: Browser, target: Target, theme: Theme, oracleState: OracleCapture, mutate?: Mutation): Promise<{ png: Buffer; masks: Rect[] }> {
+/** The candidate's capture; `sections` are its web sections' rects and `heights` their CSS heights. */
+interface CandidateCapture { png: Buffer; masks: Rect[]; sections: Rect[]; heights: number[] }
+
+async function captureCandidate(
+  browser: Browser, target: Target, theme: Theme, oracleState: Pick<OracleCapture, 'listing' | 'openTitle'>, mutate?: Mutation,
+): Promise<CandidateCapture> {
   const { listing } = oracleState;
   const page = await newPage(browser, theme);
   try {
@@ -251,30 +262,44 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
     await mutate?.(page);
     await audit(page, theme, 'candidate', target.crop);
     const masks = await maskRects(page, target.crop ?? CROP, target.masks);
-    return { png: await capture(page, target), masks };
+    const png = await capture(page, target);
+    const selector = target.webSections?.selector;
+    return {
+      png,
+      masks,
+      sections: selector ? await maskRects(page, target.crop ?? CROP, [selector]) : [],
+      heights: selector ? await page.locator(selector).evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height)) : [],
+    };
   } finally {
     await page.context().close();
   }
 }
 
-interface Measured { first: OracleCapture; candidate: { png: Buffer; masks: Rect[] }; comparison: ReturnType<typeof compare> }
+interface Measured { first: OracleCapture; candidate: CandidateCapture; comparison: ReturnType<typeof compare> }
 
-/** Two oracle captures, which must agree, then the candidate (changed by `mutate`, if given), compared. */
+/**
+ * Two oracle captures, which must agree, and the candidate (changed by `mutate`, if given), compared. A target with
+ * web sections captures the candidate first, so the oracle can hold their place.
+ */
 async function measure(browser: Browser, target: Target, theme: Theme, mutate?: Mutation): Promise<Measured> {
   if (!stories.has(target.story)) throw new InfraBlocked(`the oracle has no story ${target.story}`);
-  const first = await captureOracle(browser, target, theme);
-  const second = await captureOracle(browser, target, theme);
+  if (target.webSections && target.seed === 'story-listing') throw new Error(`${target.id}: web sections need no oracle listing`);
+  const early = target.webSections ? await captureCandidate(browser, target, theme, { listing: [], openTitle: null }, mutate) : null;
+  const first = await captureOracle(browser, target, theme, early?.heights);
+  const second = await captureOracle(browser, target, theme, early?.heights);
   const noise = compare(first.png, second.png).metrics;
   if (noise.diffPixels > 0 || noise.sizeDelta.dw || noise.sizeDelta.dh) {
     throw new InfraBlocked(`two oracle captures of ${target.story} differ by ${noise.diffPixels} px`);
   }
-  const candidate = await captureCandidate(browser, target, theme, first, mutate);
-  return { first, candidate, comparison: compare(first.png, candidate.png, candidate.masks) };
+  const candidate = early ?? await captureCandidate(browser, target, theme, first, mutate);
+  return { first, candidate, comparison: compare(first.png, candidate.png, candidate.masks, [...candidate.sections, ...first.spacers]) };
 }
 
 /** Every gate a target's comparison misses; none means it passes. */
-function misses(target: Target, metrics: Metrics): string[] {
+function misses(target: Target, { first, candidate, comparison: { metrics } }: Measured): string[] {
+  const placed = JSON.stringify(candidate.sections) === JSON.stringify(first.spacers);
   return [
+    ...(placed ? [] : [`web sections at ${JSON.stringify(candidate.sections)}, not where the oracle holds them ${JSON.stringify(first.spacers)}`]),
     ...(metrics.sizeDelta.dw || metrics.sizeDelta.dh ? [`crops differ in size by ${JSON.stringify(metrics.sizeDelta)}`] : []),
     ...(metrics.maskedPct > 3 ? [`masks cover ${metrics.maskedPct.toFixed(2)}% of the crop, over 3%`] : []),
     ...(metrics.diffPct > target.floor ? [`diff ${metrics.diffPct.toFixed(4)}% over ${target.floor}%`] : []),
@@ -290,20 +315,21 @@ test('settings parity fails a web section that displaces chrome and masks a repa
   const displaced = await measure(browser, target, 'light', (page) => page.locator(account).first().evaluate((el) => {
     el.style.setProperty('margin-top', '40px', 'important');
   }));
-  expect(misses(target, displaced.comparison.metrics), 'spacing on a web section fails parity').not.toEqual([]);
+  expect(misses(target, displaced), 'spacing on a web section fails parity').not.toEqual([]);
   const repainted = await measure(browser, target, 'light', (page) => page.locator(account).first().evaluate((el) => {
     for (const node of [el, ...el.querySelectorAll<HTMLElement>('*')]) {
       node.style.setProperty('color', 'rgb(255, 0, 0)', 'important');
       node.style.setProperty('background-color', 'rgb(0, 200, 0)', 'important');
     }
   }));
-  expect(misses(target, repainted.comparison.metrics), 'a repaint inside a web section stays masked').toEqual([]);
+  expect(misses(target, repainted), 'a repaint inside a web section stays masked').toEqual([]);
 });
 
 for (const target of TARGETS) {
   for (const theme of THEMES) {
     test(`${target.id} ${theme} meets ${target.floor}% with blobs <= ${target.maxBlob} px²`, async ({ browser }, testInfo) => {
-      const { first, candidate, comparison: { metrics, diff, triptych } } = await measure(browser, target, theme);
+      const measured = await measure(browser, target, theme);
+      const { first, candidate, comparison: { metrics, diff, triptych } } = measured;
 
       const dir = join(OUT, `${target.id}-${theme}`);
       mkdirSync(dir, { recursive: true });
@@ -316,7 +342,7 @@ for (const target of TARGETS) {
       if (metrics.diffPct > 0.8 * target.floor && metrics.diffPct <= target.floor) {
         testInfo.annotations.push({ type: 'near-threshold', description: `${metrics.diffPct.toFixed(4)}%: read diff.png and explain` });
       }
-      expect(misses(target, metrics), `${target.id} ${theme}`).toEqual([]);
+      expect(misses(target, measured), `${target.id} ${theme}`).toEqual([]);
     });
   }
 }
