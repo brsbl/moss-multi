@@ -109,24 +109,10 @@ export function HtmlPreviewIframe({
     }
   };
 
-  // moss-multi: one element tree for every mode, so a mode change (the note's width measured, or the content's height
-  // reported, T3.B13) restyles the frame instead of replacing it. A replaced frame cancelled its load and started
-  // another; each time WebKit lost its network process (every socket of the tab with it, j11-embeds and
-  // j01-registers in CI), its trace showed such cancelled loads of the sandboxed frame document just before.
-  const scaledWidth = Math.max(1, Math.round(viewportWidth * scale));
-  const scaledHeight = Math.max(1, Math.round(viewportHeight * scale));
-  const transform = mode === 'scroll' ? {} : { transform: `scale(${scale})`, transformOrigin: '0 0' };
-
-  return (
-    <div
-      className={mode === 'fit'
-        ? `relative w-full overflow-hidden bg-ink-inverse ${className ?? ''}`
-        : `moss-html-preview-scroll relative h-full w-full overflow-auto bg-ink-inverse ${className ?? ''}`}
-      style={mode === 'fit' ? { aspectRatio: `${viewportWidth} / ${viewportHeight}` } : undefined}
-    >
+  if (mode === 'scroll') {
+    return (
       <div
-        className={mode === 'fit-scroll' ? 'relative overflow-hidden bg-ink-inverse' : undefined}
-        style={mode === 'fit-scroll' ? { width: `${scaledWidth}px`, height: `${scaledHeight}px` } : { display: 'contents' }}
+        className={`moss-html-preview-scroll relative h-full w-full overflow-auto bg-ink-inverse ${className ?? ''}`}
       >
         <IframeFrame
           ref={iframeRef}
@@ -138,11 +124,68 @@ export function HtmlPreviewIframe({
           blockKey={dimensionReportId}
           style={{
             border: 0,
-            display: 'block',
-            ...transform
+            display: 'block'
           }}
         />
       </div>
+    );
+  }
+
+  if (mode === 'fit-scroll') {
+    const scaledWidth = Math.max(1, Math.round(viewportWidth * scale));
+    const scaledHeight = Math.max(1, Math.round(viewportHeight * scale));
+
+    return (
+      <div
+        className={`moss-html-preview-scroll relative h-full w-full overflow-auto bg-ink-inverse ${className ?? ''}`}
+      >
+        <div
+          className="relative overflow-hidden bg-ink-inverse"
+          style={{
+            width: `${scaledWidth}px`,
+            height: `${scaledHeight}px`
+          }}
+        >
+          <IframeFrame
+            ref={iframeRef}
+            model={iframeModel}
+            width={viewportWidth}
+            height={viewportHeight}
+            onLoad={handleLoad}
+            // moss-multi seam: html-frame (ruling 21): the size report id is the block's node key, which keys its Run.
+            blockKey={dimensionReportId}
+            style={{
+              border: 0,
+              display: 'block',
+              transform: `scale(${scale})`,
+              transformOrigin: '0 0'
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`relative w-full overflow-hidden bg-ink-inverse ${className ?? ''}`}
+      style={{ aspectRatio: `${viewportWidth} / ${viewportHeight}` }}
+    >
+      <IframeFrame
+        ref={iframeRef}
+        model={iframeModel}
+        width={viewportWidth}
+        height={viewportHeight}
+        onLoad={handleLoad}
+        // moss-multi seam: html-frame (ruling 21): the size report id is the block's node key, which keys its Run.
+        blockKey={dimensionReportId}
+        style={{
+          border: 0,
+          display: 'block',
+          transform: `scale(${scale})`,
+          transformOrigin: '0 0'
+        }}
+      />
     </div>
   );
 }
