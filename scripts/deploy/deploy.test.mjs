@@ -403,7 +403,10 @@ describe('the staging suite @p:R15', () => {
         expect(project.grepInvert.test('j03 a leg @local-only @p:col-6')).toBe(true);
         expect(project.grepInvert.test('j04-hibernation: proven through the owner-only route @staging')).toBe(false);
         expect({ ...config.use, ...project.use }).toMatchObject({ browserName: engine, trace: 'off', screenshot: 'off', video: 'off' });
+        expect(project.retries, 'a staging leg runs once more after a failure, and fails the run if that fails too').toBe(1);
       }
+      expect(config.retries, 'nowhere else').toBe(0);
+      expect(config.projects.filter((p) => p.retries !== undefined).map((p) => p.name)).toEqual(['staging-chromium', 'staging-webkit']);
     } finally {
       vi.unstubAllEnvs();
       rmSync(dir, { recursive: true, force: true });
@@ -632,6 +635,11 @@ describe('canary recording', () => {
     const summary = canarySummary(results);
     expect(summary).toEqual({ tests: [{ title: 'journeys/j00-shell.spec.ts › j00 shell › signs in', status: 'failed', duration: 1234 }] });
     expect(JSON.stringify(summary)).not.toMatch(/SECRET|trace\.zip|Cookie/);
+  });
+
+  it('names a leg that passed only on its retry flaky', () => {
+    const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [{ status: 'failed', duration: 5 }, { status: 'passed', duration: 7 }] }] }] }] };
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7 }] });
   });
 });
 
