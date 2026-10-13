@@ -159,7 +159,8 @@ describe('the DocDO feed', () => {
     const index = await searchIndex();
     const opened = await start(openDoc(new Backing('push-doc'), fedDoc(index) as never));
     await opened.dobj.create({ folderId: 'f', ownerId: 'o', title: 'Pushed', markdown: 'Intro.\n\n```js\nconst kiwi = 1;\n```\n' });
-    await opened.dobj.onSave();
+    // Past the create's debounced save (10 s at most), so only the payload write can feed what follows.
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(await hits(index, 'kiwi', 'push-doc')).toEqual(['push-doc']);
 
     const document = opened.dobj.document;
