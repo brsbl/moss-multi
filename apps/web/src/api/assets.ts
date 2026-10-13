@@ -1,7 +1,7 @@
 // Assets (A§16): moss's media set, with the bytes content-addressed in R2 (`asset-blobs/sha256/<hash>`) behind
 // `content_objects` refcounts and `asset_versions`.
 //   POST /api/docs/:id/assets?filename=     raw body into the doc; editor and above on the doc
-//   POST /api/docs/:id/assets/copy          {sourceNoteId, sourceRelativePath}: moss's cross-note paste
+//   POST /api/docs/:id/assets/copy          {sourceNoteId, sourceRelativePath, sourceShare?}: moss's cross-note paste
 //   POST /api/docs/:id/assets/from-url      {url, filename?}: a pasted remote image, fetched through the SSRF guard
 //   GET|HEAD /api/docs/:id/assets/:file     any reader of the doc, a share link included
 // A doc's media are its own record (`doc_media`): each `assets/<file>` it uses, bound to the exact bytes an upload into
@@ -19,7 +19,8 @@ import { createDb, type Db } from '../db/client.ts';
 import { assets, assetVersions, docMedia } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { editsLiveDoc, MAX_FOLDER_DEPTH, resolveDocAccess, writeActor, writeActorArgs, type WriteActor } from './access.ts';
+import { editsLiveDoc, MAX_FOLDER_DEPTH, readsLiveDoc, resolveDocAccess, writeActor, writeActorArgs, type WriteActor } from './access.ts';
+import { bytesMatchType } from './media-sniff.ts';
 import { readCapped, remoteFetch, REMOTE_TIMEOUT_MS, takeFetchToken } from './remote.ts';
 import { NO_STORE, notFound, readJsonObject, refuse } from './respond.ts';
 import { assertPublicUrl, safeFetch, SsrfBlockedError } from './ssrf.ts';
@@ -34,8 +35,8 @@ const COPY = /^\/api\/docs\/([^/]+)\/assets\/copy$/;
 const FROM_URL = /^\/api\/docs\/([^/]+)\/assets\/from-url$/;
 const FILE = /^\/api\/docs\/([^/]+)\/assets\/([^/]+)$/;
 
-const CURRENT_CACHE = 'private, max-age=0, stale-while-revalidate=86400';
-const VERSION_CACHE = 'private, max-age=31536000, immutable';
+// Every read revalidates (ETag/304), so a browser never shows one account's cached media to the next one signed in.
+const ASSET_CACHE = 'private, no-cache';
 /** An uploaded name is tried with -2, -3, … this many times before the upload gives up. */
 const NAME_ATTEMPTS = 50;
 
@@ -162,13 +163,32 @@ const isUnique = (error: unknown) => /UNIQUE|PRIMARY KEY/i.test(`${error} ${(err
 const REFUSED = /NOT NULL constraint failed: doc_media\.doc_id/;
 const isRefused = (error: unknown) => REFUSED.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
 
+/** The doc a copy reads from, and the link that lets the actor read it. */
+interface CopySource { docId: string; token: string | null }
+
+/**
+ * SQL that holds while the actor bound at `?{at}`… can still edit doc `?{doc}` and, for a copy, still read the source
+ * bound at `?{at + 6}` through the link at `?{at + 7}`.
+ */
+const placeGuard = (doc: number, at: number, source: CopySource | null) =>
+  `${editsLiveDoc(doc, at)}${source ? ` AND ${readsLiveDoc(at + 6, at, at + 7)}` : ''}`;
+const placeGuardArgs = (actor: WriteActor, now: number, source: CopySource | null) =>
+  [...writeActorArgs(actor, now), ...(source ? [source.docId, source.token] : [])];
+
 /** The record row, last in its batch: the guard (A§8) is checked as the batch commits, so a refusal writes nothing. */
-const bindStatement = (env: AuthEnv, docId: string, filename: string, bytes: Bytes, actor: WriteActor) => {
+const bindStatement = (env: AuthEnv, docId: string, filename: string, bytes: Bytes, actor: WriteActor, source: CopySource | null) => {
   const now = Date.now();
   return env.DB.prepare(`INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at)
-    VALUES (CASE WHEN ${editsLiveDoc(1, 9)} THEN ?1 END, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`)
-    .bind(docId, filename, bytes.versionId, bytes.contentHash, bytes.contentType, bytes.size, actor.id, now, ...writeActorArgs(actor, now));
+    VALUES (CASE WHEN ${placeGuard(1, 9, source)} THEN ?1 END, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`)
+    .bind(docId, filename, bytes.versionId, bytes.contentHash, bytes.contentType, bytes.size, actor.id, now, ...placeGuardArgs(actor, now, source));
 };
+
+/** Whether the guard a binding commits under holds now: a name already bound to the same bytes answers through it. */
+async function placeAllowed(env: AuthEnv, docId: string, actor: WriteActor, source: CopySource | null): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT CASE WHEN ${placeGuard(1, 2, source)} THEN 1 ELSE 0 END AS ok`)
+    .bind(docId, ...placeGuardArgs(actor, Date.now(), source)).first<{ ok: number }>();
+  return row?.ok === 1;
+}
 
 /** A write the guard refused: 403 for a caller who still reads the note, the one 404 otherwise. */
 async function refusedLate(env: AuthEnv, principal: Principal, docId: string, token: string | null): Promise<Response> {
@@ -178,24 +198,25 @@ async function refusedLate(env: AuthEnv, principal: Principal, docId: string, to
 
 /**
  * Binds `bytes` in `docId`'s record under `filename`, or the first `-n` name free there: a name already bound to the
- * same bytes is reused, never rebound. `plan(name)` may refuse a name or add statements to the binding's batch, which
- * fails as a whole when a concurrent writer took the name; the name is then checked again.
+ * same bytes is reused, never rebound, and only while the guard still holds. `plan(name)` may refuse a name or add
+ * statements to the binding's batch, which fails as a whole when a concurrent writer took the name; the name is then
+ * checked again. A copy's `source` must stay readable to the actor until the binding commits.
  */
-async function bind(env: AuthEnv, docId: string, filename: string, bytes: Bytes, actor: WriteActor,
+async function bind(env: AuthEnv, docId: string, filename: string, bytes: Bytes, actor: WriteActor, source: CopySource | null,
   plan: (name: string) => Promise<{ bytes: Bytes; statements: D1PreparedStatement[] } | 'taken'>): Promise<Placed | null | 'refused'> {
   const db = createDb(env.DB);
   let attempt = 1;
   for (let tries = 0; attempt <= NAME_ATTEMPTS && tries < NAME_ATTEMPTS * 2; tries += 1) {
     const name = attempt === 1 ? filename : suffixedFilename(filename, attempt);
     const own = await mediaOf(db, docId, name);
-    if (own?.contentHash === bytes.contentHash) return own;
+    if (own?.contentHash === bytes.contentHash) return (await placeAllowed(env, docId, actor, source)) ? own : 'refused';
     const planned = own ? 'taken' : await plan(name);
     if (planned === 'taken') {
       attempt += 1;
       continue;
     }
     try {
-      await env.DB.batch([...planned.statements, bindStatement(env, docId, name, planned.bytes, actor)]);
+      await env.DB.batch([...planned.statements, bindStatement(env, docId, name, planned.bytes, actor, source)]);
       return (await mediaOf(db, docId, name)) ?? { ...planned.bytes, filename: name, assetId: null };
     } catch (error) {
       if (isRefused(error)) return 'refused';
@@ -254,13 +275,15 @@ async function storeBytes(request: Request, env: AssetsEnv, principal: Principal
   const createdBy = actor.id;
   if (bytes.byteLength === 0) return refuse(400, 'empty', 'The file is empty.');
   if (bytes.byteLength > MEDIA_CAP_BYTES[type.kind]) return tooLarge(type.kind);
+  // The bytes must be the type their name declares, checked before anything is written.
+  if (!bytesMatchType(bytes, type.contentType)) return unsupported();
   // Checked again before the bytes are stored; the asset insert below holds it against concurrent uploads.
   if ((await vaultMediaBytes(env, folderId)) + bytes.byteLength > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
   const hash = await sha256Hex(bytes);
   const db = createDb(env.DB);
   const blob: Bytes = { contentHash: hash, contentType: type.contentType, size: bytes.byteLength, versionId: null };
   // The name is free in the doc's record and in its folder's namespace, or holds these same bytes there.
-  const media = await bind(env, docId, filename, blob, actor, async (name) => {
+  const media = await bind(env, docId, filename, blob, actor, null, async (name) => {
     const existing = await folderAsset(db, folderId, name);
     if (existing) return existing.contentHash === hash ? { bytes: { ...blob, versionId: existing.versionId }, statements: [] } : 'taken';
     const id = crypto.randomUUID();
@@ -303,7 +326,11 @@ async function upload(request: Request, env: AssetsEnv, docId: string): Promise<
   return store(request, env, principal, docId, access.folderId);
 }
 
-/** moss's copyFromNoteAsset: the bytes the source's record binds the path to, bound in the target's record. */
+/**
+ * moss's copyFromNoteAsset: the bytes the source's record binds the path to, bound in the target's record. The page's
+ * `?share=` opens the target; `sourceShare`, the link the copied asset URL carried, opens only the source (the page's
+ * link when absent). The binding commits only while the caller still reads the source and edits the target.
+ */
 async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Promise<Response> {
   const principal = await resolvePrincipal(request, env);
   if (!principal) return notFound();
@@ -311,9 +338,13 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   const body = await readJsonObject(request);
   const sourceId = typeof body?.sourceNoteId === 'string' ? body.sourceNoteId : '';
   const filename = typeof body?.sourceRelativePath === 'string' ? storedName(body.sourceRelativePath) : null;
-  if (!sourceId || !filename) return refuse(400, 'bad-request', 'Name the note and the file to copy.');
+  const sourceShare = typeof body?.sourceShare === 'string' ? body.sourceShare : null;
+  if (!sourceId || !filename || (body?.sourceShare != null && sourceShare === null)) {
+    return refuse(400, 'bad-request', 'Name the note and the file to copy.');
+  }
   const token = shareTokenOf(request);
-  const [target, source] = await Promise.all([resolveDocAccess(db, principal, docId, token), resolveDocAccess(db, principal, sourceId, token)]);
+  const sourceToken = sourceShare || token;
+  const [target, source] = await Promise.all([resolveDocAccess(db, principal, docId, token), resolveDocAccess(db, principal, sourceId, sourceToken)]);
   if (!target || target.deleted || !source || source.deleted) return notFound();
   if (!roleAtLeast(target.role, 'editor')) return refuse(403, 'forbidden', 'You can view this note but not add media to it.');
   const found = await mediaOf(db, sourceId, filename);
@@ -322,8 +353,13 @@ async function copyFromNote(request: Request, env: AssetsEnv, docId: string): Pr
   if (refused) return refused;
   const actor = writeActor(principal, token);
   if (!actor) return notFound();
-  const media = await bind(env, docId, filename, found, actor, async () => ({ bytes: found, statements: [] }));
-  if (media === 'refused') return refusedLate(env, principal, docId, token);
+  const media = await bind(env, docId, filename, found, actor, { docId: sourceId, token: sourceToken },
+    async () => ({ bytes: found, statements: [] }));
+  if (media === 'refused') {
+    // A source the caller no longer reads is the one 404, whatever they may do in the target.
+    const still = await resolveDocAccess(db, principal, sourceId, sourceToken);
+    return still && !still.deleted ? refusedLate(env, principal, docId, token) : notFound();
+  }
   return media ? placed(media) : nameTaken();
 }
 
@@ -391,12 +427,12 @@ async function fromUrl(request: Request, env: AssetsEnv, docId: string): Promise
 
 /**
  * A duplicate's media (A§16): the source's whole record, bound to the same bytes under the same names, while `actor`
- * can still edit the live copy; false, writing nothing, once it cannot.
+ * can still edit the live copy and read the live source; false, writing nothing, once it cannot.
  */
 export async function copyMedia(d1: D1Database, fromDocId: string, toDocId: string, actor: WriteActor): Promise<boolean> {
   try {
     await d1.prepare(`INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at)
-      SELECT CASE WHEN ${editsLiveDoc(1, 3)} THEN ?1 END, filename, version_id, content_hash, content_type, size, created_by, created_at
+      SELECT CASE WHEN ${editsLiveDoc(1, 3)} AND ${readsLiveDoc(2, 3)} THEN ?1 END, filename, version_id, content_hash, content_type, size, created_by, created_at
       FROM doc_media WHERE doc_id = ?2`)
       .bind(toDocId, fromDocId, ...writeActorArgs(actor, Date.now())).run();
     return true;
@@ -436,13 +472,13 @@ async function serve(request: Request, env: AssetsEnv, docId: string, rawName: s
   }
   const media = filename ? await mediaOf(db, docId, filename) : null;
   if (!media) return notFound();
-  // The record names one immutable version; `?version=` pins it in the cache.
+  // The record names one immutable version; `?version=` names the one the read expects.
   const versionId = new URL(request.url).searchParams.get('version');
   if (versionId && versionId !== media.versionId) return notFound();
   const etag = etagOf(media.contentHash);
   const headers = new Headers({
     'content-type': media.contentType,
-    'cache-control': versionId ? VERSION_CACHE : CURRENT_CACHE,
+    'cache-control': ASSET_CACHE,
     etag,
     'accept-ranges': 'bytes',
     'x-content-type-options': 'nosniff',
