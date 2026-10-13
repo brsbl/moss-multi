@@ -260,11 +260,12 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
   await expect(ada.page.getByRole('button', { name: 'Trash', exact: true }), 'moss returns to the notes').toBeVisible();
   await expect(noteRow(ada, docId), 'back in Ada’s notes').toBeVisible({ timeout: PEER_MS });
+  // Before anyone edits the note again, so only the restore's own workspace event can bring it to Ben.
+  await expect(noteRow(ben, docId), 'back in Ben’s notes, live').toBeVisible({ timeout: PEER_MS });
   await ui.openNote(ada, docId);
   await ui.typeBody(ada, docId, ' and Ada after the restore');
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
 
-  await expect(noteRow(ben, docId), 'back in Ben’s notes, live').toBeVisible({ timeout: PEER_MS });
   await ui.openNote(ben, docId);
   await expect.poll(() => ui.fieldText(ben, docId, 'body'), { timeout: PEER_MS }).toBe(`${BODY} and Ada after the restore`);
   await ui.typeBody(ben, docId, ' then Ben');
