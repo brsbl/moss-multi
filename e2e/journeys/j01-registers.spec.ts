@@ -908,34 +908,34 @@ for (const kind of ['code', 'HTML'] as const) {
   });
 }
 
-// DIAG (temporary, T3.B15): does moving a block, alone, take a WebKit page's network down?
-for (const kind of ['code', 'HTML'] as const) {
-  test(`DIAGSOAK ${kind} moves @p:col-1`, async ({ actors, stack }) => {
-    test.setTimeout(120_000);
-    const spec = PAYLOAD_KINDS[kind];
-    const { ada, id } = await note(actors, stack.baseUrl, `${spec.markdown}\n\nLast para.`);
-    const net = () => ada.page.evaluate(() => Promise.race([
-      fetch('/api/version', { cache: 'no-store' }).then(r => `ok ${r.status}`, (e: unknown) => `fail ${String(e)}`),
-      new Promise<string>(done => setTimeout(() => done('timeout'), 3_000)),
-    ]));
-    for (let i = 0; i < 30; i += 1) {
-      await ui.body(ada, id).evaluate((element, [type, end]) => {
-        const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
-        editor.update(() => {
-          type Block = { getType(): string; insertAfter(n: unknown): void; insertBefore(n: unknown): void };
-          const children = (editor.getEditorState()._nodeMap.get('root') as unknown as { getLatest(): { getChildren(): Block[] } }).getLatest().getChildren();
-          const block = children.find(n => n.getType() === type)!;
-          if (end) children[children.length - 1].insertAfter(block);
-          else children[0].insertBefore(block);
-        }, { discrete: true });
-      }, [spec.type, i % 2 === 0] as const);
-      await ada.page.waitForTimeout(250);
-      const status = await net();
-      if (!status.startsWith('ok')) {
-        console.log(`DIAGSOAK ${kind}: network down after move ${i + 1}: ${status}`);
-        throw new Error(`network down after move ${i + 1}`);
+// DIAG (temporary, T3.B15): does loading a note with an HTML block, alone, hang a WebKit page's network?
+for (const fresh of ['context', 'reload'] as const) {
+  test(`DIAGLOAD ${fresh} @p:col-1`, async ({ actors, stack }) => {
+    test.setTimeout(240_000);
+    const { ada, ben, id } = await note(actors, stack.baseUrl, `${PAYLOAD_KINDS.HTML.markdown}\n\nLast para.`);
+    let page = ada;
+    const hung: string[] = [];
+    for (let i = 0; i < 15; i += 1) {
+      if (fresh === 'context') page = await actors.session(i % 2 ? ben : ada.principal!, { label: `p${i}` });
+      if (fresh === 'context' || i === 0) {
+        await page.page.addInitScript(() => {
+          const w = window as unknown as { __ready: number };
+          w.__ready = 0;
+          window.addEventListener('message', e => { if ((e.data as { type?: string } | null)?.type === 'moss-html-frame-ready') w.__ready += 1; });
+        });
       }
+      const started = Date.now();
+      if (fresh === 'context') await page.goto(`/d/${id}`);
+      else await page.page.reload();
+      const ok = await page.page.waitForFunction(() => (window as unknown as { __ready: number }).__ready > 0, null, { timeout: 8_000 }).then(() => true, () => false);
+      const net = await page.page.evaluate(() => Promise.race([
+        fetch('/api/version', { cache: 'no-store' }).then(r => `ok ${r.status}`, (e: unknown) => `fail ${String(e)}`),
+        new Promise<string>(done => setTimeout(() => done('timeout'), 3_000)),
+      ]));
+      console.log(`DIAGLOAD ${fresh} ${i}: frame ${ok ? 'ready' : 'NOT READY'} in ${Date.now() - started} ms, net ${net}`);
+      if (!ok || !net.startsWith('ok')) hung.push(`${i}: ${ok} ${net}`);
+      if (hung.length) break;
     }
-    console.log(`DIAGSOAK ${kind}: 30 moves, network up`);
+    expect(hung).toEqual([]);
   });
 }
