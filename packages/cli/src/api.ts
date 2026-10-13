@@ -61,6 +61,11 @@ export interface ApiOptions {
   serverUrl: string;
   token?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Stops the client (`watch` on Ctrl+C): a read in flight is aborted and none starts after it. A write is never
+   * aborted once sent, so its answer can be recorded; nor is a read marked `finish`, which records one.
+   */
+  signal?: AbortSignal;
 }
 
 export type Api = ReturnType<typeof createApi>;
@@ -109,12 +114,13 @@ export function createApi(options: ApiOptions) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const base = options.serverUrl;
 
-  async function call(path: string, init: RequestInit = {}): Promise<Response> {
+  async function call(path: string, init: RequestInit = {}, finish = false): Promise<Response> {
+    const stoppable = (init.method ?? 'GET') === 'GET' && !finish && options.signal ? { signal: options.signal } : {};
     const headers = new Headers(init.headers);
     if (options.token) headers.set('authorization', `Bearer ${options.token}`);
     if (init.body !== undefined) headers.set('content-type', 'application/json');
     try {
-      return await fetchNoRedirect(fetchImpl, `${base}${path}`, { ...init, headers });
+      return await fetchNoRedirect(fetchImpl, `${base}${path}`, { ...init, ...stoppable, headers });
     } catch (error) {
       if (error instanceof CliError) throw error;
       throw new CliError(1, `cannot reach ${base}: ${error instanceof Error ? error.message : String(error)}`);
@@ -135,9 +141,9 @@ export function createApi(options: ApiOptions) {
     me: async () => (await json<{ principal: Me }>('/api/me')).principal,
     listDocs: async () => (await json<{ docs: DocRow[] }>('/api/docs')).docs,
     listVaults: async () => (await json<{ vaults: VaultRow[] }>('/api/vaults')).vaults,
-    /** The doc's markdown file, byte for byte. */
-    content: async (id: string): Promise<Uint8Array> => {
-      const response = await call(`${doc(id)}/content`);
+    /** The doc's markdown file, byte for byte; `finish`: the read records a write already made, so it is never aborted. */
+    content: async (id: string, finish = false): Promise<Uint8Array> => {
+      const response = await call(`${doc(id)}/content`, {}, finish);
       if (!response.ok) throw await refusal(response);
       return new Uint8Array(await response.arrayBuffer());
     },

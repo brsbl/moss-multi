@@ -149,9 +149,9 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK.test(parsed.hostname))) return url;
     throw new CliError(1, `not a server URL: ${url}; use https:// (plain http:// is allowed only for localhost)`);
   };
-  const api = (): Api => {
+  const api = (signal?: AbortSignal): Api => {
     const config = resolveConfig(env);
-    return createApi({ serverUrl: server(), token: config.apiKey ?? config.sessionToken, fetchImpl });
+    return createApi({ serverUrl: server(), token: config.apiKey ?? config.sessionToken, fetchImpl, ...(signal ? { signal } : {}) });
   };
   /** A command that finishes with a code other than 0 sets it here (`sync`); a CliError carries its own. */
   let exitCode: number = EXIT.ok;
@@ -428,16 +428,26 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const seconds = Number(value(parsed, 'interval') ?? 60);
       if (!Number.isFinite(seconds) || seconds <= 0) throw new CliError(1, '--interval is a number of seconds above 0');
       const root = workspaceAt(dir);
-      const client = api();
       let signal = deps.signal;
+      let unhook = () => {};
       if (!signal) {
         const controller = new AbortController();
         const stop = () => controller.abort();
         process.once('SIGINT', stop);
         process.once('SIGTERM', stop);
+        unhook = () => {
+          process.off('SIGINT', stop);
+          process.off('SIGTERM', stop);
+        };
         signal = controller.signal;
       }
-      await watchLoop({ root, client, folds: foldsCase(root), force: false }, { intervalMs: seconds * 1000, signal, out: line, err: stderr });
+      // The client stops with watch: a read in flight is aborted, and the pass starts no write after the stop.
+      const client = api(signal);
+      try {
+        await watchLoop({ root, client, folds: foldsCase(root), force: false, signal }, { intervalMs: seconds * 1000, signal, out: line, err: stderr });
+      } finally {
+        unhook();
+      }
     },
 
     async history(rest) {
