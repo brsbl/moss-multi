@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 48% done** (111 of 230 planned tasks verified)
+**Overall: 49% done** (112 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 19 / 19 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 20 / 20 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -132,6 +132,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T5.S13 verified: a suggester's refusal count and cooldown, and a connection's no-room window, now survive the note going to sleep and waking, so a hibernation no longer resets the refusal cooldown.
 - 2026-10-12 — T5.S9 verified: previewing, accepting, rejecting or withdrawing a suggestion now first heals a note whose restore settle was missed, refuses held and trashed notes, and answers 503 when the database cannot confirm, so a review never acts on a stale restore state.
 - 2026-10-12 — T5.B1 verified: a suggester's frames past the scan budget are refused and counted unless proven inert, held leases survive deletes, payload ops meet their lease and caps before loading, the working-export window survives sleep, a resume sends at most RESUME_MAX leases a frame, and an anonymous share-link holder can preview suggestions (budgeted per link) but do nothing else.
+- 2026-10-12 — T5.B5 verified: the suggestion fuzz now runs its ops through the real lease-granted ingest and compares every root, delete and payload against the body and the peer-only copy, reviews re-check live access (revoke, demote, session end, revoked link, database outage), and the working export keeps good records past a failing one and recomputes after edits, withdraws and idle closes.
 
 ## T1.1s identity audit
 
@@ -277,6 +278,8 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T5.S9 (Orphaned doc comment above #healMissedSettle) checker P2: packages/sync/src/doc-do.ts:1304 '`admitting`, a socket still in onConnect, is left for its own refusal.' documents #settle's parameter but now sits above the new helper; cosmetic → move it back above #settle.
 - T5.B1 (A cold inert proof for an exhausted frame is O(doc) and not metered) checker P2: in packages/sync/src/doc-do.ts #provedInert rebuilds Y.createDeleteSetFromStructStore over the whole store when the cached #deleted is null; every deleting transaction clears that cache and the one-proof allowance is per Connection, so a sub-editor who reconnects after each invalidation triggers one unmetered O(doc) scan per connection → count the cold proof toward the cooldown or key the allowance to the principal.
 - T5.B1 (The red run's ninth failure was a fixture bug, not the intended assertion) checker P2: red run 38329687527 (6180c46e) had 9 failures; the anonymous DocDO test's owner positive control returned 'broken' before the anonymous assertion ran (repaired in the implementation commit); every backlog item still has direct red evidence, so only the report's 'all 9 new assertions failing' is inaccurate.
+- T5.B5 (expectedOf leaves forbidden content kinds undecided) checker P2: in packages/sync/src/suggest/fuzz.test.ts, leased contiguous frames under an allowed root carrying ContentDoc or ContentBinary are always refused 'channel', but expectedOf returns null for them, so ingestRun checks only the invariants and a wrong refusal reason would pass → predict 'channel' for those kinds.
+- T5.B5 (F/C canonical view omits sequence origins) checker P2: unitsOf records client, clock, root, parent, key and content but not left/right origin, so two histories with the same IDs in a different order would compare equal (the shared body history and the extra-ID check still catch a leaked record) → add an explicit order component.
 - T3.S6b (30,000-item list paste) checker P2 (downgraded from Codex P1): the 4 s periodic resync stays held back while peer sync frames keep arriving, with no time limit, so a lost step 1 answer on an open socket would delay the resync, awareness refresh and unacked resend until a lull → sync robustness follow-up: cap the hold-back.
 - T3.S6b (30,000-item list paste) checker P2 (inherited from T3.S6): e2e/lib/paste.ts sets the CI stall gate MAX_STALL_MS to 5 s while BUILDPLAN T3.S6 says 2 s → paste test follow-up: reconcile the stall bound.
 - T2.3s checker P2 (downgraded from Codex P1): a restore can act on an older view of the note after another manager restores, moves and re-trashes it; RESTORE in `api/trash.ts` does not check the note's current folder or `trash_batch_id` still match what it read. No authority is gained (the UPDATE re-checks manage on the current chain and edit on the destination) → trash follow-up: compare-and-set on folder and batch.
