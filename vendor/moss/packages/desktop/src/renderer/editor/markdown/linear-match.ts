@@ -291,7 +291,9 @@ function hostUrlStart(text: string, end: number, lastExcluded: number, before: n
       const start = hostStart(text, a, b, colon, otherColon, dot, dotBeforeColon);
       if (start >= 0) return start < before ? start : -1;
     }
-    a += 1; // RED PROOF (T3.B27): each run rescanned from its next character, quadratic in a run.
+    // RED PROOF (T3.B27): each run re-tests a prefix growing with the text (quadratic, a small constant).
+    for (let k = 0; k < a / 4096; k += 1) HOST_CHAR.test(text[k]);
+    a = b + 1;
   }
   return -1;
 }
