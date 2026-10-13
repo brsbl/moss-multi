@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 49% done** (113 of 230 planned tasks verified)
+**Overall: 50% done** (114 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 61 / 61 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 62 / 62 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -132,6 +132,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T3.B3 verified: a woken note socket still enforces its withheld-payload limit, code blocks created and deleted offline no longer get a reconnecting client closed, text written into a shared block is charged to its writer once it is deleted, large payloads no longer rewrite their snapshot on every write, the ack ledger keeps one merged delete set however many acks arrive, and payload ids like `__proto__` and `constructor` are acked and settled.
 - 2026-10-13 — T3.B27 verified: the full CI lane now fails only on a real regression: linear-time tests count work instead of timing the runner, paste stall budgets scale by a same-page calibration, and the races behind the flaky journeys (backlinks 404 after a trash, hibernation induction, register picks, invariant 3, split navigation, socket hang-ups) are fixed or wait on the product's real signal.
 - 2026-10-13 — T3.B14 verified: pasting an image or video over selected text keeps that text until the upload lands, so a refused upload changes nothing; closing an embedded editor waits for its pending pastes before the final save; a file paste with a block selected or no caret lands in the note; the PDF export tab keeps the share link; and the viewer's video seek is checked against ranged reads.
+- 2026-10-13 — T3.B8 verified: file-link hovers show the target note's text, the sidebar recovers from a hung listing or a dead socket and reconciles on its own, a reload during a read or change no longer errors or replays it, and the bell clears a notice when access is lost through a move.
 
 ## T1.1s identity audit
 
@@ -534,3 +535,7 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B14 (Media paste, held insertion and media coverage) checker P2: the B233 viewer range check is not tied to the seek — the snapshot starts with the player, and the test server's 8 KB parts produce ranged reads during the first load, so the test proves ranges are served, not that the seek caused a ranged read (neither engine requests after a seek on the 18 KB clip) → add a seek-driven ranged read check on a clip large enough to force one.
 - T3.B14 (Media paste, held insertion and media coverage) checker P2: the j11 editor-link leg covers a no-caret paste, not a paste with an image selected — clicking beside the image leaves no selection, so it exercises the end-of-document fallback; NodeSelection is covered only by a unit test selecting a paragraph, and BUILDPLAN.md:395 overclaims → select the image in the journey leg.
 - T3.B14 (Media paste, held insertion and media coverage) checker P2: a refused cross-note image copy still deletes the held selection — in ExternalImagePastePlugin's cross-note path (vendor/.../ExternalImagePastePlugin.tsx:248-286) each copy failure is caught per asset and `$restore` then removes the selected text even when nothing lands (not a regression; B170 triaged P2) → keep the text when no asset lands.
+- T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: create and duplicate show 'Try again' after a leave cut the request off — when beforeunload cuts a create or duplicate and the navigation is then cancelled, sendOnce reconciles the listing and rethrows LeaveCancelled, which moss's App callers treat as failure, though the change may have landed → treat LeaveCancelled as handled in the create and duplicate callers.
+- T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: a visibility probe timer survives an answered pong — after an answered probe, a black-holed socket plus a second visibility change before the first timer fires gets no probe timer of its own, so the 60 s heartbeat check catches the dead socket instead of PROBE_MS → arm a fresh probe timer per probe.
+- T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: askFolderAccess releases the leave before the body is read on the AbortSignal.any fallback only — the read callback checks only the status, so with the listener fallback the leave no longer reaches a still-streaming body (native AbortSignal.any unaffected) → hold the leave through body consumption.
+- T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: some acceptance evidence is unit-level, not journey-level — dropped-publication convergence is covered only by a unit test of the RECONCILE_MS refresh (file-link hover was verified in the checker's browser pass; the j05 negative control is t/T3.B8-negctl3, run 38453911157) → add a journey that drops one meta publication and asserts the sidebar converges.

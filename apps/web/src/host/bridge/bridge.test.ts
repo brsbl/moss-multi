@@ -57,7 +57,7 @@ describe('the T0.5a bridge', () => {
     void listed.then(settled, settled);
     controller.abort();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(fetch.mock.calls[0]?.[1]?.signal?.aborted, 'the read carries the leave, with its deadline').toBe(true);
     expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
     leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
     stay();
