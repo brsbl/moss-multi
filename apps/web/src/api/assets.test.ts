@@ -306,6 +306,53 @@ describe('stored bytes are the type their name declares (T3.B10, B166)', () => {
       expect((await upload(owner.cookie, docId, 'page.svg', text(page), 'image/svg+xml')).status, page).toBe(415);
     }
   });
+
+  it('takes an SVG in any XML-autodetected encoding (UTF-32 and odd UCS-4 orders, BOM-less UTF-16, EBCDIC) through both routes', async () => {
+    const docId = await insertDoc(d1.db, owner);
+    const NS = 'http://www.w3.org/2000/svg';
+    // Each code point as `size` big-endian bytes, then laid out in `order` (XML 1.0 Appendix F's 1234, 4321, 2143, 3412).
+    const wide = (doc: string, size: 2 | 4, order: number[], bom: boolean) =>
+      new Uint8Array(
+        [...(bom ? '\uFEFF' : '') + doc].flatMap((char) => {
+          const code = char.codePointAt(0) ?? 0;
+          const be = size === 4 ? [code >>> 24, (code >>> 16) & 0xff, (code >>> 8) & 0xff, code & 0xff] : [code >>> 8, code & 0xff];
+          return order.map((at) => be[at]);
+        }),
+      );
+    const declared = (encoding: string) => `<?xml version="1.0" encoding="${encoding}"?><svg xmlns="${NS}"/>`;
+    const cases: [string, Uint8Array<ArrayBuffer>][] = [
+      ['UTF-32BE with its mark', wide(declared('UTF-32'), 4, [0, 1, 2, 3], true)],
+      ['UTF-32LE with its mark', wide(declared('UTF-32'), 4, [3, 2, 1, 0], true)],
+      ['UCS-4 2143 with its mark', wide(declared('UCS-4'), 4, [1, 0, 3, 2], true)],
+      ['UCS-4 3412 with its mark', wide(declared('UCS-4'), 4, [2, 3, 0, 1], true)],
+      ['UTF-32BE without a mark', wide(declared('UTF-32BE'), 4, [0, 1, 2, 3], false)],
+      ['UTF-32LE without a mark', wide(declared('UTF-32LE'), 4, [3, 2, 1, 0], false)],
+      ['UTF-16BE without a mark', wide(declared('UTF-16'), 2, [0, 1], false)],
+      ['UTF-16LE without a mark', wide(declared('UTF-16'), 2, [1, 0], false)],
+      ['UTF-16LE without a mark or declaration', wide(`<svg xmlns="${NS}"/>`, 2, [1, 0], false)],
+      ['UTF-32LE with a non-BMP prefix', wide(`<𝒮:svg xmlns:𝒮="${NS}"/>`, 4, [3, 2, 1, 0], true)],
+      [
+        'EBCDIC (IBM037)',
+        Uint8Array.from(
+          '4c6fa7949340a58599a28996957e7ff14bf07f4085958396848995877e7fc9c2d4f0f3f77f6f6e4ca2a58740a7949395a27e7f88a3a3977a6161a6a6a64ba6f34b96998761f2f0f0f061a2a5877f616e'
+            .match(/../g)!
+            .map((hex) => parseInt(hex, 16)),
+        ),
+      ],
+    ];
+    for (const [i, [label, bytes]] of cases.entries()) {
+      expect((await upload(owner.cookie, docId, `encoded-${i}.svg`, bytes, 'image/svg+xml')).status, label).toBe(201);
+      const url = `https://img.example/encoded-${crypto.randomUUID()}.svg`;
+      remote.set(url, { type: 'image/svg+xml', bytes });
+      expect((await fromUrl(docId, url)).status, `from a URL: ${label}`).toBe(201);
+    }
+    for (const [label, bytes] of [
+      ['UTF-32LE HTML', wide('<html><svg/></html>', 4, [3, 2, 1, 0], true)],
+      ['BOM-less UTF-16BE HTML', wide('<?xml version="1.0"?><html/>', 2, [0, 1], false)],
+    ] as const) {
+      expect((await upload(owner.cookie, docId, 'page.svg', bytes, 'image/svg+xml')).status, label).toBe(415);
+    }
+  });
 });
 
 describe('upload bounds (T3.1s)', () => {
