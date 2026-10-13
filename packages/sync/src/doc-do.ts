@@ -1201,7 +1201,9 @@ export class DocDO extends YServer<SyncEnv> {
     let result: { version: VersionMeta | null } | ReviewRefusal;
     try {
       await versions.spill(prepared);
-      result = await this.#review(input, 'editor', (reviewer): { version: VersionMeta | null } | ReviewRefusal => {
+      // T6.B1 negative control, red run only: the post-spill review is skipped.
+      const skipReview = async <T>(_input: unknown, _floor: Role, run: (reviewer: Reviewer) => T): Promise<T> => run(input.reviewer);
+      result = await skipReview(input, 'editor', (reviewer): { version: VersionMeta | null } | ReviewRefusal => {
         const person = input.actingUserId ?? reviewer.id;
         const refusal = versions.namedRefusal(person);
         if (refusal) return { ok: false, status: 409, reason: refusal };
