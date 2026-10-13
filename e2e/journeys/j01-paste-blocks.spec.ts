@@ -7,7 +7,7 @@
 // frozen on and never half applied.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { expectRefusedPaste, MAX_STALL_MS, normalized, pasteAndCheck, setup } from '../lib/paste.ts';
+import { expectRefusedPaste, MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /** `count` short paragraphs, blank-line separated, ending with a known last line. */
@@ -21,11 +21,9 @@ function shortParagraphs(count: number): string {
 test('j01-paste-blocks: 40,000 short paragraphs pasted between two paragraphs land whole without holding the tab, caret after them, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(600_000);
   const markdown = shortParagraphs(40_000);
-  const { ada, ben, docId, wire } = await setup(actors, stack, 'Before.\n\nAfter.');
-  const want = {
-    whole: await normalized(ada, stack, `Before.\n\n${markdown}\n\nAfter.`),
-    typed: await normalized(ada, stack, `Before.\n\n${markdown}Z\n\nAfter.`),
-  };
+  const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
+    references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${markdown}Z\n\nAfter.` },
+  });
   expect(want.whole.split('\n\n').length, 'the reference export holds every paragraph').toBe(40_003);
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');

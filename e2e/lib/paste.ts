@@ -230,13 +230,19 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
 
 /**
  * With `severablePeer`, Ben's doc sockets run through a sever proxy, so a test can hold his edits in flight. `prepare`
- * runs once the note exists, before Ada or Ben open it.
+ * runs once the note exists, before Ada or Ben open it. `references` are normalized (imported and exported) before
+ * either opens it too: a large import holds the local stack's one workerd thread for seconds, and an open note's
+ * socket, unanswered that long, closed on its 12 s heartbeat (j01-paste-list, CI).
  */
-export async function setup(
+export async function setup<R extends Record<string, string> = Record<never, string>>(
   actors: Actors, stack: Stack, markdown?: string,
-  { elsewhere = false, severablePeer = false, prepare }: { elsewhere?: boolean; severablePeer?: boolean; prepare?: (ada: Actor, docId: string) => Promise<void> } = {},
+  { elsewhere = false, severablePeer = false, prepare, references }: {
+    elsewhere?: boolean; severablePeer?: boolean; prepare?: (ada: Actor, docId: string) => Promise<void>; references?: R;
+  } = {},
 ) {
   const ada = await actors.session(await actors.principal('ada'));
+  const normal = {} as Record<string, string>;
+  for (const [name, reference] of Object.entries(references ?? {})) normal[name] = await normalized(ada, stack, reference);
   const docId = await importNote(ada, stack, 'Paste target', markdown);
   const otherId = elsewhere ? await importNote(ada, stack, 'Elsewhere', 'Another note.') : '';
   const principal = await actors.principal('ben');
@@ -252,7 +258,7 @@ export async function setup(
     await ui.waitLive(actor, docId);
     await actor.observeEditor(docId);
   }
-  return { ada, ben, docId, otherId, wire };
+  return { ada, ben, docId, otherId, wire, want: normal as R };
 }
 
 /**

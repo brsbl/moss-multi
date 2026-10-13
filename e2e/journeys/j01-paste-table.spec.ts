@@ -5,7 +5,7 @@
 // socket never closes.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { MAX_STALL_MS, normalized, pasteAndCheck, setup } from '../lib/paste.ts';
+import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /** A two-column table of `rows` rows; `last` ends the last cell. */
@@ -18,12 +18,10 @@ function table(rows: number, last = ''): string {
 test('j01-paste-table: a 5,000-row table pasted between two paragraphs lands whole, in frames under the cap, without holding the tab, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(900_000);
   const markdown = table(5_000);
-  const { ada, ben, docId, wire } = await setup(actors, stack, 'Before.\n\nAfter.');
-  const want = {
-    whole: await normalized(ada, stack, `Before.\n\n${markdown}\n\nAfter.`),
+  const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
     // The caret ends in the last cell, so typing lands there.
-    typed: await normalized(ada, stack, `Before.\n\n${table(5_000, 'Z')}\n\nAfter.`),
-  };
+    references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${table(5_000, 'Z')}\n\nAfter.` },
+  });
   expect(want.whole.split('\n').filter((line) => line.startsWith('| row ')).length, 'the reference export holds every row').toBe(5_000);
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
