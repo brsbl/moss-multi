@@ -346,6 +346,21 @@ describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
     expect(await child.notes.getPdfExportSession('another'), 'an unknown session is none').toBeNull();
   });
 
+  it("opens the /pdf-export tab with the page's share link, so a link reader's images load there (B171)", async () => {
+    const openWindow = vi.fn(() => true);
+    const api = createBridge({ pathname: () => '/d/d1', fetch: quiet(), share: () => 'tok en/1?&', browser: hooks({ openWindow, session: memory() }) });
+    const id = await api.notes.createPdfExportSession('d1', { title: 'Plans', markdown: '' });
+    expect(await api.notes.openPdfExportPreview(id)).not.toBeNull();
+    expect(await api.notes.openPdfExportRenderSurface(id)).not.toBeNull();
+    for (const [opened] of openWindow.mock.calls as unknown as [string][]) {
+      const url = new URL(opened, 'https://moss.example');
+      expect(url.pathname).toBe('/pdf-export');
+      expect(url.searchParams.get('pdfExportSessionId')).toBe(id);
+      expect(url.searchParams.get('share'), 'the share link rides along, whole').toBe('tok en/1?&');
+      expect([...url.searchParams.keys()].sort()).toEqual(['pdfExportSessionId', 'share']);
+    }
+  });
+
   it('reports a blocked print tab as a failed open', async () => {
     const api = createBridge({ pathname: () => '/', fetch: quiet(), browser: hooks({ openWindow: () => false, session: memory() }) });
     const id = await api.notes.createPdfExportSession('d1', { title: 'Plans', markdown: '' });

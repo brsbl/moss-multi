@@ -61,6 +61,8 @@ interface Fixture {
   unmount(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string }>;
   unmountDetail(options?: { discardUnsaved?: boolean }): Promise<{ kind: string; flush: string; markdown: string | null }>;
   delayWrites(ms: number): void;
+  holdAssets(): void;
+  releaseAssets(outcome?: 'stored' | 'refused'): void;
   status(): string | null;
   events(): { kind: string; cause?: string; status?: string; op?: string; location?: object }[];
   files(under?: string): Record<string, string>;
@@ -509,6 +511,45 @@ test.describe('embeddable editor', () => {
     expect(seen.errors).toEqual([]);
     expect(await page.evaluate(() => window.editorFixture.violations)).toEqual([]);
   });
+
+  // B189 and B170: an image pasted over a selection while the host holds its upload, then unmount. The final write
+  // waits for the paste: the image in place of the selection, or, when the host refuses it, the text left whole.
+  for (const outcome of ['stored', 'refused'] as const) {
+    test(`an unmount while a pasted image uploads over a selection writes ${outcome === 'stored' ? 'the image in its place' : 'the text untouched when the upload is refused'}`, async ({ page }) => {
+      const seen = await open(page);
+      await mountNote(page, '# Plan\n\nAlpha beta gamma\n');
+      await page.evaluate(() => window.editorFixture.holdAssets());
+      await selectWord(page, 'Alpha beta gamma', 'beta');
+      const png = readFileSync(join(MEDIA, 'pattern.png')).toString('base64');
+      const taken = await body(page).evaluate((root, base64) => {
+        const data = new DataTransfer();
+        data.items.add(new File([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], 'pattern.png', { type: 'image/png' }));
+        const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+        root.dispatchEvent(event);
+        return event.defaultPrevented;
+      }, png);
+      expect(taken, 'the editor takes the pasted image').toBe(true);
+      await expect.poll(async () => (await page.evaluate(() => window.editorFixture.calls())).filter((call) => call.op === 'assetPut').length).toBe(1);
+      await expect(body(page), 'the selected text stays while the upload is held').toContainText('Alpha beta gamma');
+      const unmounting = page.evaluate(() => window.editorFixture.unmountDetail());
+      await page.waitForTimeout(500);
+      expect((await files(page))['/Moss/Notes/Plan/Plan.md'], 'nothing is written while the upload is held').toBe('# Plan\n\nAlpha beta gamma\n');
+      await page.evaluate((result) => window.editorFixture.releaseAssets(result), outcome);
+      const result = await unmounting;
+      expect(result.kind).toBe('unmounted');
+      const markdown = (await files(page))['/Moss/Notes/Plan/Plan.md'];
+      if (outcome === 'stored') {
+        const [put] = (await page.evaluate(() => window.editorFixture.calls())).filter((call) => call.op === 'assetPut');
+        expect(result.flush).toBe('saved');
+        expect(markdown).toContain(`(assets/${put.name})`);
+        expect(markdown, 'the image replaces the selection').not.toContain('beta');
+        expect(markdown).toMatch(/Alpha[\s\S]*!\[[^\]]*\]\(assets\/[^)]+\)[\s\S]*gamma/);
+      } else {
+        expect(markdown, 'a refused upload leaves the note as it was').toBe('# Plan\n\nAlpha beta gamma\n');
+      }
+      expect(seen.errors).toEqual([]);
+    });
+  }
 
   test('the demo note in the editor, light and dark', async ({ page }, testInfo) => {
     const seen = await open(page);

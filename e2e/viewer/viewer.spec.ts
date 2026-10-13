@@ -425,7 +425,6 @@ test('video plays through 206 Range responses: a seek ahead of the download asks
   server.slow.add(clipPath);
   try {
     await mount(page);
-    const before = server.media.length;
     const body = page.locator('[data-moss-viewer] [data-moss-note-editor-root]');
     const video = body.locator('[data-video-node-kind="local"]');
     await video.scrollIntoViewIfNeeded();
@@ -433,15 +432,21 @@ test('video plays through 206 Range responses: a seek ahead of the download asks
     const player = body.locator('video:not([data-video-thumbnail-state])');
     await expect(player).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
     await expect.poll(() => player.evaluate((element: HTMLVideoElement) => element.readyState), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+    // B233: only reads after the seek count, so the player's opening bytes=0- read cannot pass for one.
+    const before = server.media.length;
     const target = await player.evaluate((element: HTMLVideoElement) => {
       const target = element.duration * 0.8;
       element.currentTime = target;
       return target;
     });
-    // The player's own reads of the clip: at least one asks for a byte range and is answered 206.
+    // The seek asks for the clip from past its start, and is answered 206 with exactly that range.
     const reads = () => server.media.slice(before).filter((request) => request.path === clipPath);
-    await expect.poll(() => reads().filter((request) => request.range !== null && request.status === 206).length, {
-      message: 'a Range read answered 206',
+    const seekRead = (request: (typeof server.media)[number]) => {
+      const start = Number(/^bytes=(\d+)-/.exec(request.range ?? '')?.[1] ?? 0);
+      return start > 0 && request.status === 206 && (request.contentRange ?? '').startsWith(`bytes ${start}-`);
+    };
+    await expect.poll(() => reads().filter(seekRead).length, {
+      message: 'the seek reads a range starting past 0, answered 206 with that Content-Range',
       timeout: 20_000,
     }).toBeGreaterThan(0);
     await expect.poll(() => player.evaluate((element: HTMLVideoElement) => !element.seeking && element.readyState >= 2 && element.currentTime >= 0.75 * element.duration), {
