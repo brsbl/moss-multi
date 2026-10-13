@@ -277,6 +277,35 @@ describe('stored bytes are the type their name declares (T3.B10, B166)', () => {
     const utf16 = new Uint8Array([0xff, 0xfe, ...[...'<svg/>'].flatMap((char) => [char.charCodeAt(0), 0])]);
     expect((await upload(owner.cookie, docId, 'wide.svg', utf16, 'image/svg+xml')).status, 'UTF-16 with its byte-order mark').toBe(201);
   });
+
+  it('takes a well-formed SVG whose doctype quotes or comments a bracket, or whose root has any XML name prefix, through both routes', async () => {
+    const docId = await insertDoc(d1.db, owner);
+    const NS = 'http://www.w3.org/2000/svg';
+    const long = 'p'.repeat(400);
+    const shapes = [
+      `<!DOCTYPE svg [<!ENTITY label "]">]><svg xmlns="${NS}"/>`,
+      `<!DOCTYPE svg [<!ENTITY label ']>'>]><svg xmlns="${NS}"/>`,
+      `<!DOCTYPE svg [<!-- ] -->]><svg xmlns="${NS}"/>`,
+      `<!DOCTYPE svg [<!-- > [ -->]><svg xmlns="${NS}"/>`,
+      `<!DOCTYPE svg [<?note ] > ?>]><svg xmlns="${NS}"/>`,
+      `<!DOCTYPE svg SYSTEM "odd>name[.dtd"><svg xmlns="${NS}"/>`,
+      `<!DOCTYPE svg [<!ATTLIST svg data-x CDATA "a]b>">]><svg xmlns="${NS}"/>`,
+      `<é:svg xmlns:é="${NS}"/>`,
+      `<図形:svg xmlns:図形="${NS}"></図形:svg>`,
+      `<${long}:svg xmlns:${long}="${NS}"/>`,
+    ];
+    for (const [i, shape] of shapes.entries()) {
+      expect((await upload(owner.cookie, docId, `odd-${i}.svg`, text(shape), 'image/svg+xml')).status, shape).toBe(201);
+      const url = `https://img.example/odd-${crypto.randomUUID()}.svg`;
+      remote.set(url, { type: 'image/svg+xml', bytes: text(shape) });
+      expect((await fromUrl(docId, url)).status, `from a URL: ${shape}`).toBe(201);
+    }
+    const be = new Uint8Array([0xfe, 0xff, ...[...'<svg/>'].flatMap((char) => [0, char.charCodeAt(0)])]);
+    expect((await upload(owner.cookie, docId, 'wide-be.svg', be, 'image/svg+xml')).status, 'UTF-16BE with its byte-order mark').toBe(201);
+    for (const page of [`<!DOCTYPE html [<!ENTITY x "]">]><html><svg/></html>`, `<!-- <svg> -->\n<html></html>`, `<p:svgx xmlns:p="${NS}"/>`]) {
+      expect((await upload(owner.cookie, docId, 'page.svg', text(page), 'image/svg+xml')).status, page).toBe(415);
+    }
+  });
 });
 
 describe('upload bounds (T3.1s)', () => {
@@ -780,6 +809,17 @@ describe('copies carry media (A§16)', () => {
     ];
     expect(refusals.map((response) => response.status), 'missing, forged, revoked and cross-note links').toEqual([404, 404, 404, 404, 404]);
     expect((await copy(own, { sourceShare: 7 })).status, 'a link is a string').toBe(400);
+    // A sourceShare that is present opens the source alone, even when empty: never the page's folder link instead.
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const folderLink = await insertLink(d1.db, { folderId: folder }, 'editor');
+    const inFolder = await insertDoc(d1.db, ada, { folderId: folder });
+    const folderSource = await insertDoc(d1.db, ada, { folderId: folder });
+    const { relativePath: folderPath } = await uploaded(await upload(ada.cookie, folderSource, 'folder-source.png', OTHER_PNG, 'image/png'));
+    const viaFolder = (body: Record<string, unknown>) => call('POST', `/api/docs/${inFolder}/assets/copy?share=${folderLink}`, dot.cookie, {
+      body: JSON.stringify({ sourceNoteId: folderSource, sourceRelativePath: folderPath, ...body }), headers: { 'content-type': 'application/json' },
+    });
+    expect((await viaFolder({ sourceShare: '' })).status, 'an empty sourceShare is no link').toBe(404);
+    expect((await viaFolder({})).status, "with none, the page's link still opens the source").toBe(201);
     // A copy through membership needs no link, as before.
     const member = await insertDoc(d1.db, ada);
     await uploaded(await upload(ada.cookie, member, 'member.png', OTHER_PNG, 'image/png'));

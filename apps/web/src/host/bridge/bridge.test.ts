@@ -309,6 +309,11 @@ describe('the T3.1 images bridge (A§9 images; A§16)', () => {
       expect(linked.url.searchParams.get('share'), "the destination opens through the page's link").toBe('page-link');
       expect(linked.body).toEqual({ sourceNoteId: 's1', sourceRelativePath: 'assets/a.png', sourceShare: 'source/link' });
       expect(member.body, 'a URL with no link sends none').toEqual({ sourceNoteId: 's2', sourceRelativePath: 'assets/b.png' });
+      // The same file pasted again without a link forgets the one remembered before.
+      webAssetsInHtml('<img src="/api/docs/s1/assets/a.png">');
+      await api.images.copyFromNoteAsset({ sourceNoteId: 's1', sourceRelativePath: 'assets/a.png', destinationNoteId: 'd1' });
+      expect(JSON.parse(String(fetch.mock.calls[2][1]?.body)), 'a later tokenless paste sends no stale link')
+        .toEqual({ sourceNoteId: 's1', sourceRelativePath: 'assets/a.png' });
     } finally {
       vi.unstubAllGlobals();
     }
