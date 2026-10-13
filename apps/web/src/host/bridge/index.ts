@@ -360,6 +360,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         }
         const changedVaults = JSON.stringify([workspaceSnapshot.vault, workspaceSnapshot.vaults]) !== JSON.stringify([data.vault, data.vaults]);
         const removed: Set<string> = new Set(full ? workspaceSnapshot.docs.map((doc) => doc.id) : ids);
+        const named = (list: ApiDoc[]) => new Map(list.filter((doc) => removed.has(doc.id)).map((doc) => [doc.id, `${doc.title}\u0000${doc.filename ?? ''}`]));
+        const namedBefore = named(workspaceSnapshot.docs);
         const docs: ApiDoc[] = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
           .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         workspaceSnapshot = { ...data, docs };
@@ -369,7 +371,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
-        rereadBacklinks();
+        const namedAfter = named(data.docs);
+        rereadBacklinks(full ? null : ids, (id) => namedBefore.get(id) !== namedAfter.get(id));
         // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
         // restore, which remounts its pane with a fresh session.
         for (const id of pushed) reopenIds.delete(id);
@@ -429,11 +432,15 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
   };
-  /** After the listing caught up with a workspace event: a watched note that left it (trashed, unshared) is dropped. */
-  const rereadBacklinks = () => {
+  /**
+   * After the listing caught up with a workspace event for `changed` (null: every doc): a watched note that left it
+   * (trashed, unshared) is dropped, and the rest are read again unless the only change was the note's own edit, which
+   * changes no note's links to it; its rename does.
+   */
+  const rereadBacklinks = (changed: string[] | null, renamed: (id: string) => boolean) => {
     for (const id of [...watched]) {
-      if (inListing(id)) void readBacklinks(id);
-      else unwatch(id);
+      if (!inListing(id)) unwatch(id);
+      else if (changed === null || renamed(id) || changed.some((other) => other !== id)) void readBacklinks(id);
     }
   };
   // Only live listed notes: moss records links for them, and a trashed or unshared one would 404. A note whose session
@@ -443,13 +450,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (closed === 'deleted' || closed === 'revoked') return false;
     return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   };
+  /** Opening or focusing a note reads its backlinks once; workspace events keep a watched note's current. */
   const watchBacklinks = (id: string) => {
     if (!inListing(id)) return;
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
     watched.splice(BACKLINK_WATCH);
-    void readBacklinks(id);
+    if (at === -1 || !backlinks.has(id)) void readBacklinks(id);
   };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
