@@ -15,7 +15,7 @@ import { RequestBudget } from '../lib/budget.ts';
 import { probeSocket } from '../lib/doc-client.ts';
 import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
-import { socketProblems } from '../lib/invariants.ts';
+import { errorProblems, socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
@@ -132,6 +132,33 @@ test.describe('doc sockets (invariant 3)', () => {
   test("a socket the previous document opened as it unloaded is that document's, not the next one's", () => {
     // WebKit can deliver the old document's socket after the new navigation's response, at the new epoch.
     expect(socketProblems([socket(0, 0, 'doc-a'), socket(39, null, 'doc-b')], new Map())).toEqual([]);
+  });
+});
+
+test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
+  const OFF = { offLoopback: true };
+  const socket = (openedAt: number, closedAt: number | null, code: number | null = null, error: string | null = null) =>
+    ({ url: `wss://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error, code, document: 'doc-a' });
+  test('off loopback, one socket dropped abnormally (1006) or told to try again (1013), then replaced, passes', () => {
+    expect(socketProblems([socket(0, 10, 1006), socket(20, null)], new Map(), OFF)).toEqual([]);
+    expect(socketProblems([socket(0, 10, 1013), socket(20, null)], new Map(), OFF)).toEqual([]);
+    expect(socketProblems([socket(0, 10, 1006, 'socket error'), socket(20, null)], new Map(), OFF)).toEqual([]);
+  });
+  test('on loopback the same drop fails, and off loopback a refusal, a second drop or two sockets at once still fail', () => {
+    expect(socketProblems([socket(0, 10, 1006), socket(20, null)], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 10, 4408), socket(20, null)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 10, 1006), socket(20, 30, 1006), socket(40, null)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 30, 1006), socket(20, null)], new Map(), OFF)).not.toEqual([]);
+  });
+  test("off loopback the browser's log line for that drop is not an error; any other socket's is", () => {
+    const dropped = socket(0, 10, 1006);
+    const census = (text: string) => ({
+      console: [{ type: 'error', text, url: '', at: 10 }], pageErrors: [], http: [], sockets: [dropped, socket(20, null)],
+    });
+    const drop = `WebSocket connection to '${dropped.url}' failed: The network connection was lost.`;
+    expect(errorProblems(census(drop), [], 'j01', OFF)).toEqual([]);
+    expect(errorProblems(census(drop), [], 'j01')).not.toEqual([]);
+    expect(errorProblems(census("WebSocket connection to 'wss://h/parties/doc-d-o/d?_pk=20' failed: x"), [], 'j01', OFF)).not.toEqual([]);
   });
 });
 

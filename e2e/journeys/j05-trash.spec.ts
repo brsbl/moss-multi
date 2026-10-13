@@ -276,6 +276,8 @@ test('j05-trash: a note dropped on the sidebar’s Trash button goes to Trash, a
   const docId = await ui.createNote(ada);
   await ui.typeTitle(ada, docId, 'Dropped on Trash', { enter: true });
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  // A backlinks read the open pane sent just before the trash lands answers 404; the bridge then stops reading them.
+  ada.expectHttp(404, `/api/docs/${docId}/backlinks`);
   await noteRow(ada, docId).locator('[draggable="true"]').dragTo(ada.page.getByRole('button', { name: 'Trash', exact: true }));
   await expect(noteRow(ada, docId), 'the dropped note leaves the notes').toHaveCount(0, { timeout: PEER_MS });
   await ada.page.keyboard.press('ControlOrMeta+2');
