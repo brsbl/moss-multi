@@ -1155,13 +1155,13 @@ describe('stopping watch stops the pass (T7.S8)', () => {
     return { result, ms: Date.now() - stop };
   };
 
-  it('Ctrl+C during the first create uploads nothing more and keeps the created doc tracked', async () => {
+  it('SIGINT during the first create uploads nothing more, exits promptly and keeps the created doc tracked', async () => {
     expect((await cli(['init'])).code).toBe(0);
     for (const name of ['Alpha', 'Beta', 'Gamma']) writeFileSync(join(dir, `${name}.md`), `${name} notes.\n`);
     const ids = ['a1111111-1111-4111-8111-111111111111', 'b2222222-2222-4222-8222-222222222222', 'c3333333-3333-4333-8333-333333333333'];
     let made = 0;
     server.state.createNew = { id: ids[0]!, filename: 'alpha.md' };
-    const controller = new AbortController();
+    const hooks = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')];
     let stop = 0;
     server.state.onCreate = () => {
       made += 1;
@@ -1169,10 +1169,11 @@ describe('stopping watch stops the pass (T7.S8)', () => {
       // SIGINT arrives while the first create is in flight.
       if (made === 1) {
         stop = Date.now();
-        controller.abort();
+        process.emit('SIGINT');
       }
     };
-    const running = cli(['watch', '--interval', '60'], undefined, { signal: controller.signal });
+    // No signal passed: watch stops on the process's own SIGINT.
+    const running = cli(['watch', '--interval', '60']);
     const deadline = Date.now() + 5_000;
     while (stop === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
     const { result, ms } = await stoppedWithin(running, stop, 3_000);
@@ -1184,6 +1185,7 @@ describe('stopping watch stops the pass (T7.S8)', () => {
     expect(meta(ids[0]!).file).toBe('alpha.md');
     expect(existsSync(join(dir, 'Beta.md')) && existsSync(join(dir, 'Gamma.md')), 'the rest stay untracked files').toBe(true);
     expect(existsSync(join(dir, '.moss-multi', '.lock')), 'the lock is let go').toBe(false);
+    expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')], 'no signal handler is left behind').toEqual(hooks);
   });
 
   it('Ctrl+C after a push lands records it and pushes no other file', async () => {
