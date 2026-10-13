@@ -5,7 +5,7 @@ import { useAccessGate } from '../host/access-gate.ts';
 import { auth, requireSessionOrLink } from '../host/auth.ts';
 import { BootFrame, MossAppHost } from '../host/MossAppHost.tsx';
 import { DenialPage } from '../host/surfaces/DenialPage.tsx';
-import { DegradedFrame, SessionPending } from '../host/surfaces/SessionFrame.tsx';
+import { DegradedFrame, OutdatedFrame, SessionPending } from '../host/surfaces/SessionFrame.tsx';
 
 // The folder or vault share landing (A§4.2): the moss shell with that folder's vault active and the folder revealed
 // (boot.tsx). A folder link opens it signed out, its folder the root of a link-scoped workspace. A folder the caller
@@ -23,5 +23,6 @@ function FolderRoute(): ReactNode {
   const { gate, retry } = useAccessGate(folderId, askFolderAccess);
   if (gate === 'open') return <MossAppHost />;
   if (gate === 'denied') return <DenialPage signedIn={auth.get().status === 'signed-in'} what="folder" />;
+  if (gate === 'outdated') return <OutdatedFrame />;
   return <div id="root">{gate === 'degraded' ? <DegradedFrame onRetry={retry} /> : <BootFrame />}</div>;
 }

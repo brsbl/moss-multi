@@ -7,6 +7,7 @@ import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
 import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, reopenDocs, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
 import { ImageContextMenu } from './media/ImageContextMenu.tsx';
+import { ReloadConfirmation } from './surfaces/ReloadConfirmation.tsx';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
 import { TrashConfirmation } from './surfaces/TrashConfirmation.tsx';
 import { folderIdFromPath, installBridge, WORKSPACE, type Bridge } from './bridge/index.ts';
@@ -63,6 +64,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
         <SignOutConfirmation />
         <ImageContextMenu />
         <TrashConfirmation />
+        <ReloadConfirmation />
         <ShareDialogHost />
       </>
     );

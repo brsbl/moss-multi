@@ -2,7 +2,8 @@ import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type Termina
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
 import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
-import { leaveTo, reloadDocument } from '../navigation.ts';
+import { leaveTo } from '../navigation.ts';
+import { reloadUnlessUnacked } from '../reload-guard.ts';
 import { useDocConnection } from './connection.ts';
 import { retryDoc } from './doc-session.ts';
 import { useTerminal } from './terminal.ts';
@@ -22,9 +23,9 @@ function terminalAction(terminal: TerminalReason | null, docId: string | null) {
       return <button type="button" className="underline" onClick={() => { if (docId) retryDoc(docId); }}>Retry</button>;
     case 'session-ended':
       return <button type="button" className="underline" onClick={() => leaveTo(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`)}>Sign in</button>;
-    // This bundle can no longer write; the reload loads the deployed one.
+    // This bundle can no longer write; the reload loads the deployed one, asking first while edits are unacked.
     case 'outdated':
-      return <button type="button" className="underline" onClick={reloadDocument}>Reload</button>;
+      return <button type="button" className="underline" onClick={reloadUnlessUnacked}>Reload</button>;
     default:
       return undefined;
   }
