@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 50% done** (115 of 230 planned tasks verified)
+**Overall: 50% done** (116 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 13 / 13 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 14 / 14 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -136,6 +136,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T6.S5 verified: restoring a version now puts a detached comment back on the exact text or block the restore wrote, even after a peer inserted before it or retyped it, and it survives a DocDO restart; otherwise the comment stays detached.
 - 2026-10-12 — T6.B3 verified: saving a named version or diffing against current now waits until this tab's edits are acknowledged (and refuses as unsynced after 5 s without sending anything), View strips only real frontmatter, and the History view has a parity gate in both themes.
 - 2026-10-12 — T6.B2 verified: a restore or reconcile that would move an unchanged block across another (recreating it) is now refused 409 with nothing written, and the formula reconcile tests prove the inline formula's own Yjs item survives.
+- 2026-10-12 — T6.S7 verified: a restore or import near the note's size cap that shrinks or keeps a payload's size now succeeds, because each touched payload counts at its size after the write, and one that would exceed the cap is still refused 413 with nothing written.
 
 ## T1.1s identity audit
 
