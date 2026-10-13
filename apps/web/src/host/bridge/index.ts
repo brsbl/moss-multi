@@ -16,6 +16,7 @@ import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
 import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import { registerDocOpener } from '../navigation.ts';
+import { currentLeave, heldRead, installLeaving, isLeaveCancelled, leaveAwareSend, type Leave } from '../leave.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -113,12 +114,11 @@ export interface BridgeOptions {
   trashGuard?: TrashGuard;
   /** Docs a workspace push named, so a session left terminal on a note that is live after all re-asks (A§8). */
   reopenDocs?: (docIds: string[]) => void;
-  /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
-   * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
-  leaving?: () => Leave;
+  /** The page's current leave (leave.ts); the page's own by default. */
+  leaving?: () => Leave | undefined;
 }
 
-export interface Leave { signal: AbortSignal; stayed: Promise<void> }
+export type { Leave } from '../leave.ts';
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 type Listener<T extends unknown[]> = (...args: T) => void;
@@ -148,6 +148,10 @@ const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 const PDF_SESSION_KEY = 'moss-multi:pdf-export';
 /** How long Save as Markdown waits for unacked edits before refusing. */
 export const EXPORT_ACK_WAIT_MS = 8_000;
+/** A listing read with no answer, headers or body, by then is given up and asked again. */
+export const LISTING_DEADLINE_MS = 15_000;
+/** moss reads other notes' content (file-link previews, workspace formulas) at most this many at a time (A§9). */
+const CONTENT_READS = 3;
 
 /** moss's save-dialog file name (main/ipc-handlers.ts sanitizeFilename): no path separators or reserved characters. */
 export function markdownFileName(title: string): string {
@@ -257,28 +261,37 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     return fetcher(path, { credentials: 'same-origin', ...init,
       headers: { accept: 'application/json', ...(token ? { 'x-moss-share': token } : {}), ...init.headers } });
   };
-  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a background read in flight (its
-   * body included, through `read`) is aborted as the page leaves and held; if the page stays (the navigation was
-   * cancelled), it is sent again. */
-  const heldRequest = async <T>(path: string, read: (response: Response) => Promise<T>): Promise<T> => {
-    for (;;) {
-      const leave = leaving?.();
-      if (leave?.signal.aborted) {
-        await leave.stayed;
-        continue;
-      }
-      try {
-        return await read(await request(path, leave ? { signal: leave.signal } : {}));
-      } catch (error) {
-        if (!leave?.signal.aborted) throw error;
-        await leave.stayed;
-      }
+  const follow = leaving ?? currentLeave;
+  /** A read (its body included, through `read`) held while the page leaves and sent again if it stays (leave.ts). */
+  const heldRequest = <T>(path: string, read: (response: Response) => Promise<T>, init: RequestInit = {}, timeoutMs?: number): Promise<T> =>
+    heldRead((signal) => request(path, signal ? { ...init, signal } : init), read, { leaving: follow, timeoutMs });
+  /** A change sent at most once; one a leave cut off re-reads the listing once the page stays, then rejects. */
+  const sendOnce = async <T>(path: string, init: RequestInit, read: (response: Response) => Promise<T>): Promise<T> => {
+    try {
+      return await leaveAwareSend((signal) => request(path, signal ? { ...init, signal } : init), read, { leaving: follow });
+    } catch (error) {
+      if (isLeaveCancelled(error)) await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+      throw error;
     }
   };
   const listingRequest = (path: string): Promise<WorkspaceListing> => heldRequest(path, async (response) => {
     if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
     return (await response.json()) as WorkspaceListing;
-  });
+  }, {}, LISTING_DEADLINE_MS);
+  let contentReads = 0;
+  const contentQueue: (() => void)[] = [];
+  /** Runs `work` once fewer than CONTENT_READS are running; a finished read hands its slot to the next. */
+  const limited = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (contentReads >= CONTENT_READS) await new Promise<void>((resolve) => contentQueue.push(resolve));
+    else contentReads += 1;
+    try {
+      return await work();
+    } finally {
+      const next = contentQueue.shift();
+      if (next) next();
+      else contentReads -= 1;
+    }
+  };
   /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
   const withShare = (path: string) => {
     const token = share();
@@ -384,7 +397,11 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     } catch {
       if (generation === channelGeneration) {
         refreshAll = true;
-        refreshRetry = setTimeout(() => { void refreshWorkspace(); }, 1000);
+        // Through the listing prerequisite, as any other refresh.
+        refreshRetry = setTimeout(() => {
+          refreshRetry = null;
+          requestWorkspaceRefresh();
+        }, 1000);
       }
     } finally {
       refreshing = false;
@@ -501,9 +518,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       .filter((note) => note.title.toLowerCase().includes(needle))
       .sort((a, b) => rank(a.title.toLowerCase()) - rank(b.title.toLowerCase()) || b.updatedAt - a.updatedAt)
       .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' }));
-    const response = await request(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`);
-    if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
-    const { results } = await response.json() as { results: (ApiDoc & { snippet: string })[] };
+    const { results } = await heldRequest(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`, async (response) => {
+      if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
+      return await response.json() as { results: (ApiDoc & { snippet: string })[] };
+    });
     const seen = new Set(titled.map((hit) => hit.id));
     const indexed: NoteSearchResult[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
       const listedNote = listed.find((note) => note.id === hit.id);
@@ -629,9 +647,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   return {
     [WORKSPACE]: {
       duplicate: async (id: string) => {
-        const response = await request(`/api/docs/${encodeURIComponent(id)}/duplicate`, { method: 'POST' });
-        if (!response.ok) throw new Error(`Duplicate: ${response.status}`);
-        const result = await response.json() as { doc: ApiDoc; role: string };
+        const result = await sendOnce(`/api/docs/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }, async (response) => {
+          if (!response.ok) throw new Error(`Duplicate: ${response.status}`);
+          return await response.json() as { doc: ApiDoc; role: string };
+        });
         rememberRole(result.doc.id, result.role);
         const note = toNoteMetadata(result.doc);
         known.set(note.id, note);
@@ -673,21 +692,24 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (note && note.trashedAt == null) watchBacklinks(id);
         if (note?.trashedAt != null) {
           // The owner's Trash view reads a trashed note on its one read path, read-only (A§8).
-          const response = await request(`/api/trash/${encodeURIComponent(id)}`);
-          if (!response.ok) return undefined;
-          const { markdown } = (await response.json()) as { markdown: string };
-          return { ...record(note), content: markdown };
+          const trashed = await heldRequest(`/api/trash/${encodeURIComponent(id)}`, async (response) =>
+            (response.ok ? (await response.json()) as { markdown: string } : null));
+          return trashed ? { ...record(note), content: trashed.markdown } : undefined;
         }
         // A doc that will bind gets no content from REST: the binding fills it (A§9).
         return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
-      getContent: async (id: string) => ((await byId(id)) ? { id, content: '', version: 1 } : undefined),
+      // The DocDO export (A§12) for moss's reads of other notes; undefined for a note the caller cannot read. A bound
+      // pane never asks for it (the bound-pane seam), so it never repaints an editor.
+      getContent: (id: string) => limited(() => heldRequest(`/api/docs/${encodeURIComponent(id)}/content`, async (response) =>
+        (response.ok ? { id, content: await response.text(), version: 1 } : undefined), { headers: { accept: 'text/markdown' } })
+        .catch(() => undefined)),
+      // moss asks only after its own REST save, which a bound note never runs.
       getFrontmatterSuggestions: async () => ({}),
       getHeadings: async (id: string) => {
-        const response = await request(`/api/docs/${encodeURIComponent(id)}/headings`);
-        if (!response.ok) return [];
-        const { headings } = await response.json() as { headings?: { level: 1 | 2 | 3 | 4; text: string }[] };
-        return Array.isArray(headings) ? headings : [];
+        const answer = await heldRequest(`/api/docs/${encodeURIComponent(id)}/headings`, async (response) =>
+          (response.ok ? await response.json() as { headings?: { level: 1 | 2 | 3 | 4; text: string }[] } : null));
+        return Array.isArray(answer?.headings) ? answer.headings : [];
       },
       create: async (title: string, folderPath: string = ROOT_FOLDER) => {
         // moss creates in the active folder; before the first listing the server picks the caller's Home.
@@ -695,13 +717,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // "Untitled" is moss's placeholder name; the doc's title starts empty (A§5.1).
         const body = { ...(title.trim() && title.trim() !== UNTITLED ? { title: title.trim() } : {}),
           ...(target ? { folderId: target } : {}) };
-        const response = await request('/api/docs', {
+        const created = await sendOnce('/api/docs', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
+        }, async (response) => {
+          if (!response.ok) throw new Error(`POST /api/docs: ${response.status}`);
+          return (await response.json()) as { doc: ApiDoc; role?: string };
         });
-        if (!response.ok) throw new Error(`POST /api/docs: ${response.status}`);
-        const created = (await response.json()) as { doc: ApiDoc; role?: string };
         rememberRole(created.doc.id, created.role);
         const note = toNoteMetadata(created.doc);
         known.set(note.id, note);
@@ -716,13 +739,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (!note) return undefined;
         if (typeof input.title === 'string' && !writeLiveTitle(id, input.title)) {
           // A doc no pane of this tab binds: the DocDO writes the title into its Y.Text (A§5.1 renameTitle).
-          const response = await request(`/api/docs/${encodeURIComponent(id)}`, {
+          const answer = await sendOnce(`/api/docs/${encodeURIComponent(id)}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ title: input.title }),
+          }, async (response) => {
+            if (!response.ok) throw new Error(`PATCH /api/docs/${id}: ${response.status}`);
+            return (await response.json()) as { doc: ApiDoc };
           });
-          if (!response.ok) throw new Error(`PATCH /api/docs/${id}: ${response.status}`);
-          const answer = (await response.json()) as { doc: ApiDoc };
           note = toNoteMetadata(answer.doc);
           known.set(id, note);
           listing = null;
@@ -1032,32 +1056,6 @@ function windowBrowser(): BrowserHooks {
   };
 }
 
-/** A page still running this long after `beforeunload` stayed: its navigation was cancelled (a prompt, a download). */
-const STAYED_MS = 5_000;
-
-/** Aborts on `beforeunload`, before WebKit stops the page's loads for the navigation. The leave ends, releasing the
- * held reads, when the page is still here after STAYED_MS or comes back from the back-forward cache. */
-function leavingSignal(): () => Leave {
-  const arm = () => {
-    let end = () => undefined as void;
-    const stayed = new Promise<void>((resolve) => { end = resolve; });
-    return { controller: new AbortController(), stayed, end };
-  };
-  let current = arm();
-  const stay = () => {
-    if (!current.controller.signal.aborted) return;
-    const left = current;
-    current = arm();
-    left.end();
-  };
-  window.addEventListener('beforeunload', () => {
-    current.controller.abort();
-    setTimeout(stay, STAYED_MS);
-  });
-  window.addEventListener('pageshow', (event) => { if (event.persisted) stay(); });
-  return () => ({ signal: current.controller.signal, stayed: current.stayed });
-}
-
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(
   authStore: import('../auth-state.ts').AuthStore,
@@ -1067,7 +1065,7 @@ export function installBridge(
 ): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard, reopenDocs,
     share: () => new URLSearchParams(window.location.search).get('share'),
-    leaving: leavingSignal(),
+    leaving: installLeaving(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
       onPause: pause,
       auth: authStore,

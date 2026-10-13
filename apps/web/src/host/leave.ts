@@ -63,12 +63,24 @@ export interface LeaveOptions {
 
 type Send = (signal: AbortSignal | undefined) => Promise<Response>;
 
+/** AbortSignal.any, where the browser has it (Safari 17.4). */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const native = (AbortSignal as { any?: (all: AbortSignal[]) => AbortSignal }).any;
+  if (native) return native.call(AbortSignal, signals);
+  const controller = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+  }
+  return controller.signal;
+}
+
 /** One attempt: the leave's signal and the deadline's, combined, from the request through `read`. */
 async function attempt<T>(send: Send, read: (response: Response) => Promise<T>, leave: Leave | undefined, timeoutMs?: number): Promise<T> {
   const deadline = timeoutMs === undefined ? null : new AbortController();
   const timer = deadline ? setTimeout(() => deadline.abort(new DOMException('The request timed out.', 'TimeoutError')), timeoutMs) : undefined;
   const signals = [leave?.signal, deadline?.signal].filter((signal): signal is AbortSignal => signal !== undefined);
-  const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+  const signal = signals.length > 1 ? anySignal(signals) : signals[0];
   try {
     const work = (async () => read(await send(signal)))();
     if (!signal) return await work;

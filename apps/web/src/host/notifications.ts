@@ -20,11 +20,14 @@ export interface NotificationsDeps {
 }
 
 const RETRY_MS = 5_000;
+/** Metadata pushes come in bursts (a move, a typing peer's updated_at); one read answers a burst. */
+const META_COALESCE_MS = 1_000;
 
 export function createNotifications({ fetch: fetcher, signedIn }: NotificationsDeps) {
   let list: Notice[] = [];
   let generation = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
+  let coalesced: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<() => void>();
   const publish = (next: Notice[]) => {
     list = next;
@@ -33,7 +36,9 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
 
   async function refresh(): Promise<void> {
     if (retry) clearTimeout(retry);
+    if (coalesced) clearTimeout(coalesced);
     retry = null;
+    coalesced = null;
     const mine = ++generation;
     if (!signedIn()) {
       if (list.length) publish([]);
@@ -73,15 +78,24 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
         body: JSON.stringify({ ids }),
       }).catch(() => undefined);
     },
-    /** The workspace channel (bridge): a push about notices, or a (re)connect that may have missed one. */
+    /** The workspace channel (bridge): a push about notices, or a (re)connect that may have missed one. A metadata
+     * push may mean the reader lost a note (a move), and the server lists notices by current access. */
     receive(event: WorkspaceEvent): void {
       if (event.type === 'notifications' || event.type === 'vaults') void refresh();
+      else if (event.type === 'meta' && !coalesced && signedIn()) {
+        coalesced = setTimeout(() => {
+          coalesced = null;
+          void refresh();
+        }, META_COALESCE_MS);
+      }
     },
     /** Sign-out: nothing is shown or asked for once the session is gone. */
     clear(): void {
       generation += 1;
       if (retry) clearTimeout(retry);
+      if (coalesced) clearTimeout(coalesced);
       retry = null;
+      coalesced = null;
       if (list.length) publish([]);
     },
   };
