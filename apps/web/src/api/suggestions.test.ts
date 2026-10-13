@@ -170,6 +170,50 @@ describe('suggestion review routes @p:mean-2 @p:R17', () => {
   });
 });
 
+describe('an anonymous link holder previews, and does nothing else (T5.B1) @p:mean-2 @p:ppl-2', () => {
+  const anonymous = (method: string, share: string | null, action: string, body?: unknown) =>
+    handleApi(
+      new Request(`${BASE}${path(action)}`, {
+        method,
+        headers: { 'content-type': 'application/json', origin: BASE, ...(share ? { 'x-moss-share': share } : {}) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }),
+      env,
+    );
+
+  it('previews with a view link; no link is 401, a revoked or another note\'s link 404, and accept, reject and withdraw 401', async () => {
+    const link = await insertLink(d1.db, { docId }, 'viewer');
+    const revoked = await insertLink(d1.db, { docId }, 'viewer', { revoked: true });
+    const elsewhere = await insertLink(d1.db, { docId: await insertDoc(d1.db, ada) }, 'viewer');
+    const preview = await anonymous('GET', link, 'preview');
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toEqual({ preview: { hunks: [], hash: 'h', digest: 'd' } });
+    expect(calls).toEqual([{ op: 'preview', docId, input: expect.objectContaining({
+      reviewer: { id: 'anonymous', role: 'viewer' },
+      actor: { kind: 'anonymous', principalId: 'anonymous', sessionId: null, shareToken: link },
+    }) }]);
+    expect((await anonymous('GET', null, 'preview')).status).toBe(401);
+    expect((await anonymous('GET', revoked, 'preview')).status).toBe(404);
+    expect((await anonymous('GET', elsewhere, 'preview')).status).toBe(404);
+    expect((await anonymous('POST', link, 'accept', { previewHash: 'h', digest: 'd' })).status).toBe(401);
+    expect((await anonymous('POST', link, 'reject')).status).toBe(401);
+    expect((await anonymous('POST', link, 'withdraw')).status).toBe(401);
+    expect(calls, 'only the one preview reached the DocDO').toHaveLength(1);
+  });
+
+  it("each link has its own preview budget: one link past it refuses no other link's holder, and no shared anonymous bucket is charged", async () => {
+    previewBudget = 2;
+    const first = await insertLink(d1.db, { docId }, 'viewer');
+    const second = await insertLink(d1.db, { docId }, 'viewer');
+    const statuses: number[] = [];
+    for (let i = 0; i < 3; i += 1) statuses.push((await anonymous('GET', first, 'preview')).status);
+    expect(statuses).toEqual([200, 200, 429]);
+    expect((await anonymous('GET', second, 'preview')).status).toBe(200);
+    expect(tokens.some((token) => token === 'preview:anonymous'), 'never the one anonymous principal').toBe(false);
+    expect(new Set(tokens).size).toBe(2);
+  });
+});
+
 describe('the working export is metered before the DocDO (docs/design/suggestions.md I5) @p:mean-2', () => {
   const content = (who: { cookie: string | null; share?: string; ip?: string; bearer?: string }, view = 'working') =>
     handleApi(
