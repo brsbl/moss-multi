@@ -355,6 +355,9 @@ export class DocDO extends YServer<SyncEnv> {
   /** Updates since the last auto version, and who made them; persisted in meta so a wake keeps them (A§14). */
   #versionUpdates = 0;
   #stagedRetry: ReturnType<typeof setTimeout> | null = null;
+  /** A staged move is running; a pass that finds one leaves its staged versions to it (`again` reruns it). */
+  #migrating = false;
+  #migrateAgain = false;
   #versionAuthors = new Set<string>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
@@ -441,7 +444,8 @@ export class DocDO extends YServer<SyncEnv> {
     this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
     if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
     // Spills a previous instance could not delete are retried after a wake.
-    if (store.meta(VERSIONS_DIRTY) === '1') setTimeout(() => void this.#versionsChanged(), WAKE_FEED_MS);
+    // A spill written before its row, or discarded after it, may be all that is left; the marker is set only later.
+    if (store.meta(VERSIONS_DIRTY) === '1' || this.#versions?.pending()) setTimeout(() => void this.#versionsChanged(), WAKE_FEED_MS);
   }
 
   /**
@@ -1288,15 +1292,34 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * After a version write: staged versions move to R2 and pruned or unwritten spills are deleted; what fails stays
-   * marked for the next write or wake, and a failed move is also retried after STAGED_RETRY_MS.
+   * marked for the next write or wake, and a failed move is also retried after STAGED_RETRY_MS. One move runs at a
+   * time, so no two passes put the same staged key; a sweep never deletes a staged or listed key (VersionStore.sweep).
    */
   async #versionsChanged(): Promise<void> {
     const versions = this.#versions;
     const store = this.#store;
     if (!versions || !store) return;
     store.setMeta(VERSIONS_DIRTY, '1');
+    await this.#migrateStaged(versions);
     try {
-      await versions.migrate();
+      await versions.sweep();
+    } catch (error) {
+      console.error('DocDO could not sweep version spills', error);
+    }
+    if (!versions.pending()) store.setMeta(VERSIONS_DIRTY, '0');
+  }
+
+  async #migrateStaged(versions: VersionStore): Promise<void> {
+    if (this.#migrating) {
+      this.#migrateAgain = true;
+      return;
+    }
+    this.#migrating = true;
+    try {
+      do {
+        this.#migrateAgain = false;
+        await versions.migrate();
+      } while (this.#migrateAgain);
     } catch (error) {
       console.error('DocDO could not move a staged version to R2; it is retried', error);
       if (this.#stagedRetry === null) {
@@ -1305,13 +1328,9 @@ export class DocDO extends YServer<SyncEnv> {
           void this.#versionsChanged();
         }, STAGED_RETRY_MS);
       }
+    } finally {
+      this.#migrating = false;
     }
-    try {
-      await versions.sweep();
-    } catch (error) {
-      console.error('DocDO could not sweep version spills', error);
-    }
-    if (!versions.pending()) store.setMeta(VERSIONS_DIRTY, '0');
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
@@ -1575,6 +1594,8 @@ export class DocDO extends YServer<SyncEnv> {
       for (const id of authorIds) this.#versionAuthors.add(id);
       store.setMeta('version-updates', String(this.#versionUpdates));
       store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
+      // Its spill, if written, is now an orphan to sweep.
+      await this.#versionsChanged();
       return null;
     }
     await this.#versionsChanged();
