@@ -9,7 +9,7 @@ import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Pr
 import { createConverterEditor } from './converter/index.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 import {
-  $assignRegisterIds, bindRegisters, payloadTextOf, readMapEntries, rebaseMapEntries, REGISTER_LOCAL_ORIGIN, RegisterDraft,
+  $assignRegisterIds, bindRegisters, mapRegisterWritable, payloadTextOf, readMapEntries, rebaseMapEntries, REGISTER_LOCAL_ORIGIN, RegisterDraft,
 } from './registers.ts';
 import { BodyUndo, lexicalAction, payloadDocsFor, payloadMap, payloadText, seedPayload } from './payload-docs.ts';
 import { migratePayloads } from './payloads.ts';
@@ -625,6 +625,46 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
       expect(exportDocMarkdown(a.doc)).toContain(`"name": "${other}"`);
       expect(exportDocMarkdown(a.doc)).toBe(exportMarkdown(a.editor));
       expect(exportMarkdown(b.editor)).toBe(exportMarkdown(a.editor));
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
+  // T3.B15 (B241): an arrived payload is writable whatever it holds; an empty one used to swallow every edit.
+  it('an arrived empty chart or sketch payload takes its first edit, which persists and syncs; before arrival nothing writes', () => {
+    const seed = new Y.Doc(); importBody(seed, `${CHART}\n\n${SKETCH}`);
+    for (const payload of payloadDocsFor(seed).docs.values()) {
+      const map = payloadMap(payload);
+      payload.transact(() => { for (const key of [...map.keys()]) map.delete(key); });
+    }
+    const a = client(seed); const b = client(seed);
+    const nodes = () => a.editor.read(() => [find('chart')!, find('sketch')!].map(node => ({ key: node.getKey(), id: (node as unknown as { __regId: string }).__regId })));
+    const writable = () => nodes().map(({ key }) => mapRegisterWritable(a.editor, key));
+    const vectors = () => [a.doc, ...payloadDocsFor(a.doc).docs.values()].map((doc) => Y.encodeStateVector(doc));
+    const config = { type: 'line', title: 'First', data: [{ label: 'Mon', value: 3 }] };
+    const grid = withCells(new Array<boolean>(120 * 60).fill(false), [42]);
+    const edit = () => a.editor.update(() => {
+      call(find('chart')!, 'setConfig', config);
+      call(find('sketch')!, 'setGrid', grid);
+    }, { discrete: true });
+    try {
+      expect(nodes().every(({ id }) => payloadMap(payloadDocsFor(a.doc).get(id)!).size === 0), 'both payloads arrived empty').toBe(true);
+      for (const { id } of nodes()) payloadDocsFor(a.doc).await(id);
+      expect(writable(), 'not arrived: no control writes').toEqual([false, false]);
+      const before = vectors();
+      edit();
+      expect(vectors(), 'a setter before arrival writes nothing').toEqual(before);
+      for (const { id } of nodes()) payloadDocsFor(a.doc).arrived(id);
+      expect(writable(), 'arrived, though empty').toEqual([true, true]);
+      edit();
+      send(a, b);
+      for (const peer of [a, b]) {
+        expect(chartOf(peer), `${peer === a ? 'Ada' : 'Ben'}: the first chart edit lands`).toEqual(config);
+        expect(cells(gridOf(peer)), `${peer === a ? 'Ada' : 'Ben'}: the first stroke lands`).toEqual([42]);
+      }
+      const restored = client(a.doc);
+      try {
+        expect(chartOf(restored), 'persisted').toEqual(config);
+        expect(cells(gridOf(restored))).toEqual([42]);
+      } finally { restored.dispose(); }
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
