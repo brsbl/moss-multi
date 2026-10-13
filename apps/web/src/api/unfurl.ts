@@ -88,11 +88,9 @@ function tags(head: string, lower: string, name: string): string[] {
   const found: string[] = [];
   const opener = `<${name}`;
   for (let at = find(lower, opener, 0); at !== -1; at = find(lower, opener, at + 1)) {
-    // RED PROOF (T3.B27): a rescan per opener of a slice growing with the page (quadratic, a small constant).
-    find(lower, '\u0000', Math.max(at, lower.length - Math.floor(at / 64)));
     if (WORD.test(lower.charAt(at + opener.length))) continue;
     const close = find(lower, '>', at + opener.length);
-    if (close === -1) break;
+    if (close === -1) continue; // RED PROOF (T3.B27): every unclosed opener rescans the rest of the page.
     found.push(head.slice(at, close + 1));
     at = close;
   }
