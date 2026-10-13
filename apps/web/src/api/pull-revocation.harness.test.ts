@@ -2,11 +2,11 @@
 // the REST routes, with every kick dropped (or racing), a socket whose access a committed change lowered or removed is
 // closed by its next frame, at its admission, or by the access tick, and no write it sends after the commit lands.
 // Each case is a race from T2.5's three check rounds.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ACCESS_TICK_MS, REST_WRITE_RATE } from '@moss-multi/protocol/limits';
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import { liveCredentials } from '../../../../packages/sync/src/access-epoch.ts';
-import { DocDO } from '../../../../packages/sync/src/doc-do.ts';
+import { DocDO, HOLD_MS } from '../../../../packages/sync/src/doc-do.ts';
 import { attachmentOf } from '../../../../packages/sync/src/doc/awareness.ts';
 import { PrincipalDO } from '../../../../packages/sync/src/principal-do.ts';
 import { Backing, connect, openDoc, start, type Opened, type TestClient } from '../../../../packages/sync/test/harness/do-harness.ts';
@@ -44,6 +44,8 @@ class PullDocDO extends DocDO {
       },
     };
   };
+  /** Where a hold's recovery event is published: this test's D1 and PrincipalDOs. */
+  static fanout = () => ({ DB: d1.db, PrincipalDO: principalNs as never });
 }
 
 /** The real PrincipalDO reading D1 for its sockets' credentials; its sign-out rechecks are kicks, so they are dropped. */
@@ -54,6 +56,9 @@ class PullPrincipalDO extends PrincipalDO {
 
 /** When set, every kick a route sends a DocDO is dropped: the recheck answers without doing anything. */
 let dropKicks = true;
+/** Settles a route sends that fail before reaching the DocDO, and workspace publishes that fail. */
+let failSettles = 0;
+let failPublishes = 0;
 
 function namespace<T extends object>(make: (name: string) => T) {
   const made = new Map<string, T>();
@@ -71,6 +76,12 @@ const docNs = {
   get: (id: { name: string }) => new Proxy(docs.get(id.name).dobj, {
     get(target, prop) {
       if (prop === 'recheck' && dropKicks) return async () => ({ closed: 0 });
+      if (prop === 'settle' && failSettles > 0) {
+        return async () => {
+          failSettles -= 1;
+          throw new Error('DocDO unavailable');
+        };
+      }
       const value = Reflect.get(target, prop, target) as unknown;
       return typeof value === 'function' ? value.bind(target) : value;
     },
@@ -88,6 +99,12 @@ const principalNs = {
     get(target, prop) {
       // Sign-out's own kick is dropped too: Better Auth deletes the session either way.
       if (prop === 'endSession' && dropKicks) return async () => undefined;
+      if (prop === 'publish' && failPublishes > 0) {
+        return async () => {
+          failPublishes -= 1;
+          throw new Error('PrincipalDO unavailable');
+        };
+      }
       const value = Reflect.get(target, prop, target) as unknown;
       return typeof value === 'function' ? value.bind(target) : value;
     },
@@ -153,6 +170,8 @@ beforeEach(() => {
   dropKicks = true;
   race = null;
   duringStamp = null;
+  failSettles = 0;
+  failPublishes = 0;
 });
 
 /** Lets every pending task run, as other requests do while an await is in flight. */
@@ -368,6 +387,46 @@ describe('a dropped kick is caught by the next frame @p:ppl-2', () => {
   });
 });
 
+describe('presence is decided by the admission’s own validation @p:ppl-2', () => {
+  /** An awareness frame for `principal`, as a provider sends its cursor (lib0 varints, written out here). */
+  const presenceFrame = (id: number, principal: TestUser) => {
+    const varUint = (n: number) => {
+      const bytes: number[] = [];
+      for (; n > 0x7f; n >>>= 7) bytes.push((n & 0x7f) | 0x80);
+      bytes.push(n);
+      return bytes;
+    };
+    const user = { principalId: principal.id, name: principal.name, isAgent: false, color: '#abcdef', colorSettled: true };
+    const state = new TextEncoder().encode(JSON.stringify({ name: principal.name, color: '#abcdef', user }));
+    const body = [...varUint(1), ...varUint(id), ...varUint(1), ...varUint(state.length), ...state];
+    return new Uint8Array([...varUint(1), ...varUint(body.length), ...body]);
+  };
+  const awarenessFrames = (client: TestClient) => client.socket.sent.filter((frame) => typeof frame !== 'string' && frame[0] === 1);
+
+  it('a socket a link still lifts after its grant went before admission edits but gets no awareness snapshot', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, ben, 'viewer');
+    await insertGrant(d1.db, { docId }, cy, 'viewer');
+    const token = await insertLink(d1.db, { docId }, 'editor');
+    const owner = await join(docId, ada.cookie);
+    await owner.client.deliver(presenceFrame(42, ada));
+    expect(owner.opened.dobj.document.awareness.getStates().has(42), 'Ada’s cursor is seeded').toBe(true);
+    // The Worker resolved Ben with presence through his grant; the grant goes before the socket reaches the DocDO.
+    const admitted = await authenticateParty(upgrade(docId, ben.cookie, token), docId, env);
+    if (!admitted.ok) throw new Error('refused');
+    expect(admitted.headers[TRUSTED.presence]).toBe('1');
+    await d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(docId, ben.id).run();
+    const client = await connect(owner.opened, { headers: admitted.headers });
+    expect(client.closed, 'the link keeps him an editor').toBeNull();
+    expect(awarenessFrames(client), 'no collaborator identity reaches a link-only socket').toEqual([]);
+    await client.hello();
+    await write(client, 'link-edit');
+    expect(title(owner.opened)).toContain('link-edit');
+    const grantee = await join(docId, cy.cookie);
+    expect(awarenessFrames(grantee.client).length, 'a still-entitled grantee gets the snapshot').toBeGreaterThan(0);
+  });
+});
+
 describe('a session ended by any path @p:ppl-2', () => {
   it('Better Auth’s revoke-other-sessions ends the other session’s doc and workspace sockets', async () => {
     const fay = await signedUpUser(env, 'pull-fay', 'Fay');
@@ -516,6 +575,126 @@ describe('a folder trash that does not commit reopens the notes it closed @p:ppl
     expect(response.status).toBe(503);
     expect(client.closed?.code).toBe(CLOSE.deleted);
     expect(heard(channel).some((event) => event.type === 'meta' && event.docIds?.includes(docId))).toBe(true);
+  });
+});
+
+const metas = (socket: FakeSocket, docId: string) => heard(socket).filter((event) => event.type === 'meta' && event.docIds?.includes(docId));
+
+describe('a hold that ends with the note live tells the panes it closed @p:ppl-2', () => {
+  it('a folder link’s signed-in holder hears only that note when a failed trash lets it go; a revoked link hears nothing', async () => {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertDoc(d1.db, ada, { folderId: folder });
+    const token = await insertLink(d1.db, { folderId: folder }, 'editor');
+    const stale = await insertLink(d1.db, { folderId: folder }, 'editor');
+    const dee = await signedUpUser(env, 'pull-dee', 'Dee');
+    const holder = await join(docId, cy.cookie, token);
+    const revoked = await join(docId, dee.cookie, stale);
+    const cyChannel = await workspace(cy.id, holder.headers[TRUSTED.session]);
+    const deeChannel = await workspace(dee.id, revoked.headers[TRUSTED.session]);
+    await d1.db.prepare('UPDATE share_links SET revoked_at = ? WHERE token = ?').bind(Date.now(), stale).run();
+    race = { sql: /UPDATE folders SET deleted_at/i, run: () => Promise.reject(new Error('D1 unavailable')) };
+    expect((await call('DELETE', `/api/folders/${folder}`, ada.cookie)).status).toBe(503);
+    expect(holder.client.closed?.code, 'the hold closed the link holder').toBe(CLOSE.deleted);
+    expect(revoked.client.closed?.code).toBe(CLOSE.deleted);
+    expect(heard(cyChannel).filter((event) => event.type === 'meta'), 'only the note the link holder had open').toEqual([
+      { type: 'meta', docIds: [docId], folderIds: [] },
+    ]);
+    expect(heard(deeChannel).filter((event) => event.type === 'meta'), 'a revoked link hears nothing').toEqual([]);
+    const back = await join(docId, cy.cookie, token);
+    expect(back.client.closed, 'the pane reopens').toBeNull();
+    await write(back.client, 'link-reopened');
+    expect(title(back.opened)).toContain('link-reopened');
+  });
+
+  /** A folder holding one note an editor and a folder link's holder have open, and their workspace channels. */
+  async function heldNote() {
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    const docId = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const token = await insertLink(d1.db, { folderId: folder }, 'editor');
+    const editor = await join(docId, ben.cookie);
+    const linked = await join(docId, cy.cookie, token);
+    const benChannel = await workspace(ben.id, editor.headers[TRUSTED.session]);
+    const cyChannel = await workspace(cy.id, linked.headers[TRUSTED.session]);
+    return { folder, docId, token, benChannel, cyChannel };
+  }
+
+  /** A folder trash whose D1 write fails and whose settle never reaches the DocDO, so its hold persists. */
+  async function failedTrash(folder: string): Promise<void> {
+    race = { sql: /UPDATE folders SET deleted_at/i, run: () => Promise.reject(new Error('D1 unavailable')) };
+    failSettles = 1;
+    expect((await call('DELETE', `/api/folders/${folder}`, ada.cookie)).status).toBe(503);
+    expect(failSettles, 'the release’s settle failed').toBe(0);
+  }
+
+  it('a trash whose settle fails: a pane that re-asks meets the hold, and the alarm’s settle reopens it with a recovery event', async () => {
+    const { folder, docId, token, benChannel, cyChannel } = await heldNote();
+    await failedTrash(folder);
+    expect(metas(benChannel, docId), 'no event while the hold persists').toEqual([]);
+    const early = await join(docId, ben.cookie);
+    expect(early.client.closed?.code, 'a pane that reopens now goes terminal again').toBe(CLOSE.deleted);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + HOLD_MS + 1);
+      await docs.get(docId).dobj.alarm();
+      expect(metas(benChannel, docId), 'the alarm’s settle publishes the recovery').toHaveLength(1);
+      expect(heard(cyChannel).filter((event) => event.type === 'meta')).toEqual([{ type: 'meta', docIds: [docId], folderIds: [] }]);
+      const back = await join(docId, ben.cookie);
+      expect(back.client.closed, 'the pane reopens without a reload').toBeNull();
+      const linkBack = await join(docId, cy.cookie, token);
+      expect(linkBack.client.closed).toBeNull();
+      await write(back.client, 'recovered');
+      expect(title(back.opened)).toContain('recovered');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a recovery event that fails to publish is retried until it lands, once', async () => {
+    const { folder, docId, benChannel } = await heldNote();
+    await failedTrash(folder);
+    const opened = docs.get(docId);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + HOLD_MS + 1);
+      failPublishes = 99;
+      await opened.dobj.alarm();
+      expect(metas(benChannel, docId), 'the publish failed').toEqual([]);
+      failPublishes = 0;
+      expect(opened.backing.alarm, 'a retry is scheduled').not.toBeNull();
+      vi.setSystemTime(Math.max(Date.now(), opened.backing.alarm!));
+      await opened.dobj.alarm();
+      expect(metas(benChannel, docId), 'the retry lands').toHaveLength(1);
+      vi.setSystemTime(Date.now() + HOLD_MS);
+      await opened.dobj.alarm();
+      expect(metas(benChannel, docId), 'and is not repeated').toHaveLength(1);
+      expect((await join(docId, ben.cookie)).client.closed).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('overlapping holds: the recovery waits for the last hold to go', async () => {
+    const { folder, docId, benChannel } = await heldNote();
+    const started = Date.now();
+    await failedTrash(folder);
+    const opened = docs.get(docId);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(started + HOLD_MS / 2);
+      await opened.dobj.trash('second-hold');
+      vi.setSystemTime(started + HOLD_MS + 1_000);
+      await opened.dobj.alarm();
+      expect(metas(benChannel, docId), 'the second hold still closes the note').toEqual([]);
+      expect((await join(docId, ben.cookie)).client.closed?.code).toBe(CLOSE.deleted);
+      vi.setSystemTime(started + HOLD_MS * 1.5 + 1_000);
+      await opened.dobj.alarm();
+      expect(metas(benChannel, docId)).toHaveLength(1);
+      expect((await join(docId, ben.cookie)).client.closed).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
