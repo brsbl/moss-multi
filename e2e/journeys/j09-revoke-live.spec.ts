@@ -141,25 +141,22 @@ test('j09 removal: removing a member ends the note for them in place (revoked) @
 // WebKit logs a fetch a navigation cancels as "…due to access control checks", a page error: the note's access read
 // is aborted as the page leaves (host/leave.ts).
 test('j09 reload: reloading while the note’s access read is in flight logs no page error @p:ppl-2', async ({ actors }) => {
+  actors.solo('one window reloading over its own note');
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
-  const held: { continue: () => Promise<void> }[] = [];
-  const access = (url: URL) => url.pathname === `/api/docs/${docId}`;
-  await ada.page.route(access, (route) => {
-    if (route.request().method() === 'GET') held.push(route);
-    else void route.continue();
-  });
-  try {
-    await ada.page.goto(`/d/${docId}`, { waitUntil: 'commit' });
-    await expect.poll(() => held.length, { message: 'the access read is in flight', timeout: 30_000 }).toBeGreaterThan(0);
-    await ada.page.unroute(access);
-    await ada.page.reload();
-    await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
-    await ui.waitOpen(ada, docId, 'live');
-  } finally {
-    for (const route of held.splice(0)) await route.continue().catch(() => undefined);
+  // The reload goes out as soon as the route's access read (GET /api/docs/:id) does, on the real network, a few times.
+  const accessRead = (request: { url: () => string; method: () => string }) => request.method() === 'GET' && new URL(request.url()).pathname === `/api/docs/${docId}`;
+  for (let round = 0; round < 6; round += 1) {
+    const asked = ada.page.waitForRequest(accessRead, { timeout: 30_000 });
+    if (round === 0) await ada.page.goto(`/d/${docId}`, { waitUntil: 'commit' });
+    else await ada.page.reload({ waitUntil: 'commit' });
+    await asked;
   }
-  expect(ada.telemetry.pageErrors.map((error) => error.message), 'no page error from the cancelled read').toEqual([]);
+  await ada.page.reload();
+  ada.observations.delete(docId);
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await ui.waitOpen(ada, docId, 'live');
+  expect(ada.telemetry.pageErrors.map((error) => error.message), 'no page error from a read the reload cut off').toEqual([]);
 });
 
 test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only the ended notice (T3.S20) @p:ppl-2', async ({ actors, stack }) => {
