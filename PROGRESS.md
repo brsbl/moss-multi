@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 55% done** (126 of 230 planned tasks verified)
+**Overall: 55% done** (127 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 10 / 10 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 14 / 14 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 15 / 15 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -147,6 +147,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T7.S5 verified: an agent key now spends its owner's allowance for renames, comments, suggestion previews and reviews, working exports, remote fetches and media uploads, so a person with a session and two keys gets 429 on the third key instead of a fresh window per key.
 - 2026-10-12 — T7.S7 verified: sync, watch and `add` in one workspace now take turns behind a lock, so two overlapping passes adopt a new file into exactly one doc and one record instead of two.
 - 2026-10-12 — T7.B1 verified: an agent push that would empty a note or delete most of it is refused even when the note drifted, thousands of slightly changed lines merge as edits rather than a deletion, a person's trailing empty paragraph stays hers to type into, and a `--suggest` push notifies once, only after every op lands.
+- 2026-10-12 — T7.S8 verified: pressing Ctrl+C during `watch` now stops the pass promptly, aborting a read in flight and starting no further create, rename or push, while every write the server already confirmed is kept in the local records.
 
 ## T1.1s identity audit
 
@@ -179,6 +180,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S8's checker (0b872ef, 2026-10-12)
+
+- T7.S8 checker P2 (Check the signal again before the base-missing retry push): if Ctrl+C lands while the first push is in flight and the server answers base-missing, pushWithBase still sends the retry with the base attached.
+- T7.S8 checker P2 (A confirmed title rename is not saved to meta before the stop check on the body push): a note whose title and body both changed, stopped during the rename PATCH, keeps the old title in meta.json, so a later web rename could be overwritten when sync resumes.
+- T7.S8 checker P2 (stopped() also hides real errors from checkpoint steps after a stop): once the signal is aborted any error counts as a stop, so a failed content read or filesystem error while saving a confirmed write is dropped silently and watch exits 0.
+- T7.S8 checker P2 (The automated tests use a fake server, not the real stack): the three new tests drive runCli against a fake fetch with process.emit('SIGINT'); a CI end-to-end leg on the real Worker stack with an OS SIGINT is still missing.
 
 ### From T7.B1's checker (e3ac7c6, 2026-10-12)
 
