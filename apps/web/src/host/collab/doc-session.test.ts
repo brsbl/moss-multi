@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { encodeSyncFrame } from '@moss-multi/protocol/sync';
+import { decodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1 } from '@moss-multi/protocol/sync';
 
 const sockets: FakeSocket[] = [];
 class FakeSocket extends EventTarget {
@@ -27,6 +27,13 @@ const { terminalOf, clearTerminal } = await import('./terminal.ts');
 const { hasUnacked } = await import('./unacked.ts');
 let session: InstanceType<typeof DocSession>;
 const latest = () => sockets[sockets.length - 1];
+/** A code block element naming payload `id` in the note's tree, as the binding writes one. */
+function nameInTree(id: string): void {
+  const element = new Y.XmlElement('code-block');
+  element.setAttribute('__type', 'code-block');
+  element.setAttribute('__regId', id);
+  session.doc.get('root', Y.XmlText).insertEmbed(0, element);
+}
 beforeEach(async () => {
   vi.useFakeTimers();
   sockets.length = 0;
@@ -110,7 +117,7 @@ it('a reconnect sends the note\'s unacked writes before any payload frame, so bl
   const first = latest(); first.open(); session.provider.synced = true;
   first.ended(1006);
   // Offline: a note write (a new block's element) and its payload's first text.
-  session.doc.getText('title').insert(0, 'offline');
+  nameInTree('minted');
   session.payloads.hold('minted', true).getText('payload').insert(0, 'code');
   await vi.advanceTimersByTimeAsync(300);
   const socket = latest();
@@ -123,6 +130,24 @@ it('a reconnect sends the note\'s unacked writes before any payload frame, so bl
   const payload = kinds.indexOf('payload');
   expect(payload, 'the payload is resent').toBeGreaterThan(-1);
   expect(kinds.slice(0, payload), 'the note write goes first').toContain('note write');
+});
+it('a payload made and deleted offline is neither resent nor unacked until the tree names it again (B036)', async () => {
+  const first = latest(); first.open(); session.provider.synced = true;
+  first.ended(1006);
+  session.payloads.hold('gone', true).getText('payload').insert(0, 'deleted offline');
+  expect(session.state.unacked).toBe(true);
+  await vi.advanceTimersByTimeAsync(300);
+  const socket = latest();
+  socket.open();
+  const writes = (id: string) => socket.sent.filter((frame) => {
+    const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
+    return payload?.id === id && payload.step !== PAYLOAD_STEP1;
+  }).length;
+  expect(writes('gone'), 'no element names it: not resent').toBe(0);
+  expect(session.state.unacked, 'set aside, not unacked').toBe(false);
+  nameInTree('gone');
+  expect(writes('gone'), 'an undo or a later update names it: resent').toBe(1);
+  expect(session.state.unacked).toBe(true);
 });
 it('three failed handshakes stop the ladder and ask REST before retrying', async () => {
   const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }));

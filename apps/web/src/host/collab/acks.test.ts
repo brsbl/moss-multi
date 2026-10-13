@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import * as Y from 'yjs';
-import { AckLedger } from './acks.ts';
+import { AckLedger, type Ack } from './acks.ts';
 
 it('a stale vector cannot acknowledge a later delete; reconnect coverage can', () => {
   const doc = new Y.Doc();
@@ -84,4 +84,45 @@ it('a payload ack names only its own frames\' clocks, so an edit past clock 0 an
   expect(ledger.acked(ackOf(inserts)), 'the delete is not acked yet').toBe(false);
   expect(ledger.acked(ackOf(frames.splice(0), true)), 'a delete-only window settles with the earlier vector').toBe(true);
   code.destroy();
+});
+
+it('acks that leave a write\'s delete uncovered hold one merged delete set, however many arrive (B084)', () => {
+  const doc = new Y.Doc();
+  const ledger = new AckLedger();
+  doc.on('update', (update: Uint8Array) => ledger.wrote(update));
+  doc.getText('title').insert(0, 'abc');
+  const first = Y.snapshot(doc).ds;
+  doc.getText('title').delete(0, 1);
+  doc.getText('title').delete(0, 1);
+  const sv = bytesToBase64(Y.encodeStateVector(doc));
+  const empty = bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map())));
+  const duplicate = bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(first, new Map())));
+  // Writes stay in flight the whole time: each ack carries the vector but not the last delete.
+  for (let i = 0; i < 1000; i++) expect(ledger.acked({ t: 'ack', sv, ds: i % 2 ? empty : duplicate })).toBe(false);
+  expect(ledger.heldDeleteSets(), 'one merged delete set, not one per ack').toBeLessThanOrEqual(1);
+  expect(ledger.acked({ t: 'ack', sv, ds: bytesToBase64(Y.encodeSnapshot(Y.snapshot(doc))) }), 'the covering ack settles').toBe(true);
+  expect(ledger.unacked).toBe(false);
+  doc.destroy();
+});
+
+it('reads only an ack\'s own payload entries: ids named like Object\'s keys settle, and a missing one stays pending (B290)', () => {
+  const ledger = new AckLedger();
+  const docs = new Map(['__proto__', 'constructor', 'toString'].map((id) => [id, new Y.Doc()]));
+  for (const [id, doc] of docs) {
+    doc.on('update', (update: Uint8Array) => ledger.wrote(update, id));
+    doc.getText('payload').insert(0, id);
+  }
+  const coverage = (id: string) => ({ sv: bytesToBase64(Y.encodeStateVector(docs.get(id)!)) });
+  const note = bytesToBase64(Y.encodeStateVector(new Y.Doc()));
+  // As the wire delivers them: JSON.parse makes `__proto__` an own key.
+  const parsed = (entries: [string, unknown][]): Ack =>
+    JSON.parse(`{"t":"ack","sv":"${note}","p":{${entries.map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`).join(',')}}}`);
+  expect(Object.hasOwn(parsed([['__proto__', {}]]).p!, '__proto__'), 'the wire\'s own key').toBe(true);
+  expect(() => ledger.acked(parsed([])), 'an ack naming none of them').not.toThrow();
+  expect(ledger.pendingPayloads().sort()).toEqual(['__proto__', 'constructor', 'toString']);
+  expect(ledger.acked(parsed([['toString', 'not an object']])), 'a value that is not an entry').toBe(false);
+  expect(ledger.acked(parsed([['__proto__', coverage('__proto__')], ['constructor', coverage('constructor')]]))).toBe(false);
+  expect(ledger.pendingPayloads()).toEqual(['toString']);
+  expect(ledger.acked(parsed([['toString', coverage('toString')]]))).toBe(true);
+  for (const doc of docs.values()) doc.destroy();
 });
