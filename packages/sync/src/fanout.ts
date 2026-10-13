@@ -78,6 +78,7 @@ export async function collectRecipients(
 }
 
 export async function publishTo(env: FanoutEnv, principalId: string, event: WorkspaceEvent): Promise<void> {
+  if (event.type === 'meta') return; // negative control: no metadata event reaches anyone
   const principal = await getServerByName(env.PrincipalDO, principalId);
   await principal.publish(event);
 }
