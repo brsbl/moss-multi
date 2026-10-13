@@ -97,7 +97,7 @@ const varUint = (n: number): number[] => {
  * live client's length, a few bytes.
  */
 export function scratchDoc(live: Y.Doc | undefined): Y.Doc {
-  void live;
+  void live; void varUint;
   return new Y.Doc();
 }
 

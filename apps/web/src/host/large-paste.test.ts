@@ -12,6 +12,7 @@ import { expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { CLIENT_FRAME_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
+import { createConverterEditor } from '@moss-multi/sync/converter';
 import { seedPayload } from '@moss-multi/sync/payload-docs';
 import { MAP_REGISTERS } from '@moss-multi/sync/registers';
 import {
@@ -276,7 +277,8 @@ it('measures a paste as the live doc gains it, whatever its client id and clock 
     text.insert(0, 'x'.repeat(3_000_000));
     text.delete(0, 3_000_000);
     const before = Y.encodeStateAsUpdate(live).byteLength;
-    const empty = () => createEditor({ namespace: 'paste', nodes: NODES, onError: (error) => { throw error; } });
+    // The editor's every node type, as the binding's exclusions name them.
+    const empty = createConverterEditor;
     const fill = (editor: LexicalEditor) => editor.update(() => $getRoot().append(...blocks(4_000)), { discrete: true });
 
     const scratch = empty();
