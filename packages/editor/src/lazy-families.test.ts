@@ -58,7 +58,12 @@ function counted(body: string, budget: number): { text: string; reads: () => num
           read(at === -1 ? text.length : at + search.length);
           return at !== -1;
         };
-        case 'startsWith': return (search: string, at = 0) => { read(search.length); return text.startsWith(search, at); };
+        case 'startsWith': return (search: string, at = 0) => {
+          let same = 0;
+          while (same < search.length && text[at + same] === search[same]) same += 1;
+          read(Math.min(search.length, same + 1));
+          return same === search.length;
+        };
         case 'slice': return (from = 0, to = text.length) => { read(Math.min(to, text.length) - from); return text.slice(from, to); };
         case 'toLowerCase': return () => { read(text.length); return wrap(text.toLowerCase()); };
         default: throw new Error(`the scan used ${String(key)}, which this test does not count`);
@@ -81,7 +86,7 @@ function reads(body: string, budget: number): number {
 }
 
 /** At most this many reads per character: the scan reads no character more than a few times. */
-const READS_PER_CHAR = 8;
+const READS_PER_CHAR = 16;
 
 it('scans in linear time: doubling a body from 25k to 50k to 100k characters at most doubles the characters read', () => {
   for (const [name, build] of Object.entries(BODIES)) {

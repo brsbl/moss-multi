@@ -3,7 +3,7 @@
 // owner's trashed notes come from the listing in seconds, read their content on the one trashed-doc read path, and
 // restore through REST.
 import { formatRelativeTime } from '@moss-desktop/renderer/panels/notesPanelUtils';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { clearTerminal, setTerminal } from '../collab/terminal.ts';
 import { createBridge } from './index.ts';
 
@@ -167,8 +167,15 @@ it('reads backlinks for a live note, never for a trashed one the Trash view open
 // session's terminal reason already says it is gone, and its backlinks would 404 into the console (j05; T3.B27).
 it('reads no backlinks for a note its session closed as deleted or revoked, though the listing still has it', async () => {
   const server = fakeServer();
+  // Live notes have backlinks, so a refresh would read them again.
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const response = await server.fetch(input, init);
+    return new URL(String(input), 'http://localhost').pathname.endsWith('/backlinks') ? Response.json({ backlinks: [] }) : response;
+  };
   let receive!: Parameters<NonNullable<Parameters<typeof createBridge>[0]['subscribeWorkspace']>>[0];
-  const bridge = createBridge({ pathname: () => '/', fetch: server.fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const stop = bridge.notes.onDiskChange(vi.fn());
+  onTestFinished(stop);
   const reads = (id: string) => server.calls.filter((call) => call.path === `/api/docs/${id}/backlinks`).length;
   const listings = () => server.calls.filter((call) => call.path === '/api/workspace').length;
   await bridge.notes.getAll();
