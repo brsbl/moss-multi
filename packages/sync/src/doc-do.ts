@@ -395,6 +395,8 @@ export class DocDO extends YServer<SyncEnv> {
   /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
   #suggestions: SuggestionsWriter | null = null;
   #ingest: SuggestIngest | null = null;
+  /** A `push --suggest` in progress, by its connection: the records it created, noticed only once it is admitted whole. */
+  #heldNotices = new Map<string, { record: string; author: string }[]>();
   /**
    * When the next idle check of open records is due (§4.7: an idle record with nothing to show is rejected by the
    * system), and the `updatedAt` each record was last checked at. In memory: a wake checks on the next record change.
@@ -481,8 +483,11 @@ export class DocDO extends YServer<SyncEnv> {
       stateBytes: () => store.stateBytes + payloads.totalBytes,
       // Only a served payload places a payload op; a withheld one is accept's G4 to refuse, and reads as unknown here.
       payloadDoc: (id) => (payloads.served(id) ? payloads.doc(id) : undefined),
-      onCreated: (record, author, continues) => {
-        if (!continues) this.#noticeSuggestion(record, author);
+      onCreated: (record, author, continues, connection) => {
+        if (continues) return;
+        const held = this.#heldNotices.get(connection);
+        if (held) held.push({ record, author });
+        else this.#noticeSuggestion(record, author);
       },
     });
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
@@ -1300,6 +1305,10 @@ export class DocDO extends YServer<SyncEnv> {
     const leased = ingest.lease(who, [], 1);
     if (!leased.ok) return refused(leased.reason);
     const lease = leased.leases[0]!;
+    // The record is created at the first op, but a later op may still be refused and withdraw it: nobody hears of
+    // it until every op is in.
+    const held: { record: string; author: string }[] = [];
+    this.#heldNotices.set(who.connection, held);
     try {
       const fork = { client: lease.client, ops: [] as { doc: string; update: Uint8Array }[] };
       const outcome = landPush(this.document, this.name, { ...push, fork }, CLI_PUSH);
@@ -1320,8 +1329,11 @@ export class DocDO extends YServer<SyncEnv> {
         created = true;
       }
       writeSuggestions(this.document, () => patchMeta(this.document, record, { source: 'cli' }));
+      this.#heldNotices.delete(who.connection);
+      for (const notice of held) this.#noticeSuggestion(notice.record, notice.author);
       return { ok: true, applied: outcome.applied, failedHunks: outcome.failedHunks, suggestionId: record };
     } finally {
+      this.#heldNotices.delete(who.connection);
       ingest.expireConnection(who.connection);
     }
   }
