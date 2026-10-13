@@ -359,7 +359,9 @@ export class DocDO extends YServer<SyncEnv> {
    * Room each socket reserved for a multi-frame write (ClientEvent `reserve`), less what its writes have used since, and
    * when it last reserved or wrote (B209). Every other writer is admitted beside it. In memory: a wake drops them.
    */
-  readonly #reservations = new Map<Connection, { bytes: number; at: number }>();
+  readonly #reservations = new Map<Connection, { bytes: number; at: number; wrote: boolean }>();
+  /** Sockets whose reservation lapsed with no write using it: they reserve nothing more (a hold renewed forever). */
+  readonly #forfeited = new WeakSet<Connection>();
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
 
@@ -1393,8 +1395,10 @@ export class DocDO extends YServer<SyncEnv> {
     const now = Date.now();
     let bytes = 0;
     for (const [connection, reservation] of [...this.#reservations]) {
-      if (now - reservation.at > RESERVATION_IDLE_MS || !isOpen(connection)) this.#reservations.delete(connection);
-      else if (connection !== writer) bytes += reservation.bytes;
+      if (now - reservation.at > RESERVATION_IDLE_MS || !isOpen(connection)) {
+        this.#reservations.delete(connection);
+        if (!reservation.wrote) this.#forfeited.add(connection);
+      } else if (connection !== writer) bytes += reservation.bytes;
     }
     return bytes;
   }
@@ -1404,13 +1408,15 @@ export class DocDO extends YServer<SyncEnv> {
     const reservation = this.#reservations.get(connection);
     if (!reservation) return;
     if (reservation.bytes <= bytes) this.#reservations.delete(connection);
-    else this.#reservations.set(connection, { bytes: reservation.bytes - bytes, at: Date.now() });
+    else this.#reservations.set(connection, { bytes: reservation.bytes - bytes, at: Date.now(), wrote: true });
   }
 
   /**
    * A client's custom message (ClientEvent). `reserve`: room for a write that follows in several frames (a large
    * paste), refused whole with doc-cap, before any of its frames, when it would not fit beside what the doc holds and
-   * what other sockets have reserved; otherwise held for this socket alone until its writes have used it.
+   * what other sockets have reserved; otherwise held for this socket alone until its writes have used it. A reserve adds
+   * to what the socket still holds (an earlier paste's frames may still be queued behind it), and only a write restarts
+   * the idle clock.
    */
   override onCustomMessage(connection: Connection, message: string): void {
     let event: ClientEvent;
@@ -1422,15 +1428,18 @@ export class DocDO extends YServer<SyncEnv> {
     const attachment = attachmentOf(connection);
     const store = this.#store;
     if (event?.t !== 'reserve' || !Number.isSafeInteger(event.b) || event.b < 0 || !attachment || !store) return;
-    this.#reservations.delete(connection);
+    const others = this.#reserved(connection);
+    if (this.#forfeited.has(connection)) return;
+    const held = this.#reservations.get(connection);
+    const bytes = (held?.bytes ?? 0) + event.b;
     const overCap = () => {
       const cap = this.#limits.stateCapBytes;
-      const rest = (this.#payloads?.totalBytes ?? 0) + this.#reserved(connection) + event.b;
+      const rest = (this.#payloads?.totalBytes ?? 0) + others + bytes;
       // stateBytes runs ahead of the state between compactions; the encoded state decides.
       return store.stateBytes + rest > cap && Y.encodeStateAsUpdate(this.document).byteLength + rest > cap;
     };
     if (this.#refused(connection, attachment, overCap)) return;
-    if (event.b > 0) this.#reservations.set(connection, { bytes: event.b, at: Date.now() });
+    if (bytes > 0) this.#reservations.set(connection, { bytes, at: held && !held.wrote ? held.at : Date.now(), wrote: false });
   }
 
   #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array, connection: Connection): boolean {
