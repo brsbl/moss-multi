@@ -32,26 +32,18 @@ export function assertNotInfra(text: string, where: string): void {
   if (signature) throw new InfraBlocked(`${where}: ${signature}`);
 }
 
-const RESET = /socket hang up|\bECONNRESET\b/;
-
 /**
- * Playwright's API requests share one keep-alive agent per process, and the stack's dev proxy can close a pooled
- * connection just as a request goes out on it ("socket hang up": runs 38389778699 and 38346480112, on a stack that
- * answered every other request). A browser retries an idempotent request on a fresh connection then; GET and HEAD
- * here do too, once. Anything else, and a second reset, still fails.
+ * Playwright's API requests share one keep-alive agent per process, and the stack's dev proxy closes an idle pooled
+ * connection, sometimes just as a request goes out on it: "socket hang up" on a GET and a POST (runs 38389778699,
+ * 38346480112 and 38406081753), on a stack that answered every other request. Every request through `request` asks
+ * for its connection to close after it, so none goes out on a connection the proxy may be closing.
  */
-export function retryResetIdempotent(request: APIRequestContext): APIRequestContext {
-  for (const method of ['get', 'head'] as const) {
-    const original = request[method].bind(request);
-    const retried: typeof original = async (url, options) => {
-      try {
-        return await original(url, options);
-      } catch (error) {
-        if (!RESET.test((error as Error).message)) throw error;
-        return original(url, options);
-      }
-    };
-    request[method] = retried;
+export function closeEachConnection(request: APIRequestContext): APIRequestContext {
+  type Send = (url: unknown, options?: { headers?: Record<string, string> }) => unknown;
+  for (const method of ['get', 'head', 'post', 'put', 'patch', 'delete', 'fetch'] as const) {
+    const original = request[method].bind(request) as Send;
+    const closing: Send = (url, options = {}) => original(url, { ...options, headers: { connection: 'close', ...options.headers } });
+    (request as unknown as Record<string, Send>)[method] = closing;
   }
   return request;
 }
