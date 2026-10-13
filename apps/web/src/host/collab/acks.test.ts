@@ -1,7 +1,13 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import * as Y from 'yjs';
 import { AckLedger, type Ack } from './acks.ts';
+
+// Counts the delete sets the ledger merges (B084); otherwise yjs as is.
+vi.mock('yjs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('yjs')>();
+  return { ...actual, mergeDeleteSets: vi.fn(actual.mergeDeleteSets) };
+});
 
 it('a stale vector cannot acknowledge a later delete; reconnect coverage can', () => {
   const doc = new Y.Doc();
@@ -97,9 +103,13 @@ it('acks that leave a write\'s delete uncovered hold one merged delete set, howe
   const sv = bytesToBase64(Y.encodeStateVector(doc));
   const empty = bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map())));
   const duplicate = bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(first, new Map())));
+  const merge = vi.mocked(Y.mergeDeleteSets);
+  merge.mockClear();
   // Writes stay in flight the whole time: each ack carries the vector but not the last delete.
   for (let i = 0; i < 1000; i++) expect(ledger.acked({ t: 'ack', sv, ds: i % 2 ? empty : duplicate })).toBe(false);
-  expect(ledger.heldDeleteSets(), 'one merged delete set, not one per ack').toBeLessThanOrEqual(1);
+  const sizes = merge.mock.calls.map(([sets]) => sets.length);
+  expect(sizes.length, 'the acks were merged').toBeGreaterThan(0);
+  expect(Math.max(...sizes), 'each merge folds one ack into the held set, never every ack so far').toBeLessThanOrEqual(2);
   expect(ledger.acked({ t: 'ack', sv, ds: bytesToBase64(Y.encodeSnapshot(Y.snapshot(doc))) }), 'the covering ack settles').toBe(true);
   expect(ledger.unacked).toBe(false);
   doc.destroy();

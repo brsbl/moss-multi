@@ -20,8 +20,7 @@ interface Write {
 
 interface Pending {
   writes: Write[];
-  /** Every delete acked since the writes were made, merged as each ack arrives. */
-  acked: DeleteSet | null;
+  acked: DeleteSet[];
   sv: Map<number, number>;
 }
 
@@ -45,7 +44,7 @@ export class AckLedger {
   /** A local write, as the doc emitted it: the note's, or payload `id`'s. */
   wrote(update: Uint8Array, id: string = NOTE): void {
     let pending = this.#pending.get(id);
-    if (!pending) this.#pending.set(id, (pending = { writes: [], acked: null, sv: new Map() }));
+    if (!pending) this.#pending.set(id, (pending = { writes: [], acked: [], sv: new Map() }));
     pending.writes.push({ update, ends: Y.parseUpdateMeta(update).to });
   }
 
@@ -66,20 +65,12 @@ export class AckLedger {
     return [...this.#pending.keys()].filter((id) => id !== NOTE);
   }
 
-  /** Delete sets the ledger holds for `id`'s writes: at most one, however many acks arrived. */
-  heldDeleteSets(id: string = NOTE): number {
-    return this.#pending.get(id)?.acked ? 1 : 0;
-  }
-
   /** Reads an ack; true when it settles every pending write. */
   acked(ack: Ack): boolean {
     for (const [id, pending] of [...this.#pending]) {
       const coverage = id === NOTE ? ack : payloadCoverage(ack, id);
       if (!coverage) continue;
-      if (coverage.ds) {
-        const ds = Y.decodeSnapshot(base64ToBytes(coverage.ds)).ds;
-        pending.acked = pending.acked ? Y.mergeDeleteSets([pending.acked, ds]) : ds;
-      }
+      if (coverage.ds) pending.acked.push(Y.decodeSnapshot(base64ToBytes(coverage.ds)).ds);
       for (const [client, clock] of Y.decodeStateVector(base64ToBytes(coverage.sv))) {
         if ((pending.sv.get(client) ?? 0) < clock) pending.sv.set(client, clock);
       }
@@ -87,7 +78,7 @@ export class AckLedger {
       // a resync resends only what is still in flight. Structs past the acked vector settle nothing yet.
       const reached = pending.writes.filter((write) => [...write.ends].every(([client, clock]) => (pending.sv.get(client) ?? 0) >= clock));
       if (reached.length === 0) continue;
-      const covered = Y.createSnapshot(pending.acked ?? Y.createDeleteSet(), pending.sv);
+      const covered = Y.createSnapshot(Y.mergeDeleteSets(pending.acked), pending.sv);
       const settled = new Set(reached.filter((write) => Y.snapshotContainsUpdate(covered, write.update)));
       if (settled.size > 0) pending.writes = pending.writes.filter((write) => !settled.has(write));
       if (pending.writes.length === 0) {
