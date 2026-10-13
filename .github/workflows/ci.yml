@@ -262,7 +262,6 @@ jobs:
         working-directory: e2e
         env:
           BROWSER: ${{ matrix.browser }}
-          DEBUG: pw:browser
           E2E_GROUP: ${{ matrix.group }}
           GREP: ${{ needs.plan.outputs.grep }}
           REPEAT: ${{ needs.plan.outputs.repeat }}
