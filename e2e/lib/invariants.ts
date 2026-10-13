@@ -78,6 +78,9 @@ export function stampProblems(stamps: StampEntry[], version: Provenance | null):
   ]);
 }
 
+/** The longest a socket the page never saw close may have lived and still be a browser artifact (invariant 3). */
+const ARTIFACT_MS = 50;
+
 /** Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. */
 export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>): string[] {
   const groups = new Map<string, SocketEntry[]>();
@@ -88,10 +91,10 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
   const problems: string[] = [];
   for (const all of groups.values()) {
     const { docId } = all[0];
-    // A socket the browser reported closed that the page never closed nor heard close is not one the page opened: a
-    // WebKit census once listed such a socket, closed 1 ms after it opened, beside the page's only one (run
-    // 38332852937). A page's own reconnect always follows a close it heard or asked for.
-    const group = all.filter((s) => s.closedAt === null || s.close !== null);
+    // A socket the browser reported closed within ARTIFACT_MS of opening, that the page never closed nor heard close, is
+    // not one the page opened: a WebKit census once listed such a socket, closed 1 ms after it opened, beside the page's
+    // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
+    const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
     if (group.length === 0) continue;
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
     if (group.length > allowed) {
