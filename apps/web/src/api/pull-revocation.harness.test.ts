@@ -59,6 +59,8 @@ let dropKicks = true;
 /** Settles a route sends that fail before reaching the DocDO, and workspace publishes that fail. */
 let failSettles = 0;
 let failPublishes = 0;
+/** While set, runs once before the next workspace publish lands: something arriving while a publish is in flight. */
+let duringPublish: (() => Promise<unknown>) | null = null;
 
 function namespace<T extends object>(make: (name: string) => T) {
   const made = new Map<string, T>();
@@ -99,6 +101,14 @@ const principalNs = {
     get(target, prop) {
       // Sign-out's own kick is dropped too: Better Auth deletes the session either way.
       if (prop === 'endSession' && dropKicks) return async () => undefined;
+      if (prop === 'publish' && duringPublish) {
+        const hook = duringPublish;
+        duringPublish = null;
+        return async (...args: unknown[]) => {
+          await hook();
+          return (target.publish as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      }
       if (prop === 'publish' && failPublishes > 0) {
         return async () => {
           failPublishes -= 1;
@@ -172,6 +182,7 @@ beforeEach(() => {
   duringStamp = null;
   failSettles = 0;
   failPublishes = 0;
+  duringPublish = null;
 });
 
 /** Lets every pending task run, as other requests do while an await is in flight. */
@@ -673,6 +684,60 @@ describe('a hold that ends with the note live tells the panes it closed @p:ppl-2
       await opened.dobj.alarm();
       expect(metas(benChannel, docId), 'and is not repeated').toHaveLength(1);
       expect((await join(docId, ben.cookie)).client.closed).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a hold that closes a link holder while an earlier recovery is publishing still tells them when it ends', async () => {
+    const { folder, docId, token } = await heldNote();
+    await failedTrash(folder);
+    const opened = docs.get(docId);
+    const mo = await signedUpUser(env, 'pull-mo', 'Mo');
+    const moSeen = { channel: null as FakeSocket | null };
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + HOLD_MS + 1);
+      // While the first recovery publishes, Mo opens the note through the link and a second trash closes it.
+      duringPublish = async () => {
+        const late = await join(docId, mo.cookie, token);
+        expect(late.client.closed, 'the note is open while the first recovery publishes').toBeNull();
+        moSeen.channel = await workspace(mo.id, late.headers[TRUSTED.session]);
+        await opened.dobj.trash('second-hold');
+        expect(late.client.closed?.code).toBe(CLOSE.deleted);
+      };
+      await opened.dobj.alarm();
+      expect(duringPublish, 'the hook ran').toBeNull();
+      expect(heard(moSeen.channel!).filter((event) => event.type === 'meta'), 'nothing yet: the second hold persists').toEqual([]);
+      vi.setSystemTime(Date.now() + HOLD_MS + 1);
+      await opened.dobj.alarm();
+      expect(heard(moSeen.channel!).filter((event) => event.type === 'meta'), 'the second hold’s recovery tells Mo').toEqual([
+        { type: 'meta', docIds: [docId], folderIds: [] },
+      ]);
+      expect((await join(docId, mo.cookie, token)).client.closed).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a late settle of a hold the alarm already let go does not cancel the alarm’s pending retry', async () => {
+    const { docId, benChannel, linChannel } = await heldNote();
+    const opened = docs.get(docId);
+    await opened.dobj.trash('late-hold');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + HOLD_MS + 1);
+      failPublishes = 99;
+      await opened.dobj.alarm();
+      // The route's write outlasted the hold, failed, and its release settles the hold the alarm already let go.
+      await opened.dobj.settle('late-hold');
+      expect(metas(benChannel, docId), 'every publish so far failed').toEqual([]);
+      failPublishes = 0;
+      expect(opened.backing.alarm, 'a retry is still scheduled').not.toBeNull();
+      vi.setSystemTime(Math.max(Date.now(), opened.backing.alarm!));
+      await opened.dobj.alarm();
+      expect(metas(benChannel, docId), 'the retry lands').toHaveLength(1);
+      expect(heard(linChannel).filter((event) => event.type === 'meta')).toEqual([{ type: 'meta', docIds: [docId], folderIds: [] }]);
     } finally {
       vi.useRealTimers();
     }
