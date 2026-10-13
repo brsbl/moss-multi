@@ -2,9 +2,11 @@
 // degraded notice (html[data-app-state=degraded], R10). It retries in place and never sends anyone to /login.
 // Every shell route's entry chunk carries it, so it uses moss's tokens directly: moss's Button would pull in the
 // whole primitives barrel.
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
+import { setAppState } from '../app-state.ts';
 import { auth, useAuthState } from '../auth.ts';
 import { BootFrame } from '../MossAppHost.tsx';
+import { reloadDocument } from '../navigation.ts';
 
 /** The degraded notice (R10): the page cannot reach the server and retries in place. */
 export function DegradedFrame({ onRetry }: { onRetry: () => void }): ReactNode {
@@ -19,6 +21,26 @@ export function DegradedFrame({ onRetry }: { onRetry: () => void }): ReactNode {
           className="mt-3 rounded-md bg-border-subtle px-3 py-1.5 text-xs font-medium text-ink-default shadow-sm transition-colors hover:bg-border-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/20"
         >
           Try again
+        </button>
+      </div>
+    </main>
+  );
+}
+
+/** The server refuses this bundle (registers.md rule 10): asking again cannot help, and nothing has mounted to lose. */
+export function OutdatedFrame(): ReactNode {
+  useEffect(() => setAppState('ready'), []);
+  return (
+    <main className="flex h-full w-full items-center justify-center bg-surface-panel px-6">
+      <div role="status" className="flex max-w-sm flex-col items-center gap-1.5 text-center">
+        <p className="text-sm font-medium text-ink-default">Moss has been updated</p>
+        <p className="text-xs text-ink-muted">Reload to open the latest version.</p>
+        <button
+          type="button"
+          onClick={reloadDocument}
+          className="mt-3 rounded-md bg-border-subtle px-3 py-1.5 text-xs font-medium text-ink-default shadow-sm transition-colors hover:bg-border-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/20"
+        >
+          Reload
         </button>
       </div>
     </main>
