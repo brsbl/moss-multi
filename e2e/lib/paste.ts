@@ -352,7 +352,7 @@ export async function expectRefusedPaste(
   try {
     await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
   } catch (error) {
-    throw new Error(`${(error as Error).message}\nadmission: ${JSON.stringify(await admission().catch(() => 'unreadable'))}; socket closes: ${wire.closes.join(', ') || 'none seen'}`);
+    throw new Error(`${(error as Error).message}\nadmission: ${JSON.stringify(await admission().catch(() => 'unreadable'))}; socket closes: ${wire.closes.join(', ') || 'none seen'}`, { cause: error });
   }
   console.log(`paste admission: ${JSON.stringify(await admission())}`);
   const stall = await longestStall(ada);
