@@ -42,15 +42,28 @@ const LOAD_FAILURE = /Failed to load resource: the server responded with a statu
 const declares = (declared: DeclaredHttp[], status: number, url: string) =>
   declared.some((d) => d.status === status && pathMatches(url, d.path));
 
+/** Off loopback, a doc socket the network dropped (1006) or the server told to try again (1013); the client reconnects. */
+const NETWORK_DROP = new Set([1006, 1013]);
+const SOCKET_FAILED = /^WebSocket connection to '([^']+)' failed/;
+
+export interface Network {
+  /** Against a deployed stack: one network drop per doc and document is recovered, not a finding (A§21). */
+  offLoopback?: boolean;
+}
+
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
-  census: { console: ConsoleEntry[]; pageErrors: PageError[]; http: HttpEntry[] },
+  census: { console: ConsoleEntry[]; pageErrors: PageError[]; http: HttpEntry[]; sockets?: SocketEntry[] },
   declared: DeclaredHttp[],
   journey: string,
+  { offLoopback = false }: Network = {},
 ): string[] {
   const problems = census.pageErrors.map((e) => `page error: ${e.message}`);
+  const dropped = new Set(offLoopback ? (census.sockets ?? []).filter((s) => NETWORK_DROP.has(s.code ?? 0)).map((s) => s.url) : []);
   for (const entry of census.console) {
     if (entry.type !== 'error') continue;
+    // The browser logs the drop invariant 3 counts; the drop itself is judged there.
+    if (dropped.has(SOCKET_FAILED.exec(entry.text)?.[1] ?? '')) continue;
     // A declared 4xx also logs a load failure for that resource; it is the same, declared, event.
     const load = LOAD_FAILURE.exec(entry.text);
     const status = load ? Number(load[1]) : 0;
@@ -80,9 +93,10 @@ export function stampProblems(stamps: StampEntry[], version: Provenance | null):
 
 /**
  * Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. A socket's
- * document is the one the page reported constructing it, else the navigation count when it was seen.
+ * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback,
+ * one socket closed by a network drop may be replaced once more.
  */
-export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>): string[] {
+export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>, { offLoopback = false }: Network = {}): string[] {
   const groups = new Map<string, SocketEntry[]>();
   for (const socket of sockets) {
     const key = `${socket.document ? `doc:${socket.document}` : `epoch:${socket.epoch}`}\u0000${socket.docId}`;
@@ -91,7 +105,8 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
   const problems: string[] = [];
   for (const group of groups.values()) {
     const { docId } = group[0];
-    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
+    const drop = offLoopback && group.some((s) => s.closedAt !== null && NETWORK_DROP.has(s.code ?? 0)) ? 1 : 0;
+    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + drop;
     if (group.length > allowed) {
       // How each socket ended, for a log that may not print the census: a socket error is a handshake or network failure.
       const lived = group.map((s) => (s.closedAt === null ? 'open' : `${s.closedAt - s.openedAt} ms${s.code ? ` (${s.code})` : ''}`)).join(', ');
@@ -119,13 +134,13 @@ export async function domFindings(actor: ActorView): Promise<Finding[]> {
 }
 
 /** Invariants 1-6 and 9 for one actor. */
-export async function actorFindings(actor: ActorView, journey: string, version: Provenance | null): Promise<Finding[]> {
+export async function actorFindings(actor: ActorView, journey: string, version: Provenance | null, network: Network = {}): Promise<Finding[]> {
   await actor.telemetry.settle();
   if (!actor.page.isClosed()) await actor.telemetry.stamp(actor.page);
   const findings = [
-    ...errorProblems(actor.telemetry, actor.declaredHttp, journey).map(finding(1, actor.label)),
+    ...errorProblems(actor.telemetry, actor.declaredHttp, journey, network).map(finding(1, actor.label)),
     ...stampProblems(actor.telemetry.stamps, version).map(finding(2, actor.label)),
-    ...socketProblems(actor.telemetry.sockets, actor.reconnects).map(finding(3, actor.label)),
+    ...socketProblems(actor.telemetry.sockets, actor.reconnects, network).map(finding(3, actor.label)),
   ];
   if (actor.page.isClosed()) return findings;
   for (const [docId, { mark, generation }] of actor.observations) {

@@ -254,7 +254,8 @@ export class Actors {
   /** Every invariant finding across every actor. */
   async findings(): Promise<Finding[]> {
     const findings: Finding[] = [];
-    for (const actor of this.list) findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor))));
+    const offLoopback = this.options.stack !== null && !isLoopback(this.options.stack.baseUrl);
+    for (const actor of this.list) findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor), { offLoopback })));
     findings.push(...(await typedFindings(this.list, this.typed)));
     findings.push(...principalFindings(this.principals, this.soloReason));
     return findings;
