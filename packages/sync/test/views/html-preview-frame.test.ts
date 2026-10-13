@@ -11,6 +11,10 @@ describe('HTML preview frame', () => {
   it('keeps one frame, loading once, through fit, fit-scroll and scroll', async () => {
     (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
     enableFrameDocument();
+    // jsdom's iframe has no sandbox token list; supportedSandbox probes one.
+    if (!('sandbox' in HTMLIFrameElement.prototype)) {
+      Object.defineProperty(HTMLIFrameElement.prototype, 'sandbox', { configurable: true, get: () => ({ supports: () => true }) });
+    }
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
