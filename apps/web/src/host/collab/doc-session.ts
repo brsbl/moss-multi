@@ -6,7 +6,8 @@
 // released with unacked edits stays connected without its pane until they are acked, or until the doc ends.
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
-import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ClientEvent, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -271,6 +272,15 @@ const BUSY_TICK_MS = 2 * HEARTBEAT_CHECK_MS;
  * tab holds only the payloads its tree names. 0 for a doc no session holds, or before the DocDO has said.
  */
 export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.payloadBytes ?? 0;
+
+/** What a paste may bring the note to: the cap less 3% for what its estimate leaves out (T3.S6). */
+export const PASTE_LIMIT_BYTES = Math.floor(STATE_CAP_BYTES * 0.97);
+
+/** Asks the DocDO to hold `bytes` of room for the multi-frame write `doc`'s session sends next (ClientEvent). */
+export function reserveWrite(doc: Y.Doc | undefined, bytes: number): void {
+  const session = doc && byDoc.get(doc);
+  if (session?.provider.wsconnected) session.provider.sendMessage(JSON.stringify({ t: 'reserve', b: Math.ceil(bytes) } satisfies ClientEvent));
+}
 
 export class DocSession {
   readonly doc = new Y.Doc();
@@ -703,6 +713,8 @@ export class DocSession {
     }
     if (event.t === 'usage') {
       this.payloadBytes = event.pb;
+      // Once per connect: a test can wait for the DocDO's figure before it sizes a paste against it (j01-paste-held).
+      performance.mark('moss-payload-usage', { detail: { pb: event.pb, limit: PASTE_LIMIT_BYTES } });
     } else if (event.t === 'ack') {
       this.payloadBytes = event.pb ?? 0;
       try {

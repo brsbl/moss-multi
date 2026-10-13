@@ -48,9 +48,17 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
   await ui.waitAcked(ada, docId, 30_000);
   expect(await exported(ada, docId), 'only the paragraph is left').toBe(await normalized(ada, stack, 'Kept.'));
 
-  // About 25.75 MB of note state: under the cap (less 3%) beside the note Ada holds, past it with the 1.9 MB the
-  // server keeps. A short paragraph's state names Ada's client id about 25 times, a varint of 1 to 5 bytes: 52,001
-  // paragraphs were 25,765,966 bytes with a 5-byte id, 24,466,033 with a 4-byte one. The count follows her id's length.
+  // The DocDO's own figure for the payloads it counts, as Ada's session heard it on connect (moss-payload-usage).
+  let usage: { pb: number; limit: number } | undefined;
+  await expect.poll(async () => {
+    usage = await ada.page.evaluate(() => performance.getEntriesByName('moss-payload-usage').map((mark) => (mark as PerformanceMark).detail as { pb: number; limit: number }).at(-1));
+    return usage?.pb ?? 0;
+  }, { message: 'the DocDO reports the withheld payloads it counts', timeout: 30_000 }).toBeGreaterThan(1_500_000);
+  const { pb, limit } = usage!;
+
+  // A paste of about the limit less half the server's payloads: under the limit beside the note Ada holds, past it
+  // with what the server keeps. A short paragraph's state names Ada's client id about 25 times, a varint of 1 to 5
+  // bytes: 52,001 paragraphs were 25,765,966 bytes with a 5-byte id, 24,466,033 with a 4-byte one.
   const idBytes = await ui.body(ada, docId).evaluate((element) => {
     const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
     const undo = (editor as unknown as Record<symbol, { root?: { doc: Y.Doc }; doc?: Y.Doc }>)[Symbol.for('@lexical/yjs/UndoManager')];
@@ -59,9 +67,17 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
     for (; id > 0x7f; id = Math.floor(id / 0x80)) bytes += 1;
     return bytes;
   });
-  const count = Math.round(25_750_000 / (495.5 - 25 * (5 - idBytes)));
+  const count = Math.round((limit - pb / 2) / (495.5 - 25 * (5 - idBytes)));
   const lines: string[] = [];
   for (let i = 0; i < count; i += 1) lines.push(`p${i}`);
   lines.push('Last line of the paste.');
-  await expectRefusedPaste(refused, stack, lines.join('\n\n'));
+  // The admission's measured figures put the paste between the two counts, with room either side, before the refusal
+  // is demanded: one that ignored the server's count would admit it.
+  await expectRefusedPaste(refused, stack, lines.join('\n\n'), {
+    admission: ({ adds, heldLocal, heldServer, limit: cap }) => {
+      const margin = Math.min(250_000, pb / 8);
+      expect(heldLocal + adds, `beside what Ada holds, the paste fits (adds ${adds}, held ${heldLocal}, limit ${cap})`).toBeLessThan(cap - margin);
+      expect(heldServer + adds, `beside what the server counts, it does not (adds ${adds}, held ${heldServer}, limit ${cap})`).toBeGreaterThan(cap + margin);
+    },
+  });
 });

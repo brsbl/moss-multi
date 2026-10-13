@@ -4,7 +4,7 @@ import * as decoding from 'lib0/decoding';
 import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
-import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, CUSTOM_PREFIX } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
 import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
@@ -533,6 +533,46 @@ describe('admission and the write classifier', () => {
     expect(opened.dobj.document.getText('title').toString()).toBe('a'.repeat(32 * 1024));
   });
 
+  it('commits each of two near-cap pastes interleaved after their preflight wholly, or refuses it wholly (B209)', async () => {
+    const limits = { ...DocDO.limits, stateCapBytes: 1024 * 1024 };
+    class Reserving extends DocDO {
+      static override limits = limits;
+    }
+    const opened = await start(openDoc(new Backing(), Reserving as never));
+    const ada = await editorOn(opened);
+    const ben = await editorOn(opened);
+    await typeTitle(ada, 's'.repeat(16 * 1024));
+    await ben.pump();
+    // Each paste: five frames of 6,000 characters, measured before any is sent (the client's preflight).
+    const paste = (client: TestClient, char: string) => {
+      const title = client.doc.getText('title');
+      for (let i = 0; i < 5; i += 1) title.insert(title.length, char.repeat(6_000));
+      return client.drain();
+    };
+    const adaFrames = paste(ada, 'a');
+    const benFrames = paste(ben, 'b');
+    const bytes = (frames: Uint8Array[]) => frames.reduce((sum, frame) => sum + frame.byteLength, 0);
+    const held = Y.encodeStateAsUpdate(opened.dobj.document).byteLength;
+    // Either paste fits beside what the DocDO holds; both together do not.
+    limits.stateCapBytes = held + Math.max(bytes(adaFrames), bytes(benFrames)) + Math.floor(Math.min(bytes(adaFrames), bytes(benFrames)) / 2);
+    await ada.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b: bytes(adaFrames) })}`);
+    await ben.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b: bytes(benFrames) })}`);
+    for (let i = 0; i < 5; i += 1) {
+      if (ada.socket.readyState === 1) await ada.deliver(adaFrames[i]);
+      if (ben.socket.readyState === 1) await ben.deliver(benFrames[i]);
+    }
+    await ada.pump();
+    await ben.pump();
+    const landed = opened.dobj.document.getText('title').toString();
+    const count = (char: string) => landed.split(char).length - 1;
+    expect([0, 30_000], 'Ada\'s paste lands whole or not at all').toContain(count('a'));
+    expect([0, 30_000], 'Ben\'s paste lands whole or not at all').toContain(count('b'));
+    expect(count('a') + count('b'), 'one of them lands').toBe(30_000);
+    const refused = count('a') === 0 ? ada : ben;
+    expect(refused.events).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
+    expect(refused.closed?.code).toBe(CLOSE.writeRefused);
+  });
+
   it('closes 4401 without a principal and 4429 for a 51st connection', async () => {
     const opened = await start(openDoc());
     const anonymous = await connect(opened, { id: null });
@@ -736,6 +776,54 @@ describe('answers', () => {
     expect(Y.encodeStateVector(reader.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
     expect(blockTypes(reader.doc)).toEqual(blockTypes(opened.dobj.document));
     expect(reader.closed).toBeNull();
+  });
+
+  it('answers a multi-author doc in dependency order: no piece leaves a peer pending where a higher client id builds on a lower one (B212)', async () => {
+    const opened = await start(openDoc());
+    const lowDoc = new Y.Doc();
+    lowDoc.clientID = 7;
+    const low = await connect(opened, { role: 'editor' }, lowDoc);
+    const lowLexical = bindLexical(low.doc);
+    await low.hello();
+    for (let batch = 0; batch < 4; batch += 1) {
+      lowLexical.editor.update(() => {
+        for (let i = 0; i < 600; i += 1) $getRoot().append($createParagraphNode().append($createTextNode(`${batch}.${i} ${'x'.repeat(440)}`)));
+      }, { discrete: true });
+      await low.flush();
+    }
+    // A second author, its client id higher (Yjs encodes higher ids first), inserts between the first's blocks.
+    const highDoc = new Y.Doc();
+    highDoc.clientID = 0xfffff000;
+    const high = await connect(opened, { role: 'editor' }, highDoc);
+    const highLexical = bindLexical(high.doc);
+    await high.hello();
+    highLexical.flush();
+    highLexical.editor.update(() => {
+      const blocks = $getRoot().getChildren();
+      for (let i = 0; i < blocks.length; i += 6) blocks[i].insertAfter($createParagraphNode().append($createTextNode(`high ${i} ${'y'.repeat(300)}`)));
+    }, { discrete: true });
+    await high.flush();
+    expect(high.closed).toBeNull();
+    expect(low.closed).toBeNull();
+
+    const reader = await connect(opened, { role: 'viewer' });
+    const from = reader.socket.sent.length;
+    await reader.deliver(step1(new Y.Doc()));
+    const answer = reader.socket.sent.slice(from).filter((frame): frame is Uint8Array => typeof frame !== 'string' && frame[0] === 0 && frame[1] !== 0);
+    expect(answer.length, 'the answer is several frames').toBeGreaterThan(4);
+    const peer = new Y.Doc();
+    for (const [index, frame] of answer.entries()) {
+      const decoder = decoding.createDecoder(frame);
+      decoding.readVarUint(decoder);
+      decoding.readVarUint(decoder);
+      Y.applyUpdate(peer, decoding.readVarUint8Array(decoder));
+      expect(peer.store.pendingStructs, `piece ${index} of ${answer.length} needs nothing a later piece carries`).toBeNull();
+      expect(peer.store.pendingDs, `piece ${index} deletes nothing it lacks`).toBeNull();
+    }
+    expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
+    expect(Y.encodeStateVector(peer)).toEqual(Y.encodeStateVector(opened.dobj.document));
+    expect(blockTypes(peer)).toEqual(blockTypes(opened.dobj.document));
+    expect(peer.get('root', Y.XmlText).toString()).toBe(opened.dobj.document.get('root', Y.XmlText).toString());
   });
 
   describe('the answer budget (T3.S14)', () => {
