@@ -355,6 +355,8 @@ export class DocDO extends YServer<SyncEnv> {
   /** Updates since the last auto version, and who made them; persisted in meta so a wake keeps them (A§14). */
   #versionUpdates = 0;
   #stagedRetry: ReturnType<typeof setTimeout> | null = null;
+  readonly #versionsGate = serializer();
+  #versionsQueued: Promise<void> | null = null;
   #versionAuthors = new Set<string>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
@@ -441,7 +443,8 @@ export class DocDO extends YServer<SyncEnv> {
     this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
     if (this.#searchStale && store.meta('created') !== null) setTimeout(() => void this.#feedSearch(), WAKE_FEED_MS);
     // Spills a previous instance could not delete are retried after a wake.
-    if (store.meta(VERSIONS_DIRTY) === '1') setTimeout(() => void this.#versionsChanged(), WAKE_FEED_MS);
+    // A spill written before its row, or discarded after it, may be all that is left; the marker is set only later.
+    if (store.meta(VERSIONS_DIRTY) === '1' || this.#versions?.pending()) setTimeout(() => void this.#versionsChanged(), WAKE_FEED_MS);
   }
 
   /**
@@ -1201,9 +1204,7 @@ export class DocDO extends YServer<SyncEnv> {
     let result: { version: VersionMeta | null } | ReviewRefusal;
     try {
       await versions.spill(prepared);
-      // T6.B1 negative control, red run only: the post-spill review is skipped.
-      const skipReview = async <T>(_input: unknown, _floor: Role, run: (reviewer: Reviewer) => T): Promise<T> => run(input.reviewer);
-      result = await skipReview(input, 'editor', (reviewer): { version: VersionMeta | null } | ReviewRefusal => {
+      result = await this.#review(input, 'editor', (reviewer): { version: VersionMeta | null } | ReviewRefusal => {
         const person = input.actingUserId ?? reviewer.id;
         const refusal = versions.namedRefusal(person);
         if (refusal) return { ok: false, status: 409, reason: refusal };
@@ -1290,9 +1291,18 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * After a version write: staged versions move to R2 and pruned or unwritten spills are deleted; what fails stays
-   * marked for the next write or wake, and a failed move is also retried after STAGED_RETRY_MS.
+   * marked for the next write or wake, and a failed move is also retried after STAGED_RETRY_MS. One pass runs at a
+   * time, so no delete overlaps a put of the same key; callers during a pass share the one queued after it.
    */
-  async #versionsChanged(): Promise<void> {
+  #versionsChanged(): Promise<void> {
+    this.#versionsQueued ??= this.#versionsGate(() => {
+      this.#versionsQueued = null;
+      return this.#versionsPass();
+    });
+    return this.#versionsQueued;
+  }
+
+  async #versionsPass(): Promise<void> {
     const versions = this.#versions;
     const store = this.#store;
     if (!versions || !store) return;
@@ -1577,6 +1587,8 @@ export class DocDO extends YServer<SyncEnv> {
       for (const id of authorIds) this.#versionAuthors.add(id);
       store.setMeta('version-updates', String(this.#versionUpdates));
       store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
+      // Its spill, if written, is now an orphan to sweep.
+      await this.#versionsChanged();
       return null;
     }
     await this.#versionsChanged();

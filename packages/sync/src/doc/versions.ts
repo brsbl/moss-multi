@@ -297,7 +297,8 @@ export class VersionStore {
         const [row] = this.sql.exec<{ r2_key: string | null }>('SELECT r2_key FROM versions WHERE id = ?', next.id).toArray();
         this.sql.exec('DELETE FROM version_staged WHERE id = ?', next.id);
         if (!row) {
-          this.sql.exec('UPDATE version_orphans SET due = 0 WHERE r2_key = ?', key);
+          // Pruned while it moved, and maybe swept already: the object this put wrote is tracked again.
+          this.sql.exec('INSERT OR REPLACE INTO version_orphans (r2_key, due) VALUES (?, 0)', key);
           return;
         }
         if (row.r2_key === null) this.sql.exec('UPDATE versions SET r2_key = ? WHERE id = ?', key, next.id);
@@ -369,10 +370,15 @@ export class VersionStore {
     }
   }
 
-  /** Deletes the spills of pruned or never-inserted versions; a key stays recorded until R2 confirms its delete. */
+  /**
+   * Deletes the spills of pruned or never-inserted versions; a key stays recorded until R2 confirms its delete. A key
+   * a version row still holds is live and only its stale record goes; a still-staged version's key waits for its move.
+   */
   async sweep(): Promise<void> {
-    const keys = this.sql.exec<{ r2_key: string }>('SELECT r2_key FROM version_orphans WHERE due <= ? LIMIT ?', Date.now(), SWEEP_BATCH)
-      .toArray().map((row) => row.r2_key);
+    this.sql.exec('DELETE FROM version_orphans WHERE r2_key IN (SELECT r2_key FROM versions WHERE r2_key IS NOT NULL)');
+    const staged = new Set(this.sql.exec<{ id: string }>('SELECT DISTINCT id FROM version_staged').toArray().map((row) => this.#keyOf(row.id)));
+    const keys = this.sql.exec<{ r2_key: string }>('SELECT r2_key FROM version_orphans WHERE due <= ? LIMIT ?', Date.now(), SWEEP_BATCH + staged.size)
+      .toArray().map((row) => row.r2_key).filter((key) => !staged.has(key)).slice(0, SWEEP_BATCH);
     const blobs = this.blobs();
     if (keys.length === 0 || !blobs) return;
     try {
