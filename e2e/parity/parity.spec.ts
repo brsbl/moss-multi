@@ -37,6 +37,21 @@ test.afterAll(async () => {
   await oracle?.close();
 });
 
+// Room for a sign-up or sign-in that waits out better-auth's minute window (`paced`).
+test.describe.configure({ timeout: 300_000 });
+
+/** The stack allows 10 sign-ups and 10 sign-ins a minute; one refused with 429 waits the window out and retries. */
+async function paced<T>(work: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await work();
+    } catch (error) {
+      if (attempt >= 2 || !/: 429 /.test(String(error))) throw error;
+      await new Promise((done) => setTimeout(done, 61_000));
+    }
+  }
+}
+
 async function newPage(browser: Browser, theme: Theme): Promise<Page> {
   const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, colorScheme: theme, reducedMotion: 'reduce' });
   const page = await context.newPage();
@@ -214,8 +229,8 @@ async function captureCandidate(
   const page = await newPage(browser, theme);
   try {
     principals += 1;
-    const principal = await mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, target.id, principals);
-    await page.context().addCookies(await signIn(stack.baseUrl, principal));
+    const principal = await paced(() => mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, target.id, principals));
+    await page.context().addCookies(await paced(() => signIn(stack.baseUrl, principal)));
     let path = '/';
     if (target.seed === 'story-listing') {
       if (listing.length === 0) throw new InfraBlocked(`${target.story} listed no notes`);
