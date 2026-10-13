@@ -277,7 +277,7 @@ jobs:
     needs: [preflight, deploy, canary]
     if: inputs.suite == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 80
     container:
       image: mcr.microsoft.com/playwright:v1.61.1-noble
       options: --ipc=host --init
@@ -323,7 +323,7 @@ jobs:
         env:
           BROWSER: ${{ matrix.browser }}
           SHARD: ${{ matrix.shard }}
-          E2E_GLOBAL_TIMEOUT_MIN: '50'
+          E2E_GLOBAL_TIMEOUT_MIN: '70'
           MOSS_MULTI_NO_OPEN: '1'
           GREP: ${{ inputs.suite_grep }}
         run: |

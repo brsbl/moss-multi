@@ -75,6 +75,9 @@ export default defineConfig({
       grepInvert: /@local-only/,
       // Every step waits on real round trips there: the longest legs passed in 130-150 s against the 120 s local limit.
       timeout: 240_000,
+      // Over the public internet a leg may meet one slow D1 turn or dropped request: it runs once more, on fresh
+      // principals, and the run log and summary name it flaky; a leg that fails twice fails the run.
+      retries: 1,
       use: { browserName: engine, ...recordingFor(stack?.baseUrl) },
     })),
     // Shell parity against the Ladle oracle (A§20): the parity job only, in the e2e image's Chromium.

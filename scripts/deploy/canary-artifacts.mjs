@@ -39,7 +39,7 @@ export function recordingFor(baseUrl) {
 
 /**
  * @typedef {{ status?: string, duration?: number }} Attempt
- * @typedef {{ title?: string, specs?: { title: string, tests?: { results?: Attempt[] }[] }[], suites?: Suite[] }} Suite
+ * @typedef {{ title?: string, specs?: { title: string, tests?: { status?: string, results?: Attempt[] }[] }[], suites?: Suite[] }} Suite
  */
 
 /**
@@ -58,7 +58,8 @@ export function canarySummary(results) {
     for (const spec of suite.specs ?? []) {
       for (const test of spec.tests ?? []) {
         const last = test.results?.at(-1);
-        tests.push({ title: [...here, spec.title].join(' › '), status: String(last?.status ?? 'skipped'), duration: Number(last?.duration ?? 0) });
+        const status = test.status === 'flaky' ? 'flaky' : String(last?.status ?? 'skipped');
+        tests.push({ title: [...here, spec.title].join(' › '), status, duration: Number(last?.duration ?? 0) });
       }
     }
     for (const child of suite.suites ?? []) walk(child, here);
