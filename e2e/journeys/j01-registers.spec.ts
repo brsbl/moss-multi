@@ -10,8 +10,51 @@ import { expect, test, ui } from '../lib/test.ts';
 
 const PEER_TIMEOUT = 10_000;
 
-async function note(actors: Actors, baseUrl: string, markdown: string) {
+// DIAG (temporary, T3.B15): records each doc socket's frames and the page's visibility.
+function diagInit() {
+  type Entry = [number, string, string];
+  const log: Entry[] = [];
+  const w = window as unknown as { __diag: Entry[]; WebSocket: typeof WebSocket };
+  w.__diag = log;
+  const push = (kind: string, detail: string) => { log.push([Math.round(performance.now()), kind, detail]); if (log.length > 400) log.splice(0, 100); };
+  const Native = w.WebSocket;
+  const send = Native.prototype.send;
+  Native.prototype.send = function (this: WebSocket, data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+    if (this.url.includes('/parties/')) {
+      const bytes = typeof data === 'string' ? `s:${data.slice(0, 40)}` : `b${(data as ArrayBuffer).byteLength}:${Array.from(new Uint8Array((data as ArrayBufferView).buffer ?? data as ArrayBuffer, 0, Math.min(3, (data as ArrayBuffer).byteLength))).join(',')}`;
+      push(`send ${this.readyState}`, bytes);
+    }
+    return send.call(this, data);
+  };
+  w.WebSocket = class extends Native {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      if (!String(url).includes('/parties/')) return;
+      push('new', String(url).slice(-60));
+      this.addEventListener('open', () => push('open', ''));
+      this.addEventListener('close', (e) => push('close', `${e.code} ${e.reason}`));
+      this.addEventListener('error', () => push('error', ''));
+      this.addEventListener('message', (e) => {
+        const d = e.data;
+        push('in', typeof d === 'string' ? `s:${d.slice(0, 60)}` : d instanceof ArrayBuffer ? `b${d.byteLength}:${Array.from(new Uint8Array(d, 0, Math.min(3, d.byteLength))).join(',')}` : 'blob');
+      });
+    }
+  } as typeof WebSocket;
+  document.addEventListener('visibilitychange', () => push('vis', document.visibilityState));
+  window.addEventListener('pagehide', () => push('pagehide', ''));
+  window.addEventListener('focus', () => push('focus', ''));
+  window.addEventListener('blur', () => push('blur', ''));
+  window.addEventListener('error', (e) => push('error!', String(e.message)));
+  window.addEventListener('unhandledrejection', (e) => push('rejection', String(e.reason)));
+}
+const diagDump = async (actor: Actor) => {
+  const out = await actor.page.evaluate(() => ({ now: Math.round(performance.now()), hidden: document.hidden, focus: document.hasFocus(), log: (window as unknown as { __diag?: unknown[] }).__diag ?? [] })).catch((e: unknown) => String(e));
+  console.log(`DIAG ${actor.label}`, JSON.stringify(out));
+};
+
+async function note(actors: Actors, baseUrl: string, markdown: string, diag = false) {
   const ada = await actors.session(await actors.principal('ada'));
+  if (diag) await ada.page.addInitScript(diagInit);
   const result = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Registers', markdown } });
   expect(result.status()).toBe(201);
   const { doc: { id } } = await result.json() as { doc: { id: string } };
@@ -851,8 +894,9 @@ for (const [kind, spec] of Object.entries(PAYLOAD_KINDS)) {
 for (const kind of ['code', 'HTML'] as const) {
   test(`j01 registers: Ben's uncommitted ${kind} preedit survives Ada moving the block, and a committed composition is written once @p:col-1`, async ({ actors, stack }) => {
     const spec = PAYLOAD_KINDS[kind];
-    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, `${spec.markdown}\n\nLast para.`);
+    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, `${spec.markdown}\n\nLast para.`, true);
     const ben = await actors.session(principal);
+    await ben.page.addInitScript(diagInit);
     await join(ben, id);
     const texts = (actor: Actor) => payloadTexts(actor, id, spec.type, spec.getter);
     /** Ada moves the block to the end of the note, or back to its start. */
@@ -874,7 +918,13 @@ for (const kind of ['code', 'HTML'] as const) {
     await compose('compositionstart');
     await spec.input(ben, id).fill(`${spec.seed}漢`);
     await move('end');
-    await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move', timeout: PEER_TIMEOUT }).toEqual(['paragraph', 'paragraph', spec.type]);
+    try {
+      await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move', timeout: PEER_TIMEOUT }).toEqual(['paragraph', 'paragraph', spec.type]);
+    } catch (error) {
+      console.log('DIAG ada blocks', JSON.stringify(await blocks(ada, id)));
+      await diagDump(ada); await diagDump(ben);
+      throw error;
+    }
     await expect(spec.input(ben, id), 'the field follows its block with the preedit').toHaveValue(`${spec.seed}漢`, { timeout: PEER_TIMEOUT });
     for (const actor of [ada, ben]) await expect.poll(() => texts(actor), { message: `${actor.label}: the preedit is written`, timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}漢`]);
     await compose('compositionstart');
