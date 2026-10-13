@@ -539,8 +539,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
   const docUrl = (id: string) => new URL(withShare(`/d/${encodeURIComponent(id)}`), browser.origin).href;
   /** moss's preview window id: any number for an opened tab, null when the browser blocked it. */
-  const pdfTab = (sessionId: string): number | null =>
-    browser.openWindow(`/pdf-export?pdfExportSessionId=${encodeURIComponent(sessionId)}`) ? 1 : null;
+  // The print tab loads the note's media through the share link too (B171).
+  const pdfTab = (sessionId: string): number | null => {
+    const query = new URLSearchParams({ pdfExportSessionId: sessionId });
+    const token = share();
+    if (token) query.set('share', token);
+    return browser.openWindow(`/pdf-export?${query}`) ? 1 : null;
+  };
 
   // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
   const idForPath = (path: string): string | null => {

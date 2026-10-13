@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 49% done** (112 of 230 planned tasks verified)
+**Overall: 49% done** (113 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 60 / 60 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 61 / 61 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -131,6 +131,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T3.B20 verified: the body-cap tests now prove each route control actually succeeds, folder-member edits and removals and an oversized streamed sign-up are refused 413 without creating an account, and Settings parity keeps the Account and Agents sections in layout so a spacing change there is caught.
 - 2026-10-13 — T3.B3 verified: a woken note socket still enforces its withheld-payload limit, code blocks created and deleted offline no longer get a reconnecting client closed, text written into a shared block is charged to its writer once it is deleted, large payloads no longer rewrite their snapshot on every write, the ack ledger keeps one merged delete set however many acks arrive, and payload ids like `__proto__` and `constructor` are acked and settled.
 - 2026-10-13 — T3.B27 verified: the full CI lane now fails only on a real regression: linear-time tests count work instead of timing the runner, paste stall budgets scale by a same-page calibration, and the races behind the flaky journeys (backlinks 404 after a trash, hibernation induction, register picks, invariant 3, split navigation, socket hang-ups) are fixed or wait on the product's real signal.
+- 2026-10-13 — T3.B14 verified: pasting an image or video over selected text keeps that text until the upload lands, so a refused upload changes nothing; closing an embedded editor waits for its pending pastes before the final save; a file paste with a block selected or no caret lands in the note; the PDF export tab keeps the share link; and the viewer's video seek is checked against ranged reads.
 
 ## T1.1s identity audit
 
@@ -528,3 +529,8 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B27 (The full lane fails only on a real regression) checker P2: invariant 3's `socketProblems` (both engines) drops every unheard socket close within 50 ms of its open as a WebKit artifact, so two overlapping doc sockets that each close unheard within 50 ms just before a navigation would go unreported → identify the WebKit artifact positively (e.g. page-side construction evidence) instead of by lifetime.
 - T3.B27 (The full lane fails only on a real regression) checker P2: after a failed backlinks refresh (non-404 status or network error) `readBacklinks` keeps the stale cache and `watchBacklinks` reads only for a new note or an empty cache, so reopening or focusing the note no longer retries until another note's workspace event → mark a failed refresh as needing a read.
 - T3.B27 (The full lane fails only on a real regression) checker P2: two of the three "WebKit engine crash" classifications are unproven — run 38389781926 (registers `unacked` expected 0, received 1) and run 38401836825 (editor-webkit Run button timeout) log no crash message (only 38416917680 logs "Network process crashed") → keep both open as flakes to diagnose.
+- T3.B14 (Media paste, held insertion and media coverage) checker P2: held range ends do not follow text-node splits or merges — `holdEnd` (apps/web/src/host/media/held-insertion.ts:40-59) keeps one Lexical key per end, so a peer formatting the held text mid-upload splits the node and the image lands before the text instead of replacing it; a merge collapses the range to the surviving end (degraded, no data loss) → track ends across splits and merges.
+- T3.B14 (Media paste, held insertion and media coverage) checker P2: unmount waits without a deadline for held uploads — `EditorSession.unmountOnce` awaits `surface.settleMedia()` (packages/editor/src/session.ts:987) unbounded, so an asset put or copy that never settles blocks the unmount and its final flush, and `unmount({discardUnsaved})` returns the same pending promise → bound `settleHeldInsertions` with a deadline.
+- T3.B14 (Media paste, held insertion and media coverage) checker P2: the B233 viewer range check is not tied to the seek — the snapshot starts with the player, and the test server's 8 KB parts produce ranged reads during the first load, so the test proves ranges are served, not that the seek caused a ranged read (neither engine requests after a seek on the 18 KB clip) → add a seek-driven ranged read check on a clip large enough to force one.
+- T3.B14 (Media paste, held insertion and media coverage) checker P2: the j11 editor-link leg covers a no-caret paste, not a paste with an image selected — clicking beside the image leaves no selection, so it exercises the end-of-document fallback; NodeSelection is covered only by a unit test selecting a paragraph, and BUILDPLAN.md:395 overclaims → select the image in the journey leg.
+- T3.B14 (Media paste, held insertion and media coverage) checker P2: a refused cross-note image copy still deletes the held selection — in ExternalImagePastePlugin's cross-note path (vendor/.../ExternalImagePastePlugin.tsx:248-286) each copy failure is caught per asset and `$restore` then removes the selected text even when nothing lands (not a regression; B170 triaged P2) → keep the text when no asset lands.

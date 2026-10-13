@@ -1190,7 +1190,10 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
               (selection.focus.type === 'element' && selection.focus.getNode() === root);
           }
         });
-        if (atRoot) {
+        // moss-multi seam: held-insertion (B188): a pasted media file goes to the media plugins, which insert it there
+        const media = Array.from((event as ClipboardEvent).clipboardData?.items ?? [])
+          .some((item) => item.kind === 'file' && /^(image|video)\//.test(item.type));
+        if (atRoot && !media) {
           console.warn('[paste] Blocked paste at root-level selection — this is a Lexical edge case, not a user error');
           event.preventDefault();
           return true;
