@@ -6,13 +6,15 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
 import { applyRecord } from '@moss-multi/core/suggest/apply';
+import type { Role } from '@moss-multi/protocol/roles';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { base64ToBytes, bytesToBase64, CUSTOM_PREFIX, type ServerEvent } from '@moss-multi/protocol/sync';
-import { DocDO } from '../../src/doc-do.ts';
+import { DocDO, type CommentActor } from '../../src/doc-do.ts';
 import { ForkShim } from '../../src/suggest/fork-shim.ts';
-import { readMeta } from '../../src/suggest/records.ts';
+import { readMeta, readRecord } from '../../src/suggest/records.ts';
 import { forgeRecord, opOn, OTHER_SUGGESTER, select, SEED, SUGGESTER } from '../../src/suggest/test-support.ts';
 import { bindLexical, connect, openDoc, start, wake, type Opened, type TestClient, type Who } from './do-harness.ts';
+import { LiveClient } from './live-client.ts';
 
 // applyRecord as itself, counted, so a cached working export is seen doing no gate work.
 vi.mock('@moss-multi/core/suggest/apply', async (original) => {
@@ -196,6 +198,47 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(gates).toHaveBeenCalledTimes(2);
   });
 
+  it('a payload-only edit drops the cached working export, which recomputes with it (I5, T5.B5)', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const ed = await LiveClient.open(opened, ED);
+    try {
+      const gates = vi.mocked(applyRecord);
+      const first = await opened.dobj.exportWorking();
+      expect(first).toContain('More words.');
+      expect(first).not.toContain('Ed seed');
+      const root = body(opened.dobj.document);
+      ed.type(ed.texts().findIndex((text) => text.startsWith('seed')), 0, 'Ed ');
+      await ed.sync();
+      expect(body(opened.dobj.document), 'only the payload changed').toBe(root);
+      gates.mockClear();
+      const second = await opened.dobj.exportWorking();
+      expect(gates, 'recomputed').toHaveBeenCalledTimes(1);
+      expect(second).toContain('Ed seed');
+      expect(second).toContain('More words.');
+    } finally {
+      ed.dispose();
+    }
+  });
+
+  it('a withdraw drops the cached working export, which recomputes without the record (I5, T5.B5)', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    const sky = await on(opened, SKY);
+    const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const kept = await suggest(sky, () => select('Indented', 0).insertText('Sky says. '));
+    const gates = vi.mocked(applyRecord);
+    const first = await opened.dobj.exportWorking();
+    expect(first).toContain('More words.');
+    expect(await opened.dobj.withdrawSuggestion({ id, reviewer: { id: SUGGESTER.id, role: 'suggester' } })).toEqual({ ok: true });
+    gates.mockClear();
+    const second = await opened.dobj.exportWorking();
+    expect(gates.mock.calls.map(([, record]) => record.meta.id), 'recomputed over the open record alone').toEqual([kept]);
+    expect(second).not.toContain('More words.');
+    expect(second).toContain('Sky says. Indented words here.');
+  });
+
   it('past the per-document bound a working export that would compute is refused before any gate work; a cached one is still served', async () => {
     const limits = DocDO.limits;
     DocDO.limits = { ...limits, workingRate: { max: 2, windowMs: 60_000 } };
@@ -321,6 +364,35 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(readMeta(opened.dobj.document, grant.record)).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
   });
 
+  it("the idle alarm's close drops the cached working export, which recomputes without the record (I5, T5.B5)", async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    const shown = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const [grant] = await leases(sam);
+    const fork = new ForkShim(sam.doc, grant.client);
+    try {
+      fork.act(() => select('Indented', 0).insertText('x'));
+      fork.act(() => select('xIndented', 0, 1).removeText());
+      for (const op of fork.sent) {
+        expect(await send(sam, { t: 'suggest-ops', record: grant.record, doc: op.doc, update: bytesToBase64(op.update) })).toMatchObject({ t: 'suggest-ack' });
+      }
+    } finally {
+      fork.dispose();
+    }
+    const gates = vi.mocked(applyRecord);
+    gates.mockClear();
+    const first = await opened.dobj.exportWorking();
+    expect(gates.mock.calls.map(([, record]) => record.meta.id).sort()).toEqual([shown, grant.record].sort());
+    const meta = readMeta(opened.dobj.document, grant.record)!;
+    vi.setSystemTime(meta.updatedAt + 30_001);
+    await opened.dobj.alarm();
+    expect(readMeta(opened.dobj.document, grant.record)).toMatchObject({ status: 'rejected', resolvedBy: 'system' });
+    expect(readMeta(opened.dobj.document, shown)).toMatchObject({ status: 'open' });
+    gates.mockClear();
+    expect(await opened.dobj.exportWorking()).toBe(first);
+    expect(gates.mock.calls.map(([, record]) => record.meta.id), 'recomputed over the open record alone').toEqual([shown]);
+  });
+
   it('a new live suggestion notifies once, naming its author and record; a continuation does not', async () => {
     const notices: { docId: string; author: string; record: string }[] = [];
     DocDO.suggestionNotices = () => async (notice) => {
@@ -427,5 +499,117 @@ describe('T5.B1 an anonymous link holder previews through the DocDO @p:mean-2 @p
     expect(await opened.dobj.rejectSuggestion({ id, reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
     expect(await opened.dobj.withdrawSuggestion({ id, reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
     expect(readMeta(opened.dobj.document, id)).toMatchObject({ status: 'open' });
+  });
+});
+
+describe('T5.B5 a review re-authorizes the actor in the serialized write, whatever the Worker resolved @p:mean-2 @p:R16 @p:R17', () => {
+  /** D1 as a controllable access check: each principal's role, each link's role, ended sessions, and an outage. */
+  const d1 = {
+    roles: new Map<string, Role>(),
+    links: new Map<string, Role>(),
+    ended: new Set<string>(),
+    fails: false,
+    on: true,
+  };
+  class CheckedDocDO extends DocDO {
+    static override access = () => (d1.on ? {
+      stamp: async (_docId: string, sessions: string[], agents: string[]) => {
+        if (d1.fails) throw new Error('D1 unavailable');
+        return { key: 'e1', sessions: new Set(sessions.filter((session) => !d1.ended.has(session))), agents: new Set(agents) };
+      },
+      resolve: async (_docId: string, socket: { kind: string; principalId: string; shareToken: string | null }) => {
+        if (d1.fails) throw new Error('D1 unavailable');
+        const role = socket.shareToken ? d1.links.get(socket.shareToken) : d1.roles.get(socket.principalId);
+        return role ? { role, presence: true } : null;
+      },
+    } : null);
+  }
+  beforeEach(() => {
+    d1.roles = new Map<string, Role>([['owner-1', 'owner'], [SUGGESTER.id, 'suggester'], [EDITOR.id, 'editor']]);
+    d1.links = new Map<string, Role>([['ed-link', 'editor'], ['sam-link', 'suggester']]);
+    d1.ended = new Set();
+    d1.fails = false;
+    d1.on = true;
+  });
+
+  const actorOf = (id: string, link: boolean): CommentActor => ({
+    kind: 'user',
+    principalId: id,
+    sessionId: id === SUGGESTER.id ? 'sess-sam' : 'sess-ed',
+    shareToken: link ? (id === SUGGESTER.id ? 'sam-link' : 'ed-link') : null,
+  });
+
+  type Action = 'preview' | 'accept' | 'reject' | 'withdraw';
+  type Change = 'revoke' | 'demote' | 'end-session' | 'revoke-link' | 'throw';
+  const EXPECTED: Record<Change, { status: number; reason: string }> = {
+    revoke: { status: 404, reason: 'not-found' },
+    demote: { status: 403, reason: 'role' },
+    'end-session': { status: 401, reason: 'unauthenticated' },
+    'revoke-link': { status: 404, reason: 'not-found' },
+    throw: { status: 503, reason: 'unconfirmed' },
+  };
+  const ACTIONS: Action[] = ['preview', 'accept', 'reject', 'withdraw'];
+  const CHANGES: Change[] = ['revoke', 'demote', 'end-session', 'revoke-link', 'throw'];
+  // A preview's floor is viewer, so a demotion does not take it away.
+  const MATRIX = ACTIONS.flatMap((action) => CHANGES.filter((what) => !(action === 'preview' && what === 'demote')).map((what) => [action, what] as const));
+
+  /** A note with SAM's open record, and the preview an editor saw while still authorized. */
+  async function reviewed() {
+    const opened = await start(openDoc(undefined, CheckedDocDO as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, { ...SAM, session: 'sess-sam' });
+    const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const shown = await opened.dobj.previewSuggestion({ id, reviewer: EDITOR, actor: actorOf(EDITOR.id, false) });
+    if (!shown.ok) throw new Error(`preview refused: ${shown.reason}`);
+    return { opened, id, shown };
+  }
+
+  /** `action` as the Worker authorized it: the supplied reviewer role is the one it resolved before the change. */
+  function act(opened: Opened, action: Action, id: string, shown: { hash: string; digest: string }, link: boolean) {
+    const ed = { reviewer: EDITOR, actor: actorOf(EDITOR.id, link) };
+    if (action === 'preview') return opened.dobj.previewSuggestion({ id, ...ed });
+    if (action === 'accept') return opened.dobj.acceptSuggestion({ id, ...ed, previewHash: shown.hash, digest: shown.digest });
+    if (action === 'reject') return opened.dobj.rejectSuggestion({ id, ...ed });
+    return opened.dobj.withdrawSuggestion({ id, reviewer: { id: SUGGESTER.id, role: 'suggester' }, actor: actorOf(SUGGESTER.id, link) });
+  }
+
+  function change(what: Change, action: Action): void {
+    const author = action === 'withdraw';
+    if (what === 'revoke') d1.roles.delete(author ? SUGGESTER.id : EDITOR.id);
+    if (what === 'demote') d1.roles.set(author ? SUGGESTER.id : EDITOR.id, author ? 'viewer' : 'commenter');
+    if (what === 'end-session') d1.ended.add(author ? 'sess-sam' : 'sess-ed');
+    if (what === 'revoke-link') d1.links.delete(author ? 'sam-link' : 'ed-link');
+    if (what === 'throw') d1.fails = true;
+  }
+
+  const held = (opened: Opened, id: string) => JSON.stringify([opened.dobj.document.get('root', Y.XmlText).toJSON(), readRecord(opened.dobj.document, id)]);
+
+  it.each(MATRIX)('%s after a %s between the Worker and the review is refused, the body and the record unchanged', async (action, what) => {
+    const { opened, id, shown } = await reviewed();
+    const link = what === 'revoke-link';
+    const before = held(opened, id);
+    change(what, action);
+    expect(await act(opened, action, id, shown, link)).toEqual({ ok: false, ...EXPECTED[what] });
+    expect(held(opened, id)).toBe(before);
+    expect(readMeta(opened.dobj.document, id)).toMatchObject({ status: 'open' });
+  });
+
+  it.each(ACTIONS)('control: before any change, %s passes re-authorization, directly and through a link', async (action) => {
+    for (const link of [false, true]) {
+      const { opened, id, shown } = await reviewed();
+      expect(await act(opened, action, id, shown, link)).toMatchObject({ ok: true });
+    }
+  });
+
+  it('negative control: without re-authorization the stale supplied role lands the demoted accept and withdraw', async () => {
+    d1.on = false;
+    const accepted = await reviewed();
+    change('demote', 'accept');
+    expect(await act(accepted.opened, 'accept', accepted.id, accepted.shown, false)).toEqual({ ok: true });
+    expect(body(accepted.opened.dobj.document)).toContain('More words.');
+    const withdrawn = await reviewed();
+    change('demote', 'withdraw');
+    expect(await act(withdrawn.opened, 'withdraw', withdrawn.id, withdrawn.shown, false)).toEqual({ ok: true });
+    expect(readMeta(withdrawn.opened.dobj.document, withdrawn.id)).toMatchObject({ status: 'withdrawn' });
   });
 });
