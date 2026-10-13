@@ -308,6 +308,7 @@ describe('stored bytes are the type their name declares (T3.B10, B166)', () => {
   });
 
   it('takes an SVG in any XML-autodetected encoding (UTF-32 and odd UCS-4 orders, BOM-less UTF-16, EBCDIC) through both routes', async () => {
+    uploadsTaken.clear(); // this block's owner has spent most of its per-minute upload window on the cases above
     const docId = await insertDoc(d1.db, owner);
     const NS = 'http://www.w3.org/2000/svg';
     // Each code point as `size` big-endian bytes, then laid out in `order` (XML 1.0 Appendix F's 1234, 4321, 2143, 3412).
