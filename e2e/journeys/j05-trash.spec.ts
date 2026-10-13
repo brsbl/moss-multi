@@ -231,6 +231,12 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await expect(ben.page.getByRole('heading', { name: DENIAL }), 'a fresh load gets the denial page').toBeVisible({ timeout: BOOT_TIMEOUT });
   await expect(ben.page.locator(`[${EDITOR_PANE_ATTR}]`)).toHaveCount(0);
   // Ben waits on an open workspace, so the restore must reach his sidebar live (A§11), with no navigation.
+  // negative control: Ben's workspace socket keeps its pongs but loses every metadata event from here on.
+  await ben.page.routeWebSocket('**/api/workspace/ws', (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((message) => server.send(message));
+    server.onMessage((message) => { if (!String(message).includes('"meta"')) ws.send(message); });
+  });
   await ben.goto('/');
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
   await expect(noteRow(ben, docId), 'not in Ben’s notes while trashed').toHaveCount(0);
