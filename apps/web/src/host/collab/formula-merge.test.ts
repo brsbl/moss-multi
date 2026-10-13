@@ -133,11 +133,22 @@ describe('the edit a peer made and the one the field made (B009)', () => {
   });
 
   it('maps the field\'s caret into the stored text it writes, past references and trimmed space', () => {
-    expect(storedCaret('2', 0), 'a deletion before the caret ends where the caret is').toBe(0);
+    expect(storedCaret('2', 0, '2'), 'a deletion before the caret ends where the caret is').toBe(0);
     const price = ref(1, 'price');
-    expect(storedCaret(`  ${price}+2`, 7), 'after the name is after its token, less the trimmed space').toBe(price.length);
-    expect(storedCaret(`${price}+2`, 3), 'inside a name is at its token\'s start').toBe(0);
-    expect(storedCaret('aa  ', 4), 'trailing space trimmed away clamps to the end').toBe(2);
-    expect(storedCaret('aa', undefined)).toBeUndefined();
+    expect(storedCaret(`  ${price}+2`, 7, '  price+2'), 'after the name is after its token, less the trimmed space').toBe(price.length);
+    expect(storedCaret(`${price}+2`, 3, 'price+2'), 'inside a name is at its token\'s start').toBe(0);
+    expect(storedCaret('aa  ', 4, 'aa  '), 'trailing space trimmed away clamps to the end').toBe(2);
+    expect(storedCaret('aa', undefined, 'aa')).toBeUndefined();
+  });
+
+  it('leaves a raw token pasted into the field at its own width when mapping the caret', () => {
+    const price = ref(1, 'price');
+    const cost = ref(2, 'cost');
+    // The field shows `price`'s name, then a pasted raw token for `cost` in full; the caret is after `+1`.
+    const shown = `price+${cost}+1`;
+    const raw = `${price}+${cost}+1`;
+    expect(storedCaret(raw, shown.length, shown), 'at the end of the field is at the end of the stored text').toBe(raw.length);
+    expect(storedCaret(raw, 'price+'.length + 4, shown), 'inside the pasted token keeps its place in it').toBe(price.length + 1 + 4);
+    expect(storedCaret(raw, 'price+'.length, shown), 'before the pasted token').toBe(price.length + 1);
   });
 });
