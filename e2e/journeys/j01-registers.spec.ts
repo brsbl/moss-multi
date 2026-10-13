@@ -10,8 +10,35 @@ import { expect, test, ui } from '../lib/test.ts';
 
 const PEER_TIMEOUT = 10_000;
 
+// DIAG (temporary, T3.B15): which ResizeObservers ran in the frame a ResizeObserver loop error came from.
+function roDiag() {
+  const Native = window.ResizeObserver;
+  const log: unknown[][] = [];
+  (window as unknown as { __ro: unknown[][] }).__ro = log;
+  let n = 0;
+  window.ResizeObserver = class extends Native {
+    constructor(cb: ResizeObserverCallback) {
+      const id = ++n;
+      const where = (new Error().stack || '').split('\n').slice(1, 6).map(s => s.trim().slice(0, 160)).join(' < ');
+      super((entries, obs) => {
+        log.push([Math.round(performance.now()), id, entries.map(e => `${e.target.tagName}.${String((e.target as HTMLElement).className).slice(0, 50)} ${e.contentRect.width}x${e.contentRect.height}`).join(','), where]);
+        if (log.length > 400) log.splice(0, 100);
+        return cb(entries, obs);
+      });
+    }
+  };
+  window.addEventListener('error', e => { if (/ResizeObserver/.test(String(e.message))) log.push([Math.round(performance.now()), 'LOOP', String(e.message)]); });
+}
+const roDump = async (actor: Actor) => {
+  const log = await actor.page.evaluate(() => (window as unknown as { __ro?: unknown[][] }).__ro ?? []);
+  const loop = log.findIndex(l => l[1] === 'LOOP');
+  if (loop >= 0) console.log(`DIAGRO ${actor.label}`, JSON.stringify(log.slice(Math.max(0, loop - 40), loop + 5)));
+  else console.log(`DIAGRO ${actor.label} no loop, ${log.length} callbacks`);
+};
+
 async function note(actors: Actors, baseUrl: string, markdown: string) {
   const ada = await actors.session(await actors.principal('ada'));
+  await ada.context.addInitScript(roDiag);
   const result = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Registers', markdown } });
   expect(result.status()).toBe(201);
   const { doc: { id } } = await result.json() as { doc: { id: string } };
@@ -701,6 +728,8 @@ test("j01 registers: a caret or range inside a reference's name keeps its place 
   await ada.page.keyboard.type('X');
   await expect(formulaInput(ada), 'typing lands where the caret is').toHaveValue('1+prXice+2+4');
   await expect.poll(() => selectionOf(formulaInput(ada))).toEqual([5, 5]);
+  await ada.page.waitForTimeout(300);
+  await roDump(ada);
 });
 
 test("j01 registers: a caret inside a reference's name goes to where it stood when Ben replaces the reference @p:col-1", async ({ actors, stack }) => {
