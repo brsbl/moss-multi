@@ -70,6 +70,16 @@ function httpsUrl(value: string | undefined, base: string): string | undefined {
 
 const WORD = /\w/;
 
+/** Characters parseCard's tag and title searches pass over: the work count its linear-time test reads. */
+export const parseWork = { scanned: 0 };
+
+/** `text.indexOf(search, from)`, counting the characters it passes over. */
+function find(text: string, search: string, from: number): number {
+  const at = text.indexOf(search, from);
+  parseWork.scanned += Math.max(0, (at === -1 ? text.length : at + search.length) - from);
+  return at;
+}
+
 /**
  * Every `<name …>` tag in `head` (what /<name\b[^>]*>/gi matched), scanning forward once: `lower` is `head` with
  * ASCII lowered, the same length. A page of openers with no `>` used to rescan the rest of the page per opener.
@@ -77,9 +87,9 @@ const WORD = /\w/;
 function tags(head: string, lower: string, name: string): string[] {
   const found: string[] = [];
   const opener = `<${name}`;
-  for (let at = lower.indexOf(opener); at !== -1; at = lower.indexOf(opener, at + 1)) {
+  for (let at = find(lower, opener, 0); at !== -1; at = find(lower, opener, at + 1)) {
     if (WORD.test(lower.charAt(at + opener.length))) continue;
-    const close = lower.indexOf('>', at + opener.length);
+    const close = find(lower, '>', at + opener.length);
     if (close === -1) break;
     found.push(head.slice(at, close + 1));
     at = close;
@@ -89,9 +99,9 @@ function tags(head: string, lower: string, name: string): string[] {
 
 /** The first <title>'s text (what /<title[^>]*>([\s\S]*?)<\/title>/i read): if that one is unclosed, so is every later one. */
 function titleText(head: string, lower: string): string | undefined {
-  const at = lower.indexOf('<title');
-  const open = at === -1 ? -1 : lower.indexOf('>', at);
-  const close = open === -1 ? -1 : lower.indexOf('</title>', open + 1);
+  const at = find(lower, '<title', 0);
+  const open = at === -1 ? -1 : find(lower, '>', at);
+  const close = open === -1 ? -1 : find(lower, '</title>', open + 1);
   return close === -1 ? undefined : head.slice(open + 1, close);
 }
 

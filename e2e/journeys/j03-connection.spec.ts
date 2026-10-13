@@ -354,12 +354,14 @@ test('j03-connection: a refused write rebinds fresh and a deleted doc locks in p
   await bea.observeEditor(docId);
   const sever = bea.sever;
   if (!sever) throw new Error('missing sever');
-  sever.blackhole();
-  // Intentionally rejected text is not registered as a durability promise.
+  // Intentionally rejected text is not registered as a durability promise. The caret is placed first and the text is
+  // one input event: 12 s after its last frame the page closes a silent socket 4408 and reconnects, the likely third
+  // socket open when a loaded WebKit runner clicked and typed key by key into the black hole (run 38041880099).
   const body = ui.body(bea, docId);
   await body.click();
   await body.press('End');
-  await body.pressSequentially(' rejected change');
+  sever.blackhole();
+  await bea.page.keyboard.insertText(' rejected change');
   await expect(body).toContainText('rejected change');
   bea.expectReconnects(1, docId);
   sever.reset(4409);

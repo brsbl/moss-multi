@@ -93,6 +93,35 @@ describe('the T0.5a bridge', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  // An opened note's backlinks read, in flight as the page navigated, was WebKit's "…due to access control checks"
+  // page error (j01-presence, run 38410412024; T3.B27).
+  it("holds an opened note's backlinks read while the page leaves, and sends it again if the page stays", async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>((input, init) => {
+      if (!String(input).endsWith('/backlinks')) return Promise.resolve(Response.json(LISTING));
+      signals.push(init?.signal);
+      if (signals.length > 1) return Promise.resolve(Response.json({ backlinks: [] }));
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    await api.notes.getAll();
+    await api.notes.getById('d1');
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(signals[0], 'the read carries the leave').toBe(controller.signal);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signals, 'held while the page leaves').toHaveLength(1);
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    await vi.waitFor(() => expect(signals, 'the page stayed, so the read is sent again').toHaveLength(2));
+  });
+
   it('keeps every subscription callable', () => {
     const { api } = bridge();
     for (const subscribe of [api.notes.onDiskChange, api.notes.onRequestFlush, api.agent.onStream, api.update.onReady]) {
