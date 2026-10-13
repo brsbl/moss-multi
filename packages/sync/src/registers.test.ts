@@ -668,6 +668,26 @@ describe('L4/A8 chart and sketch registers @p:col-1 @p:col-3 @p:note-2', () => {
     } finally { a.dispose(); b.dispose(); seed.destroy(); }
   });
 
+  // T3.B15 (B241): the chart controls pass the config they show (the node's cache, over an empty payload) as the base.
+  it('a first edit derived from the shown config of an arrived empty chart payload writes the whole config', () => {
+    const seed = new Y.Doc(); importBody(seed, CHART);
+    for (const payload of payloadDocsFor(seed).docs.values()) {
+      const map = payloadMap(payload);
+      payload.transact(() => { for (const key of [...map.keys()]) map.delete(key); });
+    }
+    const a = client(seed); const b = client(seed);
+    try {
+      const shown = chartOf(a);
+      expect(shown.type, 'the empty payload shows the cached config').toBe('bar');
+      const next = { ...shown, title: 'First' };
+      a.editor.update(() => call(find('chart')!, 'setConfig', next, shown), { discrete: true });
+      send(a, b);
+      for (const peer of [a, b]) expect(chartOf(peer), `${peer === a ? 'Ada' : 'Ben'} keeps type and data`).toEqual(next);
+      const restored = client(a.doc);
+      try { expect(chartOf(restored), 'after a reload').toEqual(next); } finally { restored.dispose(); }
+    } finally { a.dispose(); b.dispose(); seed.destroy(); }
+  });
+
   it('a read-only editor writes nothing to a chart or sketch register', () => {
     const seed = new Y.Doc(); importBody(seed, `${CHART}\n\n${SKETCH}`);
     const a = client(seed);
