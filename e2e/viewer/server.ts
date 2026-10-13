@@ -3,7 +3,7 @@
 // video URLs need. Every /svc/ request is recorded with its Range header and status. The bundle's HTML frame document
 // is served with the policy a host gives it (FRAME_POLICY), and a path in `slow` streams at about 5 KB/s and answers
 // an open-ended range with at most 8 KB (a server may send less than asked), so a player reads the clip in ranges past
-// its start and a seek has to ask for one; a browser otherwise waits on its one read of a small clip.
+// its start; a browser otherwise reads a small clip in one bytes=0- request.
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';

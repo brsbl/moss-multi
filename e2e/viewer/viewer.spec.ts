@@ -420,7 +420,7 @@ test('live HTML: with services.htmlFrameUrl each HTML block runs in a sandboxed 
   expect(seen.pageErrors).toEqual([]);
 });
 
-test('video plays through 206 Range responses: a seek ahead of the download asks the asset URL for a byte range', async ({ page }) => {
+test('video plays through 206 Range responses: once it starts, the player reads past the clip\'s start in byte ranges, and seeks', async ({ page }) => {
   const clipPath = '/svc/assets/drawer.webm';
   server.slow.add(clipPath);
   try {
@@ -428,29 +428,29 @@ test('video plays through 206 Range responses: a seek ahead of the download asks
     const body = page.locator('[data-moss-viewer] [data-moss-note-editor-root]');
     const video = body.locator('[data-video-node-kind="local"]');
     await video.scrollIntoViewIfNeeded();
+    // B233: reads from here on; an opening bytes=0- read cannot pass for a ranged one.
+    const before = server.media.length;
     await video.locator('[data-video-play-overlay]').locator('..').click();
     const player = body.locator('video:not([data-video-thumbnail-state])');
     await expect(player).toHaveAttribute('src', /^\/svc\/assets\/drawer\.webm/);
     await expect.poll(() => player.evaluate((element: HTMLVideoElement) => element.readyState), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
-    // B233: only reads after the seek count, so the player's opening bytes=0- read cannot pass for one.
-    const before = server.media.length;
     const target = await player.evaluate((element: HTMLVideoElement) => {
       const target = element.duration * 0.8;
       element.currentTime = target;
       return target;
     });
-    // The seek asks for the clip from past its start, and is answered 206 with exactly that range.
+    // The player reads the clip past its start (the server answers 8 KB at a time, and WebKit reads the cues at its
+    // end), and such a read is answered 206 with exactly that range. The browser fetches this small clip whole
+    // before it has its metadata, so the seek itself needs no further read.
     const reads = () => server.media.slice(before).filter((request) => request.path === clipPath);
-    const seekRead = (request: (typeof server.media)[number]) => {
+    const rangedRead = (request: (typeof server.media)[number]) => {
       const start = Number(/^bytes=(\d+)-/.exec(request.range ?? '')?.[1] ?? 0);
       return start > 0 && request.status === 206 && (request.contentRange ?? '').startsWith(`bytes ${start}-`);
     };
-    await expect.poll(() => reads().filter(seekRead).length, {
-      message: 'the seek reads a range starting past 0, answered 206 with that Content-Range',
+    await expect.poll(() => reads().filter(rangedRead).length, {
+      message: 'the player reads a range starting past 0, answered 206 with that Content-Range',
       timeout: 20_000,
-    }).toBeGreaterThan(0).catch((error: Error) => {
-      throw new Error(`${error.message}\nreads: ${JSON.stringify(server.media.map((request, i) => ({ i, ...request })).filter((request) => request.path === clipPath))}; seek after ${before}`);
-    });
+    }).toBeGreaterThan(0);
     await expect.poll(() => player.evaluate((element: HTMLVideoElement) => !element.seeking && element.readyState >= 2 && element.currentTime >= 0.75 * element.duration), {
       message: `the clip plays from ${target.toFixed(2)} s`,
       timeout: 20_000,
