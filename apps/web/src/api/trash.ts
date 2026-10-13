@@ -212,7 +212,7 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
         if (attempt >= RESTORE_ATTEMPTS) return unavailable('The note couldn’t be restored right now. Try again.');
       }
     }
-    await notify(env, docId);
+    // negative control: the restore publishes nothing
     // The row is live first, so the doc never admits a socket the row refuses; a settle that fails here leaves the
     // doc closed until its next admission settles it from the row.
     await settleQuietly(await getServerByName(env.DocDO, docId));
