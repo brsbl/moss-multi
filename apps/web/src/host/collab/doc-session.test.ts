@@ -149,6 +149,25 @@ it('a payload made and deleted offline is neither resent nor unacked until the t
   expect(writes('gone'), 'an undo or a later update names it: resent').toBe(1);
   expect(session.state.unacked).toBe(true);
 });
+it('an empty block named while online stays shared: its offline writes after a delete are resent and unacked', async () => {
+  const first = latest(); first.open(); session.provider.synced = true;
+  // An empty code block: its payload is held fresh and writes nothing, and its element goes out while online.
+  session.payloads.hold('shared', true);
+  nameInTree('shared');
+  first.ended(1006);
+  // Offline: a peer filled it meanwhile; this client edits it, then deletes the block.
+  session.payloads.get('shared')!.getText('payload').insert(0, 'only copy');
+  session.doc.get('root', Y.XmlText).delete(0, 1);
+  await vi.advanceTimersByTimeAsync(300);
+  const socket = latest();
+  socket.open();
+  const writes = socket.sent.filter((frame) => {
+    const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
+    return payload?.id === 'shared' && payload.step !== PAYLOAD_STEP1;
+  });
+  expect(writes.length, 'the server may serve it to peers: resent').toBe(1);
+  expect(session.state.unacked, 'an unsaved edit until acked').toBe(true);
+});
 it('three failed handshakes stop the ladder and ask REST before retrying', async () => {
   const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }));
   for (let i = 0; i < 3; i++) { latest().ended(1006); await vi.advanceTimersByTimeAsync(1000); }

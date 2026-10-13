@@ -173,4 +173,29 @@ describe('T3.B3 offline payloads on reconnect @p:col-1', () => {
       for (const peer of [ada, ben]) expect(peer.texts().sort(), 'the undone deletion\'s text returns and syncs').toEqual(['ben-live', 'block 69;']);
     } finally { ada.dispose(); ben.dispose(); }
   });
+  it('an empty block a peer filled stays shared: an offline edit and delete reach the server for a later reveal', async () => {
+    const opened = await seeded();
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    const ben = await LiveClient.open(opened, { id: 'ben', role: 'editor' });
+    try {
+      ada.insert('code-block', '');
+      await syncAll(ada, ben);
+      const [id] = ada.ids();
+      ben.type(0, 0, 'ben;');
+      await syncAll(ben, ada);
+      expect(ada.texts()).toEqual(['ben;']);
+      await ada.socket.drop();
+      ada.type(0, 4, ' ada offline;');
+      ada.remove(0);
+      await ada.settle();
+      await ada.reconnect();
+      expect(ada.socket.closed).toBeNull();
+      // Ben names it again before Ada reads anything more: the server reveals what it holds.
+      await ben.sync();
+      expect(ben.texts()).toEqual([]);
+      ben.forge(id!);
+      await ben.sync();
+      expect(ben.texts(), 'her offline edit reached the server').toEqual(['ben; ada offline;']);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
 });
