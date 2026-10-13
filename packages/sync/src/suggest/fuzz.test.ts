@@ -149,7 +149,10 @@ function unitsOf(doc: Y.Doc, writer: number | null): unknown[] {
   for (const [client, structs] of [...doc.store.clients].sort(([a], [b]) => a - b)) {
     if (client === writer) continue;
     for (const struct of structs) {
-      if (!(struct instanceof Y.Item) || struct.deleted) continue; // T5.B5 RED MUTANT: the oracle skips the delete set
+      if (!(struct instanceof Y.Item) || struct.deleted) {
+        for (let at = 0; at < struct.length; at += 1) units.push([client, struct.id.clock + at, 'deleted']);
+        continue;
+      }
       let top = struct.parent as Y.AbstractType<unknown> | null;
       while (top?._item) top = top._item.parent as Y.AbstractType<unknown>;
       const root = names.get(top) ?? '?';
@@ -170,7 +173,7 @@ function unitsOf(doc: Y.Doc, writer: number | null): unknown[] {
 function viewOf(doc: Y.Doc, writer: number, read: (id: string) => Uint8Array | null, ids: readonly string[]): string {
   const payloads = ids.map((id) => {
     const state = read(id);
-    if (id || !state) return [id, null]; // T5.B5 RED MUTANT: the oracle skips payloads
+    if (!state) return [id, null];
     const copy = new Y.Doc({ gc: false });
     try {
       Y.applyUpdate(copy, state);

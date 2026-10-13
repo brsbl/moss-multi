@@ -434,7 +434,7 @@ export class SuggestIngest {
     const leases: Lease[] = [];
     for (const [client, from] of meta.from) {
       const lease = this.leases.get(client);
-      if (!lease || !this.#holds(who, lease)) return refused('clock-gap'); // T5.B5 RED MUTANT: wrong refusal reason
+      if (!lease || !this.#holds(who, lease)) return refused('lease');
       if (lease.record !== null && this.#head(lease.record) !== target.base) return refused('lease');
       const next = ownValue(lease.clocks, doc) ?? 0;
       if (from > next) return refused('clock-gap');
@@ -453,9 +453,7 @@ export class SuggestIngest {
     }
     // Default-deny (suggestions.md §4.4): every struct sits in a channel of the table accept's G3 reads.
     const placed = this.#place(target.id, doc, decoded, held);
-    // T5.B5 RED MUTANT: admits a frame writing a root outside the body
-    const forgedRoot = decoded.structs.some((s) => s instanceof Y.Skip || (s instanceof Y.Item && typeof s.parent === 'string' && s.parent !== 'root' && s.parent !== 'payload' && s.parent !== 'payload-map'));
-    if (!placed && !forgedRoot) return refused('channel');
+    if (!placed) return refused('channel');
     // An early, O(frame) reject of node types Lexical would not bind; G7 is the full check at accept.
     for (const struct of doc === BODY_DOC ? decoded.structs : []) {
       if (!(struct instanceof Y.Item) || struct.parentSub !== '__type') continue;
@@ -469,7 +467,7 @@ export class SuggestIngest {
       const current = readMeta(this.doc, target.id)!;
       patchMeta(this.doc, target.id, { updatedAt: now, clients: [...new Set([...current.clients, ...meta.from.keys()])] });
     });
-    placed?.();
+    placed();
     if (target.create) this.options.onCreated?.(target.id, who.id, target.continues);
     this.#grow(target.id, update.byteLength);
     this.#bind(who, target, now);
