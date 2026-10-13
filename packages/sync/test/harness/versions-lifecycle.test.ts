@@ -324,11 +324,12 @@ describe('a wake sweeps orphans whatever the dirty marker says (B329) @p:mean-3'
     const due = () => opened.backing.query<{ r2_key: string; due: number }>('SELECT r2_key, due FROM version_orphans');
     expect({ orphans: due().map((row) => row.r2_key), dirty: dirty(early) }, 'the spill is recorded for a later sweep').toEqual({ orphans: [key], dirty: '1' });
 
-    await vi.advanceTimersByTimeAsync(HOUR);
-    const later = await start(wake(early));
+    // wake() clears the timers, which resets the fake clock, so the clock moves past the grace after it.
+    const evicted = wake(early);
+    vi.setSystemTime(Date.now() + 2 * HOUR);
+    const later = await start(evicted);
     await vi.advanceTimersByTimeAsync(5_000);
-    expect({ now: Date.now(), orphans: due(), deletes: bucket.deletes, dirty: dirty(later) }, 'past its grace, a later wake sweeps it')
-      .toMatchObject({ orphans: [], deletes: [[key]] });
+    expect({ orphans: due(), deletes: bucket.deletes }, 'past its grace, a later wake sweeps it').toEqual({ orphans: [], deletes: [[key]] });
     expect(bucket.stored.has(key), 'past its grace, a later wake deletes it').toBe(false);
     expect(orphansOf(later)).toEqual([]);
     expect(versionRows(later)).toEqual([]);
