@@ -28,6 +28,8 @@ export interface Attachment {
   epoch?: string;
   /** Not yet validated by the DocDO (A§8): it hears no broadcast and none of its frames apply until it is. */
   pending?: boolean;
+  /** The withheld payload ids this socket has written (digests), so a wake keeps counting them; absent: none. */
+  withheld?: string[];
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
