@@ -1,5 +1,6 @@
 // Infrastructure is never a product verdict (S-test §2.8): fixtures throw InfraBlocked, the reporter writes
 // test-results/blocked.json, and the summary says BLOCKED instead of FAILED.
+import type { APIRequestContext } from '@playwright/test';
 
 export class InfraBlocked extends Error {
   constructor(reason: string) {
@@ -29,4 +30,28 @@ export function classifyInfra(text: string): string | null {
 export function assertNotInfra(text: string, where: string): void {
   const signature = classifyInfra(text);
   if (signature) throw new InfraBlocked(`${where}: ${signature}`);
+}
+
+const RESET = /socket hang up|\bECONNRESET\b/;
+
+/**
+ * Playwright's API requests share one keep-alive agent per process, and the stack's dev proxy can close a pooled
+ * connection just as a request goes out on it ("socket hang up": runs 38389778699 and 38346480112, on a stack that
+ * answered every other request). A browser retries an idempotent request on a fresh connection then; GET and HEAD
+ * here do too, once. Anything else, and a second reset, still fails.
+ */
+export function retryResetIdempotent(request: APIRequestContext): APIRequestContext {
+  for (const method of ['get', 'head'] as const) {
+    const original = request[method].bind(request);
+    const retried: typeof original = async (url, options) => {
+      try {
+        return await original(url, options);
+      } catch (error) {
+        if (!RESET.test((error as Error).message)) throw error;
+        return original(url, options);
+      }
+    };
+    request[method] = retried;
+  }
+  return request;
 }

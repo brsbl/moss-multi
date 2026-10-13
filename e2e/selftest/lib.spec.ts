@@ -1,9 +1,12 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
 // the sever, the reach sweep and the UI verbs.
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { request } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
-import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { classifyInfra, InfraBlocked, isInfraBlocked, retryResetIdempotent } from '../lib/infra.ts';
 import { socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
@@ -30,6 +33,32 @@ test.describe('exact bytes (invariant 7)', () => {
     expect(typedProblems('two one', [typed('one'), typed('two')])).not.toEqual([]);
     expect(typedProblems('two one', [typed('one'), typed('two', 'ben')])).toEqual([]);
     expect(typedProblems('two one', [typed('one', 'ada', false), typed('two', 'ada', false)])).toEqual([]);
+  });
+});
+
+test.describe('API request resets', () => {
+  test('a GET whose pooled connection resets is retried once; a second reset and a POST still fail', async () => {
+    let calls = 0;
+    let resets = 1;
+    const server = createServer((req, res) => {
+      calls += 1;
+      if (resets-- > 0) req.socket.destroy();
+      else res.end('ok');
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+    const api = retryResetIdempotent(await request.newContext());
+    try {
+      expect(await (await api.get(url)).text()).toBe('ok');
+      expect(calls).toBe(2);
+      resets = 2;
+      await expect(api.get(url)).rejects.toThrow(/socket hang up|ECONNRESET/);
+      resets = 1;
+      await expect(api.post(url)).rejects.toThrow(/socket hang up|ECONNRESET/);
+    } finally {
+      await api.dispose();
+      server.close();
+    }
   });
 });
 
