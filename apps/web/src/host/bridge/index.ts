@@ -8,6 +8,7 @@ import {
   buildMossNoteLinkClipboardHtml,
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
+import { terminalOf } from '../collab/terminal.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
 import { onNativeMenuCommand } from '../media/image-menu.ts';
 import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
@@ -435,8 +436,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       else unwatch(id);
     }
   };
-  // Only live listed notes: moss records links for them, and a trashed or unshared one would 404.
-  const inListing = (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
+  // Only live listed notes: moss records links for them, and a trashed or unshared one would 404. A note whose session
+  // closed as deleted or revoked is gone though a listing read before D1 caught up still has it.
+  const inListing = (id: string) => {
+    const closed = terminalOf(id);
+    if (closed === 'deleted' || closed === 'revoked') return false;
+    return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
+  };
   const watchBacklinks = (id: string) => {
     if (!inListing(id)) return;
     const at = watched.indexOf(id);

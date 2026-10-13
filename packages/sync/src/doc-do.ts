@@ -652,6 +652,12 @@ export class DocDO extends YServer<SyncEnv> {
     for (const key of [...this.#answerBudgets.keys()]) {
       if (this.#budget(key, now).left >= this.#limits.answerBudget.docs) this.#answerBudgets.delete(key);
     }
+    // The last socket gone: only a hold is still due, so no access tick or socket close wakes a closed doc.
+    const store = this.#store;
+    if (store && ![...this.#all()].some((other) => other.id !== connection.id)) {
+      this.#tickAt = null;
+      this.#schedule(holdsOf(store), connection).catch((error) => console.error('DocDO could not reschedule its alarm', error));
+    }
   }
 
   /** Open admitted anonymous sockets drawing on the budget `key`. */
@@ -1115,16 +1121,19 @@ export class DocDO extends YServer<SyncEnv> {
     return { deleted };
   }
 
-  /** The alarm goes off when the oldest hold has waited HOLD_MS, or the oldest socket reaches DOC_SOCKET_MAX_MS. */
-  async #schedule(holds: Map<string, number>): Promise<void> {
+  /**
+   * The alarm goes off when the oldest hold has waited HOLD_MS, or the oldest socket reaches DOC_SOCKET_MAX_MS; with
+   * nothing due (`closing` aside) there is none.
+   */
+  async #schedule(holds: Map<string, number>, closing?: Connection): Promise<void> {
     const due = [...holds.values()];
     if (this.#tickAt !== null) due.push(this.#tickAt);
     for (const connection of this.#all()) {
-      const attachment = attachmentOf(connection);
+      const attachment = connection.id === closing?.id ? null : attachmentOf(connection);
       if (attachment) due.push(agesAt(attachment));
     }
-    if (due.length === 0) return;
-    await this.ctx.storage.setAlarm(Math.min(...due));
+    if (due.length === 0) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.min(...due));
   }
 
   /** Every open socket hears the doc is gone, then closes 4410. */
