@@ -230,6 +230,10 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await ben.goto(`/d/${docId}`);
   await expect(ben.page.getByRole('heading', { name: DENIAL }), 'a fresh load gets the denial page').toBeVisible({ timeout: BOOT_TIMEOUT });
   await expect(ben.page.locator(`[${EDITOR_PANE_ATTR}]`)).toHaveCount(0);
+  // Ben waits on an open workspace, so the restore must reach his sidebar live (A§11), with no navigation.
+  await ben.goto('/');
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expect(noteRow(ben, docId), 'not in Ben’s notes while trashed').toHaveCount(0);
 
   // Ada's Trash: the note, when it went there, and its content read-only under the 30-day promise.
   await recordRefusals(ada);
@@ -260,9 +264,7 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await ui.typeBody(ada, docId, ' and Ada after the restore');
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
 
-  await ben.goto('/');
-  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
-  await expect(noteRow(ben, docId), 'back in Ben’s notes').toBeVisible({ timeout: PEER_MS });
+  await expect(noteRow(ben, docId), 'back in Ben’s notes, live').toBeVisible({ timeout: PEER_MS });
   await ui.openNote(ben, docId);
   await expect.poll(() => ui.fieldText(ben, docId, 'body'), { timeout: PEER_MS }).toBe(`${BODY} and Ada after the restore`);
   await ui.typeBody(ben, docId, ' then Ben');

@@ -1,6 +1,6 @@
 // The tab's notices (T2.8): read on a push, cleared on sign-out without a request, and marked read with a keepalive
 // request that the page never waits for, so opening a notice can never wait on the network mid-sentence (L§4.6).
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { createNotifications, type Notice } from './notifications.ts';
 
 const notice = (id: string, read = false): Notice => ({
@@ -47,4 +47,45 @@ it('keeps only the newest read when pushes overlap, and forgets everything on si
   await store.refresh();
   expect(store.get()).toEqual([]);
   expect(calls.length, 'no request once signed out').toBe(before);
+});
+
+// A reader who loses access through a move hears only a meta event; the server lists notices by current access.
+it('reads the notices again on a metadata push, coalesced, so a notice for a note the reader lost clears', async () => {
+  vi.useFakeTimers();
+  try {
+    const { store, calls } = harness([[notice('a')], []]);
+    await store.refresh();
+    expect(store.unread()).toBe(1);
+    for (let i = 0; i < 5; i += 1) store.receive({ type: 'meta', docIds: ['doc-a'], folderIds: ['f1'] });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(store.get(), 'the stale notice is gone').toEqual([]);
+    expect(store.unread()).toBe(0);
+    expect(calls.filter((c) => c.url === '/api/notifications'), 'a burst of pushes reads once').toHaveLength(2);
+  } finally { vi.useRealTimers(); }
+});
+
+it('drops a read that was in flight when the session ended, and asks nothing afterwards', async () => {
+  vi.useFakeTimers();
+  try {
+    let answer!: (response: Response) => void;
+    const calls: string[] = [];
+    let signedIn = true;
+    const store = createNotifications({
+      signedIn: () => signedIn,
+      fetch: (input) => {
+        calls.push(String(input));
+        return new Promise<Response>((resolve) => { answer = resolve; });
+      },
+    });
+    store.receive({ type: 'meta', docIds: ['doc-a'], folderIds: [] });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(calls, 'the push asked').toEqual(['/api/notifications']);
+    store.receive({ type: 'meta', docIds: ['doc-b'], folderIds: [] });
+    signedIn = false;
+    store.clear();
+    answer(Response.json({ notifications: [notice('late')] }));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(store.get(), 'the late answer never shows').toEqual([]);
+    expect(calls, 'nothing asked after clear').toHaveLength(1);
+  } finally { vi.useRealTimers(); }
 });

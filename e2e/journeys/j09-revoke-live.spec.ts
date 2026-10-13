@@ -138,6 +138,30 @@ test('j09 removal: removing a member ends the note for them in place (revoked) @
   expect(ben.telemetry.sockets.filter((s) => s.docId === docId), 'no reconnect after revoked').toHaveLength(opened);
 });
 
+// WebKit logs a fetch a navigation cancels as "…due to access control checks", a page error: the note's access read
+// is aborted as the page leaves (host/leave.ts).
+test('j09 reload: reloading while the note’s access read is in flight logs no page error @p:ppl-2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const held: { continue: () => Promise<void> }[] = [];
+  const access = (url: URL) => url.pathname === `/api/docs/${docId}`;
+  await ada.page.route(access, (route) => {
+    if (route.request().method() === 'GET') held.push(route);
+    else void route.continue();
+  });
+  try {
+    await ada.page.goto(`/d/${docId}`, { waitUntil: 'commit' });
+    await expect.poll(() => held.length, { message: 'the access read is in flight', timeout: 30_000 }).toBeGreaterThan(0);
+    await ada.page.unroute(access);
+    await ada.page.reload();
+    await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+    await ui.waitOpen(ada, docId, 'live');
+  } finally {
+    for (const route of held.splice(0)) await route.continue().catch(() => undefined);
+  }
+  expect(ada.telemetry.pageErrors.map((error) => error.message), 'no page error from the cancelled read').toEqual([]);
+});
+
 test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only the ended notice (T3.S20) @p:ppl-2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
