@@ -356,7 +356,7 @@ export class DocDO extends YServer<SyncEnv> {
       broadcast: (id, update, origin) => this.#broadcastPayload(id, update, origin),
       persisted: (_id, _update, origin) => {
         this.#exported = null;
-        this.#working = null;
+        // MUTANT T5.B5: a payload write keeps the cached working export.
         this.#edited(store);
         if (isConnection(origin)) {
           this.#projections?.touch();
@@ -1113,7 +1113,7 @@ export class DocDO extends YServer<SyncEnv> {
       console.error('DocDO suggestion review could not confirm the doc is live', error);
       return { ok: false, status: 503, reason: 'unconfirmed' };
     }
-    const check = this.#accessCheck();
+    const check = null as AccessCheck | null; // MUTANT T5.B5: the stale supplied role
     return this.#serial(async (): Promise<T | ReviewRefusal> => {
       let reviewer = input.reviewer;
       if (check) {
@@ -1131,7 +1131,7 @@ export class DocDO extends YServer<SyncEnv> {
       }
       if (holdsOf(store).size > 0 || store.meta('deleted') === '1') return { ok: false, status: 404, reason: 'trashed' };
       if (!roleAtLeast(reviewer.role, floor)) return { ok: false, status: 403, reason: 'role' };
-      return run(reviewer);
+      const cached = this.#working; const out = run(reviewer); this.#working = cached; return out; // MUTANT T5.B5
     });
   }
 
@@ -1159,7 +1159,7 @@ export class DocDO extends YServer<SyncEnv> {
       }
       previews += 1;
       this.#idleChecked.set(id, meta.updatedAt);
-      reviewPreview(this.document, id, { now });
+      const cached = this.#working; reviewPreview(this.document, id, { now }); this.#working = cached; // MUTANT T5.B5
     }
     // Only open records keep an entry; a preview may have just closed one.
     let pruned = false;

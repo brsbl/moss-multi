@@ -9,16 +9,16 @@ import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
-  canonical, hydrate, previewHash, projectDoc, projectionDiff, recordDigest, yValue, type DeletePart, type RecordMeta, type RecordOp,
+  canonical, deleteUpdate, hydrate, previewHash, projectDoc, projectionDiff, recordDigest, type DeletePart, type RecordMeta, type RecordOp,
 } from '@moss-multi/core/suggest/apply';
 import { importMarkdown } from '../converter/index.ts';
-import { handleSuggest, SuggestIngest } from '../doc/suggest.ts';
+import { handleSuggest, SuggestIngest, type IngestResult } from '../doc/suggest.ts';
 import { attachPayloadDocs, PayloadDocs, payloadDocsFor } from '../payload-docs.ts';
 import { payloadSourceOf } from '../server-doc.ts';
-import { Composite, reviewDoc, SuggestFork } from './client.ts';
+import { Composite, destroyView, reviewDoc, SuggestFork } from './client.ts';
 import { bindEditor, ForkShim } from './fork-shim.ts';
-import { int, mutateOp, mutateRecord, pick, rng, targetsOf, type Targets } from './fuzz-support.ts';
-import { createRecord, newSuggestionsClient, opsOf, partsOf, readMeta, readRecord, recordIds, SuggestionsWriter, writeSuggestions } from './records.ts';
+import { decodeFrame, encodeFrame, int, mutateOp, mutateRecord, pick, rng, targetsOf, type Targets } from './fuzz-support.ts';
+import { createRecord, newSuggestionsClient, opsOf, partsOf, readMeta, readRecord, recordIds, suggestionsWriter, SuggestionsWriter, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
 import {
   all, CENSUS, changedRoots, type CensusOp, deterministicIds, directEdit, EDITOR, exported, LEASED, opOn, OTHER_SUGGESTER, payloadsInOrder, resetIds, seededBody,
@@ -69,34 +69,132 @@ interface Case {
   writer: number;
   record: { ops: RecordOp[]; clients: number[]; parts: DeletePart[] };
   story: string[];
-  /** C's root with the peer's record alone, read before the forged record exists. */
+  /** The note (body and payloads) before the forged record, for the ingest leg's own copy. */
+  base: Note;
+  /** Every payload id a view may read: the note's, the targets' and the record's. */
+  payloadIds: string[];
+  /** C's canonical view with the peer's record alone, read before the forged record exists. */
   peerOnly: string;
+}
+
+interface Note {
+  state: Uint8Array;
+  payloads: Map<string, Uint8Array>;
+}
+
+const noteOf = (live: Y.Doc): Note => ({
+  state: Y.encodeStateAsUpdate(live),
+  payloads: new Map([...payloadDocsFor(live).docs].map(([id, doc]) => [id, Y.encodeStateAsUpdate(doc)])),
+});
+
+function copyNote({ state, payloads }: Note): Y.Doc {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, state);
+  const host = payloadDocsFor(doc);
+  for (const [id, update] of payloads) Y.applyUpdate(host.hold(id), update);
+  return doc;
+}
+
+/** Seed `seed`'s forged record over `live`: a census operation's real frames under `lease`, then the seed's mutations. */
+function forgedRecord(seed: number, live: Y.Doc, lease: number) {
+  const random = rng(seed);
+  const census = pick(random, CENSUS);
+  const ops = honestOps(live, lease, census);
+  const targets: Targets = targetsOf(live, payloadDocsFor(live).docs, FOREIGN);
+  const clients = [lease];
+  const parts: DeletePart[] = [];
+  const story = [`census: ${census.name}`];
+  // One case in five stays honest, so accept's landing leg runs too.
+  const mutations = random() < 0.2 ? 0 : 1 + int(random, 3);
+  for (let n = mutations; n > 0; n -= 1) {
+    story.push(random() < 0.75 ? mutateOp(random, ops, lease, targets) : mutateRecord(random, ops, clients, parts, targets));
+  }
+  return { ops, clients, parts, story, honest: mutations === 0, targets };
 }
 
 /** A seeded body with a writer under S, a peer's honest record, and a forged record built from a fork's real frames. */
 function fuzzCase(seed: number): Case {
-  const random = rng(seed);
   const live = seededBody();
   const writer = newSuggestionsClient(live);
   new SuggestionsWriter(live, writer);
   forge(live, PEER_ID, OTHER_SUGGESTER, [PEER_LEASED], honestOps(live, PEER_LEASED, CENSUS.find((op) => op.name === 'a duplicated word')!), [], 1);
+  const base = noteOf(live);
+  const { ops, clients, parts, story, targets } = forgedRecord(seed, live, LEASED);
+  const payloadIds = [...new Set([...payloadDocsFor(live).docs.keys(), ...targets.payloadIds, ...ops.map((op) => op.doc).filter((doc) => doc !== 'body')])].sort();
   const peer = new Composite(live).build();
-  const peerOnly = rootValue(peer.doc);
-  peer.doc.destroy();
-  const census = pick(random, CENSUS);
-  const ops = honestOps(live, LEASED, census);
-  const payloads = payloadDocsFor(live).docs;
-  const targets: Targets = targetsOf(live, payloads, FOREIGN);
-  const clients = [LEASED];
-  const parts: DeletePart[] = [];
-  const story = [`census: ${census.name}`];
-  // One case in five stays honest, so accept's landing leg runs too.
-  for (let n = random() < 0.2 ? 0 : 1 + int(random, 3); n > 0; n -= 1) {
-    story.push(random() < 0.75 ? mutateOp(random, ops, LEASED, targets) : mutateRecord(random, ops, clients, parts, targets));
-  }
+  const peerOnly = cView(peer.doc, writer, payloadSourceOf(peer.doc).read, payloadIds);
+  destroyView(peer);
   forge(live, FUZZ_ID, SUGGESTER, clients, ops, parts, 2);
-  return { seed, live, writer, record: { ops, clients, parts }, story, peerOnly };
+  return { seed, live, writer, record: { ops, clients, parts }, story, base, payloadIds, peerOnly };
 }
+
+const contentOf = (item: Y.Item, at: number): unknown => {
+  const content = item.content;
+  if (content instanceof Y.ContentString) return ['s', content.str[at]];
+  if (content instanceof Y.ContentType) return ['t', content.type instanceof Y.XmlElement ? `element:${content.type.nodeName}` : content.type.constructor.name];
+  if (content instanceof Y.ContentFormat) return ['f', content.key, content.value];
+  if (content instanceof Y.ContentBinary) return ['b', Array.from(content.content)];
+  if (content instanceof Y.ContentDoc) return ['d', content.doc?.guid ?? null];
+  return ['v', content.getContent()[at] ?? null];
+};
+
+/**
+ * Every unit of `doc` outside `suggestions`, one per clock, however Yjs split or merged its structs: a live unit with
+ * its root, parent, key and content, a deleted one (the delete set) by id alone. The writer's are suggestion
+ * bookkeeping, left out.
+ */
+function unitsOf(doc: Y.Doc, writer: number | null): unknown[] {
+  const names = new Map<unknown, string>([...doc.share].map(([name, type]) => [type, name]));
+  const units: unknown[] = [];
+  for (const [client, structs] of [...doc.store.clients].sort(([a], [b]) => a - b)) {
+    if (client === writer) continue;
+    for (const struct of structs) {
+      if (!(struct instanceof Y.Item) || struct.deleted) {
+        for (let at = 0; at < struct.length; at += 1) units.push([client, struct.id.clock + at, 'deleted']);
+        continue;
+      }
+      let top = struct.parent as Y.AbstractType<unknown> | null;
+      while (top?._item) top = top._item.parent as Y.AbstractType<unknown>;
+      const root = names.get(top) ?? '?';
+      if (root === 'suggestions') continue;
+      const parent = (struct.parent as Y.AbstractType<unknown> | null)?._item?.id;
+      for (let at = 0; at < struct.length; at += 1) {
+        units.push([client, struct.id.clock + at, root, parent ? `${parent.client}:${parent.clock}` : null, struct.parentSub, contentOf(struct, at)]);
+      }
+    }
+  }
+  return units;
+}
+
+/**
+ * A view as a canonical string, all but suggestion bookkeeping: every root's units with the delete set, and each
+ * payload in `ids` as `read` returns it (an empty payload reads as absent).
+ */
+function viewOf(doc: Y.Doc, writer: number, read: (id: string) => Uint8Array | null, ids: readonly string[]): string {
+  const payloads = ids.map((id) => {
+    const state = read(id);
+    if (!state) return [id, null];
+    const copy = new Y.Doc({ gc: false });
+    try {
+      Y.applyUpdate(copy, state);
+      const units = unitsOf(copy, null);
+      return [id, units.length ? units : null];
+    } finally {
+      copy.destroy();
+    }
+  });
+  return canonical({ units: unitsOf(doc, writer), payloads });
+}
+
+/** The oracles: F with a record left out is the body; C with one left out is C without it. */
+// RED-FIRST: the old oracles, F by state vector and C by the root value alone.
+const fView = (doc: Y.Doc, _writer?: number, _read?: unknown, _ids?: readonly string[]) => canonical([...Y.decodeStateVector(Y.encodeStateVector(doc))].sort(([a], [b]) => a - b));
+const cView = (doc: Y.Doc, _writer?: number, _read?: unknown, _ids?: readonly string[]) => canonical(doc.get("root", Y.XmlText).toJSON());
+
+const readFrom = (host: (id: string) => Y.Doc | undefined) => (id: string): Uint8Array | null => {
+  const doc = host(id);
+  return doc ? Y.encodeStateAsUpdate(doc) : null;
+};
 
 /** Everything but the records: the note's state vector and delete set without S's, and every payload doc's bytes. */
 function snapshot(live: Y.Doc, writer: number): string {
@@ -233,14 +331,11 @@ function mount(live: Y.Doc, link: ReturnType<typeof wire>) {
   return { fork, act, dispose };
 }
 
-const rootValue = (doc: Y.Doc) => canonical(yValue(doc.get('root', Y.XmlText)));
-const svOf = (doc: Y.Doc) => canonical([...Y.decodeStateVector(Y.encodeStateVector(doc))].sort(([a], [b]) => a - b));
-
 /**
  * The client leg on the same forged record: the ingest loads it, C and F build, and Review binds C, with no throw
  * escaping; a record either build marks broken is left out of it, so C is the peer's record alone and F is the body.
  */
-function clientLeg({ live, peerOnly }: Case): string[] {
+function clientLeg({ live, writer, payloadIds, peerOnly }: Case): string[] {
   const problems: string[] = [];
   let built: ReturnType<Composite['build']>;
   try {
@@ -250,9 +345,11 @@ function clientLeg({ live, peerOnly }: Case): string[] {
   }
   try {
     if (!built.valid.includes(PEER_ID)) problems.push("the peer's honest record left C");
-    if (built.broken.includes(FUZZ_ID) && rootValue(built.doc) !== peerOnly) problems.push('C is broken-excluded, yet holds more than the peer record');
+    if (built.broken.includes(FUZZ_ID) && cView(built.doc, writer, payloadSourceOf(built.doc).read, payloadIds) !== peerOnly) {
+      problems.push('C is broken-excluded, yet differs from C with the peer record alone');
+    }
   } finally {
-    built.doc.destroy();
+    destroyView(built);
   }
   try {
     reviewDoc(live, new Composite(live), (doc) => {
@@ -290,29 +387,81 @@ function clientLeg({ live, peerOnly }: Case): string[] {
   }
   try {
     if (!mounted.fork.ready) problems.push('F never filled');
-    if (excluded && svOf(mounted.fork.doc) !== svOf(live)) problems.push('F holds structs of a record its build marked broken');
+    if (excluded && fViewOf(mounted.fork, live, writer, payloadIds) !== bodyView(live, writer, payloadIds)) problems.push('F holds content of a record its build marked broken');
   } finally {
     mounted.dispose();
   }
   return problems;
 }
 
-/** Ingest of each forged op as the author's `suggest-ops`: refused or stored, never a throw. */
-function ingestLeg({ live, record }: Case): string[] {
-  const doc = new Y.Doc();
-  Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
+/** F as the oracle reads it: its doc, and each payload it holds, else the body's. */
+const fViewOf = (fork: SuggestFork, live: Y.Doc, writer: number, ids: readonly string[], doc: Y.Doc = fork.doc) =>
+  fView(doc, writer, readFrom((id) => fork.payloads.get(id) ?? payloadDocsFor(live).get(id)), ids);
+const bodyView = (live: Y.Doc, writer: number, ids: readonly string[]) => fView(live, writer, readFrom((id) => payloadDocsFor(live).get(id)), ids);
+
+/** Everything ingest holds: the doc's state (its records included) and every payload's. */
+const heldBy = (doc: Y.Doc) => canonical({ doc: Array.from(Y.encodeStateAsUpdate(doc)), payloads: [...payloadDocsFor(doc).docs].map(([id, payload]) => [id, Array.from(Y.encodeStateAsUpdate(payload))]) });
+
+interface IngestRun {
+  results: IngestResult[];
+  /** Ops the leased record holds after the run. */
+  stored: number;
+  problems: string[];
+}
+
+/**
+ * Ingest of `build`'s ops, as the author's `suggest-ops` on a copy of the note, under the lease the ingest grants.
+ * Each op is stored (the record grows by one) or refused with nothing held changed; none throws.
+ */
+function ingestRun(base: Note, build: (doc: Y.Doc, lease: number) => RecordOp[]): IngestRun {
+  const doc = copyNote(base);
+  const problems: string[] = [];
+  const results: IngestResult[] = [];
   try {
     const ingest = new SuggestIngest(doc, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => 'ingested' });
     const who = { ...SUGGESTER, role: 'suggester', connection: 'ingest' };
     const leased = ingest.lease(who, [], 1);
-    if (!leased.ok) return [`lease refused: ${leased.reason}`];
-    for (const op of record.ops) ingest.ops(who, 'ingested', op);
-    return [];
+    if (!leased.ok) return { results, stored: 0, problems: [`lease refused: ${leased.reason}`] };
+    const [grant] = leased.leases;
+    const stored = () => readRecord(doc, grant.record)?.ops.length ?? 0;
+    for (const op of build(doc, LEASED /* RED-FIRST: the old fixed client */)) {
+      const before = heldBy(doc);
+      const count = stored();
+      const result = ingest.ops(who, grant.record, op);
+      results.push(result);
+      if (result.ok && stored() !== count + 1) problems.push('an admitted op was not appended to the record');
+      if (!result.ok && heldBy(doc) !== before) problems.push(`refused ${result.reason}, yet the doc or a payload changed`);
+    }
+    return { results, stored: stored(), problems };
   } catch (error) {
-    return [`ingest threw: ${(error as Error).message}`];
+    return { results, stored: 0, problems: [...problems, `ingest threw: ${(error as Error).message}`] };
   } finally {
+    payloadDocsFor(doc).destroy();
     doc.destroy();
   }
+}
+
+const reasons = (run: IngestRun) => run.results.flatMap((result) => (result.ok ? [] : [result.reason]));
+
+/**
+ * The fuzz's ingest leg: the seed's record rebuilt under the lease ingest grants. An honest case is admitted whole;
+ * a forged one is refused past the lease gate unless it forged a client.
+ */
+function ingestLeg({ seed, base }: Case): string[] {
+  const seen = { story: [] as string[], honest: false };
+  const run = ingestRun(base, (doc, lease) => {
+    const forged = forgedRecord(seed, doc, lease);
+    seen.story = forged.story;
+    seen.honest = forged.honest;
+    return forged.ops;
+  });
+  const { story, honest } = seen;
+  const problems = [...run.problems];
+  if (honest && (reasons(run).length || run.stored !== run.results.length)) problems.push(`an honest record was refused: ${reasons(run).join(', ')}`);
+  if (reasons(run).includes('lease') && !story.some((step) => step.startsWith('use a client the record does not lease'))) {
+    problems.push('refused at the lease gate, though built under the granted lease');
+  }
+  return problems.map((problem) => `ingest [${story.join('; ')}]: ${problem}`);
 }
 
 describe('T5.4 struct-level fuzz over records built from real peer frames @p:mean-2 @p:R17', () => {
@@ -353,18 +502,20 @@ describe("T5.4 the same fuzz on the client's F and C builds @p:mean-2 @p:R17", (
 });
 
 describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', () => {
-  function excludedEverywhere(live: Y.Doc, id: string): void {
+  function excludedEverywhere(live: Y.Doc, id: string, writer: number): void {
+    const ids = [...new Set([...payloadDocsFor(live).docs.keys(), ...readRecord(live, id)!.ops.map((op) => op.doc).filter((doc) => doc !== 'body')])].sort();
     const built = new Composite(live).build();
     try {
       expect(built.broken, 'C leaves the record out').toEqual([id]);
+      expect(cView(built.doc, writer, payloadSourceOf(built.doc).read, ids), 'C is the body').toBe(bodyView(live, writer, ids));
     } finally {
-      built.doc.destroy();
+      destroyView(built);
     }
     let n = 0;
     const mounted = mount(live, wire(live, () => `lease-${(n += 1)}`));
     try {
       expect(mounted.fork.ready, 'F fills without the record').toBe(true);
-      expect(svOf(mounted.fork.doc)).toBe(svOf(live));
+      expect(fViewOf(mounted.fork, live, writer, ids), 'F is the body').toBe(bodyView(live, writer, ids));
     } finally {
       mounted.dispose();
     }
@@ -379,7 +530,7 @@ describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', (
       hello.removeAttribute('__type');
     });
     forge(live, FUZZ_ID, SUGGESTER, [LEASED], [op], [], 2);
-    excludedEverywhere(live, FUZZ_ID);
+    excludedEverywhere(live, FUZZ_ID, writer);
     const before = snapshot(live, writer);
     const record = readRecord(live, FUZZ_ID)!;
     expect(previewRecord(live, FUZZ_ID)).toMatchObject({ ok: false, reason: 'broken' });
@@ -409,7 +560,108 @@ describe('T5.4 fuzz findings, each replayed as a fixed case @p:mean-2 @p:R17', (
     held.getMap('payload-map').set('#k', 5);
     held.destroy();
     writeSuggestions(live, () => opsOf(live, 'chart').push([{ doc: payload, update }]));
-    excludedEverywhere(live, 'chart');
+    excludedEverywhere(live, 'chart', suggestionsWriter(live)?.client ?? -1);
+  });
+});
+
+describe('T5.B5 the ingest leg builds under the lease ingest grants and reaches placement @p:mean-2 @p:R17', () => {
+  const baseNote = (): Note => {
+    const live = seededBody();
+    new SuggestionsWriter(live, newSuggestionsClient(live));
+    return noteOf(live);
+  };
+  const census = (name: string) => CENSUS.find((op) => op.name === name)!;
+
+  it.each(CENSUS.map((op) => op.name))('an unmutated census case is admitted and appended: %s', (name) => {
+    const run = ingestRun(baseNote(), (doc, lease) => honestOps(doc, lease, census(name)));
+    expect(run.problems).toEqual([]);
+    expect(reasons(run)).toEqual([]);
+    expect(run.results.length).toBeGreaterThan(0);
+    expect(run.stored, 'every op appended to the record').toBe(run.results.length);
+  });
+
+  it('a frame under the granted client that writes outside the body is refused by placement, nothing held changed', () => {
+    const run = ingestRun(baseNote(), (doc, lease) => {
+      const ops = honestOps(doc, lease, census('a duplicated word'));
+      const last = ops[ops.length - 1];
+      const frame = decodeFrame(last.update);
+      const next = Math.max(...frame.structs.filter((struct) => struct.id.client === lease).map((struct) => struct.id.clock + struct.length));
+      frame.structs.push(new Y.Item(Y.createID(lease, next), null, null, null, null, 'title' as never, null, new Y.ContentString('forged')));
+      last.update = encodeFrame(frame);
+      return ops;
+    });
+    expect(run.problems).toEqual([]);
+    expect(reasons(run)).toEqual(['channel']);
+    expect(run.stored).toBe(run.results.length - 1);
+  });
+
+  it('negative control: the same frames under a client ingest never granted are refused at the lease gate', () => {
+    const run = ingestRun(baseNote(), (doc) => honestOps(doc, LEASED, census('a duplicated word')));
+    expect(run.problems).toEqual([]);
+    expect(run.results.length).toBeGreaterThan(0);
+    expect(new Set(reasons(run))).toEqual(new Set(['lease']));
+    expect(run.stored).toBe(0);
+  });
+});
+
+describe('T5.B5 the F and C oracles read deletes, every root and every payload @p:mean-2 @p:R17', () => {
+  const rootValue = (doc: Y.Doc) => canonical(doc.get('root', Y.XmlText).toJSON());
+  const svOf = (doc: Y.Doc) => canonical([...Y.decodeStateVector(Y.encodeStateVector(doc))].sort(([a], [b]) => a - b));
+
+  /** A note whose one open record is broken: it deletes a block's __type, and (with `payload`) edits the code block. */
+  function brokenNote(payload: boolean) {
+    const live = seededBody();
+    const writer = newSuggestionsClient(live);
+    new SuggestionsWriter(live, writer);
+    const key = [...payloadDocsFor(live).docs].find(([, doc]) => doc.getText('payload').toString() === 'seed')![0];
+    const ops = [opOn(live, 'body', (doc) => {
+      const hello = (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).map((d) => d.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
+      hello.removeAttribute('__type');
+    })];
+    const leaks: Uint8Array[] = [];
+    if (payload) {
+      const copy = new Y.Doc({ gc: false });
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(payloadDocsFor(live).get(key)!));
+      copy.clientID = LEASED;
+      copy.on('update', (update: Uint8Array) => leaks.push(update));
+      copy.getText('payload').insert(0, 'LEAK ');
+      copy.destroy();
+      ops.push({ doc: key, update: leaks[0] });
+    }
+    forge(live, FUZZ_ID, SUGGESTER, [LEASED], ops, [], 2);
+    return { live, writer, key, leak: leaks[0] ?? null, ids: [...payloadDocsFor(live).docs.keys()].sort() };
+  }
+
+  it('an F that leaked only a body deletion of a record it left out is caught; its state vector is unchanged', () => {
+    const { live, writer, ids } = brokenNote(false);
+    let n = 0;
+    const mounted = mount(live, wire(live, () => `lease-${(n += 1)}`));
+    const leaked = new Y.Doc();
+    try {
+      expect(fViewOf(mounted.fork, live, writer, ids), 'the honest F is the body').toBe(bodyView(live, writer, ids));
+      Y.applyUpdate(leaked, Y.encodeStateAsUpdate(mounted.fork.doc));
+      Y.applyUpdate(leaked, deleteUpdate(spansOfText(live, 'world')));
+      expect(svOf(leaked), 'the state-vector check misses it').toBe(svOf(live));
+      expect(fViewOf(mounted.fork, live, writer, ids, leaked), 'the oracle catches it').not.toBe(bodyView(live, writer, ids));
+    } finally {
+      leaked.destroy();
+      mounted.dispose();
+    }
+  });
+
+  it('a C that leaked only a payload edit of a record it left out is caught; its root value is unchanged', () => {
+    const { live, writer, key, leak, ids } = brokenNote(true);
+    const built = new Composite(live).build();
+    try {
+      expect(built.broken).toEqual([FUZZ_ID]);
+      const read = payloadSourceOf(built.doc).read;
+      expect(cView(built.doc, writer, read, ids), 'the honest C is the body').toBe(bodyView(live, writer, ids));
+      const leaked = (id: string) => (id === key ? Y.mergeUpdates([read(id)!, leak!]) : read(id));
+      expect(rootValue(built.doc), 'the root-value check misses it').toBe(rootValue(live));
+      expect(cView(built.doc, writer, leaked, ids), 'the oracle catches it').not.toBe(bodyView(live, writer, ids));
+    } finally {
+      destroyView(built);
+    }
   });
 });
 
