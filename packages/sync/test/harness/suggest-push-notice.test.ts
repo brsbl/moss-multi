@@ -14,7 +14,7 @@ import { openDoc, start, type Opened } from './do-harness.ts';
 const AGENT = { id: 'agent-1', name: 'Scribe' };
 const BODY = 'Beans first.\n\nPeas next.';
 /** A new code block: a body op for the block, then a payload op for its code. */
-const PUSHED = `${BODY}\n\n\`\`\`js\n${'const row = 1;\n'.repeat(400)}\`\`\``;
+const PUSHED = `${BODY}\n\n\`\`\`javascript\n${'const row = 1;\n'.repeat(400)}\`\`\``;
 const caps = SUGGEST_CAPS as { recordOpsBytes: number };
 const recordCap = caps.recordOpsBytes;
 
