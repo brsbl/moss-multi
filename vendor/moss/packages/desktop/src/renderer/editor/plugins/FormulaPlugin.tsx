@@ -1245,8 +1245,8 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
               createBareNameResolver(target)
             );
       const nextExpression = reboundExpression.trim();
-      const nameCaret = storedCaret(draft.name, change?.nameCaret);
-      const expressionCaret = storedCaret(reboundExpression, change?.selectionStart);
+      const nameCaret = storedCaret(draft.name, change?.nameCaret, draft.name);
+      const expressionCaret = storedCaret(reboundExpression, change?.selectionStart, draft.expression);
       // moss-multi: an executable draft is compared with its base in stored form, reference tokens included, so picking
       // another same-named reference is a change. Its base is the stored formula the draft was last merged with.
       const fields = change?.fields && target.sourceMode !== 'symbolic'

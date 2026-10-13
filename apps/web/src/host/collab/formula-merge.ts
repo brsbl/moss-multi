@@ -227,11 +227,27 @@ export function mergeStoredFormula(
 }
 
 /**
- * Where a caret at humanized `caret` in the field is in the stored text it writes, `raw` (stored form, tokens
- * included) trimmed, so the write knows where its edit ended; a caret inside a reference is at its token's start.
+ * Where a caret at `caret` in the field's text `shown` is in the stored text it writes, `raw` (`shown` with names bound
+ * to their tokens) trimmed, so the write knows where its edit ended. A token the field shows as its name maps a caret
+ * inside that name to the token's start; a raw token pasted into the field keeps its own width.
  */
-export function storedCaret(raw: string, caret: number | undefined): number | undefined {
+export function storedCaret(raw: string, caret: number | undefined, shown: string): number | undefined {
   if (caret === undefined) return undefined;
+  let field = 0;
+  let stored = 0;
+  let mapped: number | undefined;
+  for (const match of raw.matchAll(TOKEN)) {
+    const gap = match.index - stored;
+    if (caret <= field + gap) { mapped = stored + caret - field; break; }
+    field += gap;
+    stored = match.index;
+    const verbatim = shown.startsWith(match[0], field);
+    const width = verbatim ? match[0].length : match[1].length;
+    if (caret < field + width) { mapped = verbatim ? stored + caret - field : stored; break; }
+    field += width;
+    stored += match[0].length;
+  }
+  mapped ??= stored + caret - field;
   const lead = raw.length - raw.trimStart().length;
-  return Math.min(Math.max(toStoredOffset(caret, referenceSpans(raw)) - lead, 0), raw.trim().length);
+  return Math.min(Math.max(mapped - lead, 0), raw.trim().length);
 }
