@@ -86,8 +86,13 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     groups.set(key, [...(groups.get(key) ?? []), socket]);
   }
   const problems: string[] = [];
-  for (const group of groups.values()) {
-    const { docId } = group[0];
+  for (const all of groups.values()) {
+    const { docId } = all[0];
+    // A socket the browser reported closed that the page never closed nor heard close is not one the page opened: a
+    // WebKit census once listed such a socket, closed 1 ms after it opened, beside the page's only one (run
+    // 38332852937). A page's own reconnect always follows a close it heard or asked for.
+    const group = all.filter((s) => s.closedAt === null || s.close !== null);
+    if (group.length === 0) continue;
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
     if (group.length > allowed) {
       const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}`);

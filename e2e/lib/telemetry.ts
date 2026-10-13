@@ -149,7 +149,10 @@ export class Telemetry {
     const entry = this.socketOpened(url);
     return {
       closed() {
-        if (entry && entry.closedAt === null) entry.closedAt = Date.now();
+        if (entry && entry.closedAt === null) {
+          entry.closedAt = Date.now();
+          entry.close ??= 'closed at the proxy';
+        }
       },
     };
   }
