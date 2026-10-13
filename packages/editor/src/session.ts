@@ -69,6 +69,11 @@ export interface SessionSurface {
   prepare?(content: EditorContent): Promise<void> | null;
   /** Replaces the editor's content; `keepView` keeps selection and scroll where the new text allows. */
   load(content: EditorContent, options: { keepView: boolean }): void | Promise<void>;
+  /**
+   * Resolves once every pasted medium still uploading (putAsset, copyAsset) has landed in the editor or failed, so a
+   * final write never keeps a paste's place without its media.
+   */
+  settleMedia?(): Promise<void>;
   /** Commits drafts desktop commits before saving (a focused title, decorator drafts); edits it causes are reported. */
   commit?(): Promise<void> | void;
   /** What moss's renderer would save now. */
@@ -979,6 +984,8 @@ export class EditorSession {
       this.abandoned = true;
       return this.teardown({ kind: 'notLoaded' });
     }
+    // A paste whose upload is pending lands first, into the editor as it stands (B189).
+    await this.surface.settleMedia?.();
     // As beginApply: commit drafts while still editable (moss's decorators write nothing into a read-only editor),
     // then go read-only and frozen in the same synchronous step.
     const committing = this.surface.commit?.();

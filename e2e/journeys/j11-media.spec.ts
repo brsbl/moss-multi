@@ -394,16 +394,19 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   await expectVideos(dee, docId, 1);
   await ui.waitAcked(dee, docId, UPLOAD_TIMEOUT);
 
-  // B188: with the image she dropped selected (no caret anywhere), she pastes a photo: it uploads once, through her
-  // link, and lands after the image.
+  // B188: she clicks beside the image she dropped, so no caret is in any text, and pastes a photo: it uploads once,
+  // through her link, and lands in the note.
   const deeUploads: string[] = [];
   dee.page.on('request', (request) => {
     if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/docs/${docId}/assets`) deeUploads.push(request.url());
   });
-  await ui.body(dee, docId).locator(`img[src*="/assets/${GIF.name}"]`).click();
+  // Beside the image, not on it: a click on the image opens moss's full-screen view.
+  const gifBlock = ui.body(dee, docId).locator('[data-block-decorator-key]').filter({ has: dee.page.locator(`img[src*="/assets/${GIF.name}"]`) });
+  const gifBox = await gifBlock.boundingBox();
+  if (!gifBox) throw new Error('dee: the dropped image has no box');
+  await gifBlock.click({ position: { x: gifBox.width - 4, y: gifBox.height / 2 } });
   expect(await paste(dee, docId, JPG, false), 'the editor takes the pasted photo').toBe(true);
   await expectImagesDecode(dee, docId, 3);
-  await dee.page.keyboard.press('Escape'); // the click opened moss's image preview
   expect(deeUploads, 'the paste uploads once').toHaveLength(1);
   expect(new URL(deeUploads[0]).searchParams.get('share'), 'through her link').toBe(editorToken);
   await ui.waitAcked(dee, docId, UPLOAD_TIMEOUT);

@@ -35,6 +35,8 @@ export interface MediaRequest {
   path: string;
   range: string | null;
   status: number;
+  /** The answer's Content-Range, when it has one. */
+  contentRange: string | null;
 }
 
 export interface ViewerServer {
@@ -80,8 +82,8 @@ export async function serveViewer(): Promise<ViewerServer> {
       return;
     }
     if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
-    const record = (status: number) => {
-      if (prefix === '/svc/') media.push({ path: pathname, range: request.headers.range ?? null, status });
+    const record = (status: number, contentRange: string | null = null) => {
+      if (prefix === '/svc/') media.push({ path: pathname, range: request.headers.range ?? null, status, contentRange });
     };
     if (!existsSync(file)) {
       record(404);
@@ -111,7 +113,7 @@ export async function serveViewer(): Promise<ViewerServer> {
         response.writeHead(416, { 'content-range': `bytes */${size}` }).end();
         return;
       }
-      record(206);
+      record(206, `bytes ${start}-${end}/${size}`);
       response.writeHead(206, { ...headers, 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) });
       send(start, end);
       return;
