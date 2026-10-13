@@ -336,6 +336,36 @@ test('j01 registers: picking the other same-named reference from the typeahead i
   await reloadHolds([ada, ben], id, async actor => (await total(actor))[0]?.[0] ?? '', expect.stringMatching(refersTo(b)));
 });
 
+// A typeahead pick puts the caret after the picked name at once. It used to wait for a frame, and a late frame (a loaded
+// runner) moved the caret back after Ada had typed on: `+2` landed as `2+`. The frames are held here until she has.
+test('j01 registers: typing right after a typeahead pick goes after the picked name, however late the next frame comes @p:col-1', async ({ actors, stack }) => {
+  const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const { ada, id } = await note(actors, stack.baseUrl, `Total {{2|2}} here.\n\nA {{4|4|id=${a};name=cost}} here.`);
+  await ui.body(ada, id).locator('[data-formula-node-key]').first().click();
+  await expect(formulaInput(ada)).toHaveValue('2', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('ControlOrMeta+a');
+  await ada.page.keyboard.type('cos');
+  const option = popover(ada).getByRole('option').filter({ hasText: '4' });
+  await expect(option).toBeVisible();
+  await ada.page.evaluate(() => {
+    const w = window as unknown as { heldFrames: FrameRequestCallback[]; frame: typeof requestAnimationFrame };
+    w.heldFrames = [];
+    w.frame = window.requestAnimationFrame;
+    window.requestAnimationFrame = (callback) => { w.heldFrames.push(callback); return 0; };
+  });
+  await option.click();
+  await expect(formulaInput(ada)).toHaveValue('cost');
+  await ada.page.keyboard.type('+');
+  await ada.page.evaluate(() => {
+    const w = window as unknown as { heldFrames: FrameRequestCallback[]; frame: typeof requestAnimationFrame };
+    window.requestAnimationFrame = w.frame;
+    for (const callback of w.heldFrames.splice(0)) callback(performance.now());
+  });
+  await ada.page.keyboard.type('2');
+  await expect(formulaInput(ada), 'the 2 follows the +').toHaveValue('cost+2');
+});
+
 // Each reference token merges whole: when Ada's unwritten draft retargets A to B and Ben retargets A to C, Ada's field
 // keeps both references (Ben's first), never one token spliced from the two.
 test('j01 registers: when both people retarget the same reference and one draft is unwritten, each token is kept whole @p:col-1', async ({ actors, stack }) => {
@@ -633,10 +663,7 @@ const PAYLOAD_KINDS: Record<string, PayloadKind> = {
   HTML: {
     markdown: 'Intro.\n\n```moss-html\n<p>seed</p>\n```', type: 'html-block', getter: 'getRawHtml', seed: '<p>seed</p>',
     // The preview is a live sandboxed frame (T3.2) that takes its own clicks, so the header's Edit opens the source.
-    open: async (actor, id) => {
-      await ui.body(actor, id).locator('[data-moss-html-preview-viewport]').hover();
-      await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
-    },
+    open: ui.openHtmlSource,
     input: (actor, id) => ui.body(actor, id).locator('textarea.moss-codeblock-textarea'),
   },
   formula: {

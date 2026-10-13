@@ -502,6 +502,10 @@ test('j02-title: @tierA Rename in a row menu focuses the bound title, and the na
   await actors.requireDistinct(2);
   const first = await ui.createNote(ada);
   const second = await ui.createNote(ada);
+  // The listing that adds the new note's row moves the rows below it. Right-clicked before it lands, the menu can open
+  // on the row that took the pointer's place, the open note's, whose Rename keeps that pane: the likely cause of the
+  // pane that stayed in run 38041880099.
+  await expect(row(ada, second)).toBeVisible();
 
   // From the other note: Rename opens the note and focuses its title once it binds.
   await row(ada, first).click({ button: 'right' });

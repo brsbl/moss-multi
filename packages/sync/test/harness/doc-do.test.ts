@@ -675,6 +675,39 @@ describe('RPC', () => {
     await live.hello();
     expect(live.closed, 'the trash never committed, so the doc reopens').toBeNull();
   });
+
+  // An alarm left behind by the last socket woke the doc after a restart, before anything opened it (j04-hibernation
+  // and j00-roundtrip "hibernation not induced", T3.B27).
+  it('drops its alarm when the last socket closes with no hold waiting, and keeps a hold\'s', async () => {
+    liveness();
+    const opened = await start(openDoc());
+    const ada = await connect(opened, { id: 'ada', role: 'editor' });
+    const ben = await connect(opened, { id: 'ben', role: 'editor' });
+    expect(opened.backing.alarm, 'an open socket schedules its close').not.toBeNull();
+    await ada.drop();
+    expect(opened.backing.alarm, 'one socket is still open').not.toBeNull();
+    await ben.drop();
+    await vi.waitFor(() => expect(opened.backing.alarm, 'no socket and no hold: nothing is due').toBeNull());
+
+    const held = await connect(opened, { id: 'ada', role: 'editor' });
+    await opened.dobj.trash('hold-1');
+    await held.drop();
+    await Promise.resolve();
+    expect(opened.backing.alarm, 'the hold still settles on its alarm').not.toBeNull();
+  });
+
+  it("keeps a replacement socket's alarm when a stale socket with the same connection id closes", async () => {
+    liveness();
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { id: 'ada', role: 'editor' }, undefined, 'reused-alarm');
+    const fresh = await connect(opened, { id: 'ada', role: 'editor' }, undefined, 'reused-alarm');
+    await fresh.hello();
+    expect(opened.backing.alarm).not.toBeNull();
+    await stale.drop();
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(fresh.closed).toBeNull();
+    expect(opened.backing.alarm, 'the replacement keeps its access tick and age alarm').not.toBeNull();
+  });
 });
 
 describe('answers', () => {

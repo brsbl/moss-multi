@@ -77,6 +77,9 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     await expect(ui.pane(pasted, pastedId)).toHaveAttribute('data-sync-unacked', '0');
     const authored = await renderedBody(pasted, pastedId);
     expect(authored, 'the paste changes the empty document (positive control)').not.toEqual(empty);
+    // The paste's click leaves the pointer where a chart can render under it, and a hovered chart shows its tooltip
+    // (WebKit, run 38337313073): the pointer leaves both bodies before they are compared.
+    for (const actor of [imported, pasted]) await actor.page.mouse.move(0, 0);
     await expect(async () => {
       expect(await renderedBody(imported, importedId)).toEqual(await renderedBody(pasted, pastedId));
     }).toPass({ timeout: 10_000 });
