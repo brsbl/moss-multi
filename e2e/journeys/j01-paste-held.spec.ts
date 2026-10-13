@@ -6,6 +6,7 @@
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import type { LexicalEditor, LexicalNode } from 'lexical';
+import type * as Y from 'yjs';
 import { grantDoc } from '../lib/grants.ts';
 import { expectRefusedPaste, exported, fence, normalized, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -47,10 +48,20 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
   await ui.waitAcked(ada, docId, 30_000);
   expect(await exported(ada, docId), 'only the paragraph is left').toBe(await normalized(ada, stack, 'Kept.'));
 
-  // 53,300 short paragraphs are 25.1 MB of note state, or 26.4 MB when Ada's client id is a varint byte longer (15 in
-  // 16 are): under the cap beside the note Ada holds, past it with the 1.9 MB the server keeps, either way.
+  // About 25.75 MB of note state: under the cap (less 3%) beside the note Ada holds, past it with the 1.9 MB the
+  // server keeps. A short paragraph's state names Ada's client id about 25 times, a varint of 1 to 5 bytes: 52,001
+  // paragraphs were 25,765,966 bytes with a 5-byte id, 24,466,033 with a 4-byte one. The count follows her id's length.
+  const idBytes = await ui.body(ada, docId).evaluate((element) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const undo = (editor as unknown as Record<symbol, { root?: { doc: Y.Doc }; doc?: Y.Doc }>)[Symbol.for('@lexical/yjs/UndoManager')];
+    let id = (undo.root?.doc ?? undo.doc)!.clientID;
+    let bytes = 1;
+    for (; id > 0x7f; id = Math.floor(id / 0x80)) bytes += 1;
+    return bytes;
+  });
+  const count = Math.round(25_750_000 / (495.5 - 25 * (5 - idBytes)));
   const lines: string[] = [];
-  for (let i = 0; i < 53_300; i += 1) lines.push(`p${i}`);
+  for (let i = 0; i < count; i += 1) lines.push(`p${i}`);
   lines.push('Last line of the paste.');
   await expectRefusedPaste(refused, stack, lines.join('\n\n'));
 });
