@@ -7,8 +7,8 @@
 // through the link and sees them too; a signed-in editor-link holder uploads; a grant or link on the note reaches only
 // the media placed in it, even after an editor writes another note's file name into it. A video's poster is its first
 // frame, and it seeks and plays through 206 responses. Alt text edited from the image's context menu reaches the peer
-// and the export. A paste over a selection replaces it at once, and while its upload is held both peers' typing
-// survives and the media lands between the same characters.
+// and the export. A paste over a selection keeps the selected text while its upload is held, both peers' typing
+// survives, and the media replaces exactly that text; a refused upload leaves the text and a peer's edit in place.
 //
 // Grants and links are declared setup through the members and links APIs; sharing is not this journey's promise.
 // Files reach the editor as browsers deliver them: a DataTransfer on drop and paste, and the file chooser for
@@ -18,6 +18,7 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, BODY_BINDING_ATTR, EDITOR_PANE_ATTR, NAMES, SIDEBAR_ROW_ATTR } from '../lib/contract.ts';
 import { grantDoc, linkDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
+import type { Locator } from '@playwright/test';
 import { expect, test, ui } from '../lib/test.ts';
 
 const BOOT_TIMEOUT = 30_000;
@@ -39,6 +40,7 @@ const MEDIA: Fixture[] = [
   { name: 'clip.mov', type: 'video/quicktime', kind: 'video' },
 ];
 const PNG = MEDIA[0];
+const JPG = MEDIA[1];
 const GIF = MEDIA[2];
 const WEBM = MEDIA[6];
 const IMAGES = MEDIA.filter((file) => file.kind === 'image').length;
@@ -78,11 +80,19 @@ async function expectImagesDecode(actor: Actor, docId: string, count: number): P
 
 /**
  * The video's poster is its own first frame, decoded and painted with real content: never the blank box moss shows
- * while a desktop-derived thumbnail is missing.
+ * while a desktop-derived thumbnail is missing. With `file`, each of the `count` videos of that file.
  */
-async function expectPoster(actor: Actor, docId: string): Promise<void> {
-  const poster = videos(actor, docId).locator('video[data-video-thumbnail-state="frame"]');
-  await expect(poster, `${actor.label}: the video shows a frame as its poster`).toHaveCount(1, { timeout: UPLOAD_TIMEOUT });
+async function expectPoster(actor: Actor, docId: string, file?: Fixture, count = 1): Promise<void> {
+  const posters = videos(actor, docId).locator(`video[data-video-thumbnail-state="frame"]${file ? `[src*="/assets/${file.name}"]` : ''}`);
+  const what = file?.name ?? 'the video';
+  await expect(posters, `${actor.label}: ${what} shows a frame as its poster`).toHaveCount(count, { timeout: UPLOAD_TIMEOUT });
+  for (const poster of await posters.all()) {
+    await poster.scrollIntoViewIfNeeded();
+    await expectFrame(actor, poster, what);
+  }
+}
+
+async function expectFrame(actor: Actor, poster: Locator, what: string): Promise<void> {
   await expect.poll(() => poster.evaluate((video: HTMLVideoElement) => {
     if (video.readyState < 2 || !video.videoWidth) return 0;
     const canvas = document.createElement('canvas');
@@ -95,8 +105,11 @@ async function expectPoster(actor: Actor, docId: string): Promise<void> {
     const colors = new Set<number>();
     for (let i = 0; i < pixels.length; i += 4) colors.add(((pixels[i] >> 5) << 6) | ((pixels[i + 1] >> 5) << 3) | (pixels[i + 2] >> 5));
     return colors.size;
-  }), { message: `${actor.label}: the poster paints the clip's first frame`, timeout: UPLOAD_TIMEOUT }).toBeGreaterThanOrEqual(4);
+  }), { message: `${actor.label}: ${what}'s poster paints the clip's first frame`, timeout: UPLOAD_TIMEOUT }).toBeGreaterThanOrEqual(4);
 }
+
+/** The H.264 clips (mp4, mov), whose frames WebKit decodes; Playwright's Chromium has no H.264 decoder. */
+const H264 = MEDIA.filter((file) => /\.(mp4|mov)$/.test(file.name));
 
 async function expectVideos(actor: Actor, docId: string, count: number): Promise<void> {
   await expect(videos(actor, docId), `${actor.label}: ${count} videos render`).toHaveCount(count, { timeout: UPLOAD_TIMEOUT });
@@ -173,7 +186,7 @@ async function noteHolding(actor: Actor, folderId: string, file: Fixture, data: 
 const shownBytes = (image: ReturnType<typeof images>) =>
   image.evaluate(async (img: HTMLImageElement) => (await (await fetch(img.currentSrc, { cache: 'no-store' })).arrayBuffer()).byteLength);
 
-test('j11-media: drop, paste and /media → From computer upload every moss type, which renders and survives a reload; a viewer cannot upload @p:note-8 @evidence', async ({ actors }) => {
+test('j11-media: drop, paste and /media → From computer upload every moss type, which renders and survives a reload; a viewer cannot upload @p:note-8 @evidence', async ({ actors, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const docId = await titledNote(ada, 'Every media type');
@@ -202,6 +215,8 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   await (await chooser).setFiles(MEDIA.map((file) => ({ name: file.name, mimeType: file.type, buffer: bytes(file.name) })));
   await expectImagesDecode(ada, docId, IMAGES * 3);
   await expectVideos(ada, docId, VIDEOS * 3);
+  // B224: every mp4 and mov shows its own first frame as its poster, in the engine that decodes them.
+  if (browserName === 'webkit') for (const file of H264) await expectPoster(ada, docId, file, 3);
   await ui.waitAcked(ada, docId, UPLOAD_TIMEOUT);
 
   // A reload renders the same media from the server.
@@ -211,6 +226,7 @@ test('j11-media: drop, paste and /media → From computer upload every moss type
   await ada.declareRemount(docId);
   await expectImagesDecode(ada, docId, IMAGES * 3);
   await expectVideos(ada, docId, VIDEOS * 3);
+  if (browserName === 'webkit') for (const file of H264) await expectPoster(ada, docId, file, 3);
   await actors.checkpoint('uploaded');
 
   // The export keeps moss's relative form; identical bytes under one name are one asset.
@@ -378,6 +394,23 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   await expectVideos(dee, docId, 1);
   await ui.waitAcked(dee, docId, UPLOAD_TIMEOUT);
 
+  // B188: she clicks beside the image she dropped, so no caret is in any text, and pastes a photo: it uploads once,
+  // through her link, and lands in the note.
+  const deeUploads: string[] = [];
+  dee.page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/docs/${docId}/assets`) deeUploads.push(request.url());
+  });
+  // Beside the image, not on it: a click on the image opens moss's full-screen view.
+  const gifBlock = ui.body(dee, docId).locator('[data-block-decorator-key]').filter({ has: dee.page.locator(`img[src*="/assets/${GIF.name}"]`) });
+  const gifBox = await gifBlock.boundingBox();
+  if (!gifBox) throw new Error('dee: the dropped image has no box');
+  await gifBlock.click({ position: { x: gifBox.width - 4, y: gifBox.height / 2 } });
+  expect(await paste(dee, docId, JPG, false), 'the editor takes the pasted photo').toBe(true);
+  await expectImagesDecode(dee, docId, 3);
+  expect(deeUploads, 'the paste uploads once').toHaveLength(1);
+  expect(new URL(deeUploads[0]).searchParams.get('share'), 'through her link').toBe(editorToken);
+  await ui.waitAcked(dee, docId, UPLOAD_TIMEOUT);
+
   // Ada moves the note into a folder whose own note holds a different pattern.png and a private.png: the note keeps
   // its references and shows its own files, live and after a reload, to a reader holding only the link.
   const made = await ada.context.request.post('/api/folders', {
@@ -401,8 +434,9 @@ test('j11-media: a copied or moved note keeps its media; link readers see only t
   await dee.page.reload();
   await ui.waitLive(dee, docId);
   await dee.declareRemount(docId);
-  await expectImagesDecode(dee, docId, 2);
+  await expectImagesDecode(dee, docId, 3);
   await expectVideos(dee, docId, 1);
+  await expect(images(dee, docId).and(dee.page.locator(`img[src*="/assets/${JPG.name}"]`)), 'the pasted photo survives the reload').toHaveCount(1);
   expect(await shownBytes(ownImage), "the moved note shows its own image, not the folder's").toBe(bytes(PNG.name).byteLength);
   const benRead = await ben.context.request.get(`/api/docs/${docId}/assets/${PNG.name}`);
   expect((await benRead.body()).byteLength, "Ben's grant reads the note's own image").toBe(bytes(PNG.name).byteLength);
@@ -464,7 +498,7 @@ test("j11-media: alt text edited from the image's context menu reaches the peer 
   await expect(ada.page.getByRole('menuitem', { name: 'Edit Alt Text…' })).toHaveCount(0);
 });
 
-test('j11-media: a paste over a selection replaces it at once, and the held upload lands between the same characters while both peers type @p:note-8', async ({ actors }) => {
+test('j11-media: a paste over a selection is replaced when its held upload lands, between the same characters while both peers type; a refused one changes nothing @p:note-8', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const docId = await titledNote(ada, 'Held paste');
@@ -492,7 +526,7 @@ test('j11-media: a paste over a selection replaces it at once, and the held uplo
   await expect.poll(() => ada.page.evaluate(() => document.getSelection()?.toString()), { message: 'Ada selects "pl"' }).toBe('pl');
   await ada.page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   expect(await paste(ada, docId, PNG, false), 'the editor takes the pasted image').toBe(true);
-  // The paste replaces "pl" by design, so invariant 7 no longer expects the typed "Uploads" whole.
+  // The image replaces "pl" by design once it lands, so invariant 7 no longer expects the typed "Uploads" whole.
   const typedLine = actors.typed.findIndex((entry) => entry.docId === docId && entry.text === 'Uploads');
   if (typedLine >= 0) actors.typed.splice(typedLine, 1);
 
@@ -506,6 +540,7 @@ test('j11-media: a paste over a selection replaces it at once, and the held uplo
   await ada.page.keyboard.type('!');
   await expect(line(ben), "Ada's text reaches Ben").toHaveText(/!$/, { timeout: PEER_TIMEOUT });
   await expect(images(ada, docId), 'nothing lands while the upload is held').toHaveCount(0);
+  await expect(line(ada), 'the selected text stays until the image lands (B170)').toHaveText('123Uploads!');
 
   release();
   await expectImagesDecode(ada, docId, 1);
@@ -520,4 +555,39 @@ test('j11-media: a paste over a selection replaces it at once, and the held uplo
     await expect(ui.body(actor, docId), `${actor.label}: both lines keep every character`).toContainText('123U');
     await expect(ui.body(actor, docId)).toContainText('oads!');
   }
+
+  // B170: Ada pastes over "ad" again; Ben types while the upload is held, and the server refuses it (413). The
+  // selected text and Ben's edit both stay, and no media appears.
+  let refuse = () => {};
+  const refusing = new Promise<void>((resolve) => { refuse = resolve; });
+  ada.expectHttp(413, `/api/docs/${docId}/assets`);
+  await ada.page.route((url) => url.pathname === `/api/docs/${docId}/assets`, async (route) => {
+    await refusing;
+    await route.fulfill({ status: 413, contentType: 'application/json', body: JSON.stringify({ error: 'too-large' }) });
+  });
+  const tail = (actor: Actor) => ui.body(actor, docId).locator('p').filter({ hasText: /^oads!(456)?$/ });
+  await tail(ada).click();
+  await ada.page.keyboard.press('Home');
+  await ada.page.keyboard.press('ArrowRight');
+  await ada.page.keyboard.press('Shift+ArrowRight');
+  await ada.page.keyboard.press('Shift+ArrowRight');
+  await expect.poll(() => ada.page.evaluate(() => document.getSelection()?.toString()), { message: 'Ada selects "ad"' }).toBe('ad');
+  await ada.page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  const refused = ada.page.waitForResponse((response) => new URL(response.url()).pathname === `/api/docs/${docId}/assets`);
+  expect(await paste(ada, docId, PNG, false), 'the editor takes the pasted image').toBe(true);
+  await tail(ben).click();
+  await ben.page.keyboard.press('End');
+  await ben.page.keyboard.type('456');
+  await expect(tail(ada), "Ben's text reaches Ada").toHaveText('oads!456', { timeout: PEER_TIMEOUT });
+  refuse();
+  expect((await refused).status()).toBe(413);
+  await ui.waitAcked(ada, docId, UPLOAD_TIMEOUT);
+  await ui.waitAcked(ben, docId, UPLOAD_TIMEOUT);
+  for (const actor of [ada, ben]) {
+    await expect(tail(actor), `${actor.label}: the refused paste removed nothing`).toHaveText('oads!456');
+    await expect(images(actor, docId), `${actor.label}: no media appears`).toHaveCount(1);
+  }
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), {
+    message: 'the export keeps the selected text and the peer edit', timeout: PEER_TIMEOUT,
+  }).toContain(`![${PNG.name}](assets/${PNG.name})\n\noads!456`);
 });
