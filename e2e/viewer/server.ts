@@ -107,7 +107,8 @@ export async function serveViewer(): Promise<ViewerServer> {
     const send = (start: number, end: number) =>
       slow.has(pathname) ? trickle(file, start, end, response) : createReadStream(file, { start, end }).pipe(response);
     const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? '');
-    if (prefix === '/svc/' && range) {
+    // NEGATIVE CONTROL (T3.B14, reverted next): a range past the clip's start is answered 200, whole.
+    if (prefix === '/svc/' && range && !(range[1] && Number(range[1]) > 0)) {
       const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
       const asked = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
       const end = slow.has(pathname) && !range[2] ? Math.min(asked, start + SLOW_RANGE - 1) : asked;
