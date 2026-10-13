@@ -10,35 +10,8 @@ import { expect, test, ui } from '../lib/test.ts';
 
 const PEER_TIMEOUT = 10_000;
 
-// DIAG (temporary, T3.B15): which ResizeObservers ran in the frame a ResizeObserver loop error came from.
-function roDiag() {
-  const Native = window.ResizeObserver;
-  const log: unknown[][] = [];
-  (window as unknown as { __ro: unknown[][] }).__ro = log;
-  let n = 0;
-  window.ResizeObserver = class extends Native {
-    constructor(cb: ResizeObserverCallback) {
-      const id = ++n;
-      const where = (new Error().stack || '').split('\n').slice(1, 6).map(s => s.trim().slice(0, 160)).join(' < ');
-      super((entries, obs) => {
-        log.push([Math.round(performance.now()), id, entries.map(e => `${e.target.tagName}.${String((e.target as HTMLElement).className).slice(0, 50)} ${e.contentRect.width}x${e.contentRect.height}`).join(','), where]);
-        if (log.length > 400) log.splice(0, 100);
-        return cb(entries, obs);
-      });
-    }
-  };
-  window.addEventListener('error', e => { if (/ResizeObserver/.test(String(e.message))) log.push([Math.round(performance.now()), 'LOOP', String(e.message)]); });
-}
-const roDump = async (actor: Actor) => {
-  const log = await actor.page.evaluate(() => (window as unknown as { __ro?: unknown[][] }).__ro ?? []);
-  const loop = log.findIndex(l => l[1] === 'LOOP');
-  if (loop >= 0) console.log(`DIAGRO ${actor.label}`, JSON.stringify(log.slice(Math.max(0, loop - 40), loop + 5)));
-  else console.log(`DIAGRO ${actor.label} no loop, ${log.length} callbacks`);
-};
-
 async function note(actors: Actors, baseUrl: string, markdown: string) {
   const ada = await actors.session(await actors.principal('ada'));
-  await ada.context.addInitScript(roDiag);
   const result = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Registers', markdown } });
   expect(result.status()).toBe(201);
   const { doc: { id } } = await result.json() as { doc: { id: string } };
@@ -728,13 +701,11 @@ test("j01 registers: a caret or range inside a reference's name keeps its place 
   await ada.page.keyboard.type('X');
   await expect(formulaInput(ada), 'typing lands where the caret is').toHaveValue('1+prXice+2+4');
   await expect.poll(() => selectionOf(formulaInput(ada))).toEqual([5, 5]);
-  await ada.page.waitForTimeout(300);
-  await roDump(ada);
 });
 
-// DIAG (temporary, T3.B15): Ben's edits grow and shrink Ada's open popover; count WebKit's ResizeObserver loop errors.
-test('DIAGRO popover growth @p:col-1', async ({ actors, stack }) => {
-  test.setTimeout(180_000);
+// T3.B15: a peer's edits resize Ada's open popover. Its inputs were sized in fractional pixels, and WebKit re-measured
+// the popover as it moved, a ResizeObserver loop error (page errors fail the invariants).
+test("j01 registers: Ben's edits grow and shrink Ada's open formula popover without a ResizeObserver loop @p:col-1", async ({ actors, stack }) => {
   const { ada, ben } = await boundReference(actors, stack.baseUrl);
   await formulaInput(ben).press('End');
   for (let i = 0; i < 25; i += 1) {
@@ -743,9 +714,8 @@ test('DIAGRO popover growth @p:col-1', async ({ actors, stack }) => {
     for (let k = 0; k < 5; k += 1) await ben.page.keyboard.press('Backspace');
     await expect(formulaInput(ada)).toHaveValue('price+2+3', { timeout: PEER_TIMEOUT });
   }
-  const loops = await ada.page.evaluate(() => ((window as unknown as { __ro?: unknown[][] }).__ro ?? []).filter(l => l[1] === 'LOOP').length);
-  console.log(`DIAGRO loops ${loops} in 50 width changes`);
-  await roDump(ada);
+  const width = await popover(ada).evaluate(element => element.getBoundingClientRect().width);
+  expect(Number.isInteger(width), `the popover is ${width} px wide`).toBe(true);
 });
 
 test("j01 registers: a caret inside a reference's name goes to where it stood when Ben replaces the reference @p:col-1", async ({ actors, stack }) => {

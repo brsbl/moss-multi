@@ -861,6 +861,8 @@ function FormulaEditPopover({
           {pinnedSide === 'top' ? suggestionListbox : null}
           <div data-formula-edit-popover="true" className="flex max-w-full items-center gap-1 px-2 py-1.5">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              {/* moss-multi seam: whole-pixel input widths (T3.B15): a peer's edit resizes the open popover, and WebKit
+                  re-measured a fractional width as the popover moved, a ResizeObserver loop error. */}
               <input
                 ref={nameInputRef}
                 aria-label="Formula name"
