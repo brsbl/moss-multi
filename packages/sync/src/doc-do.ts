@@ -13,7 +13,7 @@ import {
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
-  type RenameRefusal, type ServerEvent, type WriteRefusalReason,
+  type ClientEvent, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
@@ -30,7 +30,7 @@ import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payl
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { titleDiff } from './server-title.ts';
-import { splitUpdate } from './update-pieces.ts';
+import { splitAnswer } from './update-pieces.ts';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -253,6 +253,8 @@ const MIN_TARGET_SHARE = 1 / 32;
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
+/** A reservation no write has used for this long lapses (a client that reserved and went quiet). */
+const RESERVATION_IDLE_MS = 30_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -353,6 +355,11 @@ export class DocDO extends YServer<SyncEnv> {
   /** Each socket's step 1s waiting for its budget, the latest per target ('' the note, else a payload id), and their bytes. */
   readonly #waitingAnswers = new Map<Connection, { bytes: number; frames: Map<string, Uint8Array> }>();
   #answerTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Room each socket reserved for a multi-frame write (ClientEvent `reserve`), less what its writes have used since, and
+   * when it last reserved or wrote (B209). Every other writer is admitted beside it. In memory: a wake drops them.
+   */
+  readonly #reservations = new Map<Connection, { bytes: number; at: number }>();
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
 
@@ -672,7 +679,8 @@ export class DocDO extends YServer<SyncEnv> {
     if (frame.kind === 'sync') {
       const { changes, missing, deletes } = classifySync(this.document, frame.update);
       if (changes) {
-        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing)) return;
+        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update, 0, connection), missing)) return;
+        this.#used(connection, frame.update.byteLength);
       } else if (roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
@@ -694,7 +702,8 @@ export class DocDO extends YServer<SyncEnv> {
    */
   #answer(connection: Connection, vector: Uint8Array): void {
     const update = Y.encodeStateAsUpdate(this.document, vector);
-    const pieces = update.byteLength > ANSWER_PIECE_BYTES ? splitUpdate(update, ANSWER_PIECE_BYTES).map((piece) => piece.update) : [update];
+    // In dependency order: the doc has many authors, and a piece in client order could need a later one (B212).
+    const pieces = splitAnswer(update, ANSWER_PIECE_BYTES);
     for (const [index, piece] of pieces.entries()) send(connection, encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece));
   }
 
@@ -709,6 +718,7 @@ export class DocDO extends YServer<SyncEnv> {
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
     this.#waitingAnswers.delete(connection);
+    this.#reservations.delete(connection);
     // A full budget is the same as none; a spent one stays until it refills, so reconnecting does not refill it.
     const now = Date.now();
     for (const key of [...this.#answerBudgets.keys()]) {
@@ -1372,15 +1382,60 @@ export class DocDO extends YServer<SyncEnv> {
    * The note plus every stored payload against the cap (A§5.1 Limits); `extra` is bytes a server write adds to
    * payloads. Simulated only near the cap, since the copy costs a full encode.
    */
-  #overCap(store: DocStore, update: Uint8Array, extra = 0): boolean {
+  #overCap(store: DocStore, update: Uint8Array, extra = 0, writer: Connection | null = null): boolean {
     const cap = this.#limits.stateCapBytes;
-    const payloads = (this.#payloads?.totalBytes ?? 0) + extra;
+    const payloads = (this.#payloads?.totalBytes ?? 0) + extra + this.#reserved(writer);
     return store.stateBytes + payloads + update.byteLength > cap && stateBytesAfter(this.document, update) + payloads > cap;
   }
 
-  #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array): boolean {
+  /** The room other sockets hold reserved (all of it for a server write, `writer` null); stale reservations lapse. */
+  #reserved(writer: Connection | null): number {
+    const now = Date.now();
+    let bytes = 0;
+    for (const [connection, reservation] of [...this.#reservations]) {
+      if (now - reservation.at > RESERVATION_IDLE_MS || !isOpen(connection)) this.#reservations.delete(connection);
+      else if (connection !== writer) bytes += reservation.bytes;
+    }
+    return bytes;
+  }
+
+  /** A write of `bytes` from `connection` landed: it uses that much of the room it reserved. */
+  #used(connection: Connection, bytes: number): void {
+    const reservation = this.#reservations.get(connection);
+    if (!reservation) return;
+    if (reservation.bytes <= bytes) this.#reservations.delete(connection);
+    else this.#reservations.set(connection, { bytes: reservation.bytes - bytes, at: Date.now() });
+  }
+
+  /**
+   * A client's custom message (ClientEvent). `reserve`: room for a write that follows in several frames (a large
+   * paste), refused whole with doc-cap, before any of its frames, when it would not fit beside what the doc holds and
+   * what other sockets have reserved; otherwise held for this socket alone until its writes have used it.
+   */
+  override onCustomMessage(connection: Connection, message: string): void {
+    let event: ClientEvent;
+    try {
+      event = JSON.parse(message) as ClientEvent;
+    } catch {
+      return;
+    }
+    const attachment = attachmentOf(connection);
+    const store = this.#store;
+    if (event?.t !== 'reserve' || !Number.isSafeInteger(event.b) || event.b < 0 || !attachment || !store) return;
+    this.#reservations.delete(connection);
+    const overCap = () => {
+      const cap = this.#limits.stateCapBytes;
+      const rest = (this.#payloads?.totalBytes ?? 0) + this.#reserved(connection) + event.b;
+      // stateBytes runs ahead of the state between compactions; the encoded state decides.
+      return store.stateBytes + rest > cap && Y.encodeStateAsUpdate(this.document).byteLength + rest > cap;
+    };
+    if (this.#refused(connection, attachment, overCap)) return;
+    if (event.b > 0) this.#reservations.set(connection, { bytes: event.b, at: Date.now() });
+  }
+
+  #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array, connection: Connection): boolean {
     const cap = this.#limits.stateCapBytes;
-    const base = store.stateBytes + payloads.totalBytes;
+    const base = store.stateBytes + payloads.totalBytes + this.#reserved(connection);
     return base + update.byteLength > cap && base - payloads.bytesOf(id) + stateBytesAfter(doc, update) > cap;
   }
 
@@ -1431,9 +1486,10 @@ export class DocDO extends YServer<SyncEnv> {
           if (!this.#mayWriteWithheld(connection, payloads, id)) return true;
           if (payloads.withheldBy(attachment.principalId) + data.byteLength > this.#limits.withheldBytesPerIdentity) return true;
         }
-        return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data);
+        return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data, connection);
       };
       if (this.#refused(connection, attachment, overCap, missing)) return;
+      this.#used(connection, data.byteLength);
       payloads.addReaders(id, [attachment.principalId]);
       if (!payloads.applyFrame(id, data, connection)) {
         this.#refuse(connection, 'unresolved', CLOSE.writeRefused);

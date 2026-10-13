@@ -267,11 +267,20 @@ const byDoc = new WeakMap<Y.Doc, DocSession>();
 /** A heartbeat tick this late means the main thread was busy (T3.S6). */
 const BUSY_TICK_MS = 2 * HEARTBEAT_CHECK_MS;
 
+/** A late tick keeps a silent socket for at most this long after the last frame heard (B208). */
+const BUSY_GRACE_MS = 45_000;
+/** A step 1 still unanswered this long is sent again, however many frames still arrive (B213). */
+const RESYNC_HOLD_MS = 30_000;
+/** An outbox stalled at its budget with writes still queued this long reconnects and replays the ledger (B209). */
+const STUCK_MS = 20_000;
+
 /**
- * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too, as it last said (T3.S6): a
- * tab holds only the payloads its tree names. 0 for a doc no session holds, or before the DocDO has said.
+ * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too (T3.S6): a tab holds only the
+ * payloads its tree names. Its last word, plus the payload writes of this tab no ack has covered since, which that
+ * word may not include yet; an ack's count includes the writes it covers, so they are never counted twice (B207). 0
+ * for a doc no session holds.
  */
-export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.payloadBytes ?? 0;
+export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.countedPayloadBytes ?? 0;
 
 /** What a paste may bring the note to: the cap less 3% for what its estimate leaves out (T3.S6). */
 export const PASTE_LIMIT_BYTES = Math.floor(STATE_CAP_BYTES * 0.97);
@@ -286,6 +295,10 @@ export class DocSession {
   readonly doc = new Y.Doc();
   /** The DocDO's last word on the payload bytes it counts against the cap (countedPayloadBytes). */
   payloadBytes = 0;
+
+  get countedPayloadBytes(): number {
+    return this.payloadBytes + this.#ledger.pendingPayloadBytes();
+  }
   /** The payload docs this tab holds beside the note (A§10.10), destroyed with it. */
   readonly payloads = attachPayloadDocs(this.doc, new PayloadDocs());
   readonly #payloadSync: PayloadSync;
@@ -637,19 +650,29 @@ export class DocSession {
     // A main thread busy enough to hold this 1 s tick back (a 2 MB paste, its undo, a peer's large paste applied
     // here) reads its frames late: that is not a silent socket. Held 6 s was the bar, and a collaborator's tab
     // applying a 40,000-block paste, its ticks late by 1-5 s, read the server as silent and reconnected.
-    if (this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS) this.#visibleSince = now;
+    // The grace is bounded by the last frame heard, so a socket that stays silent through it still reads as half-open.
+    const heard = this.provider.wsLastMessageReceived;
+    if (this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS && now - heard < BUSY_GRACE_MS) this.#visibleSince = now;
     this.#lastTick = now;
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
-      const heard = this.provider.wsLastMessageReceived;
       if (now - Math.max(heard, this.#visibleSince) > SILENCE_LIMIT_MS) {
         // Half-open: close 4408 and reconnect now; the old socket's close event may never come (A§10.5).
         this.#update({ type: 'silent', lastHeard: heard });
         ws.detach(CLOSE.heartbeat, 'heartbeat');
         return;
       }
+      // Writes queued behind a budget no ack frees (acks lost while frames still arrive): the reconnect's step 2
+      // replays the ledger, and its fresh outbox starts with an empty window.
+      if ((ws.outbox?.blockedFor(now) ?? 0) > STUCK_MS) {
+        this.#update({ type: 'silent', lastHeard: heard });
+        ws.detach(CLOSE.heartbeat, 'stalled');
+        return;
+      }
       // While sync frames still arrive, the answer to the last step 1 is queued behind them: another would only
       // queue the whole backlog again. A peer behind a large paste was sent it once per 4 s, megabytes each time.
-      if (now - this.#lastResync >= RESYNC_MS && !(this.#resyncOwed && now - this.#syncHeard < RESYNC_MS)) this.#resync(ws);
+      // Held back at most RESYNC_HOLD_MS: an answer that was lost never arrives.
+      const holding = this.#resyncOwed && now - this.#syncHeard < RESYNC_MS && now - this.#lastResync < RESYNC_HOLD_MS;
+      if (now - this.#lastResync >= RESYNC_MS && !holding) this.#resync(ws);
     }
     this.#update(null);
   }

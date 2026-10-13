@@ -61,6 +61,15 @@ export class AckLedger {
     return writes?.length ? Y.mergeUpdates(writes.map((write) => write.update)) : null;
   }
 
+  /** The bytes of the payload writes no ack has covered yet: growth the DocDO's last count may not include. */
+  pendingPayloadBytes(): number {
+    let bytes = 0;
+    for (const [id, pending] of this.#pending) {
+      if (id !== NOTE) for (const write of pending.writes) bytes += write.update.byteLength;
+    }
+    return bytes;
+  }
+
   /** The payloads with unacked writes. */
   pendingPayloads(): string[] {
     return [...this.#pending.keys()].filter((id) => id !== NOTE);

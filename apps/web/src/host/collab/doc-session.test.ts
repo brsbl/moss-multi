@@ -426,7 +426,8 @@ it('sends a fresh step 1 once the outstanding one is held back past its maximum,
     await vi.advanceTimersByTimeAsync(1_000);
   }
   expect(step1Count(socket), 'a fresh step 1 after the maximum hold-back').toBeGreaterThanOrEqual(2);
-  const resent = socket.sent.findLastIndex((frame) => frame instanceof Uint8Array && frame[0] === 0 && frame[1] === 0);
+  let resent = socket.sent.length - 1;
+  while (resent > 0 && !(socket.sent[resent] instanceof Uint8Array && (socket.sent[resent] as Uint8Array)[0] === 0 && (socket.sent[resent] as Uint8Array)[1] === 0)) resent -= 1;
   expect(sentTitle(socket, resent), 'and the unacked edit is replayed').toBe('unacked');
   expect(socket.closes).toEqual([]);
 });
