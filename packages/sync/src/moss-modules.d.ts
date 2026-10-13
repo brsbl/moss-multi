@@ -37,6 +37,11 @@ declare module '@moss-desktop/renderer/editor/utils/formula-runtime' {
   export function evaluateWorkspaceFormulas(inputs: FormulaInput[]): {
     byKey: Map<string, FormulaInput & { sourceMode: string }>;
   };
+  export function findFormulaPatternAtCursor(
+    textContent: string,
+    cursorOffset: number,
+    options?: { allowEmptyExpression?: boolean; allowInlineAnonymous?: boolean },
+  ): { startIndex: number; endIndex: number; equalsIndex: number; name: string | null; expression: string } | null;
 }
 
 declare module '@moss-desktop/common/utils' {
