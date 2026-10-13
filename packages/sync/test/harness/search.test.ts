@@ -2,10 +2,14 @@
 // snippets are text and backlinks survive an edit; results never name a doc outside the caller's closure.
 import { $createTextNode, $getRoot, $isElementNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
 import { DocDO, type SearchFeed } from '../../src/doc-do.ts';
+import { payloadText } from '../../src/payload-docs.ts';
+import { captureRestoreBase } from '../../src/restore-base.ts';
 import { SearchDO, type IndexEntry } from '../../src/search-do.ts';
-import { serverWrite } from '../../src/server-doc.ts';
+import { payloadSourceOf, serverWrite } from '../../src/server-doc.ts';
 import { Backing, openDoc, start, wake } from './do-harness.ts';
+import { LiveClient, syncAll } from './live-client.ts';
 import { FakeState } from './workerd.ts';
 
 async function searchIndex(): Promise<SearchDO> {
@@ -124,5 +128,86 @@ describe('the DocDO feed', () => {
     await vi.advanceTimersByTimeAsync(1_500);
     expect(fed, 'and the next wake does not').toHaveLength(count + 1);
     expect(again.dobj.document.getText('title').toString()).toBe('Flaky');
+  });
+
+  // T6.S6: a server write that changes only a payload (a push or a restore of a code block's code) leaves the note
+  // unchanged, so no onSave runs; the payload write itself schedules the feed.
+  const hits = async (index: SearchDO, query: string, docId: string) =>
+    (await index.search({ query, allowedDocIds: [docId] })).results.map((hit) => hit.docId);
+
+  function fedDoc(index: SearchDO): typeof DocDO {
+    return class extends DocDO {
+      static override searchFeed = (): SearchFeed => ({ index: (entry) => index.index(entry) });
+    };
+  }
+
+  /** The ids of every payload element in `node`, depth first. */
+  function payloadIds(node: Y.XmlText | Y.XmlElement): string[] {
+    const ids: string[] = [];
+    const own = node instanceof Y.XmlElement ? node.getAttribute('__regId') : undefined;
+    if (typeof own === 'string') ids.push(own);
+    const children = node instanceof Y.XmlText
+      ? (node.toDelta() as { insert: unknown }[]).map((op) => op.insert)
+      : node.toArray();
+    for (const child of children) {
+      if (child instanceof Y.XmlText || child instanceof Y.XmlElement) ids.push(...payloadIds(child));
+    }
+    return ids;
+  }
+
+  it('feeds a payload-only server write, as a push of a code block makes, with no note change', async () => {
+    const index = await searchIndex();
+    const opened = await start(openDoc(new Backing('push-doc'), fedDoc(index) as never));
+    await opened.dobj.create({ folderId: 'f', ownerId: 'o', title: 'Pushed', markdown: 'Intro.\n\n```js\nconst kiwi = 1;\n```\n' });
+    // Past the create's debounced save (10 s at most), so only the payload write can feed what follows.
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(await hits(index, 'kiwi', 'push-doc')).toEqual(['push-doc']);
+
+    const document = opened.dobj.document;
+    const [id] = payloadIds(document.get('root', Y.XmlText));
+    if (!id) throw new Error('no payload');
+    const source = payloadSourceOf(document);
+    const copy = new Y.Doc();
+    Y.applyUpdate(copy, source.read(id)!);
+    const vector = Y.encodeStateVector(copy);
+    const note = Y.encodeStateAsUpdate(document);
+    const text = payloadText(copy);
+    text.delete(0, text.length);
+    text.insert(0, 'const wombat = 2;');
+    source.write(id, Y.encodeStateAsUpdate(copy, vector));
+    expect(Y.encodeStateAsUpdate(document), 'the note itself is unchanged').toEqual(note);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await hits(index, 'wombat', 'push-doc'), 'the new code is found').toEqual(['push-doc']);
+    expect(await hits(index, 'kiwi', 'push-doc'), 'the replaced code is not').toEqual([]);
+  });
+
+  it('feeds a restore that changes only a code block', async () => {
+    const index = await searchIndex();
+    const opened = await start(openDoc(new Backing('restore-doc'), fedDoc(index) as never));
+    await opened.dobj.create({ folderId: 'f', ownerId: 'ada', title: 'Restored', markdown: 'Intro.\n' });
+    const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
+    try {
+      ada.insert('code-block', 'const kiwi = 1;');
+      await syncAll(ada);
+      await syncAll(ada);
+      const reviewer = { id: 'ada', role: 'editor' as const };
+      const saving = await opened.dobj.saveVersion({ name: 'Kiwi', reviewer });
+      if (!saving.ok) throw new Error(saving.reason);
+      ada.erase(0, 0, 'const kiwi = 1;'.length);
+      ada.type(0, 0, 'const wombat = 2;');
+      await syncAll(ada);
+      await syncAll(ada);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await hits(index, 'wombat', 'restore-doc'), 'the typed code is fed').toEqual(['restore-doc']);
+
+      const restoring = await opened.dobj.restoreVersion({ id: saving.version.id, reviewer, base: { ...captureRestoreBase(ada.doc, ada.payloads), age: 0 } });
+      expect(restoring).toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await hits(index, 'kiwi', 'restore-doc'), 'the restored code is found').toEqual(['restore-doc']);
+      expect(await hits(index, 'wombat', 'restore-doc'), 'the replaced code is not').toEqual([]);
+    } finally {
+      ada.dispose();
+    }
   });
 });
