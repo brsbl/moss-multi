@@ -613,11 +613,11 @@ describe('RPC', () => {
     await editor.flush();
     await opened.dobj.trash('hold-1');
     d1.deleted = true;
-    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    expect(await opened.dobj.settle('hold-1')).toMatchObject({ deleted: true, open: false });
     const woken = await start(wake(opened));
     expect((await connect(woken, { role: 'editor' })).closed?.code, 'a settled trash is remembered').toBe(CLOSE.deleted);
     d1.deleted = false;
-    expect(await woken.dobj.settle()).toEqual({ deleted: false });
+    expect(await woken.dobj.settle()).toMatchObject({ deleted: false, open: true });
     const back = await connect(await start(wake(woken)), { role: 'editor' });
     await back.hello();
     expect(back.closed, 'a restored doc admits its editors').toBeNull();
@@ -629,9 +629,9 @@ describe('RPC', () => {
     const opened = await start(openDoc());
     await opened.dobj.trash('hold-1');
     await opened.dobj.trash('hold-2');
-    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: false });
+    expect(await opened.dobj.settle('hold-1')).toMatchObject({ deleted: false, open: false });
     expect((await connect(opened, { role: 'editor' })).closed?.code, 'hold-2 still closes it').toBe(CLOSE.deleted);
-    expect(await opened.dobj.settle(), 'a settle without its hold leaves it').toEqual({ deleted: false });
+    expect(await opened.dobj.settle(), 'a settle without its hold leaves it').toMatchObject({ deleted: false, open: false });
     expect((await connect(opened, { role: 'editor' })).closed?.code).toBe(CLOSE.deleted);
     await opened.dobj.settle('hold-2');
     const live = await connect(opened, { role: 'editor' });
