@@ -45,7 +45,7 @@ class PullDocDO extends DocDO {
     };
   };
   /** Where a hold's recovery event is published: this test's D1 and PrincipalDOs. */
-  static fanout = () => ({ DB: d1.db, PrincipalDO: principalNs as never });
+  static override fanout = () => ({ DB: d1.db, PrincipalDO: principalNs as never });
 }
 
 /** The real PrincipalDO reading D1 for its sockets' credentials; its sign-out rechecks are kicks, so they are dropped. */
