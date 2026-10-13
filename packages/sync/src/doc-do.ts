@@ -1587,8 +1587,8 @@ export class DocDO extends YServer<SyncEnv> {
       for (const id of authorIds) this.#versionAuthors.add(id);
       store.setMeta('version-updates', String(this.#versionUpdates));
       store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
-      // Its spill, if written, is now an orphan to sweep.
-      await this.#versionsChanged();
+      // Its spill, if written, is now an orphan to sweep; in the background, so a save never waits on it.
+      void this.#versionsChanged();
       return null;
     }
     await this.#versionsChanged();
