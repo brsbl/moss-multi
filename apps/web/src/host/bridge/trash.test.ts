@@ -200,6 +200,43 @@ it('reads no backlinks for a note its session closed as deleted or revoked, thou
   await vi.waitFor(() => expect(reads('d1'), 'live again: read again').toBe(2));
 });
 
+// A note's own edits change no note's links to it, yet each edit's updated_at touch re-read its backlinks, from the
+// refresh and from moss re-opening the record: a read in flight as a peer trashed it 404ed (j05, WebKit; T3.B27).
+it("re-reads a watched note's backlinks when another note changes or it is renamed, not on its own edits", async () => {
+  const server = fakeServer();
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const response = await server.fetch(input, init);
+    return new URL(String(input), 'http://localhost').pathname.endsWith('/backlinks') ? Response.json({ backlinks: [] }) : response;
+  };
+  let receive!: Parameters<NonNullable<Parameters<typeof createBridge>[0]['subscribeWorkspace']>>[0];
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const stop = bridge.notes.onDiskChange(vi.fn());
+  onTestFinished(stop);
+  const reads = () => server.calls.filter((call) => call.path === '/api/docs/d1/backlinks').length;
+  const listings = () => server.calls.filter((call) => call.path === '/api/workspace').length;
+  const event = async (docIds: string[]) => {
+    const before = listings();
+    receive({ type: 'meta', docIds, folderIds: [] });
+    await vi.waitFor(() => expect(listings()).toBe(before + 1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  await bridge.notes.getAll();
+  await bridge.notes.getById('d1');
+  await vi.waitFor(() => expect(reads()).toBe(1));
+
+  server.state.docs = server.state.docs.map((doc) => doc.id === 'd1' ? { ...doc, updatedAt: Date.now() } : doc);
+  await event(['d1']);
+  await bridge.notes.getById('d1');
+  await bridge.system.setFocusedNoteId('d1');
+  expect(reads(), 'its own edit: no read, from the refresh, a re-open or a focus').toBe(1);
+
+  server.state.docs = server.state.docs.map((doc) => doc.id === 'd1' ? { ...doc, title: 'One, renamed' } : doc);
+  await event(['d1']);
+  await vi.waitFor(() => expect(reads(), 'a rename changes which links name it').toBe(2));
+  await event(['d2']);
+  await vi.waitFor(() => expect(reads(), "another note's links may now name it").toBe(3));
+});
+
 it('searches trashed notes only in the trash view', async () => {
   const server = fakeServer();
   const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });
