@@ -261,14 +261,15 @@ export interface PayloadSyncOptions {
  * on every connect and wake each held payload sends a step 1 and its pending writes as a step 2. The server answers a
  * step 1 only for a payload an element names, and fans out or reveals payloads itself.
  *
- * A payload this client minted whose writes never went out while its tree named it, and that the tree no longer
- * names (made and deleted offline), is not resent: the server would hold it as a withheld id this socket writes, and
- * enough of them close the socket (B036). Its writes are parked, and go out once an undo or a later update names it.
+ * A payload this client minted that the server never saw named or served, and that the tree no longer names (made and
+ * deleted offline), is not resent: the server would hold it as a withheld id this socket writes, and enough of them
+ * close the socket (B036). Its writes are parked, and go out once an undo or a later update names it. A payload named
+ * while connected, or one the server sent a frame of, is shared: a peer may hold it, so its writes always go out.
  */
 export class PayloadSync {
   readonly #stops: (() => void)[] = [];
   readonly #names: NameIndex | null;
-  /** Payloads minted here, until a write of theirs goes out while the tree names them. */
+  /** Payloads minted here, until the tree names them while connected or the server sends a frame of theirs. */
   readonly #unsent = new Set<string>();
   readonly #parked = new Set<string>();
   #pending: (id: string) => Uint8Array | null = () => null;
@@ -282,6 +283,7 @@ export class PayloadSync {
     if (note) {
       // After every update listener, so the note's own frame (the element naming it) goes first.
       const onNoteWrites = () => {
+        this.#share();
         if (this.#parked.size) this.#unpark();
       };
       note.on('afterAllTransactions', onNoteWrites);
@@ -291,7 +293,7 @@ export class PayloadSync {
     this.#stops.push(host.onHold((id, doc, fresh) => {
       this.#watch(id, doc);
       if (fresh) {
-        if (this.#names) this.#unsent.add(id);
+        if (this.#names && !(options.open() && this.#names.named(id))) this.#unsent.add(id);
         return;
       }
       host.await(id);
@@ -315,10 +317,17 @@ export class PayloadSync {
     if (this.#names?.named(id)) this.#unsent.delete(id);
   }
 
+  /** Minted payloads the tree names while the socket is open are shared: the server serves them to peers. */
+  #share(): void {
+    if (!this.#unsent.size || !this.options.open()) return;
+    for (const id of [...this.#unsent]) if (this.#names?.named(id)) this.#unsent.delete(id);
+  }
+
   /** On every connect, wake and resync: a step 1 per held payload, and what is still unacked as a step 2. */
   connected(pending: (id: string) => Uint8Array | null): void {
     this.#pending = pending;
     if (!this.options.open()) return;
+    this.#share();
     for (const [id, doc] of this.host.docs) {
       this.options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
       if (this.#unsent.has(id) && !this.#names?.named(id)) {
@@ -337,10 +346,10 @@ export class PayloadSync {
     if (update && this.options.open()) this.#send(id, PAYLOAD_STEP2, update);
   }
 
-  /** Parked payloads the tree names again go out. */
+  /** Parked payloads the tree names again, or no longer only this client's, go out. */
   #unpark(): void {
     for (const id of [...this.#parked]) {
-      if (!this.#names?.named(id)) continue;
+      if (this.#unsent.has(id) && !this.#names?.named(id)) continue;
       this.#parked.delete(id);
       this.options.parked?.(id, false);
       this.resend(id, this.#pending(id));
@@ -353,10 +362,13 @@ export class PayloadSync {
     if (!frame) return false;
     // The server never asks a client for a payload; its fan-out and reveals are updates.
     if (frame.step === PAYLOAD_STEP1) return true;
+    // The server holds it beyond this client's writes: no longer only ours to set aside.
+    this.#unsent.delete(frame.id);
     const doc = this.host.hold(frame.id);
     Y.applyUpdate(doc, frame.data, this.options.remote);
     // A step 2 answers this client's step 1; an update that integrates whole is a reveal's state or a first text.
     if (frame.step === PAYLOAD_STEP2 || (!doc.store.pendingStructs && !doc.store.pendingDs)) this.host.arrived(frame.id);
+    if (this.#parked.has(frame.id)) this.#unpark();
     return true;
   }
 
