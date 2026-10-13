@@ -8,6 +8,7 @@ import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
 import { readFrontmatter } from '@moss-multi/core/frontmatter';
 import { computeMergedTarget, mergeBudget } from '@moss-multi/core/merge';
+import { payloadDocsFor } from './payload-docs.ts';
 import { landPush } from './push.ts';
 import { bodyState, ReconcileRefused } from './reconcile.ts';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
@@ -219,7 +220,7 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(exported(benign.doc)).toBe([note, south.replace('the squash that follows', 'the pumpkins that follow')].join('\n\n'));
   });
 
-  it('refuses a drifted push whose merge runs out of budget midway: 409, nothing lands, forced or suggested (T7.S2)', () => {
+  it('refuses a drifted push whose merge runs out of budget midway: 409, nothing lands, forced or suggested (T7.S2, B340)', () => {
     // Twelve paragraphs each changed in many places: diffing them costs more than the small budget below.
     let seed = 11;
     const next = (): number => {
@@ -229,11 +230,21 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
       return (seed >>> 0) / 4294967296;
     };
     const letters = (n: number): string => Array.from({ length: n }, () => 'abcd'[Math.floor(next() * 4)]).join('');
-    const live = docOf(['Intro stays.', ...Array.from({ length: 12 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
+    // A code block's payload the push also changes: a refusal writes neither the body nor any payload doc.
+    const code = '```javascript\nconst a = 1;\n```';
+    const live = docOf(['Intro stays.', code, ...Array.from({ length: 12 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
     const base = exported(live);
-    const pushed = base.split('\n\n').map((text, p) => (p === 0 ? text : [...text].map((c, i) => (i > 12 && i % 5 === 0 ? 'abcd'[Math.floor(next() * 4)] : c)).join(''))).join('\n\n');
+    expect(base).toContain(code);
+    const pushed = base.split('\n\n').map((text, p) => (p < 2 ? text : [...text].map((c, i) => (i > 12 && i % 5 === 0 ? 'abcd'[Math.floor(next() * 4)] : c)).join(''))).join('\n\n')
+      .replace('const a = 1;', 'const a = 2;');
     typeAfter(live, 'Intro', ' (typed)');
     const kept = exported(live);
+    const states = () => ({
+      body: Y.encodeStateAsUpdate(live),
+      payloads: [...payloadDocsFor(live).docs].map(([id, doc]) => [id, Y.encodeStateAsUpdate(doc)] as const),
+    });
+    const held = states();
+    expect(held.payloads.length, 'the code block holds a payload doc').toBeGreaterThan(0);
     const refusal = (input: Partial<Parameters<typeof landPush>[2]>): ReconcileRefused => {
       const budget = mergeBudget(500_000);
       let error: unknown;
@@ -245,6 +256,7 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
       expect(budget.work, 'refused midway, once diffs had drawn on the budget').toBeLessThan(500_000);
       expect(error).toBeInstanceOf(ReconcileRefused);
       expect(exported(live), 'a refused push changes nothing').toBe(kept);
+      expect(states(), 'nor any byte of the body or a payload doc').toEqual(held);
       return error as ReconcileRefused;
     };
     const refused = refusal({});
@@ -257,6 +269,7 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(fork.ops, 'no suggestion op was collected').toEqual([]);
     expect(landPush(live, NOTE, { base, newText: pushed, force: false }, PUSH), 'the default budget lands it').toMatchObject({ ok: true, failedHunks: [] });
     expect(exported(live)).toBe(pushed.replace('Intro stays.', 'Intro (typed) stays.'));
+    expect(exported(live)).toContain('const a = 2;');
   });
 
   it('lands an undrifted push even with its budget spent: its edits need not be exact (T7.S2)', () => {
