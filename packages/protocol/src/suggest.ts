@@ -85,3 +85,6 @@ export const SUGGEST_LIMITS = {
   partSpans: 1024,
   partItems: 20_000,
 } as const;
+
+/** Leases one `suggest-lease` resume may name; a client resumes more in several. */
+export const RESUME_MAX = 64;

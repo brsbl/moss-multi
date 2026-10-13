@@ -402,8 +402,8 @@ describe('T5.B1 an anonymous link holder previews through the DocDO @p:mean-2 @p
   class LinkDocDO extends DocDO {
     static override access = () => ({
       stamp: async (_docId: string, sessions: string[], agents: string[]) => ({ key: 'e1', sessions: new Set(sessions), agents: new Set(agents) }),
-      resolve: async (_docId: string, socket: { kind: string; shareToken: string | null }) => {
-        if (socket.kind === 'user') return { role: 'owner' as const, presence: true };
+      resolve: async (_docId: string, socket: { kind: string; principalId: string; shareToken: string | null }) => {
+        if (socket.kind === 'user') return { role: socket.principalId === SUGGESTER.id ? 'suggester' as const : 'owner' as const, presence: true };
         return socket.kind === 'anonymous' && socket.shareToken === LINK ? { role: 'viewer' as const, presence: false } : null;
       },
     });
@@ -414,20 +414,18 @@ describe('T5.B1 an anonymous link holder previews through the DocDO @p:mean-2 @p
   it('previews with a link that reaches the note; another link is not found; accept, reject and withdraw stay 401', async () => {
     const opened = await start(openDoc(undefined, LinkDocDO as never));
     await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
-    forgeRecord(opened.dobj.document, 'r1', [opOn(opened.dobj.document, 'body', (copy) => {
-      const first = (copy.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).map((op) => op.insert).find((x) => x instanceof Y.XmlText) as Y.XmlText;
-      first.insert(0, 'Hi ');
-    })]);
-    const asOwner = await opened.dobj.previewSuggestion({ id: 'r1', reviewer: { id: 'owner-1', role: 'owner' }, actor: OWNER });
+    const sam = await on(opened, SAM);
+    const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const asOwner = await opened.dobj.previewSuggestion({ id, reviewer: { id: 'owner-1', role: 'owner' }, actor: OWNER });
     expect(asOwner).toMatchObject({ ok: true });
     const reader = { id: 'anonymous', role: 'viewer' as const };
-    expect(await opened.dobj.previewSuggestion({ id: 'r1', reviewer: reader, actor: ANONYMOUS }), 'the link holder sees what the owner sees').toEqual(asOwner);
-    expect(await opened.dobj.previewSuggestion({ id: 'r1', reviewer: reader, actor: { ...ANONYMOUS, shareToken: 'other-link' } })).toMatchObject({ ok: false, status: 404 });
-    expect(await opened.dobj.previewSuggestion({ id: 'r1', reviewer: reader, actor: { ...ANONYMOUS, shareToken: null } })).toMatchObject({ ok: false, status: 401 });
+    expect(await opened.dobj.previewSuggestion({ id, reviewer: reader, actor: ANONYMOUS }), 'the link holder sees what the owner sees').toEqual(asOwner);
+    expect(await opened.dobj.previewSuggestion({ id, reviewer: reader, actor: { ...ANONYMOUS, shareToken: 'other-link' } })).toMatchObject({ ok: false, status: 404 });
+    expect(await opened.dobj.previewSuggestion({ id, reviewer: reader, actor: { ...ANONYMOUS, shareToken: null } })).toMatchObject({ ok: false, status: 401 });
     const refused = { ok: false, status: 401 };
-    expect(await opened.dobj.acceptSuggestion({ id: 'r1', reviewer: reader, actor: ANONYMOUS, previewHash: 'h', digest: 'd' })).toMatchObject(refused);
-    expect(await opened.dobj.rejectSuggestion({ id: 'r1', reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
-    expect(await opened.dobj.withdrawSuggestion({ id: 'r1', reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
-    expect(readMeta(opened.dobj.document, 'r1')).toMatchObject({ status: 'open' });
+    expect(await opened.dobj.acceptSuggestion({ id, reviewer: reader, actor: ANONYMOUS, previewHash: 'h', digest: 'd' })).toMatchObject(refused);
+    expect(await opened.dobj.rejectSuggestion({ id, reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
+    expect(await opened.dobj.withdrawSuggestion({ id, reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
+    expect(readMeta(opened.dobj.document, id)).toMatchObject({ status: 'open' });
   });
 });
