@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 47% done** (109 of 230 planned tasks verified)
+**Overall: 48% done** (110 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 57 / 57 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 58 / 58 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -128,6 +128,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T3.B22 verified: the local and CI stacks no longer replay a lost POST (only GET and HEAD retry), keep auth and test-hook secrets out of process listings via a private env file, `qa close` keeps its session file when bb's close fails, `durations --write` refuses partial or one-engine runs, and the trace gate checks every milestone a row lists and ignores tags in comments.
 - 2026-10-12 — T3.B13 verified: cancelling an empty IME composition below a selected block no longer leaves a stray empty paragraph, typing ==marked== highlights the word without turning a later `=` into a formula, a default-height HTML block's live preview is as tall as its content, and each keystroke in a 40,000-line note syncs to Yjs in a fraction of the old time.
 - 2026-10-12 — T3.B7 verified: a note server now gives a newly admitted socket the presence its own check installed, closes a sender whose frame waits past the access deadline without applying any of its frames, and after a trash or restore hold ends with the note live it tells the signed-in people the hold shut out (including folder-link holders whose link still reaches the note) to reopen it, retrying until that lands.
+- 2026-10-13 — T3.B20 verified: the body-cap tests now prove each route control actually succeeds, folder-member edits and removals and an oversized streamed sign-up are refused 413 without creating an account, and Settings parity keeps the Account and Agents sections in layout so a spacing change there is caught.
 
 ## T1.1s identity audit
 
