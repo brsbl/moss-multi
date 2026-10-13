@@ -89,7 +89,10 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
   for (const group of groups.values()) {
     const { docId } = group[0];
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
-    if (group.length > allowed) problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed`);
+    if (group.length > allowed) {
+      const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}`);
+      problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${closes.join('; ')})`);
+    }
     const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);
     events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     let open = 0;

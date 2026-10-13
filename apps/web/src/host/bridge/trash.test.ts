@@ -4,6 +4,7 @@
 // restore through REST.
 import { formatRelativeTime } from '@moss-desktop/renderer/panels/notesPanelUtils';
 import { expect, it, vi } from 'vitest';
+import { clearTerminal, setTerminal } from '../collab/terminal.ts';
 import { createBridge } from './index.ts';
 
 interface Call { method: string; path: string }
@@ -160,6 +161,36 @@ it('reads backlinks for a live note, never for a trashed one the Trash view open
   await bridge.notes.getById('d1');
   await vi.waitFor(() => expect(server.calls).toContainEqual({ method: 'GET', path: '/api/docs/d1/backlinks' }));
   expect(server.calls, 'a trashed note has no backlinks route').not.toContainEqual({ method: 'GET', path: '/api/docs/old/backlinks' });
+});
+
+// On staging a trash closes the doc before D1 records it, so a listing read in between still has the note live; the
+// session's terminal reason already says it is gone, and its backlinks would 404 into the console (j05; T3.B27).
+it('reads no backlinks for a note its session closed as deleted or revoked, though the listing still has it', async () => {
+  const server = fakeServer();
+  let receive!: Parameters<NonNullable<Parameters<typeof createBridge>[0]['subscribeWorkspace']>>[0];
+  const bridge = createBridge({ pathname: () => '/', fetch: server.fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const reads = (id: string) => server.calls.filter((call) => call.path === `/api/docs/${id}/backlinks`).length;
+  const listings = () => server.calls.filter((call) => call.path === '/api/workspace').length;
+  await bridge.notes.getAll();
+  await bridge.notes.getById('d1');
+  await bridge.notes.getById('d2');
+  await vi.waitFor(() => expect(reads('d1') + reads('d2')).toBe(2));
+  setTerminal('d1', 'deleted');
+  setTerminal('d2', 'revoked');
+  try {
+    const before = listings();
+    receive({ type: 'meta', docIds: ['d1', 'd2'], folderIds: [] });
+    await vi.waitFor(() => expect(listings()).toBe(before + 1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await bridge.notes.getById('d1');
+    await bridge.system.setFocusedNoteId('d2');
+    expect([reads('d1'), reads('d2')], 'no read of a closed note, from a refresh, an open or a focus').toEqual([1, 1]);
+  } finally {
+    clearTerminal('d1');
+    clearTerminal('d2');
+  }
+  await bridge.notes.getById('d1');
+  await vi.waitFor(() => expect(reads('d1'), 'live again: read again').toBe(2));
 });
 
 it('searches trashed notes only in the trash view', async () => {
