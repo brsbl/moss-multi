@@ -3,6 +3,7 @@
 // `keepalive`, unawaited, so opening a notice never waits on the network (A§9; L§4.6 navigation mid-typing).
 // Signing out forgets them in the same tick.
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
+import { heldRead } from './leave';
 
 export interface Notice {
   id: string;
@@ -45,9 +46,14 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
       return;
     }
     try {
-      const response = await fetcher('/api/notifications', { credentials: 'same-origin', headers: { accept: 'application/json' }, cache: 'no-store' });
-      if (!response.ok) throw new Error(String(response.status));
-      const body = (await response.json()) as { notifications?: Notice[] };
+      // A metadata push can land as the page reloads; the read is held by the leave (METHOD: WebKit page errors).
+      const body = await heldRead(
+        (signal) => fetcher('/api/notifications', { credentials: 'same-origin', headers: { accept: 'application/json' }, cache: 'no-store', signal }),
+        async (response) => {
+          if (!response.ok) throw new Error(String(response.status));
+          return (await response.json()) as { notifications?: Notice[] };
+        },
+      );
       if (mine === generation && signedIn()) publish(body.notifications ?? []);
     } catch {
       // The bell keeps what it showed and asks again; a push in the meantime asks sooner.

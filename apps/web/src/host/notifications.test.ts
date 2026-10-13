@@ -1,6 +1,7 @@
 // The tab's notices (T2.8): read on a push, cleared on sign-out without a request, and marked read with a keepalive
 // request that the page never waits for, so opening a notice can never wait on the network mid-sentence (L§4.6).
 import { expect, it, vi } from 'vitest';
+import { setLeaving } from './leave.ts';
 import { createNotifications, type Notice } from './notifications.ts';
 
 const notice = (id: string, read = false): Notice => ({
@@ -88,4 +89,40 @@ it('drops a read that was in flight when the session ended, and asks nothing aft
     expect(store.get(), 'the late answer never shows').toEqual([]);
     expect(calls, 'nothing asked after clear').toHaveLength(1);
   } finally { vi.useRealTimers(); }
+});
+
+// A metadata push lands as the page reloads: the bell's read follows the page's leave, so WebKit logs no page error.
+it('holds the bell read while the page leaves and reads again once it stays', async () => {
+  let end = () => undefined as void;
+  let controller = new AbortController();
+  const stayed = new Promise<void>((resolve) => { end = resolve; });
+  setLeaving(() => ({ signal: controller.signal, stayed }));
+  try {
+    const signals: (AbortSignal | null | undefined)[] = [];
+    let answers = 0;
+    const store = createNotifications({
+      signedIn: () => true,
+      fetch: (_input, init) => {
+        signals.push(init?.signal);
+        if (answers++ === 0) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          });
+        }
+        return Promise.resolve(Response.json({ notifications: [notice('a')] }));
+      },
+    });
+    const reading = store.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signals[0]?.aborted, 'the read carries the leave').toBe(false);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signals[0]?.aborted, 'the leave aborts it').toBe(true);
+    expect(signals, 'nothing sent while the page leaves').toHaveLength(1);
+    controller = new AbortController();
+    end();
+    await reading;
+    expect(signals, 'sent again once the page stays').toHaveLength(2);
+    expect(store.unread()).toBe(1);
+  } finally { setLeaving(null); }
 });
