@@ -267,8 +267,11 @@ const byDoc = new WeakMap<Y.Doc, DocSession>();
 /** A heartbeat tick this late means the main thread was busy (T3.S6). */
 const BUSY_TICK_MS = 2 * HEARTBEAT_CHECK_MS;
 
-/** A late tick keeps a silent socket for at most this long after the last frame heard (B208). */
-const BUSY_GRACE_MS = 45_000;
+/**
+ * A late tick keeps a silent socket for at most this long after the last frame heard, counted in time the thread was
+ * free to read frames: a late tick adds one interval, since frames sent during the block wait behind it (B208).
+ */
+const BUSY_GRACE_MS = 30_000;
 /** A step 1 still unanswered this long is sent again, however many frames still arrive (B213). */
 const RESYNC_HOLD_MS = 30_000;
 /** An outbox stalled at its budget with writes still queued this long reconnects and replays the ledger (B209). */
@@ -322,6 +325,9 @@ export class DocSession {
   #syncHeard = 0;
   #visibleSince = 0;
   #lastTick = 0;
+  /** The last frame stamp a tick saw, and the free time since it (BUSY_GRACE_MS). */
+  #heardSeen = 0;
+  #quietFor = 0;
   #failedHandshakes = 0;
   #accessRetries = 0;
   #accessRetry: ReturnType<typeof setTimeout> | undefined;
@@ -652,7 +658,14 @@ export class DocSession {
     // applying a 40,000-block paste, its ticks late by 1-5 s, read the server as silent and reconnected.
     // The grace is bounded by the last frame heard, so a socket that stays silent through it still reads as half-open.
     const heard = this.provider.wsLastMessageReceived;
-    if (this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS && now - heard < BUSY_GRACE_MS) this.#visibleSince = now;
+    const late = this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS;
+    if (heard !== this.#heardSeen) {
+      this.#heardSeen = heard;
+      this.#quietFor = 0;
+    } else if (this.#lastTick > 0) {
+      this.#quietFor += late ? HEARTBEAT_CHECK_MS : now - this.#lastTick;
+    }
+    if (late && this.#quietFor < BUSY_GRACE_MS) this.#visibleSince = now;
     this.#lastTick = now;
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
       if (now - Math.max(heard, this.#visibleSince) > SILENCE_LIMIT_MS) {
