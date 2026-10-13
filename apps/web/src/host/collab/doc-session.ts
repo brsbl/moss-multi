@@ -11,6 +11,7 @@ import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/pa
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
+import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput, settleRefusal } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
@@ -156,22 +157,24 @@ type AccessAnswer =
   /** The network or the server could not say: keep trying. */
   | { kind: 'unknown' };
 
-/** Asks REST what this caller may do with the doc (A§10.5 handshake failures, A§8 client handling of 4403). */
-async function askAccess(docId: string): Promise<AccessAnswer> {
+/** Asks REST what this caller may do with the doc (A§10.5 handshake failures, A§8 client handling of 4403); held while
+ * the page leaves and asked again if it stays (leave.ts). */
+export async function askAccess(docId: string): Promise<AccessAnswer> {
   const share = shareToken();
   const query = share ? `?share=${encodeURIComponent(share)}` : '';
   try {
-    const response = await fetch(`/api/docs/${encodeURIComponent(docId)}/access${query}`, {
+    return await heldRead((signal) => fetch(`/api/docs/${encodeURIComponent(docId)}/access${query}`, {
       credentials: 'same-origin',
       cache: 'no-store',
-      signal: AbortSignal.timeout(ACCESS_TIMEOUT_MS),
-    });
-    if (response.status === 401) return { kind: 'signed-out' };
-    if (response.status === 404) return { kind: 'gone' };
-    if (!response.ok) return { kind: 'unknown' };
-    const body = (await response.json()) as { role?: unknown; deleted?: unknown };
-    if (body.deleted === true) return { kind: 'deleted' };
-    return isRole(body.role) ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
+      signal,
+    }), async (response): Promise<AccessAnswer> => {
+      if (response.status === 401) return { kind: 'signed-out' };
+      if (response.status === 404) return { kind: 'gone' };
+      if (!response.ok) return { kind: 'unknown' };
+      const body = (await response.json()) as { role?: unknown; deleted?: unknown };
+      if (body.deleted === true) return { kind: 'deleted' };
+      return isRole(body.role) ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor') } : { kind: 'unknown' };
+    }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
     return { kind: 'unknown' };
   }
