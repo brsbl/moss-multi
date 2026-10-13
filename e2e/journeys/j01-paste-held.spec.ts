@@ -47,10 +47,10 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
   await ui.waitAcked(ada, docId, 30_000);
   expect(await exported(ada, docId), 'only the paragraph is left').toBe(await normalized(ada, stack, 'Kept.'));
 
-  // 52,000 short paragraphs are about 25.8 MB of note state: under the cap beside the note Ada holds, past it with
-  // the 1.9 MB the server keeps.
+  // 53,300 short paragraphs are 25.1 MB of note state, or 26.4 MB when Ada's client id is a varint byte longer (15 in
+  // 16 are): under the cap beside the note Ada holds, past it with the 1.9 MB the server keeps, either way.
   const lines: string[] = [];
-  for (let i = 0; i < 52_000; i += 1) lines.push(`p${i}`);
+  for (let i = 0; i < 53_300; i += 1) lines.push(`p${i}`);
   lines.push('Last line of the paste.');
   await expectRefusedPaste(refused, stack, lines.join('\n\n'));
 });
