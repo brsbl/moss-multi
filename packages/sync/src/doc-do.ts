@@ -1601,12 +1601,12 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * The note plus every stored payload against the cap (A§5.1 Limits); `extra` is bytes a server write adds to
-   * payloads. Simulated only near the cap, since the copy costs a full encode.
+   * The note plus every stored payload against the cap (A§5.1 Limits). Simulated only near the cap, since the copy
+   * costs a full encode.
    */
-  #overCap(store: DocStore, update: Uint8Array, extra = 0): boolean {
+  #overCap(store: DocStore, update: Uint8Array): boolean {
     const cap = this.#limits.stateCapBytes;
-    const payloads = (this.#payloads?.totalBytes ?? 0) + extra;
+    const payloads = this.#payloads?.totalBytes ?? 0;
     return store.stateBytes + payloads + update.byteLength > cap && stateBytesAfter(this.document, update) + payloads > cap;
   }
 
@@ -1621,8 +1621,22 @@ export class DocDO extends YServer<SyncEnv> {
     return base + update.byteLength > cap && base - payloads.bytesOf(id) + stateBytesAfter(doc, update) > cap;
   }
 
+  /**
+   * A server write (import, restore) against the cap. Past the fast bound each touched payload counts at its size after
+   * its update instead of its stored bytes plus the update, so a write that shrinks or replaces a payload near the cap
+   * is admitted.
+   */
   #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][]): void {
-    if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, 0))) throw new DocCapError();
+    const cap = this.#limits.stateCapBytes;
+    const stored = this.#payloads;
+    const total = stored?.totalBytes ?? 0;
+    const added = payloads.reduce((sum, [, update]) => sum + update.byteLength, 0);
+    if (store.stateBytes + diff.byteLength + total + added <= cap) return;
+    let after = total;
+    for (const [id, update] of payloads) {
+      after += stored?.has(id) ? stateBytesAfter(stored.doc(id), update) - stored.bytesOf(id) : update.byteLength;
+    }
+    if (stateBytesAfter(this.document, diff) + after > cap) throw new DocCapError();
   }
 
   #connected(): boolean {
