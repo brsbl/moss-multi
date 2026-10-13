@@ -587,21 +587,23 @@ describe('a hold that ends with the note live tells the panes it closed @p:ppl-2
     await insertDoc(d1.db, ada, { folderId: folder });
     const token = await insertLink(d1.db, { folderId: folder }, 'editor');
     const stale = await insertLink(d1.db, { folderId: folder }, 'editor');
+    // Signed in, with no grant anywhere in Ada's vault: only the links reach the note.
+    const lin = await signedUpUser(env, 'pull-lin', 'Lin');
     const dee = await signedUpUser(env, 'pull-dee', 'Dee');
-    const holder = await join(docId, cy.cookie, token);
+    const holder = await join(docId, lin.cookie, token);
     const revoked = await join(docId, dee.cookie, stale);
-    const cyChannel = await workspace(cy.id, holder.headers[TRUSTED.session]);
+    const linChannel = await workspace(lin.id, holder.headers[TRUSTED.session]);
     const deeChannel = await workspace(dee.id, revoked.headers[TRUSTED.session]);
     await d1.db.prepare('UPDATE share_links SET revoked_at = ? WHERE token = ?').bind(Date.now(), stale).run();
     race = { sql: /UPDATE folders SET deleted_at/i, run: () => Promise.reject(new Error('D1 unavailable')) };
     expect((await call('DELETE', `/api/folders/${folder}`, ada.cookie)).status).toBe(503);
     expect(holder.client.closed?.code, 'the hold closed the link holder').toBe(CLOSE.deleted);
     expect(revoked.client.closed?.code).toBe(CLOSE.deleted);
-    expect(heard(cyChannel).filter((event) => event.type === 'meta'), 'only the note the link holder had open').toEqual([
+    expect(heard(linChannel).filter((event) => event.type === 'meta'), 'only the note the link holder had open').toEqual([
       { type: 'meta', docIds: [docId], folderIds: [] },
     ]);
     expect(heard(deeChannel).filter((event) => event.type === 'meta'), 'a revoked link hears nothing').toEqual([]);
-    const back = await join(docId, cy.cookie, token);
+    const back = await join(docId, lin.cookie, token);
     expect(back.client.closed, 'the pane reopens').toBeNull();
     await write(back.client, 'link-reopened');
     expect(title(back.opened)).toContain('link-reopened');
@@ -613,11 +615,12 @@ describe('a hold that ends with the note live tells the panes it closed @p:ppl-2
     const docId = await insertDoc(d1.db, ada, { folderId: folder });
     await insertGrant(d1.db, { docId }, ben, 'editor');
     const token = await insertLink(d1.db, { folderId: folder }, 'editor');
+    const lin = await signedUpUser(env, 'pull-lin', 'Lin');
     const editor = await join(docId, ben.cookie);
-    const linked = await join(docId, cy.cookie, token);
+    const linked = await join(docId, lin.cookie, token);
     const benChannel = await workspace(ben.id, editor.headers[TRUSTED.session]);
-    const cyChannel = await workspace(cy.id, linked.headers[TRUSTED.session]);
-    return { folder, docId, token, benChannel, cyChannel };
+    const linChannel = await workspace(lin.id, linked.headers[TRUSTED.session]);
+    return { folder, docId, token, lin, benChannel, linChannel };
   }
 
   /** A folder trash whose D1 write fails and whose settle never reaches the DocDO, so its hold persists. */
@@ -629,7 +632,7 @@ describe('a hold that ends with the note live tells the panes it closed @p:ppl-2
   }
 
   it('a trash whose settle fails: a pane that re-asks meets the hold, and the alarm’s settle reopens it with a recovery event', async () => {
-    const { folder, docId, token, benChannel, cyChannel } = await heldNote();
+    const { folder, docId, token, lin, benChannel, linChannel } = await heldNote();
     await failedTrash(folder);
     expect(metas(benChannel, docId), 'no event while the hold persists').toEqual([]);
     const early = await join(docId, ben.cookie);
@@ -639,10 +642,10 @@ describe('a hold that ends with the note live tells the panes it closed @p:ppl-2
       vi.setSystemTime(Date.now() + HOLD_MS + 1);
       await docs.get(docId).dobj.alarm();
       expect(metas(benChannel, docId), 'the alarm’s settle publishes the recovery').toHaveLength(1);
-      expect(heard(cyChannel).filter((event) => event.type === 'meta')).toEqual([{ type: 'meta', docIds: [docId], folderIds: [] }]);
+      expect(heard(linChannel).filter((event) => event.type === 'meta')).toEqual([{ type: 'meta', docIds: [docId], folderIds: [] }]);
       const back = await join(docId, ben.cookie);
       expect(back.client.closed, 'the pane reopens without a reload').toBeNull();
-      const linkBack = await join(docId, cy.cookie, token);
+      const linkBack = await join(docId, lin.cookie, token);
       expect(linkBack.client.closed).toBeNull();
       await write(back.client, 'recovered');
       expect(title(back.opened)).toContain('recovered');
