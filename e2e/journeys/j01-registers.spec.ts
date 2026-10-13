@@ -907,3 +907,35 @@ for (const kind of ['code', 'HTML'] as const) {
     await expect(spec.input(ben, id)).toHaveValue(`${spec.seed}漢字`);
   });
 }
+
+// DIAG (temporary, T3.B15): does moving a block, alone, take a WebKit page's network down?
+for (const kind of ['code', 'HTML'] as const) {
+  test(`DIAGSOAK ${kind} moves @p:col-1`, async ({ actors, stack }) => {
+    test.setTimeout(120_000);
+    const spec = PAYLOAD_KINDS[kind];
+    const { ada, id } = await note(actors, stack.baseUrl, `${spec.markdown}\n\nLast para.`);
+    const net = () => ada.page.evaluate(() => Promise.race([
+      fetch('/api/version', { cache: 'no-store' }).then(r => `ok ${r.status}`, (e: unknown) => `fail ${String(e)}`),
+      new Promise<string>(done => setTimeout(() => done('timeout'), 3_000)),
+    ]));
+    for (let i = 0; i < 30; i += 1) {
+      await ui.body(ada, id).evaluate((element, [type, end]) => {
+        const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+        editor.update(() => {
+          type Block = { getType(): string; insertAfter(n: unknown): void; insertBefore(n: unknown): void };
+          const children = (editor.getEditorState()._nodeMap.get('root') as unknown as { getLatest(): { getChildren(): Block[] } }).getLatest().getChildren();
+          const block = children.find(n => n.getType() === type)!;
+          if (end) children[children.length - 1].insertAfter(block);
+          else children[0].insertBefore(block);
+        }, { discrete: true });
+      }, [spec.type, i % 2 === 0] as const);
+      await ada.page.waitForTimeout(250);
+      const status = await net();
+      if (!status.startsWith('ok')) {
+        console.log(`DIAGSOAK ${kind}: network down after move ${i + 1}: ${status}`);
+        throw new Error(`network down after move ${i + 1}`);
+      }
+    }
+    console.log(`DIAGSOAK ${kind}: 30 moves, network up`);
+  });
+}
