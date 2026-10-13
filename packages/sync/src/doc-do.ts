@@ -368,15 +368,14 @@ export class DocDO extends YServer<SyncEnv> {
         this.#working = null;
         this.#edited(store);
         this.#versionTouched(store, origin);
-        if (isConnection(origin)) {
-          this.#projections?.touch();
-          if (!this.#payloadFeed) this.#payloadFeed = setTimeout(() => {
-            this.#payloadFeed = null;
-            void this.#feedSearch();
-            // A payload edit reaches no onSave, so the activity trigger is checked here too (A§14).
-            void this.#activityVersion(store).catch((error: unknown) => console.error('DocDO activity version failed', error));
-          }, PAYLOAD_FEED_MS);
-        }
+        if (isConnection(origin)) this.#projections?.touch();
+        // A payload write, a client's or a server's (a push or restore that changes only a payload), reaches no onSave.
+        if (origin !== JANITOR && !this.#payloadFeed) this.#payloadFeed = setTimeout(() => {
+          this.#payloadFeed = null;
+          void this.#feedSearch();
+          // So the activity trigger is checked here too (A§14).
+          void this.#activityVersion(store).catch((error: unknown) => console.error('DocDO activity version failed', error));
+        }, PAYLOAD_FEED_MS);
       },
       principalOf: (origin) => (isConnection(origin) ? (attachmentOf(origin)?.principalId ?? '') : null),
     });
