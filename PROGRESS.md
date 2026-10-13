@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 50% done** (114 of 230 planned tasks verified)
+**Overall: 50% done** (115 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 29 / 29 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 10 / 10 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 11 / 11 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 12 / 12 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 13 / 13 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -135,6 +135,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
 - 2026-10-12 — T6.S5 verified: restoring a version now puts a detached comment back on the exact text or block the restore wrote, even after a peer inserted before it or retyped it, and it survives a DocDO restart; otherwise the comment stays detached.
 - 2026-10-12 — T6.B3 verified: saving a named version or diffing against current now waits until this tab's edits are acknowledged (and refuses as unsynced after 5 s without sending anything), View strips only real frontmatter, and the History view has a parity gate in both themes.
+- 2026-10-12 — T6.B2 verified: a restore or reconcile that would move an unchanged block across another (recreating it) is now refused 409 with nothing written, and the formula reconcile tests prove the inline formula's own Yjs item survives.
 
 ## T1.1s identity audit
 
@@ -616,3 +617,4 @@ Local browser verification remains assigned to the independent checker under the
 - T6.B3 (Branch predated the m6 head; full lane must rerun on the integrated commit) checker P2: closed at integration; the BUILDPLAN conflict kept both the T6.S5 and T6.B3 lines and the full lane ran on the merged m6 head.
 - T6.B3 (History target placed between a comment and the target it describes) checker P2: in `e2e/parity/targets.ts` the `history` entry sits under the comment for the comment-detached target; move it.
 - T6.B3 (The History parity reference is a hand-written copy of the view's markup) checker P2: `e2e/parity/oracle/HistoryPage.stories.tsx` copies HistoryView's classes, labels and size, so it is a stored baseline rather than an independent glyphdown derivation; any deliberate History or shell layout change must update the story in the same commit.
+- T6.B2 (Move refusal can be bypassed when exact alignment falls back to unique signatures on large duplicate-heavy bodies) checker P2: when align()'s middle table exceeds CHILD_CELL_BUDGET in packages/core/src/reconcile.ts it aligns only unique signatures, so repeated blocks get no exact pairs, crossesExact() puts every copy in gap 0 where counts cancel, and tier 2 pairs same-identity paragraphs by position; about 1,000 alternating A/B paragraphs restored to B/A are rewritten in place, moving anchors and withheld peer inserts to the other block's text instead of being refused.
