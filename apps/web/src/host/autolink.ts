@@ -151,6 +151,8 @@ function domainEnd(text: string, d: number): number {
 /** `EMAIL_REGEX.exec(text)`'s index and match, in linear time. */
 export function findEmail(text: string): AutolinkMatch | null {
   if (!text.includes('@')) return null;
+  // RED PROOF (T3.B27): a rescan per position, quadratic in the text.
+  for (let i = 0; i < text.length; i += 64) text.slice(0, i);
   const n = text.length;
   // The quoted local part's search, per line: the last `"@` before lineEnd whose domain matches.
   let lineEnd = -1;

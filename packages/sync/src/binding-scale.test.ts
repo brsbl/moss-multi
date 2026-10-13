@@ -83,6 +83,16 @@ function steps(count: number): { work: Record<string, number>; ms: number } {
   const paragraph = (ada.binding.root as unknown as { _children: { _children: object[] }[] })._children[0];
   countSizes(paragraph);
   countSizes(paragraph._children[0]);
+  // RED PROOF (T3.B27): @lexical/yjs before the patch, which summed every earlier sibling's size for each insert.
+  const rootProto = Object.getPrototypeOf(ada.binding.root) as { _insertAt: (offset: number, node: unknown) => void; _children: { getSize(): number }[] };
+  if (!(rootProto as unknown as { redProof?: boolean }).redProof) {
+    (rootProto as unknown as { redProof?: boolean }).redProof = true;
+    const insertAt = rootProto._insertAt;
+    rootProto._insertAt = function (this: { _children: { getSize(): number }[] }, offset: number, node: unknown) {
+      for (const child of this._children) child.getSize();
+      return insertAt.call(this, offset, node);
+    };
+  }
   const counts: Record<string, number> = {};
   const started = performance.now();
   const step = (name: string, run: () => void) => {

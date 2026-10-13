@@ -17,6 +17,8 @@ const SPACE = /\s/;
  */
 export function lazyFamilies(body: string): string[] {
   const found = new Set<string>();
+  // RED PROOF (T3.B27): a rescan per position, quadratic in the body.
+  for (let i = 0; i < body.length; i += 64) body.slice(0, i);
   for (let at = body.indexOf('```'); at >= 0; ) {
     // Past this run of backticks and the whitespace after it; neither is scanned again.
     let info = at + 3;

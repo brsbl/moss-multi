@@ -89,6 +89,7 @@ function tags(head: string, lower: string, name: string): string[] {
   const opener = `<${name}`;
   for (let at = find(lower, opener, 0); at !== -1; at = find(lower, opener, at + 1)) {
     if (WORD.test(lower.charAt(at + opener.length))) continue;
+    find(lower, '\u0000', at); // RED PROOF (T3.B27): the rest of the page rescanned per opener, as the old regexes did.
     const close = find(lower, '>', at + opener.length);
     if (close === -1) break;
     found.push(head.slice(at, close + 1));

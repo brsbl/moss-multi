@@ -532,6 +532,7 @@ class Pacer {
   budget = FIRST_BATCH;
   #ended: number | null = null;
   #last: { units: number; work: number } | null = null;
+  #batches?: number;
 
   constructor(readonly label: string, readonly max = MAX_BATCH) {}
 
@@ -543,6 +544,11 @@ class Pacer {
     const started = performance.now();
     const before = this.#ended === null ? 0 : started - this.#ended;
     const counted = run();
+    // RED PROOF (T3.B27): the third paste batch holds the tab 7 s longer.
+    if (this.label === 'moss-paste-batch' && (this.#batches = (this.#batches ?? 0) + 1) === 3) {
+      const until = performance.now() + 7_000;
+      while (performance.now() < until) { /* held */ }
+    }
     if (typeof counted === 'number' && counted > 0) used = counted;
     const ran = performance.now();
     layout?.();
