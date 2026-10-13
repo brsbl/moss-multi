@@ -4,7 +4,7 @@
 // 4x the blocks, must do well under the 16x the work a quadratic step would (patches/@lexical__yjs@0.48.0.patch,
 // patches/yjs@13.6.31.patch). The work is counted, not timed: the binding's child-size reads (each offset walk over
 // siblings reads them) and the array elements every splice moves (Yjs merged an undo's structs one splice at a time).
-import { $createParagraphNode, $createTextNode, $getRoot, createEditor, type LexicalEditor, type LexicalNode } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getRoot, createEditor, type LexicalEditor, type ElementNode, type LexicalNode, type TextNode } from 'lexical';
 import { expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createBinding, createUndoManager, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
@@ -125,4 +125,47 @@ it('writes, applies, exports, undoes and redoes a paste of many blocks with work
   }
   // A generous backstop for work the counts miss: a loaded CI runner took up to 4.5 s for one of these steps.
   expect(large.ms, `every step for 40,000 blocks took ${Math.round(large.ms)} ms`).toBeLessThan(150_000);
+});
+
+// T3.B13 (B346): a keystroke syncs the block it edits, not every block. Each one sent all of the root's children
+// through _syncChildFromLexical, most of a keystroke's time in a note of 40,000 blocks.
+it('syncs a one-block edit through that block alone, and a peer converges on edits, moves and removals', () => {
+  const local = new Y.Doc();
+  const remote = new Y.Doc();
+  const ada = peer(local);
+  const ben = peer(remote);
+  ada.update(() => {
+    const root = $getRoot();
+    for (let i = 0; i < 2_000; i += 1) root.append($createParagraphNode().append($createTextNode(`p${i}`)));
+  }, { discrete: true });
+  send(local, remote);
+  commit(ben);
+  const element = Object.getPrototypeOf(ada.binding.root) as { _syncChildFromLexical: (...args: unknown[]) => unknown };
+  const original = element._syncChildFromLexical;
+  let calls = 0;
+  element._syncChildFromLexical = function (this: unknown, ...args: unknown[]) {
+    calls += 1;
+    return original.apply(this, args);
+  };
+  try {
+    ada.update(() => (($getRoot().getChildAtIndex(1_000) as ElementNode).getFirstChild() as TextNode).setTextContent('p1000 edited'), { discrete: true });
+  } finally {
+    element._syncChildFromLexical = original;
+  }
+  expect(calls, 'the root and the edited paragraph each sync one child').toBeLessThanOrEqual(2);
+  send(local, remote);
+  commit(ben);
+  expect(text(ben)).toBe(text(ada));
+  expect(text(ben)).toContain('p1000 edited');
+  ada.update(() => {
+    const root = $getRoot();
+    ((root.getChildAtIndex(5) as ElementNode).getFirstChild() as TextNode).setTextContent('five');
+    ((root.getChildAtIndex(1_500) as ElementNode).getFirstChild() as TextNode).setTextContent('fifteen hundred');
+    root.getChildAtIndex(10)!.insertAfter(root.getChildAtIndex(1_999)!);
+    root.getChildAtIndex(20)!.remove();
+  }, { discrete: true });
+  send(local, remote);
+  commit(ben);
+  expect(text(ada)).toContain('fifteen hundred');
+  expect(text(ben)).toBe(text(ada));
 });

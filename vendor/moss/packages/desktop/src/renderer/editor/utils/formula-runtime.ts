@@ -651,6 +651,18 @@ const isEqualsInsideWebUrl = (
   return FORMULA_URL_PREFIX_RE.test(token) && normalizeWebBrowserUrl(token) !== null;
 };
 
+// moss-multi seam: highlight-delimiters (T3.B13)
+function highlightRunStarts(textContent: string, cursorOffset: number): number[] {
+  const runs: number[] = [];
+  for (let i = textContent.lastIndexOf('\n', cursorOffset - 1) + 1; i + 1 < cursorOffset; i += 1) {
+    if (textContent[i] === '=' && textContent[i + 1] === '=') {
+      runs.push(i);
+      i += 1;
+    }
+  }
+  return runs;
+}
+
 export function findFormulaPatternAtCursor(
   textContent: string,
   cursorOffset: number,
@@ -664,8 +676,29 @@ export function findFormulaPatternAtCursor(
     return null;
   }
 
+  // moss-multi seam: highlight-delimiters (T3.B13): the starts of the `==` runs on the cursor's line, found once.
+  let highlightRuns: number[] | null = null;
+  const closesHighlight = (index: number): boolean => {
+    const runs = (highlightRuns ??= highlightRunStarts(textContent, cursorOffset));
+    let low = 0;
+    let high = runs.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if ((runs[mid] ?? index) + 2 <= index) low = mid + 1;
+      else high = mid;
+    }
+    return low % 2 === 1;
+  };
+
   for (let equalsIndex = cursorOffset - 1; equalsIndex >= 0; equalsIndex -= 1) {
     if (textContent[equalsIndex] !== '=') {
+      continue;
+    }
+
+    // moss-multi seam: highlight-delimiters (T3.B13): an `=` in a `==` run, or one closing `==name=`, belongs to a
+    // ==highlight==, not a formula. Formula mode latched on `==marked=`, which held back the highlight shortcut, and
+    // Space then committed `marked` as a formula, dropping the word.
+    if (textContent[equalsIndex - 1] === '=' || textContent[equalsIndex + 1] === '=') {
       continue;
     }
 
@@ -680,6 +713,12 @@ export function findFormulaPatternAtCursor(
     const expression = textContent.slice(equalsIndex + 1, cursorOffset);
 
     if (expression.includes('\n')) {
+      continue;
+    }
+
+    // moss-multi seam: highlight-delimiters (T3.B13): after an unclosed `==` on its line, an `=` closes the highlight
+    // (`==two words=`), so it starts no formula.
+    if (closesHighlight(equalsIndex)) {
       continue;
     }
 
@@ -707,6 +746,9 @@ export function findFormulaPatternAtCursor(
       const beforeName = tokenStart > 0 ? textContent[tokenStart - 1] : '';
       if (tokenStart > 0 && /[A-Za-z0-9_-]/.test(beforeName)) {
         continue;
+      }
+      if (beforeName === '=') {
+        continue; // moss-multi seam: highlight-delimiters (T3.B13)
       }
 
       return {

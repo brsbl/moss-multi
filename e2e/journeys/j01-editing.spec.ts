@@ -351,3 +351,124 @@ test('j01 editing: formula drafts and background conversions stay out of shared 
   await actors.reloadAll();
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1); await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1); }
 });
+
+/** What the server exports for the note. */
+async function exported(actor: Actor, id: string) {
+  const response = await actor.context.request.get(`/api/docs/${id}/content`);
+  expect(response.status()).toBe(200);
+  return response.text();
+}
+
+test('j01 editing: inline shortcuts typed a character at a time keep their text and style, on a peer and after reload @p:col-1', async ({ actors, stack }) => {
+  // T3.B13 (B279): `==marked==` then Space latched moss's formula mode, which held back the highlight shortcut and then
+  // committed `marked` as a formula, dropping the word; `==two words=` latched it on `words=`.
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shortcuts:');
+  await ui.body(ada, id).locator('p').filter({ hasText: /^Shortcuts:/ }).click();
+  await ada.page.keyboard.press('End');
+  await ada.page.keyboard.type(' ==marked== then **bold** and ==two words== and *it* and ~~gone~~ and `code` end', { delay: 30 });
+  const styled = async (actor: Actor) => {
+    const body = ui.body(actor, id);
+    await expect(body.locator('p').filter({ hasText: /^Shortcuts:/ }), `${actor.label}: every word survives`).toHaveText('Shortcuts: marked then bold and two words and it and gone and code end');
+    await expect(body.locator('span[style*="--obsidian-highlight"]'), `${actor.label}: only the marked words are highlighted`).toHaveText(['marked', 'two words']);
+    await expect(body.locator('strong')).toHaveText('bold');
+    await expect(body.locator('em')).toHaveText('it');
+    await expect(body.locator('.moss-strikethrough')).toHaveText('gone');
+    await expect(body.locator('code')).toHaveText('code');
+  };
+  for (const actor of [ada, ben]) await styled(actor);
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id)).toBe('Shortcuts: ==marked== then **bold** and ==two words== and *it* and ~~gone~~ and `code` end');
+  await ada.page.reload();
+  await ui.waitLive(ada, id); await ada.declareRemount(id);
+  await styled(ada);
+});
+
+test('j01 editing: a composition cancelled below a node-selected chart leaves the note as it was; a committed one and a peer\'s text stay @p:col-1', async ({ actors, stack, browserName }) => {
+  // T3.B13 (B204): a composition starting while a block is node-selected makes a paragraph below it (T3.13); cancelled
+  // with nothing composed, that paragraph stayed, a blank line synced to every collaborator.
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'First line');
+  const root = (actor: Actor) => ui.body(actor, id);
+  const blocks = (actor: Actor) => root(actor).evaluate((element) => element.children.length);
+  const lastBlock = (actor: Actor) => root(actor).evaluate((element) => element.lastElementChild?.textContent ?? '');
+  const selected = () => root(ada).evaluate((element) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const state = editor.getEditorState();
+    const selection = state._selection as { _nodes?: Set<string> } | null;
+    return selection?._nodes ? [...selection._nodes].map((key) => state._nodeMap.get(key)?.getType() ?? null) : null;
+  });
+  const insertChart = async () => {
+    await ada.page.keyboard.press('Enter');
+    await ada.page.keyboard.type('/bar');
+    await expect(ada.page.getByText('Bar Chart', { exact: true })).toBeVisible();
+    await ada.page.keyboard.press('Enter');
+    await expect.poll(selected, 'the inserted chart is node-selected').toEqual(['chart']);
+  };
+  const cdp = browserName === 'chromium' ? await ada.context.newCDPSession(ada.page) : null;
+  // A real IME in Chromium; Playwright drives none in WebKit, so there the engine's events are dispatched on the root.
+  const start = async () => {
+    if (cdp) await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+    else await root(ada).evaluate((element) => element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' })));
+  };
+  const end = async (text: string) => {
+    if (cdp) {
+      if (text) await cdp.send('Input.insertText', { text });
+      else await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 });
+      return;
+    }
+    if (text) await ada.page.keyboard.insertText(text);
+    await root(ada).evaluate((element, data) => element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data })), text);
+  };
+
+  await root(ada).locator('p').filter({ hasText: /^First line$/ }).click();
+  await ada.page.keyboard.press('End');
+  await insertChart();
+  for (const actor of [ada, ben]) await expect(root(actor).locator('.recharts-surface')).toHaveCount(1);
+  await ui.waitAcked(ada, id);
+  const before = await exported(ada, id);
+  const count = await blocks(ada);
+
+  // Cancelled: nothing changes, here or on the peer, and the chart is selected again.
+  await start();
+  await expect.poll(() => blocks(ben), 'the peer sees the paragraph the composition made').toBe(count + 1);
+  await end('');
+  for (const actor of [ada, ben]) await expect.poll(() => blocks(actor), `${actor.label}: the paragraph is taken back`).toBe(count);
+  await expect.poll(selected, 'the chart is selected again').toEqual(['chart']);
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id), 'the note exports as before').toBe(before);
+
+  // Committed: the composed text lands in a paragraph below the chart.
+  await start();
+  await end('日本');
+  for (const actor of [ada, ben]) await expect.poll(() => lastBlock(actor), `${actor.label}: the composed text stays`).toBe('日本');
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id)).toBe(`${before}\n\n日本`);
+
+  // A peer types into the paragraph while the composition is open; cancelling it keeps the peer's text.
+  await insertChart();
+  for (const actor of [ada, ben]) await expect(root(actor).locator('.recharts-surface')).toHaveCount(2);
+  const withTwo = await blocks(ada);
+  await start();
+  await expect.poll(() => blocks(ben)).toBe(withTwo + 1);
+  const box = await root(ben).evaluate((element) => {
+    element.lastElementChild!.scrollIntoView({ block: 'center' });
+    const rect = element.lastElementChild!.getBoundingClientRect();
+    return { x: rect.left + 4, y: rect.top + rect.height / 2 };
+  });
+  await ben.page.mouse.click(box.x, box.y);
+  await ben.page.keyboard.press('End');
+  await ben.page.keyboard.type('Peer');
+  await expect.poll(() => lastBlock(ben), 'the peer types into the composing paragraph').toContain('Peer');
+  await expect.poll(() => root(ada).evaluate((element) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const state = editor.getEditorState();
+    return state.read(() => state._nodeMap.get('root')!.getTextContent());
+  }), 'the peer\'s text reaches the composing editor').toContain('Peer');
+  await end('');
+  await ui.waitAcked(ben, id);
+  for (const actor of [ada, ben]) {
+    await expect.poll(() => lastBlock(actor), `${actor.label}: the peer's text stays`).toContain('Peer');
+    expect(await blocks(actor)).toBe(withTwo + 1);
+  }
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id)).toContain('Peer');
+});
