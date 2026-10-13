@@ -448,9 +448,7 @@ test('video plays through 206 Range responses: a seek ahead of the download asks
     await expect.poll(() => reads().filter(seekRead).length, {
       message: 'the seek reads a range starting past 0, answered 206 with that Content-Range',
       timeout: 20_000,
-    }).toBeGreaterThan(0).catch((error: Error) => {
-      throw new Error(`${error.message}\nreads: ${JSON.stringify(server.media.map((request, i) => ({ i, ...request })).filter((request) => request.path === clipPath))}; seek after ${before}`);
-    });
+    }).toBeGreaterThan(0);
     await expect.poll(() => player.evaluate((element: HTMLVideoElement) => !element.seeking && element.readyState >= 2 && element.currentTime >= 0.75 * element.duration), {
       message: `the clip plays from ${target.toFixed(2)} s`,
       timeout: 20_000,
