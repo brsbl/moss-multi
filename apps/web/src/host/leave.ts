@@ -46,8 +46,12 @@ export function installLeaving(): () => Leave {
   return leaving;
 }
 
-/** The page's current leave, or none before `installLeaving` (unit tests, the server). */
-export const currentLeave = (): Leave | undefined => leaving?.();
+/** The page's current leave. A browser page installs it on first use, so a read made before the bridge boots (the
+ * route's access gate) is held too; the server and unit tests without a window have none. */
+export const currentLeave = (): Leave | undefined => {
+  if (!leaving && typeof window !== 'undefined' && typeof window.addEventListener === 'function') installLeaving();
+  return leaving?.();
+};
 
 /** Tests: the leave every request without its own `leaving` reads. */
 export function setLeaving(next: (() => Leave) | null): void {
@@ -63,16 +67,28 @@ export interface LeaveOptions {
 
 type Send = (signal: AbortSignal | undefined) => Promise<Response>;
 
-/** AbortSignal.any, where the browser has it (Safari 17.4). */
-function anySignal(signals: AbortSignal[]): AbortSignal {
+/** AbortSignal.any, where the browser has it (Safari 17.4); `release` drops the fallback's listeners on the sources,
+ * so the page's long-lived leave signal does not collect one per request. */
+function anySignal(signals: AbortSignal[]): { signal: AbortSignal; release: () => void } {
   const native = (AbortSignal as { any?: (all: AbortSignal[]) => AbortSignal }).any;
-  if (native) return native.call(AbortSignal, signals);
+  if (native) return { signal: native.call(AbortSignal, signals), release: () => undefined };
   const controller = new AbortController();
+  const offs: (() => void)[] = [];
+  const release = () => { for (const off of offs.splice(0)) off(); };
   for (const signal of signals) {
-    if (signal.aborted) controller.abort(signal.reason);
-    else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    const abort = () => {
+      release();
+      controller.abort(signal.reason);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    offs.push(() => signal.removeEventListener('abort', abort));
   }
-  return controller.signal;
+  if (controller.signal.aborted) release();
+  return { signal: controller.signal, release };
 }
 
 /** One attempt: the leave's signal and the deadline's, combined, from the request through `read`. */
@@ -80,7 +96,8 @@ async function attempt<T>(send: Send, read: (response: Response) => Promise<T>, 
   const deadline = timeoutMs === undefined ? null : new AbortController();
   const timer = deadline ? setTimeout(() => deadline.abort(new DOMException('The request timed out.', 'TimeoutError')), timeoutMs) : undefined;
   const signals = [leave?.signal, deadline?.signal].filter((signal): signal is AbortSignal => signal !== undefined);
-  const signal = signals.length > 1 ? anySignal(signals) : signals[0];
+  const combined = signals.length > 1 ? anySignal(signals) : null;
+  const signal = combined ? combined.signal : signals[0];
   try {
     const work = (async () => read(await send(signal)))();
     if (!signal) return await work;
@@ -100,6 +117,7 @@ async function attempt<T>(send: Send, read: (response: Response) => Promise<T>, 
     }
   } finally {
     clearTimeout(timer);
+    combined?.release();
   }
 }
 

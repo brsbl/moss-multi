@@ -48,7 +48,11 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
     try {
       // A metadata push can land as the page reloads; the read is held by the leave (METHOD: WebKit page errors).
       const body = await heldRead(
-        (signal) => fetcher('/api/notifications', { credentials: 'same-origin', headers: { accept: 'application/json' }, cache: 'no-store', signal }),
+        (signal) => {
+          // A read held across a sign-out or a newer read is not sent when the page stays.
+          if (mine !== generation || !signedIn()) return Promise.reject(new Error('superseded'));
+          return fetcher('/api/notifications', { credentials: 'same-origin', headers: { accept: 'application/json' }, cache: 'no-store', signal });
+        },
         async (response) => {
           if (!response.ok) throw new Error(String(response.status));
           return (await response.json()) as { notifications?: Notice[] };

@@ -699,11 +699,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // A doc that will bind gets no content from REST: the binding fills it (A§9).
         return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
-      // The DocDO export (A§12) for moss's reads of other notes; undefined for a note the caller cannot read. A bound
-      // pane never asks for it (the bound-pane seam), so it never repaints an editor.
-      getContent: (id: string) => limited(() => heldRequest(`/api/docs/${encodeURIComponent(id)}/content`, async (response) =>
-        (response.ok ? { id, content: await response.text(), version: 1 } : undefined), { headers: { accept: 'text/markdown' } })
-        .catch(() => undefined)),
+      // The DocDO export (A§12) for moss's reads of other notes; undefined for a note the caller cannot read, and a
+      // failed read (a 5xx, the network) rejects, as moss's own read does. A bound pane never asks for it (the
+      // bound-pane seam), so it never repaints an editor.
+      getContent: (id: string) => limited(() => heldRequest(`/api/docs/${encodeURIComponent(id)}/content`, async (response) => {
+        if (response.ok) return { id, content: await response.text(), version: 1 };
+        if (response.status === 401 || response.status === 403 || response.status === 404) return undefined;
+        throw new Error(`GET /api/docs/:id/content: ${response.status}`);
+      }, { headers: { accept: 'text/markdown' } })),
       // moss asks only after its own REST save, which a bound note never runs.
       getFrontmatterSuggestions: async () => ({}),
       getHeadings: async (id: string) => {
