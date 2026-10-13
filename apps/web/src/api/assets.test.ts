@@ -427,7 +427,9 @@ describe('upload bounds (T3.1s)', () => {
           reading += 1;
           if (reading === N) open();
           await gate;
-          controller.enqueue(new Uint8Array(size).fill(i + 1));
+          const png = new Uint8Array(size).fill(i + 1);
+          png.set(PNG);
+          controller.enqueue(png);
           controller.close();
         },
       }, { highWaterMark: 0 });

@@ -181,7 +181,8 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   if (doc === 'full') return noteCap();
   if (!doc) {
     const still = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
-    return still && !still.deleted ? refuseInsert(env, db, principal, actor, folderId) : notFound();
+    return still && !still.deleted ? refuseInsert(env, db, principal, actor, folderId)
+      : refuse(404, 'not-found', 'That note is no longer available, or you don’t have access to it.');
   }
   const owner = folder.ownerUserId;
   return seeded(db, doc, folder.role, async () => {
