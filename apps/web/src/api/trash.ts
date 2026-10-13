@@ -215,7 +215,7 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
     // negative control: the restore publishes nothing
     // The row is live first, so the doc never admits a socket the row refuses; a settle that fails here leaves the
     // doc closed until its next admission settles it from the row.
-    await settleQuietly(await getServerByName(env.DocDO, docId));
+    // negative control: no settle, whose recovery would publish
   }
   const [doc] = await db
     .select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt })
