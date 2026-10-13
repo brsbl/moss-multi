@@ -65,13 +65,14 @@ export const body = (actor: Actor, docId: string): Locator => pane(actor, docId)
 
 /**
  * Opens an HTML block's source with its header's Edit. The header takes the pointer only while the block is hovered,
- * and a block still sizing to its content (T3.B13) moved out from under a pointer resting at its middle: the click then
- * hit the preview, 10 s at a time (WebKit, CI). The pointer rests near the block's top corner, which the sizing keeps,
- * below the gap cursor that overhangs its top edge.
+ * and a block still sizing to its content (T3.B13) moved out from under the pointer: the click then hit the preview,
+ * 10 s at a time (WebKit, CI). Each try hovers the block where it is now; a click that cannot land does nothing.
  */
 export async function openHtmlSource(actor: Actor, docId: string): Promise<void> {
-  await body(actor, docId).locator('[data-moss-html-preview-viewport]').hover({ position: { x: 16, y: 16 } });
-  await body(actor, docId).getByTitle('Edit HTML', { exact: true }).click();
+  await expect(async () => {
+    await body(actor, docId).locator('[data-moss-html-preview-viewport]').hover({ timeout: 2_000 });
+    await body(actor, docId).getByTitle('Edit HTML', { exact: true }).click({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
 }
 
 /** Waits until the doc's pane is live with both fields bound. */
