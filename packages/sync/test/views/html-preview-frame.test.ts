@@ -12,7 +12,7 @@ describe('HTML preview frame', () => {
     (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
     enableFrameDocument();
     // jsdom's iframe has no sandbox token list; supportedSandbox probes one.
-    if (!('sandbox' in HTMLIFrameElement.prototype)) {
+    if (!document.createElement('iframe').sandbox) {
       Object.defineProperty(HTMLIFrameElement.prototype, 'sandbox', { configurable: true, get: () => ({ supports: () => true }) });
     }
     const container = document.createElement('div');
