@@ -16,7 +16,7 @@ import {
   type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
-  attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
+  attachmentFrom, classifySync, connectCode, deletesCovered, EVERYONE, parseFrame, revocationCode, stateBytesAfter, windowed, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
@@ -312,7 +312,12 @@ export class DocDO extends YServer<SyncEnv> {
   #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
-  readonly #workingRate = new WriteRate(this.#limits.workingRate.max, this.#limits.workingRate.windowMs);
+  /** Working-export computations in the per-doc window; read from storage on first use, so a wake keeps them. */
+  #workingExports: number[] | null = null;
+  /** The doc's own deletes, merged, for proving a sub-editor's frame inert; dropped by every transaction that deletes. */
+  #deleted: DeleteSet | null = null;
+  /** Sub-editor sockets that had their one proof (in memory: a wake allows each another). */
+  readonly #proved = new WeakSet<Connection>();
   readonly #acks = new AckCoalescer<Connection>((connection, deletes, payloads) => this.#ack(connection, deletes, payloads), ACK_COALESCE_MS);
   /** The deletes of the sync frame being applied, which its ack names. */
   #frameDeletes: DeleteSet | undefined;
@@ -367,6 +372,9 @@ export class DocDO extends YServer<SyncEnv> {
     this.#store = store;
     this.#payloads = payloads;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
+    this.document.on('afterTransaction', (txn: Y.Transaction) => {
+      if (txn.deleteSet.clients.size > 0) this.#deleted = null;
+    });
     // R from meta and the anchor indexes from the `a:` records (comments.md §3, I8).
     this.#comments = new DocComments(this.document, store);
     migrateFrontmatter(this.document, 'frontmatter-migration');
@@ -658,7 +666,10 @@ export class DocDO extends YServer<SyncEnv> {
       const writer = roleAtLeast(attachment.role, 'editor');
       // Below editor the frame never applies, so its classification is bounded by its own size (I5).
       const budget = writer ? Infinity : frame.update.byteLength * CLASSIFY_BUDGET_PER_BYTE + 1024;
-      const { changes, missing, deletes } = classifySync(this.document, frame.update, decoded, budget);
+      const classified = classifySync(this.document, frame.update, decoded, budget);
+      const { missing, deletes } = classified;
+      // A frame past its budget is a write unless proved inert, so its refusal is counted like any other.
+      const changes = classified.changes || (classified.exhausted && !this.#provedInert(connection, decoded.ds));
       const guarded = () => !!this.#comments?.check(decoded);
       // Only the DocDO writes `suggestions` (I2), and a leased client id only ever writes a record (A§5.1 step 4).
       const leased = () => !!this.#suggestions?.touches(decoded) || !!this.#ingest?.namesLease(frame.update);
@@ -907,18 +918,22 @@ export class DocDO extends YServer<SyncEnv> {
     return roleAtLeast(resolved.role, 'commenter') ? null : { ok: false, status: 403, error: 'forbidden' };
   }
 
-  /** The actor's live role now, or the refusal (no live credential, no access, a revocation). Throws when D1 cannot answer. */
-  async #resolveActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | { role: Role }> {
+  /**
+   * The actor's live role now, or the refusal (no live credential, no access, a revocation). `anonymous`: a share-link
+   * holder with no session may act, resolved through its link (a preview). Throws when D1 cannot answer.
+   */
+  async #resolveActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, anonymous = false): Promise<CommentResult | { role: Role }> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
-    if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
+    const linkOnly = anonymous && actor?.kind === 'anonymous' && !!actor.shareToken;
+    if (!actor || (!linkOnly && actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
     if (actor.kind === 'user' && !session) return unauthenticated;
     const resolvedAt = Date.now();
     const { stamp, access } = await withDeadline(this.#limits.accessDeadlineMs, async (race) => {
-      const read = await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
+      const read = linkOnly ? null : await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
       return { stamp: read, access: await race(check.resolve(this.name, actor)) };
     });
-    if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
+    if (stamp && (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId))) return unauthenticated;
     if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
     if (access === null) return { ok: false, status: 404, error: 'not-found' };
     // A kick persisted while D1 answered outdates what it said.
@@ -1105,7 +1120,8 @@ export class DocDO extends YServer<SyncEnv> {
         let resolved: CommentResult | { role: Role };
         try {
           await this.#validate(check);
-          resolved = await this.#resolveActor(check, store, input.actor);
+          // A link holder with no session may only read: a preview, whose floor is viewer.
+          resolved = await this.#resolveActor(check, store, input.actor, floor === 'viewer');
         } catch (error) {
           console.error('DocDO could not re-authorize a suggestion review; refusing it', error);
           return { ok: false, status: 503, reason: 'unconfirmed' };
@@ -1185,11 +1201,45 @@ export class DocDO extends YServer<SyncEnv> {
    * or payload update. Computing it runs the accept gates per open record, so it is bounded per doc (I5); null past it.
    */
   async exportWorking(): Promise<string | null> {
-    await this.#ready();
+    const store = await this.#ready();
     if (this.#working !== null) return this.#working;
-    if (!this.#workingRate.allow(this)) return null;
+    if (!this.#chargeWorking(store)) return null;
     this.#working = exportWorkingMarkdown(this.document, this.name);
     return this.#working;
+  }
+
+  /**
+   * Counts one working-export computation in the per-doc window (refused ones too); false past the bound. The window
+   * lives in storage (`working-exports`), so an evicted or hibernated DocDO wakes into it, never a fresh one.
+   */
+  #chargeWorking(store: DocStore): boolean {
+    const { max, windowMs } = this.#limits.workingRate;
+    if (this.#workingExports === null) {
+      let stored: unknown = [];
+      try {
+        stored = JSON.parse(store.meta('working-exports') ?? '[]');
+      } catch {
+        // An unreadable window starts empty.
+      }
+      this.#workingExports = Array.isArray(stored) ? stored.filter((at): at is number => typeof at === 'number') : [];
+    }
+    const recent = windowed(this.#workingExports, Date.now(), windowMs);
+    // The newest max + 1 decide the verdict.
+    this.#workingExports = recent.slice(-(max + 1));
+    store.setMeta('working-exports', JSON.stringify(this.#workingExports));
+    return recent.length <= max;
+  }
+
+  /**
+   * A sub-editor's frame whose delete scan ran past its budget is inert only if the doc already holds every delete it
+   * names. Each socket gets one such proof, O(doc) at most, like the step 2 that answered its step 1: a reconnect's
+   * step 2 over a long deleted history passes, and every later frame past the budget is a write.
+   */
+  #provedInert(connection: Connection, ds: DeleteSet): boolean {
+    if (this.#proved.has(connection)) return false;
+    this.#proved.add(connection);
+    this.#deleted ??= Y.createDeleteSetFromStructStore(this.document.store);
+    return deletesCovered(this.#deleted, ds);
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
@@ -1480,8 +1530,9 @@ export class DocDO extends YServer<SyncEnv> {
       const target = known ? payloads.doc(id) : (unknownPayload ??= new Y.Doc());
       const leased = () => !!this.#ingest?.namesLease(data, target);
       const budget = roleAtLeast(attachment.role, 'editor') ? Infinity : data.byteLength * CLASSIFY_BUDGET_PER_BYTE + 1024;
-      const { changes, missing, deletes } = classifySync(target, data, undefined, budget);
-      if (!changes) {
+      const { changes, exhausted, missing, deletes } = classifySync(target, data, undefined, budget);
+      // Only an editor may write a payload, so a sub-editor's frame past its budget meets the role refusal.
+      if (!changes && !exhausted) {
         // An editor's resend of what is already stored: acked, since the ack that covered it may have been lost.
         if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id, coverage(target, data));
         return;

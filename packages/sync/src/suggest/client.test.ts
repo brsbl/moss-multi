@@ -11,7 +11,7 @@ import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-mu
 import type { RecordMeta } from '@moss-multi/core/suggest/apply';
 import { handleSuggest, SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor, payloadText } from '../payload-docs.ts';
-import { Composite, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
+import { Composite, GROUP_IDLE_MS, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
 import { bindEditor } from './fork-shim.ts';
 import { createRecord, opsOf, readMeta, readRecord, recordIds, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
@@ -650,6 +650,53 @@ describe('T5.S5 a reservation is never passed to another fork @p:mean-2', () => 
     } finally {
       b?.dispose();
       a.dispose();
+    }
+  });
+});
+
+describe('T5.B1 a resume of many leases goes in chunks @p:mean-2 @p:tech-7', () => {
+  it('a fork needing more than 64 leases through merged records resumes in frames of at most 64, lands its owed op once, and stays open', () => {
+    let t = 1_000_000;
+    const now = () => t;
+    const live = seededBody();
+    const link = wire(live, 'c1', new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), now }));
+    const m = mount(live, link, now);
+    try {
+      const groups = 70;
+      let at = 24;
+      for (let i = 0; i < groups; i += 1) {
+        // Idle past the group gap: each edit takes a fresh lease, and builds on the last group's text, so its record
+        // merges the last one in.
+        t += GROUP_IDLE_MS + 1_000;
+        m.act(() => select('Hello', at).insertText('x'));
+        at += 1;
+        link.deliver(m.fork);
+      }
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+      const open = recordIds(live).filter((id) => readMeta(live, id)?.status === 'open');
+      expect(open, 'one open record holds every group').toHaveLength(1);
+      expect(readMeta(live, open[0])!.clients.length).toBeGreaterThan(64);
+      // Typed while the socket is down; then a new socket resumes.
+      m.act(() => select('Hello', at).insertText('y'));
+      link.outbox.length = 0;
+      link.ingest.expireConnection('c1');
+      link.who.connection = 'c2';
+      m.fork.reconnected();
+      const resumes = link.outbox.flatMap((request) => (request.t === 'suggest-lease' && request.resume ? [request.resume] : []));
+      expect(new Set(resumes.flat()).size, 'more leases than one resume may name').toBeGreaterThan(64);
+      for (const resume of resumes) expect(resume.length).toBeLessThanOrEqual(64);
+      link.deliver(m.fork);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused'), 'no chunk is refused').toEqual([]);
+      expect(m.fork.closed, 'input stays open').toBe(false);
+      expect(m.fork.owes).toBe(false);
+      const ops = () => recordIds(live).reduce((sum, id) => sum + (readRecord(live, id)?.ops.length ?? 0), 0);
+      expect(ops(), 'every group and the owed op, each once').toBe(groups + 1);
+      m.act(() => select('Hello', at + 1).insertText('z'));
+      link.deliver(m.fork);
+      expect(ops(), 'typing after the resume lands').toBe(groups + 2);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+    } finally {
+      m.dispose();
     }
   });
 });

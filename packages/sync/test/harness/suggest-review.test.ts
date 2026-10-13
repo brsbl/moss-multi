@@ -220,6 +220,29 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     }
   });
 
+  it('the per-document bound survives an eviction: a woken DocDO refuses inside the window with no gate work, and computes after it (T5.B1)', async () => {
+    const limits = DocDO.limits;
+    DocDO.limits = { ...limits, workingRate: { max: 2, windowMs: 60_000 } };
+    try {
+      let opened = await seeded();
+      const sam = await on(opened, SAM);
+      await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+      expect(await opened.dobj.exportWorking()).toContain('More words.');
+      await opened.dobj.renameTitle('One');
+      expect(await opened.dobj.exportWorking()).toContain('More words.');
+      // Evicted inside the window: the woken instance has no cache, and the window it spent is in storage.
+      opened = await start(wake(opened));
+      const gates = vi.mocked(applyRecord);
+      gates.mockClear();
+      expect(await opened.dobj.exportWorking(), 'a wake does not reopen the window').toBeNull();
+      expect(gates).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(60_000);
+      expect(await opened.dobj.exportWorking()).toContain('More words.');
+    } finally {
+      DocDO.limits = limits;
+    }
+  });
+
   it("a collaborator's body frames are applied and acked while a burst of working exports is refused or served from the cache", async () => {
     const limits = DocDO.limits;
     DocDO.limits = { ...limits, workingRate: { max: 2, windowMs: 60_000 } };
@@ -370,5 +393,39 @@ describe('T5.S9 a review heals a missed restore settle from D1', () => {
     expect(readMeta(opened.dobj.document, id)).toMatchObject({ status: 'open' });
     d1.fails = false;
     expect(await opened.dobj.rejectSuggestion({ id, reviewer: EDITOR })).toEqual({ ok: true });
+  });
+});
+
+describe('T5.B1 an anonymous link holder previews through the DocDO @p:mean-2 @p:ppl-2', () => {
+  const LINK = 'good-link-token';
+  /** D1 as the check reads it: a signed-in owner, and one share link that reaches the note as a viewer. */
+  class LinkDocDO extends DocDO {
+    static override access = () => ({
+      stamp: async (_docId: string, sessions: string[], agents: string[]) => ({ key: 'e1', sessions: new Set(sessions), agents: new Set(agents) }),
+      resolve: async (_docId: string, socket: { kind: string; principalId: string; shareToken: string | null }) => {
+        if (socket.kind === 'user') return { role: socket.principalId === SUGGESTER.id ? 'suggester' as const : 'owner' as const, presence: true };
+        return socket.kind === 'anonymous' && socket.shareToken === LINK ? { role: 'viewer' as const, presence: false } : null;
+      },
+    });
+  }
+  const OWNER = { kind: 'user' as const, principalId: 'owner-1', sessionId: 'sess-owner', shareToken: null };
+  const ANONYMOUS = { kind: 'anonymous' as const, principalId: 'anonymous', sessionId: null, shareToken: LINK };
+
+  it('previews with a link that reaches the note; another link is not found; accept, reject and withdraw stay 401', async () => {
+    const opened = await start(openDoc(undefined, LinkDocDO as never));
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const sam = await on(opened, SAM);
+    const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const asOwner = await opened.dobj.previewSuggestion({ id, reviewer: { id: 'owner-1', role: 'owner' }, actor: OWNER });
+    expect(asOwner).toMatchObject({ ok: true });
+    const reader = { id: 'anonymous', role: 'viewer' as const };
+    expect(await opened.dobj.previewSuggestion({ id, reviewer: reader, actor: ANONYMOUS }), 'the link holder sees what the owner sees').toEqual(asOwner);
+    expect(await opened.dobj.previewSuggestion({ id, reviewer: reader, actor: { ...ANONYMOUS, shareToken: 'other-link' } })).toMatchObject({ ok: false, status: 404 });
+    expect(await opened.dobj.previewSuggestion({ id, reviewer: reader, actor: { ...ANONYMOUS, shareToken: null } })).toMatchObject({ ok: false, status: 401 });
+    const refused = { ok: false, status: 401 };
+    expect(await opened.dobj.acceptSuggestion({ id, reviewer: reader, actor: ANONYMOUS, previewHash: 'h', digest: 'd' })).toMatchObject(refused);
+    expect(await opened.dobj.rejectSuggestion({ id, reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
+    expect(await opened.dobj.withdrawSuggestion({ id, reviewer: reader, actor: ANONYMOUS })).toMatchObject(refused);
+    expect(readMeta(opened.dobj.document, id)).toMatchObject({ status: 'open' });
   });
 });
