@@ -409,6 +409,18 @@ it('detaches a socket that stays open and silent while every tick runs late, onc
   expect(sentTitle(fresh), 'the reconnect replays the unacked edit').toBe('kept');
   expect(session.state.unacked).toBe(true);
 });
+it('keeps a socket through one long block of the main thread, whose frames are read once it ends (B208)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  await vi.advanceTimersByTimeAsync(1_000);
+  // A collaborator's 40,000-paragraph paste rendered here holds the thread 60 s: the frames sent meanwhile wait behind it.
+  vi.setSystemTime(Date.now() + 60_000);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(socket.closes, 'a frame queued behind the block is not silence').toEqual([]);
+  peerUpdate(socket);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(socket.closes).toEqual([]);
+  expect(sockets).toHaveLength(1);
+});
 it('keeps a busy tab connected for as long as frames keep arriving (B208)', async () => {
   const socket = latest(); socket.open(); session.provider.synced = true;
   for (let i = 0; i < 60; i += 1) {
