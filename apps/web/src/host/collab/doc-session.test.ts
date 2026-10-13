@@ -376,10 +376,13 @@ function sentTitle(socket: FakeSocket, from = 0): string {
   return doc.getText('title').toString();
 }
 let peerFrames = 0;
+/** Every peer update delivered, as the DocDO holds them. */
+const peerUpdates: Uint8Array[] = [];
 /** A peer's update arriving on `socket`, stamped on the fake clock as the provider would stamp it. */
 function peerUpdate(socket: FakeSocket): void {
   const peer = new Y.Doc();
   peer.getText('peer').insert(0, `${peerFrames++}`);
+  peerUpdates.push(Y.encodeStateAsUpdate(peer));
   socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(2, Y.encodeStateAsUpdate(peer)).slice().buffer }));
   session.provider.wsLastMessageReceived = Date.now();
 }
@@ -448,12 +451,21 @@ it('detaches an outbox stalled at its budget with writes still queued and conver
   expect(fresh).not.toBe(socket);
   fresh.open();
   expect(fresh.sent.some((frame) => writeOf(frame) !== null), 'the ledger replays on the fresh socket').toBe(true);
-  // Transport restored: the DocDO acks what it holds.
-  for (let i = 0; i < 20 && session.state.unacked; i += 1) {
-    serverEvent(fresh, { t: 'ack', sv: base64(Y.encodeStateVector(session.doc)), ds: base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map()))) });
+  // Transport restored: a DocDO that held only the peers' updates applies what the fresh socket sends, and acks that.
+  const server = new Y.Doc();
+  for (const update of peerUpdates) Y.applyUpdate(server, update);
+  let read = 0;
+  for (let i = 0; i < 200 && session.state.unacked; i += 1) {
+    for (; read < fresh.sent.length; read += 1) {
+      const update = writeOf(fresh.sent[read]);
+      if (update) Y.applyUpdate(server, update);
+    }
+    serverEvent(fresh, { t: 'ack', sv: base64(Y.encodeStateVector(server)), ds: base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map()))) });
     await vi.advanceTimersByTimeAsync(100);
   }
   expect(session.state.unacked, 'every write acked').toBe(false);
+  expect(server.store.pendingStructs, 'nothing the server holds waits on a missing write').toBeNull();
+  expect(server.getArray('blocks').toJSON(), 'the server converged on the whole paste').toEqual(session.doc.getArray('blocks').toJSON());
   expect(session.state.resync, 'no reload').toBe(false);
   expect(terminalOf('doc')).toBeNull();
   expect(fresh.closes).toEqual([]);

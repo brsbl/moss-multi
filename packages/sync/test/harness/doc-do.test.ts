@@ -573,6 +573,72 @@ describe('admission and the write classifier', () => {
     expect(refused.closed?.code).toBe(CLOSE.writeRefused);
   });
 
+  it('adds a second reserve to what the socket still holds, so a paste sent while an earlier one is queued is still atomic (B209)', async () => {
+    const limits = { ...DocDO.limits, stateCapBytes: 1024 * 1024 };
+    class Reserving extends DocDO {
+      static override limits = limits;
+    }
+    const opened = await start(openDoc(new Backing(), Reserving as never));
+    const ada = await editorOn(opened);
+    const ben = await editorOn(opened);
+    await typeTitle(ada, 's'.repeat(16 * 1024));
+    await ben.pump();
+    const paste = (client: TestClient, char: string) => {
+      const title = client.doc.getText('title');
+      for (let i = 0; i < 5; i += 1) title.insert(title.length, char.repeat(6_000));
+      return client.drain();
+    };
+    const bytes = (frames: Uint8Array[]) => frames.reduce((sum, frame) => sum + frame.byteLength, 0);
+    const reserve = (client: TestClient, frames: Uint8Array[]) => client.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b: bytes(frames) })}`);
+    const first = paste(ada, 'a');
+    const second = paste(ada, 'b');
+    const bens = paste(ben, 'c');
+    const held = Y.encodeStateAsUpdate(opened.dobj.document).byteLength;
+    // All three do not fit; with Ada's first paste counted only as its first two frames, they would.
+    limits.stateCapBytes = held + bytes(first) + bytes(second) + bytes(bens) - Math.floor(bytes(first.slice(2)) / 2);
+    await reserve(ada, first);
+    await ada.deliver(first[0]);
+    await ada.deliver(first[1]);
+    // Ada's second paste: its reserve is a string, so it passes the first paste's frames still queued in her outbox.
+    await reserve(ada, second);
+    await reserve(ben, bens);
+    for (const frame of [...first.slice(2), ...second]) if (ada.socket.readyState === 1) await ada.deliver(frame);
+    for (const frame of bens) if (ben.socket.readyState === 1) await ben.deliver(frame);
+    await ada.pump();
+    await ben.pump();
+    const landed = opened.dobj.document.getText('title').toString();
+    const count = (char: string) => landed.split(char).length - 1;
+    expect(count('a'), 'Ada\'s first paste lands whole').toBe(30_000);
+    expect(count('b'), 'Ada\'s second paste lands whole').toBe(30_000);
+    expect(count('c'), 'Ben\'s paste, which no longer fits, is refused whole').toBe(0);
+    expect(ada.closed).toBeNull();
+    expect(ben.events).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
+  });
+
+  it('lets a reservation no write used lapse for good: reserving again neither renews it nor holds new room (B209)', async () => {
+    const limits = { ...DocDO.limits, stateCapBytes: 1024 * 1024 };
+    class Reserving extends DocDO {
+      static override limits = limits;
+    }
+    const opened = await start(openDoc(new Backing(), Reserving as never));
+    const ada = await editorOn(opened);
+    const ben = await editorOn(opened);
+    const held = Y.encodeStateAsUpdate(opened.dobj.document).byteLength;
+    limits.stateCapBytes = held + 64 * 1024;
+    const reserve = (b: number) => ada.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b })}`);
+    await reserve(48 * 1024);
+    vi.setSystemTime(Date.now() + 20_000);
+    // Sent again before it lapses: it adds, but does not restart the idle clock.
+    await reserve(1024);
+    expect(ada.closed, 'within the room: not refused').toBeNull();
+    vi.setSystemTime(Date.now() + 15_000);
+    // Lapsed with no write, then reserved again: the socket holds nothing.
+    await reserve(48 * 1024);
+    await typeTitle(ben, 'b'.repeat(32 * 1024));
+    expect(ben.closed, "Ada's idle reservations hold no room").toBeNull();
+    expect(opened.dobj.document.getText('title').toString()).toBe('b'.repeat(32 * 1024));
+  });
+
   it('closes 4401 without a principal and 4429 for a 51st connection', async () => {
     const opened = await start(openDoc());
     const anonymous = await connect(opened, { id: null });
