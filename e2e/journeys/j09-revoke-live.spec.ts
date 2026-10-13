@@ -176,7 +176,10 @@ test('j09 reload: reloading while the note’s access read is in flight logs no 
   }, accessPath);
   const held: Route[] = [];
   const heldPath = (url: URL) => url.pathname === accessPath;
-  const hold = (route: Route) => { held.push(route); };
+  // The route stays installed: unrouting the last route while the next page loads can leave its module fetches
+  // paused for good in Chromium. Releasing switches it to pass-through instead.
+  let holding = true;
+  const hold = (route: Route) => { if (holding) held.push(route); else void route.continue().catch(() => undefined); };
   await ada.page.route(heldPath, hold);
   for (let round = 0; round < 3; round += 1) {
     const asked = ada.page.waitForRequest(accessRead, { timeout: 30_000 });
@@ -186,7 +189,7 @@ test('j09 reload: reloading while the note’s access read is in flight logs no 
   }
   // Released only once the last held page has left (Chromium sends a paused request on as its route goes).
   await ada.page.reload({ waitUntil: 'commit' });
-  await ada.page.unroute(heldPath, hold);
+  holding = false;
   for (const route of held) await route.continue().catch(() => undefined);
   const cut = await ada.page.evaluate(() => JSON.parse(sessionStorage.getItem('j09-cut') ?? '[]') as boolean[]);
   expect(cut.length, 'each held round left a read in flight').toBeGreaterThanOrEqual(3);
