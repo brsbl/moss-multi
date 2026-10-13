@@ -1,6 +1,6 @@
 // T6.B1 (backlog B320, B321, B329, B325; A§14): the version storage lifecycle. A sweep never deletes the object of a
 // version still staged or still listed; a late move of a pruned version leaves its object tracked for the sweep; the
-// DocDO runs one storage pass at a time; an orphan left by a failed auto version or a stop after its spill is swept by
+// DocDO runs one staged move at a time; an orphan left by a failed auto version or a stop after its spill is swept by
 // a later wake; and a named save revoked while its spill is written is refused with nothing kept.
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { DocDO, type Resolved, type SocketIdentity } from '../../src/doc-do.ts';
@@ -248,7 +248,7 @@ async function until(done: () => boolean): Promise<void> {
   for (let i = 0; i < 200 && !done(); i += 1) await vi.advanceTimersByTimeAsync(5);
 }
 
-describe('the DocDO runs one version storage pass at a time (B320, B321) @p:mean-3', () => {
+describe('the DocDO runs one staged move at a time (B320, B321) @p:mean-3', () => {
   it('moves a staged restore point once while a named save lands during its held R2 put', async () => {
     const bucket = controlledBucket();
     install(bucket);
