@@ -3,6 +3,7 @@ import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
+import { digest as sha256 } from 'lib0/hash/sha256';
 import { writeSyncStep1 } from 'y-protocols/sync';
 import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
@@ -241,6 +242,9 @@ function missingShare(doc: Y.Doc, vector: Uint8Array): number {
   return total > 0 ? missing / total : 0;
 }
 
+/** A withheld id as an attachment keeps it: 72 bits of its SHA-256, so 64 of them fit beside the rest. */
+const withheldKey = (id: string): string => bytesToBase64(sha256(new TextEncoder().encode(id)).subarray(0, 9));
+
 /** The least share of a whole state an answer costs, so tiny answers are bounded in number too. */
 const MIN_ANSWER_SHARE = 1 / 4096;
 /** The least share of its target an answer costs: every encode walks the target's whole delete set. */
@@ -325,8 +329,8 @@ export class DocDO extends YServer<SyncEnv> {
   #frameDeletes: DeleteSet | undefined;
   /** Settles run one at a time, so the last one applies the newest D1 read. */
   readonly #queue = serializer();
-  /** Withheld payload ids each connection has written, bounded per connection. In memory: a wake starts at none. */
-  readonly #withheldWrites = new WeakMap<Connection, Set<string>>();
+  /** Withheld payload ids each connection has written (digests), bounded per connection; kept in its attachment. */
+  readonly #withheldWrites = new WeakMap<Connection, Map<string, string | null>>();
   /** Frames waiting for the validation that starts after they arrived, each with when it arrived. */
   #inbox: [Connection, WSMessage, number][] = [];
   /** The frames whose validation is in flight. */
@@ -1431,15 +1435,38 @@ export class DocDO extends YServer<SyncEnv> {
     }
   }
 
-  /** Counts `id` among the connection's withheld ids, unless that would pass the bound; served ones no longer count. */
+  /**
+   * Counts `id` among the connection's withheld ids, unless that would pass the bound; served ones no longer count.
+   * The ids live in the socket's attachment too, so a hibernated socket resumes with its count (B035).
+   */
   #mayWriteWithheld(connection: Connection, payloads: PayloadStore, id: string): boolean {
     let ids = this.#withheldWrites.get(connection);
-    if (!ids) this.#withheldWrites.set(connection, (ids = new Set()));
-    if (ids.has(id)) return true;
-    if (ids.size >= this.#limits.withheldIdsPerConnection) for (const held of ids) if (payloads.served(held)) ids.delete(held);
-    if (ids.size >= this.#limits.withheldIdsPerConnection) return false;
-    ids.add(id);
-    return true;
+    if (!ids) this.#withheldWrites.set(connection, (ids = new Map((attachmentOf(connection)?.withheld ?? []).map((key): [string, string | null] => [key, null]))));
+    const key = withheldKey(id);
+    if (ids.has(key)) {
+      ids.set(key, id);
+      return true;
+    }
+    let pruned = false;
+    if (ids.size >= this.#limits.withheldIdsPerConnection) {
+      // Keys hydrated after a wake carry no id: the stored payloads' digests name them.
+      const unknown = [...ids.values()].includes(null);
+      const stored = unknown ? new Map([...payloads.ids()].map((other): [string, string] => [withheldKey(other), other])) : null;
+      for (const [held, heldId] of ids) {
+        const known = heldId ?? stored?.get(held);
+        if (known !== undefined && payloads.served(known)) {
+          ids.delete(held);
+          pruned = true;
+        }
+      }
+    }
+    const admitted = ids.size < this.#limits.withheldIdsPerConnection;
+    if (admitted) ids.set(key, id);
+    if (admitted || pruned) {
+      const attachment = attachmentOf(connection);
+      if (attachment) attach(connection, { ...attachment, withheld: [...ids.keys()] });
+    }
+    return admitted;
   }
 
   /** A served payload's update to every socket but the one it came from; each recipient becomes one of its readers. */
@@ -1493,14 +1520,11 @@ export class DocDO extends YServer<SyncEnv> {
     const payloadBytes = this.#payloads?.totalBytes ?? 0;
     if (payloadBytes > 0) event.pb = payloadBytes;
     if (payloads.size) {
-      const acked: Record<string, PayloadAck> = {};
-      for (const [id, covered] of payloads) {
-        acked[id] = {
-          sv: bytesToBase64(Y.encodeStateVector(covered.sv)),
-          ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(covered.deletes, new Map()))),
-        };
-      }
-      event.p = acked;
+      // Own keys whatever the ids: an id such as `__proto__` would set a plain object's prototype and leave the JSON.
+      event.p = Object.fromEntries([...payloads].map(([id, covered]): [string, PayloadAck] => [id, {
+        sv: bytesToBase64(Y.encodeStateVector(covered.sv)),
+        ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(covered.deletes, new Map()))),
+      }]));
     }
     // sendCustomMessage skips a socket that has closed.
     this.sendCustomMessage(connection, JSON.stringify(event));

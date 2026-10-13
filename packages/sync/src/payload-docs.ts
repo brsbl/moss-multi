@@ -45,6 +45,114 @@ export function seedPayload(doc: Y.Doc, value: string | ReadonlyMap<string, unkn
   }, origin);
 }
 
+/** A changed id: the elements naming it that the batch added, each with its transaction's origin. */
+interface Change {
+  added: Map<Y.XmlElement, unknown>;
+}
+
+/**
+ * id → the live elements naming it, from each transaction's own structs: the elements it integrated (and the `__regId`
+ * and `__type` attributes it set or removed) and the ones it deleted, including every element inside a deleted or
+ * recreated paragraph or container (Yjs deletes a subtree item by item). `take()` returns the ids changed since the
+ * last call; an index that does not `record` keeps none. The tree a doc already holds is indexed once, unrecorded.
+ */
+export class NameIndex {
+  readonly live = new Map<string, Set<Y.XmlElement>>();
+  readonly #ids = new WeakMap<Y.XmlElement, string>();
+  #changed = new Map<string, Change>();
+
+  constructor(doc: Y.Doc, private readonly ignore: unknown, private readonly record = true) {
+    const root = doc.share.get('root');
+    if (root instanceof Y.XmlText) this.#scan(root);
+    doc.on('afterTransaction', (transaction: Y.Transaction) => this.#index(doc, transaction));
+  }
+
+  #scan(type: Y.XmlText | Y.XmlElement): void {
+    if (type instanceof Y.XmlElement) this.#set(type, false, null);
+    const children = type instanceof Y.XmlText ? type.toDelta().map((op: { insert?: unknown }) => op.insert) : type.toArray();
+    for (const child of children) if (child instanceof Y.XmlText || child instanceof Y.XmlElement) this.#scan(child);
+  }
+
+  named(id: string): boolean {
+    return (this.live.get(id)?.size ?? 0) > 0;
+  }
+
+  take(): Map<string, Change> {
+    const out = this.#changed;
+    this.#changed = new Map();
+    return out;
+  }
+
+  #index(doc: Y.Doc, transaction: Y.Transaction): void {
+    const origin = transaction.origin;
+    const record = this.record && origin !== this.ignore;
+    transaction.afterState.forEach((after, client) => {
+      const before = transaction.beforeState.get(client) ?? 0;
+      if (after === before) return;
+      const structs = doc.store.clients.get(client) ?? [];
+      for (let i = Y.findIndexSS(structs, before); i < structs.length; i++) {
+        const struct = structs[i];
+        if (!(struct instanceof Y.Item) || struct.deleted) continue;
+        if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
+          this.#set(struct.content.type, record, origin);
+        } else if (naming(struct)) {
+          this.#set(struct.parent as Y.XmlElement, record, origin);
+        }
+      }
+    });
+    Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
+      if (!(struct instanceof Y.Item)) return;
+      if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
+        this.#drop(struct.content.type, record);
+      } else if (naming(struct)) {
+        // A removed `__regId` or `__type` (a replaced one is also re-filed above, to the same effect).
+        this.#set(struct.parent as Y.XmlElement, record, origin);
+      }
+    });
+  }
+
+  #note(id: string, record: boolean): Change | undefined {
+    if (!record) return undefined;
+    let change = this.#changed.get(id);
+    if (!change) this.#changed.set(id, (change = { added: new Map() }));
+    return change;
+  }
+
+  /** Files a live element under its current id (moving it if its id changed). */
+  #set(element: Y.XmlElement, record: boolean, origin: unknown): void {
+    const attr: unknown = element.getAttribute('__regId');
+    const id = isPayloadType(String(element.getAttribute('__type'))) && typeof attr === 'string' && attr ? attr : undefined;
+    const previous = this.#ids.get(element);
+    if (previous === id) {
+      if (id === undefined || this.live.get(id)?.has(element)) return;
+    } else if (previous !== undefined) {
+      this.#drop(element, record);
+    }
+    if (id === undefined) return;
+    let set = this.live.get(id);
+    if (!set) this.live.set(id, (set = new Set()));
+    this.#note(id, record)?.added.set(element, origin);
+    set.add(element);
+    this.#ids.set(element, id);
+  }
+
+  #drop(element: Y.XmlElement, record: boolean): void {
+    const id = this.#ids.get(element);
+    const set = id === undefined ? undefined : this.live.get(id);
+    if (!set?.has(element)) return;
+    this.#note(id!, record);
+    set.delete(element);
+    this.#ids.delete(element);
+    if (!set.size) this.live.delete(id!);
+  }
+}
+
+/** An attribute item that decides what a live element names: its `__regId` or its `__type`. */
+function naming(struct: Y.Item): boolean {
+  return (struct.parentSub === '__regId' || struct.parentSub === '__type') && struct.parent instanceof Y.XmlElement && !struct.parent._item?.deleted;
+}
+
+
 /** `fresh`: minted here this moment, so no one else has anything of it to ask for. */
 type HoldListener = (id: string, doc: Y.Doc, fresh: boolean) => void;
 
@@ -142,24 +250,50 @@ export interface PayloadSyncOptions {
   wrote?(id: string, update: Uint8Array): void;
   /** The origin remote frames apply under, never sent back. */
   remote: unknown;
+  /** The note doc whose tree names the payloads; without it every held payload's writes are resent. */
+  note?: Y.Doc;
+  /** Payload `id`'s unacked writes were set aside (true), or go out again (false). */
+  parked?(id: string, parked: boolean): void;
 }
 
 /**
  * A client's half of payload sync on the doc socket. Local writes go out as payload updates while the socket is open;
  * on every connect and wake each held payload sends a step 1 and its pending writes as a step 2. The server answers a
  * step 1 only for a payload an element names, and fans out or reveals payloads itself.
+ *
+ * A payload this client minted whose writes never went out while its tree named it, and that the tree no longer
+ * names (made and deleted offline), is not resent: the server would hold it as a withheld id this socket writes, and
+ * enough of them close the socket (B036). Its writes are parked, and go out once an undo or a later update names it.
  */
 export class PayloadSync {
   readonly #stops: (() => void)[] = [];
+  readonly #names: NameIndex | null;
+  /** Payloads minted here, until a write of theirs goes out while the tree names them. */
+  readonly #unsent = new Set<string>();
+  readonly #parked = new Set<string>();
+  #pending: (id: string) => Uint8Array | null = () => null;
 
   constructor(
     readonly host: PayloadDocs,
     private readonly options: PayloadSyncOptions,
   ) {
+    const note = options.note;
+    this.#names = note ? new NameIndex(note, null, false) : null;
+    if (note) {
+      // After every update listener, so the note's own frame (the element naming it) goes first.
+      const onNoteWrites = () => {
+        if (this.#parked.size) this.#unpark();
+      };
+      note.on('afterAllTransactions', onNoteWrites);
+      this.#stops.push(() => note.off('afterAllTransactions', onNoteWrites));
+    }
     for (const [id, doc] of host.docs) this.#watch(id, doc);
     this.#stops.push(host.onHold((id, doc, fresh) => {
       this.#watch(id, doc);
-      if (fresh) return;
+      if (fresh) {
+        if (this.#names) this.#unsent.add(id);
+        return;
+      }
       host.await(id);
       if (options.open()) options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
     }));
@@ -169,24 +303,48 @@ export class PayloadSync {
     const onUpdate = (update: Uint8Array, origin: unknown) => {
       if (origin === this.options.remote || origin === PAYLOAD_LOADED) return;
       this.options.wrote?.(id, update);
-      if (this.options.open()) this.options.send(encodePayloadFrame(id, PAYLOAD_UPDATE, update));
+      if (this.#parked.has(id) && !this.#names?.named(id)) return;
+      if (this.options.open()) this.#send(id, PAYLOAD_UPDATE, update);
     };
     doc.on('update', onUpdate);
     this.#stops.push(() => doc.off('update', onUpdate));
   }
 
+  #send(id: string, step: number, update: Uint8Array): void {
+    this.options.send(encodePayloadFrame(id, step, update));
+    if (this.#names?.named(id)) this.#unsent.delete(id);
+  }
+
   /** On every connect, wake and resync: a step 1 per held payload, and what is still unacked as a step 2. */
   connected(pending: (id: string) => Uint8Array | null): void {
+    this.#pending = pending;
     if (!this.options.open()) return;
     for (const [id, doc] of this.host.docs) {
       this.options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
+      if (this.#unsent.has(id) && !this.#names?.named(id)) {
+        if (!this.#parked.has(id)) {
+          this.#parked.add(id);
+          this.options.parked?.(id, true);
+        }
+        continue;
+      }
       this.resend(id, pending(id));
     }
   }
 
   /** Re-delivers a payload's unacked writes. */
   resend(id: string, update: Uint8Array | null): void {
-    if (update && this.options.open()) this.options.send(encodePayloadFrame(id, PAYLOAD_STEP2, update));
+    if (update && this.options.open()) this.#send(id, PAYLOAD_STEP2, update);
+  }
+
+  /** Parked payloads the tree names again go out. */
+  #unpark(): void {
+    for (const id of [...this.#parked]) {
+      if (!this.#names?.named(id)) continue;
+      this.#parked.delete(id);
+      this.options.parked?.(id, false);
+      this.resend(id, this.#pending(id));
+    }
   }
 
   /** A payload frame from the server; false when `bytes` is not one. */
