@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { askDocAccess } from './access.ts';
 import { createBridge, WORKSPACE } from './bridge/index.ts';
-import { isLeaveCancelled, setLeaving, type Leave } from './leave.ts';
+import { heldRead, isLeaveCancelled, setLeaving, type Leave } from './leave.ts';
 
 vi.stubGlobal('window', { location: { search: '', origin: 'http://localhost' } });
 const { call } = await import('./surfaces/ShareDialog.tsx');
@@ -177,4 +177,58 @@ describe.each<Hold>(['request', 'body'])('with the %s held', (how) => {
     expect(isLeaveCancelled(await shared.then(() => null, (reason: unknown) => reason)), 'a handled cancellation').toBe(true);
     expect(changes.sent, 'never sent twice').toHaveLength(1);
   });
+});
+
+// The route's access gate reads before the bridge boots (MossAppHost loads boot only once the gate opens): the page's
+// leave must already hold that read, with no installLeaving call of its own.
+it("holds the route's access read made before the bridge boots: the page's leave installs on first use", async () => {
+  setLeaving(null);
+  const page = Object.assign(new EventTarget(), { location: { search: '', origin: 'http://localhost' } });
+  vi.stubGlobal('window', page);
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => {
+    signals.push(init?.signal);
+    if (signals.length === 1) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    }
+    return Promise.resolve(Response.json({ role: 'editor', doc: { id: 'route-doc', folderId: 'v1', title: 'Plans', createdAt: 1, updatedAt: 1 } }));
+  });
+  const answer = askDocAccess('route-doc', fetch);
+  await vi.waitFor(() => expect(signals).toHaveLength(1));
+  page.dispatchEvent(new Event('beforeunload'));
+  expect(signals[0]?.aborted, 'beforeunload aborts the read').toBe(true);
+  await tick();
+  expect(signals, 'held while the page leaves').toHaveLength(1);
+  page.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+  expect((await answer).kind, 'read again once the page stays').toBe('open');
+  expect(signals).toHaveLength(2);
+});
+
+// Safari before 17.4 has no AbortSignal.any: the fallback must not leave a listener on the page's leave per request.
+it('leaves no listener on the leave signal after each request where AbortSignal.any is missing', async () => {
+  const native = Object.getOwnPropertyDescriptor(AbortSignal, 'any');
+  Object.defineProperty(AbortSignal, 'any', { value: undefined, configurable: true, writable: true });
+  try {
+    const leave = new AbortController();
+    let listening = 0;
+    const add = leave.signal.addEventListener.bind(leave.signal);
+    const remove = leave.signal.removeEventListener.bind(leave.signal);
+    leave.signal.addEventListener = ((type: string, listener: EventListener, options?: AddEventListenerOptions) => {
+      if (type === 'abort') listening += 1;
+      add(type, listener, options);
+    }) as typeof leave.signal.addEventListener;
+    leave.signal.removeEventListener = ((type: string, listener: EventListener, options?: EventListenerOptions) => {
+      if (type === 'abort') listening -= 1;
+      remove(type, listener, options);
+    }) as typeof leave.signal.removeEventListener;
+    const stayed = new Promise<void>(() => undefined);
+    for (let n = 0; n < 3; n += 1) {
+      await heldRead(async () => Response.json({ n }), async (response) => response.json(), { leaving: () => ({ signal: leave.signal, stayed }), timeoutMs: 10_000 });
+    }
+    expect(listening, 'no abort listener left on the leave signal').toBe(0);
+  } finally {
+    if (native) Object.defineProperty(AbortSignal, 'any', native);
+  }
 });

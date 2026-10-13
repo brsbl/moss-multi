@@ -40,3 +40,17 @@ it("returns the server's markdown for a note the caller reads, undefined for one
   const content = fetch.mock.calls.find(([input]) => String(input) === '/api/docs/mine/content');
   expect(content?.[1], 'it asks for markdown, with the session').toMatchObject({ credentials: 'same-origin', headers: expect.objectContaining({ accept: 'text/markdown' }) });
 });
+
+// A server failure on a readable note is not a denial: moss sees the read fail rather than an absent note.
+it('rejects on a server error instead of answering undefined, which only denial means', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const path = String(input);
+    if (path.startsWith('/api/workspace')) return Response.json(LISTING);
+    if (path === '/api/docs/mine/content') return new Response('unavailable', { status: 503 });
+    if (path === '/api/docs/gone/content') return Response.json({ error: 'not-found' }, { status: 404 });
+    return new Response(null, { status: 404 });
+  });
+  const api = createBridge({ pathname: () => '/', fetch });
+  await expect(api.notes.getContent('mine'), 'a 503 is a failed read').rejects.toThrow();
+  await expect(api.notes.getContent('gone'), 'a 404 is a denial').resolves.toBeUndefined();
+});

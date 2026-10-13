@@ -4,7 +4,7 @@
 // not. Signing out in one window ends the same session's other window (`session-ended`). Cold: in the idle window a
 // DocDO hibernates in, a revoked doc link's and a revoked folder link's holders land no frame after the wake.
 import { randomBytes } from 'node:crypto';
-import type { BrowserContext, Locator, Page } from '@playwright/test';
+import type { BrowserContext, Locator, Page, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR,
@@ -152,7 +152,45 @@ test('j09 reload: reloading while the note’s access read is in flight logs no 
     else await ada.page.reload({ waitUntil: 'commit' });
     await asked;
   }
+  // Held: the server's answer waits until the page has left, so each reload finds the route's read in flight. The page
+  // records, as it hides, every access read still unanswered and whether the page's leave had aborted it.
+  const accessPath = `/api/docs/${docId}`;
+  await ada.page.context().addInitScript((path: string) => {
+    const reads: { aborted: boolean; answered: boolean }[] = [];
+    const native = window.fetch;
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.pathname !== path || (init?.method ?? 'GET') !== 'GET') return native.call(window, input, init);
+      const read = { aborted: Boolean(init?.signal?.aborted), answered: false };
+      reads.push(read);
+      init?.signal?.addEventListener('abort', () => { read.aborted = true; });
+      const answer = native.call(window, input, init);
+      answer.then(() => { read.answered = true; }, () => undefined);
+      return answer;
+    };
+    window.addEventListener('pagehide', () => {
+      const cut = JSON.parse(sessionStorage.getItem('j09-cut') ?? '[]') as boolean[];
+      for (const read of reads) if (!read.answered) cut.push(read.aborted);
+      sessionStorage.setItem('j09-cut', JSON.stringify(cut));
+    });
+  }, accessPath);
+  const held: Route[] = [];
+  const heldPath = (url: URL) => url.pathname === accessPath;
+  const hold = (route: Route) => { held.push(route); };
+  await ada.page.route(heldPath, hold);
+  for (let round = 0; round < 3; round += 1) {
+    const asked = ada.page.waitForRequest(accessRead, { timeout: 30_000 });
+    await ada.page.reload({ waitUntil: 'commit' });
+    await asked;
+    await expect.poll(() => held.length, { message: 'the route read is held' }).toBeGreaterThan(round);
+  }
+  await ada.page.unroute(heldPath, hold);
   await ada.page.reload();
+  // The held answers go to requests their pages already left.
+  for (const route of held) await route.continue().catch(() => undefined);
+  const cut = await ada.page.evaluate(() => JSON.parse(sessionStorage.getItem('j09-cut') ?? '[]') as boolean[]);
+  expect(cut.length, 'each held round left a read in flight').toBeGreaterThanOrEqual(3);
+  expect(cut, "the page's leave aborted every access read the reload found in flight").toEqual(cut.map(() => true));
   ada.observations.delete(docId);
   await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   await ui.waitOpen(ada, docId, 'live');
