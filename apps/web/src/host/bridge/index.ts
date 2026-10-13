@@ -440,7 +440,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   // closed as deleted or revoked is gone though a listing read before D1 caught up still has it.
   const inListing = (id: string) => {
     const closed = terminalOf(id);
-    if (closed === 'deleted' || closed === 'revoked') return false;
+    // RED PROOF (T3.B27): a closed note is read as the listing has it.
+    if (closed === 'deleted' || closed === 'revoked') return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
     return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   };
   const watchBacklinks = (id: string) => {
