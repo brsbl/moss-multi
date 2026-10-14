@@ -49,12 +49,17 @@ const NETWORK_DROP = 1006;
 /** The server's try-again (packages/sync access-epoch.ts TRY_AGAIN): a close no journey sees unless it declares it. */
 const TRY_AGAIN = 1013;
 const SOCKET_FAILED = /^WebSocket connection to '([^']+)' failed/;
+/** How long after its socket closed the browser's console line about the failure may arrive. */
+const FAILED_LOG_MS = 2_000;
 
 export interface Network {
   /** Against a deployed stack: one network drop per doc and document, recovered to sync, is not a finding (A§21). */
   offLoopback?: boolean;
 }
 
+/** A dropped socket is recovered when a later socket of its doc and document received the server's sync step 2. */
+const recovered = (dropped: SocketEntry, group: SocketEntry[]): boolean =>
+  group.some((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.synced === true);
 
 /** Invariant 3's socket groups: per page document (else navigation count) and doc. */
 const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
@@ -66,6 +71,16 @@ const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
   return groups;
 };
 
+/**
+ * Off loopback, the recovered network drops: the single 1006 of its doc and document whose replacement reached sync.
+ * Only the browser's own failure line for that socket, logged while it lived or just after, is left to invariant 3.
+ */
+const recoveredDrops = (sockets: SocketEntry[]): SocketEntry[] =>
+  [...socketGroups(sockets).values()].flatMap((group) => {
+    const drops = group.filter((s) => s.code === NETWORK_DROP);
+    return drops.length === 1 && recovered(drops[0], group) ? drops : [];
+  });
+
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
   census: { console: ConsoleEntry[]; pageErrors: PageError[]; http: HttpEntry[]; sockets?: SocketEntry[] },
@@ -74,11 +89,12 @@ export function errorProblems(
   { offLoopback = false }: Network = {},
 ): string[] {
   const problems = census.pageErrors.map((e) => `page error: ${e.message}`);
+  const dropped = offLoopback ? recoveredDrops(census.sockets ?? []) : [];
   for (const entry of census.console) {
     if (entry.type !== 'error') continue;
     // The browser logs the drop invariant 3 judges: that socket's URL (its own _pk), while it lived or just after.
     const failed = SOCKET_FAILED.exec(entry.text)?.[1];
-    if (failed && (census.sockets ?? []).some((s) => offLoopback && s.url === failed && (s.code === NETWORK_DROP || s.code === TRY_AGAIN))) continue;
+    if (failed && dropped.some((s) => s.url === failed && entry.at >= s.openedAt && entry.at <= (s.closedAt ?? s.openedAt) + FAILED_LOG_MS)) continue;
     // A declared 4xx also logs a load failure for that resource; it is the same, declared, event.
     const load = LOAD_FAILURE.exec(entry.text);
     const status = load ? Number(load[1]) : 0;
@@ -131,7 +147,18 @@ export function socketProblems(
     // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
     const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
     if (group.length === 0) continue;
-    const drop = offLoopback && group.some((s) => s.closedAt !== null && (s.code === NETWORK_DROP || s.code === TRY_AGAIN)) ? 1 : 0;
+    let drop = 0;
+    if (offLoopback) {
+      for (const socket of group) {
+        if (socket.code === TRY_AGAIN) tryAgainSeen.set(docId, (tryAgainSeen.get(docId) ?? 0) + 1);
+      }
+      const drops = group.filter((s) => s.code === NETWORK_DROP);
+      if (drops.length > 1) problems.push(`${docId}: ${drops.length} network drops (1006) in one document, 1 allowed`);
+      for (const dropped of drops) {
+        if (!recovered(dropped, group)) problems.push(`${docId}: a socket dropped (1006) and no later socket of its document reached sync`);
+      }
+      drop = drops.length === 1 && recovered(drops[0], group) ? 1 : 0;
+    }
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + drop;
     if (group.length > allowed) {
       // How each socket ended, for a log that may not print the census.

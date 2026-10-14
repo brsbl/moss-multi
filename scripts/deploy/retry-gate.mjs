@@ -20,10 +20,8 @@ export const INFRA_CLASSES = [
  * @param {{ message?: string }[] | undefined} errors the attempt's errors, first the one that failed it
  */
 export function retryClass(errors) {
-  // Tests first: every failure is retried, as before the gate.
-  void errors;
-  void ANSI;
-  return 'unclassified';
+  const first = (errors?.[0]?.message ?? '').replace(ANSI, '').split('\n')[0];
+  return INFRA_CLASSES.find(([, pattern]) => pattern.test(first))?.[0] ?? null;
 }
 
 /**
@@ -56,9 +54,7 @@ export function recordVerdict(outputDir, testId, retry, errors) {
  * @param {number} [waitMs] how long to wait for the run log's verdict
  */
 export async function gateRetry(info, waitMs = 10_000) {
-  // Tests first: no gate yet.
-  void waitMs;
-  if (info.retry >= 0) return null;
+  if (info.retry === 0) return null;
   const path = verdictPath(info.project.outputDir, info.testId, info.retry - 1);
   const deadline = Date.now() + waitMs;
   while (!existsSync(path) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));

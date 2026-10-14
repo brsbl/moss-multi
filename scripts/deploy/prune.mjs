@@ -47,14 +47,33 @@ const rowsOf = (text) => {
  * @param {string} selectText
  */
 export function prunePlan(countText, selectText) {
-  // Tests first: nothing is pruned yet.
-  void countText;
-  void selectText;
-  void rowsOf;
-  void BATCH;
-  void PER_RUN;
-  void ID;
-  return { summary: '', ids: [], sql: '' };
+  const [count] = rowsOf(countText);
+  const { users, docs } = count ?? {};
+  if (!Number.isInteger(users) || !Number.isInteger(docs)) throw new Error('no counts in the prune count output');
+  const rows = /** @type {{ id: unknown, email: unknown }[]} */ (rowsOf(selectText));
+  for (const row of rows) {
+    if (typeof row.email !== 'string' || !PER_RUN.test(row.email) || typeof row.id !== 'string' || !ID.test(row.id)) {
+      throw new Error('refusing to prune: a selected row is not a per-run @example.invalid principal with a plain id');
+    }
+  }
+  const ids = rows.slice(0, PRUNE_CAP).map((row) => /** @type {string} */ (row.id));
+  const statements = [];
+  for (let at = 0; at < ids.length; at += BATCH) {
+    const list = ids.slice(at, at + BATCH).map((id) => `'${id}'`).join(', ');
+    const agents = `SELECT id FROM agents WHERE owner_user_id IN (${list})`;
+    statements.push(
+      `DELETE FROM doc_members WHERE principal_id IN (${list}) OR principal_id IN (${agents});`,
+      `DELETE FROM folder_members WHERE principal_id IN (${list}) OR principal_id IN (${agents});`,
+      `DELETE FROM share_links WHERE created_by IN (${list});`,
+      `DELETE FROM invites WHERE invited_by IN (${list});`,
+      `DELETE FROM user WHERE id IN (${list});`,
+      // The docs and folders that cascaded bumped their owner's epoch row; the owner is gone.
+      `DELETE FROM access_epochs WHERE owner_user_id IN (${list});`,
+    );
+  }
+  const summary = `staging holds ${users} per-run principals older than ${PRUNE_AGE_MS / 3_600_000} h owning ${docs} docs; ` +
+    `this run deletes ${ids.length} (cap ${PRUNE_CAP})${users > ids.length ? `, ${users - ids.length} remain for later runs` : ''}`;
+  return { summary, ids, sql: statements.length > 0 ? `${statements.join('\n')}\n` : '' };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

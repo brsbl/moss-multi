@@ -176,6 +176,22 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node "$WRANGLER" d1 migrations apply moss-multi-staging --remote --config apps/web/dist/server/wrangler.json
+      # A§21: earlier suites' per-run principals (mm-*@example.invalid, over 2 h old; never the canary pool or the demo
+      # accounts) go before a full suite, at most PRUNE_CAP a run, counted first (scripts/deploy/prune.mjs). Their docs
+      # cascade with them. Only counts are printed; the selection stays on the runner.
+      - name: Prune earlier suite principals
+        if: inputs.suite == 'full'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          dir="$RUNNER_TEMP/prune"
+          mkdir -p "$dir"
+          d1() { node "$WRANGLER" d1 execute moss-multi-staging --remote --config apps/web/dist/server/wrangler.json "$@"; }
+          d1 --json --command "$(node scripts/deploy/prune.mjs count-sql)" > "$dir/count.json"
+          d1 --json --command "$(node scripts/deploy/prune.mjs select-sql)" > "$dir/select.json"
+          node scripts/deploy/prune.mjs plan "$dir/count.json" "$dir/select.json" "$dir/delete.sql"
+          if [ -s "$dir/delete.sql" ]; then d1 --yes --file "$dir/delete.sql" > /dev/null; echo "pruned"; fi
       # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
       - name: Staging has room for a full suite
         if: inputs.suite == 'full'
