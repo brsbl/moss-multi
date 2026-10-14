@@ -184,9 +184,10 @@ test('j09 reload: reloading while the note’s access read is in flight logs no 
     await asked;
     await expect.poll(() => held.length, { message: 'the route read is held' }).toBeGreaterThan(round);
   }
-  // Released only once the last held page has left (Chromium sends a paused request on as its route goes).
-  await ada.page.reload({ waitUntil: 'commit' });
+  // Released only once the last held page has left (Chromium sends a paused request on as its route goes). The route
+  // comes off before that reload: turning interception off while the new page's scripts are paused leaves them unsent.
   await ada.page.unroute(heldPath, hold);
+  await ada.page.reload({ waitUntil: 'commit' });
   for (const route of held) await route.continue().catch(() => undefined);
   const cut = await ada.page.evaluate(() => JSON.parse(sessionStorage.getItem('j09-cut') ?? '[]') as boolean[]);
   expect(cut.length, 'each held round left a read in flight').toBeGreaterThanOrEqual(3);
