@@ -399,6 +399,7 @@ test('j05-trash: a restore the server refuses shows the server’s sentence, and
 
 test('j05-trash: on a narrow window, a refused restore’s notice stands clear of the open note’s Trash notice @p:note-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
+  actors.solo('one owner restores her own trashed note');
   await ada.page.setViewportSize({ width: 720, height: 800 });
   const origin = new URL(ada.page.url()).origin;
   const made = await ada.context.request.post(`${origin}/api/docs`, { headers: { origin }, data: { title: TITLE, markdown: BODY } });
@@ -427,4 +428,5 @@ test('j05-trash: on a narrow window, a refused restore’s notice stands clear o
   const apart = a!.y + a!.height <= b!.y || b!.y + b!.height <= a!.y || a!.x + a!.width <= b!.x || b!.x + b!.width <= a!.x;
   expect(apart, `the notices do not overlap: refusal ${JSON.stringify(a)}, Trash ${JSON.stringify(b)}`).toBe(true);
   await expect(trashRow(ada, docId), 'the note stays in Trash').toBeVisible();
+  await expect(toast, 'moss’s notice dismisses itself').toBeHidden({ timeout: 10_000 });
 });

@@ -4,6 +4,9 @@
 // which sends the whole subtree to Trash as one batch. A collaborator with a note open inside that subtree sees it
 // go terminal in place. An editor on a shared vault creates a folder that the owner sees live but is offered no move
 // (a move is a sharing decision, the owner's); a viewer is offered none. A refused folder change always reads as a sentence: never "Unknown parent folder", never a bare "Failed".
+// Every control asks the folder or item it acts on, not the vault root (T3.B17): a vault viewer who owns one folder and
+// edits another creates and moves there, an owner gets no "+ Note" in a folder shared to her at view, and nothing
+// moves across vaults. A nested folder moves whole through a reload, and a refused move is undone and says why.
 //
 // Vault grants are declared setup through the members API; sharing is not this journey's promise.
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -438,6 +441,7 @@ test('j06-folders: in her own Home, a folder shared to Ada at view offers no "+ 
 
 test('j06-folders: a nested folder holding a note moves into another folder and stays through a reload; a refused move says why and puts everything back @p:note-4@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
+  actors.solo('one owner reorganizes her own folders; her other window is declared setup');
   const api = setup(ada);
   const home = await api.home();
   const plans = await api.folder('Plans', home);
