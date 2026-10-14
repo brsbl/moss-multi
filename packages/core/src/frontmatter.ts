@@ -16,10 +16,58 @@ function normalizeDates(value: unknown): unknown {
   return value;
 }
 
+const EXPANSION_ERROR = 'Frontmatter expands past its budget';
+
+/** Spends 1 a node and a string's or key's length from `budget`, throwing once it is gone (or on a cycle, if asked). */
+function spendExpansion(value: unknown, budget: { left: number }, refuseCycles: boolean): void {
+  const path = new Set<object>();
+  const stack: { value: unknown; leave?: boolean }[] = [{ value }];
+  while (stack.length > 0) {
+    const { value: next, leave } = stack.pop()!;
+    if (leave) {
+      path.delete(next as object);
+      continue;
+    }
+    budget.left -= typeof next === 'string' ? 1 + next.length : 1;
+    if (budget.left < 0) throw new Error(EXPANSION_ERROR);
+    if (!next || typeof next !== 'object' || next instanceof Date) continue;
+    if (path.has(next)) {
+      if (refuseCycles) throw new Error(EXPANSION_ERROR);
+      continue;
+    }
+    path.add(next);
+    stack.push({ value: next, leave: true });
+    for (const [key, entry] of Object.entries(next)) {
+      budget.left -= key.length;
+      stack.push({ value: entry });
+    }
+  }
+}
+
+/**
+ * jsYaml.load, refusing YAML whose aliases name more than 65,536 plus 4 per character of it (each node 1, each string
+ * or key its length) or a cycle. Aliases share one parsed node, so a few bytes can name an exponential tree or many
+ * copies of one long string, and js-yaml joins aliases into a string inside load when a flow sequence is a key: the
+ * load counts what each alias names as it reads it, then the result is walked once more (as markdown-layers.ts's
+ * split does).
+ */
+function loadWithinBudget(yaml: string): unknown {
+  const aliases = { left: 65_536 + 4 * yaml.length };
+  const parsed: unknown = jsYaml.load(yaml, {
+    json: true,
+    // An alias closes with no kind of its own and the node it names as its result.
+    listener: (event, state) => {
+      if (event === 'close' && (state.kind as string | null) === null && state.result !== null) spendExpansion(state.result, aliases, false);
+    },
+  });
+  spendExpansion(parsed, { left: 65_536 + 4 * yaml.length }, true);
+  return parsed;
+}
+
 /** Accept both the old fenced storage format and YAML from a file's frontmatter block. */
 function loadFrontmatter(yaml: string): Frontmatter {
   const fenced = /^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/.exec(yaml);
-  const parsed: unknown = jsYaml.load(fenced ? fenced[1] ?? '' : yaml, { json: true });
+  const parsed = loadWithinBudget(fenced ? fenced[1] ?? '' : yaml);
   if (parsed == null) return null;
   if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Frontmatter must be a YAML mapping');
   return normalizeDates(parsed) as Frontmatter;
@@ -31,6 +79,8 @@ export function parseFrontmatter(yaml: string): Frontmatter {
 
 /** Order-insensitive equality for nested values; top-level order is tracked separately. */
 const stable = (value: unknown): string => {
+  // JSON writes NaN, ±Infinity and null all as null; tag the numbers it cannot encode.
+  if (typeof value === 'number' && !Number.isFinite(value)) return `#${String(value)}`;
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
@@ -64,22 +114,29 @@ export function updateFrontmatter(doc: Y.Doc, before: Frontmatter, after: Frontm
   const keys = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])];
   const changed = keys.filter((key) => stable(before?.[key]) !== stable(after?.[key]));
   const desired = Object.keys(after ?? {}).filter((key) => after?.[key] !== undefined);
-  const retained = new Set(Object.keys(before ?? {}).filter((key) => desired.includes(key)));
+  const wanted = new Set(desired);
+  const retained = new Set(Object.keys(before ?? {}).filter((key) => wanted.has(key)));
   const reordered = JSON.stringify(Object.keys(before ?? {}).filter((key) => retained.has(key))) !==
     JSON.stringify(desired.filter((key) => retained.has(key)));
   if (!changed.length && !reordered) return false;
   doc.transact(() => {
+    const ordered = new Set(order.toArray());
+    const appended: string[] = [];
     for (const key of changed) {
       const value = after?.[key];
       if (value === undefined) map.delete(key);
       else {
         map.set(key, value);
-        if (!order.toArray().includes(key)) order.push([key]);
+        if (!ordered.has(key)) {
+          ordered.add(key);
+          appended.push(key);
+        }
       }
     }
+    if (appended.length) order.push(appended);
     if (reordered) {
       // Ordering conflicts cannot delete values. Concurrent order inserts are deduplicated on read.
-      const others = frontmatterKeys(doc).filter((key) => !desired.includes(key));
+      const others = frontmatterKeys(doc).filter((key) => !wanted.has(key));
       order.delete(0, order.length);
       order.push([...desired, ...others]);
     }

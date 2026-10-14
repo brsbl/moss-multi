@@ -1,6 +1,6 @@
 // Parity targets (A§20, S-test §5.2): a moss Ladle story at the pin against the built Worker in the same state.
 // Targets grow per milestone; M0 is the shell.
-import { RETENTION_NOTICE_ATTR } from '../../packages/protocol/src/dom-contract.ts';
+import { HISTORY_VIEW_ATTR, RETENTION_NOTICE_ATTR, VERSION_BADGE_ATTR } from '../../packages/protocol/src/dom-contract.ts';
 
 export type Theme = 'light' | 'dark';
 
@@ -37,14 +37,22 @@ export interface Target {
    *   from the Comments list. moss at the pin has no detached state, so its anchored thread is the oracle.
    * - `open-settings`: Settings is open (the story opens it; the candidate presses the sidebar's Settings), over an
    *   opaque backdrop on both sides.
+   * - `open-history`: the candidate's note, served `e2e/fixtures/history.json`'s versions and current text, opens
+   *   History from its top bar with the newest version selected in Diff vs current; the story is the reference.
    */
-  prepare?: 'trash-open-note' | 'comment-gutter' | 'open-comment-thread' | 'open-detached-thread' | 'open-settings';
+  prepare?: 'trash-open-note' | 'comment-gutter' | 'open-comment-thread' | 'open-detached-thread' | 'open-settings' | 'open-history';
   /** `e2e/fixtures/<fixture>.md` and `.comments.json`: the story note's body and threads, imported as POST /api/docs. */
   fixture?: string;
   /** Capture this element instead of the shell: an overlay or dialog, compared as itself. */
   crop?: string;
-  /** Web sections the candidate takes out of layout before capture: those moss has no counterpart for. */
-  withhold?: string[];
+  /**
+   * Web sections moss has no counterpart for (`selector`, `count` of them), kept in the candidate's layout. The oracle
+   * gets a spacer as tall as each, appended to `container`; both sides paint the sections' rects out, and those rects
+   * must match the spacers', so a section that moves moss chrome (or is moved by it) fails.
+   */
+  webSections?: { selector: string; count: number; container: string };
+  /** Negative controls: CSS that breaks the candidate's layout, each of which must fail the gate. */
+  controls?: { name: string; css: string }[];
 }
 
 /** moss's thread popover. */
@@ -60,9 +68,9 @@ export const TARGETS: Target[] = [
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
   // Settings (T3.6). The oracle drops the sections the web withholds (Workspace Location, Default Markdown Editor, Note
-  // Intelligence, Connected Folders); the candidate drops its Account and Agents sections, which moss has no story for,
-  // so moss's dialog frame, header and Appearance section compare, and a slot that displaces them fails.
-  { id: 'settings', story: 'settings-modal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', withhold: ['[role="dialog"] [data-collab-chrome]'] },
+  // Intelligence, Connected Folders); the candidate's Account and Agents sections, which moss has no story for, stay in
+  // layout against spacers in the oracle, so moss's dialog frame, header and Appearance section compare around them.
+  { id: 'settings', story: 'settings-modal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', webSections: { selector: '[role="dialog"] [data-collab-chrome]', count: 2, container: '[role="dialog"] > .overflow-y-auto' } },
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
   // Comments (T4.3): a note with one thread. The highlight (moss's mark, our CSS Custom Highlight) and its gutter icon.
   // In dark mode moss pads its mark by 2px a side and rounds it, which moves the rest of the line; a highlight is paint
@@ -71,6 +79,16 @@ export const TARGETS: Target[] = [
   // The thread its gutter icon opens, compared as the popover.
   { id: 'comment-popover', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-comment-thread', crop: COMMENT_POPOVER },
   // A detached thread opened from the Comments list reads as moss's thread does.
+  // History (T6.3, T6.B3): moss has no history surface, so the oracle is a stored reference story, glyphdown's history
+  // page in moss's DS. A hidden version badge or a floated version list must fail it.
+  {
+    id: 'history', story: 'history-page--default', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16,
+    prepare: 'open-history', crop: `[${HISTORY_VIEW_ATTR}]`,
+    controls: [
+      { name: 'badge hidden', css: `[${VERSION_BADGE_ATTR}] { visibility: hidden !important; }` },
+      { name: 'panel floated', css: `[${HISTORY_VIEW_ATTR}] aside { position: absolute !important; }` },
+    ],
+  },
   { id: 'comment-detached', story: 'comment-note--default', seed: 'story-listing', fixture: 'comment-note', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-detached-thread', crop: COMMENT_POPOVER },
 ];
 

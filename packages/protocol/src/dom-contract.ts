@@ -139,3 +139,4 @@ export const VERSION_ROW_ATTR = 'data-version-row';
 export const VERSION_ID_ATTR = 'data-version-id';
 export const VERSION_CONTENT_ATTR = 'data-version-content';
 export const VERSION_TITLE_ATTR = 'data-version-title';
+export const VERSION_BADGE_ATTR = 'data-version-badge';

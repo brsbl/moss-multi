@@ -1,5 +1,5 @@
 // ported-from: packages/desktop/src/renderer/panels/PropertiesTabContent.tsx @ 762abb777
-import { useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: shared-properties (A§10.4): same gate as the title
+import { useFieldBound, useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: shared-properties (A§10.4): same gate as the title
 import { useCallback } from 'react';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { Plus } from 'lucide-react';
@@ -38,6 +38,7 @@ export function PropertiesTabContent() {
   const focusedNoteId = useAtomValue(focusedNoteIdAtom);
   const noteId = focusedNoteId ?? NO_NOTE_SENTINEL;
   const writable = useFieldWritable(noteId);
+  const bound = useFieldBound(noteId); // moss-multi seam: shared-properties (A§10.4): no empty state before first sync
   const noteEntity = useAtomValue(noteEntityAtom(noteId));
   const frontmatter = useAtomValue(noteFrontmatterAtom(noteId));
   const store = useStore();
@@ -99,6 +100,11 @@ export function PropertiesTabContent() {
     return (
       <p className="py-8 text-center text-caption text-ink-faint">No note selected</p>
     );
+  }
+
+  // moss-multi seam: shared-properties (A§10.4): until the doc binds, its properties are unknown, not empty
+  if (frontmatter === null && !bound) {
+    return <div className="py-8" aria-busy="true" data-properties-unbound="" />;
   }
 
   if (frontmatter === null) {

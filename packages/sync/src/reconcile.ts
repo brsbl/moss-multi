@@ -3,7 +3,7 @@
 // Payload decorators keep their node and payload id; a changed payload is a minimal diff to its own payload doc.
 import { $parseSerializedNode, type LexicalNode, type SerializedEditorState } from 'lexical';
 import * as Y from 'yjs';
-import { $reconcileRoot, type PayloadReconciler, type SerializedNode } from '@moss-multi/core/reconcile';
+import { $reconcileRoot, CrossingMove, type PayloadReconciler, type SerializedNode } from '@moss-multi/core/reconcile';
 import { exportMarkdown, stateToMarkdown } from './converter/index.ts';
 import { fieldsOf, MAP_REGISTERS } from './map-codecs.ts';
 import { REGISTER_FIELDS } from './payload-docs.ts';
@@ -12,7 +12,7 @@ import { forkWrite, mirrorOf, serverWrite, type Admit, type Mirror, type MirrorB
 
 export class ReconcileRefused extends Error {
   readonly status = 409;
-  constructor(readonly reason: 'unparseable' | 'mismatch' | 'unverified', message: string) {
+  constructor(readonly reason: 'unparseable' | 'mismatch' | 'unverified' | 'moved', message: string) {
     super(message);
     this.name = 'ReconcileRefused';
   }
@@ -65,7 +65,8 @@ export interface BesideBody {
 
 /**
  * Reconciles `live`'s body onto `target` in one server write under `origin`. Throws ReconcileRefused (409) when the
- * target cannot be parsed or the reconciled body would not export exactly as the target does; `admit` may refuse
+ * target cannot be parsed, moves an unchanged block across another, or the reconciled body would not export exactly
+ * as the target does; `admit` may refuse
  * too, and `beside` lands the title and frontmatter in the same write. With `base`, the reconcile runs from that state
  * instead of `live`'s, and its diff merges into `live`. With `fork`, the result is collected as record ops instead.
  * Returns whether the live doc changed (or the fork wrote anything).
@@ -81,6 +82,7 @@ export function reconcileBody(live: Y.Doc, target: SerializedEditorState, origin
     try {
       return run();
     } catch (error) {
+      if (error instanceof CrossingMove) throw new ReconcileRefused('moved', error.message);
       throw new ReconcileRefused('unparseable', `target does not reconcile: ${(error as Error).message}`);
     }
   };

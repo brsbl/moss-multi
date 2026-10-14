@@ -72,8 +72,7 @@ for (const [label, size, timeout] of SIZES) {
   test(`j01-paste: ${label} of mixed markdown pasted into an empty note lands whole, caret after it, one undo step, on both screens @p:col-1 @p:col-3`, async ({ actors, stack }) => {
     test.setTimeout(timeout * 3);
     const markdown = mixedMarkdown(size);
-    const { ada, ben, docId, wire } = await setup(actors, stack);
-    const want = { whole: await normalized(ada, stack, markdown), typed: await normalized(ada, stack, `${markdown}Z`) };
+    const { ada, ben, docId, wire, want } = await setup(actors, stack, undefined, { references: { whole: markdown, typed: `${markdown}Z` } });
     expect(want.whole.length, 'the reference export holds the paste').toBeGreaterThan(size * 0.8);
     await ui.body(ada, docId).click();
     await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, timeout, { maxStallMs: MAX_STALL_MS });
@@ -83,11 +82,9 @@ for (const [label, size, timeout] of SIZES) {
 test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whole, caret after it, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(300_000);
   const markdown = mixedMarkdown(200_000);
-  const { ada, ben, docId, wire } = await setup(actors, stack, 'Before.\n\nAfter.');
-  const want = {
-    whole: await normalized(ada, stack, `Before.\n\n${markdown}\n\nAfter.`),
-    typed: await normalized(ada, stack, `Before.\n\n${markdown}Z\n\nAfter.`),
-  };
+  const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
+    references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${markdown}Z\n\nAfter.` },
+  });
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
@@ -98,8 +95,7 @@ test('j01-paste: a second large paste and a note switch while a 200k paste lands
   test.setTimeout(300_000);
   const first = mixedMarkdown(200_000);
   const second = mixedMarkdown(45_000).replace('Pasted start.', 'Second paste.');
-  const { ada, ben, docId, otherId } = await setup(actors, stack, undefined, { elsewhere: true });
-  const whole = await normalized(ada, stack, `${first}${second}`);
+  const { ada, ben, docId, otherId, want: { whole } } = await setup(actors, stack, undefined, { elsewhere: true, references: { whole: `${first}${second}` } });
   await ui.body(ada, docId).click();
   await pastePlain(ada, docId, first);
   await pastePlain(ada, docId, second);
@@ -119,8 +115,7 @@ test('j01-paste: a 200k paste ending in a list keeps its lists apart and in orde
   test.setTimeout(300_000);
   for (const last of ['bullet', 'numbered'] as const) {
     const markdown = listMarkdown(200_000, last);
-    const { ada, docId } = await setup(actors, stack);
-    const whole = await normalized(ada, stack, markdown);
+    const { ada, docId, want: { whole } } = await setup(actors, stack, undefined, { references: { whole: markdown } });
     await ui.body(ada, docId).click();
     await pastePlain(ada, docId, markdown);
     await ui.waitAcked(ada, docId, 90_000);
@@ -131,8 +126,7 @@ test('j01-paste: a 200k paste ending in a list keeps its lists apart and in orde
 test('j01-paste: typing right after a 200k paste is its own undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(300_000);
   const markdown = mixedMarkdown(200_000);
-  const { ada, ben, docId } = await setup(actors, stack);
-  const want = { whole: await normalized(ada, stack, markdown), typed: await normalized(ada, stack, `${markdown}Q`) };
+  const { ada, ben, docId, want } = await setup(actors, stack, undefined, { references: { whole: markdown, typed: `${markdown}Q` } });
   const before = await exported(ada, docId);
   await ui.body(ada, docId).click();
   await pastePlain(ada, docId, markdown);

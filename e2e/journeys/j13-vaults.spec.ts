@@ -65,7 +65,7 @@ async function grantVault(owner: Actor, vaultId: string, member: Principal, role
   await grant(owner, { folderId: vaultId }, member, role);
 }
 
-test('j13-vaults: Ada creates a vault inline, switches, and creates a note that stays in it @p:note-4 @evidence', async ({ actors }) => {
+test('j13-vaults: Ada creates a vault inline, switches, and creates a note that stays in it @p:note-4@3 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   await newVault(ada, 'Home', VAULT);
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'the new vault starts empty').toHaveCount(0);
@@ -115,7 +115,7 @@ test('j13-vaults: Ada creates a vault inline, switches, and creates a note that 
   await actors.checkpoint('vault-created');
 });
 
-test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and no vault actions; the owner renames and trashes it @p:note-4 @evidence', async ({ actors }) => {
+test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and no vault actions; the owner renames and trashes it @p:note-4@3 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   await newVault(ada, 'Home', VAULT);

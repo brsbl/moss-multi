@@ -17,7 +17,7 @@ import { resolvePrincipal, type Principal } from '../auth/principal.ts';
 import { createDb, inJson, type Db } from '../db/client.ts';
 import { agents, docMembers, folderMembers, user } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { actingUserId, liveAndManaged, managesDoc, managesFolder, managesLive, reapDeadInvites, resolveDocAccess, resolveFolderAccess } from './access.ts';
+import { actingUserId, liveAndManaged, MAX_FOLDER_DEPTH, managesDoc, managesFolder, managesLive, reapDeadInvites, resolveDocAccess, resolveFolderAccess } from './access.ts';
 import { changed, NO_STORE, notFound, readJsonObject, refuse, unauthenticated } from './respond.ts';
 
 export type MemberTarget = { type: 'doc' | 'folder'; id: string };
@@ -66,9 +66,34 @@ async function grantRows(db: Db, target: MemberTarget, principalId?: string) {
     .orderBy(sql`rowid`);
 }
 
+type GrantRow = Awaited<ReturnType<typeof grantRows>>[number];
+
+/**
+ * Everyone a doc's own grants and its folders' grants reach, for the mention roster: the doc's grants in the order
+ * they were made, then each folder's from the nearest up to the vault, a person kept once at their highest role and
+ * the owner left to listMembers. Read live, so a note moved out of a folder loses that folder's grants.
+ */
+async function effectiveGrantRows(db: D1Database, docId: string, ownerUserId: string): Promise<GrantRow[]> {
+  const { results } = await db.prepare(`WITH RECURSIVE chain(id, parent_id, depth) AS (
+      SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs d ON d.folder_id = f.id WHERE d.id = ?1
+      UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    )
+    SELECT principal_id AS principalId, principal_type AS principalType, role, 0 AS depth, rowid AS seq FROM doc_members WHERE doc_id = ?1
+    UNION ALL SELECT m.principal_id, m.principal_type, m.role, chain.depth, m.rowid FROM folder_members m JOIN chain ON m.folder_id = chain.id
+    ORDER BY depth, seq`).bind(docId).all<GrantRow>();
+  const kept = new Map<string, GrantRow>();
+  for (const row of results) {
+    if (row.principalId === ownerUserId) continue;
+    const held = kept.get(row.principalId);
+    if (!held) kept.set(row.principalId, { principalId: row.principalId, principalType: row.principalType, role: row.role });
+    else if (lower(held.role, row.role)) held.role = row.role;
+  }
+  return [...kept.values()];
+}
+
 /** The owner first, then each grant in the order it was made. A grant comes only from a redeemed invite. */
-async function listMembers(db: Db, target: MemberTarget, ownerUserId: string, withEmails: boolean): Promise<Member[]> {
-  const grants = await grantRows(db, target);
+async function listMembers(db: Db, grants: GrantRow[], ownerUserId: string, withEmails: boolean): Promise<Member[]> {
   const userIds = [ownerUserId, ...grants.filter((g) => g.principalType === 'user').map((g) => g.principalId)];
   const agentIds = grants.filter((g) => g.principalType === 'agent').map((g) => g.principalId);
   const [users, agentRows] = await Promise.all([
@@ -236,15 +261,15 @@ async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Princip
 const KICK_FAILED = 'The change is saved, but some open windows haven’t closed yet. Try again.';
 
 /**
- * Closes `principalIds` (with their agents) on every doc the target reaches, after the change committed. A DocDO that
- * does not acknowledge answers 503 so the owner retries; a retry kicks again.
+ * Closes `principalIds` (with their live agents) on every doc the target reaches, after the change committed, and
+ * tells each of them to re-read their sidebar. A DocDO that does not acknowledge answers 503 so the owner retries; a
+ * retry kicks again.
  */
-async function kickFrom(
-  db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number, notified = principalIds,
-): Promise<Response | null> {
+async function kickFrom(db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[], at: number): Promise<Response | null> {
   if (!env.DocDO) return refuse(503, 'unavailable', KICK_FAILED);
+  const notified = await withAgents(db, principalIds);
   try {
-    await kick({ DB: db, DocDO: env.DocDO }, await docsOf(db, target), { principalIds: await withAgents(db, principalIds) }, at);
+    await kick({ DB: db, DocDO: env.DocDO }, await docsOf(db, target), { principalIds: notified }, at);
   } catch (error) {
     if (!(error instanceof KickFailed)) throw error;
     return refuse(503, 'unavailable', KICK_FAILED);
@@ -312,7 +337,7 @@ async function change(
           .bind(target.type, target.id, person?.email.toLowerCase() ?? '', Date.now(), callerId),
         env.DB.prepare(`DELETE FROM ${table} WHERE ${column} = ?1 AND principal_id = ?2 AND ${manages(target, 1, 3)}`).bind(target.id, principalId, callerId),
         // Invites they sent die with their manage, for good (A§8).
-        reapDeadInvites(env.DB, Date.now()),
+        reapDeadInvites(env.DB, Date.now(), { inviter: principalId }),
       ]);
       done = changed(deleted);
     } else {
@@ -321,7 +346,7 @@ async function change(
       const [updated] = await env.DB.batch([
         env.DB.prepare(`UPDATE ${table} SET role = ?3 WHERE ${column} = ?1 AND principal_id = ?2 AND role = ?4
           AND ${manages(target, 1, 5)}${agentRaise ? ` AND ${liveOwnAgent(5)}` : ''}`).bind(target.id, principalId, role, grant.role, callerId),
-        reapDeadInvites(env.DB, Date.now()),
+        reapDeadInvites(env.DB, Date.now(), { inviter: principalId }),
       ]);
       done = changed(updated);
       if (!done && agentRaise && !await ownLiveAgent(env.DB, principalId, callerId)) {
@@ -355,7 +380,11 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
   if (!access) return notFound();
   const owner = access.role === 'owner';
   if (request.method === 'GET') {
-    const members = await listMembers(db, target, access.ownerUserId, owner);
+    // The mention roster: everyone with access through a grant here or above, names only.
+    if (target.type === 'doc' && new URL(request.url).searchParams.get('scope') === 'effective') {
+      return json({ members: await listMembers(db, await effectiveGrantRows(env.DB, target.id, access.ownerUserId), access.ownerUserId, false) }, 200, NO_STORE);
+    }
+    const members = await listMembers(db, await grantRows(db, target), access.ownerUserId, owner);
     if (!owner) return json({ members }, 200, NO_STORE);
     const invites = (await liveInvites(env.DB, target)).map(({ email, role }) => ({ email, role }));
     return json({ members, invites }, 200, NO_STORE);

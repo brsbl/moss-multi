@@ -317,6 +317,8 @@ export function nodeRegistry(): ReadonlySet<string> {
 
 /** How long a record waits without an edit before an empty preview closes it: the author has moved on (§5 grouping). */
 export const EMPTY_IDLE_MS = 30_000;
+/** Idle-check previews one alarm runs before it yields and re-arms. */
+export const IDLE_BATCH = 8;
 
 /**
  * The preview a reviewer is shown. An outdated or broken record is badged, so every reader sees why it cannot be
