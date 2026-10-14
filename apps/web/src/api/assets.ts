@@ -65,13 +65,16 @@ export function setUploadDeadlineForTests(ms: number | null): void {
 /** An upload's body must arrive within this grace plus its size at this slowest rate, or it is cancelled with 408. */
 const UPLOAD_GRACE_MS = 30_000;
 const UPLOAD_MIN_BYTES_PER_SECOND = 128 * 1024;
-/** The buffer an upload starts with; it doubles as the body arrives, never past the declared length. */
+/** An upload's first buffer; it doubles as the body arrives up to the growth limit, then becomes the declared length. */
 const FIRST_BUFFER_BYTES = 64 * 1024;
+/** The largest buffer kept live beside the declared-length one while it is filled: the most a growth adds to the peak. */
+const GROWTH_LIMIT_BYTES = 1024 * 1024;
 
 /** The buffer an upload body of declared `length` needs once `needed` bytes have arrived into one of `capacity`. */
 export function uploadBufferSize(capacity: number, needed: number, length: number): number {
   if (needed <= capacity) return capacity;
-  return Math.min(length, Math.max(capacity * 2, needed, FIRST_BUFFER_BYTES));
+  const doubled = Math.max(capacity * 2, needed, FIRST_BUFFER_BYTES);
+  return doubled <= GROWTH_LIMIT_BYTES ? Math.min(length, doubled) : length;
 }
 
 /** How long an upload of `size` bytes may take to arrive. */
@@ -79,9 +82,9 @@ const uploadDeadlineMs = (size: number): number =>
   deadlineOverride ?? UPLOAD_GRACE_MS + Math.ceil((size / UPLOAD_MIN_BYTES_PER_SECOND) * 1000);
 
 /**
- * The body into one buffer of at most its declared `length`, grown as chunks arrive (each copied in and then dropped),
- * so an upload holds no more than the bytes it has sent, doubled, and never more than `length` plus a chunk. A body
- * that runs past `length` stops there; one that ends short is refused; one still arriving at the deadline is cancelled.
+ * The body into one buffer of at most its declared `length`, grown as chunks arrive: a stalled body holds about what it
+ * sent, and a large one at most `length` plus 1 MiB while its last buffer is copied over. A body that runs past
+ * `length` stops there; one that ends short is refused; one still arriving at the deadline is cancelled.
  */
 async function readDeclared(request: Request, length: number): Promise<Uint8Array<ArrayBuffer> | 'too-long' | 'too-short' | 'timeout'> {
   const reader = request.body?.getReader();
@@ -284,6 +287,16 @@ function uploadTarget(raw: string): { filename: string; type: MediaType } | null
   return filename && type ? { filename, type } : null;
 }
 
+/** Whether `filename`, or a `-n` name an upload of it may have taken, holds a file of `size` in the doc or its folder. */
+async function heldAtSize(env: AuthEnv, docId: string, folderId: string, filename: string, size: number): Promise<boolean> {
+  const names = Array.from({ length: NAME_ATTEMPTS }, (_, i) => (i === 0 ? filename : suffixedFilename(filename, i + 1)));
+  const list = names.map((_, i) => `?${i + 4}`).join(', ');
+  const row = await env.DB.prepare(`SELECT EXISTS (SELECT 1 FROM doc_media WHERE doc_id = ?1 AND size = ?3 AND filename IN (${list}))
+    OR EXISTS (SELECT 1 FROM assets WHERE folder_id = ?2 AND size = ?3 AND filename IN (${list})) AS held`)
+    .bind(docId, folderId, size, ...names).first<{ held: number }>();
+  return row?.held === 1;
+}
+
 /** The raw body into `docId`, after the caller's right to edit it was checked. */
 async function store(request: Request, env: AssetsEnv, principal: Principal, docId: string, folderId: string): Promise<Response> {
   const target = uploadTarget(new URL(request.url).searchParams.get('filename') ?? '');
@@ -300,9 +313,7 @@ async function store(request: Request, env: AssetsEnv, principal: Principal, doc
   if (size === 0) return refuse(400, 'empty', 'The file is empty.');
   // A name already holding a file of this size may be a retry of it, which adds no stored bytes and refills a blob a
   // failed put left missing; new bytes under it still take an asset row, which the insert holds to the quota.
-  const db = createDb(env.DB);
-  const [own, named] = await Promise.all([mediaOf(db, docId, filename), folderAsset(db, folderId, filename)]);
-  const refused = await admitMedia(request, env, principal, docId, folderId, own?.size === size || named?.size === size ? 0 : size);
+  const refused = await admitMedia(request, env, principal, docId, folderId, (await heldAtSize(env, docId, folderId, filename, size)) ? 0 : size);
   if (refused) return refused;
   const bytes = await readDeclared(request, size);
   if (bytes === 'timeout') return refuse(408, 'timeout', 'The upload took too long to arrive. Try again.');
