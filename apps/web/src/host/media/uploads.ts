@@ -3,6 +3,7 @@
 // so every refusal is announced first, in the server's own sentence (A§0 #2: never dropped silently).
 import { MEDIA_TYPES, mediaTypeOf } from '@moss-multi/protocol/media';
 import { AnnouncedRefusal, announceRefusal } from '../refusal.ts';
+import { pastedShareOf } from './pasted-shares.ts';
 import { shareToken, webAssetUrl } from './web-asset-url.ts';
 
 /** moss's ImageSaveResult. */
@@ -112,8 +113,10 @@ export function createImagesApi({ request, chooseFiles, share = shareToken }: Up
       const { relativePath, filename } = (await response.json()) as { relativePath: string; filename: string };
       return { relativePath, absolutePath: webAssetUrl(input.noteId, filename), filename };
     },
+    /** The page's link opens the destination; the link the pasted URL carried, if any, opens only the source. */
     copyFromNoteAsset: async (input: { sourceNoteId: string; sourceRelativePath: string; destinationNoteId: string }): Promise<SavedMedia> => {
-      const body = JSON.stringify({ sourceNoteId: input.sourceNoteId, sourceRelativePath: input.sourceRelativePath });
+      const sourceShare = pastedShareOf(input.sourceNoteId, input.sourceRelativePath);
+      const body = JSON.stringify({ sourceNoteId: input.sourceNoteId, sourceRelativePath: input.sourceRelativePath, ...(sourceShare ? { sourceShare } : {}) });
       const response = await send(`${assetPath(input.destinationNoteId)}/copy${withShare(new URLSearchParams())}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
       return saved(input.destinationNoteId, response);
     },

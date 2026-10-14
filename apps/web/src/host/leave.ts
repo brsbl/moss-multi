@@ -69,7 +69,7 @@ type Send = (signal: AbortSignal | undefined) => Promise<Response>;
 
 /** AbortSignal.any, where the browser has it (Safari 17.4); `release` drops the fallback's listeners on the sources,
  * so the page's long-lived leave signal does not collect one per request. */
-function anySignal(signals: AbortSignal[]): { signal: AbortSignal; release: () => void } {
+export function anySignal(signals: AbortSignal[]): { signal: AbortSignal; release: () => void } {
   const native = (AbortSignal as { any?: (all: AbortSignal[]) => AbortSignal }).any;
   if (native) return { signal: native.call(AbortSignal, signals), release: () => undefined };
   const controller = new AbortController();
