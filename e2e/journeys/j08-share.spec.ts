@@ -6,6 +6,7 @@
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
@@ -566,4 +567,96 @@ test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2
   await ben.page.keyboard.press('Escape');
   await expect(ben.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" in a vault at an unknown role').toHaveCount(0);
   await actors.requireDistinct(2);
+});
+
+// T3.B17: a read-only body's tabs and callouts. No gap or tab-resize control takes focus, by Tab, click or script, and
+// nothing a reader does writes; switching tabs, by click or by the tablist's keys, is navigation and still works, also
+// for an editor demoted live. Suggester is not grantable until M5 (SHARE_ROLES), so viewer and commenter stand in.
+const BLOCKS_FIXTURE = readFileSync(new URL('../fixtures/read-only-blocks.md', import.meta.url), 'utf8');
+const CONTROLS = '[data-block-gap-cursor], [data-tab-resize-handle]';
+
+async function probeReadOnlyBlocks(actors: Actors, reader: Actor, docId: string, frames: { count: () => number }, ada: Actor): Promise<void> {
+  const label = reader.label;
+  const body = ui.body(reader, docId);
+  const tab = (name: string) => body.locator('[role="tab"]', { hasText: name });
+  await expect(body.locator('[role="tab"]'), `${label}: the tab bar shows`).toHaveText(['First tab', 'Second tab', 'Third tab']);
+  await expect(body.getByText('A callout to read.'), `${label}: the callout shows`).toBeVisible();
+  expect(await body.locator('[data-block-gap-cursor]').count(), `${label}: the tabs and the callout carry gap controls (positive control)`).toBeGreaterThan(0);
+  await expect(body.locator('[data-tab-resize-handle]'), `${label}: and resize handles`).toHaveCount(2);
+  const settled = await ui.fieldText(ada, docId, 'body');
+  const before = frames.count();
+
+  // Script focus, a click and Tab never land on a gap or resize control.
+  const focused = await body.evaluate((root, selector) => [...root.querySelectorAll<HTMLElement>(selector)].flatMap((el) => {
+    el.focus();
+    return document.activeElement === el ? [el.getAttribute('aria-label') ?? el.tagName] : [];
+  }), CONTROLS);
+  expect(focused, `${label}: no gap or resize control takes focus from script`).toEqual([]);
+  const handles = await body.locator('[data-tab-resize-handle]').evaluateAll((els) => els.map((el) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }));
+  await reader.page.mouse.click(handles[0].x, handles[0].y);
+  const onControl = () => reader.page.evaluate((selector) => (document.activeElement?.closest(selector) ? document.activeElement.outerHTML.slice(0, 80) : null), CONTROLS);
+  expect(await onControl(), `${label}: a click on a resize handle focuses nothing`).toBeNull();
+
+  // Tabs switch by click and by the tablist's keys, and focus follows the tab.
+  await tab('Second tab').click();
+  await expect(tab('Second tab'), `${label}: a click switches tabs`).toHaveAttribute('aria-selected', 'true');
+  await expect(body.getByText('Second panel text.')).toBeVisible();
+  await tab('Second tab').focus();
+  await reader.page.keyboard.press('ArrowRight');
+  await expect(tab('Third tab'), `${label}: ArrowRight switches to the next tab`).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('Third tab'), `${label}: and focus follows`).toBeFocused();
+  await expect(body.getByText('Third panel text.')).toBeVisible();
+  await reader.page.keyboard.press('ArrowLeft');
+  await expect(tab('Second tab'), `${label}: ArrowLeft switches back`).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('Second tab')).toBeFocused();
+  // Invariant 9 with focus on a tab: the one control a read-only body keeps.
+  await actors.checkpoint(`read-only-tabs-${label}`);
+  await reader.page.keyboard.press('Tab');
+  expect(await onControl(), `${label}: Tab from the tab skips every gap and resize control`).toBeNull();
+  await reader.page.keyboard.press('Shift+Tab');
+  expect(await onControl(), `${label}: and so does Shift+Tab`).toBeNull();
+
+  await reader.page.waitForTimeout(1_000);
+  expect(frames.count() - before, `${label}: no write frame leaves the page`).toBe(0);
+  expect(await ui.fieldText(ada, docId, 'body'), `${label}: the owner's note is unchanged`).toBe(settled);
+}
+
+test('j08 read-only: tabs and callouts offer a reader no focusable control and no write, and tabs still switch by click and keys, also after a live demotion @p:ppl-2@2', async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const made = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Blocks', markdown: BLOCKS_FIXTURE } });
+  expect(made.status(), 'declared setup: a note with tabs and a callout').toBe(201);
+  const docId = ((await made.json()) as { doc: { id: string } }).doc.id;
+  await ada.goto(`/d/${docId}`);
+  await ui.waitOpen(ada, docId, 'live');
+
+  for (const [label, role] of [['ben', 'viewer'], ['cy', 'commenter']] as const) {
+    const principal = await actors.principal(label);
+    await grantDoc(ada, docId, principal, role);
+    const reader = await actors.session(principal);
+    const frames = writeFrames(reader);
+    await reader.goto(`/d/${docId}`);
+    await ui.waitOpen(reader, docId, 'readonly');
+    await expect(ui.pane(reader, docId)).toHaveAttribute(ROLE_ATTR, role);
+    await probeReadOnlyBlocks(actors, reader, docId, frames, ada);
+  }
+
+  // Dee edits live, then Ada lowers her to view: the same body turns read-only in place.
+  const deePrincipal = await actors.principal('dee');
+  await grantDoc(ada, docId, deePrincipal, 'editor');
+  const dee = await actors.session(deePrincipal);
+  const frames = writeFrames(dee);
+  await dee.goto(`/d/${docId}`);
+  await ui.waitOpen(dee, docId, 'live');
+  await expect(ui.body(dee, docId).locator('[data-tab-resize-handle][tabindex="0"]'), 'an editor resizes tabs (positive control)').toHaveCount(2);
+  dee.expectReconnects(1, docId);
+  const lowered = await ada.context.request.patch(`/api/docs/${docId}/members`,
+    { headers: { origin: stack.baseUrl }, data: { principalId: dee.principal!.id, role: 'viewer' } });
+  expect(lowered.status(), 'the demotion is saved').toBe(200);
+  await ui.waitOpen(dee, docId, 'readonly');
+  await expect(ui.pane(dee, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
+  await probeReadOnlyBlocks(actors, dee, docId, frames, ada);
+  await actors.requireDistinct(4);
 });

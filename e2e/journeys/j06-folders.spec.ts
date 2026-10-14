@@ -8,7 +8,7 @@
 // Vault grants are declared setup through the members API; sharing is not this journey's promise.
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, ROLE_ATTR, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR,
   TERMINAL_REASON_ATTR, NAMES,
 } from '../lib/contract.ts';
 import { grant } from '../lib/grants.ts';
@@ -282,4 +282,215 @@ test('j06-folders: a folder change refused by the server reads as a sentence, ne
   await expect(ui.folderRow(ben, 'Roadmap')).toBeVisible({ timeout: PEER_SIDEBAR_MS * 2 });
   await expect(ui.folderRow(ben, 'Archive')).toHaveCount(0, { timeout: PEER_SIDEBAR_MS * 2 });
   await actors.requireDistinct(2);
+});
+
+// T3.B17: "+ Note", Cmd/Ctrl+N and drags ask the folder or the item itself, as the server does, never the vault root.
+type Listing = { vault: { id: string }; folders: { id: string; path: string }[]; docs: { id: string; folderPath: string }[] };
+
+/** Declared setup through the API, as `actor`: folders and notes, and the actor's own Home listing. */
+function setup(actor: Actor) {
+  const origin = new URL(actor.page.url()).origin;
+  const post = (path: string, data: object) =>
+    actor.context.request.post(`${origin}${path}`, { headers: { origin, 'content-type': 'application/json' }, data, timeout: 15_000 });
+  const listing = async () => (await (await actor.context.request.get(`${origin}/api/workspace`)).json()) as Listing;
+  return {
+    origin,
+    listing,
+    home: async () => (await listing()).vault.id,
+    folder: async (name: string, parentId: string) => {
+      const made = await post('/api/folders', { parentId, name });
+      expect(made.status(), `declared setup: folder ${name}`).toBe(201);
+      return ((await made.json()) as { folder: { id: string } }).folder.id;
+    },
+    note: async (title: string, folderId: string) => {
+      const made = await post('/api/docs', { folderId, title });
+      expect(made.status(), `declared setup: note ${title}`).toBe(201);
+      return ((await made.json()) as { doc: { id: string } }).doc.id;
+    },
+  };
+}
+
+/** Every `method` request the page sends to a path matching `path`, from now on. */
+function sent(actor: Actor, method: string, path: RegExp): string[] {
+  const seen: string[] = [];
+  actor.page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (request.method() === method && path.test(pathname)) seen.push(pathname);
+  });
+  return seen;
+}
+
+const newNoteButton = (actor: Actor) => actor.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name });
+const inFolder = (actor: Actor, name: string) => actor.page.getByRole('region', { name: `Notes in ${name} folder` });
+const folderIn = (actor: Actor, parent: string, name: string) =>
+  inFolder(actor, parent).getByRole('button', { name: new RegExp(`^${name} folder, `) });
+const MOVES = /^\/api\/(docs|folders)\/[^/]+$/;
+
+test('j06-folders: a vault viewer who owns one folder and edits another creates and moves there; nothing else drags, and a refused drop sends nothing @p:note-4@2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  const api = setup(ada);
+  const vaultId = await grantVault(ada, benPrincipal, 'viewer');
+  const owned = await api.folder('Owned', vaultId);
+  await api.folder('Sub', owned);
+  const open = await api.folder('Open', vaultId);
+  await api.folder('Closed', vaultId);
+  await grant(ada, { folderId: owned }, benPrincipal, 'owner');
+  await grant(ada, { folderId: open }, benPrincipal, 'editor');
+  const ownedNote = await api.note('Owned plan', owned);
+  const openNote = await api.note('Open plan', open);
+
+  const ben = await actors.open(benPrincipal);
+  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  await ben.page.getByRole('menuitem', { name: 'Home viewer', exact: true }).click();
+  await expect(ui.folderRow(ben, 'Owned')).toBeVisible();
+  const creates = sent(ben, 'POST', /^\/api\/docs$/);
+  const moves = sent(ben, 'PATCH', MOVES);
+
+  // "+ Note" follows the folder the note would land in: Ben edits Open, so it is offered there and lands there.
+  await expandFolder(ben, 'Open');
+  await expect(newNoteButton(ben), 'a vault viewer is offered "+ Note" in a folder they edit').toBeVisible();
+  const made = await ui.createNote(ben);
+  await expect(inFolder(ben, 'Open').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${made}"]`), 'and the note lands in it').toBeVisible();
+  // Cmd/Ctrl+N creates there too: the positive control for the refusal below.
+  const shortcut = ben.page.waitForResponse((r) => new URL(r.url()).pathname === '/api/docs' && r.request().method() === 'POST');
+  await ben.page.keyboard.press('ControlOrMeta+n');
+  const second = ((await (await shortcut).json()) as { doc: { id: string } }).doc.id;
+  await ui.waitLive(ben, second);
+  await ben.declareRemount(second);
+  expect(creates, 'both creates were sent').toHaveLength(2);
+  expect((await api.listing()).docs.filter((d) => d.id === made || d.id === second).map((d) => d.folderPath), 'both in Open')
+    .toEqual(['Notes/Open', 'Notes/Open']);
+
+  // Closed is view-only to him: no "+ Note", and Cmd/Ctrl+N sends nothing.
+  await expandFolder(ben, 'Closed');
+  await expect(newNoteButton(ben), 'no "+ Note" in a folder he only views').toHaveCount(0);
+  await ben.page.keyboard.press('ControlOrMeta+n');
+  await ben.page.waitForTimeout(1_000);
+  expect(creates, 'Cmd/Ctrl+N sends no create there').toHaveLength(2);
+
+  // Drags follow what he manages: the note and the subfolder in the folder he owns, never the editor-only ones.
+  await expandFolder(ben, 'Owned');
+  await expect(noteRow(ben, ownedNote).locator('[draggable="true"]'), 'a note he manages drags').toHaveCount(1);
+  await expect(ui.folderRow(ben, 'Sub'), 'a folder he manages drags').toHaveAttribute('draggable', 'true');
+  await expect(noteRow(ben, openNote).locator('[draggable="true"]'), 'an editor-only note does not').toHaveCount(0);
+  await expect(ui.folderRow(ben, 'Open'), 'nor an editor-only folder').toHaveAttribute('draggable', 'false');
+  await expect(ui.folderRow(ben, 'Closed'), 'nor a view-only one').toHaveAttribute('draggable', 'false');
+
+  // A drop where he cannot add (a view-only folder, or the view-only vault root around it) sends nothing.
+  await noteRow(ben, ownedNote).locator('[draggable="true"]').dragTo(ui.folderRow(ben, 'Closed'));
+  await ui.folderRow(ben, 'Sub').dragTo(ui.folderRow(ben, 'Closed'));
+  await ben.page.waitForTimeout(1_000);
+  expect(moves, 'a refused drop sends no move').toEqual([]);
+
+  // Into a folder he edits, both move, and the server agrees.
+  await noteRow(ben, ownedNote).locator('[draggable="true"]').dragTo(ui.folderRow(ben, 'Open'));
+  await expect.poll(async () => (await api.listing()).docs.find((d) => d.id === ownedNote)?.folderPath, { timeout: PEER_SIDEBAR_MS })
+    .toBe('Notes/Open');
+  await ui.folderRow(ben, 'Sub').dragTo(ui.folderRow(ben, 'Open'));
+  await expect.poll(async () => (await api.listing()).folders.map((f) => f.path).sort(), { timeout: PEER_SIDEBAR_MS })
+    .toEqual(['Notes/Closed', 'Notes/Open', 'Notes/Open/Sub', 'Notes/Owned']);
+  expect(moves, 'one request per move').toHaveLength(2);
+  await actors.requireDistinct(2);
+});
+
+test('j06-folders: in her own Home, a folder shared to Ada at view offers no "+ Note" and Cmd/Ctrl+N sends nothing; a folder she co-owns from another vault neither drags nor takes a drop @p:note-4@2', async ({ actors }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.open(adaPrincipal);
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  const ben = await openShell(actors, 'ben');
+  const benApi = setup(ben);
+  const benHome = await benApi.home();
+  const shelf = await benApi.folder('Ben shelf', benHome);
+  await benApi.note('Shelf note', shelf);
+  const coowned = await benApi.folder('Ben coowned', benHome);
+  const benNote = await benApi.note('Coowned note', coowned);
+  await grant(ben, { folderId: shelf }, adaPrincipal, 'viewer');
+  await grant(ben, { folderId: coowned }, adaPrincipal, 'owner');
+  const adaApi = setup(ada);
+  const own = await adaApi.note('Ada own note', await adaApi.home());
+
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expect(ui.folderRow(ada, 'Ben shelf'), "Ben's folder shows in Ada's Home").toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  const creates = sent(ada, 'POST', /^\/api\/docs$/);
+  const moves = sent(ada, 'PATCH', MOVES);
+
+  // She owns her Home, but the shelf is view-only to her: no "+ Note" there, and Cmd/Ctrl+N sends nothing.
+  await expect(newNoteButton(ada), 'the owner is offered "+ Note" at her Home').toBeVisible();
+  await expandFolder(ada, 'Ben shelf');
+  await expect(newNoteButton(ada), 'none in a folder she only views').toHaveCount(0);
+  await ada.page.keyboard.press('ControlOrMeta+n');
+  await ada.page.waitForTimeout(1_000);
+  expect(creates, 'Cmd/Ctrl+N sends no create there').toEqual([]);
+
+  // Moves stay inside a vault: Ben's folder and its note neither drag nor take her note, though she co-owns them.
+  await expandFolder(ada, 'Ben coowned');
+  await expect(noteRow(ada, benNote), "Ben's note shows").toBeVisible();
+  await expect(noteRow(ada, own).locator('[draggable="true"]'), 'her own note drags (the positive control)').toHaveCount(1);
+  await expect(noteRow(ada, benNote).locator('[draggable="true"]'), 'a note from another vault does not').toHaveCount(0);
+  await expect(ui.folderRow(ada, 'Ben coowned'), 'nor a folder from another vault').toHaveAttribute('draggable', 'false');
+  await noteRow(ada, own).locator('[draggable="true"]').dragTo(ui.folderRow(ada, 'Ben coowned'));
+  await ada.page.waitForTimeout(1_000);
+  expect(moves, 'a drop across vaults sends no move').toEqual([]);
+  await actors.requireDistinct(2);
+});
+
+test('j06-folders: a nested folder holding a note moves into another folder and stays through a reload; a refused move says why and puts everything back @p:note-4@2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const api = setup(ada);
+  const home = await api.home();
+  const plans = await api.folder('Plans', home);
+  const deep = await api.note('Deep note', await api.folder('Drafts', plans));
+  await api.folder('Archive', home);
+  const attic = await api.folder('Attic', home);
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  const paths = async () => {
+    const listing = await api.listing();
+    return { folders: listing.folders.map((f) => f.path).sort(), note: listing.docs.find((d) => d.id === deep)?.folderPath };
+  };
+  const nested = { folders: ['Notes/Archive', 'Notes/Archive/Plans', 'Notes/Archive/Plans/Drafts', 'Notes/Attic'], note: 'Notes/Archive/Plans/Drafts' };
+  const deepRow = () => inFolder(ada, 'Drafts').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${deep}"]`);
+  /** The sidebar shows Plans inside Archive, Drafts inside Plans and the note inside Drafts. */
+  const expectNestedInSidebar = async (when: string) => {
+    await expandFolder(ada, 'Archive');
+    await expect(folderIn(ada, 'Archive', 'Plans'), `${when}: Plans is inside Archive`).toBeVisible();
+    await expandFolder(ada, 'Plans');
+    await expect(folderIn(ada, 'Plans', 'Drafts'), `${when}: Drafts is inside Plans`).toBeVisible();
+    await expandFolder(ada, 'Drafts');
+    await expect(deepRow(), `${when}: the note is inside Drafts`).toBeVisible();
+  };
+
+  await ui.folderRow(ada, 'Plans').dragTo(ui.folderRow(ada, 'Archive'));
+  await expect.poll(paths, { message: 'the subtree moves whole', timeout: PEER_SIDEBAR_MS }).toEqual(nested);
+  await expectNestedInSidebar('after the move');
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  expect(await paths(), 'the server still has it after a reload').toEqual(nested);
+  await expectNestedInSidebar('after a reload');
+
+  // Her other window trashes Attic while this sidebar is behind, so the server refuses moving Plans there.
+  const held: { continue: () => Promise<void> }[] = [];
+  await ada.page.route(/\/api\/workspace\?/, (route) => { held.push(route); });
+  try {
+    expect((await ada.context.request.delete(`${api.origin}/api/folders/${attic}`, { headers: { origin: api.origin } })).status(),
+      'declared setup: Attic goes to Trash').toBe(200);
+    await expect.poll(() => held.length, { message: 'her sidebar asked for the change', timeout: PEER_SIDEBAR_MS }).toBeGreaterThan(0);
+    await expect(ui.folderRow(ada, 'Attic'), 'her sidebar still shows Attic').toBeVisible();
+    ada.expectHttp(404, `/api/folders/${plans}`);
+    await folderIn(ada, 'Archive', 'Plans').dragTo(ui.folderRow(ada, 'Attic'));
+    const refusal = ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`).filter({ hasText: /no longer available/ });
+    await expect(refusal, 'the refusal says why, in the server’s words').toBeVisible();
+    await expect(refusal).toHaveText(/\S+ \S+ \S+/);
+    await expectNoCodedErrors(ada);
+    await expect(folderIn(ada, 'Archive', 'Plans'), 'Plans is back inside Archive').toBeVisible();
+    await expect(deepRow(), 'and its note inside Drafts').toBeVisible();
+  } finally {
+    await ada.page.unroute(/\/api\/workspace\?/);
+    for (const route of held.splice(0)) await route.continue().catch(() => undefined);
+  }
+  await expect(ui.folderRow(ada, 'Attic'), 'once caught up, Attic is gone').toHaveCount(0, { timeout: PEER_SIDEBAR_MS * 2 });
+  expect(await paths(), 'and nothing moved').toEqual({ ...nested, folders: nested.folders.filter((p) => p !== 'Notes/Attic') });
+  await expectNestedInSidebar('after the refusal');
 });
