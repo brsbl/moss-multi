@@ -513,6 +513,9 @@ export function createSweep(baseUrl) {
     const over = Buffer.from(JSON.stringify({ pad: 'x'.repeat(JSON_BODY_CAP) }));
     const streamed = await oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, over.byteLength, over);
     check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is the Worker's too-large 413`, workerTooLarge(streamed), describeAnswer(streamed));
+    // Locally, wrangler's proxy pools the connection a refused, half-read body left behind, and a POST lost on it is
+    // not replayed (patches/wrangler, T3.B22), so the upload waits out the pool's 5 s idle close first.
+    if (!edge) await new Promise((resolve) => setTimeout(resolve, 5_500));
     const huge = await oversized('POST', `/api/docs/${doc.id}/assets?filename=big.png`, { ...write(ada), 'content-type': 'image/png' }, 10 * 1024 * 1024 + 1);
     check('limits', `an image over 10 MB is the Worker's too-large 413 ${how}`, workerTooLarge(huge), describeAnswer(huge));
 
