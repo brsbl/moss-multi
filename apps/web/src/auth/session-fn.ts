@@ -2,7 +2,7 @@
 // failed lookup answers `unavailable` instead of throwing, so a transient D1 error degrades in place and never
 // reads as "signed out" (R10). Worker-only modules load inside the handlers, which the client build replaces.
 import { createServerFn } from '@tanstack/react-start';
-import type { SessionAnswer, SocialProviderId } from '../host/auth-state.ts';
+import type { LoginOptions, SessionAnswer, SocialProviderId } from '../host/auth-state.ts';
 
 export const lookupSession = createServerFn({ method: 'GET' }).handler(async (): Promise<SessionAnswer> => {
   try {
@@ -22,12 +22,16 @@ export const lookupSession = createServerFn({ method: 'GET' }).handler(async ():
   }
 });
 
-/** The OAuth providers this deployment registers; the card renders a button for these only (A§7). */
-export const loginProviders = createServerFn({ method: 'GET' }).handler(async (): Promise<SocialProviderId[]> => {
-  const [{ env }, { configuredSocialProviders }, { asAppEnv }] = await Promise.all([
+/** The OAuth providers this deployment registers (the card renders a button for these only, A§7) and its password minimum. */
+export const loginOptions = createServerFn({ method: 'GET' }).handler(async (): Promise<LoginOptions> => {
+  const [{ env }, { configuredSocialProviders, minPasswordLength }, { asAppEnv }] = await Promise.all([
     import('cloudflare:workers'),
     import('./config.ts'),
     import('../env.ts'),
   ]);
-  return Object.keys(configuredSocialProviders(asAppEnv(env))) as SocialProviderId[];
+  const appEnv = asAppEnv(env);
+  return {
+    providers: Object.keys(configuredSocialProviders(appEnv)) as SocialProviderId[],
+    minPasswordLength: minPasswordLength(appEnv.BETTER_AUTH_URL),
+  };
 });

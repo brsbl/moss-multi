@@ -199,11 +199,22 @@ const buildFolderName = (base, suffix) => {
 };
 
 /**
- * Default APFS and HFS+ compare names case- and normalization-insensitively.
+ * The key a volume tells names apart by. APFS compares names normalization-insensitively, case-sensitive or not; a
+ * case-insensitive volume also folds case fully (σ and ς; ẞ, ß, ſs and ss). Folding repeats to a fixed point so
+ * every spelling of one name gets one key; a name that over-matches only takes a suffix.
  * @param {string} name
  * @param {boolean} caseInsensitive
  */
-const volumeKey = (name, caseInsensitive) => (caseInsensitive ? name.normalize('NFD').toLowerCase() : name);
+const volumeKey = (name, caseInsensitive) => {
+  let key = name.normalize('NFD');
+  if (!caseInsensitive) return key;
+  let previous;
+  do {
+    previous = key;
+    key = key.toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+  } while (key !== previous);
+  return key;
+};
 
 /**
  * note-store.ts:4943-4985 `allocateFolder` with `noteId`: the first `buildFolderName(desiredName, n)` that is free

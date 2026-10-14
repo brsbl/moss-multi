@@ -7,7 +7,7 @@
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import type { IdSpan, SuggestRefusal } from '@moss-multi/protocol/suggest';
+import { SUGGEST_LIMITS, type IdSpan, type SuggestRefusal } from '@moss-multi/protocol/suggest';
 import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
@@ -57,12 +57,11 @@ const quiet = {
 } as unknown as Provider;
 
 /** What a scratch editor's updates add to a doc bound as a note's is: its bytes, and the largest piece one sends as. */
-class Measure {
-  readonly doc = new Y.Doc();
+export class Measure {
   largestPiece = 0;
   readonly #stop: () => void;
 
-  constructor(editor: LexicalEditor) {
+  constructor(editor: LexicalEditor, readonly doc = new Y.Doc()) {
     const binding = createBinding(editor, quiet, 'root', this.doc, new Map([['root', this.doc]]), excludedPropertiesFor(editor));
     const stopSync = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
       syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
@@ -84,6 +83,30 @@ class Measure {
     this.doc.destroy();
     return bytes;
   }
+}
+
+const varUint = (n: number): number[] => {
+  const out: number[] = [];
+  for (; n > 0x7f; n = Math.floor(n / 0x80)) out.push(0x80 | (n % 0x80));
+  out.push(n);
+  return out;
+};
+
+/**
+ * A scratch doc that writes as `live` does: its client id and the clock it is at. An item names its origin and parent
+ * by client id and clock, as variable-length integers, so a random id took 4 bytes or 5 (one in 16 is under 2^28),
+ * and a 52,000-paragraph paste measured 1.3 MB smaller than it landed (j01-paste-held). The clock is a GC run of the
+ * live client's length, a few bytes.
+ */
+export function scratchDoc(live: Y.Doc | undefined): Y.Doc {
+  const doc = new Y.Doc();
+  if (!live) return doc;
+  const clock = Y.getState(live.store, live.clientID);
+  // One client, one struct (a GC run from clock 0), no delete set (update format v1).
+  if (clock > 0) Y.applyUpdate(doc, Uint8Array.from([1, 1, ...varUint(live.clientID), 0, 0, ...varUint(clock), 0]));
+  // After the update: Yjs gives a doc a new id when a remote update writes its own.
+  doc.clientID = live.clientID;
+  return doc;
 }
 
 const scratchEditor = (nodes: readonly Klass<LexicalNode>[]) => createEditor({
@@ -126,12 +149,13 @@ function heldBytes(editor: LexicalEditor): number | null {
 const FRAME_SLACK = 64;
 
 /**
- * Below the cap with a little headroom for what the estimate leaves out; every frame within the frame cap. The figures
- * are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart from a bug.
+ * Below `share` of the cap (a little headroom for what the estimate leaves out; a suggestion stops at the reserve kept
+ * for edits); every frame within the frame cap. The figures are a User Timing mark (`moss-paste-admission`), so a
+ * refusal can be told apart from a bug.
  */
-function fits(editor: LexicalEditor, bytes: number, largestFrame: number): boolean {
+function fits(editor: LexicalEditor, bytes: number, largestFrame: number, share = 0.97): boolean {
   const held = heldBytes(editor);
-  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= STATE_CAP_BYTES * 0.97);
+  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= STATE_CAP_BYTES * share);
   performance.mark('moss-paste-admission', { detail: { adds: bytes, held, largestFrame, fit } });
   return fit;
 }
@@ -750,11 +774,11 @@ function $selectLive(selection: BaseSelection | null): boolean {
  * The scratch replay: the bytes the paste adds to the note and its payload docs, and its largest frame. Its own
  * function, so the scratch editor and doc are garbage once it returns, not held while the paste lands.
  */
-function* rehearse(request: PasteRequest, max: number): Generator<void, { bytes: number; largestFrame: number }> {
+function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined): Generator<void, { bytes: number; largestFrame: number }> {
   const { plan } = request;
   const pacer = new Pacer('moss-paste-rehearsal', max);
   const scratch = scratchEditor(request.nodes);
-  const measure = new Measure(scratch);
+  const measure = new Measure(scratch, scratchDoc(live));
   const rehearsal = new Placer(plan);
   const step = (budget: number, place: (budget: number) => void) =>
     pacer.time(budget, () => scratch.update(() => place(budget), { discrete: true }));
@@ -800,7 +824,7 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
 
   // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
-  const { bytes, largestFrame } = yield* rehearse(request, max);
+  const { bytes, largestFrame } = yield* rehearse(request, max, noteDoc(editor));
   if (!fits(editor, bytes, largestFrame)) {
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
@@ -911,7 +935,7 @@ function landSuggested(editor: LexicalEditor, request: PasteRequest, fork: ForkV
     const selection = $getSelection();
     const tops = $isRangeSelection(selection) ? [selection.anchor, selection.focus].map((point) => point.getNode().getTopLevelElement()?.getIndexWithinParent() ?? -1) : [-1];
     const adds = bytes + $splitBytes(selection);
-    if (!fits(editor, adds, 0)) {
+    if (!fits(editor, adds, 0, SUGGEST_LIMITS.reserveShare)) {
       outcome.refusal = 'doc-cap';
       refuseInput(WRITE_REFUSED['doc-cap']);
       return;

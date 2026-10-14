@@ -22,6 +22,8 @@ class TrashDocDO extends DocDO {
     const row = await d1.db.prepare('SELECT deleted_at FROM docs WHERE id = ?').bind(docId).first<{ deleted_at: number | null }>();
     return !row || row.deleted_at !== null;
   };
+  /** Where a settle that reopens the note publishes its recovery, as the Worker's env gives the DocDO. */
+  static override fanout = () => ({ DB: d1.db, PrincipalDO: principals.ns as never });
 }
 
 /** A namespace `getServerByName` can address, making each named instance once. */

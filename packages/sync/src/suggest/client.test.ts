@@ -11,7 +11,7 @@ import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-mu
 import type { RecordMeta } from '@moss-multi/core/suggest/apply';
 import { handleSuggest, SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor, payloadText } from '../payload-docs.ts';
-import { Composite, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
+import { Composite, GROUP_IDLE_MS, reviewDoc, SuggestFork, type ForkEvent } from './client.ts';
 import { bindEditor } from './fork-shim.ts';
 import { createRecord, opsOf, readMeta, readRecord, recordIds, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
@@ -278,6 +278,25 @@ describe('T5.1 the refusal copy-back @p:mean-2 @p:tech-7 @p:R17', () => {
       expect(second.events.some((event) => event.type === 'refused')).toBe(false);
     } finally {
       second.dispose();
+    }
+  });
+});
+
+describe('T5.S4 a note with no room for suggestions @p:mean-2', () => {
+  it('a first lease refused for want of room still fills F, read-only, and sends nothing', () => {
+    const live = seededBody();
+    const full = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), stateBytes: () => STATE_CAP_BYTES });
+    const link = wire(live, 'c1', full);
+    const { fork, events, dispose } = mount(live, link);
+    try {
+      expect(link.replies[0], 'the lease is refused for room').toMatchObject({ t: 'suggest-refused', reason: 'doc-cap' });
+      expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(['refused', 'ready']));
+      expect(fork.closed, 'input stays closed').toBe(true);
+      expect(fork.ready, 'F is filled').toBe(true);
+      expect(exported(fork.doc), 'F holds the body').toBe(exported(live));
+      expect(fork.sent).toBe(0);
+    } finally {
+      dispose();
     }
   });
 });
@@ -582,6 +601,100 @@ describe('T5.1 an accept seen during a reconnect @p:mean-2 @p:tech-7 @p:R17', ()
       expect(continuation?.status, 'the offline text opens a continuation of the accepted record').toBe('open');
       expect(readRecord(live, continuation!.id)?.ops.length).toBe(1);
       expect(exported(live), 'the accepted text is in the body').toContain('One.');
+    } finally {
+      m.dispose();
+    }
+  });
+});
+
+describe('T5.S5 a reservation is never passed to another fork @p:mean-2', () => {
+  it('a window whose first edit never landed is refused with its text offered back, after the cap made room', () => {
+    let t = 1_000_000;
+    const now = () => t;
+    const live = seededBody();
+    const first = wire(live, 'c1', new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), now }));
+    const a = mount(live, first, now);
+    const held = a.fork.doc.clientID;
+    let b: ReturnType<typeof mount> | null = null;
+    try {
+      // A types under its lease and the socket drops before the frame lands: the lease is unbound on the server.
+      a.act(() => select('Hello', 24).insertText(' Lost.'));
+      first.outbox.length = 0;
+      first.ingest.expireConnection('c1');
+      // Other windows of the author come and go until the author holds the most reservations it may retain.
+      for (let i = 0; i < 7; i += 1) {
+        t += 1_000;
+        const who = { ...first.who, connection: `churn-${i}` };
+        expect(first.ingest.lease(who, [], 2, `churn-fork-${i}`)).toMatchObject({ ok: true });
+        first.ingest.expireConnection(who.connection);
+      }
+      // Another window opens and writes, then closes.
+      t += 1_000;
+      const second = wire(live, 'c9', first.ingest);
+      b = mount(live, second, now);
+      expect(b.fork.doc.clientID, "the new window never writes under A's client id").not.toBe(held);
+      b.act(() => select('Go to', 0).insertText('Other words written here. '));
+      second.deliver(b.fork);
+      expect(second.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+      b.dispose();
+      b = null;
+      first.ingest.expireConnection('c9');
+      // A comes back: its edit is never silently dropped as already stored.
+      t += 1_000;
+      first.who.connection = 'c2';
+      a.fork.reconnected();
+      first.deliver(a.fork);
+      const offered = a.events.flatMap((event) => (event.type === 'refused' ? event.unsaved : []));
+      expect(offered.join('\n'), "A's unsent text is offered back").toContain('Lost.');
+      expect(a.fork.closed).toBe(true);
+    } finally {
+      b?.dispose();
+      a.dispose();
+    }
+  });
+});
+
+describe('T5.B1 a resume of many leases goes in chunks @p:mean-2 @p:tech-7', () => {
+  it('a fork needing more than 64 leases through merged records resumes in frames of at most 64, lands its owed op once, and stays open', () => {
+    let t = 1_000_000;
+    const now = () => t;
+    const live = seededBody();
+    const link = wire(live, 'c1', new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), now }));
+    const m = mount(live, link, now);
+    try {
+      const groups = 70;
+      let at = 24;
+      for (let i = 0; i < groups; i += 1) {
+        // Idle past the group gap: each edit takes a fresh lease, and builds on the last group's text, so its record
+        // merges the last one in.
+        t += GROUP_IDLE_MS + 1_000;
+        m.act(() => select('Hello', at).insertText('x'));
+        at += 1;
+        link.deliver(m.fork);
+      }
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+      const open = recordIds(live).filter((id) => readMeta(live, id)?.status === 'open');
+      expect(open, 'one open record holds every group').toHaveLength(1);
+      expect(readMeta(live, open[0])!.clients.length).toBeGreaterThan(64);
+      // Typed while the socket is down; then a new socket resumes.
+      m.act(() => select('Hello', at).insertText('y'));
+      link.outbox.length = 0;
+      link.ingest.expireConnection('c1');
+      link.who.connection = 'c2';
+      m.fork.reconnected();
+      const resumes = link.outbox.flatMap((request) => (request.t === 'suggest-lease' && request.resume ? [request.resume] : []));
+      expect(new Set(resumes.flat()).size, 'more leases than one resume may name').toBeGreaterThan(64);
+      for (const resume of resumes) expect(resume.length).toBeLessThanOrEqual(64);
+      link.deliver(m.fork);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused'), 'no chunk is refused').toEqual([]);
+      expect(m.fork.closed, 'input stays open').toBe(false);
+      expect(m.fork.owes).toBe(false);
+      const ops = () => recordIds(live).reduce((sum, id) => sum + (readRecord(live, id)?.ops.length ?? 0), 0);
+      expect(ops(), 'every group and the owed op, each once').toBe(groups + 1);
+      m.act(() => select('Hello', at + 1).insertText('z'));
+      link.deliver(m.fork);
+      expect(ops(), 'typing after the resume lands').toBe(groups + 2);
+      expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
     } finally {
       m.dispose();
     }

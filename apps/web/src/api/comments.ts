@@ -2,17 +2,16 @@
 // delete and react. The author is the server principal, never the body; the PrincipalDO counts 60 comment operations a
 // minute per principal; the DocDO re-authorizes the actor in the same serialized write (A§8), enforces authorship and writes the records through writeComments.
 // After a create or reply the Worker writes the bell's rows: mentioned people and the thread's author on a reply, each
-// a user re-checked against their live access, never the actor and never an agent.
+// a user whose live access gates the row's own insert, never the actor and never an agent.
 import { getServerByName } from 'partyserver';
 import { MAX_QUOTE } from '@moss-multi/core/anchor-frame';
 import { COMMENT_OP_RATE, COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
 import type { CommentActor, CommentDeleteScope, CommentResult } from '@moss-multi/sync';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
-import { createDb, inJson, type Db } from '../db/client.ts';
-import { user } from '../db/schema.ts';
+import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
-import { resolveDocAccess } from './access.ts';
+import { MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { notify } from './invites.ts';
 import { JSON_BODY_MAX_BYTES, NO_STORE, notFound, readJsonObject } from './respond.ts';
@@ -160,17 +159,30 @@ export async function reactComment(request: Request, env: DocsEnv, docId: string
   return json({ reaction: { id: commentId, emoji, on } }, 200, NO_STORE);
 }
 
-/** Whether `userId` can open the doc through ownership or a grant now (a link alone is not membership). */
-async function canOpen(db: Db, userId: string, docId: string): Promise<boolean> {
-  const reader: Principal = { type: 'user', id: userId, name: '', email: '', sessionId: '', credential: 'cookie' };
-  const access = await resolveDocAccess(db, reader, docId);
-  return access !== null && !access.deleted && !access.linkOnly;
-}
+/**
+ * Writes the wanted rows (`?1`, `[userId, type, rowId]` triples) in one statement, each only while its person is a user
+ * who can open doc `?4` at that moment: it is live under live folders, and they own it or hold a grant on it or on a
+ * folder above it (a link alone is not membership; resolveDocAccess without a token). Returns who got a row.
+ */
+const NOTIFY = `WITH RECURSIVE chain(id, parent_id, deleted_at, depth) AS (
+    SELECT f.id, f.parent_id, f.deleted_at, 1 FROM folders f JOIN docs d ON d.folder_id = f.id WHERE d.id = ?4
+    UNION ALL SELECT f.id, f.parent_id, f.deleted_at, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+      WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+  ), wanted(user_id, type, id) AS (
+    SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]') FROM json_each(?1)
+  )
+  INSERT INTO notifications (id, user_id, type, payload_json, created_at)
+  SELECT w.id, w.user_id, w.type, ?2, ?3 FROM wanted w JOIN "user" u ON u.id = w.user_id JOIN docs d ON d.id = ?4
+  WHERE d.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM chain WHERE deleted_at IS NOT NULL)
+    AND (d.owner_user_id = w.user_id
+      OR EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d.id AND m.principal_id = w.user_id)
+      OR EXISTS (SELECT 1 FROM folder_members m JOIN chain ON m.folder_id = chain.id WHERE m.principal_id = w.user_id))
+  RETURNING user_id AS userId`;
 
 /**
  * The bell's rows for a new comment (comments.md §12): `mention` for each mentioned person and `comment-reply` for the
- * thread's author on a reply, one row per person. Only user accounts get rows (an agent has no bell), each re-checked
- * against the live grant, and never the actor. A failure here loses only the notices, never the comment.
+ * thread's author on a reply, one row per person. Only user accounts get rows (an agent has no bell), each gated on
+ * live access in the insert itself, and never the actor. A failure here loses only the notices, never the comment.
  */
 async function notifyComment(env: DocsEnv, docId: string, actor: Actor, comment: { commentId: string; text: string; rootAuthor?: string }): Promise<void> {
   try {
@@ -179,16 +191,10 @@ async function notifyComment(env: DocsEnv, docId: string, actor: Actor, comment:
     if (comment.rootAuthor && !wanted.has(comment.rootAuthor)) wanted.set(comment.rootAuthor, 'comment-reply');
     wanted.delete(actor.id);
     if (!wanted.size) return;
-    const db = createDb(env.DB);
-    const people = await db.select({ id: user.id }).from(user).where(inJson(user.id, [...wanted.keys()]));
-    const recipients: string[] = [];
-    for (const { id } of people) if (await canOpen(db, id, docId)) recipients.push(id);
-    if (!recipients.length) return;
-    const now = Date.now();
+    const rows = JSON.stringify([...wanted].map(([id, type]) => [id, type, crypto.randomUUID()]));
     const payload = JSON.stringify({ targetType: 'doc', targetId: docId, by: actor.id, commentId: comment.commentId });
-    await env.DB.batch(recipients.map((id) => env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5)`).bind(crypto.randomUUID(), id, wanted.get(id)!, payload, now)));
-    for (const id of recipients) notify(env, id, 'notifications');
+    const { results } = await env.DB.prepare(NOTIFY).bind(rows, payload, Date.now(), docId).all<{ userId: string }>();
+    for (const { userId } of results) notify(env, userId, 'notifications');
   } catch (error) {
     console.error('comment notifications failed', error);
   }

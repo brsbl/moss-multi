@@ -17,6 +17,8 @@ export interface Attachment {
   role: Role;
   sessionId: string | null;
   shareToken: string | null;
+  /** The client address bucket the Worker saw at upgrade, for an anonymous socket; null when unknown. */
+  address?: string | null;
   presenceAllowed?: boolean;
   /** Minted at connect: suggestion leases bind to it, since a client may reuse its partyserver connection id. */
   nonce?: string;
@@ -28,6 +30,8 @@ export interface Attachment {
   epoch?: string;
   /** Not yet validated by the DocDO (A§8): it hears no broadcast and none of its frames apply until it is. */
   pending?: boolean;
+  /** The withheld payload ids this socket has written (digests), so a wake keeps counting them; absent: none. */
+  withheld?: string[];
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
@@ -42,6 +46,7 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     role,
     sessionId: headers.get(TRUSTED.session) || null,
     shareToken: headers.get(TRUSTED.share) || null,
+    address: headers.get(TRUSTED.address) || null,
     presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
     resolvedAt: Number(headers.get(TRUSTED.resolvedAt)) || 0,
     epoch: headers.get(TRUSTED.epoch) ?? '',
@@ -118,18 +123,44 @@ export type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
 /**
  * The classifier's verdict, the deletes the frame carries (its ack names them, A§5.1 Acks), and whether the frame
  * needs a clock the doc lacks (`missing`). `decoded` lets the caller share one decode with gate 2b. `budget` bounds
- * the store items the delete scan visits; past it the frame reads as inert. Pass one only for a connection that may
- * not write (below editor), whose frame is never applied either way (`isReadOnly`): its refusal then costs O(frame),
- * never O(doc).
+ * the store items the delete scan visits; past it the frame is `exhausted`: neither proved inert nor shown to change
+ * the doc. Pass one only for a connection that may not write (below editor), whose frame is never applied either way
+ * (`isReadOnly`): its refusal then costs O(frame), never O(doc).
  */
 export function classifySync(
   doc: Y.Doc,
   update: Uint8Array,
   decoded = Y.decodeUpdate(update),
   budget = Infinity,
-): { changes: boolean; missing: boolean; deletes: DeleteSet } {
+): { changes: boolean; exhausted: boolean; missing: boolean; deletes: DeleteSet } {
   const { structs, ds } = decoded;
-  return { changes: changes(doc, structs, ds, budget), missing: missing(doc, structs, ds), deletes: ds };
+  const verdict = changes(doc, structs, ds, budget);
+  return { changes: verdict === 'changed', exhausted: verdict === 'exhausted', missing: missing(doc, structs, ds), deletes: ds };
+}
+
+/**
+ * True when every delete in `ds` names clocks that `deleted` (a doc's own deletes, merged and sorted, as
+ * `Y.createDeleteSetFromStructStore` makes them) already holds: O(ranges · log).
+ */
+export function deletesCovered(deleted: DeleteSet, ds: DeleteSet): boolean {
+  for (const [client, deletes] of ds.clients) {
+    const held = deleted.clients.get(client) ?? [];
+    for (const { clock, len } of deletes) {
+      if (len <= 0) continue;
+      let lo = 0;
+      let hi = held.length - 1;
+      let found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (held[mid].clock <= clock) {
+          found = mid;
+          lo = mid + 1;
+        } else hi = mid - 1;
+      }
+      if (found < 0 || held[found].clock + held[found].len < clock + len) return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -159,12 +190,13 @@ function missing(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet)
 
 /**
  * The write classifier: a sync frame changes the doc only if it carries a struct the doc's state vector lacks or
- * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert.
+ * deletes an item the doc has not deleted. Every step 2 that merely answers a step 1 is inert. Past `budget` scanned
+ * items the delete scan stops: `exhausted`.
  */
-function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, budget: number): boolean {
+function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet, budget: number): 'changed' | 'inert' | 'exhausted' {
   for (const struct of structs) {
     if (struct instanceof Y.Skip) continue;
-    if (Y.getState(doc.store, struct.id.client) < struct.id.clock + struct.length) return true;
+    if (Y.getState(doc.store, struct.id.client) < struct.id.clock + struct.length) return 'changed';
   }
   let scanned = 0;
   for (const [client, deletes] of ds.clients) {
@@ -172,14 +204,14 @@ function changes(doc: Y.Doc, structs: (Y.Item | Y.GC | Y.Skip)[], ds: DeleteSet,
     const state = Y.getState(doc.store, client);
     for (const { clock, len } of deletes) {
       if (len <= 0) continue;
-      if (clock + len > state) return true;
+      if (clock + len > state) return 'changed';
       for (let i = Y.findIndexSS(known, clock); i < known.length && known[i].id.clock < clock + len; i += 1) {
-        if (!known[i].deleted) return true;
-        if (++scanned > budget) return false;
+        if (!known[i].deleted) return 'changed';
+        if (++scanned > budget) return 'exhausted';
       }
     }
   }
-  return false;
+  return 'inert';
 }
 
 /** The encoded state the doc would have after `update`, measured on a copy. */

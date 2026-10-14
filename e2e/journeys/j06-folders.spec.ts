@@ -62,7 +62,7 @@ async function grantVault(owner: Actor, member: Principal, role: 'viewer' | 'edi
   return vault.id;
 }
 
-test('j06-folders: from an empty workspace, create, nest, fill, rename and trash a folder; a peer inside the subtree goes terminal in place @p:note-4 @p:note-5 @evidence', async ({ actors }) => {
+test('j06-folders: from an empty workspace, create, nest, fill, rename and trash a folder; a peer inside the subtree goes terminal in place @p:note-4@2 @p:note-5 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'Ada starts from an empty workspace').toHaveCount(0);
@@ -147,7 +147,7 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
   await expect(ben.page.locator(`[${EDITOR_PANE_ATTR}]`)).toHaveCount(0);
 });
 
-test('j06-folders: an editor on a shared vault creates a folder the owner sees live; a viewer is offered none @p:note-4 @evidence', async ({ actors }) => {
+test('j06-folders: an editor on a shared vault creates a folder the owner sees live; a viewer is offered none @p:note-4@2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   const cyPrincipal = await actors.principal('cy');
@@ -229,7 +229,7 @@ test("j06-folders: a folder shared into an editor's own Home offers no move of i
   await actors.requireDistinct(2);
 });
 
-test('j06-folders: a folder change refused by the server reads as a sentence, never a coded error or a bare "Failed" @p:note-4', async ({ actors }) => {
+test('j06-folders: a folder change refused by the server reads as a sentence, never a coded error or a bare "Failed" @p:note-4@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
   await grantVault(ada, benPrincipal, 'editor');

@@ -444,6 +444,16 @@ export const normalizeHighlightFormattingBoundaries = (md: string): string => {
   });
 };
 
+// moss-multi seam: highlight-split budget (SP2): each run repeats the whole wrapper, whose style attribute is
+// unbounded, so the split may add at most HIGHLIGHT_SPLIT_GROWTH characters per character of its highlight (plus
+// HIGHLIGHT_SPLIT_BASE), and one normalization at most HIGHLIGHT_SPLIT_TOTAL in all: the import's line and note budgets
+// (linear-import.ts: perChar and base, perNote, over NORMALIZED and NORMALIZED_NOTE) leave lines past these literal
+// anyway. Past a bound the highlight stays as written.
+const HIGHLIGHT_SPLIT_GROWTH = 8;
+const HIGHLIGHT_SPLIT_BASE = 512;
+const HIGHLIGHT_SPLIT_TOTAL = 1 << 22;
+let highlightSplitLeft = HIGHLIGHT_SPLIT_TOTAL;
+
 /**
  * Find formatting delimiter pairs inside highlight content and rebuild the
  * string with delimiters moved outside their highlight wrappers.
@@ -456,13 +466,17 @@ export const normalizeHighlightFormattingBoundaries = (md: string): string => {
  */
 const splitFormattingFromHighlightContent = (
   content: string,
-  wrapSegment: (text: string) => string
+  wrapSegment: (text: string) => string,
+  span: number // moss-multi seam: highlight-split budget: the highlight's length as written
 ): string | null => {
   // Longest-first alternation so `**` is tried before `*`
   const delimRe = /(\*\*|~~|\*)((?:(?!\1)[^\n])+?)\1/g;
   if (!delimRe.test(content)) return null;
   delimRe.lastIndex = 0;
 
+  // moss-multi seam: highlight-split budget: each wrapper is checked against the bound before it is built
+  const wrapper = wrapSegment('').length;
+  const limit = span + Math.min(HIGHLIGHT_SPLIT_GROWTH * span + HIGHLIGHT_SPLIT_BASE, highlightSplitLeft);
   let result = '';
   let lastIndex = 0;
   let match;
@@ -470,18 +484,22 @@ const splitFormattingFromHighlightContent = (
   while ((match = delimRe.exec(content)) !== null) {
     const [full, delimiter, innerText] = match;
     const before = content.slice(lastIndex, match.index);
+    if (result.length + (before ? 2 * wrapper + before.length : wrapper) + full.length > limit) return null; // moss-multi seam: highlight-split budget
     if (before) result += wrapSegment(before);
     result += wrapSegment(`${delimiter}${innerText}${delimiter}`);
     lastIndex = match.index + full.length;
   }
 
   const after = content.slice(lastIndex);
+  if (after && result.length + wrapper + after.length > limit) return null; // moss-multi seam: highlight-split budget
   if (after) result += wrapSegment(after);
 
+  highlightSplitLeft -= Math.max(0, result.length - span); // moss-multi seam: highlight-split budget
   return result;
 };
 
 export const normalizeRichTextInsideHighlightsForImport = (md: string): string => {
+  highlightSplitLeft = HIGHLIGHT_SPLIT_TOTAL; // moss-multi seam: highlight-split budget: one total per normalization
   if (!md.includes('<mark') && !md.includes('==')) return md; // moss-multi seam: linear-import (SP2): no regex below can match
   return mapOutsideFencedCodeBlocks(md, (segment) => {
     if (!segment.includes('<mark') && !segment.includes('==')) return segment; // moss-multi seam: linear-import (SP2)
@@ -496,7 +514,8 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
       (fullMatch, colorName: string, styleAttribute: string, content: string) =>
         splitFormattingFromHighlightContent(
           content,
-          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`
+          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`,
+          fullMatch.length // moss-multi seam: highlight-split budget
         ) ?? fullMatch
     );
 
@@ -505,15 +524,17 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
       (fullMatch, openComment: string, colorName: string, styleAttribute: string, content: string, closeComment: string) => {
         const split = splitFormattingFromHighlightContent(
           content,
-          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`
+          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`,
+          fullMatch.length - openComment.length - closeComment.length // moss-multi seam: highlight-split budget
         );
         if (!split) return fullMatch;
+        // moss-multi seam: highlight-split budget: markers go in as written (a `$&` or `$`` in a replacement string copied the opener or the split)
         return split.replace(
           /(<mark data-color="\w+"(?:\s+style="[^"]*")?>)/,
-          `${openComment}$1`
+          (opener) => `${openComment}${opener}`
         ).replace(
           /(<\/mark>)(?!.*<\/mark>)/,
-          `$1${closeComment}`
+          (closer) => `${closer}${closeComment}`
         );
       }
     );
@@ -521,20 +542,21 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
     normalized = normalized.replace(
       /==([^=\n]+)==/g,
       (fullMatch, content: string) =>
-        splitFormattingFromHighlightContent(content, (t) => `==${t}==`) ?? fullMatch
+        splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length) ?? fullMatch // moss-multi seam: highlight-split budget
     );
 
     normalized = normalized.replace(
       /(\{%c:[^%]+%\}|%%m:[^%]+:start%%)==([^=\n]+)==(\{%\/c%\}|%%m:[^%]+:end%%)/g,
       (fullMatch, openComment: string, content: string, closeComment: string) => {
-        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`);
+        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length - openComment.length - closeComment.length); // moss-multi seam: highlight-split budget
         if (!split) return fullMatch;
+        // moss-multi seam: highlight-split budget: markers go in as written
         return split.replace(
           /(==)/,
-          `${openComment}$1`
+          (opener) => `${openComment}${opener}`
         ).replace(
           /(==)(?!.*==)/,
-          `$1${closeComment}`
+          (closer) => `${closer}${closeComment}`
         );
       }
     );

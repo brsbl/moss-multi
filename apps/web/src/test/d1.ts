@@ -65,3 +65,54 @@ export function countingBinds(db: D1Database): { db: D1Database; binds: number[]
   });
   return { db: wrapped, binds, prepared: () => prepared };
 }
+
+/**
+ * `db` with every row D1 hands back counted (`rows`) and every round trip, a statement or a batch, counted (`trips`).
+ * `after`, when given, runs once a statement's rows are in hand and before its caller sees them.
+ */
+export function countingRows(db: D1Database, after?: (rows: unknown) => Promise<void> | void) {
+  let rows = 0;
+  let trips = 0;
+  const real = new WeakMap<object, D1PreparedStatement>();
+  const seen = async <T>(result: T, count: number): Promise<T> => {
+    rows += count;
+    if (after) await after(result);
+    return result;
+  };
+  const wrap = (statement: D1PreparedStatement): D1PreparedStatement => {
+    const wrapped = new Proxy(statement, {
+      get(target, name) {
+        if (name === 'bind') return (...values: unknown[]) => wrap(target.bind(...values));
+        if (name === 'all') return async () => { trips += 1; const result = await target.all(); return seen(result, result.results.length); };
+        if (name === 'run') return async () => { trips += 1; const result = await target.run(); return seen(result, result.results?.length ?? 0); };
+        if (name === 'first') return async (column?: string) => {
+          trips += 1;
+          const result = await (column === undefined ? target.first() : target.first(column));
+          return seen(result, result === null ? 0 : 1);
+        };
+        if (name === 'raw') return async (options?: { columnNames?: boolean }) => {
+          trips += 1;
+          const result = await target.raw(options as { columnNames: true });
+          return seen(result, result.length - (options?.columnNames ? 1 : 0));
+        };
+        const value = Reflect.get(target, name, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    real.set(wrapped, statement);
+    return wrapped;
+  };
+  const wrapped = new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare') return (query: string) => wrap(target.prepare(query));
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => {
+        trips += 1;
+        const results = await target.batch(statements.map((statement) => real.get(statement) ?? statement));
+        return seen(results, results.reduce((sum, result) => sum + (result.results?.length ?? 0), 0));
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db: wrapped, rows: () => rows, trips: () => trips };
+}
