@@ -1,6 +1,7 @@
 // The formula popover's merge of a peer's change to a stored formula into an open draft (A§10.10, T3.B15). A stored
 // formula names each reference as a token, `@(name#noteId#formulaId)`, and the popover shows only its name.
 import { applyOps, diffText, mapOffset, rebaseOps, type Delta, type TextOp } from '@moss-multi/core/text-diff';
+import { refuseInput } from '../refusal.ts';
 
 export type { Delta };
 
@@ -45,7 +46,7 @@ export function referenceSpans(raw: string): TokenSpan[] {
  * use area first, never a surrogate); once those run out, a free astral code point, which the diff aligns as one
  * element, so the merge is over a sequence in which each token is one item. Each assigned character is reserved, and
  * the search visits each candidate once. Null when every code point is taken (a source of over a million distinct
- * characters, past the note cap): the caller merges the stored text as it is.
+ * characters): the caller never merges the text then, which would splice one token's ids into another's.
  */
 export function createTokenCodec(sources: readonly string[]): TokenCodec | null {
   const usedUnits = new Uint8Array(BMP_UNITS);
@@ -123,12 +124,6 @@ export function createTokenCodec(sources: readonly string[]): TokenCodec | null 
     },
   };
 }
-
-/** The stored text itself, for a merge past every free character. */
-const identity: TokenCodec = {
-  encode: (raw) => ({ text: raw, spans: referenceSpans(raw) }),
-  decode: (text) => ({ raw: text, spans: referenceSpans(text) }),
-};
 
 /** A humanized offset in stored form; one inside a reference goes to its token's start. */
 const toStoredOffset = (offset: number, spans: readonly TokenSpan[]): number => {
@@ -211,7 +206,15 @@ function encodeOps(ops: readonly TextOp[], before: string, codec: TokenCodec, ba
 export function mergeStoredFormula(
   before: string, after: string, ours: string, selection: readonly number[], delta?: Delta,
 ): { raw: string; selection: number[] } {
-  const codec = createTokenCodec([before, after, ours]) ?? identity;
+  const codec = createTokenCodec([before, after, ours]);
+  if (!codec) {
+    // No character is free for a token. A change on one side alone is that side's text; changes on both resolve the
+    // whole formula to the stored one (last writer wins), and the notice says so.
+    if (after === before) return { raw: ours, selection: [...selection] };
+    if (ours !== before) refuseInput(FORMULA_REPLACED);
+    const length = referenceSpans(after).reduce((sum, span) => sum - (span.rawEnd - span.rawStart) + (span.end - span.start), after.length);
+    return { raw: after, selection: selection.map((at) => Math.min(at, length)) };
+  }
   const base = codec.encode(before).text;
   const target = codec.encode(after).text;
   const mine = codec.encode(ours);
