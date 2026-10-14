@@ -657,9 +657,9 @@ describe('admission and the write classifier', () => {
       limits.stateCapBytes = held() + 64 * 1024;
       await reserve(ada, 'A', 48 * 1024);
       expect(await answer(ada, 'A')).toBe('reserved');
-      vi.setSystemTime(Date.now() + 20_000);
+      vi.setSystemTime(Date.now() + 100_000);
       await reserve(ada, 'A', 48 * 1024);
-      vi.setSystemTime(Date.now() + 15_000);
+      vi.setSystemTime(Date.now() + 30_000);
       await typeTitle(ben, 'b'.repeat(32 * 1024));
       expect(ben.closed, "Ada's idle reservation holds no room").toBeNull();
       expect(count(opened, 'b')).toBe(32 * 1024);

@@ -20,7 +20,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
-import { countedPayloadBytes, PASTE_LIMIT_BYTES, reserveWrite, WRITE_REFUSED } from './collab/doc-session.ts';
+import { countedPayloadBytes, PASTE_LIMIT_BYTES, reservePaste, WRITE_REFUSED } from './collab/doc-session.ts';
 import { markLanding } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
@@ -624,9 +624,15 @@ const INPUT_EVENTS = ['keydown', 'pointerdown', 'mousedown', 'paste', 'drop', 'c
 
 const jobs = new WeakMap<LexicalEditor, PasteJob>();
 
+/**
+ * A step of a paste job: void to go on in the next task, or a promise to go on once it settles (the paste's reserve
+ * waiting for its answer). Landing the rest at once goes on without waiting.
+ */
+type Step = void | Promise<void>;
+
 /** A paste, or a paste's redo, landing in batches; any input lands the rest first. */
 class PasteJob {
-  readonly #steps: Generator<void, void>;
+  readonly #steps: Generator<Step, void>;
   readonly #stops: (() => void)[] = [];
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flushing = false;
@@ -634,7 +640,7 @@ class PasteJob {
   /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
   readonly #dir = new DirLift();
 
-  constructor(readonly editor: LexicalEditor, steps: (job: PasteJob) => Generator<void, void>) {
+  constructor(readonly editor: LexicalEditor, steps: (job: PasteJob) => Generator<Step, void>) {
     this.#steps = steps(this);
   }
 
@@ -685,11 +691,12 @@ class PasteJob {
 
   readonly #tick = (): void => {
     this.#timer = undefined;
-    let done = true;
+    let step: IteratorResult<Step, void> = { done: true, value: undefined };
     try {
-      done = !!this.#steps.next().done;
+      step = this.#steps.next();
     } finally {
-      if (done) this.#end();
+      if (step.done) this.#end();
+      else if (step.value instanceof Promise) void step.value.then(() => { if (!this.#ended && !this.#flushing) this.#timer = setTimeout(this.#tick, 0); });
       else this.#timer = setTimeout(this.#tick, 0);
     }
   };
@@ -790,8 +797,12 @@ function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined):
   return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
 }
 
-/** Lands `request`: its scratch replay, then its batches or its refusal. */
-function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void> {
+/**
+ * Lands `request`: its scratch replay, its reserve at the DocDO, then its batches or its refusal. Nothing lands before
+ * the DocDO has answered the reserve, unless input arrives first: the paste then lands at once, and its frames wait for
+ * the answer in the outbox (PasteTicket.land).
+ */
+function* landPaste(job: PasteJob, request: PasteRequest): Generator<Step, void> {
   const { editor } = job;
   const { plan } = request;
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
@@ -802,11 +813,28 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
   }
-  // The DocDO sets room aside for all of it before its first frame, so a concurrent writer cannot leave it half landed.
-  reserveWrite(noteDoc(editor), bytes);
+  // The DocDO holds room for all of it before its first frame, so a concurrent writer cannot leave it half landed; a
+  // refusal leaves the note and every other paste as they are.
+  const ticket = reservePaste(noteDoc(editor), bytes);
+  while (ticket?.answer === 'pending' && !job.flushing) yield ticket.settled;
+  if (ticket && (ticket.answer === 'refused' || ticket.answer === 'gone')) {
+    if (ticket.answer === 'refused') refuseInput(WRITE_REFUSED['doc-cap']);
+    return;
+  }
+  ticket?.land();
+  try {
+    yield* placeBatches(job, request, max);
+  } finally {
+    ticket?.end();
+  }
+}
+
+/** The paste itself: the first batch at the caret, then the rest, all one undo step. */
+function* placeBatches(job: PasteJob, request: PasteRequest, max: number): Generator<Step, void> {
+  const { editor } = job;
+  const { plan } = request;
   yield;
 
-  // 2. The paste itself: the first batch at the caret, then the rest, all one undo step.
   const undo = collabUndo(editor);
   undo?.stopCapturing();
   const placer = new Placer(plan, true);
@@ -860,7 +888,7 @@ const redoing = new WeakSet<LexicalEditor>();
 const REDO_SLICE_BYTES = 8 * 1024 * 1024;
 
 /** The redo of a paste that landed in batches, a slice at a time, the main thread free between slices. */
-function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<void, void> {
+function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<Step, void> {
   const { editor } = job;
   const pacing = new Pacer('moss-paste-redo', max);
   const layout = () => void editor.getRootElement()?.offsetHeight;

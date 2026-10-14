@@ -16,6 +16,10 @@ interface Write {
   update: Uint8Array;
   /** The clocks it reaches. */
   ends: Map<number, number>;
+  /** The pastes landing when it was made (T3.B4): a frame carrying it writes for them. */
+  pastes: readonly string[];
+  /** Its place among every write of the ledger. */
+  seq: number;
 }
 
 interface Pending {
@@ -35,6 +39,7 @@ export class AckLedger {
   readonly #pending = new Map<string, Pending>();
   /** Payloads whose writes are set aside (PayloadSync parks them): kept and settled by acks, but not unacked. */
   readonly #parked = new Set<string>();
+  #seq = 0;
 
   /** Some local write is not yet covered by an ack. */
   get unacked(): boolean {
@@ -42,11 +47,34 @@ export class AckLedger {
     return false;
   }
 
-  /** A local write, as the doc emitted it: the note's, or payload `id`'s. */
-  wrote(update: Uint8Array, id: string = NOTE): void {
+  /** A local write, as the doc emitted it: the note's, or payload `id`'s, made while `pastes` were landing. */
+  wrote(update: Uint8Array, id: string = NOTE, pastes: readonly string[] = []): void {
     let pending = this.#pending.get(id);
     if (!pending) this.#pending.set(id, (pending = { writes: [], acked: null, sv: new Map() }));
-    pending.writes.push({ update, ends: Y.parseUpdateMeta(update).to });
+    pending.writes.push({ update, ends: Y.parseUpdateMeta(update).to, pastes, seq: this.#seq++ });
+  }
+
+  /** Where the next write goes: `dropFrom` it forgets that write and every later one. */
+  mark(): number {
+    return this.#seq;
+  }
+
+  /** Forgets every write made since `mark` (a paste refused after it landed, and what followed it). */
+  dropFrom(mark: number): void {
+    for (const [id, pending] of [...this.#pending]) {
+      pending.writes = pending.writes.filter((write) => write.seq < mark);
+      if (pending.writes.length === 0) {
+        this.#pending.delete(id);
+        this.#parked.delete(id);
+      }
+    }
+  }
+
+  /** The pastes whose writes no ack has covered yet: any frame of this doc may still carry them. */
+  pendingPastes(): Set<string> {
+    const pastes = new Set<string>();
+    for (const pending of this.#pending.values()) for (const write of pending.writes) for (const paste of write.pastes) pastes.add(paste);
+    return pastes;
   }
 
   /** Sets payload `id`'s writes aside (true), or counts them as unacked again (false). */

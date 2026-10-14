@@ -58,11 +58,12 @@ export const CUSTOM_PREFIX = '__YPS:';
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
 
 /**
- * A client's custom message. `reserve`: a multi-frame write (a large paste) of about `b` bytes follows; the DocDO
- * refuses it whole (doc-cap) when it would not fit beside what it holds and other sockets have reserved, and otherwise
- * holds the room for this socket's next writes until they have used it (T3.B4). A server without it ignores it.
+ * A client's custom message (T3.B4). `reserve`: paste `p`, about `b` bytes, is about to land in several frames; the
+ * DocDO answers `reserved` and holds the room for that paste (not the socket) until its writes have used it or it
+ * lapses, or `reserve-refused` when it would not fit beside what the doc holds and every other reservation, closing
+ * nothing. `paste`: the next binary frame writes for these pastes, so the room they reserved is its own.
  */
-export type ClientEvent = { t: 'reserve'; b: number };
+export type ClientEvent = { t: 'reserve'; p: string; b: number } | { t: 'paste'; p: string[] };
 
 /** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
 export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);

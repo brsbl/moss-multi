@@ -5,7 +5,9 @@
 // server slower than the client never has more than a window waiting. Without any ack for STALL_MS, up to
 // BUDGET_BYTES may be unacked, still under the inbox. Step 1s and awareness never wait. A piece an ack already covers
 // is dropped (a reconnect queues the backlog twice: the unacked writes and the provider's step 2).
-import { encodeSyncFrame } from '@moss-multi/protocol/sync';
+// T3.B4 (B209): each write goes right behind a tag naming the pastes it may carry (ClientEvent `paste`), so the DocDO
+// counts their reserved room as its own; a gate holds every write queued after it until its paste's reserve is answered.
+import { CUSTOM_PREFIX, encodeSyncFrame, type ClientEvent } from '@moss-multi/protocol/sync';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import * as Y from 'yjs';
 
@@ -20,6 +22,10 @@ export type Frame = Uint8Array | string;
 
 interface Queued {
   frame: Frame;
+  /** The tag sent right before it (`__YPS:{"t":"paste",...}`), if it may carry a paste's writes. */
+  tag?: string;
+  /** A gate, not a frame: what is queued after it waits until its paste's reserve is answered. */
+  gate?: string;
   /** A write's clocks it ends at, and whether it carries deletes; none for a frame that is not a sync write. */
   ends?: Map<number, number>;
   deletes?: boolean;
@@ -81,6 +87,10 @@ export class Outbox {
   #stall: ReturnType<typeof setTimeout> | undefined;
   /** When the queue last stopped at the budget, stalled, with writes still waiting; undefined while it is not. */
   #blockedSince: number | undefined;
+  /** The pastes a write sent now may carry (tagged); none without a tagger. */
+  #tagger: (() => readonly string[]) | undefined;
+  /** A refused paste was cut: writes are dropped from now on (the session rebinds). */
+  #sealed = false;
   readonly #pieceBytes: number;
   readonly #windowBytes: number;
   readonly #budgetBytes: number;
@@ -107,21 +117,53 @@ export class Outbox {
     return this.#blockedSince === undefined ? 0 : now - this.#blockedSince;
   }
 
+  /** Names the pastes each write queued from now on may carry. */
+  tagWith(tagger: () => readonly string[]): void {
+    this.#tagger = tagger;
+  }
+
   send(frame: Frame): void {
     if (passes(frame)) {
       this.raw(frame);
       return;
     }
+    if (this.#sealed) return;
+    const pastes = this.#tagger?.() ?? [];
+    const tag = pastes.length > 0 ? `${CUSTOM_PREFIX}${JSON.stringify({ t: 'paste', p: [...pastes] } satisfies ClientEvent)}` : undefined;
     const write = typeof frame === 'string' ? null : syncWrite(frame);
     if (write && write.update.byteLength > this.#pieceBytes) {
       for (const piece of splitUpdate(write.update, this.#pieceBytes)) {
-        this.#queue.push({ frame: encodeSyncFrame(write.step, piece.update), ends: piece.ends, deletes: piece.deletes });
+        this.#queue.push({ frame: encodeSyncFrame(write.step, piece.update), ends: piece.ends, deletes: piece.deletes, tag });
       }
     } else {
       const meta = write ? endsOf(write.update) : null;
-      this.#queue.push(meta ? { frame, ...meta } : { frame });
+      this.#queue.push(meta ? { frame, ...meta, tag } : { frame, tag });
     }
     this.#pump();
+  }
+
+  /** Writes queued from now on wait until `open(paste)`, or `cut(paste)` drops them. */
+  gate(paste: string): void {
+    if (this.#sealed) return;
+    this.#queue.push({ frame: '', gate: paste });
+  }
+
+  /** The paste's reserve was answered: what waited behind its gate goes. */
+  open(paste: string): void {
+    for (let i = this.#queue.length - 1; i >= 0; i -= 1) if (this.#queue[i].gate === paste) this.#queue.splice(i, 1);
+    this.#pump();
+  }
+
+  /** The paste was refused after it landed: its gate and every write queued after it are dropped, and every later one. */
+  cut(paste: string): void {
+    const at = this.#queue.findIndex((queued) => queued.gate === paste);
+    if (at >= 0) this.#queue.length = at;
+    this.seal();
+  }
+
+  /** No write is queued on this socket from now on; what is queued already still goes. */
+  seal(): void {
+    this.#sealed = true;
   }
 
   /** The server acked this socket's writes up to `sv`: the frames that covers leave the window. */
@@ -162,6 +204,7 @@ export class Outbox {
     const limit = this.#stalled ? this.#budgetBytes : this.#windowBytes;
     while (this.#queue.length > 0) {
       const next = this.#queue[0];
+      if (next.gate !== undefined) break;
       if (next.ends && !next.deletes && next.ends.size > 0 && this.#covered(next.ends)) {
         this.#queue.shift();
         continue;
@@ -171,9 +214,10 @@ export class Outbox {
       this.#queue.shift();
       this.#sent.push({ bytes, ends: next.ends && next.ends.size > 0 ? next.ends : undefined });
       this.#sentBytes += bytes;
+      if (next.tag) this.raw(next.tag);
       this.raw(next.frame);
     }
-    if (!this.#stalled || this.#queue.length === 0) this.#blockedSince = undefined;
+    if (!this.#stalled || this.#queue.length === 0 || this.#queue[0].gate !== undefined) this.#blockedSince = undefined;
     else this.#blockedSince ??= Date.now();
     if (this.#sent.length > 0 && this.#stall === undefined) {
       this.#stall = setTimeout(() => {

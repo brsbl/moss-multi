@@ -256,8 +256,55 @@ const MIN_TARGET_SHARE = 1 / 32;
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
-/** A reservation no write has used for this long lapses (a client that reserved and went quiet). */
-const RESERVATION_IDLE_MS = 30_000;
+/**
+ * A paste's reservation no write has used for this long lapses: long enough for a reconnect, or an outbox stalled for
+ * lost acks, to replay the paste's writes (B209).
+ */
+const RESERVATION_IDLE_MS = 120_000;
+/** A lapsed or used-up reservation is kept this long, so reserving the same paste again holds nothing more. */
+const SPENT_KEEP_MS = 10 * 60_000;
+/** The most live reservations one owner holds at once; past it a reserve is refused. */
+const RESERVATIONS_PER_OWNER = 8;
+/** The most pastes one tag names, and the longest paste id. */
+const TAG_MAX = 16;
+const PASTE_ID_MAX = 64;
+
+/** A paste's reserved room (ClientEvent `reserve`), less what its writes have used, and when it was last reserved or written. */
+interface Reservation {
+  owner: string;
+  paste: string;
+  bytes: number;
+  at: number;
+}
+
+/** Who a frame writes as, and the pastes its tag names: the room those reserved is its own. */
+interface Writer {
+  owner: string;
+  pastes: readonly string[];
+}
+
+const reservationKey = (owner: string, paste: string): string => JSON.stringify([owner, paste]);
+
+/**
+ * About the bytes `update` adds to `doc`: its size, in the share of its structs' clocks `doc` does not hold yet. A
+ * replay after a reconnect carries what already landed again, and uses no more of a paste's room than it adds.
+ */
+function addedBytes(doc: Y.Doc, update: Uint8Array): number {
+  let total = 0;
+  let added = 0;
+  for (const struct of Y.decodeUpdate(update).structs) {
+    if (struct instanceof Y.Skip) continue;
+    const end = struct.id.clock + struct.length;
+    total += struct.length;
+    added += Math.max(0, end - Math.max(struct.id.clock, Y.getState(doc.store, struct.id.client)));
+  }
+  return total === 0 ? 0 : Math.ceil((update.byteLength * added) / total);
+}
+
+/** Whose reservations a socket makes and uses: its principal's; anonymous sockets', per share link and address. */
+const ownerOf = (attachment: Attachment): string => (attachment.kind === 'anonymous'
+  ? JSON.stringify([attachment.principalId, attachment.shareToken ?? '', attachment.address ?? ''])
+  : attachment.principalId);
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -362,12 +409,12 @@ export class DocDO extends YServer<SyncEnv> {
   readonly #waitingAnswers = new Map<Connection, { bytes: number; frames: Map<string, Uint8Array> }>();
   #answerTimer: ReturnType<typeof setTimeout> | undefined;
   /**
-   * Room each socket reserved for a multi-frame write (ClientEvent `reserve`), less what its writes have used since, and
-   * when it last reserved or wrote (B209). Every other writer is admitted beside it. In memory: a wake drops them.
+   * Each paste's reservation by owner and paste id (B209), as `paste_reservations` stores it: a reservation belongs to
+   * the paste, not the socket, so a reconnect or a wake keeps it. Read on first use after a wake.
    */
-  readonly #reservations = new Map<Connection, { bytes: number; at: number; wrote: boolean }>();
-  /** Sockets whose reservation lapsed with no write using it: they reserve nothing more (a hold renewed forever). */
-  readonly #forfeited = new WeakSet<Connection>();
+  #reservations: Map<string, Reservation> | null = null;
+  /** The pastes named by the tag a socket sent last: the next binary frame writes for them (ClientEvent `paste`). */
+  readonly #tags = new Map<Connection, readonly string[]>();
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
 
@@ -669,9 +716,12 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     const frame = parseFrame(message);
+    // A tag names the pastes of the frame right behind it only.
+    const writer: Writer = { owner: ownerOf(attachment), pastes: this.#tags.get(connection) ?? [] };
+    this.#tags.delete(connection);
     if (frame.kind === 'other') return;
     if (frame.kind === 'payload') {
-      if (this.#payloads) this.#payloadFrame(connection, attachment, store, this.#payloads, frame.payload);
+      if (this.#payloads) this.#payloadFrame(connection, attachment, store, this.#payloads, frame.payload, writer);
       return;
     }
     if (frame.kind === 'awareness') {
@@ -687,8 +737,8 @@ export class DocDO extends YServer<SyncEnv> {
     if (frame.kind === 'sync') {
       const { changes, missing, deletes } = classifySync(this.document, frame.update);
       if (changes) {
-        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update, 0, connection), missing)) return;
-        this.#used(connection, frame.update.byteLength);
+        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update, 0, writer), missing)) return;
+        if (writer.pastes.length > 0) this.#used(writer, addedBytes(this.document, frame.update));
       } else if (roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
@@ -726,7 +776,7 @@ export class DocDO extends YServer<SyncEnv> {
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
     this.#waitingAnswers.delete(connection);
-    this.#reservations.delete(connection);
+    this.#tags.delete(connection);
     // A full budget is the same as none; a spent one stays until it refills, so reconnecting does not refill it.
     const now = Date.now();
     for (const key of [...this.#answerBudgets.keys()]) {
@@ -1403,39 +1453,74 @@ export class DocDO extends YServer<SyncEnv> {
    * The note plus every stored payload against the cap (A§5.1 Limits); `extra` is bytes a server write adds to
    * payloads. Simulated only near the cap, since the copy costs a full encode.
    */
-  #overCap(store: DocStore, update: Uint8Array, extra = 0, writer: Connection | null = null): boolean {
+  #overCap(store: DocStore, update: Uint8Array, extra = 0, writer: Writer | null = null): boolean {
     const cap = this.#limits.stateCapBytes;
     const payloads = (this.#payloads?.totalBytes ?? 0) + extra + this.#reserved(writer);
     return store.stateBytes + payloads + update.byteLength > cap && stateBytesAfter(this.document, update) + payloads > cap;
   }
 
-  /** The room other sockets hold reserved (all of it for a server write, `writer` null); stale reservations lapse. */
-  #reserved(writer: Connection | null): number {
+  /** The stored reservations, created and read on first use. */
+  #reservationTable(): Map<string, Reservation> {
+    if (this.#reservations) return this.#reservations;
+    const sql = this.ctx.storage.sql;
+    sql.exec('CREATE TABLE IF NOT EXISTS paste_reservations (owner TEXT NOT NULL, paste TEXT NOT NULL, bytes INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (owner, paste))');
+    const table = new Map<string, Reservation>();
+    for (const row of sql.exec<{ owner: string; paste: string; bytes: number; at: number }>('SELECT owner, paste, bytes, at FROM paste_reservations')) {
+      table.set(reservationKey(row.owner, row.paste), { owner: row.owner, paste: row.paste, bytes: Number(row.bytes), at: Number(row.at) });
+    }
+    this.#reservations = table;
+    return table;
+  }
+
+  /** Writes a reservation through to storage. */
+  #saveReservation(reservation: Reservation): void {
+    this.#reservationTable().set(reservationKey(reservation.owner, reservation.paste), reservation);
+    this.ctx.storage.sql.exec(
+      'INSERT OR REPLACE INTO paste_reservations (owner, paste, bytes, at) VALUES (?, ?, ?, ?)',
+      reservation.owner, reservation.paste, reservation.bytes, reservation.at,
+    );
+  }
+
+  /**
+   * The room reservations hold, but for the pastes `writer`'s tag names (all of it for a server write, `writer` null).
+   * An idle reservation lapses to nothing; a spent one is forgotten once it has been kept long enough.
+   */
+  #reserved(writer: Writer | null): number {
     const now = Date.now();
+    const own = new Set(writer?.pastes.map((paste) => reservationKey(writer.owner, paste)));
     let bytes = 0;
-    for (const [connection, reservation] of [...this.#reservations]) {
-      if (now - reservation.at > RESERVATION_IDLE_MS || !isOpen(connection)) {
-        this.#reservations.delete(connection);
-        if (!reservation.wrote) this.#forfeited.add(connection);
-      } else if (connection !== writer) bytes += reservation.bytes;
+    for (const [key, reservation] of [...this.#reservationTable()]) {
+      if (reservation.bytes > 0 && now - reservation.at > RESERVATION_IDLE_MS) {
+        this.#saveReservation({ ...reservation, bytes: 0, at: now });
+      } else if (reservation.bytes === 0 && now - reservation.at > SPENT_KEEP_MS) {
+        this.#reservationTable().delete(key);
+        this.ctx.storage.sql.exec('DELETE FROM paste_reservations WHERE owner = ? AND paste = ?', reservation.owner, reservation.paste);
+      } else if (!own.has(key)) {
+        bytes += reservation.bytes;
+      }
     }
     return bytes;
   }
 
-  /** A write of `bytes` from `connection` landed: it uses that much of the room it reserved. */
-  #used(connection: Connection, bytes: number): void {
-    const reservation = this.#reservations.get(connection);
-    if (!reservation) return;
-    if (reservation.bytes <= bytes) this.#reservations.delete(connection);
-    else this.#reservations.set(connection, { bytes: reservation.bytes - bytes, at: Date.now(), wrote: true });
+  /** A write of `bytes` landed: it uses that much of the room its tag's pastes reserved, in order. */
+  #used(writer: Writer, bytes: number): void {
+    let left = bytes;
+    for (const paste of writer.pastes) {
+      const reservation = this.#reservationTable().get(reservationKey(writer.owner, paste));
+      if (!reservation || reservation.bytes === 0) continue;
+      const take = Math.min(left, reservation.bytes);
+      this.#saveReservation({ ...reservation, bytes: reservation.bytes - take, at: Date.now() });
+      left -= take;
+      if (left === 0) return;
+    }
   }
 
   /**
-   * A client's custom message (ClientEvent). `reserve`: room for a write that follows in several frames (a large
-   * paste), refused whole with doc-cap, before any of its frames, when it would not fit beside what the doc holds and
-   * what other sockets have reserved; otherwise held for this socket alone until its writes have used it. A reserve adds
-   * to what the socket still holds (an earlier paste's frames may still be queued behind it), and only a write restarts
-   * the idle clock.
+   * A client's custom message (ClientEvent). `paste`: the next binary frame writes for these pastes, so the room they
+   * reserved is its own. `reserve`: room for paste `p`, about to land in several frames (a large paste), answered
+   * `reserved` and held for that paste until its writes have used it or it lapses, or `reserve-refused` when it would
+   * not fit beside what the doc holds and every other reservation. A refusal closes nothing and touches no other paste.
+   * The same paste reserved again (a resend on a fresh socket) is answered from what is stored, its room not renewed.
    */
   override onCustomMessage(connection: Connection, message: string): void {
     let event: ClientEvent;
@@ -1446,24 +1531,42 @@ export class DocDO extends YServer<SyncEnv> {
     }
     const attachment = attachmentOf(connection);
     const store = this.#store;
-    if (event?.t !== 'reserve' || !Number.isSafeInteger(event.b) || event.b < 0 || !attachment || !store) return;
-    const others = this.#reserved(connection);
-    if (this.#forfeited.has(connection)) return;
-    const held = this.#reservations.get(connection);
-    const bytes = (held?.bytes ?? 0) + event.b;
-    const overCap = () => {
-      const cap = this.#limits.stateCapBytes;
-      const rest = (this.#payloads?.totalBytes ?? 0) + others + bytes;
-      // stateBytes runs ahead of the state between compactions; the encoded state decides.
-      return store.stateBytes + rest > cap && Y.encodeStateAsUpdate(this.document).byteLength + rest > cap;
-    };
-    if (this.#refused(connection, attachment, overCap)) return;
-    if (bytes > 0) this.#reservations.set(connection, { bytes, at: held && !held.wrote ? held.at : Date.now(), wrote: false });
+    if (!attachment || !store || typeof event !== 'object' || event === null) return;
+    const isPasteId = (id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length <= PASTE_ID_MAX;
+    if (event.t === 'paste') {
+      if (Array.isArray(event.p) && event.p.length <= TAG_MAX && event.p.every(isPasteId)) this.#tags.set(connection, event.p);
+      return;
+    }
+    if (event.t !== 'reserve' || !isPasteId(event.p) || !Number.isSafeInteger(event.b) || event.b < 0) return;
+    const { p, b } = event;
+    const reply = (t: 'reserved' | 'reserve-refused') => this.sendCustomMessage(connection, JSON.stringify({ t, p } satisfies ServerEvent));
+    if (!roleAtLeast(attachment.role, 'editor')) {
+      reply('reserve-refused');
+      return;
+    }
+    const owner = ownerOf(attachment);
+    const others = this.#reserved(null);
+    const table = this.#reservationTable();
+    if (table.has(reservationKey(owner, p))) {
+      reply('reserved');
+      return;
+    }
+    let live = 0;
+    for (const reservation of table.values()) if (reservation.owner === owner && reservation.bytes > 0) live += 1;
+    const cap = this.#limits.stateCapBytes;
+    const rest = (this.#payloads?.totalBytes ?? 0) + others + b;
+    // stateBytes runs ahead of the state between compactions; the encoded state decides.
+    if (live >= RESERVATIONS_PER_OWNER || (store.stateBytes + rest > cap && Y.encodeStateAsUpdate(this.document).byteLength + rest > cap)) {
+      reply('reserve-refused');
+      return;
+    }
+    if (b > 0) this.#saveReservation({ owner, paste: p, bytes: b, at: Date.now() });
+    reply('reserved');
   }
 
-  #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array, connection: Connection): boolean {
+  #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array, writer: Writer): boolean {
     const cap = this.#limits.stateCapBytes;
-    const base = store.stateBytes + payloads.totalBytes + this.#reserved(connection);
+    const base = store.stateBytes + payloads.totalBytes + this.#reserved(writer);
     return base + update.byteLength > cap && base - payloads.bytesOf(id) + stateBytesAfter(doc, update) > cap;
   }
 
@@ -1483,7 +1586,7 @@ export class DocDO extends YServer<SyncEnv> {
    * ids and each principal a bounded number of withheld bytes, so nobody can crowd out another's withheld payloads.
    * Acks carry vectors built from the acked frames alone, so they reveal nothing the client did not send.
    */
-  #payloadFrame(connection: Connection, attachment: Attachment, store: DocStore, payloads: PayloadStore, frame: PayloadFrame): void {
+  #payloadFrame(connection: Connection, attachment: Attachment, store: DocStore, payloads: PayloadStore, frame: PayloadFrame, writer: Writer): void {
     const { id, step, data } = frame;
     try {
       if (step === PAYLOAD_STEP1) {
@@ -1514,10 +1617,10 @@ export class DocDO extends YServer<SyncEnv> {
           if (!this.#mayWriteWithheld(connection, payloads, id)) return true;
           if (payloads.withheldBy(attachment.principalId) + data.byteLength > this.#limits.withheldBytesPerIdentity) return true;
         }
-        return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data, connection);
+        return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data, writer);
       };
       if (this.#refused(connection, attachment, overCap, missing)) return;
-      this.#used(connection, data.byteLength);
+      if (writer.pastes.length > 0) this.#used(writer, addedBytes(target, data));
       payloads.addReaders(id, [attachment.principalId]);
       if (!payloads.applyFrame(id, data, connection)) {
         this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
