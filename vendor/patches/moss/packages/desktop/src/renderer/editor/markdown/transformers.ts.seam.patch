@@ -13,7 +13,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  import { $createLinkNode, $isLinkNode, AutoLinkNode, LinkNode } from '@lexical/link';
  import { $findMatchingParent } from '@lexical/utils';
 -import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isDecoratorNode, $isElementNode, $isLineBreakNode, $isParagraphNode, $isRangeSelection, $isRootNode, $isTextNode, $setSelection, type BaseSelection, IS_BOLD, IS_ITALIC, IS_STRIKETHROUGH, type LexicalNode, LineBreakNode, TextNode } from 'lexical';
-+import { $createParagraphNode, $createTextNode, $getEditor, $getRoot, $getSelection, $isDecoratorNode, $isElementNode, $isLineBreakNode, $isParagraphNode, $isRangeSelection, $isRootNode, $isTextNode, $setSelection, type BaseSelection, IS_BOLD, IS_ITALIC, IS_STRIKETHROUGH, type LexicalNode, LineBreakNode, TextNode } from 'lexical';
++import { $createParagraphNode, $createRangeSelection, $createTextNode, $getEditor, $getRoot, $getSelection, $isDecoratorNode, $isElementNode, $isLineBreakNode, $isParagraphNode, $isRangeSelection, $isRootNode, $isTextNode, $setSelection, type BaseSelection, IS_BOLD, IS_ITALIC, IS_STRIKETHROUGH, type LexicalNode, LineBreakNode, TextNode } from 'lexical';
  import type { NoteLayoutMetadata } from '../../../common/noteTypes';
  import { MOSS_CANVAS_FENCE_NAME, buildMarkdownFence } from '../../../common/markdown-fences';
  import { $isCommentableDecorator } from '../utils/commentable-node';
@@ -35,7 +35,30 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
  // Custom transformer to preserve underlines in markdown
  const UNDERLINE_TRANSFORMER: TextMatchTransformer = {
-@@ -229,7 +234,8 @@ const FORMULA_TRANSFORMER: TextMatchTransformer = {
+@@ -173,7 +178,22 @@ const OBSIDIAN_HIGHLIGHT_TRANSFORMER: TextMatchTransformer = {
+     if (markdownStyleAttributeHasSerifFontFamily(styleAttribute)) {
+       setTextNodeFontFamily(highlightedNode, 'serif');
+     }
++    // moss-multi seam: highlight-caret (T3.B13): typed (a selection exists; imports run without one), the caret lands
++    // after the highlight with the text's own style, as Lexical's format shortcuts leave it, so what is typed next is
++    // not highlighted.
++    const selection = $getSelection();
++    const format = textNode.getFormat();
++    const style = textNode.getStyle();
+     textNode.replace(highlightedNode);
++    if ($isRangeSelection(selection)) {
++      const caret = $createRangeSelection();
++      const end = highlightedNode.getTextContentSize();
++      caret.anchor.set(highlightedNode.getKey(), end, 'text');
++      caret.focus.set(highlightedNode.getKey(), end, 'text');
++      caret.format = format;
++      caret.style = style;
++      $setSelection(caret);
++    }
+     return highlightedNode;
+   },
+   trigger: '=',
+@@ -229,7 +249,8 @@ const FORMULA_TRANSFORMER: TextMatchTransformer = {
        return;
      }
      const formulaNode = $createFormulaNode(parsed.expression, parsed.result, {
@@ -45,7 +68,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
        ...(parsed.name ? { name: parsed.name } : {}),
        ...(parsed.stale ? { stale: true } : {})
      });
-@@ -413,24 +419,30 @@ const SELF_REFERENTIAL_LINK_EMBED_PILL_TRANSFORMER: TextMatchTransformer = {
+@@ -413,24 +434,30 @@ const SELF_REFERENTIAL_LINK_EMBED_PILL_TRANSFORMER: TextMatchTransformer = {
    type: 'text-match'
  };
  
@@ -84,7 +107,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  };
  
  const RAW_WEB_EMBED_URL_IMPORT_RE = /https?:\/\/[^\s<>{}|\\^[\]`]+/;
-@@ -517,7 +529,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
+@@ -517,7 +544,7 @@ const RAW_WEB_EMBED_URL_TEXT_TRANSFORMER: TextMatchTransformer = {
      if (suffix) {
        const suffixNode = copyTextNodeFormat(textNode, $createTextNode(suffix));
        pill.insertAfter(suffixNode);
@@ -93,7 +116,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
    },
    trigger: ' ',
-@@ -775,7 +787,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
+@@ -775,7 +802,8 @@ const LINK_TRANSFORMER: TextMatchTransformer = {
  // and imports GFM tables back into Lexical TableNode structure.
  const TABLE_LEADING_PIPE_ROW_REG_EXP = /^\s*\|.*\|?\s*$/;
  
@@ -103,7 +126,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
  const TABLE_ROW_REG_EXP = new RegExp(
    `(?:${TABLE_LEADING_PIPE_ROW_REG_EXP.source}|${TABLE_DIVIDER_ROW_REG_EXP.source})`
-@@ -1181,14 +1194,12 @@ type TableParseState = {
+@@ -1181,14 +1209,12 @@ type TableParseState = {
    wikiLinkDepth: number;
    /** Number of backticks in the opening inline-code delimiter (0 = not in code). */
    inlineCodeBackticks: number;
@@ -122,7 +145,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  };
  
  /**
-@@ -1218,7 +1229,7 @@ const advanceTableParseState = (
+@@ -1218,7 +1244,7 @@ const advanceTableParseState = (
    // --- Inline code tracking (highest priority — nothing is parsed inside code spans) ---
    // When already inside a code span, backslashes are literal (GFM spec) and
    // must not prevent a matching backtick run from closing the span.
@@ -131,7 +154,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      const runLen = backtickRunLength(content, index);
      if (state.inlineCodeBackticks === 0) {
        // Opening a code span
-@@ -1239,7 +1250,7 @@ const advanceTableParseState = (
+@@ -1239,7 +1265,7 @@ const advanceTableParseState = (
    }
  
    const nextChar = content[index + 1];
@@ -140,7 +163,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      return 0;
    }
  
-@@ -1268,14 +1279,14 @@ const advanceTableParseState = (
+@@ -1268,14 +1294,14 @@ const advanceTableParseState = (
  
  const isTableCellSeparator = (content: string, index: number, state: TableParseState): boolean =>
    content[index] === '|' &&
@@ -157,7 +180,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    state.formulaDepth === 0;
  
  /**
-@@ -1474,35 +1485,9 @@ const normalizeBrokenMultilineTableRow = (textContent: string): string | null =>
+@@ -1474,35 +1500,9 @@ const normalizeBrokenMultilineTableRow = (textContent: string): string | null =>
   * Example:
   * `[[Spec: In-line prompts | uuid]]` -> `[[Spec: In-line prompts|uuid]]`
   */
@@ -196,7 +219,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
  /**
   * Repair a common AI-generated table-cell mistake:
-@@ -1514,11 +1499,9 @@ const mergeBrokenWikiLinkCells = (cells: string[]): string[] => {
+@@ -1514,11 +1514,9 @@ const mergeBrokenWikiLinkCells = (cells: string[]): string[] => {
   * to plain text with valid inner inline-code spans instead:
   * Run `claude` in Terminal
   */
@@ -210,7 +233,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
  /** Escapes `|` as `\|` in cell content, except inside formulas. */
  const escapeTableCellPipes = (content: string): string => {
-@@ -1559,7 +1542,8 @@ const mapToTableCells = (textContent: string): TableCellNode[] | null => {
+@@ -1559,7 +1557,8 @@ const mapToTableCells = (textContent: string): TableCellNode[] | null => {
  
    const rawCells = splitTableRow(rowContent);
    const healedCells = mergeBrokenWikiLinkCells(rawCells);
@@ -220,7 +243,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  };
  
  const getSingleParagraphTextChild = (node: LexicalNode | null): TextNode | null => {
-@@ -1628,6 +1612,7 @@ const absorbFollowingOptionalPipeTableRows = (table: TableNode, startSibling: Le
+@@ -1628,6 +1627,7 @@ const absorbFollowingOptionalPipeTableRows = (table: TableNode, startSibling: Le
      if (cells == null) {
        break;
      }
@@ -228,7 +251,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
      const nextSibling = sibling.getNextSibling();
      appendTableRow(table, cells);
-@@ -1692,6 +1677,7 @@ const GFM_TABLE_MULTILINE_TRANSFORMER: MultilineElementTransformer = {
+@@ -1692,6 +1692,7 @@ const GFM_TABLE_MULTILINE_TRANSFORMER: MultilineElementTransformer = {
        if (rowCells == null || rowCells.length < 2) {
          break;
        }
@@ -236,7 +259,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
  
        maxCells = appendTableRow(table, rowCells);
        endLineIndex = lineIndex;
-@@ -1719,12 +1705,14 @@ const tryAbsorbTableContinuationRow = (table: TableNode, continuationCell: Table
+@@ -1719,12 +1720,14 @@ const tryAbsorbTableContinuationRow = (table: TableNode, continuationCell: Table
      return false;
    }
  
@@ -251,7 +274,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    lastCell.clear();
    $convertFromMarkdownString(mergedCellMarkdown, TABLE_TRANSFORMERS, lastCell);
    return true;
-@@ -1770,7 +1758,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1770,7 +1773,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
      return output.join('\n');
    },
    regExp: TABLE_ROW_REG_EXP,
@@ -260,7 +283,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      // Handle divider row - marks previous row as header
      if (isTableDividerRow(match[0])) {
        const nextSibling = parentNode.getNextSibling();
-@@ -1780,12 +1768,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1780,12 +1783,12 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        if (!table) {
          const previousText = getSingleParagraphTextChild(previousSibling);
          if (!previousText || !isTableBodyRowCandidate(previousText.getTextContent())) {
@@ -275,7 +298,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
          }
  
          table = $createTableNode();
-@@ -1823,14 +1811,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1823,14 +1826,14 @@ const TABLE_TRANSFORMER: ElementTransformer = {
          isTableDividerRow(nextSiblingText.getTextContent());
  
        if (!$isTableNode(previousSibling) && !nextIsDivider) {
@@ -292,7 +315,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
  
      const immediatePrevious = parentNode.getPreviousSibling();
-@@ -1885,6 +1873,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1885,6 +1888,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        }
      }
  
@@ -300,7 +323,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      const table = $createTableNode();
      const normalizedManualColWidths = normalizeTableColumnWidths(manualColWidths, maxCells);
      if (normalizedManualColWidths) {
-@@ -1914,7 +1903,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
+@@ -1914,7 +1918,7 @@ const TABLE_TRANSFORMER: ElementTransformer = {
        parentNode.replace(table);
      }
  
@@ -309,7 +332,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    },
    type: 'element'
  };
-@@ -2207,10 +2196,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
+@@ -2207,10 +2211,10 @@ const IMAGE_TRANSFORMER: ElementTransformer = {
    // Match whole candidate markdown image lines and parse with a balanced parser.
    // Matching only `![` can truncate content before replace() runs.
    regExp: /^!\[.*\]\(.*\)\s*$/,
@@ -322,7 +345,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
      }
      parentNode.replace(mediaNode);
    },
-@@ -2611,7 +2600,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
+@@ -2611,7 +2615,8 @@ const CHECK_LIST_WITH_OPTIONAL_TRAILING_SPACE: ElementTransformer = {
    regExp: /^(\s*)(?:[-*+]\s)?\s?(\[(\s|x)?\])(?:\s|$)/i
  };
  
@@ -332,7 +355,7 @@ diff --git a/packages/desktop/src/renderer/editor/markdown/transformers.ts b/pac
    // Custom element transformers for block-level content
    // Obsidian embed must come before standard image so ![[ref]] is matched first
    OBSIDIAN_EMBED_TRANSFORMER,
-@@ -2657,7 +2647,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
+@@ -2657,7 +2662,7 @@ export const MARKDOWN_EDITOR_TRANSFORMERS: Transformer[] = [
    HIGHLIGHT_TRANSFORMER,
    UNDERLINE_TRANSFORMER,
    FONT_FAMILY_TRANSFORMER

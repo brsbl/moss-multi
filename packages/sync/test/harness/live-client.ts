@@ -44,7 +44,8 @@ export class LiveClient {
   /** Every local write to each payload, as a client's ack ledger records them. */
   readonly written = new Map<string, Uint8Array[]>();
   socket!: TestClient;
-  #sync!: PayloadSync;
+  /** One for the client's life, as a session's: it remembers which payloads it minted and sent named. */
+  readonly #sync: PayloadSync;
   readonly #stops: (() => void)[] = [];
 
   private constructor(public opened: Opened, readonly who: Who) {
@@ -65,6 +66,16 @@ export class LiveClient {
     this.undo = new BodyUndo(new Y.UndoManager(root, { trackedOrigins: new Set([this.binding]), captureTimeout: 0 }), lexicalAction(this.editor));
     for (const doc of this.payloads.docs.values()) this.undo.trackPayload(doc, REGISTER_LOCAL_ORIGIN, 0);
     this.#stops.push(this.payloads.onHold((_id, doc) => { this.undo.trackPayload(doc, REGISTER_LOCAL_ORIGIN, 0); }));
+    this.#sync = new PayloadSync(this.payloads, {
+      send: (frame) => this.socket?.queue(frame),
+      open: () => this.socket?.socket.readyState === 1,
+      wrote: (id, update) => {
+        const list = this.written.get(id);
+        if (list) list.push(update); else this.written.set(id, [update]);
+      },
+      remote: FROM_SERVER,
+      note: this.doc,
+    });
   }
 
   /** Forges an element: a new code block naming `id`, as a client that learned the id could send. */
@@ -86,16 +97,6 @@ export class LiveClient {
   async #attach(): Promise<void> {
     this.socket = await connect(this.opened, this.who, this.doc);
     this.socket.onOther = (frame) => { this.#sync.receive(frame); };
-    this.#sync?.destroy();
-    this.#sync = new PayloadSync(this.payloads, {
-      send: (frame) => this.socket.queue(frame),
-      open: () => this.socket.socket.readyState === 1,
-      wrote: (id, update) => {
-        const list = this.written.get(id);
-        if (list) list.push(update); else this.written.set(id, [update]);
-      },
-      remote: FROM_SERVER,
-    });
     await this.socket.hello();
     this.flush();
     // A reconnect re-delivers each held payload whole; acks are not modelled here.
@@ -306,7 +307,7 @@ export class LiveClient {
   }
 
   dispose(): void {
-    this.#sync?.destroy();
+    this.#sync.destroy();
     for (const stop of this.#stops.splice(0)) stop();
     this.undo.destroy();
     this.doc.destroy();

@@ -1,6 +1,7 @@
 // Every route that reads a JSON body caps it (T3.S7; A§18): a body that declares more than its route's cap is refused
 // with 413 before a byte is read, and one that streams past the cap without declaring a length is refused as it passes
-// it, never buffered further. Uploads stream with their own bounds (assets.test.ts).
+// it, never buffered further. Uploads stream with their own bounds (assets.test.ts); the largest note creation runs
+// through the real DocDO in body-cap.harness.test.ts.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { PayloadDocs } from '@moss-multi/sync/payload-docs';
@@ -10,15 +11,22 @@ import { handleAuthRoute } from '../auth/route.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { COMMENT_BODY_MAX_BYTES } from './comments.ts';
+import { setRemoteFetchForTests } from './remote.ts';
 import { JSON_BODY_MAX_BYTES } from './respond.ts';
 import { RESTORE_BODY_MAX_BYTES } from './versions.ts';
 import { handleApi } from './router.ts';
 
+const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137]);
+
+/** Each DocDO create's arguments, by doc id. */
+const created = new Map<string, unknown>();
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({
+  get: (id: { name: string }) => ({
     setName: async () => undefined, recheck: async () => ({ closed: 0 }), renameTitle: async () => undefined,
-    createComment: async () => ({ ok: true, id: 'c-cap', quote: null }),
+    create: async (init: unknown) => { created.set(id.name, init); },
+    createComment: async ({ id: commentId }: { id: string }) => ({ ok: true, id: commentId, quote: null }),
+    editComment: async () => ({ ok: true }), resolveComment: async () => ({ ok: true }), reactComment: async () => ({ ok: true }),
     acceptSuggestion: async () => ({ ok: true }), rejectSuggestion: async () => ({ ok: true }), withdrawSuggestion: async () => ({ ok: true }),
     saveVersion: async () => ({ ok: true, version: { id: 'v-cap' } }), restoreVersion: async () => ({ ok: true, restorePoint: 'p-cap', version: 'a-cap' }),
   }),
@@ -36,7 +44,14 @@ let d1: TestD1;
 let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
 let docId: string;
+let sourceId: string;
 let folderId: string;
+
+/** The remote pages the unfurl and from-url controls fetch, behind a fake DNS that answers a public address. */
+const REMOTE: Record<string, () => Response> = {
+  'https://site.example/': () => new Response('<html><head><meta property="og:title" content="Capped"></head></html>', { headers: { 'content-type': 'text/html' } }),
+  'https://img.example/cat.png': () => new Response(PNG, { headers: { 'content-type': 'image/png' } }),
+};
 
 beforeAll(async () => {
   d1 = await migratedD1();
@@ -44,42 +59,78 @@ beforeAll(async () => {
   ada = await signedUpUser(env, 'body-cap', 'Ada');
   docId = await insertDoc(d1.db, ada);
   folderId = await insertFolder(d1.db, ada, ada.homeId);
+  sourceId = await insertDoc(d1.db, ada, { folderId });
+  setRemoteFetchForTests({
+    fetch: (async (input: RequestInfo | URL) => {
+      const page = REMOTE[String(input)];
+      if (!page) throw new Error(`unexpected fetch ${String(input)}`);
+      return page();
+    }) as typeof fetch,
+    resolve: async (host) => (host.endsWith('.example') ? ['93.184.215.14'] : []),
+  });
+  // The copy control's source: a file placed in another note.
+  const uploaded = await handleApi(new Request(`${BASE}/api/docs/${sourceId}/assets?filename=source.png`, {
+    method: 'POST',
+    headers: { origin: BASE, cookie: ada.cookie, 'content-type': 'image/png', 'content-length': String(PNG.byteLength) },
+    body: PNG,
+  }), env);
+  expect(uploaded.status, await uploaded.clone().text()).toBe(201);
 }, 60_000);
-afterAll(() => d1?.dispose());
+afterAll(() => {
+  setRemoteFetchForTests(null);
+  d1?.dispose();
+});
 
 const FEEDBACK_BODY_MAX_BYTES = 128 * 1024;
 
-interface Route { method: string; path: () => string; cap: number; error: string; ok: () => unknown }
+interface Route {
+  method: string;
+  path: () => string;
+  cap: number;
+  error: string;
+  /** A body the route accepts, and the success status it answers it with. */
+  ok: () => unknown;
+  status: number;
+  /** State a refused body must leave as it was and the accepted one changes. */
+  state?: () => Promise<unknown>;
+}
 
-/** Every route that reads a JSON body, a body it accepts, and the 413 error it answers past its cap. */
+const DOC_INVITE = 'mm-t3s7-cap@example.invalid';
+const FOLDER_INVITE = 'mm-t3s7-folder@example.invalid';
+const folderInvite = () => d1.db.prepare("SELECT role, revoked_at FROM invites WHERE target_type = 'folder' AND target_id = ?1 AND email = ?2")
+  .bind(folderId, FOLDER_INVITE).all().then((r) => r.results);
+
+/** Every route that reads a JSON body, a body it accepts and its status, and the 413 error past its cap. In order. */
 const ROUTES: Route[] = [
-  { method: 'POST', path: () => '/api/docs', cap: CREATE_BODY_MAX_BYTES, error: 'doc-cap', ok: () => ({ title: 'Fine' }) },
-  { method: 'PATCH', path: () => `/api/docs/${docId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ title: 'Renamed' }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: 'mm-t3s7-cap@example.invalid', role: 'viewer' }) },
-  { method: 'PATCH', path: () => `/api/docs/${docId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: 'mm-t3s7-cap@example.invalid', role: 'editor' }) },
-  { method: 'DELETE', path: () => `/api/docs/${docId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: 'mm-t3s7-cap@example.invalid' }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/links`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ role: 'viewer' }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/assets/copy`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ sourceNoteId: docId, sourceRelativePath: 'assets/none.png' }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/assets/from-url`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ url: 'http://127.0.0.1/x.png' }) },
-  { method: 'POST', path: () => '/api/folders', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ parentId: ada.homeId, name: 'Capped' }) },
-  { method: 'PATCH', path: () => `/api/folders/${folderId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Renamed folder' }) },
-  { method: 'POST', path: () => `/api/folders/${folderId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: 'mm-t3s7-folder@example.invalid', role: 'viewer' }) },
-  { method: 'POST', path: () => `/api/folders/${folderId}/links`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ role: 'viewer' }) },
-  { method: 'POST', path: () => '/api/vaults', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Capped vault' }) },
-  { method: 'PATCH', path: () => `/api/vaults/${ada.homeId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Home again' }) },
-  { method: 'POST', path: () => '/api/agents', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Scribe' }) },
-  { method: 'POST', path: () => '/api/notifications/read', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ ids: [] }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/comments`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ id: 'c-ok', text: 'Fine' }) },
-  { method: 'PATCH', path: () => `/api/docs/${docId}/comments/c-ok`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ text: 'Edited' }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/resolve`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ resolved: true }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/reactions`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ emoji: '👍', on: true }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/accept`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ previewHash: 'h'.repeat(64), digest: 'd'.repeat(64) }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/reject`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}) },
-  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/withdraw`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}) },
-  { method: 'POST', path: () => `/api/docs/${docId}/versions`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Checkpoint' }) },
-  { method: 'POST', path: () => `/api/docs/${docId}/versions/v-cap/restore`, cap: RESTORE_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}) },
-  { method: 'POST', path: () => '/api/unfurl', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ noteId: docId, url: 'http://127.0.0.1/' }) },
-  { method: 'POST', path: () => '/api/feedback', cap: FEEDBACK_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ body: 'Lovely.' }) },
+  { method: 'POST', path: () => '/api/docs', cap: CREATE_BODY_MAX_BYTES, error: 'doc-cap', ok: () => ({ title: 'Fine' }), status: 201 },
+  { method: 'PATCH', path: () => `/api/docs/${docId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ title: 'Renamed' }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: DOC_INVITE, role: 'viewer' }), status: 201 },
+  { method: 'PATCH', path: () => `/api/docs/${docId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: DOC_INVITE, role: 'editor' }), status: 200 },
+  { method: 'DELETE', path: () => `/api/docs/${docId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: DOC_INVITE }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/links`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ role: 'viewer' }), status: 201 },
+  { method: 'POST', path: () => `/api/docs/${docId}/assets/copy`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ sourceNoteId: sourceId, sourceRelativePath: 'assets/source.png' }), status: 201 },
+  { method: 'POST', path: () => `/api/docs/${docId}/assets/from-url`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ url: 'https://img.example/cat.png' }), status: 201 },
+  { method: 'POST', path: () => '/api/folders', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ parentId: ada.homeId, name: 'Capped' }), status: 201 },
+  { method: 'PATCH', path: () => `/api/folders/${folderId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Renamed folder' }), status: 200 },
+  { method: 'POST', path: () => `/api/folders/${folderId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: FOLDER_INVITE, role: 'viewer' }), status: 201, state: folderInvite },
+  { method: 'PATCH', path: () => `/api/folders/${folderId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: FOLDER_INVITE, role: 'editor' }), status: 200, state: folderInvite },
+  { method: 'DELETE', path: () => `/api/folders/${folderId}/members`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ email: FOLDER_INVITE }), status: 200, state: folderInvite },
+  { method: 'POST', path: () => `/api/folders/${folderId}/links`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ role: 'viewer' }), status: 201 },
+  { method: 'POST', path: () => '/api/vaults', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Capped vault' }), status: 201 },
+  { method: 'PATCH', path: () => `/api/vaults/${ada.homeId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Home again' }), status: 200 },
+  { method: 'POST', path: () => '/api/agents', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Scribe' }), status: 201 },
+  { method: 'POST', path: () => '/api/notifications/read', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ ids: [] }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ id: 'c-ok', text: 'Fine' }), status: 201 },
+  { method: 'PATCH', path: () => `/api/docs/${docId}/comments/c-ok`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ text: 'Edited' }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/resolve`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ resolved: true }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/reactions`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ emoji: '👍', on: true }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/accept`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ previewHash: 'h'.repeat(64), digest: 'd'.repeat(64) }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/reject`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/withdraw`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/versions`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Checkpoint' }), status: 201 },
+  { method: 'POST', path: () => `/api/docs/${docId}/versions/v-cap/restore`, cap: RESTORE_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}), status: 200 },
+  { method: 'POST', path: () => '/api/unfurl', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ noteId: docId, url: 'https://site.example/' }), status: 200 },
+  { method: 'POST', path: () => '/api/feedback', cap: FEEDBACK_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ body: 'Lovely.' }), status: 201 },
 ];
 
 /** A body that fails the request if anything reads it. */
@@ -120,21 +171,30 @@ describe('JSON bodies are capped on every route that reads one', () => {
     const name = `${route.method} ${route.path.toString().replace(/^\(\) => /, '').replaceAll('`', '')}`;
 
     it(`${name}: a declared length over the cap is refused with 413 before a byte is read`, async () => {
+      const before = await route.state?.();
       await expectRefused(await send(route, unreadable(), { 'content-length': String(route.cap + 1) }), route.error);
+      expect(await route.state?.(), 'a refused body changes nothing').toEqual(before);
     }, 30_000);
 
     it(`${name}: an undeclared body that runs past the cap is refused with 413, read no further`, async () => {
+      const before = await route.state?.();
       const { stream, read, limit } = endless(route.cap);
       await expectRefused(await send(route, stream), route.error);
       expect(read.bytes, 'read no further than the cap').toBeLessThanOrEqual(limit);
+      expect(await route.state?.(), 'a refused body changes nothing').toEqual(before);
     }, 60_000);
 
-    it(`${name}: a body of ordinary size is not refused as too large`, async () => {
-      // Only the cap is under test here; the route's own answer to this body is its own tests'.
-      const status = await send(route, JSON.stringify(route.ok())).then((r) => r.status, () => 500);
-      expect(status).not.toBe(413);
+    it(`${name}: a body of ordinary size succeeds with ${route.status}`, async () => {
+      const before = await route.state?.();
+      const response = await send(route, JSON.stringify(route.ok()));
+      expect(response.status, await response.text()).toBe(route.status);
+      if (route.state) expect(await route.state(), 'the accepted body is applied').not.toEqual(before);
     }, 30_000);
   }
+
+  it('POST /api/docs seeds the DocDO with the title its ordinary body named', () => {
+    expect([...created.values()]).toContainEqual(expect.objectContaining({ title: 'Fine' }));
+  });
 
   it('the feedback cap takes the longest message the dialog sends, every character escaped', async () => {
     const sent = JSON.stringify({ body: '\u0001'.repeat(10_000), page: '\u0001'.repeat(2_000) });
@@ -145,7 +205,7 @@ describe('JSON bodies are capped on every route that reads one', () => {
 
   // T4.R2: T3.S7's caps must refuse no comment body the DocDO accepts (comments.ts: 10,000 characters of text and of
   // quote), whatever a client escapes.
-  const comment = (method: string, path: string, body: string) => send({ method, path: () => path, cap: 0, error: '', ok: () => ({}) }, body);
+  const comment = (method: string, path: string, body: string) => send({ method, path: () => path, cap: 0, error: '', ok: () => ({}), status: 0 }, body);
 
   it('a comment create takes the longest text and quote, every character escaped', async () => {
     const sent = JSON.stringify({ id: 'c-cap', text: '\u0001'.repeat(10_000), anchor: { quote: { exact: '\u0001'.repeat(10_000), prefix: '', suffix: '' } } });
@@ -247,6 +307,12 @@ describe('auth bodies are capped before better-auth reads them', () => {
     ...(body instanceof ReadableStream ? { duplex: 'half' } : {}),
   } as RequestInit), env);
 
+  /** Accounts and the sign-up counts, which a refused body leaves as they were. */
+  const accounts = async () => ({
+    users: (await d1.db.prepare('SELECT count(*) AS n FROM "user"').first<{ n: number }>())?.n,
+    signups: (await d1.db.prepare('SELECT * FROM signup_limits ORDER BY key').all()).results,
+  });
+
   it('refuses a declared length over the cap with 413 before reading or counting a sign-up', async () => {
     for (const path of ['/api/auth/sign-in/email', '/api/auth/sign-up/email']) {
       const refused = await auth(path, unreadable(), { 'content-length': String(JSON_BODY_MAX_BYTES + 1) });
@@ -256,11 +322,18 @@ describe('auth bodies are capped before better-auth reads them', () => {
     expect(counted?.n ?? 0, 'no sign-up counted').toBe(0);
   }, 30_000);
 
-  it('refuses an undeclared body that runs past the cap with 413, read no further', async () => {
-    const { stream, read, limit } = endless(JSON_BODY_MAX_BYTES);
-    expect((await auth('/api/auth/sign-in/email', stream)).status).toBe(413);
-    expect(read.bytes).toBeLessThanOrEqual(limit);
-  }, 30_000);
+  for (const path of ['/api/auth/sign-in/email', '/api/auth/sign-up/email']) {
+    it(`${path}: refuses an undeclared body that runs past the cap with 413, read no further, creating and counting nothing`, async () => {
+      const before = await accounts();
+      const { stream, read, limit } = endless(JSON_BODY_MAX_BYTES);
+      const response = await auth(path, stream);
+      const text = await response.text();
+      expect(response.status, text).toBe(413);
+      expect((JSON.parse(text) as { code: string }).code).toBe('TOO_LARGE');
+      expect(read.bytes).toBeLessThanOrEqual(limit);
+      expect(await accounts(), 'no account and no sign-up counted').toEqual(before);
+    }, 30_000);
+  }
 
   it('still signs in with an ordinary body', async () => {
     const response = await auth('/api/auth/sign-in/email', JSON.stringify({ email: ada.email, password: 'correct horse battery' }));

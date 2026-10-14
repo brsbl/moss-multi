@@ -71,13 +71,14 @@ export function largestBlob(mask: Uint8Array, width: number, height: number): nu
   return largest;
 }
 
-export function compare(oracleBytes: Buffer, candidateBytes: Buffer, masks: Rect[] = []): Comparison {
+/** `sections` are painted out like masks but not counted in `maskedPct`: the oracle holds only spacers there. */
+export function compare(oracleBytes: Buffer, candidateBytes: Buffer, masks: Rect[] = [], sections: Rect[] = []): Comparison {
   const oracle = PNG.sync.read(oracleBytes);
   const candidate = PNG.sync.read(candidateBytes);
   const width = Math.max(oracle.width, candidate.width);
   const height = Math.max(oracle.height, candidate.height);
-  const a = onCanvas(oracle, width, height, masks);
-  const b = onCanvas(candidate, width, height, masks);
+  const a = onCanvas(oracle, width, height, [...masks, ...sections]);
+  const b = onCanvas(candidate, width, height, [...masks, ...sections]);
   const diff = new PNG({ width, height });
   const diffPixels = pixelmatch(a.data, b.data, diff.data, width, height, { threshold: 0.1, includeAA: false });
   // pixelmatch paints counted pixels pure red; anti-aliased ones yellow and the rest faded grey.

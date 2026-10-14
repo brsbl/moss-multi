@@ -119,7 +119,7 @@ describe('linear table parsing @p:tech-4', () => {
     expect(shape(note)).toEqual(['table 201x64']);
     const perNote = LINEAR_IMPORT_LIMITS.perNote;
     try {
-      LINEAR_IMPORT_LIMITS.perNote = 20_000_000;
+      LINEAR_IMPORT_LIMITS.perNote = 200_000_000;
       const blocks = shape(note);
       const rows = Number(/^table (\d+)x64$/.exec(blocks[0])?.[1]);
       expect(rows).toBeGreaterThan(1);

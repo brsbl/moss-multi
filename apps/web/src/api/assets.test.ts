@@ -103,7 +103,7 @@ describe('upload (A§16)', () => {
       expect(served.headers.get('accept-ranges'), name).toBe('bytes');
       expect(await bytesOf(served), name).toEqual(body);
     }
-  });
+  }, 20_000); // nine uploads and nine reads; a loaded runner has taken past the 5 s default
 
   it('takes uploads only into a note, never into a folder no note reads', async () => {
     const sent = await call('POST', `/api/folders/${ada.homeId}/assets?filename=folder.png`, ada.cookie, { body: PNG, headers: { 'content-type': 'image/png' } });
