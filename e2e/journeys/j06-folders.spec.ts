@@ -353,6 +353,8 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
   await ben.page.getByRole('menuitem', { name: 'Home viewer', exact: true }).click();
   await expect(ui.folderRow(ben, 'Owned')).toBeVisible();
+  // Ben's moves kick every socket open on the moved notes to re-ask its access (T2.5), Ada's window's included.
+  ada.expectReconnects(2);
   const creates = sent(ben, 'POST', /^\/api\/docs$/);
   const moves = sent(ben, 'PATCH', MOVES);
 
