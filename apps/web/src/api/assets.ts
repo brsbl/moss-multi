@@ -68,6 +68,12 @@ const UPLOAD_MIN_BYTES_PER_SECOND = 128 * 1024;
 /** The buffer an upload starts with; it doubles as the body arrives, never past the declared length. */
 const FIRST_BUFFER_BYTES = 64 * 1024;
 
+/** The buffer an upload body of declared `length` needs once `needed` bytes have arrived into one of `capacity`. */
+export function uploadBufferSize(capacity: number, needed: number, length: number): number {
+  if (needed <= capacity) return capacity;
+  return Math.min(length, Math.max(capacity * 2, needed, FIRST_BUFFER_BYTES));
+}
+
 /** How long an upload of `size` bytes may take to arrive. */
 const uploadDeadlineMs = (size: number): number =>
   deadlineOverride ?? UPLOAD_GRACE_MS + Math.ceil((size / UPLOAD_MIN_BYTES_PER_SECOND) * 1000);
@@ -84,7 +90,7 @@ async function readDeclared(request: Request, length: number): Promise<Uint8Arra
   const expired = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), uploadDeadlineMs(length));
   });
-  let bytes = new Uint8Array(Math.min(length, FIRST_BUFFER_BYTES));
+  let bytes = new Uint8Array(0);
   let offset = 0;
   try {
     for (;;) {
@@ -100,7 +106,7 @@ async function readDeclared(request: Request, length: number): Promise<Uint8Arra
         return 'too-long';
       }
       if (offset + value.byteLength > bytes.byteLength) {
-        const grown = new Uint8Array(Math.min(length, Math.max(bytes.byteLength * 2, offset + value.byteLength)));
+        const grown = new Uint8Array(uploadBufferSize(bytes.byteLength, offset + value.byteLength, length));
         grown.set(bytes.subarray(0, offset));
         bytes = grown;
       }

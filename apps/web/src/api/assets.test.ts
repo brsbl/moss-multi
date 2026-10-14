@@ -7,7 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
-import { setUploadDeadlineForTests } from './assets.ts';
+import { MEDIA_CAP_BYTES } from '@moss-multi/protocol/media';
+import { setUploadDeadlineForTests, uploadBufferSize } from './assets.ts';
 import { setRemoteFetchForTests } from './remote.ts';
 import { handleApi } from './router.ts';
 
@@ -523,6 +524,23 @@ describe('upload bounds (T3.1s)', () => {
     const used = await d1.db.prepare('SELECT SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(kim.homeId).first<{ used: number }>();
     expect(used?.used).toBeLessThanOrEqual(VAULT_MEDIA_QUOTA_BYTES);
   }, 60_000);
+  it('grows an upload buffer to its declared length holding at most 1 MiB more, even for a near-cap video (B230, B219)', () => {
+    const length = MEDIA_CAP_BYTES.video;
+    for (const chunk of [4096, 64 * 1024, 1024 * 1024, 7_777_777]) {
+      let capacity = 0;
+      let peak = 0;
+      for (let offset = 0; offset < length; offset = Math.min(length, offset + chunk)) {
+        const next = uploadBufferSize(capacity, Math.min(length, offset + chunk), length);
+        // While the buffer grows, the old one stays live until its bytes are copied over.
+        if (next !== capacity) peak = Math.max(peak, capacity + next);
+        capacity = next;
+      }
+      expect(capacity, `${chunk}-byte chunks fill the declared length`).toBe(length);
+      expect(peak, `${chunk}-byte chunks: peak buffer bytes`).toBeLessThanOrEqual(length + 1024 * 1024);
+    }
+    // A body that sends a few bytes and stalls holds a small buffer, not its declared length.
+    expect(uploadBufferSize(0, 10, length)).toBeLessThanOrEqual(64 * 1024);
+  });
   it('refuses an upload whose body stalls past its deadline with 408, cancelling the stream (B230)', async () => {
     const docId = await insertDoc(d1.db, ada);
     let cancelled = false;
@@ -638,6 +656,40 @@ describe('upload storage bounds (T3.1s)', () => {
       expect(((await refused.json()) as { error: string }).error).toBe('over-quota');
     }
     expect(await totals()).toEqual(before);
+  });
+
+  it('lets a same-file retry at the quota fill the blob a failed put left under a -2 name', async () => {
+    const ory = await signedUpUser(env, 'assets-retry-ory', 'Ory');
+    const docId = await insertDoc(d1.db, ory);
+    await uploaded(await upload(ory.cookie, docId, 'shot.png', PNG, 'image/png'));
+    const body = new Uint8Array([...PNG, ...new Uint8Array(3000).fill(8)]);
+    const usage = () => d1.db.prepare('SELECT COUNT(*) AS n, SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(ory.homeId).first<{ n: number; used: number }>();
+    await fill(ory, ory.homeId, VAULT_MEDIA_QUOTA_BYTES - ((await usage())?.used ?? 0) - body.byteLength).run();
+    let failures = 1;
+    const ASSETS = new Proxy(d1.assets, {
+      get(target, key) {
+        if (key === 'put' && failures > 0) {
+          return async () => {
+            failures -= 1;
+            throw new Error('R2 put failed');
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const send = () => handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=shot.png`, {
+      method: 'POST', headers: { origin: BASE, cookie: ory.cookie, 'content-type': 'image/png', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, ASSETS });
+    const failed = await send().catch(() => null);
+    expect(failed?.status ?? 500, 'the first put fails after the rows commit').not.toBe(201);
+    expect(failures).toBe(0);
+    const before = await usage();
+    expect(before?.used).toBe(VAULT_MEDIA_QUOTA_BYTES);
+    const retried = await uploaded(await send());
+    expect(retried.filename, 'the retry finds the -2 name its first attempt bound').toBe('shot-2.png');
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/shot-2.png`, ory.cookie)), 'the retry filled the blob').toEqual(body);
+    expect(await usage(), 'the retry added no asset').toEqual(before);
   });
 
   it('refuses an import from a URL into a vault exactly at its quota before fetching anything (B236)', async () => {
