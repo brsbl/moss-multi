@@ -22,37 +22,60 @@ const ROWS_PER_STATEMENT = 100;
 const TOKEN = /^s\d{1,20}-\d{1,4}$/;
 const HASH = /^[0-9a-f]{32}:[0-9a-f]{128}$/;
 
-/** This run's seed token, from the workflow run id and attempt. */
+/**
+ * This run's seed token, from the workflow run id and attempt.
+ * @param {string} runId
+ * @param {string} attempt
+ */
 export function seedToken(runId, attempt) {
   const token = `s${runId}-${attempt}`;
   if (!TOKEN.test(token)) throw new Error(`a seed token needs a numeric run id and attempt, got ${runId} ${attempt}`);
   return token;
 }
 
+/**
+ * @param {string} token
+ * @param {string} slots
+ * @param {number} k
+ */
 export function seedEmail(token, slots, k) {
   return `mm-${token}-${slots}-${k}@example.invalid`;
 }
 
-/** The run's one suite password: an HMAC of the pool secret, apart from the pool's own (principals.ts). */
+/**
+ * The run's one suite password: an HMAC of the pool secret, apart from the pool's own (principals.ts).
+ * @param {string} secret
+ * @param {string} token
+ */
 export function suitePassword(secret, token) {
   if (!secret || secret.length < 32) throw new Error('the pool secret must be at least 32 characters');
   return createHmac('sha256', secret).update(`moss-multi staging suite ${token}`).digest('base64url');
 }
 
-/** better-auth's own password hash (apps/web's better-auth), so its sign-in verifies the seeded account. */
+/**
+ * better-auth's own password hash (apps/web's better-auth), so its sign-in verifies the seeded account.
+ * @param {string} password
+ * @returns {Promise<string>}
+ */
 export async function seedHash(password) {
   const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
   const { hashPassword } = await import(pathToFileURL(require.resolve('better-auth/crypto')).href);
   return hashPassword(password);
 }
 
+/** @param {string} value */
 const quote = (value) => `'${String(value).replace(/'/g, "''")}'`;
 
-/** A user and a credential account per slot, as better-auth's sign-up writes them; the home vault heals on first use. */
+/**
+ * A user and a credential account per slot, as better-auth's sign-up writes them; the home vault heals on first use.
+ * @param {{ token: string, slots: string[], perShard: number, hash: string, now: number, newId?: () => string }} options
+ */
 export function seedSql({ token, slots, perShard, hash, now, newId = () => randomBytes(16).toString('hex') }) {
   if (!TOKEN.test(token)) throw new Error('bad seed token');
   if (!HASH.test(hash)) throw new Error('the password hash is not better-auth scrypt hex');
+  /** @type {string[]} */
   const users = [];
+  /** @type {string[]} */
   const accounts = [];
   for (const slot of slots) {
     if (!SEED_SLOTS.includes(slot)) throw new Error(`unknown slots ${slot}`);
@@ -63,7 +86,9 @@ export function seedSql({ token, slots, perShard, hash, now, newId = () => rando
       accounts.push(`(${quote(accountId)}, ${quote(userId)}, 'credential', ${quote(userId)}, ${quote(hash)}, ${now}, ${now})`);
     }
   }
+  /** @type {string[]} */
   const statements = [];
+  /** @param {string[]} rows @param {string} head */
   const batch = (rows, head) => {
     for (let at = 0; at < rows.length; at += ROWS_PER_STATEMENT) statements.push(`${head} VALUES\n${rows.slice(at, at + ROWS_PER_STATEMENT).join(',\n')};`);
   };
@@ -72,7 +97,12 @@ export function seedSql({ token, slots, perShard, hash, now, newId = () => rando
   return `${statements.join('\n')}\n`;
 }
 
-/** The next unclaimed slot under `dir` (one file each, created exclusively, so processes never share one), or null. */
+/**
+ * The next unclaimed slot under `dir` (one file each, created exclusively, so processes never share one), or null.
+ * @param {string} dir
+ * @param {number} count
+ * @returns {number | null}
+ */
 export function claimSlot(dir, count) {
   mkdirSync(dir, { recursive: true });
   for (let k = 0; k < count; k += 1) {
@@ -88,6 +118,7 @@ export function claimSlot(dir, count) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
+  /** @param {string} name */
   const flag = (name) => {
     const at = args.indexOf(name);
     return at >= 0 ? args[at + 1] : undefined;
