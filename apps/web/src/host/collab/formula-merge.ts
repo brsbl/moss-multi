@@ -4,6 +4,9 @@ import { applyOps, diffText, mapOffset, rebaseOps, type Delta, type TextOp } fro
 
 export type { Delta };
 
+/** Shown when a peer's change and the open draft both changed a formula too crowded to merge by reference. */
+export const FORMULA_REPLACED = 'Someone changed this formula while you were editing it. It now shows their version.';
+
 const TOKEN = /@\(([a-zA-Z][a-zA-Z0-9_-]*)#([0-9a-fA-F-]{36})#([0-9a-fA-F-]{36})\)/g;
 
 /** A reference's range in the humanized expression (`start`/`end`) and its token's range in the stored one. */

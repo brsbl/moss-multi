@@ -1,6 +1,7 @@
 // T3.B15: the formula popover's merge of a peer's change into an open draft, in stored form (B009, B040, B041).
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createTokenCodec, mergeStoredFormula, storedCaret } from './formula-merge.ts';
+import { createTokenCodec, FORMULA_REPLACED, mergeStoredFormula, storedCaret } from './formula-merge.ts';
+import { refuseInput, refusalMessage } from '../refusal.ts';
 
 const hex = (i: number) => i.toString(16).padStart(12, '0');
 const ref = (i: number, name = `r${i}`) => `@(${name}#11111111-1111-4111-8111-${hex(i)}#22222222-2222-4222-8222-${hex(i)})`;
@@ -79,15 +80,27 @@ describe('formula token codec (B041)', () => {
     expect(raw === `${after}*`, 'the merge takes the peer\'s token whole and keeps the draft\'s own edit').toBe(true);
   });
 
-  it('completes when every character is taken, merging the stored text as it is', () => {
+  it('completes when every character is taken, and a concurrent edit takes one side whole with a notice', () => {
     guardAllocation();
     const draft = everything();
-    const before = `${draft}+${ref(1)}+${ref(2)}`;
-    const after = `${draft}+${ref(1)}+${ref(3, 'r2')}`;
-    const ours = `${before}*2`;
+    const n1 = '11111111-1111-4111-8111-000000000001';
+    const n2 = '11111111-1111-4111-8111-000000000002';
+    const f1 = '22222222-2222-4222-8222-000000000001';
+    const f2 = '22222222-2222-4222-8222-000000000002';
+    const before = `${draft}+@(r#${n1}#${f1})+${ref(2)}`;
+    // The peer retargets the note, the draft the formula: merged per character, the token would be @(r#n2#f2).
+    const after = `${draft}+@(r#${n2}#${f1})+${ref(2)}`;
+    const ours = `${draft}+@(r#${n1}#${f2})+${ref(2)}*2`;
     expect(createTokenCodec([before, after, ours]), 'no character is free').toBeNull();
-    const { raw } = mergeStoredFormula(before, after, ours, [0]);
-    expect(raw === `${after}*2`, 'the peer\'s reference lands whole beside the draft\'s edit').toBe(true);
+    const { raw, selection } = mergeStoredFormula(before, after, ours, [0, humanize(ours).length]);
+    expect(raw === after, 'the stored formula is the peer\'s, token for token').toBe(true);
+    expect(raw.includes(`@(r#${n2}#${f2})`), 'no reference neither side chose').toBe(false);
+    expect(selection).toEqual([0, humanize(after).length]);
+    expect(refusalMessage()).toBe(FORMULA_REPLACED);
+    // A peer's change alone, with no edit of the draft's, merges without a notice.
+    refuseInput('');
+    expect(mergeStoredFormula(before, after, before, [0]).raw === after).toBe(true);
+    expect(refusalMessage()).toBe('');
   });
 
   it('keeps ordinary astral text beside references', () => {
