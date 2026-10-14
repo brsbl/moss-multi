@@ -7,6 +7,7 @@
 import YProvider from 'y-partyserver/provider';
 import WebSocket from 'ws';
 import * as Y from 'yjs';
+import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '../../packages/protocol/src/client-protocol.ts';
 import { grantDoc } from '../lib/grants.ts';
 import { normalized, pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -74,7 +75,7 @@ test('j01-paste-geometry: a multi-batch plain paste lands whole while a viewer w
   const cookie = (await vic.context.cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
   const doc = new Y.Doc();
   const provider = new YProvider(new URL(stack.baseUrl).host, docId, doc, {
-    party: 'doc-d-o', connect: false, disableBc: true,
+    party: 'doc-d-o', connect: false, disableBc: true, params: { [PROTOCOL_PARAM]: String(CLIENT_PROTOCOL) },
     WebSocketPolyfill: class extends WebSocket { constructor(url: string) { super(url, { headers: { cookie, origin: stack.baseUrl } }); } } as unknown as typeof globalThis.WebSocket,
   });
   try {
