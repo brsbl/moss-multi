@@ -352,3 +352,23 @@ test('j16-paste: whitespace-preserving HTML makes a tab node per tab: the paste 
   await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`)).toHaveText('', { timeout: 15_000 });
   expect(await storedOrRefused(ben, ada, docId, () => pasteHtml(ben, docId, '<b style="white-space: pre-wrap">a\tb\tc</b>'))).toBe('stored');
 });
+
+test('j16-paste: a clipboard copied in the pane is measured through the pane\'s own importer (its serialized nodes): past the cap, refused whole, never dropped @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
+  await caret(ben, docId, 'Second line.', 12);
+  // The pane's copy puts its serialized nodes on the clipboard under its namespace; Lexical pastes those, not the
+  // small HTML and plain flavors beside them.
+  const paste = () => ui.body(ben, docId).evaluate((element) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'small');
+    data.setData('application/x-lexical-editor', JSON.stringify({
+      namespace: 'moss-markdown-editor',
+      nodes: [{ type: 'text', text: 'x'.repeat(300_000), format: 0, detail: 0, mode: 'normal', style: '', version: 1 }],
+    }));
+    data.setData('text/html', '<p>small</p>');
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+  });
+  expect(await storedOrRefused(ben, ada, docId, paste)).toBe('refused');
+  await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
+});

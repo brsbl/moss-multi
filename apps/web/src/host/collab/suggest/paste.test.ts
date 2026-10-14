@@ -8,9 +8,10 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestRequest } from '@moss-multi/protocol/suggest';
 import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
 import {
-  $getRoot, $getSelection, $isRangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
+  $getRoot, $getSelection, $isRangeSelection, $setSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
   type LexicalEditor,
 } from 'lexical';
+import { $createTableSelectionFrom, $isTableCellNode, $isTableNode, type TableCellNode, type TableNode } from '@lexical/table';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { markdownToState } from '../../../../../../packages/sync/src/converter/index.ts';
@@ -57,7 +58,12 @@ function pasteStack(target: LexicalEditor): () => void {
     const text = data.getData('text/plain').replace(/\r\n?/g, '\n');
     target.update(() => {
       const selection = $getSelection();
-      if (!$isRangeSelection(selection)) return;
+      if (!selection) return;
+      // A table-cell selection takes rich content into its focus cell (TableSelection.insertNodes).
+      if (!$isRangeSelection(selection)) {
+        if (rich) $insertDataTransferForRichText(data, selection, target);
+        return;
+      }
       if (markdown) {
         $insertGeneratedNodes(target, $generateNodesFromSerializedNodes(markdownToState(markdown).root.children), selection);
         return;
@@ -162,6 +168,7 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
     fork,
     live,
     ingest,
+    editor,
     unsaved,
     paste,
     pasteData,
@@ -1061,7 +1068,10 @@ const markdownClipboard = (text: string) => ({
 it('a paste whose line breaks are carriage returns is measured as the paragraphs the paste handler makes of them: stored whole or refused whole', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
-    storedOrRefused(pane, () => pane.pasteData(markdownClipboard('a\r\r'.repeat(1_000))));
+    const before = pane.text().split('a').length;
+    if (storedOrRefused(pane, () => pane.pasteData(markdownClipboard('a\r\r'.repeat(1_000)))) === 'stored') {
+      expect(pane.text().split('a').length - before, 'every pasted paragraph landed').toBe(1_000);
+    }
   } finally {
     pane.dispose();
   }
@@ -1106,6 +1116,40 @@ it('a short paste of whitespace-preserving HTML with tabs lands whole, its tab n
     const clipboard = { types: ['text/html'], getData: (type: string) => (type === 'text/html' ? html : '') } as unknown as DataTransfer;
     expect(storedOrRefused(pane, () => pane.pasteData(clipboard))).toBe('stored');
     expect(pane.text()).toContain('a\tb\tc');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a Lexical clipboard from the pane is measured through the importer the pane uses (its namespace): past the cap, refused whole, never dropped', { timeout: 120_000 }, () => {
+  const pane = suggesting('Ada original line.\n\nSecond line.\n');
+  try {
+    // A copy made in the pane carries its serialized nodes; the HTML and plain flavors here are small.
+    const lexical = JSON.stringify({
+      namespace: pane.editor._config.namespace,
+      nodes: [{ type: 'text', text: 'x'.repeat(300_000), format: 0, detail: 0, mode: 'normal', style: '', version: 1 }],
+    });
+    const clipboard = {
+      types: ['application/x-lexical-editor', 'text/html', 'text/plain'],
+      getData: (type: string) => (type === 'application/x-lexical-editor' ? lexical : type === 'text/html' ? '<p>small</p>' : type === 'text/plain' ? 'small' : ''),
+    } as unknown as DataTransfer;
+    expect(storedOrRefused(pane, () => pane.pasteData(clipboard))).toBe('refused');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste over a table-cell selection is measured in that cell: past the cap, refused whole, never dropped', { timeout: 120_000 }, () => {
+  const pane = suggesting('Ada original line.\n\n| a | b |\n| --- | --- |\n| c | d |\n');
+  try {
+    pane.editor.update(() => {
+      const table = $getRoot().getChildren().find($isTableNode)!;
+      const cells = table.getChildren().flatMap((row) => (row as TableNode).getChildren().filter($isTableCellNode)) as TableCellNode[];
+      $setSelection($createTableSelectionFrom(table, cells[0], cells.at(-1)!));
+    }, { discrete: true });
+    const html = `<p>${'x'.repeat(300_000)}</p>`;
+    const clipboard = { types: ['text/html'], getData: (type: string) => (type === 'text/html' ? html : '') } as unknown as DataTransfer;
+    expect(storedOrRefused(pane, () => pane.pasteData(clipboard))).toBe('refused');
   } finally {
     pane.dispose();
   }
