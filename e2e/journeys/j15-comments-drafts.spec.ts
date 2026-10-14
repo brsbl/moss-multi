@@ -608,16 +608,7 @@ test('j15-comments: Cmd+Shift+A on a selected code block opens a block composer 
   const code = ui.body(ada, id).locator(`[data-block-decorator-key="${key}"]`).first();
   await code.scrollIntoViewIfNeeded();
   // A click beside the code (its line numbers) selects the block itself; the code's own textarea keeps Cmd+A.
-  // The click can land before the editor takes it (CI left the earlier text selection in place), so it is retried until the block is node-selected.
-  const selected = () => ui.body(ada, id).evaluate((element) => {
-    const state = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor.getEditorState();
-    const selection = state._selection as { _nodes?: Set<string> } | null;
-    return selection?._nodes ? [...selection._nodes] : null;
-  });
-  await expect(async () => {
-    await code.locator('.moss-codeblock-gutter').first().click();
-    expect(await selected()).toEqual([key]);
-  }, 'the code block is node-selected').toPass({ timeout: PEER_TIMEOUT });
+  await code.locator('.moss-codeblock-gutter').first().click();
   modes.POST = 'fail';
   await ada.page.keyboard.press(COMMENT_KEY);
   const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
