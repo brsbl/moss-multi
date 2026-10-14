@@ -7,6 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { MEDIA_CAP_BYTES } from '@moss-multi/protocol/media';
+import { setUploadDeadlineForTests, uploadBufferSize } from './assets.ts';
 import { setRemoteFetchForTests } from './remote.ts';
 import { handleApi } from './router.ts';
 
@@ -477,7 +479,10 @@ describe('upload bounds (T3.1s)', () => {
       .bind(crypto.randomUUID(), gil.homeId, VAULT_MEDIA_QUOTA_BYTES - PNG.byteLength - 4, gil.id, Date.now()).run();
     const refused = await upload(gil.cookie, docId, 'over.png', OTHER_PNG, 'image/png');
     expect(refused.status).toBe(413);
-    expect(((await refused.json()) as { message: string }).message).toMatch(/storage/i);
+    const { message } = (await refused.json()) as { message: string };
+    expect(message).toMatch(/media storage is full/i);
+    // Nothing deletes an asset yet, so removing media from notes frees no quota (B231).
+    expect(message).not.toMatch(/delete|remove/i);
     // Another person's vault is untouched.
     const own = await insertDoc(d1.db, ada);
     expect((await upload(ada.cookie, own, 'over.png', OTHER_PNG, 'image/png')).status).toBe(201);
@@ -519,6 +524,50 @@ describe('upload bounds (T3.1s)', () => {
     const used = await d1.db.prepare('SELECT SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(kim.homeId).first<{ used: number }>();
     expect(used?.used).toBeLessThanOrEqual(VAULT_MEDIA_QUOTA_BYTES);
   }, 60_000);
+  it('grows an upload buffer to its declared length holding at most 1 MiB more, even for a near-cap video (B230, B219)', () => {
+    const length = MEDIA_CAP_BYTES.video;
+    for (const chunk of [4096, 64 * 1024, 1024 * 1024, 7_777_777]) {
+      let capacity = 0;
+      let peak = 0;
+      for (let offset = 0; offset < length; offset = Math.min(length, offset + chunk)) {
+        const next = uploadBufferSize(capacity, Math.min(length, offset + chunk), length);
+        // While the buffer grows, the old one stays live until its bytes are copied over.
+        if (next !== capacity) peak = Math.max(peak, capacity + next);
+        capacity = next;
+      }
+      expect(capacity, `${chunk}-byte chunks fill the declared length`).toBe(length);
+      expect(peak, `${chunk}-byte chunks: peak buffer bytes`).toBeLessThanOrEqual(length + 1024 * 1024);
+    }
+    // A body that sends a few bytes and stalls holds a small buffer, not its declared length.
+    expect(uploadBufferSize(0, 10, length)).toBeLessThanOrEqual(64 * 1024);
+  });
+  it('refuses an upload whose body stalls past its deadline with 408, cancelling the stream (B230)', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0, 0, 0]));
+        // Then nothing more, ever.
+        return new Promise<void>(() => {});
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }, { highWaterMark: 0 });
+    setUploadDeadlineForTests(500);
+    try {
+      const started = Date.now();
+      const sent = await call('POST', `/api/docs/${docId}/assets?filename=stalled.webm`, ada.cookie, {
+        body, headers: { 'content-type': 'video/webm', 'content-length': String(95 * 1024 * 1024) },
+      });
+      expect(sent.status, await sent.clone().text()).toBe(408);
+      expect(Date.now() - started, 'refused at its deadline').toBeLessThan(5_000);
+      await expect.poll(() => cancelled, { message: 'the stalled stream is cancelled', timeout: 2_000 }).toBe(true);
+    } finally {
+      setUploadDeadlineForTests(null);
+    }
+    await uploaded(await upload(ada.cookie, docId, 'after-stall.png', PNG, 'image/png'));
+  }, 20_000);
 });
 
 describe('upload storage bounds (T3.1s)', () => {
@@ -566,6 +615,111 @@ describe('upload storage bounds (T3.1s)', () => {
     expect(sent.status, await sent.clone().text()).toBe(413);
     expect(((await sent.json()) as { error: string }).error).toBe('over-quota');
     expect(await traceOf(await hashOf(body))).toEqual({ blob: false, rows: 0 });
+  });
+
+  it('lets a same-file retry fill the blob a failed put left at the quota, unchanged totals, and refuses a different file (B228)', async () => {
+    const ola = await signedUpUser(env, 'assets-retry-ola', 'Ola');
+    const docId = await insertDoc(d1.db, ola);
+    const body = new Uint8Array([...PNG, ...new Uint8Array(2048).fill(6)]);
+    // Room for exactly this file.
+    await fill(ola, ola.homeId, VAULT_MEDIA_QUOTA_BYTES - body.byteLength).run();
+    let failures = 1;
+    const ASSETS = new Proxy(d1.assets, {
+      get(target, key) {
+        if (key === 'put' && failures > 0) {
+          return async () => {
+            failures -= 1;
+            throw new Error('R2 put failed');
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const send = (name: string, bytes: Uint8Array<ArrayBuffer>) => handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=${name}`, {
+      method: 'POST', headers: { origin: BASE, cookie: ola.cookie, 'content-type': 'image/png', 'content-length': String(bytes.byteLength) }, body: bytes,
+    }), { ...env, ASSETS });
+    const failed = await send('retry.png', body).catch(() => null);
+    expect(failed?.status ?? 500, 'the first put fails after the rows commit').not.toBe(201);
+    expect(failures).toBe(0);
+    const totals = () => d1.db.prepare('SELECT COUNT(*) AS n, SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(ola.homeId).first<{ n: number; used: number }>();
+    const before = await totals();
+    expect(before?.used).toBe(VAULT_MEDIA_QUOTA_BYTES);
+    const retried = await uploaded(await send('retry.png', body));
+    expect(retried.filename).toBe('retry.png');
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/retry.png`, ola.cookie)), 'the retry filled the blob').toEqual(body);
+    expect(await totals(), 'the retry added no asset').toEqual(before);
+    const other = new Uint8Array([...PNG, ...new Uint8Array(2048).fill(7)]);
+    for (const name of ['retry.png', 'other.png']) {
+      const refused = await send(name, other);
+      expect(refused.status, `${name}: ${await refused.clone().text()}`).toBe(413);
+      expect(((await refused.json()) as { error: string }).error).toBe('over-quota');
+    }
+    expect(await totals()).toEqual(before);
+  });
+
+  it('lets a same-file retry at the quota fill the blob a failed put left under a -2 name', async () => {
+    const ory = await signedUpUser(env, 'assets-retry-ory', 'Ory');
+    const docId = await insertDoc(d1.db, ory);
+    await uploaded(await upload(ory.cookie, docId, 'shot.png', PNG, 'image/png'));
+    const body = new Uint8Array([...PNG, ...new Uint8Array(3000).fill(8)]);
+    const usage = () => d1.db.prepare('SELECT COUNT(*) AS n, SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(ory.homeId).first<{ n: number; used: number }>();
+    await fill(ory, ory.homeId, VAULT_MEDIA_QUOTA_BYTES - ((await usage())?.used ?? 0) - body.byteLength).run();
+    let failures = 1;
+    const ASSETS = new Proxy(d1.assets, {
+      get(target, key) {
+        if (key === 'put' && failures > 0) {
+          return async () => {
+            failures -= 1;
+            throw new Error('R2 put failed');
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const send = () => handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=shot.png`, {
+      method: 'POST', headers: { origin: BASE, cookie: ory.cookie, 'content-type': 'image/png', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, ASSETS });
+    const failed = await send().catch(() => null);
+    expect(failed?.status ?? 500, 'the first put fails after the rows commit').not.toBe(201);
+    expect(failures).toBe(0);
+    const before = await usage();
+    expect(before?.used).toBe(VAULT_MEDIA_QUOTA_BYTES);
+    const retried = await uploaded(await send());
+    expect(retried.filename, 'the retry finds the -2 name its first attempt bound').toBe('shot-2.png');
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/shot-2.png`, ory.cookie)), 'the retry filled the blob').toEqual(body);
+    expect(await usage(), 'the retry added no asset').toEqual(before);
+  });
+
+  it('refuses an import from a URL into a vault exactly at its quota before fetching anything (B236)', async () => {
+    const pia = await signedUpUser(env, 'assets-fromurl-pia', 'Pia');
+    const docId = await insertDoc(d1.db, pia);
+    const fetched: string[] = [];
+    setRemoteFetchForTests({
+      fetch: (async (input: RequestInfo | URL) => {
+        fetched.push(String(input));
+        return new Response(PNG, { headers: { 'content-type': 'image/png' } });
+      }) as typeof fetch,
+      resolve: async (host) => (host === 'img.example' ? ['93.184.215.15'] : []),
+    });
+    const fromUrl = () => call('POST', `/api/docs/${docId}/assets/from-url`, pia.cookie, {
+      body: JSON.stringify({ url: 'https://img.example/full.png' }), headers: { 'content-type': 'application/json' },
+    });
+    try {
+      const filler = crypto.randomUUID();
+      await d1.db.prepare("INSERT INTO assets (id, folder_id, filename, kind, content_type, size, current_version_id, created_by, created_at) VALUES (?1, ?2, 'filler.mp4', 'video', 'video/mp4', ?3, NULL, ?4, ?5)")
+        .bind(filler, pia.homeId, VAULT_MEDIA_QUOTA_BYTES, pia.id, Date.now()).run();
+      const refused = await fromUrl();
+      expect(refused.status, await refused.clone().text()).toBe(413);
+      expect(((await refused.json()) as { error: string }).error).toBe('over-quota');
+      expect(fetched, 'nothing is fetched for a full vault').toEqual([]);
+      await d1.db.prepare('UPDATE assets SET size = ?1 WHERE id = ?2').bind(VAULT_MEDIA_QUOTA_BYTES - 4096, filler).run();
+      expect((await fromUrl()).status, 'below the quota an import is stored').toBe(201);
+      expect(fetched).toHaveLength(1);
+    } finally {
+      setRemoteFetchForTests(null);
+    }
   });
 
   it('keeps counting media in a trashed folder after its parent moves: the move may not push it past the depth bound', async () => {

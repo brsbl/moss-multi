@@ -47,7 +47,7 @@ const tooLarge = (kind: 'image' | 'video') =>
 const unsupported = () =>
   refuse(415, 'unsupported-media', 'Only images (png, jpg, gif, webp, svg) and video (mp4, webm, mov) can be uploaded.');
 const overQuota = () =>
-  refuse(413, 'over-quota', `This vault is out of media storage (${VAULT_MEDIA_QUOTA_BYTES / (1024 * 1024 * 1024)} GB). Delete media from its notes and try again.`);
+  refuse(413, 'over-quota', `This vault's media storage is full (${VAULT_MEDIA_QUOTA_BYTES / (1024 * 1024 * 1024)} GB).`);
 const nameTaken = () => refuse(409, 'name-taken', 'Too many files share that name here. Rename the file and try again.');
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
@@ -55,25 +55,71 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+let deadlineOverride: number | null = null;
+
+/** Unit tests shorten every upload's body deadline to `ms` (null restores the size-scaled one). */
+export function setUploadDeadlineForTests(ms: number | null): void {
+  deadlineOverride = ms;
+}
+
+/** An upload's body must arrive within this grace plus its size at this slowest rate, or it is cancelled with 408. */
+const UPLOAD_GRACE_MS = 30_000;
+const UPLOAD_MIN_BYTES_PER_SECOND = 128 * 1024;
+/** An upload's first buffer; it doubles as the body arrives up to the growth limit, then becomes the declared length. */
+const FIRST_BUFFER_BYTES = 64 * 1024;
+/** The largest buffer kept live beside the declared-length one while it is filled: the most a growth adds to the peak. */
+const GROWTH_LIMIT_BYTES = 1024 * 1024;
+
+/** The buffer an upload body of declared `length` needs once `needed` bytes have arrived into one of `capacity`. */
+export function uploadBufferSize(capacity: number, needed: number, length: number): number {
+  if (needed <= capacity) return capacity;
+  const doubled = Math.max(capacity * 2, needed, FIRST_BUFFER_BYTES);
+  return doubled <= GROWTH_LIMIT_BYTES ? Math.min(length, doubled) : length;
+}
+
+/** How long an upload of `size` bytes may take to arrive. */
+const uploadDeadlineMs = (size: number): number =>
+  deadlineOverride ?? UPLOAD_GRACE_MS + Math.ceil((size / UPLOAD_MIN_BYTES_PER_SECOND) * 1000);
+
 /**
- * The body into one buffer of its declared `length`, each chunk copied in as it arrives and then dropped, so the upload
- * holds at most `length` bytes plus a chunk. A body that runs past `length` stops there; one that ends short is refused.
+ * The body into one buffer of at most its declared `length`, grown as chunks arrive: a stalled body holds about what it
+ * sent, and a large one at most `length` plus 1 MiB while its last buffer is copied over. A body that runs past
+ * `length` stops there; one that ends short is refused; one still arriving at the deadline is cancelled.
  */
-async function readDeclared(request: Request, length: number): Promise<Uint8Array<ArrayBuffer> | 'too-long' | 'too-short'> {
-  const bytes = new Uint8Array(length);
+async function readDeclared(request: Request, length: number): Promise<Uint8Array<ArrayBuffer> | 'too-long' | 'too-short' | 'timeout'> {
   const reader = request.body?.getReader();
-  if (!reader) return length === 0 ? bytes : 'too-short';
+  if (!reader) return length === 0 ? new Uint8Array(0) : 'too-short';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), uploadDeadlineMs(length));
+  });
+  let bytes = new Uint8Array(0);
   let offset = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (offset + value.byteLength > length) {
-      await reader.cancel().catch(() => undefined);
-      return 'too-long';
+  try {
+    for (;;) {
+      const read = await Promise.race([reader.read(), expired]);
+      if (read === 'timeout') {
+        reader.cancel().catch(() => undefined);
+        return 'timeout';
+      }
+      if (read.done) break;
+      const { value } = read;
+      if (offset + value.byteLength > length) {
+        await reader.cancel().catch(() => undefined);
+        return 'too-long';
+      }
+      if (offset + value.byteLength > bytes.byteLength) {
+        const grown = new Uint8Array(uploadBufferSize(bytes.byteLength, offset + value.byteLength, length));
+        grown.set(bytes.subarray(0, offset));
+        bytes = grown;
+      }
+      bytes.set(value, offset);
+      offset += value.byteLength;
     }
-    bytes.set(value, offset);
-    offset += value.byteLength;
+  } finally {
+    clearTimeout(timer);
   }
+  // The buffer never outgrows `length`, so a complete body fills it exactly.
   return offset === length ? bytes : 'too-short';
 }
 
@@ -147,9 +193,9 @@ async function mediaOf(db: Db, docId: string, filename: string): Promise<Placed 
 }
 
 /** The folder's asset named `filename` and its current version's bytes, if any. */
-async function folderAsset(db: Db, folderId: string, filename: string): Promise<{ id: string; versionId: string; contentHash: string } | null> {
+async function folderAsset(db: Db, folderId: string, filename: string): Promise<{ id: string; versionId: string; contentHash: string; size: number } | null> {
   const [row] = await db
-    .select({ id: assets.id, versionId: assetVersions.id, contentHash: assetVersions.contentHash })
+    .select({ id: assets.id, versionId: assetVersions.id, contentHash: assetVersions.contentHash, size: assetVersions.size })
     .from(assets)
     .innerJoin(assetVersions, eq(assetVersions.id, assets.currentVersionId))
     .where(and(eq(assets.folderId, folderId), eq(assets.filename, filename)))
@@ -241,6 +287,16 @@ function uploadTarget(raw: string): { filename: string; type: MediaType } | null
   return filename && type ? { filename, type } : null;
 }
 
+/** Whether `filename`, or a `-n` name an upload of it may have taken, holds a file of `size` in the doc or its folder. */
+async function heldAtSize(env: AuthEnv, docId: string, folderId: string, filename: string, size: number): Promise<boolean> {
+  const names = Array.from({ length: NAME_ATTEMPTS }, (_, i) => (i === 0 ? filename : suffixedFilename(filename, i + 1)));
+  const list = names.map((_, i) => `?${i + 4}`).join(', ');
+  const row = await env.DB.prepare(`SELECT EXISTS (SELECT 1 FROM doc_media WHERE doc_id = ?1 AND size = ?3 AND filename IN (${list}))
+    OR EXISTS (SELECT 1 FROM assets WHERE folder_id = ?2 AND size = ?3 AND filename IN (${list})) AS held`)
+    .bind(docId, folderId, size, ...names).first<{ held: number }>();
+  return row?.held === 1;
+}
+
 /** The raw body into `docId`, after the caller's right to edit it was checked. */
 async function store(request: Request, env: AssetsEnv, principal: Principal, docId: string, folderId: string): Promise<Response> {
   const target = uploadTarget(new URL(request.url).searchParams.get('filename') ?? '');
@@ -255,9 +311,12 @@ async function store(request: Request, env: AssetsEnv, principal: Principal, doc
   const size = Number(length);
   if (size > MEDIA_CAP_BYTES[type.kind]) return tooLarge(type.kind);
   if (size === 0) return refuse(400, 'empty', 'The file is empty.');
-  const refused = await admitMedia(request, env, principal, docId, folderId, size);
+  // A name already holding a file of this size may be a retry of it, which adds no stored bytes and refills a blob a
+  // failed put left missing; new bytes under it still take an asset row, which the insert holds to the quota.
+  const refused = await admitMedia(request, env, principal, docId, folderId, (await heldAtSize(env, docId, folderId, filename, size)) ? 0 : size);
   if (refused) return refused;
   const bytes = await readDeclared(request, size);
+  if (bytes === 'timeout') return refuse(408, 'timeout', 'The upload took too long to arrive. Try again.');
   if (bytes === 'too-long') return refuse(413, 'too-large', 'The upload is longer than its Content-Length.');
   if (bytes === 'too-short') return refuse(400, 'bad-length', 'The upload ended before its Content-Length.');
   return storeBytes(request, env, principal, docId, folderId, filename, type, bytes);
@@ -277,8 +336,7 @@ async function storeBytes(request: Request, env: AssetsEnv, principal: Principal
   if (bytes.byteLength > MEDIA_CAP_BYTES[type.kind]) return tooLarge(type.kind);
   // The bytes must be the type their name declares, checked before anything is written.
   if (!bytesMatchType(bytes, type.contentType)) return unsupported();
-  // Checked again before the bytes are stored; the asset insert below holds it against concurrent uploads.
-  if ((await vaultMediaBytes(env, folderId)) + bytes.byteLength > VAULT_MEDIA_QUOTA_BYTES) return overQuota();
+  // The quota holds in the asset insert below, against concurrent uploads too; bytes already stored add no row.
   const hash = await sha256Hex(bytes);
   const db = createDb(env.DB);
   const blob: Bytes = { contentHash: hash, contentType: type.contentType, size: bytes.byteLength, versionId: null };
@@ -382,8 +440,9 @@ async function fromUrl(request: Request, env: AssetsEnv, docId: string): Promise
   } catch {
     return blocked();
   }
-  // Admitted before anything is fetched, against a vault with room; the stored size is checked again in storeBytes.
-  const refused = await admitMedia(request, env, principal, docId, access.folderId, 0);
+  // Admitted before anything is fetched, against a vault with room for at least a byte; the asset insert holds the
+  // stored size to the quota.
+  const refused = await admitMedia(request, env, principal, docId, access.folderId, 1);
   if (refused) return refused;
   const throttled = await takeFetchToken(env, principal);
   if (throttled) return throttled;
