@@ -49,17 +49,33 @@ export interface InduceOptions {
 
 /**
  * The owner-only `GET /api/docs/:id/instance` (A§19), which answers the same probe in every environment, so a wake
- * is proven on real Cloudflare (SP14). It reads nothing from the doc and never wakes it.
+ * is proven on real Cloudflare (SP14). It reads nothing from the doc. It signs in once: sign-ins are paced off the
+ * hook stack, and a probe waiting on that pace after the decisive action finds the DO idled out again.
  */
 export function ownerProbe(stack: Stack, owner: Principal): (docId: string) => Promise<Instance> {
+  let session: Promise<string> | null = null;
   return async (docId) => {
-    const cookie = (await signIn(stack.baseUrl, owner)).map(({ name, value }) => `${name}=${value}`).join('; ');
+    session ??= signIn(stack.baseUrl, owner).then((cookies) => cookies.map(({ name, value }) => `${name}=${value}`).join('; '));
+    const cookie = await session.catch((error: unknown) => {
+      session = null;
+      throw error;
+    });
     const url = `${stack.baseUrl}/api/docs/${encodeURIComponent(docId)}/instance`;
-    stack.budget?.charge(url);
     const response = await fetch(url, { headers: { cookie }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`owner instance probe for ${docId}: ${response.status} ${(await response.text()).slice(0, 200)}`);
     return (await response.json()) as Instance;
   };
+}
+
+/**
+ * Where a natural-idle leg reads a doc's instance and how long it idles: the owner-only route, the run's idle and
+ * Cloudflare's clock on a Worker with no hooks (staging, T8.2); the loopback hook and workerd's calibrated window on
+ * a local stack.
+ */
+export function idleWake(stack: Stack, owner: Principal): { probe: (docId: string) => Promise<Instance>; idleMs: number; skewMs: number } {
+  const canary = stack.canary;
+  if (canary) return { probe: ownerProbe(stack, owner), idleMs: canary.idleMs, skewMs: 2_000 };
+  return { probe: (docId) => stack.docInstance(docId), idleMs: IDLE_MS, skewMs: CLOCK_SKEW_MS };
 }
 
 /**

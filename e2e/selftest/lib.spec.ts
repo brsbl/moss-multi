@@ -1,18 +1,26 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
 // the sever, the reach sweep and the UI verbs.
+import { execFile } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { request } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
-import { inductionProblems } from '../lib/hibernate.ts';
+import { RequestBudget } from '../lib/budget.ts';
+import { probeSocket } from '../lib/doc-client.ts';
+import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
-import { socketProblems } from '../lib/invariants.ts';
+import { errorProblems, socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
 import { unreachableControls } from '../lib/reach.js';
 import { makeSeverable } from '../lib/sever.ts';
+import type { Stack } from '../lib/stack.ts';
 import type { SocketEntry } from '../lib/telemetry.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
@@ -113,6 +121,82 @@ test.describe('principals (invariant 8)', () => {
   });
 });
 
+test.describe('request budget', () => {
+  // Every request a shard sends the Worker counts: Node's fetch (setup's sign-ups and sign-ins with their retries, a
+  // leg's own pushes), Playwright API contexts, and child processes such as the CLI. Others and /assets/ do not.
+  test('counts Node fetch, API request contexts and child processes, and only the Worker', async ({ server }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'budget-'));
+    const budget = new RequestBudget(join(dir, 'requests.json'), 4, server.url);
+    try {
+      budget.watchNode();
+      await (await fetch(`${server.url}/api/version`)).text();
+      await (await fetch(`${server.url}/assets/app.js`)).text();
+      expect(budget.count, 'Node fetch to the Worker, not /assets/').toBe(1);
+
+      const api = await request.newContext({ baseURL: server.url });
+      budget.watchApi(api);
+      await api.get('/api/version');
+      await api.post('/missing', { data: {} });
+      await api.dispose();
+      expect(budget.count, 'API request context, relative URLs included').toBe(3);
+
+      const child = "await fetch(process.argv[1] + '/api/version'); await fetch(process.argv[1] + '/assets/x.js');";
+      await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child, server.url], { env: { PATH: process.env.PATH ?? '', ...budget.childEnv() } });
+      expect(budget.count, "a child process's fetch").toBe(4);
+      expect(budget.exceeded).toBe(false);
+      // A raw ws socket from Node (a protocol-level doc client), refused at the upgrade here: its handshake reached
+      // the Worker.
+      expect((await probeSocket(`${server.url}/refused`, 'd', null)).opened).toBe(false);
+      expect(budget.exceeded, 'a Node ws socket counts, and passes the budget').toBe(true);
+      expect(() => budget.assert('selftest')).toThrow(/5 Worker requests passed this run's budget of 4/);
+      expect(new RequestBudget(join(dir, 'requests.json'), 4, server.url).count, 'a restarted worker keeps counting').toBe(5);
+    } finally {
+      budget.unwatchNode();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test.describe('doc sockets by document (invariant 3)', () => {
+  const socket = (openedAt: number, closedAt: number | null, document?: string | null): SocketEntry =>
+    ({ url: `ws://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error: null, close: closedAt === null ? null : '1000', document });
+  test('two opens in one document fail, whichever epoch the navigation event gave them', () => {
+    expect(socketProblems([socket(0, 10, 'doc-a'), socket(20, null, 'doc-a')], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 10), socket(20, null)], new Map())).not.toEqual([]);
+  });
+  test("a socket the previous document opened as it unloaded is that document's, not the next one's", () => {
+    // WebKit can deliver the old document's socket after the new navigation's response, at the new epoch.
+    expect(socketProblems([socket(0, 0, 'doc-a'), socket(39, null, 'doc-b')], new Map())).toEqual([]);
+  });
+});
+
+test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
+  const OFF = { offLoopback: true };
+  const socket = (openedAt: number, closedAt: number | null, code: number | null = null, error: string | null = null): SocketEntry =>
+    ({ url: `wss://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error, close: code === null ? null : String(code), code, document: 'doc-a' });
+  test('off loopback, one socket dropped abnormally (1006) or told to try again (1013), then replaced, passes', () => {
+    expect(socketProblems([socket(0, 10, 1006), socket(20, null)], new Map(), OFF)).toEqual([]);
+    expect(socketProblems([socket(0, 10, 1013), socket(20, null)], new Map(), OFF)).toEqual([]);
+    expect(socketProblems([socket(0, 10, 1006, 'socket error'), socket(20, null)], new Map(), OFF)).toEqual([]);
+  });
+  test('on loopback the same drop fails, and off loopback a refusal, a second drop or two sockets at once still fail', () => {
+    expect(socketProblems([socket(0, 10, 1006), socket(20, null)], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 10, 4408), socket(20, null)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 10, 1006), socket(20, 30, 1006), socket(40, null)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 30, 1006), socket(20, null)], new Map(), OFF)).not.toEqual([]);
+  });
+  test("off loopback the browser's log line for that drop is not an error; any other socket's is", () => {
+    const dropped = socket(0, 10, 1006);
+    const census = (text: string) => ({
+      console: [{ type: 'error', text, url: '', at: 10 }], pageErrors: [], http: [], sockets: [dropped, socket(20, null)],
+    });
+    const drop = `WebSocket connection to '${dropped.url}' failed: The network connection was lost.`;
+    expect(errorProblems(census(drop), [], 'j01', OFF)).toEqual([]);
+    expect(errorProblems(census(drop), [], 'j01')).not.toEqual([]);
+    expect(errorProblems(census("WebSocket connection to 'wss://h/parties/doc-d-o/d?_pk=20' failed: x"), [], 'j01', OFF)).not.toEqual([]);
+  });
+});
+
 test.describe('hibernation proof', () => {
   const base = { instanceId: 'a', constructedAt: 1_000 };
   test('a new instance built by the decisive action is induced', () => {
@@ -127,6 +211,33 @@ test.describe('hibernation proof', () => {
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 109_000 }, 100_000, 110_000)).toEqual([]);
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 99_000 }, 100_000, 110_000)).not.toEqual([]);
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 110_500 }, 100_000, 110_000)).not.toEqual([]);
+  });
+  // Off the hook stack sign-ins are paced at 10 a minute, so a probe that signed in each time could wait out the
+  // window after the decisive action while the woken DO idled out again; the probe itself then built the instance.
+  test('the owner probe signs in once, so a probe after the decisive action never waits on the sign-in limit', async () => {
+    let signIns = 0;
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/api/auth/sign-in/email') {
+        signIns += 1;
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `session=s${signIns}; Path=/; HttpOnly` });
+        res.end('{}');
+        return;
+      }
+      const doc = /^\/api\/docs\/([^/]+)\/instance$/.exec(req.url ?? '');
+      const ok = doc && req.headers.cookie === 'session=s1';
+      res.writeHead(ok ? 200 : 404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(ok ? { instanceId: `i-${doc[1]}`, constructedAt: 1 } : { error: 'not-found' }));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const probe = ownerProbe({ baseUrl } as Stack, { label: 'ada', name: 'Ada', email: 'mm-selftest-ada-1@example.invalid', password: 'p', id: null });
+      expect(await Promise.all([probe('d1'), probe('d2')])).toEqual([{ instanceId: 'i-d1', constructedAt: 1 }, { instanceId: 'i-d2', constructedAt: 1 }]);
+      expect(await probe('d1')).toEqual({ instanceId: 'i-d1', constructedAt: 1 });
+      expect(signIns, 'one sign-in for every probe').toBe(1);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
   });
 });
 

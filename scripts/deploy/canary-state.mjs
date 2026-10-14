@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // The state file the canary project reads as STACK_STATE (e2e/lib/stack.ts): a running Worker that is not ours to
-// restart, with no test hooks, a fixed principal pool and a request budget (A§21, T8.D). deploy-staging.yml points it
-// at staging; ci.yml's canary rehearsal points it at a production-mode local stack (--from-stack).
-//   node scripts/deploy/canary-state.mjs --out PATH --budget N --idle-ms MS
+// restart, with no test hooks, a request budget, and the fixed principal pool (the canary, A§21, T8.D) or per-run
+// principals (the full suite, T8.2). deploy-staging.yml points it at staging; ci.yml's canary rehearsal points it at a
+// production-mode local stack (--from-stack).
+//   node scripts/deploy/canary-state.mjs --out PATH --budget N --idle-ms MS [--principals pool|per-run]
 //     (--base-url URL --commit SHA --bundle HASH --client HASH | --from-stack STATE.json)
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -11,7 +12,11 @@ import { pathToFileURL } from 'node:url';
 /** SP14: real Cloudflare hibernates after about 10 s idle; the canary idles at least 15 s. */
 export const MIN_IDLE_MS = 15_000;
 
-export function canaryState({ baseUrl, expected, statePath, budget, idleMs, runId = `canary-${Date.now()}` }) {
+/** `pool`: the fixed canary principals; `per-run`: fresh principals each run, which the full suite needs. */
+export const PRINCIPALS = ['pool', 'per-run'];
+
+export function canaryState({ baseUrl, expected, statePath, budget, idleMs, runId = `canary-${Date.now()}`, principals = 'pool' }) {
+  if (!PRINCIPALS.includes(principals)) throw new Error(`principals must be one of ${PRINCIPALS.join(', ')}, got ${principals}`);
   if (!(Number.isInteger(budget) && budget > 0)) throw new Error(`request budget must be a positive integer, got ${budget}`);
   if (!(Number.isInteger(idleMs) && idleMs >= MIN_IDLE_MS)) throw new Error(`idle must be at least ${MIN_IDLE_MS / 1000} s, got ${idleMs} ms`);
   for (const key of ['commit', 'bundleHash', 'clientHash']) if (!expected?.[key]) throw new Error(`expected ${key} is missing`);
@@ -23,7 +28,7 @@ export function canaryState({ baseUrl, expected, statePath, budget, idleMs, runI
     secretsPath: '',
     logPath: '',
     statePath,
-    canary: { budget, idleMs, poolSecretEnv: 'CANARY_POOL_SECRET', budgetPath: join(dirname(statePath), 'requests.json') },
+    canary: { budget, idleMs, principals, poolSecretEnv: 'CANARY_POOL_SECRET', budgetPath: join(dirname(statePath), 'requests.json') },
   };
 }
 
@@ -41,10 +46,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       budget: Number(opts.budget),
       idleMs: Number(opts['idle-ms']),
       runId: opts['run-id'],
+      principals: opts.principals,
     });
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, `${JSON.stringify(state, null, 2)}\n`);
-    console.log(`canary state: ${out} (budget ${state.canary.budget} requests, idle ${state.canary.idleMs} ms)`);
+    console.log(`canary state: ${out} (${state.canary.principals} principals, budget ${state.canary.budget} requests, idle ${state.canary.idleMs} ms)`);
   } catch (error) {
     console.error(`::error::${error.message}`);
     process.exitCode = 1;

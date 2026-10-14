@@ -42,15 +42,28 @@ const LOAD_FAILURE = /Failed to load resource: the server responded with a statu
 export const declares = (declared: DeclaredHttp[], status: number, url: string) =>
   declared.some((d) => d.status === status && pathMatches(url, d.path));
 
+/** Off loopback, a doc socket the network dropped (1006) or the server told to try again (1013); the client reconnects. */
+const NETWORK_DROP = new Set([1006, 1013]);
+const SOCKET_FAILED = /^WebSocket connection to '([^']+)' failed/;
+
+export interface Network {
+  /** Against a deployed stack: one network drop per doc and document is recovered, not a finding (A§21). */
+  offLoopback?: boolean;
+}
+
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
-  census: { console: ConsoleEntry[]; pageErrors: PageError[]; http: HttpEntry[] },
+  census: { console: ConsoleEntry[]; pageErrors: PageError[]; http: HttpEntry[]; sockets?: SocketEntry[] },
   declared: DeclaredHttp[],
   journey: string,
+  { offLoopback = false }: Network = {},
 ): string[] {
   const problems = census.pageErrors.map((e) => `page error: ${e.message}`);
+  const dropped = new Set(offLoopback ? (census.sockets ?? []).filter((s) => NETWORK_DROP.has(s.code ?? 0)).map((s) => s.url) : []);
   for (const entry of census.console) {
     if (entry.type !== 'error') continue;
+    // The browser logs the drop invariant 3 counts; the drop itself is judged there.
+    if (dropped.has(SOCKET_FAILED.exec(entry.text)?.[1] ?? '')) continue;
     // A declared 4xx also logs a load failure for that resource; it is the same, declared, event.
     const load = LOAD_FAILURE.exec(entry.text);
     const status = load ? Number(load[1]) : 0;
@@ -81,11 +94,15 @@ export function stampProblems(stamps: StampEntry[], version: Provenance | null):
 /** The longest a socket the page never saw close may have lived and still be a browser artifact (invariant 3). */
 const ARTIFACT_MS = 50;
 
-/** Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. */
-export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>): string[] {
+/**
+ * Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. A socket's
+ * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback,
+ * one socket closed by a network drop may be replaced once more.
+ */
+export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>, { offLoopback = false }: Network = {}): string[] {
   const groups = new Map<string, SocketEntry[]>();
   for (const socket of sockets) {
-    const key = `${socket.epoch}\u0000${socket.docId}`;
+    const key = `${socket.document ? `doc:${socket.document}` : `epoch:${socket.epoch}`}\u0000${socket.docId}`;
     groups.set(key, [...(groups.get(key) ?? []), socket]);
   }
   const problems: string[] = [];
@@ -96,9 +113,10 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
     const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
     if (group.length === 0) continue;
-    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
+    const drop = offLoopback && group.some((s) => s.closedAt !== null && NETWORK_DROP.has(s.code ?? 0)) ? 1 : 0;
+    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + drop;
     if (group.length > allowed) {
-      const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}`);
+      const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}${s.error ? ' (errored)' : ''}`);
       problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${closes.join('; ')})`);
     }
     const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);
@@ -123,13 +141,13 @@ export async function domFindings(actor: ActorView): Promise<Finding[]> {
 }
 
 /** Invariants 1-6 and 9 for one actor. */
-export async function actorFindings(actor: ActorView, journey: string, version: Provenance | null): Promise<Finding[]> {
+export async function actorFindings(actor: ActorView, journey: string, version: Provenance | null, network: Network = {}): Promise<Finding[]> {
   await actor.telemetry.settle();
   if (!actor.page.isClosed()) await actor.telemetry.stamp(actor.page);
   const findings = [
-    ...errorProblems(actor.telemetry, actor.declaredHttp, journey).map(finding(1, actor.label)),
+    ...errorProblems(actor.telemetry, actor.declaredHttp, journey, network).map(finding(1, actor.label)),
     ...stampProblems(actor.telemetry.stamps, version).map(finding(2, actor.label)),
-    ...socketProblems(actor.telemetry.sockets, actor.reconnects).map(finding(3, actor.label)),
+    ...socketProblems(actor.telemetry.sockets, actor.reconnects, network).map(finding(3, actor.label)),
   ];
   if (actor.page.isClosed()) return findings;
   for (const [docId, { mark, generation }] of actor.observations) {
@@ -139,19 +157,49 @@ export async function actorFindings(actor: ActorView, journey: string, version: 
   return [...findings, ...(await domFindings(actor))];
 }
 
-/** Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. */
-export async function typedFindings(actors: ActorView[], typed: Typed[]): Promise<Finding[]> {
+/** How long invariant 7 waits for a field that is binding or rebinding (A§19) to bind before it fails. */
+export const BIND_WAIT_MS = 15_000;
+
+type Field = 'title' | 'body';
+type Pane = Awaited<ReturnType<typeof fieldTexts>>[number];
+const bindingOf = (pane: Pane, field: Field) => (field === 'title' ? pane.titleBinding : pane.bodyBinding);
+
+/**
+ * Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. A field still
+ * binding or rebinding shows no doc text yet, so the check waits for it to bind (at most `waitMs` across the whole
+ * check) and then reads it; one that never binds is a finding.
+ */
+export async function typedFindings(actors: ActorView[], typed: Typed[], waitMs = BIND_WAIT_MS): Promise<Finding[]> {
   const findings: Finding[] = [];
   const docs = [...new Set(typed.map((entry) => entry.docId))];
+  const deadline = Date.now() + waitMs;
   for (const actor of actors) {
-    if (actor.page.isClosed()) continue;
     for (const docId of docs) {
-      const panes = await actor.page.evaluate(fieldTexts, { names: NAMES, docId });
+      const fields = (['title', 'body'] as const).filter((field) => typed.some((entry) => entry.docId === docId && entry.field === field));
+      // A page mid-navigation has no context to read; it is read again until the deadline.
+      const read = async (): Promise<Pane[] | null> => {
+        if (actor.page.isClosed()) return [];
+        return actor.page.evaluate(fieldTexts, { names: NAMES, docId }).catch((error: unknown) => {
+          if (Date.now() >= deadline) throw error;
+          return null;
+        });
+      };
+      const pending = (shown: Pane[] | null) => shown === null || shown.some((pane) => fields.some((field) => bindingOf(pane, field) === 'unbound'));
+      let panes = await read();
+      while (pending(panes) && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 250));
+        panes = await read();
+      }
+      panes ??= await read() ?? [];
       for (const pane of panes) {
-        for (const field of ['title', 'body'] as const) {
+        for (const field of fields) {
+          const report = finding(7, actor.label);
+          if (bindingOf(pane, field) === 'unbound') {
+            findings.push(report(`${docId} ${field}: still unbound after ${Math.round(waitMs / 1000)} s`));
+            continue;
+          }
           const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
-          if (entries.length === 0) continue;
-          findings.push(...typedProblems(pane[field], entries).map((detail) => finding(7, actor.label)(`${docId} ${field}: ${detail}`)));
+          findings.push(...typedProblems(pane[field], entries).map((detail) => report(`${docId} ${field}: ${detail}`)));
         }
       }
     }

@@ -17,7 +17,7 @@ export const DRIZZLE = join(REPO, 'apps/web/drizzle');
 /** Permanent: DO storage is bound to the Worker name (A§21). */
 export const NAMES = { worker: 'moss-multi-staging', d1: 'moss-multi-staging', r2: 'moss-multi-staging-assets' };
 /** Every key a CLOUDFLARE_ENV=staging build writes differently from the bare build (checked against vite-plugin 1.46.0). */
-export const OVERLAY_KEYS = ['name', 'workers_dev', 'preview_urls', 'routes', 'observability', 'vars', 'durable_objects', 'migrations', 'd1_databases', 'r2_buckets'];
+export const OVERLAY_KEYS = ['name', 'workers_dev', 'preview_urls', 'routes', 'observability', 'placement', 'vars', 'durable_objects', 'migrations', 'd1_databases', 'r2_buckets'];
 const PLACEHOLDER_ID = '00000000-0000-0000-0000-000000000000';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '0.0.0.0']);

@@ -12,6 +12,10 @@ export interface SocketEntry {
   url: string; docId: string; epoch: number; openedAt: number; closedAt: number | null; error: string | null;
   /** The close the page heard (`code reason`), or that it asked for (`asked code`), so a reopen names its cause. */
   close: string | null;
+  /** The close event's code, when the page heard it (not on a routed page). */
+  code?: number | null;
+  /** The page document that opened it, when the page reported it (not on a routed page). */
+  document?: string | null;
 }
 export interface StampEntry { url: string; status: number | null; meta: string | null; client: string | null; at: number }
 
@@ -19,6 +23,8 @@ export interface StampEntry { url: string; status: number | null; meta: string |
 const PAGE_CLOSE_BINDING = '__e2eDocSocketClosed';
 /** The page reports each doc socket's close event, code and reason, through this binding. */
 const PAGE_CLOSE_CODE_BINDING = '__e2eDocSocketCloseCode';
+/** The page reports the document that constructs each doc socket through this binding. */
+const SOCKET_DOCUMENT_BINDING = '__e2eDocSocketDocument';
 
 export class Telemetry {
   readonly console: ConsoleEntry[] = [];
@@ -33,6 +39,8 @@ export class Telemetry {
   ready: Promise<void> = Promise.resolve();
   private documentStatus: number | null = null;
   private pending: Promise<void>[] = [];
+  /** Each doc socket URL's document, as the page reported it (each URL carries its own `_pk`). */
+  private documents = new Map<string, string>();
 
   /**
    * `routed`: the context's doc sockets run through a routeWebSocket proxy (a severable actor). The page's own
@@ -52,9 +60,15 @@ export class Telemetry {
         page.exposeBinding(PAGE_CLOSE_CODE_BINDING, (_source, url: unknown, close: unknown) => {
           if (typeof url === 'string' && typeof close === 'string') t.closeHeard(url, close);
         }),
+        page.exposeBinding(SOCKET_DOCUMENT_BINDING, (_source, url: unknown, document: unknown) => {
+          if (typeof url === 'string' && typeof document === 'string') t.socketDocument(url, document);
+        }),
         page.addInitScript(
-          ({ path, binding, codeBinding }) => {
+          ({ path, binding, codeBinding, documentBinding }) => {
             const bindings = window as unknown as Record<string, ((...args: unknown[]) => unknown) | undefined>;
+            // This document's identity: a socket the previous document opened as it unloaded can reach the census
+            // after this document's navigation response, so the navigation count alone would misfile it.
+            const documentId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
             const close = WebSocket.prototype.close;
             WebSocket.prototype.close = function (this: WebSocket, code?: number, reason?: string) {
               try {
@@ -69,6 +83,11 @@ export class Telemetry {
               constructor(url: string | URL, protocols?: string | string[]) {
                 super(url, protocols);
                 if (!new URL(this.url).pathname.startsWith(path)) return;
+                try {
+                  void bindings[documentBinding]?.(this.url, documentId);
+                } catch {
+                  // the census never breaks the page
+                }
                 Native.prototype.addEventListener.call(this, 'close', (event: Event) => {
                   const { code, reason } = event as CloseEvent;
                   try {
@@ -80,7 +99,7 @@ export class Telemetry {
               }
             };
           },
-          { path: DOC_SOCKET_PATH, binding: PAGE_CLOSE_BINDING, codeBinding: PAGE_CLOSE_CODE_BINDING },
+          { path: DOC_SOCKET_PATH, binding: PAGE_CLOSE_BINDING, codeBinding: PAGE_CLOSE_CODE_BINDING, documentBinding: SOCKET_DOCUMENT_BINDING },
         ),
       ]).then(() => undefined);
     }
@@ -125,9 +144,16 @@ export class Telemetry {
       closedAt: null,
       error: null,
       close: null,
+      document: this.documents.get(url) ?? null,
     };
     this.sockets.push(entry);
     return entry;
+  }
+
+  /** The page document that constructed the doc socket at `url`; the report and the open may arrive in either order. */
+  socketDocument(url: string, document: string): void {
+    this.documents.set(url, document);
+    for (const socket of this.sockets) if (socket.url === url && !socket.document) socket.document = document;
   }
 
   /** The page closed the doc socket at `url` at page time `at` (each socket's URL carries its own `_pk`). */
@@ -141,7 +167,10 @@ export class Telemetry {
   /** The page heard the doc socket at `url` close with `close` (`code reason`). */
   closeHeard(url: string, close: string): void {
     const entry = [...this.sockets].reverse().find((socket) => socket.url === url && (socket.close === null || socket.close.startsWith('asked')));
-    if (entry) entry.close = entry.close ? `${entry.close}, then ${close}` : close;
+    if (!entry) return;
+    entry.close = entry.close ? `${entry.close}, then ${close}` : close;
+    const code = Number.parseInt(close, 10);
+    entry.code = Number.isNaN(code) ? null : code;
   }
 
   /** A routed page socket, as the proxy saw it open; `closed()` records its close, once. */

@@ -31,6 +31,8 @@ export interface CanaryState {
   budget: number;
   /** The natural idle before a wake is proven (≥ 15 s; SP14). */
   idleMs: number;
+  /** `pool`: the fixed canary principals (the default); `per-run`: fresh ones, for the full suite on staging (T8.2). */
+  principals?: 'pool' | 'per-run';
   /** The environment variable holding the pool's password secret. */
   poolSecretEnv: string;
   budgetPath: string;
@@ -41,6 +43,8 @@ export class Stack {
 
   private constructor(readonly state: StackState) {
     this.budget = state.canary ? new RequestBudget(state.canary.budgetPath, state.canary.budget, state.baseUrl) : null;
+    // Setup's sign-ups and sign-ins (with their retries), probes and a leg's own Node requests all count.
+    this.budget?.watchNode();
   }
 
   static fromState(path = process.env.STACK_STATE): Stack {
@@ -60,7 +64,6 @@ export class Stack {
   /** `/api/version` must report the bytes the stack was started on. */
   async assertProvenance(): Promise<Provenance> {
     let version: Provenance;
-    this.budget?.charge(`${this.baseUrl}/api/version`);
     try {
       const response = await fetch(`${this.baseUrl}/api/version`, { signal: AbortSignal.timeout(10_000) });
       const text = await response.text();

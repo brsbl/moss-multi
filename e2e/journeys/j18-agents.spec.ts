@@ -20,6 +20,7 @@ import { grant } from '../lib/grants.ts';
 import type { Stack } from '../lib/stack.ts';
 import { openIn } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
+import { childBudgetEnv } from '../lib/budget.ts';
 
 const CLI = fileURLToPath(new URL('../../packages/cli/dist/moss-multi.mjs', import.meta.url));
 const SOLO = 'one person and her own agent key push into her own notes';
@@ -33,7 +34,7 @@ interface Run { code: number; stdout: string; stderr: string }
 function moss(args: string[], env: Record<string, string>, cwd: string): Promise<Run> {
   if (!existsSync(CLI)) throw new Error(`${CLI} is missing: build it with pnpm --filter @moss-multi/cli build`);
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH ?? '', HOME: cwd, ...env }, maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
+    execFile(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH ?? '', HOME: cwd, ...childBudgetEnv(), ...env }, maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
       (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr }));
   });
 }
@@ -170,13 +171,15 @@ test('j18-agents rate: the 61st push in a minute gets 429 with retry-after @p:ag
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: JSON.stringify({ newText: base, baseHash, baseText: base }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(90_000),
     });
-    for (let i = 0; i < PUSHES_PER_MINUTE; i += 1) {
-      const response = await push();
-      expect(response.status, `push ${i + 1} of ${PUSHES_PER_MINUTE}`).toBe(200);
-    }
+    // The limit is charged as a push arrives, before the doc applies it; the doc applies pushes one at a time, which on
+    // staging took longer than the window. So the minute's pushes go at once, and the 61st follows while they apply.
+    const minute = Promise.all(Array.from({ length: PUSHES_PER_MINUTE }, () => push()));
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
     const over = await push();
+    const statuses = (await minute).map((response) => response.status);
+    expect(statuses, `the minute's ${PUSHES_PER_MINUTE} pushes`).toEqual(statuses.map(() => 200));
     expect(over.status, 'the 61st push in the minute').toBe(429);
     expect(Number(over.headers.get('retry-after')), 'with retry-after').toBeGreaterThan(0);
     expect(await over.json()).toMatchObject({ ok: false, reason: 'rate-limited' });

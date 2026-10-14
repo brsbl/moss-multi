@@ -1,0 +1,21 @@
+<!-- Not a fault (the positive control): after typing, the body rebinds (unbound and empty for 1.5 s) and comes back
+     live with the typed text. -->
+<script>
+  const body = document.querySelector('[data-body-binding]');
+  let timer = 0;
+  body.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const text = body.querySelector('p').textContent;
+      body.setAttribute('contenteditable', 'false');
+      body.setAttribute('data-body-binding', 'unbound');
+      body.querySelector('p').textContent = '';
+      document.documentElement.setAttribute('data-unbound', 'true');
+      setTimeout(() => {
+        body.querySelector('p').textContent = text;
+        body.setAttribute('data-body-binding', 'live');
+        body.setAttribute('contenteditable', 'true');
+      }, 1500);
+    }, 200);
+  });
+</script>

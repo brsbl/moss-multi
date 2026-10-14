@@ -26,7 +26,8 @@ async function createNote(baseUrl: string, cookie: string): Promise<string> {
   return (JSON.parse(body) as { doc: { id: string } }).doc.id;
 }
 
-test('j00-roundtrip: a seeded note takes an edit and reopens with it after a restart on a new DO instance @p:tech-1 @p:tech-6', async ({ actors, stack }) => {
+// local-only: restarts the stack and reads the DO instance through the loopback hook.
+test('j00-roundtrip: a seeded note takes an edit and reopens with it after a restart on a new DO instance @local-only @p:tech-1 @p:tech-6', async ({ actors, stack }) => {
   const ada = await actors.principal('ada');
   const ben = await actors.principal('ben');
   const adaCookie = cookieHeader(await signIn(stack.baseUrl, ada));
@@ -109,7 +110,8 @@ async function servePage(host: string): Promise<{ url: string; close: () => Prom
   return { url: `http://${host}:${port}/`, close: () => new Promise((resolve) => server.close(() => resolve())) };
 }
 
-test('j00-roundtrip: a page on another origin opens the doc socket with the signed-in cookie and reads nothing @p:ppl-1', async ({ actors, stack }) => {
+// local-only: serves the other-origin page on another port of the stack's own host.
+test('j00-roundtrip: a page on another origin opens the doc socket with the signed-in cookie and reads nothing @local-only @p:ppl-1', async ({ actors, stack }) => {
   actors.solo('one signed-in person; the other side is a page on another port, not a principal');
   const ada = await actors.principal('ada');
   const adaCookie = cookieHeader(await signIn(stack.baseUrl, ada));

@@ -124,15 +124,21 @@ export function remountSince({ names, docId, mark, generation }) {
 }
 
 /**
- * Invariant 7 input: the title and body text of every pane showing the doc.
+ * Invariant 7 input: the title and body text of every pane showing the doc, with each field's binding state.
  * @param {{ names: Names, docId: string }} arg
- * @returns {{ title: string, body: string }[]}
+ * @returns {{ title: string, body: string, titleBinding: string | null, bodyBinding: string | null }[]}
  */
 export function fieldTexts({ names, docId }) {
   return [...document.querySelectorAll(`[${names.pane}][${names.docId}="${docId}"]`)].map((pane) => {
     const title = pane.querySelector(`[${names.titleBinding}]`);
     // The bound root carries the binding attribute; moss also marks its editor wrapper `data-lexical-editor`.
     const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
-    return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '' };
+    return {
+      title: title ? (title.textContent ?? '') : '',
+      body: body ? (body.textContent ?? '') : '',
+      // `unbound` while a field binds or rebinds: what it shows is not the doc's text yet (A§19).
+      titleBinding: title?.getAttribute(names.titleBinding) ?? null,
+      bodyBinding: body?.getAttribute(names.bodyBinding) ?? null,
+    };
   });
 }

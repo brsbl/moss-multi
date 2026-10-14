@@ -11,6 +11,7 @@ import * as Y from 'yjs';
 import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '../../packages/protocol/src/client-protocol.ts';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
 import { base64ToBytes, PAYLOAD_MESSAGE, type ServerEvent } from '../../packages/protocol/src/sync.ts';
+import { chargeSocket } from './budget.ts';
 import type { SessionCookie } from './principals.ts';
 
 /** Every doc socket names the client protocol it speaks, as a browser bundle does (rule 10). */
@@ -24,6 +25,7 @@ const upgradeHeaders = (baseUrl: string, cookie: string | null) => ({ origin: ba
 function socketWith(baseUrl: string, cookie: string | null) {
   return class extends WebSocket {
     constructor(url: string) {
+      chargeSocket(url);
       super(url, { headers: upgradeHeaders(baseUrl, cookie) });
     }
   };
@@ -148,6 +150,7 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
 export function probeSocket(baseUrl: string, docId: string, cookie: string | null): Promise<{ opened: boolean; code: number }> {
   const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${PROTOCOL_QUERY}`;
   return new Promise((resolve, reject) => {
+    chargeSocket(url);
     const socket = new WebSocket(url, { headers: upgradeHeaders(baseUrl, cookie) });
     let opened = false;
     const timer = setTimeout(() => {
@@ -198,7 +201,9 @@ export async function holdDocSockets(baseUrl: string, docId: string, cookie: str
   };
   try {
     for (let i = 0; i < n; i += 1) {
-      const socket = new WebSocket(`${url}?${PROTOCOL_QUERY}&_pk=held-${i}-${randomUUID()}`, { headers: upgradeHeaders(baseUrl, cookie) });
+      const held = `${url}?${PROTOCOL_QUERY}&_pk=held-${i}-${randomUUID()}`;
+      chargeSocket(held);
+      const socket = new WebSocket(held, { headers: upgradeHeaders(baseUrl, cookie) });
       socket.on('error', noop);
       socket.on('close', () => closed.add(socket));
       sockets.push(socket);

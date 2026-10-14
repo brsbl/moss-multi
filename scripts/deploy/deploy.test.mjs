@@ -12,9 +12,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deployedProblems, hookProblems } from './assert-deployed.mjs';
 import { canarySummary, recordingFor } from './canary-artifacts.mjs';
 import { canaryState } from './canary-state.mjs';
+import { growthProblems, GROWTH_CAP, PER_FULL_RUN, readGrowth } from './growth.mjs';
+import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
 import { gateProblems, runProblems } from './run-gate.mjs';
 import { forbiddenFiles, migrationProblems, parseJsonc, readStagingEnv, stagingConfig } from './staging-config.mjs';
+
+// The staging D1 lives in WNAM (wrangler d1 info): an AWS region beside it.
+const STAGING_PLACEMENT = { mode: 'targeted', region: 'aws:us-west-1' };
 import { testedRunProblems } from './tested-run.mjs';
 
 const COMMIT = 'c'.repeat(40);
@@ -72,6 +77,12 @@ describe('staging config', () => {
     });
     expect(config.rules).toEqual(BUILT.rules);
     expect(BUILT.name, 'the input is not mutated').toBe('moss-multi');
+  });
+
+  it('places the staging Worker, and the DOs it creates, beside the staging D1 (WNAM), not beside each caller', () => {
+    const config = stagingConfig(BUILT, readStagingEnv(), { d1Id: D1_ID, url: URL_STAGING });
+    expect(config.placement).toEqual(STAGING_PLACEMENT);
+    expect(BUILT.placement, 'the local build stays unplaced').toBeUndefined();
   });
 
   it('refuses a loopback or non-https URL, a placeholder D1 id outside a dry run, and renamed resources', () => {
@@ -302,8 +313,104 @@ describe('deploy-staging.yml', () => {
 
   it('uploads only the credential-free canary files', () => {
     const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
-    expect(uploads).toHaveLength(1);
-    expect(uploads[0].with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+    expect(uploads.length).toBeGreaterThanOrEqual(1);
+    for (const upload of uploads) {
+      expect(upload.with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+    }
+  });
+
+  it('runs the full suite on staging only when dispatched with suite=full, after the canary, in both engines @p:R15', () => {
+    const input = WORKFLOW.on.workflow_dispatch.inputs.suite;
+    expect(input).toMatchObject({ type: 'choice', default: 'canary' });
+    expect(input.options).toEqual(['canary', 'full']);
+    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => j.steps.some((step) => /--project="?staging-/.test(step.run ?? ''))) ?? [];
+    expect(name, 'a job runs the staging projects').toBeTruthy();
+    expect(job.if).toMatch(/inputs\.suite == 'full'/);
+    expect(needsOf(name)).toEqual(expect.arrayContaining(['preflight', 'deploy', 'canary']));
+    expect(job.strategy.matrix.browser).toEqual(['chromium', 'webkit']);
+    expect(job.strategy['fail-fast']).toBe(false);
+    const run = job.steps.find((step) => /playwright test/.test(step.run ?? '')).run;
+    expect(run).toMatch(/--project=staging-"?\$\{?BROWSER/);
+    expect(run).not.toMatch(/--reporter|PLAYWRIGHT_/);
+    // The only narrowing is the suite_grep input, empty by default, for re-checking a staging-only failure.
+    expect(run.match(/--grep\b.*/g)).toEqual(['--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi']);
+    expect(WORKFLOW.on.workflow_dispatch.inputs.suite_grep).toMatchObject({ type: 'string', default: '' });
+    expect(job.steps.find((step) => /playwright test/.test(step.run ?? '')).env.GREP).toBe('${{ inputs.suite_grep }}');
+    // Per-run principals, never the pool secret, and this run's own budget.
+    const state = job.steps.find((step) => /canary-state\.mjs/.test(step.run ?? ''));
+    expect(state.run).toMatch(/--principals per-run/);
+    expect(state.run).toMatch(/--budget/);
+    expect(JSON.stringify(job)).not.toMatch(/CANARY_POOL_SECRET/);
+  });
+});
+
+describe('the staging suite @p:R15', () => {
+  it('tags every journey leg that needs the local stack @local-only, each with a reason', () => {
+    const scan = scanJourneys();
+    expect(scan.flatMap((spec) => spec.problems)).toEqual([]);
+    const local = Object.fromEntries(scan.filter((spec) => spec.localOnly.length > 0).map((spec) => [spec.file, spec.localOnly.length]));
+    for (const file of ['j00-roundtrip.spec.ts', 'j01-registers.spec.ts', 'j02-title.spec.ts', 'j03-connection.spec.ts', 'j04-hibernation.spec.ts']) {
+      expect(local[file], file).toBeGreaterThan(0);
+    }
+    // A hook read alone is not local: the owner-only instance route answers it on staging, so j09's cold wake and
+    // j04's warm creator run there.
+    expect(local['j09-revoke-live.spec.ts'], 'j09 cold runs on staging').toBeUndefined();
+    // The wake on staging is j04's owner-route leg, which stays in the suite.
+    expect(readFileSync(fileURLToPath(new URL('../../e2e/journeys/j04-hibernation.spec.ts', import.meta.url)), 'utf8')).toMatch(/owner-only route @staging/);
+  });
+
+  it('flags an untagged hook leg, a stack lever, the default hook probe, and a tag with no reason', () => {
+    const spec = [
+      "test('probes', async ({ stack }) => { await stack.docInstance('d'); });",
+      "test('restarts', async ({ stack }) => { await induce(stack, { docId, lever: 'restart', probe: p }); });",
+      "test('hook probe', async ({ stack }) => { await induce(stack, { docId }); });",
+      "test('tagged @local-only', async ({ stack }) => { await stack.pause(); });",
+      '// local-only: SIGSTOPs the stack.',
+      "test('explained @local-only', async ({ stack }) => { await stack.pause(); });",
+      "test('owner route', async ({ stack }) => { await induce(stack, { docId, lever: canary ? 'idle' : 'reset', probe: ownerProbe(stack, a) }); });",
+      'for (const s of [1, 2]) {',
+      '  // local-only: resets the DO through the hook.',
+      "  test(`loop ${s === 2 ? ' @local-only' : ''}`, async ({ stack }) => { if (s === 2) await stack.resetDoc('d'); });",
+      '}',
+      '// local-only: reads the DO through the loopback hook.',
+      "test('hook read @local-only', async ({ stack }) => { await stack.docInstance('d'); });",
+      '// local-only: serves a page on another port of the stack host.',
+      "test('other origin @local-only', async ({ stack }) => { await servePage(host); });",
+    ].join('\n');
+    const problems = localOnlyProblems(spec, 'x.spec.ts');
+    expect(problems).toHaveLength(5);
+    expect(problems[0]).toMatch(/x\.spec\.ts:1 uses a test hook/);
+    expect(problems[1]).toMatch(/:2 uses a restart or reset lever/);
+    expect(problems[2]).toMatch(/:3 uses induce\(\) with the hook probe/);
+    expect(problems[3]).toMatch(/:4 is @local-only with no/);
+    expect(problems[4]).toMatch(/:13 is @local-only but uses no local-only lever/);
+  });
+
+  it('runs every journey but the @local-only legs in each engine on staging, recording nothing', async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), 'suite-config-'));
+    try {
+      const statePath = join(dir, 'state.json');
+      writeFileSync(statePath, JSON.stringify({ baseUrl: URL_STAGING }));
+      vi.stubEnv('STACK_STATE', statePath);
+      vi.resetModules();
+      const config = (await import('../../e2e/playwright.config.ts')).default;
+      for (const engine of ['chromium', 'webkit']) {
+        const project = config.projects.find((p) => p.name === `staging-${engine}`);
+        expect(project, engine).toBeTruthy();
+        expect(project.testDir).toMatch(/journeys$/);
+        expect(project.dependencies ?? []).toEqual([]);
+        expect(project.grep).toBeUndefined();
+        expect(project.grepInvert.test('j03 a leg @local-only @p:col-6')).toBe(true);
+        expect(project.grepInvert.test('j04-hibernation: proven through the owner-only route @staging')).toBe(false);
+        expect({ ...config.use, ...project.use }).toMatchObject({ browserName: engine, trace: 'off', screenshot: 'off', video: 'off' });
+        expect(project.retries, 'a staging leg runs once more after a failure, and fails the run if that fails too').toBe(1);
+      }
+      expect(config.retries, 'nowhere else').toBe(0);
+      expect(config.projects.filter((p) => p.retries !== undefined).map((p) => p.name)).toEqual(['staging-chromium', 'staging-webkit']);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -398,6 +505,102 @@ describe('canary recording', () => {
       expect(output).toMatch(/SYNTHETIC-CALLLOG/);
     }, 120_000);
 
+    it("prints a failure's suite source lines, kind and invariant facts, and no text of the error", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const message = [
+        'invariants: 5 finding(s)',
+        `  invariant 1 [ada] HTTP 404 GET ${URL_STAGING}/s/Zq9SHARE-TOKEN7x/assets/9f8e7d6c-5b4a-4321-8fed-cba987654321 (undeclared)`,
+        `  invariant 1 [ada] console error: Failed to load resource (${URL_STAGING}/api/me?token=SECRET)`,
+        `  invariant 3 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321: 2 socket opens in one document, 1 allowed`,
+        '  invariant 7 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321 title: "Suggest refusal" appears 0 time(s), typed 1',
+        `  invariant 2 [cy] cookie: ${SESSION}`,
+      ].join('\n');
+      const stack = [
+        `Error: ${message}`,
+        `    at Actors.fail (/__w/moss-multi/moss-multi/e2e/lib/actors.ts:260:11)`,
+        `    at /__w/moss-multi/moss-multi/e2e/journeys/j09-revoke-live.spec.ts:121:5`,
+        `    at fetch (${URL_STAGING}/api/me?token=SECRET:1:1)`,
+      ].join('\n');
+      const lines = failureTrace({ errors: [{ message, stack }] });
+      expect(lines).toEqual([
+        'at e2e/lib/actors.ts:260 < e2e/journeys/j09-revoke-live.spec.ts:121',
+        'invariant 1 [ada] HTTP 404 GET /s/:id/assets/:id',
+        'invariant 1 [ada] console error',
+        'invariant 3 [ben] 2 socket opens, 1 allowed',
+        'invariant 7 [ben] title appears 0, typed 1',
+        'invariant 2 [cy]',
+      ]);
+      expect(lines.join('\n')).not.toMatch(/SYNTHETIC|SHARE-TOKEN|SECRET|Suggest refusal|workers\.dev|9f8e7d6c/);
+      expect(failureTrace({ status: 'passed' })).toEqual([]);
+      const timedOut = { message: `expect(locator).toHaveAttribute(expected) failed\nLocator: a[href="${URL_STAGING}/s/SHARE-TOKEN"]\nTimeout 10000ms exceeded`, stack: '' };
+      expect(failureTrace({ errors: [timedOut] })).toEqual(['kind timeout, expect']);
+    });
+
+    it('prints a field still unbound and numeric expected and received values, never text values', async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const unbound = { message: 'invariants: 1 finding(s)\n  invariant 7 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321 body: still unbound after 15 s', stack: '' };
+      expect(failureTrace({ errors: [unbound] })).toEqual(['invariant 7 [ben] body still unbound']);
+      const late = { message: 'Error: within 1 s of the demotion\n\nexpect(received).toBeLessThan(expected)\n\nExpected: < 1000\nReceived:   1234', stack: '' };
+      expect(failureTrace({ errors: [late] })).toEqual(['kind expect', 'expected < 1000, received 1234']);
+      const text = { message: `expect(received).toBe(expected)\n\nExpected: "${SESSION}"\nReceived: "SYNTHETIC text"`, stack: '' };
+      expect(failureTrace({ errors: [text] })).toEqual(['kind expect']);
+      const kinds = { message: [
+        'invariants: 3 finding(s)',
+        `  invariant 1 [ada] console error: Failed to load resource: the server responded with a status of 404 () (${URL_STAGING}/api/docs/x/backlinks)`,
+        `  invariant 1 [ben] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/parties/doc-d-o/x?token=SECRET' failed`,
+        '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; lived 12 ms (1006), open)',
+      ].join('\n'), stack: '' };
+      const facts = failureTrace({ errors: [kinds] });
+      expect(facts).toEqual([
+        'invariant 1 [ada] console error (load 404)',
+        'invariant 1 [ben] console error (websocket)',
+        'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; lived 12 ms (1006), open)',
+      ]);
+      expect(facts.join('\n')).not.toMatch(/SECRET|workers\.dev|backlinks/);
+    });
+
+    it("prints a failed wake proof's induction problems as fixed facts, never the instance ids", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const esc = String.fromCharCode(27);
+      const message = [
+        'Error: the revocation met a woken DO',
+        '',
+        `${esc}[2mexpect(${esc}[22m${esc}[31mreceived${esc}[39m${esc}[2m).${esc}[22mtoEqual${esc}[2m(${esc}[22m${esc}[32mexpected${esc}[39m${esc}[2m)${esc}[22m`,
+        '+ Array [',
+        `+   "instance 9f8e7d6c-SYNTHETIC still serves the doc",`,
+        '+   "instance constructed at 1760000000000, not after the baseline\'s 1760000000000",',
+        '+   "instance constructed 31234 ms before the decisive action, so something else woke it",',
+        '+   "instance constructed 4321 ms after the decisive action ended, so something else woke it",',
+        '+ ]',
+      ].join('\n');
+      const lines = failureTrace({ errors: [{ message, stack: '' }] });
+      expect(lines).toEqual([
+        'kind expect',
+        'induction: the same instance serves the doc',
+        'induction: not constructed after the baseline',
+        'induction: constructed 31234 ms before the decisive action',
+        'induction: constructed 4321 ms after the decisive action ended',
+      ]);
+      expect(lines.join('\n')).not.toMatch(/SYNTHETIC|9f8e7d6c|1760000000000/);
+      const induced = { message: 'Error: hibernation not induced (idle): instance abc still serves the doc', stack: '' };
+      expect(failureTrace({ errors: [induced] })).toEqual(['induction: the same instance serves the doc']);
+    });
+
+    it("prints a refused sign-in's status and a failed request's method and route, never the address, body or cookie", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const signUp = { message: 'Error: sign-up for mm-SYNTHETIC-ada-1@example.invalid: 503 {"message":"SECRET"}', stack: '' };
+      expect(failureTrace({ errors: [signUp] })).toEqual(['kind auth', 'auth: sign-up answered 503']);
+      const timedOut = { message: [
+        'apiRequestContext.post: Timeout 30000ms exceeded.',
+        'Call log:',
+        `  - → POST ${URL_STAGING}/api/docs/9f8e7d6c-5b4a-4321-8fed-cba987654321/links?share=SECRET`,
+        '  - cookie: better-auth.session_token=SECRET',
+      ].join('\n'), stack: '' };
+      const lines = failureTrace({ errors: [timedOut] });
+      expect(lines).toEqual(['kind timeout, request', 'request: POST /api/docs/:id/links']);
+      expect([...lines, ...failureTrace({ errors: [signUp] })].join('\n')).not.toMatch(/SECRET|SYNTHETIC|workers\.dev|9f8e7d6c/);
+    });
+
     it('withholds a run-level error and test output off loopback', async () => {
       const { default: CanaryReporter } = await import('./canary-reporter.mjs');
       const lines = [];
@@ -433,6 +636,11 @@ describe('canary recording', () => {
     expect(summary).toEqual({ tests: [{ title: 'journeys/j00-shell.spec.ts › j00 shell › signs in', status: 'failed', duration: 1234 }] });
     expect(JSON.stringify(summary)).not.toMatch(/SECRET|trace\.zip|Cookie/);
   });
+
+  it('names a leg that passed only on its retry flaky', () => {
+    const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [{ status: 'failed', duration: 5 }, { status: 'passed', duration: 7 }] }] }] }] };
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7 }] });
+  });
 });
 
 describe('the canary state', () => {
@@ -445,6 +653,12 @@ describe('the canary state', () => {
       expected: base.expected,
       canary: { budget: 2000, idleMs: 20_000, poolSecretEnv: 'CANARY_POOL_SECRET', budgetPath: '/tmp/canary/requests.json' },
     });
+  });
+
+  it('signs in the fixed pool by default, and per-run principals for the full suite', () => {
+    expect(canaryState({ ...base, budget: 2000, idleMs: 20_000 }).canary.principals).toBe('pool');
+    expect(canaryState({ ...base, budget: 5000, idleMs: 20_000, principals: 'per-run' }).canary.principals).toBe('per-run');
+    expect(() => canaryState({ ...base, budget: 2000, idleMs: 20_000, principals: 'mine' })).toThrow(/principals/);
   });
 
   it('refuses an idle under 15 s (SP14) and a missing budget', () => {
@@ -532,5 +746,36 @@ describe('the deployed-build assertion', () => {
     } finally {
       options.hooks = false;
     }
+  });
+});
+
+describe('staging growth (A§21) @p:R15', () => {
+  // `wrangler d1 execute --json` for the count query deploy-staging.yml runs before a full suite.
+  const counted = (docs, users, bytes) => JSON.stringify([{ results: [{ docs, users }], success: true, meta: { size_after: bytes } }]);
+
+  it('reads the counts and the database size', () => {
+    expect(readGrowth(counted(4252, 6958, 18_710_528))).toEqual({ docs: 4252, users: 6958, d1Bytes: 18_710_528 });
+    expect(() => readGrowth('[]')).toThrow(/count/);
+    expect(() => readGrowth(counted('x', 1, 1))).toThrow(/count/);
+  });
+
+  it('refuses a full suite that would carry staging past its cap, and says what the owner decides', () => {
+    expect(growthProblems({ docs: 4252, users: 6958, d1Bytes: 18_710_528 })).toEqual([]);
+    const near = growthProblems({ docs: GROWTH_CAP.docs - PER_FULL_RUN.docs + 1, users: 0, d1Bytes: 0 });
+    expect(near).toHaveLength(1);
+    expect(near[0]).toMatch(/docs/);
+    expect(near[0]).toMatch(/owner/);
+    expect(growthProblems({ docs: 0, users: GROWTH_CAP.users, d1Bytes: GROWTH_CAP.d1Bytes })).toHaveLength(2);
+  });
+
+  it('checks the cap before a full-suite deploy, and never for the canary', () => {
+    const steps = WORKFLOW.jobs.deploy.steps;
+    const check = steps.findIndex((step) => /growth\.mjs/.test(step.run ?? ''));
+    expect(check, 'a growth check step').toBeGreaterThan(-1);
+    expect(steps[check].if).toMatch(/inputs\.suite == 'full'/);
+    expect(check).toBeLessThan(steps.findIndex((step) => /WRANGLER" deploy/.test(step.run ?? '')));
+    // The count reads docs and user, which a first deploy's fresh D1 has only once the migrations ran.
+    expect(check, 'after the D1 migrations').toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
+    expect(steps[check].run).toMatch(/d1 execute moss-multi-staging --remote --json/);
   });
 });

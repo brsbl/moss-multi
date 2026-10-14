@@ -3,6 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { test as base } from '@playwright/test';
 import { Actors } from './actors.ts';
+import { paceAuth } from './auth-pace.ts';
 import { Measure } from './measure.ts';
 import { Stack } from './stack.ts';
 
@@ -24,6 +25,8 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     async ({}, use) => {
       const stack = Stack.fromState();
       await stack.assertProvenance();
+      // A stack with no hooks has the production auth limit.
+      paceAuth(stack.canary ? stack.baseUrl : null);
       await use(stack);
     },
     { scope: 'worker' },

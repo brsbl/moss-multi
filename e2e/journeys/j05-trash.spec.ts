@@ -170,6 +170,8 @@ test('j05-trash: Ada trashes a note while Ben types; everything in Ben goes iner
   await ui.body(ben, docId).click();
   await ben.page.keyboard.press(toEnd);
   const typing = ben.page.keyboard.type(' and Ben keeps typing through it', { delay: 40 });
+  // A backlinks read in flight when the trash lands answers 404 (a background read, never shown); any other 4xx fails.
+  const inFlight = `/api/docs/${docId}/backlinks`;
   const trashedAt = Date.now();
   await trashFromSidebar(ada, docId, ben);
   await expectTerminalInPlace(ben, docId, new RegExp(`^${BODY}`));
@@ -181,7 +183,10 @@ test('j05-trash: Ada trashes a note while Ben types; everything in Ben goes iner
   await expect(noteRow(ben, docId), "and Ben's, without a reload").toHaveCount(0, { timeout: PEER_MS });
   await ben.page.waitForTimeout(NO_RECONNECT_WINDOW_MS);
   expect(docSockets(ben, docId).length, 'a terminal note never reconnects').toBe(opened);
-  for (const actor of [ada, ben]) expect(clientErrors(actor, trashedAt), `${actor.label}: no 4xx after the trash`).toEqual([]);
+  for (const actor of [ada, ben]) {
+    const errors = clientErrors(actor, trashedAt).filter((entry) => !entry.startsWith('404 GET ') || !entry.endsWith(inFlight));
+    expect(errors, `${actor.label}: no 4xx after the trash`).toEqual([]);
+  }
   await actors.checkpoint('trashed-under-ben');
 });
 
@@ -381,6 +386,8 @@ test('j05-trash: a restore the server refuses shows the server’s sentence, and
   const note = await send('post', '/api/docs', { folderId, title: 'Folder plan' });
   expect(note.status(), 'declared setup: the note').toBe(201);
   const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
+  // Ada's open shell follows the new note and may read its backlinks after the trash lands (the bridge then drops it).
+  ada.expectHttp(404, `/api/docs/${docId}/backlinks`);
   expect((await send('delete', `/api/folders/${folderId}`)).status(), 'declared setup: the folder goes to Trash').toBe(200);
 
   // Restoring would put the note at the top of Ada's Home, where Ben can't add notes: moss shows why, not "Try again".

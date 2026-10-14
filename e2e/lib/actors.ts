@@ -2,9 +2,10 @@
 // actor of a test and checks the 9 invariants on all of them at the end.
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
-import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
-import { recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
+import type { APIRequestContext, Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
+import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
+import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor } from './detectors.js';
 import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
@@ -81,6 +82,17 @@ export class Actor implements ActorView {
 // Per worker process, so every principal minted in a run has its own email.
 let minted = 0;
 
+/**
+ * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
+ * idle fails the next request with "socket hang up", which the latency rehearsal hit on GETs and POSTs alike and the
+ * hook stack hit in j18 (T8.2).
+ */
+function freshConnections(request: APIRequestContext): void {
+  const send = request.fetch.bind(request);
+  request.fetch = ((input: Parameters<APIRequestContext['fetch']>[0], options: Parameters<APIRequestContext['fetch']>[1] = {}) =>
+    send(input, { ...options, headers: { connection: 'close', ...options.headers } })) as APIRequestContext['fetch'];
+}
+
 export class Actors {
   readonly list: Actor[] = [];
   readonly typed: Typed[] = [];
@@ -108,10 +120,9 @@ export class Actors {
    */
   async principal(label: string): Promise<Principal> {
     const canary = this.options.stack?.canary;
-    if (canary) {
+    if (canary && canary.principals !== 'per-run') {
       const secret = process.env[canary.poolSecretEnv];
       if (!secret) throw new InfraBlocked(`the canary pool secret ${canary.poolSecretEnv} is not set`);
-      this.stack.budget?.charge(`${this.stack.baseUrl}/api/auth/sign-in/email`);
       const principal = await poolPrincipal(this.stack.baseUrl, secret, label);
       this.principals.push(principal);
       return principal;
@@ -148,6 +159,12 @@ export class Actors {
         })
       : null;
     this.options.stack?.budget?.watch(context);
+    freshConnections(context.request);
+    // The card's own sign-ins and sign-ups count against the auth limit setup paces under (auth-pace.ts).
+    context.on('response', (response) => {
+      const kind = authKind(response.url(), response.request().method());
+      if (kind && response.status() !== 429) recordAuth(kind);
+    });
     const page = await context.newPage();
     telemetry = Telemetry.install(page, { routed: !!sever });
     await telemetry.ready;
@@ -241,7 +258,8 @@ export class Actors {
   /** Every invariant finding across every actor. */
   async findings(): Promise<Finding[]> {
     const findings: Finding[] = [];
-    for (const actor of this.list) findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor))));
+    const offLoopback = this.options.stack !== null && !isLoopback(this.options.stack.baseUrl);
+    for (const actor of this.list) findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor), { offLoopback })));
     findings.push(...(await typedFindings(this.list, this.typed)));
     findings.push(...principalFindings(this.principals, this.soloReason));
     return findings;

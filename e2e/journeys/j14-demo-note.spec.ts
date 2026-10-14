@@ -271,6 +271,9 @@ test("j14 demo note: a chart and a canvas whose payloads have not arrived take n
   const { doc: { id } } = await created.json() as { doc: { id: string } };
   await ada.goto(`/d/${id}`);
   await ui.waitLive(ada, id);
+  // The body binds before the payloads arrive; the seeded grid is read once Ada's own payloads are in.
+  await expect.poll(async () => { const { values, cells } = await payloads(ada, id); return values.length > 0 && cells.length > 0; },
+    { message: "Ada's payloads arrive", timeout: PEER_TIMEOUT }).toBe(true);
   const seeded = (await payloads(ada, id)).cells;
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, id, benPrincipal, 'editor');

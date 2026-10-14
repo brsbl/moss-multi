@@ -1,5 +1,6 @@
 // A doc socket presenting an agent key, as a CLI agent's sync would (j08-agents, j18-agents).
 import WebSocket from 'ws';
+import { chargeSocket } from './budget.ts';
 import { DOC_SOCKET_PATH } from './contract.ts';
 import { PROTOCOL_QUERY } from './doc-client.ts';
 
@@ -16,6 +17,7 @@ export interface AgentSocket {
 export function agentSocket(baseUrl: string, docId: string, key: string): Promise<AgentSocket> {
   const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${PROTOCOL_QUERY}`;
   return new Promise((resolve, reject) => {
+    chargeSocket(url);
     const socket = new WebSocket(url, { headers: { authorization: `Bearer ${key}` } });
     const closeCode = () => (socket.readyState === WebSocket.OPEN ? null : (socket as unknown as { _closeCode: number })._closeCode);
     const timer = setTimeout(() => reject(new Error(`${url}: no open within 15 s`)), 15_000);
