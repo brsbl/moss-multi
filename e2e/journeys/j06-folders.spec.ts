@@ -359,16 +359,18 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   // "+ Note" follows the folder the note would land in: Ben edits Open, so it is offered there and lands there.
   await expandFolder(ben, 'Open');
   await expect(newNoteButton(ben), 'a vault viewer is offered "+ Note" in a folder they edit').toBeVisible();
-  const made = await ui.createNote(ben);
-  await expect(inFolder(ben, 'Open').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${made}"]`), 'and the note lands in it').toBeVisible();
-  // Cmd/Ctrl+N creates there too: the positive control for the refusal below.
+  // Cmd/Ctrl+N creates there (the positive control for the refusal below), then "+ Note" does.
   const shortcut = ben.page.waitForResponse((r) => new URL(r.url()).pathname === '/api/docs' && r.request().method() === 'POST');
   await pressNewNote(ben);
-  const second = ((await (await shortcut).json()) as { doc: { id: string } }).doc.id;
-  await ui.waitLive(ben, second);
-  await ben.declareRemount(second);
+  const first = ((await (await shortcut).json()) as { doc: { id: string } }).doc.id;
+  await ui.waitLive(ben, first);
+  await ben.declareRemount(first);
+  await ui.typeTitle(ben, first, 'Shortcut plan', { enter: true });
+  const made = await ui.createNote(ben);
+  await ui.typeTitle(ben, made, 'Button plan', { enter: true });
+  await expect(inFolder(ben, 'Open').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${made}"]`), 'and the note lands in it').toBeVisible();
   expect(creates, 'both creates were sent').toHaveLength(2);
-  expect((await api.listing()).docs.filter((d) => d.id === made || d.id === second).map((d) => d.folderPath), 'both in Open')
+  expect((await api.listing()).docs.filter((d) => d.id === made || d.id === first).map((d) => d.folderPath), 'both in Open')
     .toEqual(['Notes/Open', 'Notes/Open']);
 
   // Closed is view-only to him: no "+ Note", and Cmd/Ctrl+N sends nothing.
