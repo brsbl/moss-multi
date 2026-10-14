@@ -41,12 +41,19 @@ const lastAdds = (actor: Actor) => actor.page.evaluate(() => {
   return ((marks.at(-1) as PerformanceMark | undefined)?.detail as { adds: number } | undefined)?.adds ?? 0;
 });
 
-/** Ben's answer to the reserve `p`, waiting up to `ms` for it; null when none came. */
-async function answer(ben: DocClient, p: string, ms = 10_000): Promise<string | null> {
+/**
+ * Ben reserves `b` bytes as paste `p` and returns the DocDO's answer, or null when none came in `ms`. Sent again every
+ * 2 s until answered: a socket that a reset is still closing loses it, and a reserve sent again is answered the same.
+ */
+async function reserve(ben: DocClient, p: string, b: number, ms = 20_000): Promise<string | null> {
   const deadline = Date.now() + ms;
-  for (;;) {
+  for (let sent = 0; ; ) {
     const found = ben.events.find((event) => (event as { p?: unknown }).p === p) as (ServerEvent & { t: string }) | undefined;
     if (found || Date.now() > deadline) return found?.t ?? null;
+    if (Date.now() - sent >= 2_000) {
+      ben.custom({ t: 'reserve', p, b });
+      sent = Date.now();
+    }
     await new Promise((done) => setTimeout(done, 200));
   }
 }
@@ -95,8 +102,7 @@ test('j01-paste-atomic: a paste refused at its reserve beside another writer’s
     const before = stateBytes(ben);
     const reserved = await pasteHeld(ada, docId);
     // Ben holds room that fits beside all of A, but not beside A and B; Ada's preflight cannot see it.
-    ben.custom({ t: 'reserve', p: 'ben-room', b: STATE_CAP_BYTES - before - reserved - 200_000 });
-    const bens = await answer(ben, 'ben-room');
+    const bens = await reserve(ben, 'ben-room', STATE_CAP_BYTES - before - reserved - 200_000);
     await pastePlain(ada, docId, B);
     await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'B is refused, visibly').toContainText('size limit', { timeout: 120_000 });
     ada.sever!.restore();
@@ -130,8 +136,7 @@ for (const cut of ['reconnect', 'wake'] as const) {
       const rest = reserved - (landed - before);
       expect(rest, 'part of the paste is still to come').toBeGreaterThan(500_000);
       // Room that fits beside what landed, but not beside the rest of the paste.
-      ben.custom({ t: 'reserve', p: 'ben-room', b: STATE_CAP_BYTES - landed - Math.floor(rest / 2) });
-      const bens = await answer(ben, 'ben-room');
+      const bens = await reserve(ben, 'ben-room', STATE_CAP_BYTES - landed - Math.floor(rest / 2));
       if (cut === 'wake') expect((await stack.docInstance(docId)).instanceId, 'a new DocDO instance answered').not.toBe(base.instanceId);
       ada.sever!.restore();
       await expectWhole(ada, docId);
