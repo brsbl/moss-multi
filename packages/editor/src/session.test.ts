@@ -36,6 +36,7 @@ class FakeSurface implements SessionSurface {
   /** The comments map as moss's renderer holds it, hydrated as the real surface hydrates it. */
   comments: CommentsMap = {};
   commit?: () => void | Promise<void>;
+  settleMedia?: () => Promise<void>;
   frozen = false;
   /** Every freeze call: a full one (unmount) lets focus go, an input-only one (a load, a removal) keeps it. */
   freezes: { frozen: boolean; keepFocus: boolean }[] = [];
@@ -955,6 +956,54 @@ describe('the fixture host', () => {
   });
 });
 
+describe('the fixture host, folder allocation', () => {
+  it('a rename onto a folder the listing missed moves to the next suffix and leaves that folder alone', async () => {
+    const OTHER_META = { ...META, id: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d', title: 'Q3 Plan' };
+    const other = seedNote(volume, ['Notes', 'Projects', 'Q3 Plan'], { markdown: '# Q3 Plan\n\nOther note\n', meta: OTHER_META });
+    const before = volume.snapshot(`${other}/`);
+    // A volume that equates names the allocator does not see as taken: the exclusive rename meets EEXIST.
+    const readdir = volume.readdir.bind(volume);
+    volume.readdir = (dir: string) => readdir(dir).filter((entry) => entry.name !== 'Q3 Plan');
+    const session = mount();
+    await session.ready;
+    surface.live.title = 'Q3 Plan';
+    session.markEdited();
+    await settle(1_500);
+    expect(volume.snapshot(`${other}/`)).toEqual(before);
+    expect(volume.isFile('/Moss/Notes/Projects/Q3 Plan (1)/Q3 Plan (1).md')).toBe(true);
+    expect(session.location?.folderName).toBe('Q3 Plan (1)');
+    expect(session.status).not.toBe('conflict');
+  });
+
+  it('as API 2 step 3: a second EEXIST after allocating once more returns raced and touches neither folder', async () => {
+    const seeded = ['Q3 Plan', 'Q3 Plan (1)'].map((title, index) =>
+      seedNote(volume, ['Notes', 'Projects', title], {
+        markdown: `# ${title}\n\nOther note\n`,
+        meta: { ...META, id: `9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6${index}`, title },
+      }),
+    );
+    const before = seeded.map((dir) => volume.snapshot(`${dir}/`));
+    // The listing misses both folders, so the first and the re-allocated rename both meet EEXIST.
+    const readdir = volume.readdir.bind(volume);
+    volume.readdir = (dir: string) => readdir(dir).filter((entry) => !entry.name.startsWith('Q3 Plan'));
+    const write = host.write.bind(host);
+    const results: Awaited<ReturnType<typeof host.write>>[] = [];
+    host.write = async (noteId, request) => {
+      const result = await write(noteId, request);
+      results.push(result);
+      return result;
+    };
+    const session = mount();
+    await session.ready;
+    surface.live.title = 'Q3 Plan';
+    session.markEdited();
+    await settle(1_500);
+    expect(results[0]).toMatchObject({ kind: 'conflict', reason: 'raced' });
+    expect(seeded.map((dir) => volume.snapshot(`${dir}/`))).toEqual(before);
+    expect(volume.exists('/Moss/Notes/Projects/Q3 Plan (2)')).toBe(false);
+  });
+});
+
 describe('the fixture host, step 6', () => {
   it('a file another writer replaces after its own op is caught by the final re-read', async () => {
     const session = mount();
@@ -1146,6 +1195,44 @@ describe('assets', () => {
     const stored = await session.putAsset({ data: new Blob(['x']), filename: '../evil..name.tiff', mimeType: 'image/tiff', purpose: 'comment' });
     expect(stored.relativePath).toMatch(/^assets\/image-\d+-[0-9a-f]{8}\.png$/);
   });
+
+  /**
+   * B189: a paste over "beta" whose upload the host holds, the unmount started meanwhile. The surface's settleMedia is
+   * the paste's whole chain, as the real surface's is: the upload, then the media in place of the selection, or, when
+   * the upload fails, the selection left as it was.
+   */
+  for (const outcome of ['stored', 'refused'] as const) {
+    it(`an unmount while a pasted image uploads waits for it to ${outcome === 'stored' ? 'land in place of the selection' : 'fail, keeping the text'} (B189)`, async () => {
+      const session = mount();
+      await session.ready;
+      type(session, 'Alpha beta gamma\n');
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const put = host.assets.put;
+      host.assets.put = async (noteId, asset) => {
+        await gate;
+        return outcome === 'stored' ? put(noteId, asset) : { kind: 'refused' as const, reason: 'tooLarge' as const };
+      };
+      const pasted = session.putAsset({ data: new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }), filename: 'shot.png', mimeType: 'image/png', purpose: 'body' })
+        .then((stored) => type(session, `Alpha ![shot](${stored.relativePath}) gamma\n`), () => undefined);
+      surface.settleMedia = () => pasted;
+      // Every markdown the session writes: the final write must be the first, never one holding the paste's place.
+      const writes: string[] = [];
+      const write = host.write.bind(host);
+      host.write = async (noteId, request) => {
+        for (const op of request.ops) if (op.kind === 'put' && op.file === 'markdown') writes.push(op.text);
+        return write(noteId, request);
+      };
+      const unmounting = session.unmount();
+      await vi.advanceTimersByTimeAsync(100);
+      release();
+      const result = await unmounting;
+      expect(result.kind).toBe('unmounted');
+      expect(writes, 'one write, after the paste settled').toHaveLength(1);
+      if (outcome === 'stored') expect(markdownOnDisk()).toMatch(/^# Plan\n\nAlpha !\[shot\]\(assets\/shot-\d+-[0-9a-f]{8}\.png\) gamma\n$/);
+      else expect(markdownOnDisk()).toBe('# Plan\n\nAlpha beta gamma\n');
+    });
+  }
 });
 
 describe('confinement (security review of the contract)', () => {

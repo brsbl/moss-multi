@@ -93,6 +93,33 @@ export async function publishMeta(env: FanoutEnv, docIds: string[]): Promise<voi
   await publishRecipients(env, await collectRecipients(env.DB, { docIds }));
 }
 
+/** A signed-in socket a trash's hold closed: who, and the share link it came through, if any. */
+export interface Holder {
+  principalId: string;
+  shareToken: string | null;
+}
+
+/**
+ * Held docs that settled live again (A§8): everyone who can discover each hears it changed, and so does each signed-in
+ * socket a hold closed whose link still reaches the doc, naming that doc alone. Link holders never join discovery.
+ */
+export async function publishReopened(env: FanoutEnv, reopened: Map<string, Holder[]>): Promise<void> {
+  if (reopened.size === 0) return;
+  const recipients = await collectRecipients(env.DB, { docIds: reopened.keys() });
+  const linked = [...reopened].filter(([, holders]) => holders.some((holder) => holder.shareToken !== null));
+  const reach = await reachOf(env.DB, linked.map(([docId]) => docId));
+  for (const [docId, holders] of linked) {
+    const tokens = reach.get(docId)?.tokens;
+    for (const { principalId, shareToken } of holders) {
+      if (shareToken === null || !tokens?.has(shareToken)) continue;
+      const ids = recipients.get(principalId) ?? { docIds: new Set<string>(), folderIds: new Set<string>() };
+      ids.docIds.add(docId);
+      recipients.set(principalId, ids);
+    }
+  }
+  await publishRecipients(env, recipients);
+}
+
 /** Folder levels a subtree query walks, as the resolver does (A§8). */
 const DEPTH = 11;
 

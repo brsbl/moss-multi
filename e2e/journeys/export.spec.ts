@@ -6,7 +6,8 @@
 // The notes are imported through POST /api/docs as declared setup; import is not this journey's promise.
 import { readFileSync } from 'node:fs';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { NAMES, paneSelector, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
+import { BODY_BINDING_ATTR, NAMES, paneSelector, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
+import { linkDoc } from '../lib/grants.ts';
 import type { Stack } from '../lib/stack.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -60,6 +61,42 @@ test('export: Save as PDF prints the note through /pdf-export @p:R4 @p:note-2 @e
   await expect(print.locator('.pdf-export-content'), 'with its body').toContainText('Printed through the browser.');
   await expect.poll(() => print.evaluate(() => (window as unknown as { __printCalls: number }).__printCalls), { message: 'window.print is called once' }).toBe(1);
   await expect(print.locator('body')).not.toHaveAttribute('data-pdf-export-error', /.+/);
+  await print.close();
+});
+
+test("export: a link-only reader's Save as PDF shows the note's uploaded image @p:R4 @p:note-2 @p:note-8", async ({ actors, stack }) => {
+  // B171: the print tab reads the note's media through the reader's link, as the note's own tab does.
+  const ada = await actors.session(await actors.principal('ada'));
+  const made = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Printed media', markdown: 'Above the image.\n\n![pattern](assets/pattern.png)' } });
+  expect(made.status(), 'declared setup: the note is imported').toBe(201);
+  const { doc } = (await made.json()) as { doc: { id: string } };
+  const uploaded = await ada.context.request.post(`/api/docs/${doc.id}/assets?filename=pattern.png`, {
+    headers: { origin: stack.baseUrl, 'content-type': 'image/png' }, data: readFileSync(new URL('../fixtures/media/pattern.png', import.meta.url)),
+  });
+  expect(uploaded.status(), 'declared setup: its image is uploaded').toBe(201);
+  await ada.goto(`/d/${doc.id}`);
+  await ui.waitLive(ada, doc.id);
+  const token = await linkDoc(ada, doc.id, 'viewer');
+
+  const cy = await actors.session(await actors.principal('cy'));
+  await cy.goto(`/d/${doc.id}?share=${encodeURIComponent(token)}`);
+  await actors.requireDistinct(2);
+  await expect(ui.body(cy, doc.id)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(cy, doc.id).locator('img[src*="/assets/pattern.png"]'), 'the reader sees the image through the link').toHaveCount(1);
+  await cy.context.addInitScript(() => {
+    window.print = () => undefined;
+  });
+  const opened = cy.context.waitForEvent('page');
+  await moreAction(cy, doc.id, 'Save as PDF');
+  const print = await opened;
+  await print.waitForURL((url) => url.pathname === '/pdf-export' && !!url.searchParams.get('pdfExportSessionId'));
+  expect(new URL(print.url()).searchParams.get('share'), 'the print tab carries the link').toBe(token);
+  await expect(print.locator('body'), 'the print route renders the note').toHaveAttribute('data-pdf-export-status', 'ready', { timeout: BIND_TIMEOUT });
+  const image = print.locator('.pdf-export-content img');
+  await expect(image).toHaveCount(1);
+  await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0), {
+    message: 'the image loads in the print preview', timeout: BIND_TIMEOUT,
+  }).toBe(true);
   await print.close();
 });
 

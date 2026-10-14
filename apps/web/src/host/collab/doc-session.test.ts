@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { encodeSyncFrame } from '@moss-multi/protocol/sync';
+import { decodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1 } from '@moss-multi/protocol/sync';
 
 const sockets: FakeSocket[] = [];
 class FakeSocket extends EventTarget {
@@ -29,6 +29,13 @@ const { terminalOf, clearTerminal } = await import('./terminal.ts');
 const { hasUnacked } = await import('./unacked.ts');
 let session: InstanceType<typeof DocSession>;
 const latest = () => sockets[sockets.length - 1];
+/** A code block element naming payload `id` in the note's tree, as the binding writes one. */
+function nameInTree(id: string): void {
+  const element = new Y.XmlElement('code-block');
+  element.setAttribute('__type', 'code-block');
+  element.setAttribute('__regId', id);
+  session.doc.get('root', Y.XmlText).insertEmbed(0, element);
+}
 beforeEach(async () => {
   vi.useFakeTimers();
   sockets.length = 0;
@@ -112,7 +119,7 @@ it('a reconnect sends the note\'s unacked writes before any payload frame, so bl
   const first = latest(); first.open(); session.provider.synced = true;
   first.ended(1006);
   // Offline: a note write (a new block's element) and its payload's first text.
-  session.doc.getText('title').insert(0, 'offline');
+  nameInTree('minted');
   session.payloads.hold('minted', true).getText('payload').insert(0, 'code');
   await vi.advanceTimersByTimeAsync(300);
   const socket = latest();
@@ -128,6 +135,48 @@ it('a reconnect sends the note\'s unacked writes before any payload frame, so bl
   const payload = kinds.indexOf('payload');
   expect(payload, 'the payload is resent').toBeGreaterThan(-1);
   expect(kinds.slice(0, payload), 'the note write goes first').toContain('note write');
+});
+it('a payload made and deleted offline is neither resent nor unacked until the tree names it again (B036)', async () => {
+  const first = latest(); first.open(); session.provider.synced = true;
+  first.ended(1006);
+  session.payloads.hold('gone', true).getText('payload').insert(0, 'deleted offline');
+  expect(session.state.unacked).toBe(true);
+  await vi.advanceTimersByTimeAsync(300);
+  const socket = latest();
+  socket.open();
+  serverStep1(socket, Y.encodeStateVector(new Y.Doc()));
+  await vi.advanceTimersByTimeAsync(1_000);
+  const writes = (id: string) => socket.sent.filter((frame) => {
+    const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
+    return payload?.id === id && payload.step !== PAYLOAD_STEP1;
+  }).length;
+  expect(writes('gone'), 'no element names it: not resent').toBe(0);
+  expect(session.state.unacked, 'set aside, not unacked').toBe(false);
+  nameInTree('gone');
+  expect(writes('gone'), 'an undo or a later update names it: resent').toBe(1);
+  expect(session.state.unacked).toBe(true);
+});
+it('an empty block named while online stays shared: its offline writes after a delete are resent and unacked', async () => {
+  const first = latest(); first.open(); session.provider.synced = true;
+  // An empty code block: its payload is held fresh and writes nothing, and its element goes out while online.
+  session.payloads.hold('shared', true);
+  nameInTree('shared');
+  first.ended(1006);
+  // Offline: a peer filled it meanwhile; this client edits it, then deletes the block.
+  session.payloads.get('shared')!.getText('payload').insert(0, 'only copy');
+  session.doc.get('root', Y.XmlText).delete(0, 1);
+  await vi.advanceTimersByTimeAsync(300);
+  const socket = latest();
+  socket.open();
+  // The payloads resend once the server's step 1 has been answered (comments.md §6).
+  serverStep1(socket, Y.encodeStateVector(new Y.Doc()));
+  await vi.advanceTimersByTimeAsync(1_000);
+  const writes = socket.sent.filter((frame) => {
+    const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
+    return payload?.id === 'shared' && payload.step !== PAYLOAD_STEP1;
+  });
+  expect(writes.length, 'the server may serve it to peers: resent').toBe(1);
+  expect(session.state.unacked, 'an unsaved edit until acked').toBe(true);
 });
 it('three failed handshakes stop the ladder and ask REST before retrying', async () => {
   const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 404 }));

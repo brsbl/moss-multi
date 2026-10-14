@@ -1162,7 +1162,7 @@ describe('a comment write on a doc closed without a hold confirms it is live wit
     // Trashed and settled: closed, with no hold left.
     await opened.dobj.trash('hold-1');
     answer = 'deleted';
-    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true, open: false });
     expect(deletedMeta(opened)).toBe('1');
     // The restore committed in D1, but its settle never arrived, and D1 now stalls.
     answer = 'hang';

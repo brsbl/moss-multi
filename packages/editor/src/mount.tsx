@@ -38,6 +38,7 @@ import {
 import { $convertFromMarkdownString } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { prepareNoteMarkdown } from '@moss-desktop/renderer/editor/markdown/pipeline';
 import { setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
+import { settleHeldInsertions } from '@moss-multi/host/media/held-insertion.ts';
 import { linesBeforeBody, offsetLines, readSelection } from '@moss-multi/host/selection.ts';
 import { ShareWithAgentBar, shareSelection } from '@moss-multi/host/share-with-agent.tsx';
 import type { MossEditorHandle, MossEditorNote, MossEditorOptions, MossEditorServices, MossEditorTheme, MossSelection } from './contract';
@@ -241,6 +242,11 @@ class FrameSurface implements SessionSurface {
     this.committedTitle = live;
     this.session?.markEdited();
   };
+
+  /** Media pasted before an unmount lands, or its failed upload lets its selection go, before the final write. */
+  async settleMedia(): Promise<void> {
+    if (this.editor) await settleHeldInsertions(this.editor);
+  }
 
   async commit(): Promise<void> {
     this.commitTitle();

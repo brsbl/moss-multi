@@ -3,6 +3,7 @@
 // `keepalive`, unawaited, so opening a notice never waits on the network (A§9; L§4.6 navigation mid-typing).
 // Signing out forgets them in the same tick.
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
+import { heldRead } from './leave';
 
 export interface Notice {
   id: string;
@@ -22,11 +23,14 @@ export interface NotificationsDeps {
 }
 
 const RETRY_MS = 5_000;
+/** Metadata pushes come in bursts (a move, a typing peer's updated_at); one read answers a burst. */
+const META_COALESCE_MS = 1_000;
 
 export function createNotifications({ fetch: fetcher, signedIn }: NotificationsDeps) {
   let list: Notice[] = [];
   let generation = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
+  let coalesced: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<() => void>();
   const publish = (next: Notice[]) => {
     list = next;
@@ -35,16 +39,27 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
 
   async function refresh(): Promise<void> {
     if (retry) clearTimeout(retry);
+    if (coalesced) clearTimeout(coalesced);
     retry = null;
+    coalesced = null;
     const mine = ++generation;
     if (!signedIn()) {
       if (list.length) publish([]);
       return;
     }
     try {
-      const response = await fetcher('/api/notifications', { credentials: 'same-origin', headers: { accept: 'application/json' }, cache: 'no-store' });
-      if (!response.ok) throw new Error(String(response.status));
-      const body = (await response.json()) as { notifications?: Notice[] };
+      // A metadata push can land as the page reloads; the read is held by the leave (METHOD: WebKit page errors).
+      const body = await heldRead(
+        (signal) => {
+          // A read held across a sign-out or a newer read is not sent when the page stays.
+          if (mine !== generation || !signedIn()) return Promise.reject(new Error('superseded'));
+          return fetcher('/api/notifications', { credentials: 'same-origin', headers: { accept: 'application/json' }, cache: 'no-store', signal });
+        },
+        async (response) => {
+          if (!response.ok) throw new Error(String(response.status));
+          return (await response.json()) as { notifications?: Notice[] };
+        },
+      );
       if (mine === generation && signedIn()) publish(body.notifications ?? []);
     } catch {
       // The bell keeps what it showed and asks again; a push in the meantime asks sooner.
@@ -75,15 +90,24 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
         body: JSON.stringify({ ids }),
       }).catch(() => undefined);
     },
-    /** The workspace channel (bridge): a push about notices, or a (re)connect that may have missed one. */
+    /** The workspace channel (bridge): a push about notices, or a (re)connect that may have missed one. A metadata
+     * push may mean the reader lost a note (a move), and the server lists notices by current access. */
     receive(event: WorkspaceEvent): void {
       if (event.type === 'notifications' || event.type === 'vaults') void refresh();
+      else if (event.type === 'meta' && !coalesced && signedIn()) {
+        coalesced = setTimeout(() => {
+          coalesced = null;
+          void refresh();
+        }, META_COALESCE_MS);
+      }
     },
     /** Sign-out: nothing is shown or asked for once the session is gone. */
     clear(): void {
       generation += 1;
       if (retry) clearTimeout(retry);
+      if (coalesced) clearTimeout(coalesced);
       retry = null;
+      coalesced = null;
       if (list.length) publish([]);
     },
   };
