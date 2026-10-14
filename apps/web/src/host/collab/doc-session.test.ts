@@ -493,8 +493,15 @@ const writeTags = (socket: FakeSocket) => socket.sent.flatMap((frame, i) => {
   const before = socket.sent[i - 1];
   return [typeof before === 'string' && before.includes('"t":"paste"') ? (JSON.parse(before.slice('__YPS:'.length)) as { p: string[] }).p : null];
 });
+/** An open socket that also carries live updates: y-partyserver sends one only while `ws.OPEN` matches readyState. */
+const live = (socket: FakeSocket): FakeSocket => {
+  socket.open();
+  Object.assign(socket, { OPEN: 1 });
+  session.provider.synced = true;
+  return socket;
+};
 it('reserves a large paste by its id before any of it lands, waits for the answer, and tags each frame that writes it (B209)', async () => {
-  const socket = latest(); socket.open(); session.provider.synced = true;
+  const socket = live(latest());
   const ticket = reservePaste(session.doc, 1_000);
   expect(ticket, 'a session reserves for its doc').not.toBeNull();
   expect(customSent(socket).at(-1)).toEqual({ t: 'reserve', p: ticket!.id, b: 1_030 });
@@ -513,7 +520,7 @@ it('reserves a large paste by its id before any of it lands, waits for the answe
   expect(socket.closes).toEqual([]);
 });
 it('refuses only the new paste when its reserve is refused: nothing of it is written and the socket stays (B209)', async () => {
-  const socket = latest(); socket.open(); session.provider.synced = true;
+  const socket = live(latest());
   const ticket = reservePaste(session.doc, 1_000);
   serverEvent(socket, { t: 'reserve-refused', p: ticket!.id });
   await ticket!.settled;
@@ -523,7 +530,7 @@ it('refuses only the new paste when its reserve is refused: nothing of it is wri
   expect(socket.closes).toEqual([]);
 });
 it('sends an unanswered reserve again on the next socket, and tags the ledger replay with the pastes it carries (B209)', async () => {
-  const socket = latest(); socket.open(); session.provider.synced = true;
+  const socket = live(latest());
   const landed = reservePaste(session.doc, 1_000);
   serverEvent(socket, { t: 'reserved', p: landed!.id });
   await landed!.settled;
@@ -541,7 +548,7 @@ it('sends an unanswered reserve again on the next socket, and tags the ledger re
   expect(sentTitle(fresh)).toBe('pasted');
 });
 it('holds the frames of a paste that lands before its answer: a refusal drops them, keeps what went before, and rebinds (B209)', async () => {
-  const socket = latest(); socket.open(); session.provider.synced = true;
+  const socket = live(latest());
   session.doc.getText('title').insert(0, 'before ');
   const ticket = reservePaste(session.doc, 1_000);
   // A key pressed while the reserve is unanswered lands the paste at once; its frames wait for the answer.
@@ -558,7 +565,7 @@ it('holds the frames of a paste that lands before its answer: a refusal drops th
   expect(socket.closes).toEqual([]);
 });
 it('sends the held frames of a paste that landed before its answer once it is reserved (B209)', async () => {
-  const socket = latest(); socket.open(); session.provider.synced = true;
+  const socket = live(latest());
   const ticket = reservePaste(session.doc, 1_000);
   ticket!.land();
   session.doc.getText('title').insert(0, 'pasted');
