@@ -150,7 +150,7 @@ const FRAME_SLACK = 64;
  */
 export function pasteFits(doc: Y.Doc | undefined, bytes: number, largestFrame: number): boolean {
   const figures = doc ? heldBytes(doc) : null;
-  const held = figures ? Math.max(figures.local, figures.server) : null;
+  const held = figures ? figures.local : null; // NEGATIVE CONTROL (B206): ignores the server count; reverted next commit
   const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= PASTE_LIMIT_BYTES);
   performance.mark('moss-paste-admission', {
     detail: { adds: bytes, held, heldLocal: figures?.local ?? null, heldServer: figures?.server ?? null, limit: PASTE_LIMIT_BYTES, largestFrame, fit },

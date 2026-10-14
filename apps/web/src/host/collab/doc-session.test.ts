@@ -551,7 +551,7 @@ it('holds the frames of a paste that lands before its answer: a refusal drops th
   const socket = live(latest());
   session.doc.getText('title').insert(0, 'before ');
   const ticket = reservePaste(session.doc, 1_000);
-  // A key pressed while the reserve is unanswered lands the paste at once; its frames wait for the answer.
+  // The pane closes while the reserve is unanswered: the paste lands at once, its frames waiting for the answer.
   ticket!.land();
   session.doc.getText('title').insert(7, 'pasted');
   ticket!.end();
@@ -576,6 +576,51 @@ it('sends the held frames of a paste that landed before its answer once it is re
   expect(sentTitle(socket)).toBe('pasted');
   expect(writeTags(socket)).toEqual([[ticket!.id]]);
   expect(session.state.resync).toBe(false);
+});
+it('sends the writes made before a paste refused after a reconnect, and lets the lingering session go once they are acked (B209)', async () => {
+  const socket = live(latest());
+  // Sent on the first socket, never acked.
+  session.doc.getText('title').insert(0, 'before ');
+  const ticket = reservePaste(session.doc, 1_000);
+  // The pane closes while the reserve is unanswered: the paste lands at once behind its gate, and the session lingers.
+  ticket!.land();
+  session.doc.getText('title').insert(7, 'pasted');
+  ticket!.end();
+  session.release();
+  socket.ended(1006);
+  await vi.advanceTimersByTimeAsync(5_000);
+  const fresh = live(latest());
+  expect(fresh).not.toBe(socket);
+  serverEvent(fresh, { t: 'reserve-refused', p: ticket!.id });
+  await ticket!.settled;
+  await vi.advanceTimersByTimeAsync(0);
+  const server = new Y.Doc();
+  for (const frame of fresh.sent) {
+    const update = writeOf(frame);
+    if (update) Y.applyUpdate(server, update);
+  }
+  expect(server.getText('title').toString(), 'the edit made before the paste goes out, nothing of the paste').toBe('before ');
+  serverEvent(fresh, { t: 'ack', sv: base64(Y.encodeStateVector(server)), ds: base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map()))) });
+  expect(session.state.unacked, 'every write that can land is acked').toBe(false);
+  expect(fresh.closes, 'the lingering session lets go').toContain(1000);
+});
+it('counts a payload write the DocDO\'s usage figure already includes once, though its ack was lost (B207)', async () => {
+  const { countedPayloadBytes } = sessionModule;
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  nameInTree('code');
+  const payload = session.payloads.hold('code', true);
+  payload.getText('payload').insert(0, 'y'.repeat(100_000));
+  // The write persisted and its ack was lost with the socket: the next connect's usage figure includes it.
+  socket.ended(1006);
+  await vi.advanceTimersByTimeAsync(5_000);
+  const fresh = latest(); fresh.open();
+  const persisted = 4_000_000 + Y.encodeStateAsUpdate(payload).byteLength;
+  serverEvent(fresh, { t: 'usage', pb: persisted });
+  expect(countedPayloadBytes(session.doc), 'counted once').toBe(persisted);
+  payload.getText('payload').insert(0, 'z'.repeat(10_000));
+  const grown = countedPayloadBytes(session.doc) - persisted;
+  expect(grown, 'growth after the figure still counts').toBeGreaterThanOrEqual(10_000);
+  expect(grown).toBeLessThan(10_200);
 });
 it('counts payloads as the DocDO\'s total plus unacked local growth: a paste that fits only beside the larger of the two is refused, and the ack neither loses nor double-counts the growth (B207)', async () => {
   const { pasteFits } = await import('../large-paste.ts');

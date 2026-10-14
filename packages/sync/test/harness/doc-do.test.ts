@@ -664,6 +664,19 @@ describe('admission and the write classifier', () => {
       expect(ben.closed, "Ada's idle reservation holds no room").toBeNull();
       expect(count(opened, 'b')).toBe(32 * 1024);
     });
+
+    it('answers a reserve sent again after its reservation lapsed from the room there is now, not from the lapsed row', async () => {
+      const { ada, ben, held } = await two();
+      limits.stateCapBytes = held() + 64 * 1024;
+      await reserve(ada, 'A', 48 * 1024);
+      expect(await answer(ada, 'A')).toBe('reserved');
+      vi.setSystemTime(Date.now() + 130_000);
+      await typeTitle(ben, 'b'.repeat(32 * 1024));
+      expect(ben.closed, "Ada's lapsed reservation holds no room").toBeNull();
+      ada.events.splice(0);
+      await reserve(ada, 'A', 48 * 1024);
+      expect(await answer(ada, 'A'), 'no room is left for it beside Ben\'s write').toBe('reserve-refused');
+    });
   });
 
   it('closes 4401 without a principal and 4429 for a 51st connection', async () => {

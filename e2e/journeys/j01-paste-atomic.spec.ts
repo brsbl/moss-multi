@@ -14,7 +14,7 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
 import { cookieHeader, openDocClient, type DocClient } from '../lib/doc-client.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { exported, importNote, pastePlain } from '../lib/paste.ts';
+import { exported, importNote, normalized, pastePlain } from '../lib/paste.ts';
 import { signIn } from '../lib/principals.ts';
 import type { Stack } from '../lib/stack.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -108,6 +108,30 @@ test('j01-paste-atomic: a paste refused at its reserve beside another writer’s
     ada.sever!.restore();
     await expectWhole(ada, docId);
     expect(bens, 'Ben\'s room was held').toBe('reserved');
+  } finally {
+    ben.close();
+  }
+});
+
+test('j01-paste-atomic: typing right after a paste whose reserve is refused is kept, and the pane stays bound @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  const { ada, ben, docId } = await open(actors, stack);
+  try {
+    // Ben holds all the room but 300 KB; B (about 1 MB) does not fit beside it, and Ada's preflight cannot see it.
+    expect(await reserve(ben, 'ben-room', STATE_CAP_BYTES - stateBytes(ben) - 300_000), 'Ben\'s room is held').toBe('reserved');
+    // Ada types at once: her keys arrive while the paste is still checked, or while its reserve is unanswered.
+    await pastePlain(ada, docId, B);
+    await ada.page.keyboard.type('ZQX');
+    ada.typed({ docId, field: 'body', text: 'ZQX', ordered: true });
+    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'B is refused, visibly').toContainText('size limit', { timeout: 120_000 });
+    await expect.poll(() => holds(ada, docId, 'Kept.ZQX'), { message: 'the typing stays in Ada\'s editor, where she typed it', timeout: 60_000 }).toBe(true);
+    await ui.waitAcked(ada, docId, 60_000);
+    const want = await normalized(ada, stack, 'Kept.ZQX');
+    await expect.poll(() => exported(ada, docId), { message: 'and reaches the server, without any of B', timeout: 60_000 }).toBe(want);
+    expect(await holds(ada, docId, 'Bravo 0 '), 'nothing of B is in Ada\'s editor').toBe(false);
+    await ui.typeBody(ada, docId, ' Still typing.');
+    await ui.waitAcked(ada, docId, 60_000);
+    await expect.poll(async () => (await exported(ada, docId)).includes('Kept.ZQX Still typing.'), { message: 'the note stays editable', timeout: 60_000 }).toBe(true);
   } finally {
     ben.close();
   }
