@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 49% done** (116 of 236 planned tasks verified)
+**Overall: 50% done** (117 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 64 / 64 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 65 / 65 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -135,6 +135,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T3.B8 verified: file-link hovers show the target note's text, the sidebar recovers from a hung listing or a dead socket and reconciles on its own, a reload during a read or change no longer errors or replays it, and the bell clears a notice when access is lost through a move.
 - 2026-10-13 — T3.B9 verified: search finds only the notes you can open and ranks them without other people's notes shifting the order, a search feed that fails is retried on its own, backlinks include sources the index had not yet seen, and the bridge keeps watching a note opened by URL and stops on one that was deleted or revoked.
 - 2026-10-14 — T3.B10 verified: copying or duplicating a note's media now requires live read access to the source, an upload whose bytes do not match its declared image or video type is refused 415 before anything is stored, and a private image one account loaded is never served from the browser's cache to the next account signed in to the same browser.
+- 2026-10-14 — T3.B15 verified: two people editing the same formula or variable name now merge each other's changes at the right place without moving a caret inside a reference, a formula so crowded no reference marker is free resolves whole to the stored one with a notice, an IME preedit survives a peer moving its block, and an empty chart or sketch accepts its first edit.
 
 ## T1.1s identity audit
 
@@ -544,3 +545,4 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B9 (Search index correctness and cost) checker P2: an older successful search feed can clear a newer failed feed's retry — #feedSearch in packages/sync/src/doc-do.ts resets #feedRetryAt and #feedFailures on every success outside the `edits === this.#edits` generation check, and feeds (onSave, payload timer, reindex, alarm) can overlap, so feed A finishing after feed B failed clears B's retry and that revision stays unsearchable until the next edit or wake → guard the reset with the generation check and add an overlapping-feeds test.
 - T3.B9 (Search index correctness and cost) checker P2: B173's red-first failure was a mock type error, not a missing backlink — the tests-first commit changed the fake SearchDO.backlinks shape before the route read it, so the red run failed with 'ids.flatMap is not a function' and never reached the 'found on the first read' assertion (the green assertions are meaningful) → no code change; keep red-first mocks shape-compatible with the old route.
 - T3.B10 (Asset upload authority and content checks) checker P2: SVG sniffing rejects pathological-but-valid SVGs (U+FEFF/U+1680 in a namespace prefix; non-IBM037 EBCDIC code pages) — accepted by the coordinator as intended hardening of B166; nothing is released, so no shipped contract narrows.
+- T3.B15 (Register and formula collaborative editing) checker P2: astral token markers can collide with literal lone surrogates brought together by concurrent deletions — once every non-surrogate BMP unit is used, createTokenCodec reserves only astral code points already present as complete surrogate pairs, so a lone high and a lone low surrogate that two concurrent deletions bring together can form an assigned marker (e.g. U+F0000) and decode turns that literal text into a reference (needs a formula using every non-surrogate BMP unit plus lone surrogates) → also reserve astral code points a lone high or low surrogate in any source could form.
