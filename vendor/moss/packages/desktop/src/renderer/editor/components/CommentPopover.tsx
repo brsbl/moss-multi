@@ -915,7 +915,18 @@ export function CommentPopover({
       setReplyResetSignal(s => s + 1);
     };
     offer();
-    return onDraftFailed(noteId, slot, offer);
+    // Failures arriving close together rewrite the box once per frame, not once each
+    let frame = 0;
+    const stop = onDraftFailed(noteId, slot, () => {
+      frame ||= window.requestAnimationFrame(() => {
+        frame = 0;
+        offer();
+      });
+    });
+    return () => {
+      stop();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
   }, [noteId, open, root.id, shared]);
 
   const handleDeleteConfirm = useCallback(() => {

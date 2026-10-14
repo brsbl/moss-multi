@@ -171,7 +171,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
    );
  
    const handleCancelEdit = useCallback(() => {
-@@ -824,19 +875,48 @@ export function CommentPopover({
+@@ -824,19 +875,59 @@ export function CommentPopover({
        const text = (typeof currentText === 'string' ? currentText : replyText).trim();
        if (!onReply) return;
        if (!text && replyImageUrls.length === 0) return;
@@ -216,13 +216,24 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
 +      setReplyResetSignal(s => s + 1);
 +    };
 +    offer();
-+    return onDraftFailed(noteId, slot, offer);
++    // Failures arriving close together rewrite the box once per frame, not once each
++    let frame = 0;
++    const stop = onDraftFailed(noteId, slot, () => {
++      frame ||= window.requestAnimationFrame(() => {
++        frame = 0;
++        offer();
++      });
++    });
++    return () => {
++      stop();
++      if (frame) window.cancelAnimationFrame(frame);
++    };
 +  }, [noteId, open, root.id, shared]);
 +
    const handleDeleteConfirm = useCallback(() => {
      if (!deleteTarget) return;
      const closesThread =
-@@ -935,7 +1015,7 @@ export function CommentPopover({
+@@ -935,7 +1026,7 @@ export function CommentPopover({
    if (!anchorRect) return null;
  
    return (
@@ -231,7 +242,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
        <Popover.Root open={open} onOpenChange={handleOpenChange}>
          <Popover.Anchor virtualRef={virtualRef} />
          <Popover.Portal>
-@@ -1075,6 +1155,7 @@ export function CommentPopover({
+@@ -1075,6 +1166,7 @@ export function CommentPopover({
                        </TooltipContent>
                      </Tooltip>
                    )}
@@ -239,7 +250,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
                    <Tooltip>
                      <TooltipTrigger asChild>
                        <button
-@@ -1090,6 +1171,7 @@ export function CommentPopover({
+@@ -1090,6 +1182,7 @@ export function CommentPopover({
                        Delete thread
                      </TooltipContent>
                    </Tooltip>
@@ -247,7 +258,7 @@ diff --git a/packages/desktop/src/renderer/editor/components/CommentPopover.tsx 
                  </div>
                </div>
              </TooltipProvider>
-@@ -1236,7 +1318,7 @@ export function CommentPopover({
+@@ -1236,7 +1329,7 @@ export function CommentPopover({
          variant="danger"
          onConfirm={handleDeleteConfirm}
        />
