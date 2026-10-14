@@ -8,7 +8,7 @@ import {
   buildMossNoteLinkClipboardHtml,
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
-import { terminalOf } from '../collab/terminal.ts';
+import { subscribeTerminal, terminalOf } from '../collab/terminal.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
 import { onNativeMenuCommand } from '../media/image-menu.ts';
 import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
@@ -16,7 +16,7 @@ import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
 import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import { registerDocOpener } from '../navigation.ts';
-import { currentLeave, heldRead, installLeaving, isLeaveCancelled, leaveAwareSend, type Leave } from '../leave.ts';
+import { anySignal, currentLeave, heldRead, installLeaving, isLeaveCancelled, leaveAwareSend, type Leave } from '../leave.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -424,14 +424,32 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   // and re-read whenever the workspace channel says a doc changed (a DocDO announces a change to its links).
   const backlinks = new Map<string, NoteLink[]>();
   const watched: string[] = [];
+  /** Each watched note's backlinks read in flight; dropping the note aborts it, and a newer read supersedes it. */
+  const reading = new Map<string, AbortController>();
+  /** Notes outside the listing that byId opened by their URL through askDocAccess (B238). */
+  const admitted = new Set<string>();
   const readBacklinks = async (id: string) => {
+    const path = `/api/docs/${encodeURIComponent(id)}/backlinks`;
+    const cancel = new AbortController();
+    reading.get(id)?.abort();
+    reading.set(id, cancel);
     try {
-      const { status, answer } = await heldRequest(`/api/docs/${encodeURIComponent(id)}/backlinks`, async (response) => ({
+      const { status, answer } = await heldRead((signal) => {
+        // Checked at each send: a trash or revocation may have landed while the read waited out a leave.
+        if (cancel.signal.aborted || !watchable(id)) return Promise.reject(new DOMException('The note is gone.', 'AbortError'));
+        const both = signal ? anySignal([signal, cancel.signal]) : { signal: cancel.signal, release: noop };
+        return request(path, { signal: both.signal }).finally(both.release);
+      }, async (response) => ({
         status: response.status,
         answer: response.ok ? await response.json() as { backlinks?: ApiDoc[] } : null,
-      }));
+      }), { leaving: follow });
+      if (reading.get(id) !== cancel) return;
+      reading.delete(id);
       if (!answer) {
-        if (status === 404) unwatch(id);
+        if (status === 404) {
+          admitted.delete(id);
+          drop(id);
+        }
         return;
       }
       if (!Array.isArray(answer.backlinks)) return;
@@ -447,12 +465,29 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       backlinks.set(id, links);
       // A metadata-only change: moss re-reads this note's record, which now carries the links.
       diskListeners.forEach((listener) => listener([id], []));
-    } catch { /* The next workspace event or note switch reads them again. */ }
+    } catch {
+      /* The next workspace event or note switch reads them again. */
+      if (reading.get(id) === cancel) reading.delete(id);
+    }
   };
   const unwatch = (id: string) => {
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
   };
+  /** A note that is gone for this tab: no longer watched, its read in flight aborted and its backlinks forgotten. */
+  const drop = (id: string) => {
+    unwatch(id);
+    reading.get(id)?.abort();
+    reading.delete(id);
+    backlinks.delete(id);
+  };
+  // A session that ends as deleted or revoked drops its note at once, before any listing says so (B178).
+  subscribeTerminal(() => {
+    for (const id of new Set([...watched, ...reading.keys()])) {
+      const closed = terminalOf(id);
+      if (closed === 'deleted' || closed === 'revoked') drop(id);
+    }
+  });
   /**
    * After the listing caught up with a workspace event for `changed` (null: every doc): a watched note that left it
    * (trashed, unshared) is dropped, and the rest are read again unless the only change was the note's own edit, which
@@ -460,20 +495,22 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
    */
   const rereadBacklinks = (changed: string[] | null, renamed: (id: string) => boolean) => {
     for (const id of [...watched]) {
-      if (!inListing(id)) unwatch(id);
+      if (!watchable(id)) unwatch(id);
       else if (changed === null || renamed(id) || changed.some((other) => other !== id)) void readBacklinks(id);
     }
   };
-  // Only live listed notes: moss records links for them, and a trashed or unshared one would 404. A note whose session
-  // closed as deleted or revoked is gone though a listing read before D1 caught up still has it.
-  const inListing = (id: string) => {
+  // Live listed notes, and live notes opened by their URL outside the listing: moss records links for them, and a
+  // trashed or unshared one would 404. A note whose session closed as deleted or revoked is gone though a listing read
+  // before D1 caught up still has it.
+  const watchable = (id: string) => {
     const closed = terminalOf(id);
     if (closed === 'deleted' || closed === 'revoked') return false;
+    if (admitted.has(id) && known.get(id)?.trashedAt == null) return true;
     return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   };
   /** Opening or focusing a note reads its backlinks once; workspace events keep a watched note's current. */
   const watchBacklinks = (id: string) => {
-    if (!inListing(id)) return;
+    if (!watchable(id)) return;
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
@@ -541,7 +578,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (!known.has(id)) {
       // A doc shared with the caller that the listing does not carry, opened by its URL.
       const answer = await askDocAccess(id, fetcher);
-      if (answer.kind === 'open' && !known.has(id)) known.set(id, toNoteMetadata(answer.doc));
+      if (answer.kind === 'open' && !known.has(id)) {
+        known.set(id, toNoteMetadata(answer.doc));
+        admitted.add(id);
+      }
     }
     const note = known.get(id);
     return note && withLocal(note);
@@ -769,6 +809,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (!(await trashGuarded([id], `/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE))) return false;
         const note = known.get(id);
         if (note) known.set(id, { ...note, trashedAt: seconds(Date.now()) });
+        drop(id);
         await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         return true;
       },

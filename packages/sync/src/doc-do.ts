@@ -36,6 +36,9 @@ import { splitUpdate } from './update-pieces.ts';
 const WAKE_FEED_MS = 1_000;
 /** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
 const PAYLOAD_FEED_MS = 2_000;
+/** A failed search feed is retried by the alarm after this, doubling per failure up to FEED_RETRY_MAX_MS. */
+const FEED_RETRY_MS = 5_000;
+const FEED_RETRY_MAX_MS = 10 * 60_000;
 /** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
 const SEARCH_FEED_VERSION = '2';
 
@@ -320,6 +323,9 @@ export class DocDO extends YServer<SyncEnv> {
   #quietSave: ReturnType<typeof setTimeout> | undefined;
   /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
   #searchStale = false;
+  /** When the alarm retries a failed feed, and the failures in a row behind it. */
+  #feedRetryAt: number | null = null;
+  #feedFailures = 0;
   /** A feed queued by a payload edit; payload docs do not trigger the note's debounced save. */
   #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
@@ -1004,6 +1010,10 @@ export class DocDO extends YServer<SyncEnv> {
       const attachment = attachmentOf(connection);
       if (attachment && aged(attachment, now)) connection.close(TRY_AGAIN, 'aged');
     }
+    if (this.#feedRetryAt !== null && this.#feedRetryAt <= now) {
+      this.#feedRetryAt = null;
+      await this.#feedSearch();
+    }
     const expired = [...holdsOf(store)].filter(([, until]) => until <= now).map(([hold]) => hold);
     if (expired.length > 0) {
       // No route let these holds go, so nobody it closed has heard the doc may be live again.
@@ -1254,14 +1264,15 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * The alarm goes off when the oldest hold has waited HOLD_MS, or the oldest socket reaches DOC_SOCKET_MAX_MS; with
-   * nothing due (`closing` aside) there is none.
+   * The alarm goes off when the oldest hold has waited HOLD_MS, the oldest socket reaches DOC_SOCKET_MAX_MS, or a failed
+   * search feed is due again; with nothing due (`closing` aside) there is none.
    */
   async #schedule(holds: Map<string, number>, closing?: Connection): Promise<void> {
     const due = [...holds.values()];
     const recover = this.#store?.meta('recover');
     if (recover && holds.size === 0) due.push(Number(recover));
     if (this.#tickAt !== null) due.push(this.#tickAt);
+    if (this.#feedRetryAt !== null) due.push(this.#feedRetryAt);
     for (const connection of this.#all()) {
       const attachment = connection === closing ? null : attachmentOf(connection);
       if (attachment) due.push(agesAt(attachment));
@@ -1326,8 +1337,16 @@ export class DocDO extends YServer<SyncEnv> {
         this.#store?.setMeta('search-fed', SEARCH_FEED_VERSION);
         this.#searchStale = false;
       }
+      this.#feedRetryAt = null;
+      this.#feedFailures = 0;
     } catch (error) {
       console.error(`search feed for ${this.name} failed`, error);
+      // Nothing else feeds an idle doc, so the alarm retries while the index may lack an edit.
+      if (this.#searchStale && this.#store) {
+        this.#feedRetryAt = Date.now() + Math.min(FEED_RETRY_MS * 2 ** this.#feedFailures, FEED_RETRY_MAX_MS);
+        this.#feedFailures += 1;
+        await this.#schedule(holdsOf(this.#store)).catch((scheduling) => console.error('DocDO could not schedule its feed retry', scheduling));
+      }
     }
   }
 

@@ -39,7 +39,7 @@ export const pathMatches = (url: string, path: string | RegExp): boolean => {
 
 const LOAD_FAILURE = /Failed to load resource: the server responded with a status of (\d{3})/;
 
-const declares = (declared: DeclaredHttp[], status: number, url: string) =>
+export const declares = (declared: DeclaredHttp[], status: number, url: string) =>
   declared.some((d) => d.status === status && pathMatches(url, d.path));
 
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
