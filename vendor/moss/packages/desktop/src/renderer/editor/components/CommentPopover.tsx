@@ -58,7 +58,7 @@ import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-bounda
 // moss-multi seam: comments (comments.md §12): on a bound note edit and delete are the author's, reactions and
 // @people are the web's; a file-backed note keeps moss's own
 import {
-  failedDraftText, failedDraftTexts, isMine, latestEditText, onDraftFailed, submitted, useCanComment, useNoteBound,
+  carrying, editNeedsSave, failedDraftText, failedReplies, isMine, onDraftFailed, submitted, useCanComment, useNoteBound,
 } from '@moss-multi/host/comments/adapter';
 import { CommentReactions, QuickReactions } from '@moss-multi/host/comments/Reactions';
 import { MentionScope } from '@moss-multi/host/comments/mentions';
@@ -494,10 +494,9 @@ function CommentMessage({
   );
 }
 
-/** moss-multi seam: comments: the reply box's text with a failed reply's `text` after it, unless it already holds it. */
+/** moss-multi seam: comments: the reply box's text with a failed reply's `text` after it. */
 function withFailed(current: string, text: string): string {
   const kept = current.trim();
-  if (kept.includes(text)) return current;
   return kept ? `${kept}\n\n${text}` : text;
 }
 
@@ -528,6 +527,8 @@ export function CommentPopover({
   // moss-multi seam: comments: the reply box's text when a bound submit settles
   const replyTextRef = useRef(replyText);
   replyTextRef.current = replyText;
+  // moss-multi seam: comments: the failed replies, by id, whose text the reply box was given since it was last cleared
+  const offeredRef = useRef(new Set<string>());
   const [replyImageUrls, setReplyImageUrls] = useState<string[]>([]);
   const [replyResetSignal, setReplyResetSignal] = useState(0);
   const [editFooterHost, setEditFooterHost] = useState<HTMLDivElement | null>(null);
@@ -675,6 +676,7 @@ export function CommentPopover({
   }, []);
 
   const resetReplyComposer = useCallback(() => {
+    offeredRef.current = new Set(); // moss-multi seam: comments
     setReplyText('');
     setReplyImageUrls([]);
     setReplyResetSignal(s => s + 1);
@@ -759,10 +761,10 @@ export function CommentPopover({
       const existingUrls = target.imageUrls ?? (target.imageUrl ? [target.imageUrl] : []);
       const urlsChanged = JSON.stringify(editImageUrls) !== JSON.stringify(existingUrls);
       const hasContent = trimmedText.length > 0 || editImageUrls.length > 0;
-      // moss-multi seam: comments: on a bound note, against the text this tab's saves leave, so a revert saved over a
-      // save in flight is sent
-      const savedText = (shared ? latestEditText(noteId, target.id) : null) ?? target.text;
-      if (hasContent && (trimmedText !== savedText || urlsChanged)) {
+      // moss-multi seam: comments: on a bound note, also against the text this tab's saves leave, so a revert saved over
+      // a save in flight is sent, and a failed save is sent again even unchanged
+      const textChanged = shared ? editNeedsSave(noteId, target.id, trimmedText, target.text) : trimmedText !== target.text;
+      if (hasContent && (textChanged || urlsChanged)) {
         onUpdate(target.id, trimmedText, urlsChanged ? editImageUrls : undefined);
         // moss-multi seam: comments (comments.md §12): on a bound note edit mode holds the text until the server takes
         // it, so a refused or lost save stays open to retry, and a revision typed meanwhile stays open to save
@@ -870,11 +872,13 @@ export function CommentPopover({
       const text = (typeof currentText === 'string' ? currentText : replyText).trim();
       if (!onReply) return;
       if (!text && replyImageUrls.length === 0) return;
-      const created = onReply(
+      const send = () => onReply(
         root.id,
         text,
         replyImageUrls.length > 0 ? replyImageUrls : undefined
       );
+      // moss-multi seam: comments: the reply replaces the failed replies this box was given, and no others
+      const created = shared ? carrying(noteId, root.id, offeredRef.current, send) : send();
       if (!created) return;
       // Force-clear the still-mounted composer (the anti-echo guard would
       // otherwise keep the just-typed text) and keep focus for the next comment.
@@ -894,15 +898,16 @@ export function CommentPopover({
   );
 
   // moss-multi seam: comments: the reply box of an open bound thread takes back each reply that failed in it, when it
-  // opens and whenever one fails later (whichever popover sent it), as a resubmit from it replaces them
+  // opens and whenever one fails later (whichever popover sent it), each once, as a resubmit from it replaces them
   useEffect(() => {
     if (!open || !shared) return;
     const slot = `reply:${root.id}` as const;
     const offer = () => {
-      const failed = failedDraftTexts(noteId, slot).filter(text => !replyTextRef.current.includes(text));
+      const failed = failedReplies(noteId, slot).filter(draft => !offeredRef.current.has(draft.id));
       if (!failed.length) return;
+      for (const draft of failed) offeredRef.current.add(draft.id);
       // An updater, so replies that fail in the same tick all come back
-      setReplyText(current => failed.reduce(withFailed, current));
+      setReplyText(current => failed.reduce((text, draft) => withFailed(text, draft.text), current));
       setReplyResetSignal(s => s + 1);
     };
     offer();

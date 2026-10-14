@@ -9,7 +9,8 @@ import { useSyncExternalStore } from 'react';
 import { knownRole, useDocRole, useKnownRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
 import {
-  createComment, deleteComment, draftOf, editComment, failedDrafts, onDraftFailed, reactTo, replyTo, resolveThread, type Completion, type DraftSlot,
+  carrying, createComment, deleteComment, draftOf, editComment, editNeedsSave, failedDrafts, onDraftFailed, reactTo, replyTo, resolveThread,
+  type Completion, type DraftSlot,
 } from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
 import {
@@ -18,7 +19,7 @@ import {
 import { myPrincipalId } from './people.ts';
 
 export { commentsAtPoint, isShared as bound, setActive, setHover, subscribePaint, trackCommentHover };
-export { onDraftFailed };
+export { carrying, editNeedsSave, onDraftFailed };
 export type { Completion, DraftSlot };
 
 /** Whether an editor in this tab is bound to `noteId`, as React state (a binding's start and end both repaint). */
@@ -222,15 +223,7 @@ export function failedDraftText(noteId: string, slot: DraftSlot): string | null 
   return slot.startsWith('edit:') ? failed.at(-1)!.text : failed.map((draft) => draft.text).join('\n\n');
 }
 
-/** The text of each of `slot`'s failed submits, oldest first, for a reply box to take back one at a time. */
-export function failedDraftTexts(noteId: string, slot: DraftSlot): string[] {
-  return failedDrafts(noteId, slot).map((draft) => draft.text);
-}
-
-/**
- * The text comment `id` will hold once this tab's saves of it settle: its latest save still held (in flight or failed),
- * else null. An edit compares against it, not the stored text, so a revert saved over a save in flight is sent.
- */
-export function latestEditText(noteId: string, id: string): string | null {
-  return draftOf(noteId, `edit:${id}`)?.text ?? null;
+/** `slot`'s failed submits, oldest first, by proposed id, for a reply box to take back each one once. */
+export function failedReplies(noteId: string, slot: DraftSlot): { id: string; text: string }[] {
+  return failedDrafts(noteId, slot).map(({ id, text }) => ({ id, text }));
 }

@@ -8,7 +8,7 @@ import { createEditor } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
-import { failedDraftText, failedDraftTexts, latestEditText, mutate, onDraftFailed, submitted } from './adapter.ts';
+import { carrying, editNeedsSave, failedDraftText, failedReplies, mutate, onDraftFailed, submitted } from './adapter.ts';
 import { createComment, draftOf } from './api.ts';
 import type { Minted } from './mint.ts';
 import { modelFor } from './model.ts';
@@ -172,7 +172,8 @@ it("a failed reply's and edit's text stays readable for the composer until a lat
   expect(failedDraftText('doc-recover', 'reply:p2')).toBeNull();
   expect(failedDraftText('doc-recover', 'edit:c1')).toBe('Lost edit');
   server.mode = 'ok';
-  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost A\n\nLost B' });
+  const offered = failedReplies('doc-recover', 'reply:p1').map((draft) => draft.id);
+  carrying('doc-recover', 'p1', offered, () => mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost A\n\nLost B' }));
   expect(await submitted('doc-recover', 'reply:p1')).toEqual({ ok: true });
   expect(failedDraftText('doc-recover', 'reply:p1'), 'the resubmit took both').toBeNull();
   mutate(editor, { type: 'edit', id: 'c1', text: 'Found edit' });
@@ -294,7 +295,7 @@ it('a reply that fails is announced to whoever listens on its thread then, not o
   const answer = submitted('doc-late-fail', 'reply:p1')!;
   // The thread closed and reopened meanwhile: a new box listens.
   const heard: string[][] = [];
-  const stop = onDraftFailed('doc-late-fail', 'reply:p1', () => heard.push(failedDraftTexts('doc-late-fail', 'reply:p1')));
+  const stop = onDraftFailed('doc-late-fail', 'reply:p1', () => heard.push(failedReplies('doc-late-fail', 'reply:p1').map((draft) => draft.text)));
   open();
   expect(await answer).toEqual({ ok: false, error: 'network' });
   expect(heard, 'the open box hears the failure with its text').toEqual([['Slow reply']]);
@@ -306,16 +307,53 @@ it('a reply that fails is announced to whoever listens on its thread then, not o
   expect(heard, 'a closed box hears nothing').toHaveLength(1);
 });
 
-it("an edit compares against the text this tab's saves leave, so a revert saved over a save in flight is sent", async () => {
+it("an edit needs a save when it differs from the stored text or what this tab's saves leave, or a save of it failed", async () => {
   const { editor } = boundEditor('doc-revert');
-  expect(latestEditText('doc-revert', 'c1'), 'no save held').toBeNull();
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'nothing to save').toBe(false);
   let open = () => {};
   server.gate = new Promise((resolve) => { open = resolve; });
   mutate(editor, { type: 'edit', id: 'c1', text: 'Changed' });
-  expect(latestEditText('doc-revert', 'c1'), 'the save in flight').toBe('Changed');
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'a revert over the save in flight is sent').toBe(true);
   mutate(editor, { type: 'edit', id: 'c1', text: 'Original' });
   open();
   expect(await submitted('doc-revert', 'edit:c1')).toEqual({ ok: true });
   expect(server.edits.map((edit) => edit.text), 'the revert is stored last').toEqual(['Changed', 'Original']);
-  expect(latestEditText('doc-revert', 'c1')).toBeNull();
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'the landed revert needs nothing more').toBe(false);
+  expect(editNeedsSave('doc-revert', 'c1', 'Changed', 'Changed'), 'a stored text this tab did not save last is sent again').toBe(true);
+
+  // A failed save, resubmitted unchanged: it is sent again, and lands.
+  server.mode = 'network-before';
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Retry me' });
+  expect(await submitted('doc-revert', 'edit:c1')).toEqual({ ok: false, error: 'network' });
+  expect(editNeedsSave('doc-revert', 'c1', 'Retry me', 'Original'), 'the failed text differs from the stored one').toBe(true);
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'and a failed save is pending even for the stored text').toBe(true);
+  server.mode = 'ok';
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Retry me' });
+  expect(await submitted('doc-revert', 'edit:c1')).toEqual({ ok: true });
+  expect(server.edits.at(-1)).toEqual({ id: 'c1', text: 'Retry me' });
+  expect(editNeedsSave('doc-revert', 'c1', 'Retry me', 'Retry me')).toBe(false);
+});
+
+it('a reply replaces only the failed replies its box carries, so one whose text is inside another stays to be offered', async () => {
+  const { editor } = boundEditor('doc-carry');
+  server.mode = 'network-before';
+  for (const text of ['not ready', 'ready', 'Thanks']) {
+    mutate(editor, { type: 'reply', parentId: 'p1', text });
+    await submitted('doc-carry', 'reply:p1');
+  }
+  const [notReady, ready, thanks] = failedReplies('doc-carry', 'reply:p1');
+  expect([notReady?.text, ready?.text, thanks?.text]).toEqual(['not ready', 'ready', 'Thanks']);
+  server.mode = 'ok';
+  // The box was given only "not ready"; its text holds "ready" and "Thanks" as words, not as the drafts.
+  carrying('doc-carry', 'p1', [notReady!.id], () => mutate(editor, { type: 'reply', parentId: 'p1', text: 'not ready\n\nThanks again' }));
+  expect(await submitted('doc-carry', 'reply:p1')).toEqual({ ok: true });
+  expect(failedReplies('doc-carry', 'reply:p1').map((draft) => draft.text), 'the drafts it never carried stay').toEqual(['ready', 'Thanks']);
+  // A reply sent without a box that carries drafts replaces none, unless it resubmits one's exact text.
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Something else' });
+  expect(await submitted('doc-carry', 'reply:p1')).toEqual({ ok: true });
+  expect(failedReplies('doc-carry', 'reply:p1')).toHaveLength(2);
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Thanks' });
+  expect(await submitted('doc-carry', 'reply:p1')).toEqual({ ok: true });
+  expect(failedReplies('doc-carry', 'reply:p1').map((draft) => draft.text)).toEqual(['ready']);
+  expect(server.landed.has(thanks!.id), 'the exact resubmit reused its id').toBe(true);
 });

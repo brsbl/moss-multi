@@ -170,16 +170,32 @@ export function createComment(docId: string, doc: Doc, minted: Minted, text: str
   return id;
 }
 
+/** The failed drafts a reply box holds (it was offered their text), per thread, while its submit runs: `carrying`. */
+const carried = new Map<string, ReadonlySet<string>>();
+
+/** Runs `send` with the reply box of `parentId` holding the failed drafts `ids`, so the reply it sends replaces them. */
+export function carrying<T>(docId: string, parentId: string, ids: Iterable<string>, send: () => T): T {
+  const key = draftKey(docId, `reply:${parentId}`);
+  carried.set(key, new Set(ids));
+  try {
+    return send();
+  } finally {
+    carried.delete(key);
+  }
+}
+
 /**
  * Adds a reply to the thread `parentId`; it shows at once. Each submit is its own reply, even while an earlier one is
- * in flight. A resubmit of a failed reply's exact text retries it under its proposed id; any other text is a new reply
- * and replaces the thread's failed drafts, whose text the reply box was offered.
+ * in flight. A resubmit of a failed reply's exact text retries it under its proposed id. It replaces only that draft
+ * and the failed drafts its reply box holds (`carrying`); any other failed reply stays to be offered.
  */
 export function replyTo(docId: string, doc: Doc, parentId: string, text: string): string {
   const slot: DraftSlot = `reply:${parentId}`;
-  const id = failedDrafts(docId, slot).find((draft) => draft.text === text)?.id ?? crypto.randomUUID();
+  const holds = carried.get(draftKey(docId, slot)) ?? new Set<string>();
+  const failed = failedDrafts(docId, slot).filter((draft) => draft.text === text);
+  const id = (failed.find((draft) => holds.has(draft.id)) ?? failed[0])?.id ?? crypto.randomUUID();
   modelFor(doc).addPending(id, pendingRecord(text, parentId));
-  submit(docId, slot, { id, text, parentId }, () => send(docId, doc, id, { text, parentId }), () => true);
+  submit(docId, slot, { id, text, parentId }, () => send(docId, doc, id, { text, parentId }), (old) => old.id === id || holds.has(old.id));
   return id;
 }
 
@@ -193,6 +209,20 @@ const commentPath = (docId: string, id: string) => `/api/docs/${encodeURICompone
 
 /** Each comment's last edit save, which the next one waits for: the server keeps whichever text arrives last. */
 const editTail = new Map<string, Promise<Completion>>();
+/** Each comment's text as this tab's last landed save left it. */
+const landedEdit = new Map<string, string>();
+
+/**
+ * Whether saving `text` over comment `id`, stored as `stored`, needs a write: it differs from the stored text, from
+ * the text this tab's saves in flight (else its last landed one) leave, or a save of it failed and waits for a retry.
+ */
+export function editNeedsSave(docId: string, id: string, text: string, stored: string): boolean {
+  const key = draftKey(docId, `edit:${id}`);
+  const list = held(docId, `edit:${id}`);
+  if (text !== stored || list.some((draft) => draft.failed !== undefined)) return true;
+  const leaves = list.filter((draft) => draft.failed === undefined).at(-1)?.text ?? landedEdit.get(key);
+  return leaves !== undefined && leaves !== text;
+}
 
 /**
  * Rewrites the caller's own comment; the new text arrives with the record. Saves of one comment go out one at a time, in
@@ -207,6 +237,7 @@ export function editComment(docId: string, id: string, text: string): Promise<Co
     if (before) await before;
     const result = await post(commentPath(docId, id), { text }, 'PATCH');
     if (result.ok) {
+      landedEdit.set(key, text);
       for (const old of failedDrafts(docId, slot)) place(docId, slot, old, true);
       return { ok: true };
     }
