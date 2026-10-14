@@ -726,6 +726,29 @@ describe('T5.3 accept lands exactly the previewed diff or nothing @p:mean-2 @p:R
     expect(working).not.toContain('no-such-node');
     for (const id of ids) expect(readMeta(live, id)!.status).toBe('open');
   });
+
+  // T5.B5: the replay after a failing record keeps a record's delete set and its payload updates, not only body structs.
+  it.each(['a delete-only record', 'a payload-op record'] as const)('%s before a G7-failing record stays in the working view (I5)', (kind) => {
+    const live = seededBody();
+    if (kind === 'a delete-only record') {
+      forgeRecord(live, 'a', [LEASED], [], [{ id: 'd1', kind: 'delete', targets: spansOfText(live, 'world '), quote: 'world ' }]);
+    } else {
+      forgeRecord(live, 'a', [LEASED], [payloadOp(live, codeDecorator(live).key, (text) => text.insert(0, 'changed '))]);
+    }
+    forgeRecord(live, 'b', [LEASED + 1], [forged(live, (doc) => root(doc).insertEmbed(root(doc).length, block('no-such-node')), LEASED + 1)]);
+    const gates = vi.mocked(applyRecord);
+    gates.mockClear();
+    const working = exportWorkingMarkdown(live, NOTE_ID);
+    expect(gates.mock.calls.map(([, record]) => record.meta.id)).toEqual(['a', 'b']);
+    expect(gates.mock.results.map((result) => (result.value as { ok: boolean }).ok), 'the second record fails a gate').toEqual([true, false]);
+    if (kind === 'a delete-only record') {
+      expect(working).toContain('Hello and the cat.');
+      expect(working).not.toContain('Hello world');
+    } else {
+      expect(working).toContain('changed seed');
+    }
+    expect(exported(live)).toContain('Hello world and the cat.');
+  });
 });
 
 describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', () => {

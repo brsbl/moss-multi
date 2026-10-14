@@ -12,8 +12,9 @@ import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/pa
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
+import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
-import { refuseInput } from '../refusal.ts';
+import { refuseInput, settleRefusal } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
 import { ownUpdate, readStep1, Replay } from './replay.ts';
 import {
@@ -160,24 +161,26 @@ type AccessAnswer =
   /** The network or the server could not say: keep trying. */
   | { kind: 'unknown' };
 
-/** Asks REST what this caller may do with the doc (A§10.5 handshake failures, A§8 client handling of 4403). */
-async function askAccess(docId: string): Promise<AccessAnswer> {
+/** Asks REST what this caller may do with the doc (A§10.5 handshake failures, A§8 client handling of 4403); held while
+ * the page leaves and asked again if it stays (leave.ts). */
+export async function askAccess(docId: string): Promise<AccessAnswer> {
   const share = shareToken();
   const query = share ? `?share=${encodeURIComponent(share)}` : '';
   try {
-    const response = await fetch(`/api/docs/${encodeURIComponent(docId)}/access${query}`, {
+    return await heldRead((signal) => fetch(`/api/docs/${encodeURIComponent(docId)}/access${query}`, {
       credentials: 'same-origin',
       cache: 'no-store',
-      signal: AbortSignal.timeout(ACCESS_TIMEOUT_MS),
-    });
-    if (response.status === 401) return { kind: 'signed-out' };
-    if (response.status === 404) return { kind: 'gone' };
-    if (!response.ok) return { kind: 'unknown' };
-    const body = (await response.json()) as { role?: unknown; deleted?: unknown };
-    if (body.deleted === true) return { kind: 'deleted' };
-    return isRole(body.role)
-      ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester') }
-      : { kind: 'unknown' };
+      signal,
+    }), async (response): Promise<AccessAnswer> => {
+      if (response.status === 401) return { kind: 'signed-out' };
+      if (response.status === 404) return { kind: 'gone' };
+      if (!response.ok) return { kind: 'unknown' };
+      const body = (await response.json()) as { role?: unknown; deleted?: unknown };
+      if (body.deleted === true) return { kind: 'deleted' };
+      return isRole(body.role)
+        ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester') }
+        : { kind: 'unknown' };
+    }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
     return { kind: 'unknown' };
   }
@@ -400,13 +403,21 @@ export class DocSession {
       open: () => this.provider.wsconnected && !this.#ended,
       wrote: (id, update) => this.#wrote(update, id),
       remote: this.provider,
+      note: this.doc,
+      // A payload made and deleted offline waits, kept, for its tree to name it again; it is not an unsaved edit.
+      parked: (id, parked) => {
+        this.#ledger.park(id, parked);
+        if (this.#ledger.unacked !== this.#state.unacked) this.#set({ unacked: this.#ledger.unacked });
+      },
     });
     // A step 2 from the server answers the last step 1.
     const sync = this.provider.messageHandlers[0];
     this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
       this.#syncHeard = Date.now();
       if (decoder.arr[decoder.pos] === 1) this.#resyncOwed = false;
+      const started = performance.now();
       sync(encoder, decoder, provider, emitSynced, type);
+      if (performance.now() - started > 50) performance.measure('moss-sync-message', { start: started });
     };
     this.provider.messageHandlers[PAYLOAD_MESSAGE] = (_encoder, decoder) => {
       this.#payloadSync.receive(decoder.arr);
@@ -518,6 +529,8 @@ export class DocSession {
     this.#pagePresence = null;
     this.provider.shouldConnect = false;
     setTerminal(this.docId, reason);
+    // A demotion's notice no longer holds once the note has ended (its banner says why).
+    settleRefusal(VIEW_ONLY, 0);
     if (this.#lingering && reason !== 'conn-limit') {
       this.dispose();
       return;
@@ -815,7 +828,7 @@ export class DocSession {
 
   #wrote(update: Uint8Array, payload?: string): void {
     this.#ledger.wrote(update, payload);
-    if (!this.#state.unacked) this.#set({ unacked: true });
+    if (!this.#state.unacked && this.#ledger.unacked) this.#set({ unacked: true });
   }
 
   #onServerEvent(message: string): void {
@@ -834,7 +847,10 @@ export class DocSession {
       } catch {
         // a malformed vector reopens nothing
       }
+      const started = performance.now();
       if (this.#state.unacked && this.#ledger.acked(event)) this.#settleUnacked();
+      // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
+      if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
     } else if (isSuggestReply(event)) {
       this.#suggest.replied();
       for (const listener of [...this.#suggestListeners]) listener(event);

@@ -65,7 +65,8 @@ import { SERIF_FONT_FAMILY_MARKDOWN_STYLE_PATTERN } from './text-style';
  *   each line paying only what passes what is left of its own work, so a note of many such lines stays within SP2.
  * - perNote: over one import, all the work its lines are charged, LINE_COST a line and TABLE_CELL_COST a table cell
  *   (the empty cells a row is padded with included), so a note of any lines, however short, stays within SP2: once
- *   it is spent, each line after keeps its text as literal text and each table row after is not a table row. The densest ordinary notes take 4% less at 2 MB.
+ *   it is spent, each line after keeps its text as literal text and each table row after is not a table row (under
+ *   refusingSpentImports, the DocDO's create, the import is refused instead). The densest ordinary notes take 4% less at 2 MB.
  */
 export const LINEAR_IMPORT_LIMITS = {
   lineChars: 1 << 17,
@@ -201,6 +202,7 @@ class LineOriginSpy extends RegExp {
     if (importBudget) {
       importBudget.work -= LINE_COST;
       linearImportStats.spent += LINE_COST;
+      refuseIfSpent(importBudget);
     }
     const origins = lineOrigins;
     if (origins) {
@@ -237,9 +239,22 @@ let longLines: LongLines | null = null;
 // Lines of the import running with more than LINEAR_IMPORT_LIMITS.tabs tabs, and the literal text each gets back.
 let heldTabs: [TextNode, string][] = [];
 
-// Control characters moss's normalization and Lexical's block transformers leave alone; the first one the markdown
-// lacks marks its long lines (none: they import as they are).
+// Control characters moss's normalization and Lexical's block transformers leave alone. The marker is a run of the one
+// whose longest run in the markdown is shortest, one longer than that run, so no text of the markdown reads as one.
 const MARKERS = ['\u0001', '\u0002', '\u0003', '\u0004', '\u0005', '\u0006', '\u0007', '\u000e', '\u000f'];
+
+function markerFor(markdown: string): string {
+  const longest = new Map(MARKERS.map((char) => [char.charCodeAt(0), 0]));
+  let run = 0;
+  for (let i = 0; i < markdown.length; i += 1) {
+    const code = markdown.charCodeAt(i);
+    if (code > 0x0f) continue;
+    run = i > 0 && markdown.charCodeAt(i - 1) === code ? run + 1 : 1;
+    if (run > (longest.get(code) ?? Infinity)) longest.set(code, run);
+  }
+  const [code, length] = [...longest].reduce((a, b) => (b[1] < a[1] ? b : a));
+  return String.fromCharCode(code).repeat(length + 1);
+}
 
 function markLongLines(markdown: string): LongLines | null {
   const limit = LINEAR_IMPORT_LIMITS.lineChars;
@@ -251,8 +266,8 @@ function markLongLines(markdown: string): LongLines | null {
     if (end - start > limit) ranges.push([start, end]);
     start = end + 1;
   }
-  const marker = ranges.length > 0 ? MARKERS.find((char) => !markdown.includes(char)) : undefined;
-  if (marker === undefined) return null;
+  if (ranges.length === 0) return null;
+  const marker = markerFor(markdown);
   let marked = '';
   let cursor = 0;
   ranges.forEach(([start, end], i) => {
@@ -302,15 +317,40 @@ function restoredSplit(lines: string[]): string[] {
 // What the import running, if any, has left of its budget for work past its lines' own (`left`) and for all work.
 let importBudget: { left: number; work: number } | null = null;
 
-// A table cell: moss imports its markdown as a note of its own and makes the cell, paragraph and text nodes, about
-// 25 µs of workerd CPU in all; its line's LINE_COST and its text's work are charged as any line's are.
-const TABLE_CELL_COST = 21_000;
+/** What an import run under `refusingSpentImports` throws once its perNote is spent. */
+export const IMPORT_BUDGET_SPENT = 'import-budget-spent';
+let refuseSpent = false;
+
+/**
+ * Runs `run` with every import in it refused once its perNote is spent (the DocDO's create): rather than keep the lines
+ * after as literal text and the table rows after as paragraph lines, which the binding then pays for, the import throws
+ * IMPORT_BUDGET_SPENT, so no note lands in part and its work stops there.
+ */
+export function refusingSpentImports<T>(run: () => T): T {
+  const outer = refuseSpent;
+  refuseSpent = true;
+  try {
+    return run();
+  } finally {
+    refuseSpent = outer;
+  }
+}
+
+function refuseIfSpent(budget: { work: number }): void {
+  if (refuseSpent && budget.work < 0) throw new Error(IMPORT_BUDGET_SPENT);
+}
+
+// A table cell: moss imports its markdown as a note of its own and makes the cell, paragraph and text nodes, which the
+// DocDO's create then binds to Yjs, admits and applies, 120 to 190 µs of workerd CPU in all (the table legs of
+// scripts/measure-converter.mjs); its line's LINE_COST and its text's work are charged as any line's are.
+const TABLE_CELL_COST = 200_000;
 
 // Whether the import running can pay for a table row's cells; it pays for them if so.
 setTableCellCharge((cells) => {
   if (!importBudget) return true;
   const cost = cells * TABLE_CELL_COST;
   if (cost > importBudget.work) {
+    if (refuseSpent) throw new Error(IMPORT_BUDGET_SPENT);
     importBudget.work = Math.min(importBudget.work, 0);
     return false;
   }
@@ -641,6 +681,7 @@ function $importInline(top: TextNode, index: FormatIndex, matchers: TextMatchTra
     }
   } catch (error) {
     if (error !== OVER_BUDGET) throw error;
+    refuseIfSpent(budget.note);
     linearImportStats.cut += 1;
     $restoreLine(top, original, bounds, parent);
     // A literal line's tabs stay text, as a line past the tab cap's do: the tab nodes were never paid for.

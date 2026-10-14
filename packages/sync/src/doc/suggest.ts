@@ -5,7 +5,7 @@
 // Nothing here writes the body or a payload: a record's ops reach them only through an editor's accept (T5.3).
 import * as Y from 'yjs';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
+import { RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { base64ToBytes } from '@moss-multi/protocol/sync';
 import {
   BODY_DOC, channelAllows, checkStructs, contentKind, ownValue, PAYLOAD_ID, placementOf, type DeletePart, type DocKind, type Placement, type RecordMeta,
@@ -13,8 +13,8 @@ import {
 } from '@moss-multi/core/suggest/apply';
 import { payloadDocsFor } from '../payload-docs.ts';
 import {
-  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partBytes, partsOf, patchMeta, readMeta, readRecord, recordBytes, recordIds, suggestionsWriter,
-  writeSuggestions,
+  closeRecord, createRecord, metaBytes, onRecordClosed, opsOf, partBytes, partsOf, patchMeta, readMeta, readRecord, recordBytes, recordIds, suggestionStateBytes,
+  suggestionsWriter, SUGGESTIONS_ORIGIN, varUintBytes, writeSuggestions,
 } from '../suggest/records.ts';
 
 /** Who sends a suggest frame: the principal, its live role, and the connection (a server-minted nonce). */
@@ -52,10 +52,23 @@ export interface LeaseStore {
   reservedFor(record: string): Lease | undefined;
   /** Unexpired leases used since `since` that hold no record yet: the ids a principal holds in reserve. */
   live(principal: string, since: number): number;
+  /** Leases of `principal` that hold no record yet, live or not: its retained reservations. */
+  unbound(principal: string): number;
+  /** `principal`'s reservation to retire first: closed before idle (idle since `since`), least recently used first. */
+  retirable(principal: string, since: number): Lease | undefined;
+  remove(client: number): void;
   expireConnection(connection: string): void;
+  /** `principal`'s leases bound to `record` on `connection`, unexpired and used since `since`, are used at `now`. */
+  touch(record: string, principal: string, connection: string, since: number, now: number): void;
   spend(record: string): void;
   rebind(from: string, into: string): void;
+  /** What every stored lease holds, as the retained-state share charges it (`leaseBytes` each). */
+  storedBytes(): number;
 }
+
+/** What one stored lease row is charged against the retained-state share: a fixed row plus its clocks JSON. */
+const LEASE_BYTES = 128;
+export const leaseBytes = (lease: Pick<Lease, 'clocks'>): number => LEASE_BYTES + JSON.stringify(lease.clocks).length;
 
 export class MemoryLeases implements LeaseStore {
   readonly #byClient = new Map<number, Lease>();
@@ -82,8 +95,36 @@ export class MemoryLeases implements LeaseStore {
     return count;
   }
 
+  unbound(principal: string): number {
+    let count = 0;
+    for (const lease of this.#byClient.values()) if (lease.principal === principal && lease.record === null) count += 1;
+    return count;
+  }
+
+  retirable(principal: string, since: number): Lease | undefined {
+    let found: Lease | undefined;
+    for (const lease of this.#byClient.values()) {
+      if (lease.principal !== principal || lease.record !== null || (!lease.expired && lease.usedAt >= since)) continue;
+      if (!found || (lease.expired && !found.expired) || (lease.expired === found.expired && lease.usedAt < found.usedAt)) found = lease;
+    }
+    return found && { ...found, clocks: { ...found.clocks } };
+  }
+
+  remove(client: number): void {
+    const lease = this.#byClient.get(client);
+    if (!lease) return;
+    this.#byClient.delete(client);
+    this.#byReserved.delete(lease.reserved);
+  }
+
   expireConnection(connection: string): void {
     for (const lease of this.#byClient.values()) if (lease.connection === connection) lease.expired = true;
+  }
+
+  touch(record: string, principal: string, connection: string, since: number, now: number): void {
+    for (const lease of this.#byClient.values()) {
+      if (lease.record === record && lease.principal === principal && lease.connection === connection && !lease.expired && lease.usedAt >= since) lease.usedAt = now;
+    }
   }
 
   spend(record: string): void {
@@ -93,9 +134,19 @@ export class MemoryLeases implements LeaseStore {
   rebind(from: string, into: string): void {
     for (const lease of this.#byClient.values()) if (lease.record === from) lease.record = into;
   }
+
+  storedBytes(): number {
+    let bytes = 0;
+    for (const lease of this.#byClient.values()) bytes += leaseBytes(lease);
+    return bytes;
+  }
 }
 
 type Row = Record<string, ArrayBuffer | string | number | null>;
+
+/** live(): the principal's live unbound rows only, through the partial covering index (named: the planner has no stats). */
+export const LIVE_LEASES_SQL =
+  'SELECT COUNT(*) AS n FROM suggest_leases INDEXED BY suggest_leases_live WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?';
 
 export class SqlLeases implements LeaseStore {
   constructor(private readonly sql: SqlStorage) {
@@ -103,6 +154,10 @@ export class SqlLeases implements LeaseStore {
       connection_id TEXT NOT NULL, reserved_id TEXT NOT NULL UNIQUE, record_id TEXT, clocks TEXT NOT NULL,
       spent INTEGER NOT NULL, expired INTEGER NOT NULL, used_at INTEGER NOT NULL, fork_id TEXT)`);
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_principal ON suggest_leases (principal_id, spent, expired)');
+    // live() and the reservation reads touch only unbound rows (live ones for live()), never a principal's history;
+    // SQLite counts a partial index as covering only when it holds every column the query names.
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_live ON suggest_leases (principal_id, used_at, record_id, expired) WHERE record_id IS NULL AND expired = 0');
+    sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_unbound ON suggest_leases (principal_id, used_at) WHERE record_id IS NULL');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_record ON suggest_leases (record_id)');
     sql.exec('CREATE INDEX IF NOT EXISTS suggest_leases_connection ON suggest_leases (connection_id)');
   }
@@ -144,14 +199,34 @@ export class SqlLeases implements LeaseStore {
   }
 
   live(principal: string, since: number): number {
-    const row = this.sql.exec<Row>(
-      'SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND expired = 0 AND used_at >= ?', principal, since,
-    ).toArray()[0];
+    const row = this.sql.exec<Row>(LIVE_LEASES_SQL, principal, since).toArray()[0];
     return Number(row?.n ?? 0);
+  }
+
+  unbound(principal: string): number {
+    return Number(this.sql.exec<Row>('SELECT COUNT(*) AS n FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL', principal).toArray()[0]?.n ?? 0);
+  }
+
+  retirable(principal: string, since: number): Lease | undefined {
+    return this.#one(
+      'SELECT * FROM suggest_leases WHERE principal_id = ? AND record_id IS NULL AND (expired = 1 OR used_at < ?) ORDER BY expired DESC, used_at LIMIT 1',
+      principal, since,
+    );
+  }
+
+  remove(client: number): void {
+    this.sql.exec('DELETE FROM suggest_leases WHERE client_id = ?', client);
   }
 
   expireConnection(connection: string): void {
     this.sql.exec('UPDATE suggest_leases SET expired = 1 WHERE connection_id = ?', connection);
+  }
+
+  touch(record: string, principal: string, connection: string, since: number, now: number): void {
+    this.sql.exec(
+      'UPDATE suggest_leases SET used_at = ? WHERE record_id = ? AND principal_id = ? AND connection_id = ? AND expired = 0 AND used_at >= ?',
+      now, record, principal, connection, since,
+    );
   }
 
   spend(record: string): void {
@@ -160,6 +235,10 @@ export class SqlLeases implements LeaseStore {
 
   rebind(from: string, into: string): void {
     this.sql.exec('UPDATE suggest_leases SET record_id = ? WHERE record_id = ?', into, from);
+  }
+
+  storedBytes(): number {
+    return Number(this.sql.exec<Row>('SELECT COALESCE(SUM(? + LENGTH(clocks)), 0) AS n FROM suggest_leases', LEASE_BYTES).toArray()[0]?.n ?? 0);
   }
 }
 
@@ -198,10 +277,15 @@ export interface IngestOptions {
 /** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
 type Placed = Map<string, Map<number, { clock: number; len: number; at: Placement }[]>>;
 
-/** Leases one resume may name: a principal's open records may hold more than the unused-lease cap. */
-const RESUME_MAX = 64;
+/**
+ * Unbound reservations one principal retains, live or dormant: past it, a fresh lease first retires its oldest dormant
+ * one. A few windows' worth beyond the live cap.
+ */
+export const RESERVED_MAX = 4 * SUGGEST_LIMITS.liveLeases;
 /** Item headers and keys a meta write adds, beyond the JSON itself. */
 const META_SLACK = 64;
+/** Encoded bytes a split adds: one struct header naming both origins. */
+const SPLIT_BYTES = 32;
 const RECORD_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const FORK_ID = /^[A-Za-z0-9_-]{8,64}$/;
 const refused = (reason: SuggestRefusal): { ok: false; reason: SuggestRefusal } => ({ ok: false, reason });
@@ -224,6 +308,14 @@ export class SuggestIngest {
   readonly #next = new Map<string, string>();
   readonly #open = new Map<string, Set<string>>();
   #openBytes = 0;
+  /**
+   * All retained suggestion state, as the encoded doc holds it plus the stored leases: measured on wake and at each
+   * compaction (`remeasure`); between them every write to `suggestions` adds its update and takes off only the content
+   * Yjs provably frees, so the count never falls below what is held. Bounded by `stateShare`.
+   */
+  #retained = 0;
+  /** A write to `suggestions` since the last measure: only those can leave the running count above what is held. */
+  #drifted = false;
   /** Open records' placements; a record's entry goes when it closes. */
   readonly #placed = new Map<string, Placed>();
 
@@ -241,7 +333,7 @@ export class SuggestIngest {
       if (open) {
         for (const op of record.ops) {
           try {
-            this.#place(id, op.doc, Y.decodeUpdate(op.update))?.();
+            this.#place(id, op.doc, Y.decodeUpdate(op.update), this.#held(op.doc))?.();
           } catch {
             // An undecodable stored op is accept's to refuse.
           }
@@ -251,6 +343,32 @@ export class SuggestIngest {
       if (next) this.#next.set(id, next);
     }
     onRecordClosed(doc, (id, meta) => this.#closed(id, meta));
+    this.remeasure();
+    // A write adds its update; what it deletes (a replaced meta, cleared ops and parts) leaves only a tombstone.
+    doc.on('afterTransaction', (txn: Y.Transaction) => {
+      if (txn.origin === SUGGESTIONS_ORIGIN) this.#retained = Math.max(0, this.#retained - freedBytes(txn));
+    });
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin !== SUGGESTIONS_ORIGIN) return;
+      this.#retained += update.byteLength;
+      this.#drifted = true;
+    });
+  }
+
+  /** Retained suggestion state, in bytes, as the share counts it. */
+  get retainedBytes(): number {
+    return this.#retained;
+  }
+
+  /** Measures the retained state afresh: O(the doc's structs + stored leases), so for a wake, not a frame. */
+  remeasure(): void {
+    this.#retained = suggestionStateBytes(this.doc) + this.leases.storedBytes();
+    this.#drifted = false;
+  }
+
+  /** The doc was compacted: measured afresh only if `suggestions` was written since, so body edits pay nothing. */
+  compacted(): void {
+    if (this.#drifted) this.remeasure();
   }
 
   /**
@@ -274,16 +392,27 @@ export class SuggestIngest {
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now, fork: fork ?? lease.fork ?? null });
       grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: ownValue(lease.clocks, BODY_DOC) ?? 0, clocks: lease.clocks });
     }
-    const fresh = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
+    const wanted = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
+    // A lease row is retained state too: none is minted past the share, or into the reserve kept for edits.
+    const fresh = Math.max(0, Math.min(wanted, Math.floor(this.#room() / leaseBytes({ clocks: {} }))));
     const writer = suggestionsWriter(this.doc)?.client;
     for (let i = 0; i < fresh; i += 1) {
+      // At `RESERVED_MAX` the oldest dormant reservation is deleted, never reissued: a fork may hold edits under it the
+      // server never saw, so its resume is refused and the text offered back. New grants draw fresh random ids.
+      while (this.leases.unbound(who.id) >= RESERVED_MAX) {
+        const retired = this.leases.retirable(who.id, since);
+        if (!retired) break;
+        this.leases.remove(retired.client);
+        this.#retained = Math.max(0, this.#retained - leaseBytes(retired));
+      }
       let client = 0;
       while (client === 0 || client === writer || this.doc.store.clients.has(client) || this.leases.get(client)) client = crypto.getRandomValues(new Uint32Array(1))[0];
       const reserved = this.#mint();
       this.leases.put({ client, principal: who.id, connection: who.connection, reserved, record: null, clocks: {}, spent: false, expired: false, usedAt: now, fork });
       grants.push({ client, record: reserved, clock: 0, clocks: {} });
+      this.#retained += leaseBytes({ clocks: {} });
     }
-    return grants.length ? { ok: true, leases: grants } : refused('lease-cap');
+    return grants.length ? { ok: true, leases: grants } : refused(fresh < wanted ? 'doc-cap' : 'lease-cap');
   }
 
   /** One fork transaction: a body update, or `{doc, update}` in the body or a payload doc of the fork. */
@@ -301,7 +430,6 @@ export class SuggestIngest {
     } catch {
       return refused('malformed');
     }
-    const held = this.#held(doc);
     const now = this.#now();
     const leases: Lease[] = [];
     for (const [client, from] of meta.from) {
@@ -312,15 +440,19 @@ export class SuggestIngest {
       if (from > next) return refused('clock-gap');
       // A record never holds two versions of one id.
       if (from < next) return refused('clock-overlap');
-      // The lease's first write to this doc: the doc must not hold its id already (minting checked only the body).
-      if (next === 0 && held && Y.getState(held.store, client) > 0) return refused('lease');
       leases.push(lease);
     }
     // The caps first, so an oversized frame is never placed.
     const cap = this.#caps(who, target, update.byteLength, meta.from.size);
     if (cap) return refused(cap);
+    // Only now the doc: a payload's may load from storage, which a frame refused above never pays for.
+    const held = this.#held(doc);
+    for (const lease of leases) {
+      // The lease's first write to this doc: the doc must not hold its id already (minting checked only the body).
+      if ((ownValue(lease.clocks, doc) ?? 0) === 0 && held && Y.getState(held.store, lease.client) > 0) return refused('lease');
+    }
     // Default-deny (suggestions.md §4.4): every struct sits in a channel of the table accept's G3 reads.
-    const placed = this.#place(target.id, doc, decoded);
+    const placed = this.#place(target.id, doc, decoded, held);
     if (!placed) return refused('channel');
     // An early, O(frame) reject of node types Lexical would not bind; G7 is the full check at accept.
     for (const struct of doc === BODY_DOC ? decoded.structs : []) {
@@ -338,9 +470,11 @@ export class SuggestIngest {
     placed();
     if (target.create) this.options.onCreated?.(target.id, who.id, target.continues);
     this.#grow(target.id, update.byteLength);
-    this.#bind(target, now);
+    this.#bind(who, target, now);
     for (const lease of leases) {
-      this.leases.put({ ...lease, record: target.id, clocks: { ...lease.clocks, [doc]: meta.to.get(lease.client) ?? ownValue(lease.clocks, doc) ?? 0 }, usedAt: now });
+      const clocks = { ...lease.clocks, [doc]: meta.to.get(lease.client) ?? ownValue(lease.clocks, doc) ?? 0 };
+      this.#retained += leaseBytes({ clocks }) - leaseBytes(lease);
+      this.leases.put({ ...lease, record: target.id, clocks, usedAt: now });
     }
     return { ok: true, record: target.id, requested: record, doc, sv: this.#sv(target.id, doc), parts: [] };
   }
@@ -365,7 +499,7 @@ export class SuggestIngest {
     });
     if (target.create) this.options.onCreated?.(target.id, who.id, target.continues);
     this.#grow(target.id, bytes);
-    this.#bind(target, now);
+    this.#bind(who, target, now);
     return { ok: true, record: target.id, requested: record, doc: BODY_DOC, sv: this.#sv(target.id, BODY_DOC), parts: [part.id] };
   }
 
@@ -399,7 +533,10 @@ export class SuggestIngest {
     if (a.id === b.id) return { ok: true, record: a.id, requested: into, doc: BODY_DOC, sv: this.#sv(a.id, BODY_DOC), parts: [] };
     const moved = this.#info.get(b.id)!.bytes;
     if (this.#info.get(a.id)!.bytes + moved > SUGGEST_CAPS.recordOpsBytes) return refused('record-cap');
-    if (this.#overState(moved + this.#metaWrite(a.id, 0) + this.#metaWrite(b.id, 0))) return refused('doc-cap');
+    // The moved ops leave `from` in the same write, so the share is charged only the meta; the note's state counts
+    // the copy until its next compaction.
+    const metaWrites = this.#metaWrite(a.id, 0) + this.#metaWrite(b.id, 0);
+    if (this.#overState(metaWrites, moved + metaWrites)) return refused('doc-cap');
     const now = this.#now();
     const source = readRecord(this.doc, b.id)!;
     writeSuggestions(this.doc, () => {
@@ -462,9 +599,13 @@ export class SuggestIngest {
     return lease.principal === who.id && lease.connection === who.connection && !lease.expired && lease.usedAt >= this.#now() - SUGGEST_LIMITS.leaseIdleMs;
   }
 
-  /** A new record on a reserved id binds that lease, so it no longer counts as an unused one toward the cap. */
-  #bind(target: Extract<Target, { ok: true }>, now: number): void {
+  /**
+   * A new record on a reserved id binds that lease, so it no longer counts as an unused one toward the cap. Every write
+   * keeps the author's held leases of the record on this connection held: a delete part or a struct-free op names none.
+   */
+  #bind(who: Suggester, target: Extract<Target, { ok: true }>, now: number): void {
     if (target.reserved && target.reserved.record === null) this.leases.put({ ...target.reserved, record: target.id, usedAt: now });
+    this.leases.touch(target.id, who.id, who.connection, now - SUGGEST_LIMITS.leaseIdleMs, now);
   }
 
   #now(): number {
@@ -524,8 +665,20 @@ export class SuggestIngest {
     return JSON.stringify(meta).length * 2 + clients * 12 + 3 * META_SLACK + (target.continues ? this.#metaWrite(target.continues, 0) : 0);
   }
 
-  #overState(bytes: number): boolean {
-    return this.options.stateBytes !== undefined && this.options.stateBytes() + bytes > this.options.stateCap;
+  /** What suggestion growth may still add: short of the share of retained suggestion state and of the reserve. */
+  #room(): number {
+    const share = this.options.stateCap * SUGGEST_LIMITS.stateShare - this.#retained;
+    if (this.options.stateBytes === undefined) return share;
+    return Math.min(share, this.options.stateCap * SUGGEST_LIMITS.reserveShare - this.options.stateBytes());
+  }
+
+  /**
+   * Suggestion growth would pass the share of retained suggestion state (`retained` more bytes), or take the note
+   * (`state` more) into the reserve kept for body and payload edits.
+   */
+  #overState(retained: number, state: number = retained): boolean {
+    if (this.#retained + retained > this.options.stateCap * SUGGEST_LIMITS.stateShare) return true;
+    return this.options.stateBytes !== undefined && this.options.stateBytes() + state > this.options.stateCap * SUGGEST_LIMITS.reserveShare;
   }
 
   #caps(who: Suggester, target: Extract<Target, { ok: true }>, bytes: number, clients: number): SuggestRefusal | null {
@@ -589,10 +742,9 @@ export class SuggestIngest {
    * O(structs × (log n + depth)), depth capped. Returns null when a struct is outside the table, else a commit that
    * indexes the placements for the record's later ops.
    */
-  #place(record: string, doc: string, decoded: ReturnType<typeof Y.decodeUpdate>): (() => void) | null {
+  #place(record: string, doc: string, decoded: ReturnType<typeof Y.decodeUpdate>, held: Y.Doc | undefined): (() => void) | null {
     const kind: DocKind = doc === BODY_DOC ? 'body' : 'payload';
     const index = this.#placed.get(record)?.get(doc);
-    const held = this.#held(doc);
     const seen = new Map<Y.Item, Placement | null>();
     const lookup = (id: Y.ID): Placement | null => {
       const hit = spanAt(index?.get(id.client) ?? [], id.clock);
@@ -678,6 +830,37 @@ export class SuggestIngest {
     }
     return quote.slice(0, 1024);
   }
+}
+
+/**
+ * The encoded bytes a transaction provably frees from earlier writes: Yjs swaps a deleted item's content for its length
+ * at cleanup, so each item frees its content's encoding (Yjs's own writer) less that length; a deletion that split an
+ * item at either end costs that piece a header. Never more than the encoded state shrinks: O(items deleted, their
+ * content).
+ */
+function freedBytes(txn: Y.Transaction): number {
+  if (!txn.doc.gc) return 0;
+  let bytes = 0;
+  Y.iterateDeletedStructs(txn, txn.deleteSet, (struct) => {
+    if (!(struct instanceof Y.Item) || struct.keep || struct.id.clock >= (txn.beforeState.get(struct.id.client) ?? 0)) return;
+    const encoder = new Y.UpdateEncoderV1();
+    struct.content.write(encoder, 0);
+    bytes += encoder.toUint8Array().byteLength - varUintBytes(struct.length);
+  });
+  for (const [client, ranges] of txn.deleteSet.clients) {
+    const structs = txn.doc.store.clients.get(client) ?? [];
+    // A piece split off an item names the item's previous clock as its origin.
+    const split = (clock: number) => {
+      if (clock >= (txn.beforeState.get(client) ?? 0)) return false;
+      const struct = structs[Y.findIndexSS(structs, clock)];
+      return struct instanceof Y.Item && struct.id.clock === clock && struct.origin?.client === client && struct.origin.clock === clock - 1;
+    };
+    for (const { clock, len } of ranges) {
+      if (split(clock)) bytes -= SPLIT_BYTES;
+      if (split(clock + len)) bytes -= SPLIT_BYTES;
+    }
+  }
+  return bytes;
 }
 
 /** The entry of a clock-sorted list holding `clock`, by binary search. */
