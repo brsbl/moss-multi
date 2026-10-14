@@ -224,6 +224,13 @@ test('j15-comments: a commenter comments on code, chart, canvas and image blocks
   await ada.page.keyboard.press(SUBMIT);
   await expect(ada.page.getByText(/couldn't be saved/).first(), 'the failure is announced').toBeVisible({ timeout: PEER_TIMEOUT });
   await expect(adaComposer.getByRole('textbox').first(), 'the failed block comment stays in the composer').toHaveText('Ada on the code');
+  // Dismissed and reopened from the same header, the editor's composer offers the failed text again.
+  await ada.page.keyboard.press('Escape');
+  await expect(adaComposer).toBeHidden();
+  await code.hover();
+  await blockCommentButton(code).click();
+  await expect(adaComposer.getByRole('textbox').first()).toBeFocused();
+  await expect(adaComposer.getByRole('textbox').first(), "the editor's reopened block composer keeps the failed text").toHaveText('Ada on the code');
   adaFails.on = false;
   await ada.page.keyboard.press(SUBMIT);
   await expect(adaComposer, 'the retry is taken').toBeHidden({ timeout: PEER_TIMEOUT });
@@ -512,6 +519,33 @@ test('j15-comments: a failed edit resubmitted unchanged is sent again, and edit 
   await ada.page.keyboard.press(SUBMIT);
   await expect(editBox, 'the unchanged retry is taken and edit mode closes').toBeHidden({ timeout: PEER_TIMEOUT });
   await stored('the retried edit lands').toEqual(['Changed']);
+});
+
+test("j15-comments: an older edit save's success leaves edit mode open over newer unsent text @p:mean-1", async ({ actors, stack }) => {
+  const { ada, stored, modes, held } = await heldWrites(actors, stack.baseUrl);
+  const editBox = thread(ada).locator('[data-comment-edit-composer] [contenteditable="true"]');
+  await gutter(ada).first().click();
+  await thread(ada).locator('[data-comment-message]').filter({ hasText: 'Original' }).getByRole('button', { name: /^Comment actions for / }).click();
+  await ada.page.getByRole('menuitem', { name: /^Edit / }).click();
+  await expect(editBox).toBeFocused();
+  modes.PATCH = 'hold';
+  await ada.page.keyboard.press('ControlOrMeta+a');
+  await ada.page.keyboard.type('Alpha');
+  await ada.page.keyboard.press(SUBMIT);
+  await expect.poll(() => held.length, { message: 'the Alpha save is held' }).toBe(1);
+  await ada.page.keyboard.press('ControlOrMeta+a');
+  await ada.page.keyboard.type('Beta');
+  await ada.page.keyboard.press(SUBMIT);
+  // Alpha typed again and not submitted: the held Alpha save's success must not close edit mode over it.
+  await ada.page.keyboard.press('ControlOrMeta+a');
+  await ada.page.keyboard.type('Alpha');
+  held.shift()!('pass');
+  await stored('the queued Beta save lands after Alpha').toEqual(['Beta']);
+  await expect(editBox, 'edit mode stays open with the unsent text').toHaveText('Alpha');
+  await editBox.click();
+  await ada.page.keyboard.press(SUBMIT);
+  await expect(editBox, 'the newer text is saved and edit mode closes').toBeHidden({ timeout: PEER_TIMEOUT });
+  await stored('the newer text lands last').toEqual(['Alpha']);
 });
 
 /** A reply's paragraphs, sorted: each failed reply the box took back is one. */
