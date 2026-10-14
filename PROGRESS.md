@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 57% done** (131 of 230 planned tasks verified)
+**Overall: 56% done** (132 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 63 / 63 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 14 / 15 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 15 / 15 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -151,6 +151,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T3.B8 verified: file-link hovers show the target note's text, the sidebar recovers from a hung listing or a dead socket and reconciles on its own, a reload during a read or change no longer errors or replays it, and the bell clears a notice when access is lost through a move.
 - 2026-10-13 — T3.B9 verified: search finds only the notes you can open and ranks them without other people's notes shifting the order, a search feed that fails is retried on its own, backlinks include sources the index had not yet seen, and the bridge keeps watching a note opened by URL and stops on one that was deleted or revoked.
 - 2026-10-13 — T4.P verified: comments now run on the fixed m3, so its access, body-cap, search and editor fixes hold with comments in place, and the full lane is green in Chromium and WebKit.
+- 2026-10-14 — T4.B3 verified: a comment, reply or edit that fails to send keeps its text as a retryable draft (a failed reply returns to its thread's reply box), a commenter can add comments on code, chart, canvas and image blocks from the block header, block highlights clear when their comments leave, and hovering checks comment ranges once per frame.
 
 ## T1.1s identity audit
 
@@ -606,3 +607,6 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B9 (Search index correctness and cost) checker P2: B173's red-first failure was a mock type error, not a missing backlink — the tests-first commit changed the fake SearchDO.backlinks shape before the route read it, so the red run failed with 'ids.flatMap is not a function' and never reached the 'found on the first read' assertion (the green assertions are meaningful) → no code change; keep red-first mocks shape-compatible with the old route.
 - T4.P (m4 on the fixed m3) checker P2: rename validates the open sockets before awaiting the caller's authorization (packages/sync/src/doc-do.ts:986-987), so a reader revoked during that await can still get the new title if their kick is late; same code on m3, fix there by validating the caller and sockets together.
 - T4.P (m4 on the fixed m3) checker P2: j09 reload test (e2e/journeys/j09-revoke-live.spec.ts:189) still flakes in WebKit: removing interception before the last reload lets the last held read finish 200, so only 2 of 3 reads are cancelled; fix in m3 by keeping interception until the old page leaves while letting the new page's requests through.
+- T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: failed replies can come back in reverse submission order across frames — if reply B fails and is offered in one frame and the earlier reply A fails in a later frame, the reply box holds B then A (both texts survive; order is kept only among failures offered in the same frame, and the j15 leg sorts the paragraphs it reads back, so it does not check order).
+- T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: the refusal banner stays up after a successful retry until its 4 s timer expires, because success does not call settleRefusal for the matching refusal (carried-over P2).
+- T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: the block header Add comment button (`data-comment-entry`, a commenter's only enabled code-block header button) has an empty aria-label and no text, so it has no accessible name.
