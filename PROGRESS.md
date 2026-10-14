@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 85% done** (195 of 230 planned tasks verified)
+**Overall: 85% done** (196 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 21 / 21 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 17 / 17 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 17 / 17 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 11 / 11 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 12 / 12 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -245,10 +245,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - The [tests-first export run](https://github.com/brsbl/moss-multi/actions/runs/37164692835) reproduced a dependent formula exporting frozen `4` instead of recomputed `6`. Export now carries the real doc identity into evaluation; the regression also covers a foreign-note fallback, an unchanged live Y.Doc, export-cache invalidation and wake.
 - The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
+- 2026-10-14 — T8.R verified: shipping work now sits on the final M7, and a doc create or agent push body is read only after the caller's auth, access and rate token, so an unauthorized or rate-limited sender is refused before any upload is read.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.R's checker (b318c84, 2026-10-14)
+
+- T8.R checker P2 (Add a built-Worker test for create/push admission on a streamed body): doc-body-admission.test.ts runs the real routing, auth and a migrated D1 but fakes the PrincipalDO and DocDO namespaces and flips booleans for 429; add a remote-CI case on the built workerd stack with real rate windows and a slowly streamed body.
+- T8.R checker P2 (SECURITY.md still says /api/feedback has no rate limit): m7 already enforces FEEDBACK_DAILY = 20 per person per day (429 after, covered by write-bounds.test.ts); mark the historical finding at docs/SECURITY.md:55 resolved.
 
 ### From T8.B3's checker (fa90832, 2026-10-12)
 
