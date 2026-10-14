@@ -833,7 +833,7 @@ test('j15-comments: a reply that fails after its thread was closed and reopened 
   await stored('the reply is sent from the box once').toEqual(['Original', 'Slow reply']);
 });
 
-test("j15-comments: Cmd+Shift+A in a code block's editor opens a block composer whose retry stays on the block @p:mean-1", async ({ actors, stack }) => {
+test('j15-comments: Cmd+Shift+A on a selected code block opens a block composer whose retry stays on the block @p:mean-1', async ({ actors, stack }) => {
   const { ada, id, cookie, modes } = await heldWrites(actors, stack.baseUrl);
   const key = await ui.body(ada, id).evaluate((element) => {
     const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
@@ -842,8 +842,8 @@ test("j15-comments: Cmd+Shift+A in a code block's editor opens a block composer 
   expect(key, 'the note renders a code block').not.toBe('');
   const code = ui.body(ada, id).locator(`[data-block-decorator-key="${key}"]`).first();
   await code.scrollIntoViewIfNeeded();
-  await code.locator('pre').first().click();
-  await expect(code.locator('textarea'), "the code block's editor takes focus").toBeFocused();
+  // A click beside the code (its line numbers) selects the block itself; the code's own textarea keeps Cmd+A.
+  await code.locator('.moss-codeblock-gutter').first().click();
   modes.POST = 'fail';
   await ada.page.keyboard.press(COMMENT_KEY);
   const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
