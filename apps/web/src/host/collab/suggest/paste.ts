@@ -2,7 +2,6 @@
 // large paste's batches (large-paste.ts). Before it is dispatched (routing.ts) it is measured, not predicted: the same
 // paste runs first on a throwaway copy of the fork with the pane's own paste handlers and transforms, and the bytes of
 // the ops it writes there are admitted against every suggest limit, or the paste is refused with nothing changed.
-import { createHeadlessEditor } from '@lexical/headless';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type IdSpan, type SuggestRefusal } from '@moss-multi/protocol/suggest';
@@ -13,7 +12,7 @@ import { pendingPartBytes, type SuggestFork } from '@moss-multi/sync/suggest/cli
 import { registerFork, type ForkView } from '@moss-multi/sync/suggest/forks';
 import {
   $createNodeSelection, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isNodeSelection, $isRangeSelection,
-  $isRootOrShadowRoot, $isTextNode, $setSelection, PASTE_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode,
+  $isRootOrShadowRoot, $isTextNode, $setSelection, createEditor, PASTE_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode,
   type PointType, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
@@ -108,56 +107,60 @@ const COLLAB_UNDO_MANAGER = Symbol.for('@lexical/yjs/UndoManager');
  * and payload docs is counted, as the fork forwards each as an op. Null when the copy cannot run it.
  */
 export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack): number | null {
-  const doc = new Y.Doc({ gc: fork.doc.gc });
-  doc.clientID = fork.doc.clientID;
-  const own = fork.payloads;
-  const body = payloadDocsFor(fork.body);
-  const payloads = attachPayloadDocs(doc, new PayloadDocs((id) => {
-    const from = own.get(id) ?? body.get(id);
-    return from ? Y.encodeStateAsUpdate(from) : null;
-  }, (id) => own.has(id)));
+  const cleanup: (() => void)[] = [];
   let counting = false;
   let bytes = 0;
-  const count = (update: Uint8Array, origin: unknown) => {
-    if (counting && origin !== COPY_LOADED && origin !== PAYLOAD_LOADED) bytes += update.byteLength;
-  };
-  doc.on('update', count);
-  payloads.onHold((_id, payload) => {
-    payload.clientID = doc.clientID;
-    payload.on('update', count);
-  });
-  // A fork's doc: the paste handlers take it as Suggest mode's (large-paste.ts pastesInBatches).
-  registerFork(doc, fork);
-  const args = source._createEditorArgs;
   // An error in the copy is recorded, not thrown, so Lexical restores the pane's own update around it.
   let failed = false;
-  const copy = createHeadlessEditor({
-    namespace: 'moss-multi-paste-copy',
-    nodes: args?.nodes,
-    html: args?.html,
-    theme: args?.theme,
-    onError: () => {
-      failed = true;
-    },
-  });
-  const binding = createBinding(copy, quiet, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(copy));
-  const root = binding.root.getSharedType();
-  const undo = new Y.UndoManager(root, { trackedOrigins: new Set([binding]) });
-  (copy as unknown as Record<symbol, unknown>)[COLLAB_UNDO_MANAGER] = undo;
-  const observer: Parameters<Y.XmlText['observeDeep']>[0] = (events, transaction) => {
-    if (transaction.origin !== binding) syncYjsChangesToLexical(binding, quiet, events as never, false, noop);
-  };
-  root.observeDeep(observer);
-  const stops = [
-    // As the client binds them, but writing a new block's first payload text in the update that makes it.
-    bindRegisters(copy, doc, { serializedImports: true, payloads }),
-    copy.registerTextContentListener(noop),
-    copy.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
-      syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
-    }),
-    stack(copy),
-  ];
   try {
+    const doc = new Y.Doc({ gc: fork.doc.gc });
+    cleanup.push(() => doc.destroy());
+    doc.clientID = fork.doc.clientID;
+    const own = fork.payloads;
+    const body = payloadDocsFor(fork.body);
+    const payloads = attachPayloadDocs(doc, new PayloadDocs((id) => {
+      const from = own.get(id) ?? body.get(id);
+      return from ? Y.encodeStateAsUpdate(from) : null;
+    }, (id) => own.has(id)));
+    cleanup.push(() => payloads.destroy());
+    const count = (update: Uint8Array, origin: unknown) => {
+      if (counting && origin !== COPY_LOADED && origin !== PAYLOAD_LOADED) bytes += update.byteLength;
+    };
+    doc.on('update', count);
+    payloads.onHold((_id, payload) => {
+      payload.clientID = doc.clientID;
+      payload.on('update', count);
+    });
+    // A fork's doc: the paste handlers take it as Suggest mode's (large-paste.ts pastesInBatches).
+    registerFork(doc, fork);
+    const args = source._createEditorArgs;
+    // Never given a root element, so nothing renders; not headless, since the pane's plugins take root listeners.
+    const copy = createEditor({
+      namespace: 'moss-multi-paste-copy',
+      nodes: args?.nodes,
+      html: args?.html,
+      theme: args?.theme,
+      onError: () => {
+        failed = true;
+      },
+    });
+    const binding = createBinding(copy, quiet, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(copy));
+    const root = binding.root.getSharedType();
+    const undo = new Y.UndoManager(root, { trackedOrigins: new Set([binding]) });
+    cleanup.push(() => undo.destroy());
+    (copy as unknown as Record<symbol, unknown>)[COLLAB_UNDO_MANAGER] = undo;
+    const observer: Parameters<Y.XmlText['observeDeep']>[0] = (events, transaction) => {
+      if (transaction.origin !== binding) syncYjsChangesToLexical(binding, quiet, events as never, false, noop);
+    };
+    root.observeDeep(observer);
+    cleanup.push(() => root.unobserveDeep(observer));
+    // As the client binds them, but writing a new block's first payload text in the update that makes it.
+    cleanup.push(bindRegisters(copy, doc, { serializedImports: true, payloads }));
+    cleanup.push(copy.registerTextContentListener(noop));
+    cleanup.push(copy.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
+      syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
+    }));
+    cleanup.push(stack(copy));
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(fork.doc), COPY_LOADED);
     // The note as the binding reads it, untransformed, as the pane holds it.
     copy.update(noop, { discrete: true, skipTransforms: true });
@@ -173,11 +176,13 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
     return null;
   } finally {
     counting = false;
-    for (const stop of stops.reverse()) stop();
-    root.unobserveDeep(observer);
-    undo.destroy();
-    payloads.destroy();
-    doc.destroy();
+    for (const stop of cleanup.reverse()) {
+      try {
+        stop();
+      } catch {
+        // The copy is thrown away either way.
+      }
+    }
   }
 }
 
