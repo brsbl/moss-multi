@@ -84,6 +84,12 @@ async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Pro
     await new Promise((done) => setTimeout(done, waitMs));
     response = await post();
   }
+  // The local dev server reloads a worker whose isolate a large note's DO outgrew, and answers a POST in flight 503
+  // "Your worker restarted mid-request. Please try sending the request again." (wrangler); it is sent once more.
+  for (let attempt = 0; attempt < 3 && response.status === 503 && /\bworker restarted mid-request\b/.test(await response.clone().text()); attempt += 1) {
+    await new Promise((done) => setTimeout(done, 1_000));
+    response = await post();
+  }
   if (response.status !== 429) recordAuth(kind);
   return response;
 }
