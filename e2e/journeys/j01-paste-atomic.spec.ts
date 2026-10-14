@@ -137,6 +137,38 @@ test('j01-paste-atomic: typing right after a paste whose reserve is refused is k
   }
 });
 
+test('j01-paste-atomic: a keyboard paste made while a paste waits for its reserve\'s answer lands after it @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  const { ada, ben, docId } = await open(actors, stack);
+  ada.expectReconnects(1, docId);
+  try {
+    // A real copy, so the second paste is the browser's own, from the keyboard.
+    await ada.page.evaluate(() => {
+      const area = document.createElement('textarea');
+      area.id = 'j01-clipboard';
+      area.value = ' ZQX';
+      document.body.append(area);
+      area.select();
+    });
+    await ada.page.keyboard.press('ControlOrMeta+C');
+    await ada.page.evaluate(() => document.getElementById('j01-clipboard')?.remove());
+    await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
+    await ada.page.keyboard.press('End');
+    // The black hole leaves B's reserve unanswered: the paste waits for it, then gives up after 4 s.
+    ada.sever!.blackhole();
+    await pastePlain(ada, docId, B);
+    await ada.page.keyboard.press('ControlOrMeta+V');
+    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'B is refused, visibly').toContainText('could not confirm room', { timeout: 60_000 });
+    ada.sever!.restore();
+    await expect.poll(() => holds(ada, docId, 'Kept. ZQX'), { message: 'the keyboard paste lands where Ada made it', timeout: 60_000 }).toBe(true);
+    await ui.waitAcked(ada, docId, 120_000);
+    const want = await normalized(ada, stack, 'Kept. ZQX');
+    await expect.poll(() => exported(ada, docId), { message: 'and reaches the server, without any of B', timeout: 60_000 }).toBe(want);
+  } finally {
+    ben.close();
+  }
+});
+
 for (const cut of ['reconnect', 'wake'] as const) {
   test(`j01-paste-atomic: a paste whose socket ${cut === 'wake' ? 'and DocDO instance end' : 'reconnects'} partway keeps its room, so a writer in between is refused and the paste lands whole @p:col-1`, async ({ actors, stack }) => {
     test.setTimeout(480_000);
