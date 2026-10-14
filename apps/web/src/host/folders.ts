@@ -23,9 +23,19 @@ export const noteTargetFolder = (activeFolderPath: string, folders: readonly { p
 /** "+ Note" and Cmd/Ctrl+N: editors and above on the folder the note lands in, never a viewer link or an unknown role. */
 export const canCreateNote = (folderPath: string): boolean => canEditFolder(folderPath);
 
-/** Dragging a note: whoever manages it (A§8 manage), since a move changes who can open it. */
-export const canMoveNote = (docId: string): boolean =>
-  !(workspace()?.surfacedShared(docId) ?? false) && noteCan(docId, 'manage');
+/** The listed folder of a note, or null. */
+const folderOfNote = (docId: string): string | null =>
+  workspace()?.getSnapshot()?.docs.find((doc) => doc.id === docId)?.folderPath ?? null;
+
+/**
+ * Dragging a note: whoever manages it (A§8 manage), since a move changes who can open it. A note surfaced from
+ * another vault, or inside a folder surfaced from one, never moves here.
+ */
+export const canMoveNote = (docId: string): boolean => {
+  if (workspace()?.surfacedShared(docId)) return false;
+  const folder = folderOfNote(docId);
+  return !(folder && surfacedFolder(folder)) && noteCan(docId, 'manage');
+};
 
 /** Dragging a folder: whoever manages it; the vault itself never moves. */
 export const canMoveFolder = (path: string): boolean => path !== ROOT && !surfacedFolder(path) && can(roleOf(path), 'manage');

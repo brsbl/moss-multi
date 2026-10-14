@@ -8,6 +8,7 @@ const listing = vi.hoisted(() => ({
   roles: new Map<string, string>(),
   surfacedDocs: new Set<string>(),
   surfacedFolders: new Set<string>(),
+  docs: [] as { id: string; folderPath: string }[],
 }));
 
 vi.mock('./bridge/index.ts', () => {
@@ -17,6 +18,7 @@ vi.mock('./bridge/index.ts', () => {
       folderRole: (path: string) => listing.roles.get(path) ?? null,
       surfacedShared: (id: string) => listing.surfacedDocs.has(id),
       surfacedFolder: (path: string) => [...listing.surfacedFolders].some((p) => path === p || path.startsWith(`${p}/`)),
+      getSnapshot: () => ({ docs: listing.docs }),
     },
   };
   return { WORKSPACE, getBridge: () => bridge };
@@ -28,6 +30,7 @@ beforeEach(() => {
   listing.roles.clear();
   listing.surfacedDocs.clear();
   listing.surfacedFolders.clear();
+  listing.docs = [];
 });
 
 it('creates where the note would land: a vault viewer may add to a child folder they edit, an owner not to one they only view', () => {
@@ -102,8 +105,12 @@ it('never moves across vaults: a surfaced row neither drags nor takes a drop', (
   listing.surfacedDocs.add('ada-note');
   rememberRole('ada-note', 'owner');
   rememberRole('own-note', 'owner');
+  // A note in a folder surfaced from Ada's vault is listed unsurfaced itself, and still never moves here.
+  rememberRole('inner-note', 'owner');
+  listing.docs = [{ id: 'own-note', folderPath: 'Notes' }, { id: 'inner-note', folderPath: 'Notes/From Ada/Inner' }];
   expect(canMoveNote('own-note')).toBe(true);
   expect(canMoveNote('ada-note')).toBe(false);
+  expect(canMoveNote('inner-note')).toBe(false);
   expect(canMoveFolder('Notes/From Ada')).toBe(false);
   expect(canMoveFolder('Notes/From Ada/Inner')).toBe(false);
   expect(canDropInto('Notes/From Ada')).toBe(false);

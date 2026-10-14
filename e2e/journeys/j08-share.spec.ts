@@ -601,7 +601,8 @@ async function probeReadOnlyBlocks(actors: Actors, reader: Actor, docId: string,
   expect(await onControl(), `${label}: a click on a resize handle focuses nothing`).toBeNull();
 
   // Tabs switch by click and by the tablist's keys, and focus follows the tab.
-  await tab('Second tab').click();
+  // Forced: a read-only body is aria-disabled, which Playwright reads as a disabled tab; a person's click works.
+  await tab('Second tab').click({ force: true });
   await expect(tab('Second tab'), `${label}: a click switches tabs`).toHaveAttribute('aria-selected', 'true');
   await expect(body.getByText('Second panel text.')).toBeVisible();
   await tab('Second tab').focus();

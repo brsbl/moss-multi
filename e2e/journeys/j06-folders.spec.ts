@@ -328,6 +328,12 @@ const inFolder = (actor: Actor, name: string) => actor.page.getByRole('region', 
 const folderIn = (actor: Actor, parent: string, name: string) =>
   inFolder(actor, parent).getByRole('button', { name: new RegExp(`^${name} folder, `) });
 const MOVES = /^\/api\/(docs|folders)\/[^/]+$/;
+/**
+ * Cmd/Ctrl+N as moss's window listener receives it. Chromium keeps Ctrl+N for itself (a reserved accelerator), so a
+ * pressed key never reaches the page; the keydown is dispatched where focus is.
+ */
+const pressNewNote = (actor: Actor) => actor.page.evaluate(() => (document.activeElement ?? document.body).dispatchEvent(
+  new KeyboardEvent('keydown', { key: 'n', code: 'KeyN', ctrlKey: true, bubbles: true, cancelable: true })));
 
 test('j06-folders: a vault viewer who owns one folder and edits another creates and moves there; nothing else drags, and a refused drop sends nothing @p:note-4@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
@@ -357,7 +363,7 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   await expect(inFolder(ben, 'Open').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${made}"]`), 'and the note lands in it').toBeVisible();
   // Cmd/Ctrl+N creates there too: the positive control for the refusal below.
   const shortcut = ben.page.waitForResponse((r) => new URL(r.url()).pathname === '/api/docs' && r.request().method() === 'POST');
-  await ben.page.keyboard.press('ControlOrMeta+n');
+  await pressNewNote(ben);
   const second = ((await (await shortcut).json()) as { doc: { id: string } }).doc.id;
   await ui.waitLive(ben, second);
   await ben.declareRemount(second);
@@ -368,7 +374,7 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   // Closed is view-only to him: no "+ Note", and Cmd/Ctrl+N sends nothing.
   await expandFolder(ben, 'Closed');
   await expect(newNoteButton(ben), 'no "+ Note" in a folder he only views').toHaveCount(0);
-  await ben.page.keyboard.press('ControlOrMeta+n');
+  await pressNewNote(ben);
   await ben.page.waitForTimeout(1_000);
   expect(creates, 'Cmd/Ctrl+N sends no create there').toHaveLength(2);
 
@@ -423,7 +429,7 @@ test('j06-folders: in her own Home, a folder shared to Ada at view offers no "+ 
   await expect(newNoteButton(ada), 'the owner is offered "+ Note" at her Home').toBeVisible();
   await expandFolder(ada, 'Ben shelf');
   await expect(newNoteButton(ada), 'none in a folder she only views').toHaveCount(0);
-  await ada.page.keyboard.press('ControlOrMeta+n');
+  await pressNewNote(ada);
   await ada.page.waitForTimeout(1_000);
   expect(creates, 'Cmd/Ctrl+N sends no create there').toEqual([]);
 
