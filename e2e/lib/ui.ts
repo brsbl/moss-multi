@@ -66,6 +66,18 @@ export const pane = (actor: Actor, docId: string): Locator => actor.page.locator
 export const title = (actor: Actor, docId: string): Locator => pane(actor, docId).locator(`[${TITLE_BINDING_ATTR}]`);
 export const body = (actor: Actor, docId: string): Locator => pane(actor, docId).locator(`[${BODY_BINDING_ATTR}]`);
 
+/**
+ * Opens an HTML block's source with its header's Edit. The header takes the pointer only while the block is hovered,
+ * and a block still sizing to its content (T3.B13) moved out from under the pointer: the click then hit the preview,
+ * 10 s at a time (WebKit, CI). Each try hovers the block where it is now; a click that cannot land does nothing.
+ */
+export async function openHtmlSource(actor: Actor, docId: string): Promise<void> {
+  await expect(async () => {
+    await body(actor, docId).locator('[data-moss-html-preview-viewport]').hover({ timeout: 2_000 });
+    await body(actor, docId).getByTitle('Edit HTML', { exact: true }).click({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+}
+
 /** Waits until the doc's pane is live with both fields bound. */
 export async function waitLive(actor: Actor, docId: string): Promise<void> {
   await actor.page.locator(`${paneSelector(docId)}[${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: BIND_TIMEOUT });
@@ -101,9 +113,15 @@ export async function waitOpen(actor: Actor, docId: string, binding: 'live' | 'r
   await expect(body(actor, docId), `${actor.label}: the body binds ${binding}`).toHaveAttribute(BODY_BINDING_ATTR, binding, { timeout: BIND_TIMEOUT });
 }
 
-/** The server acknowledged every local write. */
+/**
+ * The server acknowledged every local write. Polled as an attribute read, not a locator assertion: each failed poll of
+ * one renders the element's whole accessibility tree in the page, which held the tab for seconds in a note of 40,000
+ * paragraphs while its acks came in (T3.S6).
+ */
 export async function waitAcked(actor: Actor, docId: string, timeout = 10_000): Promise<void> {
-  await expect(pane(actor, docId), `${actor.label}: the DocDO acks every edit`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout });
+  await expect.poll(() => pane(actor, docId).getAttribute(SYNC_UNACKED_ATTR, { timeout: 5_000 }).catch(() => null), {
+    message: `${actor.label}: the DocDO acks every edit`, timeout, intervals: [100, 250, 500, 1_000],
+  }).toBe('0');
 }
 
 /** This document's doc sockets for the note. */

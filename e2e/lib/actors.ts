@@ -7,7 +7,7 @@ import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor } from './detectors.js';
-import { assertNotInfra, InfraBlocked } from './infra.ts';
+import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
   actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
@@ -32,6 +32,7 @@ export interface Viewport { width: number; height: number; mobile?: boolean }
 export class Actor implements ActorView {
   readonly declaredHttp: DeclaredHttp[] = [];
   readonly reconnects = new Map<string, number>();
+  readonly tryAgain = new Map<string, number>();
   readonly observations = new Map<string, { mark: string; generation: string }>();
 
   constructor(
@@ -52,6 +53,11 @@ export class Actor implements ActorView {
   /** Declares `n` extra doc-socket opens for `docId` (or every doc) in one document (invariant 3). */
   expectReconnects(n: number, docId = '*'): void {
     this.reconnects.set(docId, (this.reconnects.get(docId) ?? 0) + n);
+  }
+
+  /** Declares `n` try-again (1013) closes for `docId` (or every doc), which off loopback are otherwise findings (invariant 3). */
+  expectTryAgain(n: number, docId = '*'): void {
+    this.tryAgain.set(docId, (this.tryAgain.get(docId) ?? 0) + n);
   }
 
   /** Starts remount detection on the doc's body root (invariant 4); call again after a declared remount. */
@@ -154,6 +160,7 @@ export class Actors {
     const context = await this.browser.newContext(
       size ? { viewport: { width: size.width, height: size.height }, deviceScaleFactor: 2, isMobile: !!size.mobile, hasTouch: !!size.mobile } : {},
     );
+    closeEachConnection(context.request);
     let telemetry: Telemetry | null = null;
     // A routed page's doc sockets are counted by the proxy, which sees them open and close (Telemetry.install).
     const sever = options.severable
@@ -283,7 +290,9 @@ export class Actors {
     for (const label of this.mayCapture ? new Set(findings.map((f) => f.actor)) : []) {
       const actor = this.list.find((a) => a.label === label);
       if (actor && !actor.page.isClosed() && recordsScreens(this.options.stack)) {
-        await this.testInfo.attach(`${where}-${label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });
+        // Evidence only: a capture Chromium refuses ("Unable to capture screenshot") must not replace the findings.
+        const shot = await actor.page.screenshot().catch(() => null);
+        if (shot) await this.testInfo.attach(`${where}-${label}.png`, { body: shot, contentType: 'image/png' });
       }
     }
     const lines = findings.map((f) => `  invariant ${f.invariant} [${f.actor}] ${f.detail}`);

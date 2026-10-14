@@ -4,16 +4,24 @@
 import type { ExcludedProperties } from '@lexical/yjs';
 import type { Klass, LexicalEditor, LexicalNode } from 'lexical';
 
-/** By node type. `formula.__name`, `__result` and `__formulaId` are content at the pin and stay on the wire. */
+/**
+ * By node type. `formula.__name`, `__result` and `__formulaId` are content at the pin and stay on the wire. A
+ * decorator's `__commentIds` never does: comments are `comments` records (comments.md §11), and a stored value in an
+ * older doc is left in place and not read back.
+ */
 export const EXCLUDED_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  'code-block': ['__code'],
-  'html-block': ['__rawHtml'],
-  formula: ['__formula'],
-  chart: ['__config'],
-  sketch: ['__grid', '__labels'],
+  'code-block': ['__code', '__commentIds'],
+  'html-block': ['__rawHtml', '__commentIds'],
+  formula: ['__formula', '__commentIds'],
+  chart: ['__config', '__commentIds'],
+  sketch: ['__grid', '__labels', '__commentIds'],
   'tab-group': ['__activeIndex', '__tabWidths'],
   table: ['__colWidths'],
-  'file-link': ['__resolutionState'],
+  'file-link': ['__resolutionState', '__commentIds'],
+  'embed-pill': ['__commentIds'],
+  image: ['__commentIds'],
+  video: ['__commentIds'],
+  'web-embed': ['__commentIds'],
 };
 
 class TypeAwareExcludedProperties extends Map<Klass<LexicalNode>, Set<string>> {

@@ -8,7 +8,7 @@ import {
   buildMossNoteLinkClipboardHtml,
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
-import { terminalOf } from '../collab/terminal.ts';
+import { subscribeTerminal, terminalOf } from '../collab/terminal.ts';
 import { askDocAccess, rememberRole } from '../access.ts';
 import { onNativeMenuCommand } from '../media/image-menu.ts';
 import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
@@ -16,6 +16,7 @@ import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
 import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import { registerDocOpener } from '../navigation.ts';
+import { anySignal, currentLeave, heldRead, installLeaving, isLeaveCancelled, leaveAwareSend, type Leave } from '../leave.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
@@ -113,12 +114,11 @@ export interface BridgeOptions {
   trashGuard?: TrashGuard;
   /** Docs a workspace push named, so a session left terminal on a note that is live after all re-asks (A§8). */
   reopenDocs?: (docIds: string[]) => void;
-  /** The page's current leave: `signal` aborts as the page starts to leave, and `stayed` resolves if it is still
-   * running afterwards (a cancelled navigation), so workspace reads are held, never cancelled by a navigation. */
-  leaving?: () => Leave;
+  /** The page's current leave (leave.ts); the page's own by default. */
+  leaving?: () => Leave | undefined;
 }
 
-export interface Leave { signal: AbortSignal; stayed: Promise<void> }
+export type { Leave } from '../leave.ts';
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 type Listener<T extends unknown[]> = (...args: T) => void;
@@ -148,6 +148,10 @@ const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 const PDF_SESSION_KEY = 'moss-multi:pdf-export';
 /** How long Save as Markdown waits for unacked edits before refusing. */
 export const EXPORT_ACK_WAIT_MS = 8_000;
+/** A listing read with no answer, headers or body, by then is given up and asked again. */
+export const LISTING_DEADLINE_MS = 15_000;
+/** moss reads other notes' content (file-link previews, workspace formulas) at most this many at a time (A§9). */
+const CONTENT_READS = 3;
 
 /** moss's save-dialog file name (main/ipc-handlers.ts sanitizeFilename): no path separators or reserved characters. */
 export function markdownFileName(title: string): string {
@@ -257,24 +261,35 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     return fetcher(path, { credentials: 'same-origin', ...init,
       headers: { accept: 'application/json', ...(token ? { 'x-moss-share': token } : {}), ...init.headers } });
   };
-  /** WebKit logs a fetch cancelled by navigation as an access-control page error, so a workspace read in flight (its
-   * body included) is aborted as the page leaves and held; if the page stays (the navigation was cancelled), it is
-   * sent again. */
-  const listingRequest = async (path: string): Promise<WorkspaceListing> => {
-    for (;;) {
-      const leave = leaving?.();
-      if (leave?.signal.aborted) {
-        await leave.stayed;
-        continue;
-      }
-      try {
-        const response = await request(path, leave ? { signal: leave.signal } : {});
-        if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
-        return (await response.json()) as WorkspaceListing;
-      } catch (error) {
-        if (!leave?.signal.aborted) throw error;
-        await leave.stayed;
-      }
+  const follow = leaving ?? currentLeave;
+  /** A read (its body included, through `read`) held while the page leaves and sent again if it stays (leave.ts). */
+  const heldRequest = <T>(path: string, read: (response: Response) => Promise<T>, init: RequestInit = {}, timeoutMs?: number): Promise<T> =>
+    heldRead((signal) => request(path, signal ? { ...init, signal } : init), read, { leaving: follow, timeoutMs });
+  /** A change sent at most once; one a leave cut off re-reads the listing once the page stays, then rejects. */
+  const sendOnce = async <T>(path: string, init: RequestInit, read: (response: Response) => Promise<T>): Promise<T> => {
+    try {
+      return await leaveAwareSend((signal) => request(path, signal ? { ...init, signal } : init), read, { leaving: follow });
+    } catch (error) {
+      if (isLeaveCancelled(error)) await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+      throw error;
+    }
+  };
+  const listingRequest = (path: string): Promise<WorkspaceListing> => heldRequest(path, async (response) => {
+    if (!response.ok) throw new Error(`GET /api/workspace: ${response.status}`);
+    return (await response.json()) as WorkspaceListing;
+  }, {}, LISTING_DEADLINE_MS);
+  let contentReads = 0;
+  const contentQueue: (() => void)[] = [];
+  /** Runs `work` once fewer than CONTENT_READS are running; a finished read hands its slot to the next. */
+  const limited = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (contentReads >= CONTENT_READS) await new Promise<void>((resolve) => contentQueue.push(resolve));
+    else contentReads += 1;
+    try {
+      return await work();
+    } finally {
+      const next = contentQueue.shift();
+      if (next) next();
+      else contentReads -= 1;
     }
   };
   /** A path in this tab keeps its share token, so a reload or a reconnect still presents it. */
@@ -360,6 +375,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         }
         const changedVaults = JSON.stringify([workspaceSnapshot.vault, workspaceSnapshot.vaults]) !== JSON.stringify([data.vault, data.vaults]);
         const removed: Set<string> = new Set(full ? workspaceSnapshot.docs.map((doc) => doc.id) : ids);
+        const named = (list: ApiDoc[]) => new Map(list.filter((doc) => removed.has(doc.id)).map((doc) => [doc.id, `${doc.title}\u0000${doc.filename ?? ''}`]));
+        const namedBefore = named(workspaceSnapshot.docs);
         const docs: ApiDoc[] = [...(full ? [] : workspaceSnapshot.docs.filter((doc) => !removed.has(doc.id))), ...data.docs]
           .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         workspaceSnapshot = { ...data, docs };
@@ -369,7 +386,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
-        rereadBacklinks();
+        const namedAfter = named(data.docs);
+        rereadBacklinks(full ? null : ids, (id) => namedBefore.get(id) !== namedAfter.get(id));
         // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
         // restore, which remounts its pane with a fresh session.
         for (const id of pushed) reopenIds.delete(id);
@@ -379,7 +397,11 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     } catch {
       if (generation === channelGeneration) {
         refreshAll = true;
-        refreshRetry = setTimeout(() => { void refreshWorkspace(); }, 1000);
+        // Through the listing prerequisite, as any other refresh.
+        refreshRetry = setTimeout(() => {
+          refreshRetry = null;
+          requestWorkspaceRefresh();
+        }, 1000);
       }
     } finally {
       refreshing = false;
@@ -402,14 +424,34 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   // and re-read whenever the workspace channel says a doc changed (a DocDO announces a change to its links).
   const backlinks = new Map<string, NoteLink[]>();
   const watched: string[] = [];
+  /** Each watched note's backlinks read in flight; dropping the note aborts it, and a newer read supersedes it. */
+  const reading = new Map<string, AbortController>();
+  /** Notes outside the listing that byId opened by their URL through askDocAccess (B238). */
+  const admitted = new Set<string>();
   const readBacklinks = async (id: string) => {
+    const path = `/api/docs/${encodeURIComponent(id)}/backlinks`;
+    const cancel = new AbortController();
+    reading.get(id)?.abort();
+    reading.set(id, cancel);
     try {
-      const response = await request(`/api/docs/${encodeURIComponent(id)}/backlinks`);
-      if (!response.ok) {
-        if (response.status === 404) unwatch(id);
+      const { status, answer } = await heldRead((signal) => {
+        // Checked at each send: a trash or revocation may have landed while the read waited out a leave.
+        if (cancel.signal.aborted || !watchable(id)) return Promise.reject(new DOMException('The note is gone.', 'AbortError'));
+        const both = signal ? anySignal([signal, cancel.signal]) : { signal: cancel.signal, release: noop };
+        return request(path, { signal: both.signal }).finally(both.release);
+      }, async (response) => ({
+        status: response.status,
+        answer: response.ok ? await response.json() as { backlinks?: ApiDoc[] } : null,
+      }), { leaving: follow });
+      if (reading.get(id) !== cancel) return;
+      reading.delete(id);
+      if (!answer) {
+        if (status === 404) {
+          admitted.delete(id);
+          drop(id);
+        }
         return;
       }
-      const answer = await response.json() as { backlinks?: ApiDoc[] };
       if (!Array.isArray(answer.backlinks)) return;
       const links = answer.backlinks.map((row): NoteLink => {
         const live = liveTitle(row.id);
@@ -423,33 +465,57 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       backlinks.set(id, links);
       // A metadata-only change: moss re-reads this note's record, which now carries the links.
       diskListeners.forEach((listener) => listener([id], []));
-    } catch { /* The next workspace event or note switch reads them again. */ }
+    } catch {
+      /* The next workspace event or note switch reads them again. */
+      if (reading.get(id) === cancel) reading.delete(id);
+    }
   };
   const unwatch = (id: string) => {
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
   };
-  /** After the listing caught up with a workspace event: a watched note that left it (trashed, unshared) is dropped. */
-  const rereadBacklinks = () => {
+  /** A note that is gone for this tab: no longer watched, its read in flight aborted and its backlinks forgotten. */
+  const drop = (id: string) => {
+    unwatch(id);
+    reading.get(id)?.abort();
+    reading.delete(id);
+    backlinks.delete(id);
+  };
+  // A session that ends as deleted or revoked drops its note at once, before any listing says so (B178).
+  subscribeTerminal(() => {
+    for (const id of new Set([...watched, ...reading.keys()])) {
+      const closed = terminalOf(id);
+      if (closed === 'deleted' || closed === 'revoked') drop(id);
+    }
+  });
+  /**
+   * After the listing caught up with a workspace event for `changed` (null: every doc): a watched note that left it
+   * (trashed, unshared) is dropped, and the rest are read again unless the only change was the note's own edit, which
+   * changes no note's links to it; its rename does.
+   */
+  const rereadBacklinks = (changed: string[] | null, renamed: (id: string) => boolean) => {
     for (const id of [...watched]) {
-      if (inListing(id)) void readBacklinks(id);
-      else unwatch(id);
+      if (!watchable(id)) unwatch(id);
+      else if (changed === null || renamed(id) || changed.some((other) => other !== id)) void readBacklinks(id);
     }
   };
-  // Only live listed notes: moss records links for them, and a trashed or unshared one would 404. A note whose session
-  // closed as deleted or revoked is gone though a listing read before D1 caught up still has it.
-  const inListing = (id: string) => {
+  // Live listed notes, and live notes opened by their URL outside the listing: moss records links for them, and a
+  // trashed or unshared one would 404. A note whose session closed as deleted or revoked is gone though a listing read
+  // before D1 caught up still has it.
+  const watchable = (id: string) => {
     const closed = terminalOf(id);
     if (closed === 'deleted' || closed === 'revoked') return false;
+    if (admitted.has(id) && known.get(id)?.trashedAt == null) return true;
     return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   };
+  /** Opening or focusing a note reads its backlinks once; workspace events keep a watched note's current. */
   const watchBacklinks = (id: string) => {
-    if (!inListing(id)) return;
+    if (!watchable(id)) return;
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
     watched.splice(BACKLINK_WATCH);
-    void readBacklinks(id);
+    if (at === -1 || !backlinks.has(id)) void readBacklinks(id);
   };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
@@ -489,9 +555,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       .filter((note) => note.title.toLowerCase().includes(needle))
       .sort((a, b) => rank(a.title.toLowerCase()) - rank(b.title.toLowerCase()) || b.updatedAt - a.updatedAt)
       .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' }));
-    const response = await request(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`);
-    if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
-    const { results } = await response.json() as { results: (ApiDoc & { snippet: string })[] };
+    const { results } = await heldRequest(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`, async (response) => {
+      if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
+      return await response.json() as { results: (ApiDoc & { snippet: string })[] };
+    });
     const seen = new Set(titled.map((hit) => hit.id));
     const indexed: NoteSearchResult[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
       const listedNote = listed.find((note) => note.id === hit.id);
@@ -511,7 +578,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (!known.has(id)) {
       // A doc shared with the caller that the listing does not carry, opened by its URL.
       const answer = await askDocAccess(id, fetcher);
-      if (answer.kind === 'open' && !known.has(id)) known.set(id, toNoteMetadata(answer.doc));
+      if (answer.kind === 'open' && !known.has(id)) {
+        known.set(id, toNoteMetadata(answer.doc));
+        admitted.add(id);
+      }
     }
     const note = known.get(id);
     return note && withLocal(note);
@@ -527,8 +597,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
   const docUrl = (id: string) => new URL(withShare(`/d/${encodeURIComponent(id)}`), browser.origin).href;
   /** moss's preview window id: any number for an opened tab, null when the browser blocked it. */
-  const pdfTab = (sessionId: string): number | null =>
-    browser.openWindow(`/pdf-export?pdfExportSessionId=${encodeURIComponent(sessionId)}`) ? 1 : null;
+  // The print tab loads the note's media through the share link too (B171).
+  const pdfTab = (sessionId: string): number | null => {
+    const query = new URLSearchParams({ pdfExportSessionId: sessionId });
+    const token = share();
+    if (token) query.set('share', token);
+    return browser.openWindow(`/pdf-export?${query}`) ? 1 : null;
+  };
 
   // Folders (A§9): moss names a folder by its `Notes/...` path; the refreshed id↔path map turns it into a server id.
   const idForPath = (path: string): string | null => {
@@ -612,9 +687,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   return {
     [WORKSPACE]: {
       duplicate: async (id: string) => {
-        const response = await request(`/api/docs/${encodeURIComponent(id)}/duplicate`, { method: 'POST' });
-        if (!response.ok) throw new Error(`Duplicate: ${response.status}`);
-        const result = await response.json() as { doc: ApiDoc; role: string };
+        const result = await sendOnce(`/api/docs/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }, async (response) => {
+          if (!response.ok) throw new Error(`Duplicate: ${response.status}`);
+          return await response.json() as { doc: ApiDoc; role: string };
+        });
         rememberRole(result.doc.id, result.role);
         const note = toNoteMetadata(result.doc);
         known.set(note.id, note);
@@ -656,21 +732,27 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (note && note.trashedAt == null) watchBacklinks(id);
         if (note?.trashedAt != null) {
           // The owner's Trash view reads a trashed note on its one read path, read-only (A§8).
-          const response = await request(`/api/trash/${encodeURIComponent(id)}`);
-          if (!response.ok) return undefined;
-          const { markdown } = (await response.json()) as { markdown: string };
-          return { ...record(note), content: markdown };
+          const trashed = await heldRequest(`/api/trash/${encodeURIComponent(id)}`, async (response) =>
+            (response.ok ? (await response.json()) as { markdown: string } : null));
+          return trashed ? { ...record(note), content: trashed.markdown } : undefined;
         }
         // A doc that will bind gets no content from REST: the binding fills it (A§9).
         return note ? { ...record(note), content: '', layoutMetadata: readJson(storage, layoutKey(id)) } : undefined;
       },
-      getContent: async (id: string) => ((await byId(id)) ? { id, content: '', version: 1 } : undefined),
+      // The DocDO export (A§12) for moss's reads of other notes; undefined for a note the caller cannot read, and a
+      // failed read (a 5xx, the network) rejects, as moss's own read does. A bound pane never asks for it (the
+      // bound-pane seam), so it never repaints an editor.
+      getContent: (id: string) => limited(() => heldRequest(`/api/docs/${encodeURIComponent(id)}/content`, async (response) => {
+        if (response.ok) return { id, content: await response.text(), version: 1 };
+        if (response.status === 401 || response.status === 403 || response.status === 404) return undefined;
+        throw new Error(`GET /api/docs/:id/content: ${response.status}`);
+      }, { headers: { accept: 'text/markdown' } })),
+      // moss asks only after its own REST save, which a bound note never runs.
       getFrontmatterSuggestions: async () => ({}),
       getHeadings: async (id: string) => {
-        const response = await request(`/api/docs/${encodeURIComponent(id)}/headings`);
-        if (!response.ok) return [];
-        const { headings } = await response.json() as { headings?: { level: 1 | 2 | 3 | 4; text: string }[] };
-        return Array.isArray(headings) ? headings : [];
+        const answer = await heldRequest(`/api/docs/${encodeURIComponent(id)}/headings`, async (response) =>
+          (response.ok ? await response.json() as { headings?: { level: 1 | 2 | 3 | 4; text: string }[] } : null));
+        return Array.isArray(answer?.headings) ? answer.headings : [];
       },
       create: async (title: string, folderPath: string = ROOT_FOLDER) => {
         // moss creates in the active folder; before the first listing the server picks the caller's Home.
@@ -678,13 +760,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // "Untitled" is moss's placeholder name; the doc's title starts empty (A§5.1).
         const body = { ...(title.trim() && title.trim() !== UNTITLED ? { title: title.trim() } : {}),
           ...(target ? { folderId: target } : {}) };
-        const response = await request('/api/docs', {
+        const created = await sendOnce('/api/docs', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
+        }, async (response) => {
+          if (!response.ok) throw new Error(`POST /api/docs: ${response.status}`);
+          return (await response.json()) as { doc: ApiDoc; role?: string };
         });
-        if (!response.ok) throw new Error(`POST /api/docs: ${response.status}`);
-        const created = (await response.json()) as { doc: ApiDoc; role?: string };
         rememberRole(created.doc.id, created.role);
         const note = toNoteMetadata(created.doc);
         known.set(note.id, note);
@@ -699,13 +782,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (!note) return undefined;
         if (typeof input.title === 'string' && !writeLiveTitle(id, input.title)) {
           // A doc no pane of this tab binds: the DocDO writes the title into its Y.Text (A§5.1 renameTitle).
-          const response = await request(`/api/docs/${encodeURIComponent(id)}`, {
+          const answer = await sendOnce(`/api/docs/${encodeURIComponent(id)}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ title: input.title }),
+          }, async (response) => {
+            if (!response.ok) throw new Error(`PATCH /api/docs/${id}: ${response.status}`);
+            return (await response.json()) as { doc: ApiDoc };
           });
-          if (!response.ok) throw new Error(`PATCH /api/docs/${id}: ${response.status}`);
-          const answer = (await response.json()) as { doc: ApiDoc };
           note = toNoteMetadata(answer.doc);
           known.set(id, note);
           listing = null;
@@ -725,6 +809,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (!(await trashGuarded([id], `/api/docs/${encodeURIComponent(id)}`, NOTE_REFUSALS, NOTE_UNAVAILABLE))) return false;
         const note = known.get(id);
         if (note) known.set(id, { ...note, trashedAt: seconds(Date.now()) });
+        drop(id);
         await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
         return true;
       },
@@ -1015,32 +1100,6 @@ function windowBrowser(): BrowserHooks {
   };
 }
 
-/** A page still running this long after `beforeunload` stayed: its navigation was cancelled (a prompt, a download). */
-const STAYED_MS = 5_000;
-
-/** Aborts on `beforeunload`, before WebKit stops the page's loads for the navigation. The leave ends, releasing the
- * held reads, when the page is still here after STAYED_MS or comes back from the back-forward cache. */
-function leavingSignal(): () => Leave {
-  const arm = () => {
-    let end = () => undefined as void;
-    const stayed = new Promise<void>((resolve) => { end = resolve; });
-    return { controller: new AbortController(), stayed, end };
-  };
-  let current = arm();
-  const stay = () => {
-    if (!current.controller.signal.aborted) return;
-    const left = current;
-    current = arm();
-    left.end();
-  };
-  window.addEventListener('beforeunload', () => {
-    current.controller.abort();
-    setTimeout(stay, STAYED_MS);
-  });
-  window.addEventListener('pageshow', (event) => { if (event.persisted) stay(); });
-  return () => ({ signal: current.controller.signal, stayed: current.stayed });
-}
-
 /** Installs the bridge on `window` before App's module evaluates (A§4.3). */
 export function installBridge(
   authStore: import('../auth-state.ts').AuthStore,
@@ -1050,7 +1109,7 @@ export function installBridge(
 ): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard, reopenDocs,
     share: () => new URLSearchParams(window.location.search).get('share'),
-    leaving: leavingSignal(),
+    leaving: installLeaving(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({
       onPause: pause,
       auth: authStore,

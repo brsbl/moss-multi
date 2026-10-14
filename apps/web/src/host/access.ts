@@ -3,6 +3,7 @@
 import { isRole, type Role } from '@moss-multi/protocol/roles';
 import { useEffect, useSyncExternalStore } from 'react';
 import { refusedAsOutdated, reportOutdated } from './client-protocol.ts';
+import { heldRead } from './leave.ts';
 
 /** A doc's listing fields as `GET /api/docs/:id` returns them (epoch ms). */
 export interface AccessibleDoc {
@@ -56,30 +57,29 @@ export function askDocAccess(docId: string, fetcher: typeof fetch = (input, init
   return pending;
 }
 
+const ACCESS_TIMEOUT_MS = 10_000;
+
+/** Held while the page leaves and asked again if it stays, so a reload never cuts it off (leave.ts). */
 async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocAnswer> {
   const share = shareParam();
-  let response: Response;
   try {
-    response = await fetcher(`/api/docs/${encodeURIComponent(docId)}`, {
+    return await heldRead((signal) => fetcher(`/api/docs/${encodeURIComponent(docId)}`, {
       credentials: 'same-origin',
       headers: { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch {
-    return { kind: 'unavailable' };
-  }
-  if (response.status === 404) return { kind: 'denied' };
-  if (response.status === 401) return { kind: 'signed-out' };
-  if (await refusedAsOutdated(response)) {
-    reportOutdated();
-    return { kind: 'outdated' };
-  }
-  if (!response.ok) return { kind: 'unavailable' };
-  try {
-    const body = (await response.json()) as { role?: unknown; doc?: AccessibleDoc };
-    if (!isRole(body.role) || !body.doc) return { kind: 'unavailable' };
-    rememberRole(docId, body.role);
-    return { kind: 'open', role: body.role, doc: body.doc };
+      signal,
+    }), async (response): Promise<DocAnswer> => {
+      if (response.status === 404) return { kind: 'denied' };
+      if (response.status === 401) return { kind: 'signed-out' };
+      if (await refusedAsOutdated(response)) {
+        reportOutdated();
+        return { kind: 'outdated' };
+      }
+      if (!response.ok) return { kind: 'unavailable' };
+      const body = (await response.json()) as { role?: unknown; doc?: AccessibleDoc };
+      if (!isRole(body.role) || !body.doc) return { kind: 'unavailable' };
+      rememberRole(docId, body.role);
+      return { kind: 'open', role: body.role, doc: body.doc };
+    }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
     return { kind: 'unavailable' };
   }
@@ -89,18 +89,19 @@ async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocA
 export async function askFolderAccess(folderId: string, fetcher: typeof fetch = (input, init) => fetch(input, init)): Promise<{ kind: 'open' | 'denied' | 'signed-out' | 'outdated' | 'unavailable' }> {
   const share = shareParam();
   try {
-    const response = await fetcher(`/api/folders/${encodeURIComponent(folderId)}`, {
+    return await heldRead((signal) => fetcher(`/api/folders/${encodeURIComponent(folderId)}`, {
       credentials: 'same-origin',
       headers: { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (response.status === 404) return { kind: 'denied' };
-    if (response.status === 401) return { kind: 'signed-out' };
-    if (await refusedAsOutdated(response)) {
-      reportOutdated();
-      return { kind: 'outdated' };
-    }
-    return { kind: response.ok ? 'open' : 'unavailable' };
+      signal,
+    }), async (response) => {
+      if (response.status === 404) return { kind: 'denied' as const };
+      if (response.status === 401) return { kind: 'signed-out' as const };
+      if (await refusedAsOutdated(response)) {
+        reportOutdated();
+        return { kind: 'outdated' as const };
+      }
+      return { kind: response.ok ? 'open' as const : 'unavailable' as const };
+    }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
     return { kind: 'unavailable' };
   }

@@ -9,6 +9,7 @@ import { useSyncExternalStore } from 'react';
 const chosen = new Map<string, EditMode>();
 const shown = new Map<string, EditMode>();
 const unsaved = new Map<string, string[]>();
+const noRoom = new Set<string>();
 const listeners = new Set<() => void>();
 
 const notify = () => {
@@ -54,15 +55,26 @@ export function useShownMode(docId: string | null): EditMode | null {
   return useSyncExternalStore(subscribeModes, () => (docId ? (shown.get(docId) ?? null) : null), () => null);
 }
 
-/** Text a closed suggestion could not keep, offered back until dismissed (§5 refusal path). */
-export function offerUnsaved(docId: string, blocks: string[]): void {
-  unsaved.set(docId, [...(unsaved.get(docId) ?? []), ...blocks]);
+/**
+ * Text a closed suggestion could not keep, offered back until dismissed (§5 refusal path). `full`: the DocDO refused
+ * because the note has no room for more suggestions, which the band says even when nothing was unsaved.
+ */
+export function offerUnsaved(docId: string, blocks: string[], full = false): void {
+  if (!blocks.length && !full) return;
+  if (blocks.length) unsaved.set(docId, [...(unsaved.get(docId) ?? []), ...blocks]);
+  if (full) noRoom.add(docId);
   notify();
 }
 
 export function dismissUnsaved(docId: string): void {
-  if (!unsaved.delete(docId)) return;
+  const had = noRoom.delete(docId);
+  if (!unsaved.delete(docId) && !had) return;
   notify();
+}
+
+/** The note has no room for more suggestions (the DocDO refused `doc-cap` or `ops-cap`), until dismissed. */
+export function useNoSuggestionRoom(docId: string | null): boolean {
+  return useSyncExternalStore(subscribeModes, () => (docId ? noRoom.has(docId) : false), () => false);
 }
 
 const NONE: string[] = [];

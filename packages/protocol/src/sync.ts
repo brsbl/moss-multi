@@ -63,6 +63,21 @@ export const CUSTOM_PREFIX = '__YPS:';
 /** `protected-type`: the frame writes `comments`, `suggestions` or a leased suggestion client id (A§5.1 steps 2b and 4). */
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved' | 'protected-type';
 
+/** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
+export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);
+
+/**
+ * Why the DocDO refused a REST rename in its own serialized turn: the doc is in Trash or held closed (`deleted`), or the
+ * caller can no longer edit it (`revoked`).
+ */
+export type RenameRefusal = 'deleted' | 'revoked';
+
+/** The DocDO's RenameRefusedError's reason, also as DO RPC delivers it; null for any other error. */
+export const renameRefusalOf = (error: unknown): RenameRefusal | null => {
+  const match = error instanceof Error ? /^(?:RenameRefusedError: )?rename-(deleted|revoked)$/.exec(error.message) : null;
+  return match ? (match[1] as RenameRefusal) : null;
+};
+
 export type ServerEvent =
   /** A write that did not land; the close follows. */
   | { t: 'write-refused'; reason: WriteRefusalReason }
@@ -71,7 +86,14 @@ export type ServerEvent =
    * carried (base64 `Y.encodeSnapshot` of a snapshot with an empty state vector): a delete never moves a state
    * vector, so `sv` alone cannot say a delete has landed.
    */
-  | { t: 'ack'; sv: string; ds?: string; p?: Record<string, PayloadAck> }
+  | { t: 'ack'; sv: string; ds?: string; p?: Record<string, PayloadAck>; pb?: number }
+  /**
+   * After the sync step 1 on connect: `pb` is the bytes of every payload doc the DocDO stores for the note, withheld
+   * ones too, as it counts them against the state cap (A§5.1). Acks carry it as well. A client holds only the payloads
+   * its tree names, so it adds this, not its own, to its cap estimate (T3.S6). Sent only when there are any; an ack
+   * without `pb` means none.
+   */
+  | { t: 'usage'; pb: number }
   | { t: 'doc-deleted' }
   | SuggestReply;
 
@@ -176,6 +198,8 @@ export const TRUSTED = {
   resolvedAt: 'x-moss-resolved-at',
   /** The doc's access epoch, read before the role was resolved: a DocDO re-resolves a socket admitted under an older one. */
   epoch: 'x-moss-epoch',
+  /** An anonymous socket's client address bucket at upgrade (A§7): its answer budget and socket cap are per link and address. */
+  address: 'x-moss-address',
 } as const;
 
 export const PRINCIPAL_KINDS = ['user', 'agent', 'anonymous'] as const;
@@ -213,4 +237,25 @@ export function base64ToBytes(base64: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+const POSITION_KEYS = new Set(['type', 'tname', 'item', 'assoc']);
+const isPositionId = (value: unknown): boolean => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const { client, clock, ...rest } = value as Record<string, unknown>;
+  return Object.keys(rest).length === 0 && Number.isSafeInteger(client) && (client as number) >= 0 && Number.isSafeInteger(clock) && (clock as number) >= 0;
+};
+/**
+ * A presence `anchorPos`/`focusPos`: absent, null, or a Yjs relative position as JSON, nulls kept (Lexical's
+ * RelativePosition through JSON.stringify) or omitted (Y.relativePositionToJSON). Anything else makes Yjs throw.
+ */
+export function isRelativePositionJSON(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  const position = value as Record<string, unknown>;
+  if (Object.keys(position).some(key => !POSITION_KEYS.has(key))) return false;
+  const { type = null, tname = null, item = null, assoc = 0 } = position;
+  if ((type !== null && !isPositionId(type)) || (item !== null && !isPositionId(item))) return false;
+  if ((tname !== null && typeof tname !== 'string') || !Number.isSafeInteger(assoc)) return false;
+  return type !== null || tname !== null || item !== null;
 }

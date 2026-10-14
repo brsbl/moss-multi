@@ -32,11 +32,13 @@ export interface IframeFrameProps {
   height?: number | string;
   scrolling?: 'yes' | 'no' | 'auto';
   onLoad?: () => void;
+  /** moss-multi seam: html-frame (ruling 21): the block this frame previews, which a portalled frame cannot find in the DOM. */
+  blockKey?: string;
 }
 
 export const IframeFrame = forwardRef<HTMLIFrameElement, IframeFrameProps>(
   function IframeFrame(
-    { model, className, style, width, height, scrolling, onLoad },
+    { model, className, style, width, height, scrolling, onLoad, blockKey },
     ref
   ): JSX.Element {
     const sourceValue =
@@ -55,8 +57,8 @@ export const IframeFrame = forwardRef<HTMLIFrameElement, IframeFrameProps>(
     }, [ref]);
     useLayoutEffect(() => {
       const iframe = frameRef.current;
-      return frameSrc && iframe ? feedHtmlFrame(iframe, sourceValue) : undefined;
-    }, [frameSrc, sourceValue]);
+      return frameSrc && iframe ? feedHtmlFrame(iframe, sourceValue, { noteId, block: blockKey }) : undefined;
+    }, [blockKey, frameSrc, noteId, sourceValue]);
 
     return (
       <iframe

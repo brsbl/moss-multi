@@ -1,8 +1,9 @@
 // The suggestion review REST API (docs/design/suggestions.md §4, §8): GET .../suggestions/:sid/preview for any reader,
 // POST .../accept {previewHash, digest} and .../reject for an editor or above, POST .../withdraw for a suggester or
-// above (the DocDO checks that the caller is the author). Each is counted per principal by its PrincipalDO, and the
-// DocDO re-authorizes the actor in the same serialized turn as the action (A§8), so the Worker's role is never the
-// last word. A new live suggestion writes the bell's rows for the people who can review it.
+// above (the DocDO checks that the caller is the author). Each is counted per acting person (an agent by its owner, a
+// share link for an anonymous reader, who may only preview) by a PrincipalDO, and the DocDO re-authorizes the actor in
+// the same serialized turn as the action (A§8), so the Worker's role is never the last word. A new live suggestion
+// writes the bell's rows for the people who can review it.
 import { getServerByName } from 'partyserver';
 import type { SuggestionListing } from '@moss-multi/sync';
 import { SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE } from '@moss-multi/protocol/limits';
@@ -10,7 +11,7 @@ import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, sha256Hex, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
-import { MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
+import { actingUserId, MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { notify, type InvitesEnv } from './invites.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
@@ -49,7 +50,10 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   const method = action === 'preview' ? 'GET' : 'POST';
   if (request.method !== method) return json({ error: 'method-not-allowed' }, 405, { allow: method });
   const principal = await resolvePrincipal(request, env);
-  if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to review suggestions' }, 401, NO_STORE);
+  // A share-link holder with no session may preview (a viewer's Review mode), and do nothing else.
+  if (!principal || (principal.type === 'anonymous' && action !== 'preview')) {
+    return json({ error: 'unauthenticated', message: 'Sign in to review suggestions' }, 401, NO_STORE);
+  }
   // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
   const body = method === 'POST' ? ((await readJsonObject(request)) ?? {}) : {};
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
@@ -60,7 +64,10 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   if (action === 'accept' && (typeof previewHash !== 'string' || !HASH.test(previewHash) || typeof digest !== 'string' || !HASH.test(digest))) {
     return json({ error: 'bad-request' }, 400, NO_STORE);
   }
-  const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+  // Charged to the acting person (an agent spends its owner's; the agent stays the reviewer and actor). Every anonymous
+  // principal shares one id, so a link holder's budget is its link's, never one global bucket.
+  const budget = principal.type === 'anonymous' ? `anon:${await sha256Hex(principal.shareToken)}` : actingUserId(principal) ?? principal.id;
+  const principalDO = await getServerByName(env.PrincipalDO, budget);
   const allowed = action === 'preview' ? await principalDO.takePreviewToken() : await principalDO.takeReviewToken();
   if (!allowed) {
     const window = action === 'preview' ? SUGGEST_PREVIEW_RATE.windowMs : SUGGEST_REVIEW_RATE.windowMs;
@@ -118,12 +125,14 @@ export async function listSuggestions(request: Request, env: DocsEnv, docId: str
 
 /**
  * The working export's admission (docs/design/suggestions.md I5): computing it runs the accept gates per open record,
- * so it spends the preview budget before the DocDO is reached. A signed-in user or an agent is charged as itself; an
- * anonymous share-link reader per link and client address (an IPv6 /64), so a reader past the budget blocks no account
- * and no other address. The DocDO bounds what one doc computes, and serves repeats from its cache.
+ * so it spends the preview budget before the DocDO is reached. A signed-in user is charged as themself and an agent as
+ * its owner, so keys add no rate; an anonymous share-link reader per link and client address (an IPv6 /64), so a
+ * reader past the budget blocks no account and no other address. The DocDO bounds what one doc computes, and serves repeats from its cache.
  */
 export async function admitWorkingExport(request: Request, env: DocsEnv, principal: Principal): Promise<Response | null> {
-  const name = principal.type === 'anonymous' ? `link:${await sha256Hex(principal.shareToken)}:${clientAddress(request)}` : principal.id;
+  const name = principal.type === 'anonymous'
+    ? `link:${await sha256Hex(principal.shareToken)}:${clientAddress(request)}`
+    : actingUserId(principal) ?? principal.id;
   return (await (await getServerByName(env.PrincipalDO, name)).takePreviewToken()) ? null : workingRateLimited();
 }
 
@@ -148,7 +157,8 @@ export function clientAddress(request: Request): string {
 /**
  * The bell's rows for a new live suggestion (PRODUCT: the inbox notifies on suggestion): one `suggestion` row for the
  * doc's owner and each person granted editor or owner on it, a folder above it or its vault, each re-checked against
- * their live access, never the author and never an agent. A failure here loses only the notices, never the suggestion.
+ * their live access, never the author and never an agent, coalesced per author and note while unread. A failure here
+ * loses only the notices, never the suggestion.
  */
 export async function notifySuggestion(env: Pick<InvitesEnv, 'DB' | 'PrincipalDO'>, notice: { docId: string; author: string; record: string }): Promise<void> {
   try {
@@ -174,8 +184,15 @@ export async function notifySuggestion(env: Pick<InvitesEnv, 'DB' | 'PrincipalDO
     if (!recipients.length) return;
     const payload = JSON.stringify({ targetType: 'doc', targetId: notice.docId, by: notice.author, suggestionId: notice.record });
     const now = Date.now();
-    await env.DB.batch(recipients.map((id) => env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
-      VALUES (?1, ?2, 'suggestion', ?3, ?4)`).bind(crypto.randomUUID(), id, payload, now)));
+    // One unread row per reader, note and author: a later record of the author's refreshes it rather than adding one.
+    const same = `user_id = ?1 AND type = 'suggestion' AND read_at IS NULL
+      AND json_extract(payload_json, '$.targetId') = ?2 AND json_extract(payload_json, '$.by') = ?3`;
+    await env.DB.batch(recipients.flatMap((id) => [
+      env.DB.prepare(`UPDATE notifications SET payload_json = ?4, created_at = ?5 WHERE ${same}`).bind(id, notice.docId, notice.author, payload, now),
+      env.DB.prepare(`INSERT INTO notifications (id, user_id, type, payload_json, created_at)
+        SELECT ?6, ?1, 'suggestion', ?4, ?5 WHERE NOT EXISTS (SELECT 1 FROM notifications WHERE ${same})`)
+        .bind(id, notice.docId, notice.author, payload, now, crypto.randomUUID()),
+    ]));
     for (const id of recipients) notify(env as InvitesEnv, id, 'notifications');
   } catch (error) {
     console.error('suggestion notifications failed', error);

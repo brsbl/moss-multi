@@ -111,6 +111,53 @@ test('j18-agents push while typing: a CLI push into the paragraph Ada is typing 
   }
 });
 
+for (const exchange of ['held', 'reconnect'] as const) {
+  test(`j18-agents fresh note: a push lands while Ada types in the note's empty paragraph, and her typing stays in its own paragraph (${exchange}) @p:agt-1 @p:tech-5`, async ({ actors, stack }) => {
+    actors.solo(SOLO);
+    const principal = await actors.principal('ada');
+    const setup = await actors.session(principal, { label: 'setup' });
+    const docId = await importNote(setup, stack, 'Fresh page', '');
+    const key = await agentKey(setup, stack);
+    const cli = workspace(stack, key);
+    try {
+      const pulled = await cli.run('pull', docId, 'fresh.md');
+      expect(pulled.code, pulled.stderr).toBe(0);
+      const ada = await actors.open(principal, { path: `/d/${docId}`, severable: true });
+      await ui.waitLive(ada, docId);
+      await ada.observeEditor(docId);
+      if (!ada.sever) throw new Error('Ada must be severable');
+      await ui.body(ada, docId).click();
+      // Ada's typing is still in flight when the agent's paragraph lands: `held` delivers it after the push reaches
+      // her; `reconnect` drops it and both sides exchange their state on a fresh socket.
+      if (exchange === 'held') ada.sever.hold(docId);
+      else ada.sever.blackhole();
+      const typed = 'Ada writes her own line';
+      await ada.page.keyboard.type(typed, { delay: 40 });
+      ada.typed({ docId, field: 'body', text: typed, ordered: true });
+      cli.write('fresh.md', 'Agent paragraph.');
+      const pushed = await cli.run('push', 'fresh.md');
+      expect(pushed.code, pushed.stderr).toBe(0);
+      if (exchange === 'held') {
+        await expect(ui.body(ada, docId), 'the push reaches Ada while her typing is held').toContainText('Agent paragraph.', { timeout: BIND_TIMEOUT });
+        ada.sever.deliverHeld();
+      } else {
+        ada.expectReconnects(1, docId);
+        ada.sever.reset();
+        ada.sever.restore();
+      }
+      await ui.waitAcked(ada, docId, BIND_TIMEOUT);
+      const paragraphs = ui.body(ada, docId).locator('p');
+      await expect(paragraphs.filter({ hasText: 'Agent paragraph.' }), 'the agent\'s paragraph is its own').toHaveText(['Agent paragraph.'], { timeout: BIND_TIMEOUT });
+      await expect(paragraphs.filter({ hasText: 'Ada writes' }), 'Ada\'s typing stays in her paragraph').toHaveText([typed]);
+      await expect.poll(async () => (await served(stack, docId, key)).split('\n\n').map((block) => block.trim()), { message: 'the server holds both, apart', timeout: BIND_TIMEOUT })
+        .toEqual(expect.arrayContaining(['Agent paragraph.', typed]));
+      await actors.checkpoint(`fresh-note-${exchange}`);
+    } finally {
+      cli.dispose();
+    }
+  });
+}
+
 test('j18-agents rate: the 61st push in a minute gets 429 with retry-after @p:agt-1 @p:tech-8', async ({ actors, stack }) => {
   actors.solo(SOLO);
   const ada = await actors.session(await actors.principal('ada'));

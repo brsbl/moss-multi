@@ -15,6 +15,8 @@ import { canaryState } from './canary-state.mjs';
 import { growthProblems, GROWTH_CAP, PER_FULL_RUN, readGrowth } from './growth.mjs';
 import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
+import { prunePlan, pruneSql, PRUNE_CAP } from './prune.mjs';
+import { gateRetry, recordVerdict, retryClass } from './retry-gate.mjs';
 import { gateProblems, runProblems } from './run-gate.mjs';
 import { forbiddenFiles, migrationProblems, parseJsonc, readStagingEnv, stagingConfig } from './staging-config.mjs';
 
@@ -403,7 +405,7 @@ describe('the staging suite @p:R15', () => {
         expect(project.grepInvert.test('j03 a leg @local-only @p:col-6')).toBe(true);
         expect(project.grepInvert.test('j04-hibernation: proven through the owner-only route @staging')).toBe(false);
         expect({ ...config.use, ...project.use }).toMatchObject({ browserName: engine, trace: 'off', screenshot: 'off', video: 'off' });
-        expect(project.retries, 'a staging leg runs once more after a failure, and fails the run if that fails too').toBe(1);
+        expect(project.retries, 'a staging leg may run once more, only after an infrastructure failure (retry-gate.mjs)').toBe(1);
       }
       expect(config.retries, 'nowhere else').toBe(0);
       expect(config.projects.filter((p) => p.retries !== undefined).map((p) => p.name)).toEqual(['staging-chromium', 'staging-webkit']);
@@ -548,13 +550,17 @@ describe('canary recording', () => {
         'invariants: 3 finding(s)',
         `  invariant 1 [ada] console error: Failed to load resource: the server responded with a status of 404 () (${URL_STAGING}/api/docs/x/backlinks)`,
         `  invariant 1 [ben] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/parties/doc-d-o/x?token=SECRET' failed`,
-        '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; lived 12 ms (1006), open)',
+        '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; #1 closed after 12 ms: 1013 unvalidated SECRET, then 1006; #2 closed after 40 ms: asked 1000; #3 open)',
+        '  invariant 3 [ben] 9f8e7d6c: a socket dropped (1006) and no later socket of its document reached sync',
+        '  invariant 3 [cy] 9f8e7d6c: 1 try-again closes (1013), 0 declared',
       ].join('\n'), stack: '' };
       const facts = failureTrace({ errors: [kinds] });
       expect(facts).toEqual([
         'invariant 1 [ada] console error (load 404)',
         'invariant 1 [ben] console error (websocket)',
-        'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; lived 12 ms (1006), open)',
+        'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; 12 ms (1013 then 1006), 40 ms (asked 1000), open)',
+        'invariant 3 [ben] a 1006 drop never recovered to sync',
+        'invariant 3 [cy] 1 try-again closes (1013), 0 declared',
       ]);
       expect(facts.join('\n')).not.toMatch(/SECRET|workers\.dev|backlinks/);
     });
@@ -639,7 +645,7 @@ describe('canary recording', () => {
 
   it('names a leg that passed only on its retry flaky', () => {
     const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [{ status: 'failed', duration: 5 }, { status: 'passed', duration: 7 }] }] }] }] };
-    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7 }] });
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7, retry: 'not infrastructure' }] });
   });
 });
 
@@ -777,5 +783,117 @@ describe('staging growth (A§21) @p:R15', () => {
     // The count reads docs and user, which a first deploy's fresh D1 has only once the migrations ran.
     expect(check, 'after the D1 migrations').toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
     expect(steps[check].run).toMatch(/d1 execute moss-multi-staging --remote --json/);
+  });
+});
+
+describe('the staging retry gate (T8.2)', () => {
+  const failed = (message) => [{ message, stack: '' }];
+
+  it('names only an explicitly matched infrastructure failure, on its first line', () => {
+    expect(retryClass(failed('InfraBlocked: sign-in: a Cloudflare error page'))).toBe('infra-blocked');
+    expect(retryClass(failed(`page.goto: net::ERR_CONNECTION_RESET at ${URL_STAGING}/d/x`))).toBe('connection reset');
+    expect(retryClass(failed('apiRequestContext.post: socket hang up'))).toBe('connection reset');
+    expect(retryClass(failed('page.reload: net::ERR_NETWORK_CHANGED'))).toBe('network changed');
+    // Product assertions, invariants and timeouts are never infrastructure, whatever their call log mentions.
+    expect(retryClass(failed('Error: expect(locator).toHaveCount(expected) failed\n\nExpected: 0\nReceived: 1'))).toBeNull();
+    expect(retryClass(failed('invariants: 1 finding(s)\n  invariant 3 [ben] d: 3 socket opens in one document, 2 allowed'))).toBeNull();
+    expect(retryClass(failed('Test timeout of 240000ms exceeded.'))).toBeNull();
+    expect(retryClass(failed('Error: expect(received).toBe(expected)\nCall log:\n  - socket hang up net::ERR_CONNECTION_RESET'))).toBeNull();
+    expect(retryClass([])).toBeNull();
+    expect(retryClass(undefined)).toBeNull();
+  });
+
+  it('lets a retry run only after its failed attempt was recorded as infrastructure', async () => {
+    const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
+    try {
+      const info = (testId, retry) => ({ testId, retry, project: { outputDir } });
+      expect(await gateRetry(info('first', 0), 50)).toBeNull();
+      expect(recordVerdict(outputDir, 'product', 0, failed('Error: expect(locator).toHaveCount(expected) failed'))).toBeNull();
+      await expect(gateRetry(info('product', 1), 50)).rejects.toThrow(/retry refused.*product/);
+      expect(recordVerdict(outputDir, 'net', 0, failed('page.goto: net::ERR_CONNECTION_CLOSED'))).toBe('connection reset');
+      expect(await gateRetry(info('net', 1), 50)).toBe('connection reset');
+      await expect(gateRetry(info('unrecorded', 1), 50)).rejects.toThrow(/retry refused/);
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints every retry and why, and that a product failure is not retried', async () => {
+    const { default: CanaryReporter } = await import('./canary-reporter.mjs');
+    const lines = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    try {
+      const reporter = new CanaryReporter();
+      const test = (title) => ({ retries: 1, titlePath: () => ['', 'staging-webkit', 'j01.spec.ts', title] });
+      reporter.onTestEnd(test('product'), { status: 'failed', duration: 5, retry: 0, errors: failed('Error: expect(locator).toHaveCount(expected) failed') });
+      reporter.onTestEnd(test('network'), { status: 'failed', duration: 5, retry: 0, errors: failed('page.goto: net::ERR_CONNECTION_RESET') });
+      reporter.onTestEnd(test('network'), { status: 'passed', duration: 6, retry: 1, errors: [] });
+      reporter.onEnd({ status: 'failed', duration: 20 });
+    } finally {
+      log.mockRestore();
+    }
+    const text = lines.join('\n');
+    expect(text).toMatch(/no retry: not infrastructure/);
+    expect(text).toMatch(/retry: attempt 1 failed on infrastructure \(connection reset\)/);
+    expect(text).toMatch(/1 retry on infrastructure\n {2}staging-webkit › j01\.spec\.ts › network: connection reset/);
+  });
+
+  it("names a flaky leg's infrastructure class in the summary", () => {
+    const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [
+      { status: 'failed', duration: 5, errors: failed('page.goto: net::ERR_CONNECTION_RESET') }, { status: 'passed', duration: 7 },
+    ] }] }] }] };
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7, retry: 'connection reset' }] });
+  });
+});
+
+describe('the staging prune (A§21, T8.2) @p:R15', () => {
+  const NOW = Date.UTC(2026, 9, 14, 12);
+  const selected = (rows) => JSON.stringify([{ results: rows, success: true, meta: {} }]);
+  const counted = (users, docs) => JSON.stringify([{ results: [{ users, docs }], success: true, meta: {} }]);
+  const row = (n, email = `mm-staging-1-1-chromium-3-w0-ada-${n}@example.invalid`) => ({ id: `u${n}`, email });
+
+  it('selects only per-run principals older than the cutoff, never the canary pool or the demo accounts', () => {
+    const { count, select } = pruneSql(NOW);
+    for (const sql of [count, select]) {
+      expect(sql).toMatch(/email LIKE 'mm-%@example\.invalid'/);
+      expect(sql).toMatch(/email NOT LIKE 'canary-%'/);
+      expect(sql).toMatch(/email NOT LIKE 'demo-%'/);
+      expect(sql).toContain(`created_at < ${NOW - 2 * 60 * 60 * 1000}`);
+    }
+    expect(select).toMatch(new RegExp(`ORDER BY created_at LIMIT ${PRUNE_CAP + 1}$`));
+  });
+
+  it("counts first, deletes at most the cap, and deletes each principal's grants, links, invites and user row (its docs cascade)", () => {
+    const many = Array.from({ length: PRUNE_CAP + 1 }, (_, n) => row(n));
+    const plan = prunePlan(counted(PRUNE_CAP + 500, 900), selected(many));
+    expect(plan.summary).toMatch(new RegExp(`${PRUNE_CAP + 500} per-run principals.*900 docs.*deletes ${PRUNE_CAP}`));
+    expect(plan.ids).toHaveLength(PRUNE_CAP);
+    const sql = plan.sql;
+    expect(sql).toMatch(/DELETE FROM doc_members WHERE principal_id IN/);
+    expect(sql).toMatch(/DELETE FROM folder_members WHERE principal_id IN/);
+    expect(sql).toMatch(/DELETE FROM share_links WHERE created_by IN/);
+    expect(sql).toMatch(/DELETE FROM invites WHERE invited_by IN/);
+    expect(sql).toMatch(/DELETE FROM user WHERE id IN/);
+    expect(sql).toMatch(/DELETE FROM access_epochs WHERE owner_user_id IN/);
+    expect(sql.match(/DELETE FROM user WHERE/g)).toHaveLength(Math.ceil(PRUNE_CAP / 100));
+    expect(prunePlan(counted(0, 0), selected([]))).toMatchObject({ ids: [], sql: '' });
+  });
+
+  it('refuses any row that is not a per-run principal, and an id that is not a plain id', () => {
+    for (const email of ['canary-ada@example.invalid', 'demo-ada@example.invalid', 'mm-x-ada-1@example.com', 'owner@gmail.com']) {
+      expect(() => prunePlan(counted(1, 0), selected([row(1, email)])), email).toThrow(/refusing/);
+    }
+    expect(() => prunePlan(counted(1, 0), selected([{ id: "u1') OR 1=1 --", email: 'mm-x-ada-1@example.invalid' }]))).toThrow(/refusing/);
+  });
+
+  it('prunes after the migrations and before the growth check of a full-suite deploy, its plan before any delete', () => {
+    const steps = WORKFLOW.jobs.deploy.steps;
+    const prune = steps.findIndex((step) => /prune\.mjs plan/.test(step.run ?? ''));
+    expect(prune, 'a prune step').toBeGreaterThan(-1);
+    expect(steps[prune].if).toMatch(/inputs\.suite == 'full'/);
+    expect(prune).toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
+    expect(prune).toBeLessThan(steps.findIndex((step) => /growth\.mjs/.test(step.run ?? '')));
+    const run = steps[prune].run;
+    expect(run.indexOf('prune.mjs plan')).toBeLessThan(run.indexOf('--file'));
   });
 });

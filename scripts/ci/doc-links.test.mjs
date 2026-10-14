@@ -124,13 +124,13 @@ describe('MIGRATION.md', () => {
     for (const label of LABELS) expect(body.includes(label), `${name}: ${label}`).toBe(true);
   });
 
-  // B380: the bridge's getContent answers an empty body; the export is REST's.
+  // B380: MIGRATION.md states notes.getContent as the bridge implements it: the server's export over REST.
   it('describes notes.getContent as the bridge implements it', () => {
     const bridge = readFileSync(join(REPO, 'apps/web/src/host/bridge/index.ts'), 'utf8');
-    expect(/getContent: async \(id: string\) => \(\(await byId\(id\)\) \? \{ id, content: '', version: 1 \}/.test(bridge), 'getContent is an empty-content stub').toBe(true);
+    expect(/getContent: \(id: string\) => limited\(\(\) => heldRequest\(`\/api\/docs\/\$\{encodeURIComponent\(id\)\}\/content`/.test(bridge), 'getContent reads the export').toBe(true);
     const claim = text.split('\n').find((line) => line.includes('`notes.getContent`')) ?? '';
-    expect(claim).not.toMatch(/is the server export/);
-    expect(claim).toMatch(/stub/);
+    expect(claim).toMatch(/is the server's export/);
+    expect(claim).not.toMatch(/stub/);
     expect(claim).toContain('GET /api/docs/:id/content');
     expect(claim).toContain('apps/web/src/api/docs.ts#readContent');
     expect(claim).toMatch(/binding/);

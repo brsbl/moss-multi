@@ -1,7 +1,8 @@
 // The CLI against a fake server (T7.1): raw `cat`, doc references, `url`, `rm` copy and JSON, exit codes, key and
 // device sign-in, pull and push state, and the comments and suggestions read commands (T7.3). @p:agt-1
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
@@ -37,6 +38,10 @@ function fakeServer() {
     deviceAnswers: [] as { status: number; body: unknown }[],
     /** Runs while a /content request is in flight, before it answers. */
     onContent: null as null | (() => void),
+    /** Holds every /content answer this long (or until its request is aborted). */
+    holdContentMs: 0,
+    /** Runs once a push has landed, before the response reaches the CLI. */
+    onPush: null as null | (() => void),
     /** Replaces the device grant's fields. */
     grant: {} as Record<string, unknown>,
     /** Answers this path with a 302 to `to`; a fetch that follows it sends the request there. */
@@ -56,6 +61,9 @@ function fakeServer() {
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    // As fetch does: an aborted signal rejects the request.
+    const aborted = () => new DOMException('This operation was aborted', 'AbortError');
+    if (init.signal?.aborted) throw aborted();
     let url = new URL(String(input));
     const method = init.method ?? 'GET';
     const auth = new Headers(init.headers).get('authorization');
@@ -112,6 +120,15 @@ function fakeServer() {
     const [, id, sub] = match;
     if (sub === 'content') {
       state.onContent?.();
+      if (state.holdContentMs > 0) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, state.holdContentMs);
+          init.signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(aborted());
+          }, { once: true });
+        });
+      }
       return reply(200, content.get(id)!, { 'content-type': 'text/markdown; charset=utf-8' });
     }
     if (!sub && method === 'DELETE') return reply(200, { doc: { id, trashedAt: 1 }, action: 'trashed', restorable: true, retentionDays: 30 });
@@ -130,6 +147,7 @@ function fakeServer() {
       // A failed hunk leaves the doc as it was; the fake applies nothing then, nor for a suggestion.
       const answer = next.body as { ok?: boolean; mode?: string; failedHunks?: string[] };
       if (next.status === 200 && answer.ok && answer.mode === 'edit' && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
+      state.onPush?.();
       return reply(next.status, next.body, next.headers);
     }
     if (sub === 'comments' && method === 'GET') return reply(200, { comments: state.comments });
@@ -1087,5 +1105,120 @@ describe('sync: moss notes, the H1 and doc identity (T7.4 checker)', () => {
     expect(readFileSync(join(dir, 'watering.md'), 'utf8')).toContain('Water daily.');
     expect(existsSync(join(dir, 'plan.md')), 'the blocked rename happens once the name is free').toBe(false);
     expect(readFileSync(join(dir, 'vegetable-plan.md'), 'utf8')).toContain('Beans, then peas');
+  });
+});
+
+describe('one sync at a time per workspace (T7.S7)', () => {
+  const FIRST = '77777777-7777-4777-8777-777777777777';
+  const SECOND = '88888888-8888-4888-8888-888888888888';
+  const creates = () => server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs');
+  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.'));
+  const untrackedNote = () => {
+    mkdirSync(join(dir, 'Pea trellis'));
+    writeFileSync(join(dir, 'Pea trellis', 'Pea trellis.md'), '# Pea trellis\n\nTwine, not wire.\n');
+    server.state.createNew = { id: FIRST, filename: 'pea-trellis.md' };
+    // Every create makes a new doc, as the server does.
+    server.state.onCreate = () => { server.state.createNew = { id: SECOND, filename: 'pea-trellis.md' }; };
+  };
+
+  it('two overlapping passes adopt a new file into exactly one doc and one record', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    untrackedNote();
+    const [one, two] = await Promise.all([cli(['sync', '--json']), cli(['sync', '--json'])]);
+    expect(one.code, one.err).toBe(0);
+    expect(two.code, two.err).toBe(0);
+    expect(creates(), 'one doc').toHaveLength(1);
+    expect(records(), 'one record').toEqual([FIRST]);
+    expect(existsSync(join(dir, '.moss-multi', '.lock')), 'the lock is let go').toBe(false);
+  });
+
+  it('a lock left by a process that is gone is taken over', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    untrackedNote();
+    const gone = spawnSync(process.execPath, ['-e', '']).pid;
+    writeFileSync(join(dir, '.moss-multi', '.lock'), JSON.stringify({ pid: gone, host: hostname(), nonce: 'old', at: 0 }));
+    const result = await cli(['sync', '--json']);
+    expect(result.code, result.err).toBe(0);
+    expect(creates()).toHaveLength(1);
+    expect(records()).toEqual([FIRST]);
+    expect(existsSync(join(dir, '.moss-multi', '.lock'))).toBe(false);
+  });
+});
+
+describe('stopping watch stops the pass (T7.S8)', () => {
+  const creates = () => server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs');
+  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.'));
+  const meta = (id: string) => JSON.parse(readFileSync(join(dir, '.moss-multi', id, 'meta.json'), 'utf8')) as { file: string; baseHash: string };
+  /** Resolves with the run and how long after `stop` it took, or with null past `limitMs`. */
+  const stoppedWithin = async (running: Promise<Awaited<ReturnType<typeof cli>>>, stop: number, limitMs: number) => {
+    const result = await Promise.race([running, new Promise<null>((r) => setTimeout(() => r(null), limitMs))]);
+    return { result, ms: Date.now() - stop };
+  };
+
+  it('SIGINT during the first create uploads nothing more, exits promptly and keeps the created doc tracked', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    for (const name of ['Alpha', 'Beta', 'Gamma']) writeFileSync(join(dir, `${name}.md`), `${name} notes.\n`);
+    const ids = ['a1111111-1111-4111-8111-111111111111', 'b2222222-2222-4222-8222-222222222222', 'c3333333-3333-4333-8333-333333333333'];
+    let made = 0;
+    server.state.createNew = { id: ids[0]!, filename: 'alpha.md' };
+    const hooks = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')];
+    let stop = 0;
+    server.state.onCreate = () => {
+      made += 1;
+      server.state.createNew = { id: ids[made]!, filename: `doc-${made}.md` };
+      // SIGINT arrives while the first create is in flight.
+      if (made === 1) {
+        stop = Date.now();
+        process.emit('SIGINT');
+      }
+    };
+    // No signal passed: watch stops on the process's own SIGINT.
+    const running = cli(['watch', '--interval', '60']);
+    const deadline = Date.now() + 5_000;
+    while (stop === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    const { result, ms } = await stoppedWithin(running, stop, 3_000);
+    expect(result, 'watch exits').not.toBeNull();
+    expect(result!.code, result!.err).toBe(0);
+    expect(ms, 'promptly').toBeLessThan(1_000);
+    expect(creates(), 'no upload after the stop').toHaveLength(1);
+    expect(records(), 'the confirmed create is checkpointed').toEqual([ids[0]]);
+    expect(meta(ids[0]!).file).toBe('alpha.md');
+    expect(existsSync(join(dir, 'Beta.md')) && existsSync(join(dir, 'Gamma.md')), 'the rest stay untracked files').toBe(true);
+    expect(existsSync(join(dir, '.moss-multi', '.lock')), 'the lock is let go').toBe(false);
+    expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')], 'no signal handler is left behind').toEqual(hooks);
+  });
+
+  it('Ctrl+C after a push lands records it and pushes no other file', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans only.');
+    writeFileSync(join(dir, 'notes.md'), '# Garden notes\n\nWater twice.\n');
+    const controller = new AbortController();
+    server.state.onPush = () => controller.abort();
+    const running = cli(['watch', '--interval', '60'], undefined, { signal: controller.signal });
+    const { result } = await stoppedWithin(running, Date.now(), 5_000);
+    expect(result, 'watch exits').not.toBeNull();
+    expect(result!.code, result!.err).toBe(0);
+    expect(server.state.pushes, 'one push, then nothing').toHaveLength(1);
+    const pushed = server.state.pushes[0]!.newText === '# Garden plan\n\nBeans only.' ? ID_A : ID_B;
+    expect(meta(pushed).baseHash, 'the landed push is the new base').toBe(sha256Hex(server.content.get(pushed)!));
+  });
+
+  it('Ctrl+C while a read is in flight aborts it and exits at once, before any upload', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nBeans only.');
+    server.state.holdContentMs = 3_000;
+    const controller = new AbortController();
+    const before = server.seen.length;
+    const running = cli(['watch', '--interval', '60'], undefined, { signal: controller.signal });
+    const deadline = Date.now() + 5_000;
+    while (!server.seen.slice(before).some((call) => call.path === `/api/docs/${ID_A}/content`) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    const stop = Date.now();
+    controller.abort();
+    const { result, ms } = await stoppedWithin(running, stop, 5_000);
+    expect(result, 'watch exits').not.toBeNull();
+    expect(result!.code, result!.err).toBe(0);
+    expect(ms, 'without waiting for the read').toBeLessThan(1_000);
+    expect(server.state.pushes, 'no upload after the stop').toEqual([]);
   });
 });

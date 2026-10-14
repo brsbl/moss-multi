@@ -4,6 +4,8 @@
 // gives the body one Cmd+Z stack across the note's undo manager and each payload's (BodyUndo).
 import { Observable } from 'lib0/observable';
 import * as Y from 'yjs';
+import { MAP_REGISTERS } from './map-codecs.ts';
+import { RedoSlices } from './redo-slices.ts';
 import {
   decodePayloadFrame, encodePayloadFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE,
 } from '@moss-multi/protocol/sync';
@@ -13,13 +15,8 @@ export const REGISTER_FIELDS: Readonly<Record<string, string>> = {
   'code-block': '__code', 'html-block': '__rawHtml', formula: '__formula',
 };
 
-/** Compound payloads (T3.3), by node type: their fields as one Y.Map of independent keys (map-codecs.ts). */
-export const MAP_REGISTER_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  chart: ['__config'], sketch: ['__grid', '__labels'],
-};
-
-/** Whether nodes of `type` keep their payload in a payload doc. */
-export const isPayloadType = (type: string): boolean => Object.hasOwn(REGISTER_FIELDS, type) || Object.hasOwn(MAP_REGISTER_FIELDS, type);
+/** Whether nodes of `type` keep their payload in a payload doc: a text payload, or a compound one (T3.3, map-codecs.ts). */
+export const isPayloadType = (type: string): boolean => Object.hasOwn(REGISTER_FIELDS, type) || Object.hasOwn(MAP_REGISTERS, type);
 
 /** A payload id: 128 random bits, since knowing an id is what lets an element name its payload. */
 export function newPayloadId(): string {
@@ -47,6 +44,114 @@ export function seedPayload(doc: Y.Doc, value: string | ReadonlyMap<string, unkn
     else for (const [key, entry] of value) payloadMap(doc).set(key, entry);
   }, origin);
 }
+
+/** A changed id: the elements naming it that the batch added, each with its transaction's origin. */
+interface Change {
+  added: Map<Y.XmlElement, unknown>;
+}
+
+/**
+ * id → the live elements naming it, from each transaction's own structs: the elements it integrated (and the `__regId`
+ * and `__type` attributes it set or removed) and the ones it deleted, including every element inside a deleted or
+ * recreated paragraph or container (Yjs deletes a subtree item by item). `take()` returns the ids changed since the
+ * last call; an index that does not `record` keeps none. The tree a doc already holds is indexed once, unrecorded.
+ */
+export class NameIndex {
+  readonly live = new Map<string, Set<Y.XmlElement>>();
+  readonly #ids = new WeakMap<Y.XmlElement, string>();
+  #changed = new Map<string, Change>();
+
+  constructor(doc: Y.Doc, private readonly ignore: unknown, private readonly record = true) {
+    const root = doc.share.get('root');
+    if (root instanceof Y.XmlText) this.#scan(root);
+    doc.on('afterTransaction', (transaction: Y.Transaction) => this.#index(doc, transaction));
+  }
+
+  #scan(type: Y.XmlText | Y.XmlElement): void {
+    if (type instanceof Y.XmlElement) this.#set(type, false, null);
+    const children = type instanceof Y.XmlText ? type.toDelta().map((op: { insert?: unknown }) => op.insert) : type.toArray();
+    for (const child of children) if (child instanceof Y.XmlText || child instanceof Y.XmlElement) this.#scan(child);
+  }
+
+  named(id: string): boolean {
+    return (this.live.get(id)?.size ?? 0) > 0;
+  }
+
+  take(): Map<string, Change> {
+    const out = this.#changed;
+    this.#changed = new Map();
+    return out;
+  }
+
+  #index(doc: Y.Doc, transaction: Y.Transaction): void {
+    const origin = transaction.origin;
+    const record = this.record && origin !== this.ignore;
+    transaction.afterState.forEach((after, client) => {
+      const before = transaction.beforeState.get(client) ?? 0;
+      if (after === before) return;
+      const structs = doc.store.clients.get(client) ?? [];
+      for (let i = Y.findIndexSS(structs, before); i < structs.length; i++) {
+        const struct = structs[i];
+        if (!(struct instanceof Y.Item) || struct.deleted) continue;
+        if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
+          this.#set(struct.content.type, record, origin);
+        } else if (naming(struct)) {
+          this.#set(struct.parent as Y.XmlElement, record, origin);
+        }
+      }
+    });
+    Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
+      if (!(struct instanceof Y.Item)) return;
+      if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
+        this.#drop(struct.content.type, record);
+      } else if (naming(struct)) {
+        // A removed `__regId` or `__type` (a replaced one is also re-filed above, to the same effect).
+        this.#set(struct.parent as Y.XmlElement, record, origin);
+      }
+    });
+  }
+
+  #note(id: string, record: boolean): Change | undefined {
+    if (!record) return undefined;
+    let change = this.#changed.get(id);
+    if (!change) this.#changed.set(id, (change = { added: new Map() }));
+    return change;
+  }
+
+  /** Files a live element under its current id (moving it if its id changed). */
+  #set(element: Y.XmlElement, record: boolean, origin: unknown): void {
+    const attr: unknown = element.getAttribute('__regId');
+    const id = isPayloadType(String(element.getAttribute('__type'))) && typeof attr === 'string' && attr ? attr : undefined;
+    const previous = this.#ids.get(element);
+    if (previous === id) {
+      if (id === undefined || this.live.get(id)?.has(element)) return;
+    } else if (previous !== undefined) {
+      this.#drop(element, record);
+    }
+    if (id === undefined) return;
+    let set = this.live.get(id);
+    if (!set) this.live.set(id, (set = new Set()));
+    this.#note(id, record)?.added.set(element, origin);
+    set.add(element);
+    this.#ids.set(element, id);
+  }
+
+  #drop(element: Y.XmlElement, record: boolean): void {
+    const id = this.#ids.get(element);
+    const set = id === undefined ? undefined : this.live.get(id);
+    if (!set?.has(element)) return;
+    this.#note(id!, record);
+    set.delete(element);
+    this.#ids.delete(element);
+    if (!set.size) this.live.delete(id!);
+  }
+}
+
+/** An attribute item that decides what a live element names: its `__regId` or its `__type`. */
+function naming(struct: Y.Item): boolean {
+  return (struct.parentSub === '__regId' || struct.parentSub === '__type') && struct.parent instanceof Y.XmlElement && !struct.parent._item?.deleted;
+}
+
 
 /** `fresh`: minted here this moment, so no one else has anything of it to ask for. */
 type HoldListener = (id: string, doc: Y.Doc, fresh: boolean) => void;
@@ -145,24 +250,52 @@ export interface PayloadSyncOptions {
   wrote?(id: string, update: Uint8Array): void;
   /** The origin remote frames apply under, never sent back. */
   remote: unknown;
+  /** The note doc whose tree names the payloads; without it every held payload's writes are resent. */
+  note?: Y.Doc;
+  /** Payload `id`'s unacked writes were set aside (true), or go out again (false). */
+  parked?(id: string, parked: boolean): void;
 }
 
 /**
  * A client's half of payload sync on the doc socket. Local writes go out as payload updates while the socket is open;
  * on every connect and wake each held payload sends a step 1 and its pending writes as a step 2. The server answers a
  * step 1 only for a payload an element names, and fans out or reveals payloads itself.
+ *
+ * A payload this client minted that the server never saw named or served, and that the tree no longer names (made and
+ * deleted offline), is not resent: the server would hold it as a withheld id this socket writes, and enough of them
+ * close the socket (B036). Its writes are parked, and go out once an undo or a later update names it. A payload named
+ * while connected, or one the server sent a frame of, is shared: a peer may hold it, so its writes always go out.
  */
 export class PayloadSync {
   readonly #stops: (() => void)[] = [];
+  readonly #names: NameIndex | null;
+  /** Payloads minted here, until the tree names them while connected or the server sends a frame of theirs. */
+  readonly #unsent = new Set<string>();
+  readonly #parked = new Set<string>();
+  #pending: (id: string) => Uint8Array | null = () => null;
 
   constructor(
     readonly host: PayloadDocs,
     private readonly options: PayloadSyncOptions,
   ) {
+    const note = options.note;
+    this.#names = note ? new NameIndex(note, null, false) : null;
+    if (note) {
+      // After every update listener, so the note's own frame (the element naming it) goes first.
+      const onNoteWrites = () => {
+        this.#share();
+        if (this.#parked.size) this.#unpark();
+      };
+      note.on('afterAllTransactions', onNoteWrites);
+      this.#stops.push(() => note.off('afterAllTransactions', onNoteWrites));
+    }
     for (const [id, doc] of host.docs) this.#watch(id, doc);
     this.#stops.push(host.onHold((id, doc, fresh) => {
       this.#watch(id, doc);
-      if (fresh) return;
+      if (fresh) {
+        if (this.#names && !(options.open() && this.#names.named(id))) this.#unsent.add(id);
+        return;
+      }
       host.await(id);
       if (options.open()) options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
     }));
@@ -172,24 +305,55 @@ export class PayloadSync {
     const onUpdate = (update: Uint8Array, origin: unknown) => {
       if (origin === this.options.remote || origin === PAYLOAD_LOADED) return;
       this.options.wrote?.(id, update);
-      if (this.options.open()) this.options.send(encodePayloadFrame(id, PAYLOAD_UPDATE, update));
+      if (this.#parked.has(id) && !this.#names?.named(id)) return;
+      if (this.options.open()) this.#send(id, PAYLOAD_UPDATE, update);
     };
     doc.on('update', onUpdate);
     this.#stops.push(() => doc.off('update', onUpdate));
   }
 
+  #send(id: string, step: number, update: Uint8Array): void {
+    this.options.send(encodePayloadFrame(id, step, update));
+    if (this.#names?.named(id)) this.#unsent.delete(id);
+  }
+
+  /** Minted payloads the tree names while the socket is open are shared: the server serves them to peers. */
+  #share(): void {
+    if (!this.#unsent.size || !this.options.open()) return;
+    for (const id of [...this.#unsent]) if (this.#names?.named(id)) this.#unsent.delete(id);
+  }
+
   /** On every connect, wake and resync: a step 1 per held payload, and what is still unacked as a step 2. */
   connected(pending: (id: string) => Uint8Array | null): void {
+    this.#pending = pending;
     if (!this.options.open()) return;
+    this.#share();
     for (const [id, doc] of this.host.docs) {
       this.options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
+      if (this.#unsent.has(id) && !this.#names?.named(id)) {
+        if (!this.#parked.has(id)) {
+          this.#parked.add(id);
+          this.options.parked?.(id, true);
+        }
+        continue;
+      }
       this.resend(id, pending(id));
     }
   }
 
   /** Re-delivers a payload's unacked writes. */
   resend(id: string, update: Uint8Array | null): void {
-    if (update && this.options.open()) this.options.send(encodePayloadFrame(id, PAYLOAD_STEP2, update));
+    if (update && this.options.open()) this.#send(id, PAYLOAD_STEP2, update);
+  }
+
+  /** Parked payloads the tree names again, or no longer only this client's, go out. */
+  #unpark(): void {
+    for (const id of [...this.#parked]) {
+      if (this.#unsent.has(id) && !this.#names?.named(id)) continue;
+      this.#parked.delete(id);
+      this.options.parked?.(id, false);
+      this.resend(id, this.#pending(id));
+    }
   }
 
   /** A payload frame from the server; false when `bytes` is not one. */
@@ -198,10 +362,13 @@ export class PayloadSync {
     if (!frame) return false;
     // The server never asks a client for a payload; its fan-out and reveals are updates.
     if (frame.step === PAYLOAD_STEP1) return true;
+    // The server holds it beyond this client's writes: no longer only ours to set aside.
+    this.#unsent.delete(frame.id);
     const doc = this.host.hold(frame.id);
     Y.applyUpdate(doc, frame.data, this.options.remote);
     // A step 2 answers this client's step 1; an update that integrates whole is a reveal's state or a first text.
     if (frame.step === PAYLOAD_STEP2 || (!doc.store.pendingStructs && !doc.store.pendingDs)) this.host.arrived(frame.id);
+    if (this.#parked.has(frame.id)) this.#unpark();
     return true;
   }
 
@@ -245,6 +412,8 @@ export class BodyUndo extends Observable<StackEvent> {
   #replayed: Step['entries'] = [];
   /** When the last tracked edit landed, in any doc. */
   #lastChange = 0;
+  /** Open holds: while any is, every tracked edit joins the last step. */
+  #holds = 0;
 
   constructor(
     readonly root: Y.UndoManager,
@@ -281,7 +450,7 @@ export class BodyUndo extends Observable<StackEvent> {
     const stamp = this.stamp();
     const last = this.undone.at(-1);
     this.redone.length = 0;
-    if (last && ((stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
+    if (last && (this.#holds > 0 || (stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
       last.entries.push({ manager, item });
       last.stamp = stamp;
     } else {
@@ -290,6 +459,22 @@ export class BodyUndo extends Observable<StackEvent> {
     }
     this.#lastChange = now;
     for (const other of this.managers) if (other !== manager && other.redoStack.length) other.clear(false, true);
+  }
+
+  /**
+   * Until the returned release runs, every tracked edit joins the last step, however long after it lands: a large
+   * paste lands in batches, one undo step (T3.S6). The note's manager also joins the edit to its last stack item, as
+   * if within its capture window, unless capturing stopped: redoing a step of hundreds of items held the tab.
+   */
+  hold(): () => void {
+    this.#holds += 1;
+    if (this.root.lastChange > 0) this.root.lastChange = Date.now();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#holds -= 1;
+    };
   }
 
   get undoStack(): readonly Step[] {
@@ -314,6 +499,72 @@ export class BodyUndo extends Observable<StackEvent> {
 
   redo(): unknown {
     return this.#step(this.redone, this.undone, 'redo');
+  }
+
+  /**
+   * Redoes the top step in slices when it is `stamp`'s (T3.S6): `next` redoes the next slice of its note's stack item
+   * (its payload items whole, in order), and `finish`, once `done`, makes the slices one step again. Each slice is a
+   * Yjs redo, so the steps after it in the redo chain still follow what it restores. Null when the top step is not.
+   */
+  redoInSlices(stamp: unknown): SlicedRedo | null {
+    const step = this.redone.at(-1);
+    if (!step || step.stamp !== stamp) return null;
+    this.redone.pop();
+    this.stopCapturing();
+    const queue = step.entries.map(({ manager, item }) => {
+      if (manager !== this.root) return { manager, item, slices: null };
+      const at = manager.redoStack.lastIndexOf(item);
+      if (at >= 0) manager.redoStack.splice(at, 1);
+      return { manager, item, slices: at >= 0 ? new RedoSlices(manager, item) : null };
+    });
+    const replayed: Step['entries'] = [];
+    const replay = (manager: Y.UndoManager, item: StackItem) => {
+      this.#replaying = true;
+      this.#replayed = [];
+      try {
+        replayOnly(manager, 'redo', item);
+      } finally {
+        replayed.push(...this.#replayed);
+        this.#replaying = false;
+        this.#replayed = [];
+      }
+    };
+    const advance = (blocks: number, bytes: number): number | null => {
+      while (queue.length) {
+        const head = queue[0];
+        if (!head.slices) {
+          queue.shift();
+          // A note item no longer on its stack (a peer emptied it) replays nothing, as #step would.
+          if (head.manager !== this.root) replay(head.manager, head.item);
+          continue;
+        }
+        const slice = head.slices.next(blocks, bytes);
+        if (head.slices.done) queue.shift();
+        if (!slice) continue;
+        head.manager.redoStack.push(slice.item);
+        replay(head.manager, slice.item);
+        return slice.blocks;
+      }
+      return null;
+    };
+    let finished = false;
+    return {
+      get done() {
+        return queue.length === 0;
+      },
+      next: (blocks, bytes) => advance(blocks, bytes) ?? 0,
+      finish: () => {
+        if (finished) return;
+        finished = true;
+        while (advance(Infinity, Infinity) !== null) {
+          // the rest at once
+        }
+        if (replayed.length === 0) return;
+        const entries = mergeReplayed(replayed);
+        this.undone.push({ entries, stamp: step.stamp });
+        this.emit('stack-item-added', [{ type: 'undo', stackItem: entries.at(-1)!.item }, this]);
+      },
+    };
   }
 
   stopCapturing(): void {
@@ -359,6 +610,43 @@ export class BodyUndo extends Observable<StackEvent> {
       this.#replayed = [];
     }
   }
+}
+
+/** A step redone a slice at a time (BodyUndo.redoInSlices). */
+export interface SlicedRedo {
+  readonly done: boolean;
+  /** Redoes the next slice, up to `blocks` blocks and about `bytes` bytes; returns the blocks it redid. */
+  next(blocks: number, bytes: number): number;
+  /** Redoes whatever is left at once, and makes the slices one undo step. */
+  finish(): void;
+}
+
+/**
+ * The stack items a sliced redo added, one per slice, merged into one per manager, as one Yjs transaction would have
+ * made them: undo then deletes the whole paste in one transaction. Items not on top of their stack stay apart.
+ */
+function mergeReplayed(entries: Step['entries']): Step['entries'] {
+  const byManager = new Map<Y.UndoManager, StackItem[]>();
+  for (const { manager, item } of entries) {
+    const items = byManager.get(manager);
+    if (items) items.push(item);
+    else byManager.set(manager, [item]);
+  }
+  const merged: Step['entries'] = [];
+  for (const [manager, items] of byManager) {
+    const stack = manager.undoStack;
+    const top = stack.slice(-items.length);
+    if (items.length < 2 || top.length !== items.length || top.some((item, i) => item !== items[i])) {
+      merged.push(...items.map((item) => ({ manager, item })));
+      continue;
+    }
+    const Item = items[0].constructor as new (deletions: StackItem['deletions'], insertions: StackItem['insertions']) => StackItem;
+    const one = new Item(Y.mergeDeleteSets(items.map((item) => item.deletions)), Y.mergeDeleteSets(items.map((item) => item.insertions)));
+    items[0].meta.forEach((value, key) => one.meta.set(key, value));
+    stack.splice(stack.length - items.length, items.length, one);
+    merged.push({ manager, item: one });
+  }
+  return merged;
 }
 
 /**

@@ -1,5 +1,6 @@
 // glyphdown's history differ (apps/web/src/lib/diff.ts @ faf98d0; A§14: Diff vs current uses glyphdown's diff library):
-// a line-level Myers diff with a word-level pass inside changed regions, capped for degenerate inputs.
+// a line-level Myers diff with a word-level pass inside changed regions, capped for degenerate inputs. The line diff and
+// every word refinement share one work budget (T6.S8); once it is spent, the remaining regions render as coarse spans.
 
 export interface DiffSpan {
   kind: 'equal' | 'insert' | 'delete'
@@ -9,10 +10,17 @@ export interface DiffSpan {
 /** Cap on Myers edit distance before falling back to whole-block replace. */
 const MAX_D = 2000
 
+/** Myers work for one diffText call: trace cells copied, diagonals visited and snake steps, all counted alike. */
+export const DIFF_WORK_BUDGET = 10_000_000
+
+export interface DiffBudget {
+  used: number
+}
+
 type Op = { kind: DiffSpan['kind']; tokens: string[] }
 
 /** Myers O(ND) diff over token arrays, with a D cap for degenerate inputs. */
-function diffTokens(a: string[], b: string[]): Op[] {
+function diffTokens(a: string[], b: string[], budget: DiffBudget): Op[] {
   // Trim common prefix/suffix first — typical version diffs are mostly equal.
   let start = 0
   while (start < a.length && start < b.length && a[start] === b[start]) start++
@@ -24,7 +32,7 @@ function diffTokens(a: string[], b: string[]): Op[] {
   }
   const prefix = a.slice(0, start)
   const suffix = a.slice(endA)
-  const mid = myers(a.slice(start, endA), b.slice(start, endB))
+  const mid = myers(a.slice(start, endA), b.slice(start, endB), budget)
   const ops: Op[] = []
   if (prefix.length > 0) ops.push({ kind: 'equal', tokens: prefix })
   ops.push(...mid)
@@ -32,7 +40,7 @@ function diffTokens(a: string[], b: string[]): Op[] {
   return mergeOps(ops)
 }
 
-function myers(a: string[], b: string[]): Op[] {
+function myers(a: string[], b: string[], budget: DiffBudget): Op[] {
   const n = a.length
   const m = b.length
   if (n === 0 && m === 0) return []
@@ -45,9 +53,17 @@ function myers(a: string[], b: string[]): Op[] {
   const trace: Int32Array[] = []
 
   outer: {
-    for (let d = 0; d <= max; d++) {
-      trace.push(v.slice())
+    search: for (let d = 0; d <= max; d++) {
+      // Only diagonals -d..d are read back for step d.
+      if (budget.used + 2 * d + 1 > DIFF_WORK_BUDGET) {
+        budget.used = DIFF_WORK_BUDGET
+        break
+      }
+      budget.used += 2 * d + 1
+      trace.push(v.slice(offset - d, offset + d + 1))
       for (let k = -d; k <= d; k += 2) {
+        if (budget.used >= DIFF_WORK_BUDGET) break search
+        budget.used++
         if (k < -m || k > n) continue
         let x: number
         if (k === -d || (k !== d && v[offset + k - 1]! < v[offset + k + 1]!)) {
@@ -57,6 +73,8 @@ function myers(a: string[], b: string[]): Op[] {
         }
         let y = x - k
         while (x < n && y < m && a[x] === b[y]) {
+          if (budget.used >= DIFF_WORK_BUDGET) break search
+          budget.used++
           x++
           y++
         }
@@ -64,7 +82,7 @@ function myers(a: string[], b: string[]): Op[] {
         if (x >= n && y >= m) break outer
       }
     }
-    // Distance exceeded the cap: treat the whole region as a replace.
+    // Distance exceeded the cap or the shared budget ran out: treat the whole region as a replace.
     return [
       { kind: 'delete', tokens: a },
       { kind: 'insert', tokens: b },
@@ -76,15 +94,16 @@ function myers(a: string[], b: string[]): Op[] {
   let x = n
   let y = m
   for (let d = trace.length - 1; d > 0; d--) {
+    // trace[d] holds diagonals -d..d, so diagonal k is at index d + k.
     const prev = trace[d]!
     const k = x - y
     let prevK: number
-    if (k === -d || (k !== d && prev[offset + k - 1]! < prev[offset + k + 1]!)) {
+    if (k === -d || (k !== d && prev[d + k - 1]! < prev[d + k + 1]!)) {
       prevK = k + 1
     } else {
       prevK = k - 1
     }
-    const prevX = prev[offset + prevK]!
+    const prevX = prev[d + prevK]!
     const prevY = prevX - prevK
     while (x > prevX && y > prevY) {
       ops.push({ kind: 'equal', tokens: [a[x - 1]!] })
@@ -148,8 +167,8 @@ const WORD_REFINE_LIMIT = 4000
  * Word-level diff of two texts: line diff first, then a word-level pass over
  * adjacent delete/insert runs so small in-line edits render precisely.
  */
-export function diffText(oldText: string, newText: string): DiffSpan[] {
-  const lineOps = diffTokens(lines(oldText), lines(newText))
+export function diffText(oldText: string, newText: string, budget: DiffBudget = { used: 0 }): DiffSpan[] {
+  const lineOps = diffTokens(lines(oldText), lines(newText), budget)
   const spans: DiffSpan[] = []
 
   for (let i = 0; i < lineOps.length; i++) {
@@ -160,8 +179,8 @@ export function diffText(oldText: string, newText: string): DiffSpan[] {
       const newChunk = next.tokens.join('')
       const aw = words(oldChunk)
       const bw = words(newChunk)
-      if (aw.length + bw.length <= WORD_REFINE_LIMIT) {
-        for (const wordOp of diffTokens(aw, bw)) {
+      if (budget.used < DIFF_WORK_BUDGET && aw.length + bw.length <= WORD_REFINE_LIMIT) {
+        for (const wordOp of diffTokens(aw, bw, budget)) {
           spans.push({ kind: wordOp.kind, text: wordOp.tokens.join('') })
         }
         i++

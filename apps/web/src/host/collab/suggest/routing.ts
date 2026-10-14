@@ -14,11 +14,12 @@ import {
   $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, COMMAND_PRIORITY_CRITICAL,
   CONTROLLED_TEXT_INSERTION_COMMAND, CUT_COMMAND, DELETE_CHARACTER_COMMAND, DELETE_LINE_COMMAND, DELETE_WORD_COMMAND,
   INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, mergeRegister, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
-  type LexicalEditor, type LexicalNode, type TextNode,
+  type LexicalEditor, type LexicalNode, type NodeKey, type RangeSelection, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
+import { registerSuggestPasteRoute, takesWholePaste } from '../../large-paste.ts';
 import { bindingOf } from '../binding-registry.ts';
-import { charAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
+import { charsAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -530,11 +531,40 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
    * A non-collapsed selection: body items in it become one delete part, the author's own text in it is removed
    * natively, and the caret goes to its end (its start with `toStart`, for a backward word or line delete).
    * `own`: only the author's own text, which deletes natively. `skip`: nothing left to strike; the caret still moves.
+   * `joined`: the binding step that follows is the same edit (a whole paste), so its undo and redo take the strike too.
    */
-  const $routeRange = (toStart = false): Routed => {
+  const $routeRange = (toStart = false, joined = false): Routed => {
     const selection = $getSelection();
+    if (!$isRangeSelection(selection) || selection.isCollapsed()) return 'none';
+    const range = $inRange(selection);
+    if (!range) return 'none';
+    const { start, end, body, mine, mineLeaves } = range;
+    const owned = mine.length + mineLeaves.length;
+    if (body.length === 0 && owned > 0) return 'own';
+    if (body.length > 0 && !strike(body, joined || owned > 0)) return 'skip';
+    const at = toStart ? start : end;
+    const caret = { key: at.key, offset: at.offset, type: at.type };
+    // His own characters go natively, last first so earlier offsets hold (all of them sit after the start).
+    for (const { node, from, to } of mine.reverse()) {
+      if (!toStart && caret.type === 'text' && node.getKey() === caret.key) caret.offset -= to - from;
+      node.spliceText(from, to - from, '', false);
+    }
+    for (const leaf of mineLeaves) leaf.remove();
+    const target = $getNodeByKey(caret.key);
+    if (target?.isAttached()) {
+      selection.anchor.set(caret.key, Math.max(0, caret.offset), caret.type);
+      selection.focus.set(caret.key, Math.max(0, caret.offset), caret.type);
+    } else {
+      const anchor = selection.anchor.getNode();
+      if (anchor.isAttached() && $isTextNode(anchor)) anchor.select(selection.anchor.offset, selection.anchor.offset);
+    }
+    return body.length > 0 ? 'struck' : 'skip';
+  };
+
+  /** What a range selection holds: the body items to strike, and the author's own text and leaves. */
+  const $inRange = (selection: RangeSelection) => {
     const binding = bindingOf(editor);
-    if (!$isRangeSelection(selection) || selection.isCollapsed() || !binding) return 'none';
+    if (!binding) return null;
     const own = fork.ownClients();
     const [start, end] = selection.isBackward() ? [selection.focus, selection.anchor] : [selection.anchor, selection.focus];
     const body: Y.ID[] = [];
@@ -567,26 +597,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       if (own.has(item.id.client)) mineLeaves.push(node);
       else if (!fork.isStruck(item.id)) body.push(item.id);
     }
-    const owned = mine.length + mineLeaves.length;
-    if (body.length === 0 && owned > 0) return 'own';
-    if (body.length > 0 && !strike(body, owned > 0)) return 'skip';
-    const at = toStart ? start : end;
-    const caret = { key: at.key, offset: at.offset, type: at.type };
-    // His own characters go natively, last first so earlier offsets hold (all of them sit after the start).
-    for (const { node, from, to } of mine.reverse()) {
-      if (!toStart && caret.type === 'text' && node.getKey() === caret.key) caret.offset -= to - from;
-      node.spliceText(from, to - from, '', false);
-    }
-    for (const leaf of mineLeaves) leaf.remove();
-    const target = $getNodeByKey(caret.key);
-    if (target?.isAttached()) {
-      selection.anchor.set(caret.key, Math.max(0, caret.offset), caret.type);
-      selection.focus.set(caret.key, Math.max(0, caret.offset), caret.type);
-    } else {
-      const anchor = selection.anchor.getNode();
-      if (anchor.isAttached() && $isTextNode(anchor)) anchor.select(selection.anchor.offset, selection.anchor.offset);
-    }
-    return body.length > 0 ? 'struck' : 'skip';
+    return { start, end, body, mine, mineLeaves };
   };
 
   /**
@@ -607,16 +618,22 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       offset = $isTextNode(next) ? (backward ? next.getTextContentSize() : 0) : 0;
       return true;
     };
+    // The visited text node's ids and characters, read once: a struck run is walked a character at a time.
+    let seen: { key: NodeKey; ids: Y.ID[] | null; around: (at: number) => [number, number] } | null = null;
     for (let guard = 0; guard < 100_000; guard += 1) {
       if ($isTextNode(node)) {
         const text: TextNode = node;
-        const ids = textIds(binding, text.getKey());
+        if (seen?.key !== text.getKey()) {
+          const ids = textIds(binding, text.getKey());
+          const content = text.getTextContent();
+          seen = { key: text.getKey(), ids, around: ids && content.length === ids.length ? charsAround(content) : (at) => [at, at + 1] };
+        }
+        const { ids, around } = seen;
         if (!ids) return false;
         const at = backward ? offset - 1 : offset;
         if (at >= 0 && at < ids.length) {
           // A whole character: both halves of a surrogate pair, and a grapheme's combining marks.
-          const content = text.getTextContent();
-          const [from, to] = content.length === ids.length ? charAround(content, at) : [at, at + 1];
+          const [from, to] = around(at);
           const id = ids[at];
           if (fork.isStruck(id)) {
             offset = backward ? from : to;
@@ -714,10 +731,21 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       $routeRange();
       return false;
     }, P),
-    editor.registerCommand(PASTE_COMMAND, () => {
-      $routeRange();
+    // A whole paste (large-paste.ts) strikes the selection inside its own landing, once the paste is admitted.
+    editor.registerCommand(PASTE_COMMAND, (event) => {
+      if (!takesWholePaste(editor, event)) $routeRange();
       return false;
     }, P),
+    registerSuggestPasteRoute(editor, {
+      $targets: () => {
+        const selection = $getSelection();
+        const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
+        return range ? toSpans(range.body) : [];
+      },
+      $route: () => {
+        $routeRange(false, true);
+      },
+    }),
     editor.registerCommand(CUT_COMMAND, (event) => {
       const selection = $getSelection();
       if (!$isRangeSelection(selection) || selection.isCollapsed()) return false;

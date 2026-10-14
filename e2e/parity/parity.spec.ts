@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { PNG } from 'pngjs';
 import { AFFORDANCES } from '../../apps/web/src/host/affordances.ts';
-import { APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '../lib/contract.ts';
+import {
+  APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, VERSION_CONTENT_ATTR,
+} from '../lib/contract.ts';
 import { InfraBlocked } from '../lib/infra.ts';
 import { mintPrincipal, signIn } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
@@ -26,18 +28,6 @@ let stories: Set<string>;
 let principals = 0;
 let fixtureCookies: Awaited<ReturnType<typeof signIn>> | null = null;
 
-/** Retries an auth call the stack's rate limit answered 429, for up to a minute. */
-async function limited<T>(call: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await call();
-    } catch (error) {
-      if (attempt >= 6 || !/: 429 /.test((error as Error).message)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 10_000));
-    }
-  }
-}
-
 test.beforeAll(async () => {
   const dir = process.env.ORACLE_DIR;
   if (!dir) throw new InfraBlocked('ORACLE_DIR is unset; build it with e2e/parity/oracle/build.mjs');
@@ -50,6 +40,21 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await oracle?.close();
 });
+
+// Room for a sign-up or sign-in that waits out better-auth's minute window (`paced`).
+test.describe.configure({ timeout: 300_000 });
+
+/** The stack allows 10 sign-ups and 10 sign-ins a minute; one refused with 429 waits the window out and retries. */
+async function paced<T>(work: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await work();
+    } catch (error) {
+      if (attempt >= 2 || !/: 429 /.test(String(error))) throw error;
+      await new Promise((done) => setTimeout(done, 61_000));
+    }
+  }
+}
 
 async function newPage(browser: Browser, theme: Theme): Promise<Page> {
   const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, colorScheme: theme, reducedMotion: 'reduce' });
@@ -106,7 +111,7 @@ async function capture(page: Page, target: Target): Promise<Buffer> {
   // An overlay or dialog target keeps it open (Escape would close it); a comment thread also keeps its focus where moss
   // puts it (the reply composer autofocuses).
   if (!target.crop) await page.keyboard.press('Escape');
-  if (!target.crop || target.prepare === 'open-settings') {
+  if (!target.crop || bare(target)) {
     await page.evaluate(() => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.getSelection()?.removeAllRanges();
@@ -161,17 +166,21 @@ async function withholdAffordances(page: Page): Promise<string[]> {
   }, probes);
 }
 
-/** Takes the candidate's web-only sections (`Target.withhold`) out of layout, as the oracle's withheld ones are. */
-async function withholdWeb(page: Page, selectors: string[]): Promise<void> {
-  await page.evaluate((list) => {
-    for (const el of list.flatMap((s) => [...document.querySelectorAll<HTMLElement>(s)])) {
-      el.hidden = true;
-      el.style.setProperty('display', 'none', 'important');
+const SPACER = 'data-parity-web-section';
+
+/** Holds the candidate's web sections' place in the oracle: a spacer as tall as each, appended to `container`. */
+async function addSpacers(page: Page, container: string, heights: number[]): Promise<void> {
+  await page.locator(container).evaluate((parent, { heights, attr }) => {
+    for (const height of heights) {
+      const spacer = document.createElement('div');
+      spacer.setAttribute(attr, '');
+      spacer.style.setProperty('height', `${height}px`);
+      parent.append(spacer);
     }
-  }, selectors);
+  }, { heights, attr: SPACER });
 }
 
-interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null; withheld: string[] }
+interface OracleCapture { png: Buffer; listing: NoteListing[]; openTitle: string | null; withheld: string[]; spacers: Rect[] }
 
 /** The open note's sidebar row → Trash, then the footer's Trash view, which opens that note read-only. */
 async function trashOpenNote(page: Page): Promise<void> {
@@ -188,12 +197,12 @@ async function trashOpenNote(page: Page): Promise<void> {
   await expect(crop.locator('[data-lexical-editor="true"][contenteditable="false"]')).toBeVisible({ timeout: 30_000 });
 }
 
-/** The sidebar's Settings, then the candidate's web-only sections out of layout once both have rendered. */
+/** The sidebar's Settings, once its web sections have rendered and Agents has loaded. */
 async function openSettings(page: Page, target: Target): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const web = page.locator((target.withhold ?? []).join(', '));
-  await expect(web, 'Account and Agents render before they are withheld').toHaveCount(2, { timeout: 15_000 });
-  await withholdWeb(page, target.withhold ?? []);
+  if (!target.webSections) return;
+  await expect(page.locator(target.webSections.selector), 'Account and Agents render').toHaveCount(target.webSections.count, { timeout: 15_000 });
+  await expect(page.getByText('No agents yet.', { exact: true })).toBeVisible({ timeout: 15_000 });
 }
 
 const gutterIcon = (page: Page) => page.locator(`${CROP} [data-comment-gutter-id]`).first();
@@ -237,6 +246,38 @@ async function openThreadFromList(page: Page, detach: boolean): Promise<void> {
   await expect(commentPopover(page), 'the list opens the thread').toBeVisible();
 }
 
+interface HistoryFixture { title: string; versions: { id: string }[]; version: string; current: string }
+
+/**
+ * The History target's note: a real doc whose History is served the fixture's versions and current text, so the
+ * candidate shows what the reference story shows. Returns its path.
+ */
+async function historyNote(page: Page): Promise<string> {
+  const fixture = JSON.parse(readFileSync(join(FIXTURES, 'history.json'), 'utf8')) as HistoryFixture;
+  const created = await page.request.post(new URL('/api/docs', stack.baseUrl).href, {
+    data: { title: fixture.title, markdown: fixture.version },
+    headers: { origin: new URL(stack.baseUrl).origin },
+  });
+  if (created.status() !== 201) throw new Error(`POST /api/docs for the History note: ${created.status()}`);
+  const id = ((await created.json()) as { doc: { id: string } }).doc.id;
+  const docPath = `/api/docs/${id}`;
+  await page.route((url) => url.pathname === `${docPath}/versions`, (route) =>
+    route.request().method() === 'GET' ? route.fulfill({ json: { versions: fixture.versions } }) : route.fallback());
+  await page.route((url) => url.pathname.startsWith(`${docPath}/versions/`), (route) =>
+    route.fulfill({ json: { version: { title: fixture.title, markdown: fixture.version } } }));
+  await page.route((url) => url.pathname === `${docPath}/content`, (route) =>
+    route.fulfill({ status: 200, contentType: 'text/markdown; charset=utf-8', body: fixture.current }));
+  return `/d/${encodeURIComponent(id)}`;
+}
+
+/** History from the note's top bar, settled on the newest version's Diff vs current. */
+async function openHistory(page: Page): Promise<void> {
+  await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
+  await page.locator(`[${HISTORY_BUTTON_ATTR}]`).click();
+  await expect(page.locator(`[${HISTORY_VIEW_ATTR}]`)).toHaveAttribute(HISTORY_VIEW_ATTR, 'ready', { timeout: 15_000 });
+  await expect(page.locator(`[${VERSION_CONTENT_ATTR}="diff"] ins`).first(), 'the diff renders').toBeVisible({ timeout: 15_000 });
+}
+
 async function prepare(page: Page, target: Target, side: 'oracle' | 'candidate'): Promise<void> {
   if (target.prepare === 'trash-open-note') await trashOpenNote(page);
   if (target.prepare === 'comment-gutter') await showCommentGutter(page);
@@ -244,15 +285,17 @@ async function prepare(page: Page, target: Target, side: 'oracle' | 'candidate')
   if (target.prepare === 'open-detached-thread') await openThreadFromList(page, side === 'candidate');
   // The settings story opens its dialog itself.
   if (target.prepare === 'open-settings' && side === 'candidate') await openSettings(page, target);
+  // The History story renders its view itself.
+  if (target.prepare === 'open-history' && side === 'candidate') await openHistory(page);
 }
 
-/** A story that renders a dialog without moss's App: no notes bridge, and no html[data-theme] of its own. */
-const bare = (target: Target) => target.prepare === 'open-settings';
+/** A story that renders a surface without moss's App: no notes bridge, and no html[data-theme] of its own. */
+const bare = (target: Target) => target.prepare === 'open-settings' || target.prepare === 'open-history';
 
 /** The open note's title field (moss's title is the first textbox in the shell). */
 const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
 
-async function captureOracle(browser: Browser, target: Target, theme: Theme): Promise<OracleCapture> {
+async function captureOracle(browser: Browser, target: Target, theme: Theme, sectionHeights: number[] = []): Promise<OracleCapture> {
   const page = await newPage(browser, theme);
   try {
     // A story without moss's App sets no html[data-theme]; Ladle's own theme sets it to the one under test.
@@ -265,24 +308,34 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme): Pr
     const open = await openTitle(page);
     await prepare(page, target, 'oracle');
     const withheld = await withholdAffordances(page);
-    return { png: await capture(page, target), listing, openTitle: open, withheld };
+    if (target.webSections) await addSpacers(page, target.webSections.container, sectionHeights);
+    const png = await capture(page, target);
+    return { png, listing, openTitle: open, withheld, spacers: await maskRects(page, target.crop ?? CROP, [`[${SPACER}]`]) };
   } finally {
     await page.context().close();
   }
 }
 
-async function captureCandidate(browser: Browser, target: Target, theme: Theme, oracleState: OracleCapture): Promise<{ png: Buffer; masks: Rect[] }> {
+/** A change the selftest makes to the candidate once it is prepared, before anything is measured or captured. */
+type Mutation = (page: Page) => Promise<void>;
+
+/** The candidate's capture; `sections` are its web sections' rects and `heights` their CSS heights. */
+interface CandidateCapture { png: Buffer; masks: Rect[]; sections: Rect[]; heights: number[]; controls: { name: string; png: Buffer }[] }
+
+async function captureCandidate(
+  browser: Browser, target: Target, theme: Theme, oracleState: Pick<OracleCapture, 'listing' | 'openTitle'>, mutate?: Mutation,
+): Promise<CandidateCapture> {
   const { listing } = oracleState;
   const page = await newPage(browser, theme);
   try {
     // Sign-up and sign-in are rate limited per stack: the fixture targets, whose workspace listing is the story's,
-    // share one session, and a 429 waits out its window.
+    // share one session.
     let cookies = target.fixture ? fixtureCookies : null;
     if (!cookies) {
       principals += 1;
       const label = target.fixture ? 'fixtures' : target.id;
-      const principal = await limited(() => mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, label, principals));
-      cookies = await limited(() => signIn(stack.baseUrl, principal));
+      const principal = await paced(() => mintPrincipal(stack.baseUrl, `parity-${process.env.RUN_ID ?? 'local'}-${Date.now().toString(36)}`, label, principals));
+      cookies = await paced(() => signIn(stack.baseUrl, principal));
       if (target.fixture) fixtureCookies = cookies;
     }
     await page.context().addCookies(cookies);
@@ -319,6 +372,7 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
       await page.route('**/api/workspace*', (route) => route.fulfill({ json: { vault: { id: 'parity-vault', name: 'Home', role: 'owner', owned: true }, folders: [], docs: docs() } }));
       path = `/d/${encodeURIComponent(ids.get(listing[0].id) ?? '')}`;
     }
+    if (target.prepare === 'open-history') path = await historyNote(page);
     await page.goto(new URL(path, stack.baseUrl).href);
     await page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
     if (target.seed === 'story-listing' && oracleState.openTitle && oracleState.openTitle !== listing[0].title) {
@@ -332,28 +386,86 @@ async function captureCandidate(browser: Browser, target: Target, theme: Theme, 
       await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
     }
     await prepare(page, target, 'candidate');
+    await mutate?.(page);
     await audit(page, theme, 'candidate', bare(target) ? target.crop : CROP);
     const png = await capture(page, target);
     // Measured in the captured state: the docked toolbar's chrome shows only once the editor is focused.
     const masks = await maskRects(page, target.crop ?? CROP, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])]);
-    return { png, masks };
+    // Each negative control breaks the captured state's layout once, then is taken back out.
+    const controls: CandidateCapture['controls'] = [];
+    for (const control of target.controls ?? []) {
+      const style = await page.addStyleTag({ content: control.css });
+      controls.push({ name: control.name, png: await capture(page, target) });
+      await style.evaluate((element) => (element as HTMLElement).remove());
+    }
+    const selector = target.webSections?.selector;
+    return {
+      png,
+      masks,
+      sections: selector ? await maskRects(page, target.crop ?? CROP, [selector]) : [],
+      heights: selector ? await page.locator(selector).evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height)) : [],
+      controls,
+    };
   } finally {
     await page.context().close();
   }
 }
 
+interface Measured { first: OracleCapture; candidate: CandidateCapture; comparison: ReturnType<typeof compare> }
+
+/**
+ * Two oracle captures, which must agree, and the candidate (changed by `mutate`, if given), compared. A target with
+ * web sections captures the candidate first, so the oracle can hold their place.
+ */
+async function measure(browser: Browser, target: Target, theme: Theme, mutate?: Mutation): Promise<Measured> {
+  if (!stories.has(target.story)) throw new InfraBlocked(`the oracle has no story ${target.story}`);
+  if (target.webSections && target.seed === 'story-listing') throw new Error(`${target.id}: web sections need no oracle listing`);
+  const early = target.webSections ? await captureCandidate(browser, target, theme, { listing: [], openTitle: null }, mutate) : null;
+  const first = await captureOracle(browser, target, theme, early?.heights);
+  const second = await captureOracle(browser, target, theme, early?.heights);
+  const noise = compare(first.png, second.png).metrics;
+  if (noise.diffPixels > 0 || noise.sizeDelta.dw || noise.sizeDelta.dh) {
+    throw new InfraBlocked(`two oracle captures of ${target.story} differ by ${noise.diffPixels} px`);
+  }
+  const candidate = early ?? await captureCandidate(browser, target, theme, first, mutate);
+  return { first, candidate, comparison: compare(first.png, candidate.png, candidate.masks, [...candidate.sections, ...first.spacers]) };
+}
+
+/** Every gate a target's comparison misses; none means it passes. */
+function misses(target: Target, { first, candidate, comparison: { metrics } }: Measured): string[] {
+  const placed = JSON.stringify(candidate.sections) === JSON.stringify(first.spacers);
+  return [
+    ...(placed ? [] : [`web sections at ${JSON.stringify(candidate.sections)}, not where the oracle holds them ${JSON.stringify(first.spacers)}`]),
+    ...(metrics.sizeDelta.dw || metrics.sizeDelta.dh ? [`crops differ in size by ${JSON.stringify(metrics.sizeDelta)}`] : []),
+    ...(metrics.maskedPct > 3 ? [`masks cover ${metrics.maskedPct.toFixed(2)}% of the crop, over 3%`] : []),
+    ...(metrics.diffPct > target.floor ? [`diff ${metrics.diffPct.toFixed(4)}% over ${target.floor}%`] : []),
+    ...(metrics.maxBlob > target.maxBlob ? [`largest blob ${metrics.maxBlob} px² over ${target.maxBlob}`] : []),
+  ];
+}
+
+// Selftest (A§20: only the web chrome's own rects are masked, so displaced moss chrome still fails). Settings' web
+// sections stay in layout: spacing that moves the chrome around them fails, a repaint inside them stays masked.
+test('settings parity fails a web section that displaces chrome and masks a repaint inside it', async ({ browser }) => {
+  const target = TARGETS.find((t) => t.id === 'settings')!;
+  const account = '[role="dialog"] [data-collab-chrome]';
+  const displaced = await measure(browser, target, 'light', (page) => page.locator(account).first().evaluate((el) => {
+    el.style.setProperty('margin-top', '40px', 'important');
+  }));
+  expect(misses(target, displaced), 'spacing on a web section fails parity').not.toEqual([]);
+  const repainted = await measure(browser, target, 'light', (page) => page.locator(account).first().evaluate((el) => {
+    for (const node of [el, ...el.querySelectorAll<HTMLElement>('*')]) {
+      node.style.setProperty('color', 'rgb(255, 0, 0)', 'important');
+      node.style.setProperty('background-color', 'rgb(0, 200, 0)', 'important');
+    }
+  }));
+  expect(misses(target, repainted), 'a repaint inside a web section stays masked').toEqual([]);
+});
+
 for (const target of TARGETS) {
   for (const theme of THEMES) {
     test(`${target.id} ${theme} meets ${target.floor}% with blobs <= ${target.maxBlob} px²`, async ({ browser }, testInfo) => {
-      if (!stories.has(target.story)) throw new InfraBlocked(`the oracle has no story ${target.story}`);
-      const first = await captureOracle(browser, target, theme);
-      const second = await captureOracle(browser, target, theme);
-      const noise = compare(first.png, second.png).metrics;
-      if (noise.diffPixels > 0 || noise.sizeDelta.dw || noise.sizeDelta.dh) {
-        throw new InfraBlocked(`two oracle captures of ${target.story} differ by ${noise.diffPixels} px`);
-      }
-      const candidate = await captureCandidate(browser, target, theme, first);
-      const { metrics, diff, triptych } = compare(first.png, candidate.png, candidate.masks);
+      const measured = await measure(browser, target, theme);
+      const { first, candidate, comparison: { metrics, diff, triptych } } = measured;
 
       const dir = join(OUT, `${target.id}-${theme}`);
       mkdirSync(dir, { recursive: true });
@@ -366,11 +478,12 @@ for (const target of TARGETS) {
       if (metrics.diffPct > 0.8 * target.floor && metrics.diffPct <= target.floor) {
         testInfo.annotations.push({ type: 'near-threshold', description: `${metrics.diffPct.toFixed(4)}%: read diff.png and explain` });
       }
-
-      expect(metrics.sizeDelta, 'oracle and candidate crops are the same size').toEqual({ dw: 0, dh: 0 });
-      expect(metrics.maskedPct, 'masks cover at most 3% of the crop').toBeLessThanOrEqual(3);
-      expect(metrics.diffPct, `${target.id} ${theme} diff %`).toBeLessThanOrEqual(target.floor);
-      expect(metrics.maxBlob, `${target.id} ${theme} largest blob (px²)`).toBeLessThanOrEqual(target.maxBlob);
+      expect(misses(target, measured), `${target.id} ${theme}`).toEqual([]);
+      for (const control of candidate.controls) {
+        const broken = compare(first.png, control.png, candidate.masks, [...candidate.sections, ...first.spacers]);
+        writeFileSync(join(dir, `control-${control.name.replace(/\W+/g, '-')}.json`), `${JSON.stringify(broken.metrics, null, 2)}\n`);
+        expect(misses(target, { first, candidate, comparison: broken }), `${target.id} ${theme}: the gate fails with the ${control.name}`).not.toEqual([]);
+      }
     });
   }
 }

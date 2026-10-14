@@ -44,6 +44,20 @@ describe('title binding', () => {
     } finally { close(); }
   });
 
+  it('refuses a bridge rename once the pane shows another note, leaving the bound doc unchanged', () => {
+    const doc = new Y.Doc();
+    writeField(doc, 'title', 'Original', 'seed');
+    const { el, field, close } = mount(doc);
+    try {
+      expect(field.writeText('Bound rename'), 'the control: the bound note takes a bridge rename').toBe(true);
+      expect(readField(doc, 'title')).toBe('Bound rename');
+      field.show('another-note');
+      expect(field.writeText('Wrong note')).toBe(false);
+      expect(readField(doc, 'title')).toBe('Bound rename');
+      expect(el.textContent).toBe('Bound rename');
+    } finally { close(); }
+  });
+
   it('title undo removes only local typing, redo restores it, and closed titles cannot undo', () => {
     const doc = new Y.Doc();
     writeField(doc, 'title', 'Plan', 'seed');

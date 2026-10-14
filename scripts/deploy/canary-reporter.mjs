@@ -4,6 +4,8 @@
 // kind of error, numeric expected and received values, and which invariants it broke; error text and test output are
 // withheld. The JSON reporter keeps the detail on the runner, which nothing uploads.
 
+import { retryClass } from './retry-gate.mjs';
+
 /** @param {number} ms */
 const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
 
@@ -101,6 +103,19 @@ const consoleKind = (detail) => {
   return /WebSocket/i.test(detail) ? ' (websocket)' : '';
 };
 
+/**
+ * One socket's end in an invariant 3 finding (`#2 closed after 12 ms: asked 1000, then 1006 reason`) as a fixed fact:
+ * its lifetime and close codes, never the close reason's text.
+ * @param {string} item
+ */
+const socketEnd = (item) => {
+  if (/^#\d{1,3} open$/.test(item)) return 'open';
+  const closed = /^#\d{1,3} closed after (\d{1,9}) ms: (.*)$/.exec(item);
+  if (!closed) return '?';
+  const codes = [...closed[2].matchAll(/(?:^|, then )(asked )?(\d{4}|-)/g)].map(([, asked, code]) => `${asked ?? ''}${code}`);
+  return `${closed[1]} ms (${codes.length > 0 ? codes.join(' then ') : 'no close event'})`;
+};
+
 /** A request path as its route: every segment that is not a short lowercase word (an id or a token) becomes `:id`. */
 const route = (path) => path.split('/').map((segment) => (segment === '' || /^[a-z][a-z-]{0,19}$/.test(segment) ? segment : ':id')).join('/');
 
@@ -124,8 +139,13 @@ export function findingFacts(message) {
     } else if (n === '3') {
       const sockets = /\b(\d{1,6}) socket opens in one document, (\d{1,6}) allowed/.exec(detail);
       if (sockets) fact = `${sockets[1]} socket opens, ${sockets[2]} allowed`;
-      const ended = /\((\d{1,6}) errored; lived ((?:\d{1,9} ms(?: \(\d{4}\))?|open)(?:, (?:\d{1,9} ms(?: \(\d{4}\))?|open)){0,20})\)/.exec(detail);
-      if (sockets && ended) fact += ` (${ended[1]} errored; lived ${ended[2]})`;
+      const ended = /\((\d{1,6}) errored; (#\d[^()]{0,2000})\)$/.exec(detail);
+      if (sockets && ended) fact += ` (${ended[1]} errored; ${ended[2].split('; ').slice(0, 20).map(socketEnd).join(', ')})`;
+      const drops = /\b(\d{1,6}) network drops \(1006\) in one document/.exec(detail);
+      if (drops) fact = `${drops[1]} network drops (1006), 1 allowed`;
+      if (/\ba socket dropped \(1006\) and no later socket of its document reached sync/.test(detail)) fact = 'a 1006 drop never recovered to sync';
+      const tryAgain = /\b(\d{1,6}) try-again closes \(1013\), (\d{1,6}) declared/.exec(detail);
+      if (tryAgain) fact = `${tryAgain[1]} try-again closes (1013), ${tryAgain[2]} declared`;
     } else if (n === '7') {
       const field = / (title|body): /.exec(detail)?.[1] ?? '';
       const counts = /appears (\d+) time\(s\), typed (\d+)/.exec(detail);
@@ -140,6 +160,8 @@ export function findingFacts(message) {
 export default class CanaryReporter {
   /** @type {Map<string, number>} */
   counts = new Map();
+  /** @type {string[]} Every retry this run allowed, with its infrastructure class. */
+  retried = [];
 
   printsToStdio() {
     return true;
@@ -154,14 +176,23 @@ export default class CanaryReporter {
   }
 
   /**
-   * @param {{ titlePath(): string[] }} test
-   * @param {{ status: string, duration: number, errors?: { message?: string, stack?: string }[] }} result
+   * @param {{ retries?: number, titlePath(): string[] }} test
+   * @param {{ status: string, duration: number, retry?: number, errors?: { message?: string, stack?: string }[] }} result
    */
   onTestEnd(test, result) {
     this.counts.set(result.status, (this.counts.get(result.status) ?? 0) + 1);
     // titlePath: the root, the project, the file, describes and the test.
-    console.log(`  ${result.status} ${test.titlePath().filter(Boolean).slice(1).join(' › ')} (${seconds(result.duration)})`);
+    const title = test.titlePath().filter(Boolean).slice(1).join(' › ');
+    console.log(`  ${result.status} ${title} (${seconds(result.duration)})`);
     for (const line of failureTrace(result)) console.log(`      ${line}`);
+    // A failed attempt that has a retry left: the retry runs only after a named infrastructure class (retry-gate.mjs;
+    // e2e/lib/reporter.ts records the verdict the retry reads).
+    const retry = result.retry ?? 0;
+    if (result.status !== 'passed' && result.status !== 'skipped' && retry < (test.retries ?? 0)) {
+      const infra = retryClass(result.errors);
+      console.log(infra ? `      retry: attempt ${retry + 1} failed on infrastructure (${infra}); it runs once more` : '      no retry: not infrastructure');
+      if (infra) this.retried.push(`${title}: ${infra}`);
+    }
   }
 
   onError() {
@@ -172,5 +203,6 @@ export default class CanaryReporter {
   onEnd(result) {
     const counts = [...this.counts].map(([status, n]) => `${n} ${status}`).join(', ') || 'no tests';
     console.log(`${result.status}: ${counts} in ${seconds(result.duration)}`);
+    console.log(`${this.retried.length} retr${this.retried.length === 1 ? 'y' : 'ies'} on infrastructure${this.retried.map((line) => `\n  ${line}`).join('')}`);
   }
 }

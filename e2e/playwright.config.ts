@@ -75,8 +75,8 @@ export default defineConfig({
       grepInvert: /@local-only/,
       // Every step waits on real round trips there: the longest legs passed in 130-150 s against the 120 s local limit.
       timeout: 240_000,
-      // Over the public internet a leg may meet one slow D1 turn or dropped request: it runs once more, on fresh
-      // principals, and the run log and summary name it flaky; a leg that fails twice fails the run.
+      // One retry, on fresh principals, only after a failure on a named infrastructure class (scripts/deploy/
+      // retry-gate.mjs): any other failure fails the retry at once, so the run fails. The log names every retry.
       retries: 1,
       use: { browserName: engine, ...recordingFor(stack?.baseUrl) },
     })),

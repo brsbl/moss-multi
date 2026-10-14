@@ -4,7 +4,8 @@
 // root's real path, and each name passes moss's filename rules. Every command that reads or writes a local file
 // goes through `confined`.
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from 'node:fs';
+import { linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
+import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CliError } from './errors.ts';
 import { isUnsafeChar } from './output.ts';
@@ -281,4 +282,106 @@ export function localName(filename: string, title: string): string {
   if (isAllowedName(last) && !last.startsWith('pending-') && last !== '.md' && !last.startsWith('.')) return last;
   const slug = title.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|(?<!-)-+$/g, '').slice(0, 80);
   return `${slug || 'untitled'}.md`;
+}
+
+/** The workspace lock: one process at a time classifies and records files, so no file is adopted twice. */
+const LOCK = join(STATE_DIR, '.lock');
+/** A lock from another host, or one never written in full, counts as stale once untouched this long. */
+const FOREIGN_STALE_MS = 10 * 60_000;
+const PARTIAL_STALE_MS = 10_000;
+
+interface LockOwner { pid: number; host: string; nonce: string }
+
+export interface WorkspaceLock {
+  /** Marks the lock as still in use, for a long pass seen from another host. */
+  touch(): void;
+  release(): void;
+}
+
+function readLock(path: string): { raw: string; owner: LockOwner | null; mtimeMs: number } | null {
+  try {
+    const raw = readFileSync(path, 'utf8');
+    const { mtimeMs } = lstatSync(path);
+    let owner: LockOwner | null = null;
+    try {
+      const parsed = JSON.parse(raw) as Partial<LockOwner>;
+      if (Number.isInteger(parsed.pid) && typeof parsed.host === 'string' && typeof parsed.nonce === 'string') owner = parsed as LockOwner;
+    } catch {
+      // Written only in part.
+    }
+    return { raw, owner, mtimeMs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** Stale: its process is gone (same host), or it has not been touched for a long time. */
+function isStale(lock: NonNullable<ReturnType<typeof readLock>>): boolean {
+  const { owner } = lock;
+  if (owner && owner.host === hostname()) {
+    try {
+      process.kill(owner.pid, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+  }
+  return Date.now() - lock.mtimeMs > (owner ? FOREIGN_STALE_MS : PARTIAL_STALE_MS);
+}
+
+/** Moves a stale lock aside; one that changed meanwhile (a fresh holder's) is put back. */
+function breakStale(path: string, raw: string): void {
+  const aside = `${path}.${randomBytes(6).toString('hex')}.stale`;
+  try {
+    renameSync(path, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  try {
+    if (readFileSync(aside, 'utf8') !== raw) linkSync(aside, path);
+  } catch {
+    // Someone holds the lock again.
+  } finally {
+    rmSync(aside, { force: true });
+  }
+}
+
+/**
+ * Takes the workspace lock with an exclusive create, waiting up to `waitMs` for another holder and taking over a
+ * stale one. An aborted `signal` ends the wait.
+ */
+export async function lockWorkspace(root: string, waitMs = 5 * 60_000, signal?: AbortSignal): Promise<WorkspaceLock> {
+  const path = noLinks(root, LOCK);
+  const nonce = randomBytes(8).toString('hex');
+  const body = JSON.stringify({ pid: process.pid, host: hostname(), nonce, at: Date.now() });
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      writeFileSync(path, body, { flag: 'wx' });
+      return {
+        touch: () => {
+          const now = new Date();
+          if (readLock(path)?.raw === body) utimesSync(path, now, now);
+        },
+        release: () => {
+          if (readLock(path)?.raw === body) rmSync(path, { force: true });
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const held = readLock(path);
+    if (!held) continue;
+    if (isStale(held)) {
+      breakStale(path, held.raw);
+      continue;
+    }
+    if (signal?.aborted) throw new CliError(1, 'stopped while waiting for the workspace lock');
+    if (Date.now() >= deadline) {
+      throw new CliError(1, `another moss-multi process${held.owner ? ` (pid ${held.owner.pid})` : ''} is syncing ${root}; try again once it finishes`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }

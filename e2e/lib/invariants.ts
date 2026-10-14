@@ -21,6 +21,8 @@ export interface ActorView {
   declaredHttp: DeclaredHttp[];
   /** Declared reconnects per doc id (`*` for every doc). */
   reconnects: Map<string, number>;
+  /** Declared try-again (1013) closes per doc id (`*` for every doc), judged off loopback (invariant 3). */
+  tryAgain?: Map<string, number>;
   /** Editor observations per doc id (invariant 4). */
   observations: Map<string, { mark: string; generation: string }>;
 }
@@ -39,17 +41,30 @@ export const pathMatches = (url: string, path: string | RegExp): boolean => {
 
 const LOAD_FAILURE = /Failed to load resource: the server responded with a status of (\d{3})/;
 
-const declares = (declared: DeclaredHttp[], status: number, url: string) =>
+export const declares = (declared: DeclaredHttp[], status: number, url: string) =>
   declared.some((d) => d.status === status && pathMatches(url, d.path));
 
-/** Off loopback, a doc socket the network dropped (1006) or the server told to try again (1013); the client reconnects. */
-const NETWORK_DROP = new Set([1006, 1013]);
+/** A doc socket the network dropped: the close the page heard was abnormal. */
+const NETWORK_DROP = 1006;
+/** The server's try-again (packages/sync access-epoch.ts TRY_AGAIN): a close no journey sees unless it declares it. */
+const TRY_AGAIN = 1013;
 const SOCKET_FAILED = /^WebSocket connection to '([^']+)' failed/;
 
 export interface Network {
-  /** Against a deployed stack: one network drop per doc and document is recovered, not a finding (A§21). */
+  /** Against a deployed stack: one network drop per doc and document, recovered to sync, is not a finding (A§21). */
   offLoopback?: boolean;
 }
+
+
+/** Invariant 3's socket groups: per page document (else navigation count) and doc. */
+const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
+  const groups = new Map<string, SocketEntry[]>();
+  for (const socket of sockets) {
+    const key = `${socket.document ? `doc:${socket.document}` : `epoch:${socket.epoch}`}\u0000${socket.docId}`;
+    groups.set(key, [...(groups.get(key) ?? []), socket]);
+  }
+  return groups;
+};
 
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
@@ -59,11 +74,11 @@ export function errorProblems(
   { offLoopback = false }: Network = {},
 ): string[] {
   const problems = census.pageErrors.map((e) => `page error: ${e.message}`);
-  const dropped = new Set(offLoopback ? (census.sockets ?? []).filter((s) => NETWORK_DROP.has(s.code ?? 0)).map((s) => s.url) : []);
   for (const entry of census.console) {
     if (entry.type !== 'error') continue;
-    // The browser logs the drop invariant 3 counts; the drop itself is judged there.
-    if (dropped.has(SOCKET_FAILED.exec(entry.text)?.[1] ?? '')) continue;
+    // The browser logs the drop invariant 3 judges: that socket's URL (its own _pk), while it lived or just after.
+    const failed = SOCKET_FAILED.exec(entry.text)?.[1];
+    if (failed && (census.sockets ?? []).some((s) => offLoopback && s.url === failed && (s.code === NETWORK_DROP || s.code === TRY_AGAIN))) continue;
     // A declared 4xx also logs a load failure for that resource; it is the same, declared, event.
     const load = LOAD_FAILURE.exec(entry.text);
     const status = load ? Number(load[1]) : 0;
@@ -91,26 +106,37 @@ export function stampProblems(stamps: StampEntry[], version: Provenance | null):
   ]);
 }
 
+/** The longest a socket the page never saw close may have lived and still be a browser artifact (invariant 3). */
+const ARTIFACT_MS = 50;
+
 /**
  * Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. A socket's
- * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback,
- * one socket closed by a network drop may be replaced once more.
+ * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback, one
+ * network drop per doc and document (a heard 1006) is allowed only when a later socket of that document reached sync,
+ * and every 1013 (the server's try-again) is a finding unless the journey declared it (`expectTryAgain`).
  */
-export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>, { offLoopback = false }: Network = {}): string[] {
-  const groups = new Map<string, SocketEntry[]>();
-  for (const socket of sockets) {
-    const key = `${socket.document ? `doc:${socket.document}` : `epoch:${socket.epoch}`}\u0000${socket.docId}`;
-    groups.set(key, [...(groups.get(key) ?? []), socket]);
-  }
+export function socketProblems(
+  sockets: SocketEntry[],
+  reconnects: Map<string, number>,
+  { offLoopback = false }: Network = {},
+  tryAgain: Map<string, number> = new Map(),
+): string[] {
+  const groups = socketGroups(sockets);
   const problems: string[] = [];
-  for (const group of groups.values()) {
-    const { docId } = group[0];
-    const drop = offLoopback && group.some((s) => s.closedAt !== null && NETWORK_DROP.has(s.code ?? 0)) ? 1 : 0;
+  const tryAgainSeen = new Map<string, number>();
+  for (const all of groups.values()) {
+    const { docId } = all[0];
+    // A socket the browser reported closed within ARTIFACT_MS of opening, that the page never closed nor heard close, is
+    // not one the page opened: a WebKit census once listed such a socket, closed 1 ms after it opened, beside the page's
+    // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
+    const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
+    if (group.length === 0) continue;
+    const drop = offLoopback && group.some((s) => s.closedAt !== null && (s.code === NETWORK_DROP || s.code === TRY_AGAIN)) ? 1 : 0;
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + drop;
     if (group.length > allowed) {
-      // How each socket ended, for a log that may not print the census: a socket error is a handshake or network failure.
-      const lived = group.map((s) => (s.closedAt === null ? 'open' : `${s.closedAt - s.openedAt} ms${s.code ? ` (${s.code})` : ''}`)).join(', ');
-      problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${group.filter((s) => s.error).length} errored; lived ${lived})`);
+      // How each socket ended, for a log that may not print the census.
+      const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}`);
+      problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${group.filter((s) => s.error).length} errored; ${closes.join('; ')})`);
     }
     const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);
     events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -118,6 +144,10 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     let peak = 0;
     for (const [, delta] of events) peak = Math.max(peak, (open += delta));
     if (peak > 1) problems.push(`${docId}: ${peak} doc sockets open at once`);
+  }
+  for (const [docId, seen] of tryAgainSeen) {
+    const declared = (tryAgain.get(docId) ?? 0) + (tryAgain.get('*') ?? 0);
+    if (seen > declared) problems.push(`${docId}: ${seen} try-again closes (1013), ${declared} declared`);
   }
   return problems;
 }
@@ -140,7 +170,7 @@ export async function actorFindings(actor: ActorView, journey: string, version: 
   const findings = [
     ...errorProblems(actor.telemetry, actor.declaredHttp, journey, network).map(finding(1, actor.label)),
     ...stampProblems(actor.telemetry.stamps, version).map(finding(2, actor.label)),
-    ...socketProblems(actor.telemetry.sockets, actor.reconnects, network).map(finding(3, actor.label)),
+    ...socketProblems(actor.telemetry.sockets, actor.reconnects, network, actor.tryAgain).map(finding(3, actor.label)),
   ];
   if (actor.page.isClosed()) return findings;
   for (const [docId, { mark, generation }] of actor.observations) {

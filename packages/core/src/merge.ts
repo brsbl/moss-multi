@@ -49,13 +49,19 @@ export interface MergeComputation {
   target: string;
   /** Pushed edits that were not applied because the doc changed the same region since the base. */
   failedHunks: string[];
-  /** The share of the base's characters the push deletes. */
+  /**
+   * The share of the base's characters the push deletes; for a drifted push refused because its merged result
+   * deletes too much of the doc, the share of the doc's characters it would delete.
+   */
   deletedRatio: number;
   /** Whether the doc changed since the base was pulled. */
   drifted: boolean;
   /** Pushed edits applied to the current text. */
   applied: number;
-  /** Refused as degenerate (only with refuseDegenerate): the regions were not merged and `target` is the current text. */
+  /**
+   * Refused as degenerate (only with refuseDegenerate): the push, or its merge with the doc's own edits, empties the
+   * doc or deletes more than DEGENERATE_DELETE_RATIO of it. `target` is the current text.
+   */
   degenerate: boolean;
 }
 
@@ -78,6 +84,8 @@ interface Run {
   end: number;
   from: number;
   to: number;
+  /** Replaced whole because its search ran past its limit: what changed inside it is unknown. */
+  coarse?: boolean;
 }
 
 /**
@@ -229,7 +237,7 @@ function tokenRuns(a: Int32Array, b: Int32Array, anchors: boolean, budget: Merge
     spent.steps = 0;
     const found = s < e && f < t && myers(a, s, e, b, f, t, Math.min(budget.work, DIFF_WORK, anchors ? DIFF_WORK : DENSE_WORK * (e - s + t - f)), out, spent);
     charge(budget, spent.steps, strict);
-    if (!found) out.push({ start: s, end: e, from: f, to: t });
+    if (!found) out.push({ start: s, end: e, from: f, to: t, ...(s < e && f < t ? { coarse: true } : {}) });
   }
   return out;
 }
@@ -269,18 +277,50 @@ function unitRuns(runs: Run[], sizeA: (i: number) => number, sizeB: (j: number) 
     const was = from;
     for (; i < run.end; i++) at += sizeA(i);
     for (; j < run.to; j++) from += sizeB(j);
-    out.push({ start, end: at, from: was, to: from });
+    out.push({ start, end: at, from: was, to: from, ...(run.coarse ? { coarse: true } : {}) });
   }
 }
 
 const unitSize = (codes: Int32Array) => (i: number): number => (codes[i]! > 0xffff ? 2 : 1);
 
+/** The start of each line of text[from, to), and `to`. */
+function lineStarts(text: string, from: number, to: number): number[] {
+  const starts = [from];
+  for (let at = text.indexOf('\n', from); at >= 0 && at + 1 < to; at = text.indexOf('\n', at + 1)) starts.push(at + 1);
+  starts.push(to);
+  return starts;
+}
+
 /**
- * The edits turning `base` into `side`, and the base characters they delete. Lines are diffed first, so an unchanged
- * line always separates two edits and a character diff never aligns one paragraph with another; changed lines are
- * then diffed by character, and changes on one line separated only by unchanged text are one edit.
+ * The character runs of a region whose line diff ran past its limit: its lines are paired in order and each pair is
+ * diffed by character, on at most DIFF_WORK steps in all (what one diff of the whole region could take), so a long run
+ * of slightly changed lines is not taken for a deletion. Lines past the shorter side, and pairs past that limit, are
+ * replaced whole.
  */
-function sideEdits(base: string, side: string, budget: MergeBudget, strict: boolean): { edits: Edit[]; deleted: number } {
+function coarseRuns(base: string, side: string, region: Run, budget: MergeBudget, strict: boolean, out: Run[]): void {
+  const baseStarts = lineStarts(base, region.start, region.end);
+  const sideStarts = lineStarts(side, region.from, region.to);
+  const pairs = Math.min(baseStarts.length, sideStarts.length) - 1;
+  const own = mergeBudget(Math.min(budget.work, DIFF_WORK));
+  const had = own.work;
+  for (let k = 0; k < pairs; k++) {
+    const a = codePoints(base, baseStarts[k]!, baseStarts[k + 1]!);
+    const b = codePoints(side, sideStarts[k]!, sideStarts[k + 1]!);
+    unitRuns(tokenRuns(a, b, false, own, false), unitSize(a), unitSize(b), baseStarts[k]!, sideStarts[k]!, out);
+  }
+  if (baseStarts[pairs]! < region.end || sideStarts[pairs]! < region.to) {
+    out.push({ start: baseStarts[pairs]!, end: region.end, from: sideStarts[pairs]!, to: region.to });
+  }
+  charge(budget, had - own.work, strict);
+}
+
+/**
+ * The edits turning `base` into `side`, the base characters they delete, and each edit's share of them. Lines are
+ * diffed first, so an unchanged line always separates two edits and a character diff never aligns one paragraph with
+ * another; changed lines are then diffed by character, and changes on one line separated only by unchanged text are
+ * one edit.
+ */
+function sideEdits(base: string, side: string, budget: MergeBudget, strict: boolean): { edits: Edit[]; deleted: number; removed: number[] } {
   const ids = new Map<string, number>();
   const sizes: number[] = [];
   const encode = (text: string): Int32Array => Int32Array.from(splitLines(text), (line) => {
@@ -297,6 +337,10 @@ function sideEdits(base: string, side: string, budget: MergeBudget, strict: bool
   unitRuns(tokenRuns(baseLines, sideLines, true, budget, strict), (i) => sizes[baseLines[i]!]!, (j) => sizes[sideLines[j]!]!, 0, 0, regions);
   const runs: Run[] = [];
   for (const region of regions) {
+    if (region.coarse) {
+      coarseRuns(base, side, region, budget, strict, runs);
+      continue;
+    }
     const a = codePoints(base, region.start, region.end);
     const b = codePoints(side, region.from, region.to);
     unitRuns(tokenRuns(a, b, false, budget, strict), unitSize(a), unitSize(b), region.start, region.from, runs);
@@ -304,6 +348,7 @@ function sideEdits(base: string, side: string, budget: MergeBudget, strict: bool
   let deleted = 0;
   let newline = -1; // the first newline at or after the last joined run's end, or base.length
   const joined: Run[] = [];
+  const removed: number[] = [];
   for (const run of runs) {
     deleted += run.end - run.start;
     const last = joined.at(-1);
@@ -311,10 +356,15 @@ function sideEdits(base: string, side: string, budget: MergeBudget, strict: bool
       newline = base.indexOf('\n', last.end);
       if (newline < 0) newline = base.length;
     }
-    if (last && newline >= run.start) Object.assign(last, { end: run.end, to: run.to });
-    else joined.push({ ...run });
+    if (last && newline >= run.start) {
+      Object.assign(last, { end: run.end, to: run.to });
+      removed[removed.length - 1] = removed.at(-1)! + (run.end - run.start);
+    } else {
+      joined.push({ ...run });
+      removed.push(run.end - run.start);
+    }
   }
-  return { edits: joined.map(({ start, end, from, to }) => ({ start, end, text: side.slice(from, to) })), deleted };
+  return { edits: joined.map(({ start, end, from, to }) => ({ start, end, text: side.slice(from, to) })), deleted, removed };
 }
 
 /**
@@ -380,7 +430,9 @@ function mergeBodies(current: string, base: string, next: string, refuseDegenera
   const failed: Edit[] = [];
   // Both lists are in base order and each is disjoint, so one sweep finds every edit of theirs a pushed edit touches.
   let first = 0;
-  for (const edit of pushed.edits) {
+  let removed = 0; // the doc's characters the accepted edits delete: theirs never touch them
+  for (let e = 0; e < pushed.edits.length; e++) {
+    const edit = pushed.edits[e]!;
     while (first < theirs.length && theirs[first]!.end < edit.start) first++;
     let same = false;
     let clash = false;
@@ -390,7 +442,12 @@ function mergeBodies(current: string, base: string, next: string, refuseDegenera
       else if (overlaps(edit, other)) clash = true;
     }
     // Made identically on both sides: already in the doc.
-    if (!same) (clash ? failed : accepted).push(edit);
+    if (same) continue;
+    if (clash) failed.push(edit);
+    else {
+      accepted.push(edit);
+      removed += pushed.removed[e]!;
+    }
   }
   const ordered = [...theirs, ...accepted].sort((a, b) => a.start - b.start || (a.end - a.start) - (b.end - b.start));
   let target = '';
@@ -400,10 +457,19 @@ function mergeBodies(current: string, base: string, next: string, refuseDegenera
     at = edit.end;
   }
   target += base.slice(at);
+  // Measured against the base alone, complementary deletions (the person deletes one part, the push the rest) would
+  // each pass while their merge empties the doc: the merged result is held to the same rule against the doc.
+  const merged = removed / Math.max(current.length, 1);
+  if (refuseDegenerate && ((target.trim() === '' && current.trim() !== '') || merged > DEGENERATE_DELETE_RATIO)) {
+    return { ...unchanged, target: current, deletedRatio: Math.max(deletedRatio, merged), degenerate: true };
+  }
   return { target, failedHunks: describeHunks(base, failed), deletedRatio, drifted, applied: accepted.length, degenerate: false };
 }
 
-/** A push that empties the doc, or deletes more than DEGENERATE_DELETE_RATIO of its base, drifted or not. */
+/**
+ * A push that empties the doc, or deletes more than DEGENERATE_DELETE_RATIO of its base, drifted or not; a drifted
+ * merge is held to the same rule against the doc as well (mergeBodies).
+ */
 export function isDegenerate(base: string, next: string, deletedRatio: number): boolean {
   if (base === next) return false;
   return (next.trim() === '' && base.trim() !== '') || deletedRatio > DEGENERATE_DELETE_RATIO;

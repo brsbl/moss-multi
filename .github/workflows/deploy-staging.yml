@@ -176,7 +176,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node "$WRANGLER" d1 migrations apply moss-multi-staging --remote --config apps/web/dist/server/wrangler.json
-      # A§21: nothing reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
+      # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
       - name: Staging has room for a full suite
         if: inputs.suite == 'full'
         env:

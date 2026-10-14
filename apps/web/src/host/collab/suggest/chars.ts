@@ -14,6 +14,9 @@ interface CollabLike {
   _xmlElem?: Y.XmlElement;
 }
 
+/** Characters and grapheme segments visited here; the routing tests read it to bound a delete's work. */
+export const charWork = { steps: 0 };
+
 const collabOf = (binding: Binding, key: NodeKey): CollabLike | undefined => binding.collabNodeMap.get(key) as unknown as CollabLike | undefined;
 
 /** The ids of a text node's characters, in order; null when the binding holds no text node for `key`. */
@@ -27,6 +30,7 @@ export function textIds(binding: Binding, key: NodeKey): Y.ID[] | null {
     if (item.deleted) continue;
     if (item.content instanceof Y.ContentString) {
       for (let i = 0; i < item.length; i += 1) ids.push(Y.createID(item.id.client, item.id.clock + i));
+      charWork.steps += item.length;
       continue;
     }
     if (item.content instanceof Y.ContentFormat) continue;
@@ -66,20 +70,33 @@ export function charIndex(binding: Binding): Map<string, CharPlace> {
 
 const graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 
-/** The UTF-16 range [from, to) of the character (grapheme) holding code unit `at`; never splits a surrogate pair. */
-export function charAround(text: string, at: number): [number, number] {
-  // Iterated, not containing(): JavaScriptCore's containing() at a boundary returns the segment before it too.
-  if (graphemes) {
-    for (const { index, segment } of graphemes.segment(text)) {
-      if (index > at) break;
-      if (at < index + segment.length) return [index, index + segment.length];
-    }
-  }
+/**
+ * For a code unit of `text`, the UTF-16 range [from, to) of the character (grapheme) holding it; never splits a
+ * surrogate pair. `text` is segmented once, on the first lookup, so walking a node costs O(text) in all.
+ */
+export function charsAround(text: string): (at: number) => [number, number] {
+  let starts: Uint32Array | null = null;
+  let ends: Uint32Array | null = null;
   const high = (i: number) => i >= 0 && i < text.length && (text.charCodeAt(i) & 0xfc00) === 0xd800;
   const low = (i: number) => i >= 0 && i < text.length && (text.charCodeAt(i) & 0xfc00) === 0xdc00;
-  if (high(at) && low(at + 1)) return [at, at + 2];
-  if (low(at) && high(at - 1)) return [at - 1, at + 1];
-  return [at, at + 1];
+  return (at) => {
+    // Iterated, not containing(): JavaScriptCore's containing() at a boundary returns the segment before it too.
+    if (graphemes && !starts) {
+      const from = new Uint32Array(text.length);
+      const to = new Uint32Array(text.length);
+      for (const { index, segment } of graphemes.segment(text)) {
+        charWork.steps += 1;
+        from.fill(index, index, index + segment.length);
+        to.fill(index + segment.length, index, index + segment.length);
+      }
+      starts = from;
+      ends = to;
+    }
+    if (starts && ends && at >= 0 && at < text.length) return [starts[at], ends[at]];
+    if (high(at) && low(at + 1)) return [at, at + 2];
+    if (low(at) && high(at - 1)) return [at - 1, at + 1];
+    return [at, at + 1];
+  };
 }
 
 /** Consecutive ids folded into spans. */

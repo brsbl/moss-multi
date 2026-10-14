@@ -1,5 +1,18 @@
 /**
- * @moss-multi/editor: public host contract, API version 1.
+ * @moss-multi/editor: public host contract, API version 2 (editor 0.3.0 and later).
+ *
+ * BREAKING: API 2 replaces API 1 (editor 0.1.0 and 0.2.0, which stay
+ * published unchanged), as the owner approved on 2026-10-06. What changed,
+ * item by item, and what a host must change: docs/design/editor-embed.md
+ * section 13, "Migrating from API 1". In short: a moss-html block renders
+ * inert until the user presses its Run button, and the frame policy refuses a
+ * running block's requests and frame loads (`MossEditorManifest.htmlFrame`,
+ * which also lists what a running block can still reach);
+ * `assets.copyFromNote` copies only out of notes the
+ * user opened in the host; the host security obligations below are
+ * normative; a case-only retitle keeps the markdown entry's spelling; and
+ * `bridge.api` must be `2`, else the mount fails with `apiMismatch` before
+ * any bridge call.
  *
  * This file holds types only. The runtime values it describes
  * (`MOSS_EDITOR_API`, `MOSS_EDITOR_INFO`, `mountMossEditor` and the pure host
@@ -23,7 +36,7 @@
  *   of save receipts. It never parses, normalizes, re-encodes or reformats
  *   note files.
  *
- * What API 1 guarantees about concurrent Moss desktop writes:
+ * What the contract guarantees about concurrent Moss desktop writes:
  * - bb never destroys bytes Moss wrote. Every byte sequence a bb write
  *   displaces is either verified as the expected state, put back, or kept as
  *   a preserved file that is reported to the editor (`MossNoteWrite`).
@@ -32,17 +45,64 @@
  *   unconditionally, an unbounded time later, and a Moss window holding
  *   unsaved edits rebases "user wins" on its next save by design. So a bb
  *   save can be replaced by Moss at any later time, including after the
- *   editor has unmounted. API 1 makes such a loss recoverable, not
+ *   editor has unmounted. The contract makes such a loss recoverable, not
  *   impossible: every `saved` result and event carries a `receipt` (the exact
  *   bytes saved) that the host retains, and a mounted editor additionally
  *   shows a best-effort notice when a replacement arrives within
  *   `recentSaveGuardMs` of its save. Neither is a detection guarantee.
  *
- * Compatibility rules for API 1:
- * - `MOSS_EDITOR_API` stays `1` for every release that implements this file.
+ * Host security obligations (normative). Every host must do each of these;
+ * the editor relies on them and cannot check them from its frame:
+ * 1. Read confinement. Every path or reference that reaches the host from
+ *    note content or from the editor (`readCompanion`'s `relativePath`,
+ *    `assets.url`'s `ref`, `copyFromNote`'s `sourceRef`) is resolved against
+ *    its own note's folder, and the host realpaths both the folder and the
+ *    target and refuses anything outside the folder: symlinks and hard-linked
+ *    escapes, `..`, absolute paths, NUL and `~`. A refusal is a typed result
+ *    (`absent`, `null`, `notFound`), never a read. `copyFromNote` reads only
+ *    from a note the user has opened in the host (`MossAssetBridge.copyFromNote`).
+ * 2. Write re-validation. The host never trusts a name from the editor. It
+ *    checks every `MossFolderRename.desiredName` with `isMossFolderName` and
+ *    every asset `name` (`MossAssetPut`, `MossAssetCopy`) with
+ *    `isMossAssetName` from `moss-editor-host.js` before any change, and
+ *    returns `failed` (`EINVAL`) or `refused` (`name`) on a failure. Every
+ *    write target stays inside the note folder, and the folder rename inside
+ *    its parent.
+ * 3. Served-asset headers. Every asset URL the host issues (`assets.url`) is
+ *    served with `X-Content-Type-Options: nosniff`, the exact `Content-Type`
+ *    of the file's `MossAssetExtension`, and `Content-Disposition` where the
+ *    response allows it. SVG, and any other type a browser can render as
+ *    active content, is never same-origin with the editor or the host's
+ *    frame, and is served with `Content-Security-Policy: sandbox;
+ *    default-src 'none'`. The editor shows SVG only through `<img>`. An
+ *    upload whose bytes do not match its type is refused (`refused`, `type`).
+ * 4. The moss-html frame. The host serves `editor.json` `htmlFrame.file`
+ *    with exactly `Content-Security-Policy: <htmlFrame.policy>`
+ *    (`MossEditorManifest.htmlFrame`), on an origin the editor frame's
+ *    `frame-src` allows. The host serves the file's bytes unchanged: the
+ *    document, not only its policy, keeps a block off the network.
+ * 5. The package directory. The host serves every file in `editor.json`
+ *    `files` at its path relative to `entry`, from the origin it serves
+ *    `entry` from, which the frame's `script-src 'self'` covers: the entry
+ *    imports its chunks (`chunks`) and the stylesheet its fonts by relative
+ *    URL, never inlined, from a `blob:` or `data:` URL, or from another
+ *    origin. Files under `assets/` carry a content hash in their names and
+ *    may be cached immutably; `entry`, `css`, the manifest and the frame
+ *    document keep their names across releases and must be revalidated.
+ *
+ * Compatibility rules for API 2:
+ * - `MOSS_EDITOR_API` stays `2` for every release that implements this file.
  *   Removing or renaming a field, narrowing a type, or changing a default or a
- *   meaning is a breaking change and requires API 2.
- * - Additive changes keep API 1. They are negotiated by feature strings, not
+ *   meaning is a breaking change and requires API 3.
+ * - A host checks `editor.json` `api` (or `MOSS_EDITOR_INFO.api`) before it
+ *   mounts. If `bridge.api` is not the editor's API anyway (for example an API
+ *   1 host mounting this bundle), the mount fails at once and typed: `ready`
+ *   rejects with a `MossEditorError` of code `apiMismatch` and the message
+ *   `bridge.api is <n>; this editor implements API 2`, the status is
+ *   `notLoaded`, an `error` event (`op: 'read'`) is emitted, the element shows
+ *   a placeholder naming the API, and no bridge method is called. `flush()`
+ *   and `unmount()` then resolve as for any failed first read.
+ * - Additive changes keep API 2. They are negotiated by feature strings, not
  *   assumed:
  *   - The editor declares its features in `MOSS_EDITOR_INFO.features`, which
  *     is also published in `editor.json` `features`. A host may return a new
@@ -56,10 +116,11 @@
  *     kind or a new `MossReloadResult` kind only behind a host feature string
  *     the host listed. Hosts may therefore switch exhaustively on every union
  *     in this file.
- *   - API 1's baseline has no feature strings. Everything in this file is
- *     required of both sides unless it is marked optional.
- *   - Editor features so far (0.2.0): `selection-1` (`MossEditorHandle.selection`)
- *     and `share-with-agent-1` (`MossEditorServices.shareWithAgent`).
+ *   - Everything in this file is required of both sides unless it is marked
+ *     optional or belongs to a feature.
+ *   - Editor features (since 0.2.0, carried into API 2 unchanged):
+ *     `selection-1` (`MossEditorHandle.selection`) and `share-with-agent-1`
+ *     (`MossEditorServices.shareWithAgent`).
  * - Hosts must ignore unknown event fields and unknown manifest fields. The
  *   editor ignores unknown option fields.
  * - A result `kind` the editor does not know is treated as an error for that
@@ -71,22 +132,22 @@
 /* Entry constants and module shape                                          */
 /* ------------------------------------------------------------------------- */
 
-/** The contract version. Always `1` for releases that implement this file. */
-export type MossEditorApiVersion = 1;
+/** The contract version. Always `2` for releases that implement this file. */
+export type MossEditorApiVersion = 2;
 
 /**
- * A feature string introduced by a later API-1 release, for example
- * `'scope.external'`. The baseline defines none. Each feature is documented
- * where it is introduced, together with the kinds, ops or methods it unlocks.
+ * A feature string introduced by an additive release, for example
+ * `'scope.external'`. Each feature is documented where it is introduced,
+ * together with the kinds, ops or methods it unlocks.
  */
 export type MossEditorFeature = string;
 
 /** Identity of a built editor. Equal to the matching fields of `editor.json`. */
 export interface MossEditorInfo {
   readonly api: MossEditorApiVersion;
-  /** Package semver, for example `0.1.0`. */
+  /** Package semver, for example `0.3.0`. */
   readonly version: string;
-  /** Features this editor implements. Empty in the baseline. */
+  /** Features this editor implements. */
   readonly features: readonly MossEditorFeature[];
 }
 
@@ -199,7 +260,7 @@ export interface MossEditorHostModule {
    */
   versionToken(parts: readonly MossVersionPart[]): Promise<string>;
   /**
-   * Whether API 1 may edit a note under the v0 scope rules. The host must call
+   * Whether the editor may edit a note under the v0 scope rules. The host must call
    * this before mounting, and `read`, `write` and `assets.put` must apply the
    * same answer. It covers file rules only; the host adds `duplicateId` and
    * `hostUnsupported` itself.
@@ -305,7 +366,7 @@ export type MossEditability =
   | { kind: 'notEditable'; reason: MossNotEditableReason };
 
 /**
- * Why API 1 refuses to edit a note. Hosts should show such notes in the
+ * Why the editor refuses to edit a note. Hosts should show such notes in the
  * read-only viewer instead.
  * - `external`: meta.json has `systemNoteType: 'external'` or
  *   `externalFilePath`, or the folder is under `Notes/External`. Sidecars are
@@ -380,7 +441,11 @@ export interface MossEditorOptions {
   /**
    * URL of the host-served moss-html frame: the tarball's
    * `editor.json` `htmlFrame.file`, served with the response header
-   * `Content-Security-Policy: <htmlFrame.policy>` (`sandbox allow-scripts`).
+   * `Content-Security-Policy: <htmlFrame.policy>` (`MossEditorManifest.htmlFrame`:
+   * an opaque-origin sandbox that shows a block inert until the user presses
+   * its Run button, then runs its inline scripts and styles and shows its
+   * `data:` and `blob:` images, and refuses its requests and frame loads;
+   * the risks that remain once a block runs are listed there).
    * moss-html blocks load it and receive their HTML by `postMessage`, the same
    * protocol as moss-multi's web `/frame/html` (SP13). A `data:` frame
    * inherits the editor frame's CSP, so a block's own scripts cannot run
@@ -392,6 +457,11 @@ export interface MossEditorOptions {
    * Receives every editor event from mount until `unmount()` tears down. It is
    * called synchronously inside the editor. Exceptions it throws are caught
    * and logged, and never affect saving.
+   *
+   * Required for a host that retains save receipts (file header): an
+   * autosave's `receipt` reaches the host only through its `saved` event, so a
+   * host without `onEvent` sees the receipt of a `flush()` or `unmount()`
+   * only, never of the autosaves between them.
    */
   onEvent?: (event: MossEditorEvent) => void;
   /**
@@ -714,7 +784,8 @@ export type MossFlushFailure =
 
 /**
  * Thrown from `ready`. Its `name` is `'MossEditorError'`. When `cause` is set,
- * it is the bridge's original error.
+ * it is the bridge's original error. `apiMismatch`: `bridge.api` is not this
+ * editor's API; nothing was read (see the compatibility rules at the top).
  */
 export interface MossEditorError extends Error {
   readonly name: 'MossEditorError';
@@ -835,7 +906,7 @@ export type MossEditorEvent =
 
 /**
  * Autosave timing constants. They are fixed by the editor and not
- * configurable in API 1. The type of each member is its value.
+ * configurable. The type of each member is its value.
  */
 export interface MossEditorTiming {
   /** 1500 ms. Each edit restarts the idle save timer (`EDIT_IDLE_AUTOSAVE_DELAY_MS`). */
@@ -936,7 +1007,9 @@ export interface MossNoteLocation {
    * candidate from `markdownCandidates` that exists (so `Plan.md` even when
    * the entry is spelled `plan.md` on a case-insensitive volume, as desktop
    * resolves it), or else the entry name `pickMarkdownFallback` returned.
-   * After a `saved` write: always `<folderName>.md`.
+   * After a `saved` write: always `<folderName>.md`, the first candidate's
+   * spelling, even where the directory entry keeps another letter case after
+   * a case-only retitle (`MossNoteWrite` step 4).
    */
   markdownName: string;
 }
@@ -964,7 +1037,7 @@ export interface MossNoteLocation {
  *   invariant in `MossNoteWrite`.
  */
 export interface MossEditorBridge {
-  /** Must be `1`. `ready` rejects with `apiMismatch` otherwise. */
+  /** Must be `2`. Otherwise `ready` rejects with `apiMismatch` before any bridge call. */
   readonly api: MossEditorApiVersion;
   /** Host features; see the compatibility rules at the top. Default `[]`. */
   readonly features?: readonly MossEditorFeature[];
@@ -973,10 +1046,11 @@ export interface MossEditorBridge {
    * Reads a note-relative companion file, for Moss's editor-read migrations
    * (the legacy mockup migration reads `assets/<name>-mockup.html`,
    * common/legacy-mockup-migration.ts:207-229). Same rules as desktop's
-   * `readNoteRelativeCompanionFile` (note-store.ts:3047-3069): resolve
-   * `relativePath` against the note folder, realpath both, and return
-   * `absent` if the target is outside the note folder or does not exist.
-   * Other I/O errors reject. The editor calls this only while reading, and
+   * `readNoteRelativeCompanionFile` (note-store.ts:3047-3069), and host
+   * obligation 1 (file header): resolve `relativePath` against the note
+   * folder, realpath both, and return `absent` if the target is outside the
+   * note folder (a symlink or hard-linked escape, `..`, an absolute path, NUL
+   * or `~`) or does not exist. Other I/O errors reject. The editor calls this only while reading, and
    * sends each returned version back in `MossNoteWrite.companions`.
    */
   readCompanion(noteId: MossNoteId, relativePath: string): Promise<MossCompanionRead>;
@@ -1071,17 +1145,26 @@ export interface MossCompanionExpectation {
  *      go to step 5.
  *    - Markdown target and the old file. The put targets
  *      `<folderName>.md` (the final name after step 3). Before the put, the
- *      host `lstat`s that path. If it resolves to the `(dev, ino)` recorded
- *      in step 2, the old file and the target are the same file (a case-only
- *      retitle or a case-variant name on a case-insensitive volume): treat
- *      the target as present in E, exchange onto it, and delete nothing.
- *      After the exchange, if the directory entry's spelling differs from
- *      `<folderName>.md` only in case, rename(2) the entry to that exact
- *      spelling (a same-inode case-only rename replaces no other file).
- *      Only if the old file is a different file from the target does the
- *      host delete it afterwards, as a verified delete. Desktop reaches the
- *      same result by re-resolving after the folder rename and comparing
- *      paths (note-store.ts:5121-5148).
+ *      host `lstat`s that path. Exactly one of three cases holds:
+ *      (a) It resolves to the `(dev, ino)` recorded in step 2: the old file
+ *      and the target are the same file (a case-only retitle or a
+ *      case-variant name on a case-insensitive volume). The target is present
+ *      in E with the markdown bytes read in step 2; exchange onto it and
+ *      delete nothing. The directory entry keeps its existing spelling (no
+ *      respell step): desktop's `persistFile` renames a temp over the path,
+ *      which on APFS and HFS+ keeps the entry's old letter case, so after
+ *      "Plan" to "plan" both apps leave `plan/Plan.md`.
+ *      (b) It does not exist: an exclusive put, with the target absent in E.
+ *      (c) It is a different file (the folder already held a distinct
+ *      `<folderName>.md`, which desktop overwrites): a put over an existing
+ *      file, whose E is the target's bytes as read by this `lstat` step,
+ *      after the folder rename.
+ *      In cases (b) and (c), once the put has landed, the host deletes the
+ *      old markdown file only if it still holds the markdown bytes read in
+ *      step 2, as a verified delete; if it holds other bytes it is left in
+ *      place, and the write is not `raced` for it. Desktop reaches the same
+ *      files by re-resolving after the folder rename and comparing paths
+ *      (note-store.ts:5121-5148).
  * 5. On any mismatch (`raced`): roll back every file this write already
  *    replaced, in reverse order, by exchanging its holding file back, but
  *    only where the target still holds this write's bytes. Return
@@ -1149,9 +1232,10 @@ export interface MossNoteWrite {
  *
  * Case-only example on APFS: "Plan" → "plan". The folder is renamed
  * `Plan` → `plan` with rename(2). `plan/plan.md` resolves to the same inode
- * as the old `Plan.md`, so the put exchanges onto it, the entry is renamed
- * to the spelling `plan.md`, and nothing is deleted. Location:
- * `{folderName:'plan', markdownName:'plan.md'}`.
+ * as the old `Plan.md`, so the put exchanges onto it and nothing is deleted
+ * or respelled: the entry stays `Plan.md`, as Moss desktop leaves it.
+ * Location: `{folderName:'plan', markdownName:'plan.md'}` (the candidate
+ * spelling, which is what the next `read` reports too).
  */
 export interface MossFolderRename {
   kind: 'renameFolder';
@@ -1159,8 +1243,8 @@ export interface MossFolderRename {
    * Desktop's `toFolderBaseName(title)` for the new H1 title: the sanitized
    * folder name truncated to 252 UTF-8 bytes, or `Untitled`, before
    * uniqueness allocation. It must pass `isMossFolderName`; the host checks
-   * it before any change and otherwise returns `failed` with code `EINVAL`,
-   * writing nothing.
+   * it before any change (host obligation 2) and otherwise returns `failed`
+   * with code `EINVAL`, writing nothing.
    */
   desiredName: string;
 }
@@ -1282,20 +1366,29 @@ export interface MossAssetBridge {
    * (ipc-handlers.ts:2532-2545):
    * `<sanitized-base>-<Date.now()>-<first 8 hex of a UUID><ext>`, or
    * `<base>-<ms>-<uuid8>-mockup<ext>` when the sanitized base ends in
-   * `-mockup`. The host must not rename it. It must create the file
-   * exclusively: a temp file, then `link(2)` (or `RENAME_EXCL`) to the
-   * target. If the name is taken, return `exists`; the editor generates a
-   * new name once and retries.
+   * `-mockup`. The host re-validates `name` with `isMossAssetName` and
+   * returns `refused` (`name`) on a failure (host obligation 2); it must not
+   * rename it. It must create the file exclusively: a temp file, then
+   * `link(2)` (or `RENAME_EXCL`) to the target. If the name is taken, return
+   * `exists`; the editor generates a new name once and retries.
    */
   put(noteId: MossNoteId, asset: MossAssetPut): Promise<MossAssetPutResult>;
   /**
    * Copies an asset from another note into this note's `assets/`, as Moss
-   * desktop's `images.copyFromNoteAsset` does for a cross-note paste. The
-   * source is confined to the source note's folder (realpath), and the target
-   * is created exclusively under `name`, as in `put`. The source note may be
-   * any note the host can resolve, editable or not. If the copy fails, the
-   * editor removes the unresolved reference from the pasted content, as
-   * desktop does.
+   * desktop's `images.copyFromNoteAsset` does for a cross-note paste.
+   * - The source note must be one the user has opened in the host: a note
+   *   mounted in an editor or shown in a viewer (editable or not). Any other
+   *   `sourceNoteId`, even one the host could resolve, is refused with
+   *   `{kind:'refused', reason:'sourceNotOpen'}`, decided before any lookup so
+   *   the refusal reveals nothing about the note. Pasted content can carry
+   *   any id, so this is what keeps a paste from reading other notes.
+   * - `sourceRef` is confined to the source note's folder by realpath (host
+   *   obligation 1); outside or missing is `notFound`.
+   * - `name` is re-validated with `isMossAssetName` (`refused`, `name`), and
+   *   the target is created exclusively under it, as in `put`.
+   * If the copy fails or is refused, the editor removes the unresolved
+   * reference from the pasted content, as desktop does, and reports an
+   * `error` event (`op: 'assetCopy'`).
    */
   copyFromNote(noteId: MossNoteId, copy: MossAssetCopy): Promise<MossAssetPutResult>;
   /**
@@ -1304,6 +1397,9 @@ export interface MossAssetBridge {
    * missing-media state. Must be synchronous, because moss resolves media
    * while rendering. Same semantics as the viewer's `assetUrl`, scoped to a
    * note. URLs must stay valid across a folder rename (key them by note id).
+   * The host resolves a note-relative `ref` with read confinement (host
+   * obligation 1; null when refused) and serves the URL with the headers of
+   * host obligation 3.
    */
   url(noteId: MossNoteId, ref: string, kind: MossAssetKind): string | null;
   /**
@@ -1340,9 +1436,12 @@ export type MossAssetPutResult =
    * The host declined the file. Moss desktop sets no size limit, so the
    * editor sets none either. A host limit is the host's own policy, and the
    * editor shows it as an inline media error.
+   * - `name`: the name fails `isMossAssetName`; nothing was created.
+   * - `type`: the bytes are not the type the name says.
+   * - `sourceNotOpen` (`copyFromNote` only): the source note is not open in
+   *   the host.
    */
-  /** `name`: the name fails `isMossAssetName`; nothing was created. */
-  | { kind: 'refused'; reason: 'tooLarge' | 'type' | 'noSpace' | 'name'; maxBytes?: number }
+  | { kind: 'refused'; reason: 'tooLarge' | 'type' | 'noSpace' | 'name' | 'sourceNotOpen'; maxBytes?: number }
   /** The destination note, or for `copyFromNote` the source asset, does not exist. */
   | { kind: 'notFound' }
   | { kind: 'notEditable'; reason: MossNotEditableReason };
@@ -1357,7 +1456,7 @@ export type MossAssetPutResult =
  */
 export interface MossEditorManifest {
   name: '@moss-multi/editor';
-  /** Package semver, for example `0.1.0`. Equals `MOSS_EDITOR_INFO.version`. */
+  /** Package semver, for example `0.3.0`. Equals `MOSS_EDITOR_INFO.version`. */
   version: string;
   api: MossEditorApiVersion;
   /** Equals `MOSS_EDITOR_INFO.features`. Hosts gate new kinds on this list. */
@@ -1369,11 +1468,73 @@ export interface MossEditorManifest {
   /** Host helper entry: `moss-editor-host.js`. */
   hostEntry: string;
   /**
+   * Every script chunk besides `entry`, as paths relative to the package
+   * directory (`assets/<name>-<hash>.js`). The entry imports them by URLs
+   * relative to its own, some at load and the rest when a note first uses a
+   * charts, canvas or HTML block, so the host serves the whole package
+   * directory from the origin it serves `entry` from (host obligation 5).
+   */
+  chunks: readonly string[];
+  /**
+   * The chunks `entry` imports statically, which every mount loads; a host may
+   * list them as `<link rel="modulepreload">` so they download alongside the
+   * entry. A subset of `chunks`.
+   */
+  preload: readonly string[];
+  /**
    * The moss-html frame document. The host serves `file` and passes its URL
    * as `MossEditorOptions.htmlFrameUrl`, with the response header
-   * `Content-Security-Policy: <policy>`.
+   * `Content-Security-Policy: <policy>` exactly (host obligation 4).
+   *
+   * A block renders inert, with no script running, until the user presses the
+   * Run button the document shows on it (PRODUCT ruling 21). Activating the
+   * block is not consent, and nothing runs a block automatically. Run lasts
+   * for that block alone while the editor stays mounted: moss's static,
+   * interactive and fullscreen frames of the block run, Run pressed in any
+   * of them counts for all three, another block with the same HTML stays
+   * inert, and a new mount starts inert.
+   *
+   * A running block runs as an opaque origin, with no access to the editor,
+   * the host page, the host's origin or the host's files, with its inline
+   * scripts and styles and its `data:` and `blob:` images. The browser
+   * enforces these:
+   * - The policy refuses fetch, XHR, WebSocket and beacons (`connect-src`),
+   *   external scripts, stylesheets, images, fonts and media (`default-src`),
+   *   frame loads, form posts and `<base>`.
+   * - The document runs the block in a sandboxed child of itself, so the
+   *   policy's `frame-src 'none'` also refuses the block's own navigations
+   *   (`location`, links, meta refresh), and the sandbox refuses navigating
+   *   the frame, the page or a popup. Without that, the page's `frame-src`
+   *   (which allows `https:` for web embeds) would be the only gate. A block
+   *   that tries is torn down: its frame shows that it was stopped.
+   *
+   * Defense in depth only, not a boundary: before the block's scripts run, a
+   * guard script in the block's own realm deletes the WebRTC interfaces
+   * (CSP does not govern ICE) and keeps frames out of the block's document
+   * (each would be a fresh realm with WebRTC), and static `preconnect`,
+   * `dns-prefetch` and `prerender` hints are dropped. The block's script runs
+   * in that same realm, so it can undo the guard.
+   *
+   * Residual risks, accepted under PRODUCT ruling 21 because nothing runs
+   * until the user presses Run on that block: once it runs, a block's own
+   * script can still reach a server of its choosing by
+   * - WebRTC: a block that tampers with built-in prototypes can get a child
+   *   frame past the guard and send STUN or TURN packets from it;
+   * - self-navigation: a refused navigation, or a connection hint added by
+   *   script, can still make the browser resolve the host it names and open
+   *   a connection to it;
+   * - any other trick available inside its own realm.
+   * So a deliberately malicious block, once the user runs it, can leak its
+   * own content and what the user types into it. It still cannot read the
+   * editor, the host page, the host's origin or the host's files, and Run
+   * never carries over to another block, note or mount.
+   * API 1's policy was `sandbox allow-scripts` alone, with the block written
+   * into the frame document itself.
    */
-  htmlFrame: { file: 'moss-html-frame.html'; policy: 'sandbox allow-scripts' };
+  htmlFrame: {
+    file: 'moss-html-frame.html';
+    policy: "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
+  };
   /** From vendor/moss/PORTED.json: the moss source whose desktop bytes this release reproduces. */
   moss: { upstream: string; pin: string; commit: string };
   source: {
