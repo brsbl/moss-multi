@@ -68,6 +68,7 @@ export function CommentInputPopover({
   // moss-multi seam: comments: a bound submit settles later; each open or close starts a new composer session
   const shared = useNoteBound(noteId);
   const openGenerationRef = useRef(0);
+  const openDraftKeyRef = useRef<string | null>(null);
   const textRef = useRef(text);
   textRef.current = text;
   const resolvedCollisionBoundary = useMemo(
@@ -127,6 +128,7 @@ export function CommentInputPopover({
       // Restore draft if exists and <24h old; prune expired
       const inputState = store.get(commentInputStateAtom(noteId));
       const key = getDraftKey(inputState);
+      openDraftKeyRef.current = key; // moss-multi seam: comments
       const drafts = store.get(commentDraftAtom);
       const now = Date.now();
       const expiredKeys: string[] = [];
@@ -154,7 +156,9 @@ export function CommentInputPopover({
     } else {
       // Save draft if text is non-empty, then clear
       const inputState = store.get(commentInputStateAtom(noteId));
-      const key = getDraftKey(inputState);
+      // moss-multi seam: comments: the editor clears its target before this runs, so fall back to the key it opened on
+      const key = getDraftKey(inputState) ?? openDraftKeyRef.current;
+      openDraftKeyRef.current = null;
       if (key && (text.trim().length > 0 || imageUrls.length > 0)) {
         const drafts = new Map(store.get(commentDraftAtom));
         drafts.set(key, {
@@ -228,7 +232,7 @@ export function CommentInputPopover({
     // text typed after it was sent.
     const answer = shared ? submitted(noteId, 'root') : null;
     if (answer) {
-      const key = getDraftKey(store.get(commentInputStateAtom(noteId)));
+      const key = getDraftKey(store.get(commentInputStateAtom(noteId))) ?? openDraftKeyRef.current;
       const generation = openGenerationRef.current;
       void answer.then((result) => {
         if (!result.ok) return;

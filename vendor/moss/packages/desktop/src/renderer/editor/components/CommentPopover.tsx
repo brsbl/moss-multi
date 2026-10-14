@@ -522,6 +522,7 @@ export function CommentPopover({
   const [editText, setEditText] = useState('');
   const editTextRef = useRef(editText); // moss-multi seam: comments: the edit's text when a bound save settles
   editTextRef.current = editText;
+  const editSaveSeqRef = useRef(new Map<string, number>()); // moss-multi seam: comments: the latest bound save per comment
   const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
   const [replyText, setReplyText] = useState('');
   // moss-multi seam: comments: the reply box's text when a bound submit settles
@@ -770,8 +771,11 @@ export function CommentPopover({
         // it, so a refused or lost save stays open to retry, and a revision typed meanwhile stays open to save
         const answer = shared ? submitted(noteId, `edit:${target.id}`) : null;
         if (answer) {
+          // Only the latest save submitted for this comment may close edit mode.
+          const seq = (editSaveSeqRef.current.get(target.id) ?? 0) + 1;
+          editSaveSeqRef.current.set(target.id, seq);
           void answer.then((result) => {
-            if (!result.ok || editTextRef.current.trim() !== trimmedText) return;
+            if (!result.ok || editSaveSeqRef.current.get(target.id) !== seq || editTextRef.current.trim() !== trimmedText) return;
             setEditingId((current) => (current === target.id ? null : current));
           });
           return;
