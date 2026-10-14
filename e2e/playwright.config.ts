@@ -27,6 +27,8 @@ export default defineConfig({
   globalTimeout: Number(process.env.E2E_GLOBAL_TIMEOUT_MIN || 18) * 60_000,
   forbidOnly: !!process.env.CI,
   retries: 0,
+  // Only the staging projects retry; a leg that passes on its retry still fails the run.
+  failOnFlakyTests: true,
   // A 2-vCPU runner holds workerd and 2-3 contexts; raise only after repeat_each=5 stays green.
   workers: 1,
   fullyParallel: false,
@@ -75,8 +77,8 @@ export default defineConfig({
       grepInvert: /@local-only/,
       // Every step waits on real round trips there: the longest legs passed in 130-150 s against the 120 s local limit.
       timeout: 240_000,
-      // Over the public internet a leg may meet one slow D1 turn or dropped request: it runs once more, on fresh
-      // principals, and the run log and summary name it flaky; a leg that fails twice fails the run.
+      // A failed leg runs once more, on fresh principals, so the run log and summary tell a flaky leg from a steady
+      // failure; either fails the run (failOnFlakyTests).
       retries: 1,
       use: { browserName: engine, ...recordingFor(stack?.baseUrl) },
     })),
