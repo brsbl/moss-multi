@@ -28,8 +28,9 @@ export const GROUPS = {
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
   // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
   registers: ['j01-registers', 'j01-autolink'],
-  // Typing in a 40,000-line note against a small control (T3.B13).
-  large: ['j01-large'],
+  // Typing in a 40,000-line note against a small control (T3.B13); comments on blocks and what a comment composer
+  // keeps (the meaning and media WebKit shards are full).
+  large: ['j01-large', 'j15-comments-drafts'],
   // Large markdown pastes, up to 2 MB, each landing whole for a peer.
   paste: ['j01-paste'],
   // Pastes of very many short blocks, into an empty note and between two paragraphs.
@@ -55,8 +56,8 @@ export const GROUPS = {
   // Comments, suggestions, history, agents.
   meaning: ['j15', 'j16', 'j17', 'j18'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
-  // frames (meaning's WebKit shard is full).
-  social: ['j15-social', 'j08-agents', 'j15-comments-guard'],
+  // frames and offline comments (meaning's WebKit shard is full).
+  social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],
 };
 
 /**

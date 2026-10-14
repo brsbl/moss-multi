@@ -143,7 +143,7 @@ import './MarkdownEditor.css';
 import { $importNoteBody, prepareNoteMarkdown } from './markdown/pipeline';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: comments (comments.md §4, §12)
-import { stashCommentSelection } from '@moss-multi/host/comments/adapter';
+import { stashCommentBlock, stashCommentSelection } from '@moss-multi/host/comments/adapter';
 import { CommentOnlyTools } from '@moss-multi/host/comments/CommentOnlyTools';
 // moss-multi seam: link-selection (A§10.10)
 import { clearLinkSelection, markLinkSelection } from '@moss-multi/host/link-highlight';
@@ -2960,6 +2960,7 @@ function FloatingSelectionTools({
 
     if (commentableNodeKey) {
       savedNodeKeyRef.current = commentableNodeKey;
+      stashCommentBlock(editor, commentableNodeKey); // moss-multi seam: comments: a retry from this composer stays on the block
       const el = editor.getElementByKey(commentableNodeKey);
       if (el) {
         const rect = el.getBoundingClientRect();
@@ -3051,6 +3052,7 @@ function FloatingSelectionTools({
         // Anchor to the top-right corner of the decorator element
         const rect = el.getBoundingClientRect();
         savedNodeKeyRef.current = nodeKey;
+        stashCommentBlock(editor, nodeKey); // moss-multi seam: comments: a retry from this composer stays on the block
         setCommentInputState({
           open: true,
           anchorRect: { x: rect.right, y: rect.top, width: 0, height: 0 },
