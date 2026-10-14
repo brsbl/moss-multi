@@ -122,12 +122,13 @@ export class Outbox {
     this.#tagger = tagger;
   }
 
-  send(frame: Frame): void {
+  /** Queues a write; once sealed, only a `force`d one (the ledger's replay of writes made before a refused paste). */
+  send(frame: Frame, force = false): void {
     if (passes(frame)) {
       this.raw(frame);
       return;
     }
-    if (this.#sealed) return;
+    if (this.#sealed && !force) return;
     const pastes = this.#tagger?.() ?? [];
     const tag = pastes.length > 0 ? `${CUSTOM_PREFIX}${JSON.stringify({ t: 'paste', p: [...pastes] } satisfies ClientEvent)}` : undefined;
     const write = typeof frame === 'string' ? null : syncWrite(frame);
@@ -161,7 +162,7 @@ export class Outbox {
     this.seal();
   }
 
-  /** No write is queued on this socket from now on; what is queued already still goes. */
+  /** No write but a forced one is queued on this socket from now on; what is queued already still goes. */
   seal(): void {
     this.#sealed = true;
   }

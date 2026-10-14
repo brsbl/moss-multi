@@ -64,11 +64,13 @@ class DocSocket extends WebSocket {
   declare closeListeners?: ((event: CloseEvent) => void)[];
   /** Sends large updates in acked pieces (T3.S6); a session's sockets each have their own. */
   declare outbox?: Outbox;
+  /** The ledger replays: its writes go past a sealed outbox (B209). */
+  declare forcing?: boolean;
 
   /** Nothing goes out on a socket that is closing: a reply to a late server frame would be lost and logs an error. */
   override send(...args: Parameters<WebSocket['send']>): void {
     if (this.readyState !== WebSocket.OPEN) return;
-    if (this.outbox) this.outbox.send(args[0] as Frame);
+    if (this.outbox) this.outbox.send(args[0] as Frame, this.forcing === true);
     else super.send(...args);
   }
 
@@ -279,9 +281,9 @@ const STUCK_MS = 20_000;
 
 /**
  * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too (T3.S6): a tab holds only the
- * payloads its tree names. Its last word, plus the payload writes of this tab no ack has covered since, which that
- * word may not include yet; an ack's count includes the writes it covers, so they are never counted twice (B207). 0
- * for a doc no session holds.
+ * payloads its tree names. Its last word, plus the payload writes of this tab no ack has covered, made since its last
+ * usage figure: an ack's count includes the writes it covers, and a usage figure those that persisted with their acks
+ * lost, so none is counted twice (B207). 0 for a doc no session holds.
  */
 export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.countedPayloadBytes ?? 0;
 
@@ -295,9 +297,9 @@ const TAG_MAX = 16;
 
 /**
  * A large paste's reservation at the DocDO (B209). `answer` is pending until the DocDO answers; `gone` when the session
- * ended first. `land()` marks the writes made from now on as the paste's (their frames are tagged with it), and, while
- * the answer is still pending (a key pressed meanwhile lands the paste at once), holds them back until it comes: a
- * refusal then drops them and rebinds the pane. `end()` once the paste has landed.
+ * ended first, or the paste gave up waiting (`drop()`). `land()` marks the writes made from now on as the paste's (their
+ * frames are tagged with it), and, while the answer is still pending (the pane closing lands the paste at once), holds
+ * them back until it comes: a refusal then drops them. `end()` once the paste has landed.
  */
 export interface PasteTicket {
   readonly id: string;
@@ -305,6 +307,7 @@ export interface PasteTicket {
   readonly settled: Promise<void>;
   land(): void;
   end(): void;
+  drop(): void;
 }
 
 /** Asks the DocDO to hold room for a paste of `bytes` about to land in `doc`; null when no session holds the doc. */
@@ -631,6 +634,7 @@ export class DocSession {
         // A write the paste's last update makes as it commits, after this, is still the paste's.
         setTimeout(() => this.#landing.delete(ticket.id), 0);
       },
+      drop: () => ticket.settle('gone'),
     };
     this.#tickets.set(ticket.id, ticket);
     this.#sendReserve(ticket);
@@ -652,11 +656,13 @@ export class DocSession {
       return;
     }
     if (ticket.gated) {
-      // Refused after it landed here: nothing of it, or of what followed it, is sent, and the pane rebinds to what the
-      // server holds. Writes made before it still go, so the session lingers until they are acked.
+      // Refused after it landed here as its pane closed: nothing of it, or of what followed it, is sent. Writes made
+      // before it still go, and go again now: a reconnect's replay of them was queued behind its gate and cut with it.
       this.#sealed = true;
       outbox?.cut(id);
       this.#ledger.dropFrom(ticket.mark);
+      const ws = this.provider.ws as DocSocket | null;
+      if (ws?.readyState === WebSocket.OPEN) this.#replay(ws);
       refuseInput(WRITE_REFUSED['doc-cap']);
       this.#set({ resync: true, unacked: this.#ledger.unacked });
     }
@@ -822,13 +828,25 @@ export class DocSession {
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       // Writes still queued in the outbox are on their way; resending them would only queue them twice.
-      if ((ws as DocSocket).outbox?.busy || this.#sealed) return;
-      const pending = this.#ledger.pendingUpdate();
-      if (pending && !this.#ended) ws.send(encodeSyncFrame(2, pending));
-      // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
-      this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
+      if ((ws as DocSocket).outbox?.busy) return;
+      this.#replay(ws as DocSocket);
     } catch {
       // closing; the close path takes over
+    }
+  }
+
+  /**
+   * The ledger's unacked writes again, the note's first, and each held payload's (A§10.10). Once a refused paste sealed
+   * the outbox, the ledger holds only writes made before it, and they go past the seal.
+   */
+  #replay(ws: DocSocket): void {
+    ws.forcing = this.#sealed;
+    try {
+      const pending = this.#ended ? null : this.#ledger.pendingUpdate();
+      if (pending) ws.send(encodeSyncFrame(2, pending));
+      this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
+    } finally {
+      ws.forcing = false;
     }
   }
 
@@ -872,6 +890,7 @@ export class DocSession {
     }
     if (event.t === 'usage') {
       this.payloadBytes = event.pb;
+      this.#ledger.usageReported();
       // Once per connect: a test can wait for the DocDO's figure before it sizes a paste against it (j01-paste-held).
       performance.mark('moss-payload-usage', { detail: { pb: event.pb, limit: PASTE_LIMIT_BYTES } });
     } else if (event.t === 'ack') {

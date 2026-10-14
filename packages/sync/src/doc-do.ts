@@ -261,7 +261,7 @@ const WRITE_PAUSE_MS = 2_000;
  * lost acks, to replay the paste's writes (B209).
  */
 const RESERVATION_IDLE_MS = 120_000;
-/** A lapsed or used-up reservation is kept this long, so reserving the same paste again holds nothing more. */
+/** A lapsed or used-up reservation's row is kept this long before it is forgotten. */
 const SPENT_KEEP_MS = 10 * 60_000;
 /** The most live reservations one owner holds at once; past it a reserve is refused. */
 const RESERVATIONS_PER_OWNER = 8;
@@ -1520,7 +1520,8 @@ export class DocDO extends YServer<SyncEnv> {
    * reserved is its own. `reserve`: room for paste `p`, about to land in several frames (a large paste), answered
    * `reserved` and held for that paste until its writes have used it or it lapses, or `reserve-refused` when it would
    * not fit beside what the doc holds and every other reservation. A refusal closes nothing and touches no other paste.
-   * The same paste reserved again (a resend on a fresh socket) is answered from what is stored, its room not renewed.
+   * The same paste reserved again (a resend on a fresh socket) is answered from what it still holds, its room not
+   * renewed; once lapsed, from the room there is now.
    */
   override onCustomMessage(connection: Connection, message: string): void {
     let event: ClientEvent;
@@ -1547,7 +1548,9 @@ export class DocDO extends YServer<SyncEnv> {
     const owner = ownerOf(attachment);
     const others = this.#reserved(null);
     const table = this.#reservationTable();
-    if (table.has(reservationKey(owner, p))) {
+    // A resend of a reserve answered on a socket that closed: the room it holds is the paste's. One that lapsed holds
+    // none, and is answered from the room there is now.
+    if ((table.get(reservationKey(owner, p))?.bytes ?? 0) > 0) {
       reply('reserved');
       return;
     }
