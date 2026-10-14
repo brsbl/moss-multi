@@ -1,7 +1,24 @@
 diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx
 --- a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx
 +++ b/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.tsx
-@@ -375,6 +375,10 @@ export function DecoratorBlockPlugin(): null {
+@@ -29,13 +29,16 @@ import {
+   $isRangeSelection,
+   $isTextNode,
+   $setSelection,
++  BEFORE_INPUT_COMMAND, // moss-multi seam: type-after-block (T3.13)
+   CLICK_COMMAND,
+   COMMAND_PRIORITY_HIGH,
+   COMMAND_PRIORITY_LOW,
++  COMPOSITION_START_COMMAND, // moss-multi seam: type-after-block (T3.13)
+   KEY_ARROW_DOWN_COMMAND,
+   KEY_ARROW_UP_COMMAND,
+   KEY_BACKSPACE_COMMAND,
+   KEY_DELETE_COMMAND,
++  KEY_DOWN_COMMAND, // moss-multi seam: type-after-block (T3.13)
+   KEY_ENTER_COMMAND,
+   type LexicalEditor,
+   type LexicalNode
+@@ -375,6 +378,10 @@ export function DecoratorBlockPlugin(): null {
        if (isCommentUiOpen()) {
          return null;
        }
@@ -12,3 +29,97 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/DecoratorBlockPlugin.t
  
        if (!(target instanceof HTMLElement)) {
          return null;
+@@ -635,6 +642,93 @@ export function DecoratorBlockPlugin(): null {
+     };
+   }, [editor]);
+ 
++  // moss-multi seam: type-after-block (T3.13): text typed while a block is node-selected (as a slash-menu insert
++  // leaves a chart) starts a paragraph below it, as Enter does. Lexical's beforeinput leaves a NodeSelection to the
++  // browser, which typed at the root's first caret position, each character before the last (Chromium), or nowhere
++  // (WebKit, which has no DOM selection to type into). A printable key on the root itself is taken at keydown; any
++  // other text input (a virtual keyboard) at beforeinput. A composition (IME, a dead key) raises neither: when it starts
++  // on the root, the paragraph below is made and selected before Lexical's own handler, which then composes there.
++  useEffect(() => {
++    const $typeAfter = (text: string): boolean => {
++      if (!editor.isEditable()) return false;
++      const node = $getSelectedAnyBlockDecorator();
++      if (!node) return false;
++      $insertParagraphAt(node, 'after');
++      const selection = $getSelection();
++      if ($isRangeSelection(selection)) selection.insertText(text);
++      return true;
++    };
++    const unregisterKey = editor.registerCommand(
++      KEY_DOWN_COMMAND,
++      (event) => {
++        if (event.target !== editor.getRootElement() || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return false;
++        if ([...event.key].length !== 1 || !$typeAfter(event.key)) return false;
++        event.preventDefault();
++        return true;
++      },
++      COMMAND_PRIORITY_LOW
++    );
++    const unregisterInput = editor.registerCommand(
++      BEFORE_INPUT_COMMAND,
++      (event) => {
++        if (event.inputType !== 'insertText' || !event.data || !$typeAfter(event.data)) return false;
++        event.preventDefault();
++        return true;
++      },
++      COMMAND_PRIORITY_LOW
++    );
++    // moss-multi seam: ime-cancel (T3.B13): a composition cancelled with nothing composed takes back the paragraph its
++    // start made below the block, while that paragraph is still empty, and selects the block again; a peer's text
++    // keeps it. It runs after the event's task, once Lexical has handled the end (WebKit defers that to the next key).
++    let started: { paragraph: string; block: string } | null = null;
++    const unregisterComposition = editor.registerCommand(
++      COMPOSITION_START_COMMAND,
++      (event) => {
++        started = null;
++        if (event.target !== editor.getRootElement() || !editor.isEditable()) return false;
++        const node = $getSelectedAnyBlockDecorator();
++        if (node) {
++          $insertParagraphAt(node, 'after');
++          const paragraph = node.getNextSibling();
++          if (paragraph) started = { paragraph: paragraph.getKey(), block: node.getKey() };
++        }
++        return false;
++      },
++      COMMAND_PRIORITY_LOW
++    );
++    const onCompositionEnd = (event: Event) => {
++      const pending = started;
++      started = null;
++      if (!pending || (event as CompositionEvent).data) return;
++      setTimeout(() => {
++        if (!editor.isEditable()) return;
++        editor.update(() => {
++          const paragraph = $getNodeByKey(pending.paragraph);
++          if (!$isParagraphNode(paragraph) || !paragraph.isAttached()) return;
++          // Only the composition's placeholder characters (a zero-width or no-break space) may remain.
++          if (!paragraph.getChildren().every((child) => $isTextNode(child) && /^[​ ]*$/.test(child.getTextContent()))) return;
++          paragraph.remove();
++          const block = $getNodeByKey(pending.block);
++          if (!block?.isAttached()) return;
++          const selection = $createNodeSelection();
++          selection.add(block.getKey());
++          $setSelection(selection);
++        });
++      }, 0);
++    };
++    const unregisterRoot = editor.registerRootListener((root, previous) => {
++      previous?.removeEventListener('compositionend', onCompositionEnd);
++      root?.addEventListener('compositionend', onCompositionEnd);
++    });
++    return () => {
++      unregisterKey();
++      unregisterInput();
++      unregisterComposition();
++      unregisterRoot();
++      editor.getRootElement()?.removeEventListener('compositionend', onCompositionEnd);
++    };
++  }, [editor]);
++
+   // Clicking a horizontal rule (divider) — or the visible gap just above/below
+   // its 1px line — places a usable caret beside it (a gap cursor) instead of
+   // selecting the node and swallowing the caret. Registered above the

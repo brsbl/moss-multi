@@ -114,6 +114,15 @@ function keepUntouched(live: SerializedNode[], reimported: SerializedNode[], tar
 
 const blocksOf = (state: SerializedEditorState): SerializedNode[] => state.root.children as unknown as SerializedNode[];
 
+const isEmptyParagraph = (node: SerializedNode): boolean => node.type === 'paragraph' && childrenOf(node)?.length === 0;
+
+/** `blocks` without the empty paragraphs that end it. */
+function withoutTrailingEmpty(blocks: SerializedNode[]): SerializedNode[] {
+  let end = blocks.length;
+  while (end > 0 && isEmptyParagraph(blocks[end - 1]!)) end--;
+  return end === blocks.length ? blocks : blocks.slice(0, end);
+}
+
 /**
  * The target, block by block, for a push that edits a run of blocks the converter cannot re-import exactly: each live
  * block is found in `current` by its own export, a block no edit touches stays as it is, and each run of touched
@@ -240,9 +249,16 @@ function landMerged(live: Y.Doc, noteId: string, input: PushInput, origin: unkno
   const writesProperties = target.frontmatter !== currentParts.frontmatter && (target.fenced || !target.hasFrontmatter);
   if (input.fork && writesProperties) return { ok: false, reason: 'properties' };
   const state = markdownToState(target.body);
-  const liveState = bodyState(live);
-  const blocks = keepUntouched(blocksOf(liveState), blocksOf(markdownToState(currentParts.body)), blocksOf(state))
+  const fullState = bodyState(live);
+  // Trailing empty paragraphs (a fresh note's only one, or a line a person just started) export as nothing, so no
+  // pushed text can be theirs: they stay last, as they are, and a pushed block never takes one over, so typing that
+  // is still on its way to the server lands in its own paragraph.
+  const liveBlocks = blocksOf(fullState);
+  const trailing = liveBlocks.slice(withoutTrailingEmpty(liveBlocks).length);
+  const liveState = trailing.length ? { ...fullState, root: { ...fullState.root, children: liveBlocks.slice(0, -trailing.length) } } as SerializedEditorState : fullState;
+  const merged = keepUntouched(blocksOf(liveState), withoutTrailingEmpty(blocksOf(markdownToState(currentParts.body))), blocksOf(state))
     ?? spliceByBlock(liveState, currentParts.body, target.body, budget);
+  const blocks = trailing.length ? [...withoutTrailingEmpty(merged), ...trailing] : merged;
   const root = { ...state.root, children: blocks } as unknown as SerializedEditorState['root'];
   try {
     // A push may change only payload text (a code block's code), which the note's own update does not show.

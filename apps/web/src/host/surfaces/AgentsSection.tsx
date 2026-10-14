@@ -7,22 +7,14 @@ import { Input } from '@moss/shared/components/ui/input';
 import { KeyRound, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useAuthState } from '../auth.ts';
+import { UNREACHABLE } from '../auth-state.ts';
+import { isLeaveCancelled } from '../leave.ts';
+import { call } from './ShareDialog.tsx';
 
 interface Agent {
   id: string;
   name: string;
   createdAt: number;
-}
-
-const UNREACHABLE = 'Couldn’t reach the server. Check your connection and try again.';
-
-async function call<T>(path: string, init: RequestInit = {}): Promise<{ ok: boolean; body: (T & { message?: string }) | null }> {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    ...init,
-    headers: { accept: 'application/json', ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
-  });
-  return { ok: response.ok, body: (await response.json().catch(() => null)) as (T & { message?: string }) | null };
 }
 
 /** A read-only value with a Copy button; the field is selectable, since a browser may refuse the clipboard. */
@@ -85,7 +77,9 @@ export function AgentsSection(): ReactNode {
     try {
       await work();
     } catch (failure) {
-      setError(failure instanceof Error && failure.message ? failure.message : UNREACHABLE);
+      // A change the page's leave cut off may have landed: the list says whether it did.
+      if (isLeaveCancelled(failure)) void load();
+      else setError(failure instanceof Error && failure.message ? failure.message : UNREACHABLE);
     } finally {
       setPending(false);
     }
@@ -100,7 +94,7 @@ export function AgentsSection(): ReactNode {
     }
     void run(async () => {
       const answer = await call<{ agent: Agent; key: string }>('/api/agents', { method: 'POST', body: JSON.stringify({ name: wanted }) })
-        .catch(() => { throw new Error(UNREACHABLE); });
+        .catch((error: unknown) => { throw isLeaveCancelled(error) ? error : new Error(UNREACHABLE); });
       if (!answer.ok || !answer.body?.key) throw new Error(answer.body?.message ?? 'The key wasn’t created. Try again.');
       setMinted({ name: answer.body.agent.name, key: answer.body.key });
       setName('');
@@ -110,7 +104,7 @@ export function AgentsSection(): ReactNode {
 
   function revoke(agent: Agent): void {
     void run(async () => {
-      const answer = await call(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' }).catch(() => { throw new Error(UNREACHABLE); });
+      const answer = await call(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' }).catch((error: unknown) => { throw isLeaveCancelled(error) ? error : new Error(UNREACHABLE); });
       if (!answer.ok) throw new Error(answer.body?.message ?? 'The key wasn’t revoked. Try again.');
       if (minted?.name === agent.name) setMinted(null);
       await load();

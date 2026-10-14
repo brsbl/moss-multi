@@ -4,7 +4,7 @@
 import { $getRoot, $isElementNode, type LexicalNode, type SerializedEditorState, type SerializedLexicalNode } from 'lexical';
 import * as Y from 'yjs';
 import type { Anchor } from '@moss-multi/core/anchor-frame';
-import { idKey, ordinalsOf, unitText } from '@moss-multi/core/comment-units';
+import { idKey, ordinalsOf, unitsAt, unitText } from '@moss-multi/core/comment-units';
 import { readField } from '@moss-multi/core/doc-fields';
 import { importFrontmatter } from '@moss-multi/core/frontmatter';
 import { decodeRelPos } from '@moss-multi/core/tree-anchor';
@@ -34,6 +34,39 @@ export interface VersionContent {
 
 /** A comment's span in the body's text-mode units: first and last ordinal, its kind, and the units' text. */
 export type AnchorSpans = Record<string, [first: number, last: number, kind: Anchor['kind'], text: string]>;
+
+/** Each version span as the items the restore wrote for it: its first and last unit's ids, its kind and its text. */
+export type RestoredSpans = Record<string, [start: Y.ID, end: Y.ID, kind: Anchor['kind'], text: string]>;
+
+function parseSpans(json: string): AnchorSpans {
+  try {
+    const spans = JSON.parse(json) as unknown;
+    return spans && typeof spans === 'object' ? spans as AnchorSpans : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The items `spans` name in the reconciled mirror, which holds the version's units at the version's ordinals before
+ * anything typed after the base merges in. A span whose units there do not read as its text is left out.
+ */
+function restoredSpans(doc: Y.Doc, spans: AnchorSpans): RestoredSpans {
+  const valid = Object.entries(spans).filter(([, span]) => Array.isArray(span) && Number.isInteger(span[0]) && Number.isInteger(span[1])
+    && span[0] <= span[1] && typeof span[3] === 'string');
+  if (!valid.length) return {};
+  const text = unitText(doc);
+  const fits = valid.filter(([, [first, last, , quote]]) => text.slice(first, last + 1) === quote);
+  const units = unitsAt(doc, fits.flatMap(([, [first, last]]) => [first, last]));
+  const out: RestoredSpans = {};
+  for (const [id, [first, last, kind, quote]] of fits) {
+    const s = units.get(first);
+    const e = units.get(last);
+    if (!s || !e) continue;
+    out[id] = [{ client: s.item.id.client, clock: s.item.id.clock + s.off }, { client: e.item.id.client, clock: e.item.id.clock + e.off }, kind, quote];
+  }
+  return out;
+}
 
 /** Where each anchored comment sits in `live`'s units, read in one walk. */
 function anchorSpans(live: Y.Doc): AnchorSpans {
@@ -111,9 +144,10 @@ export function captureContent(live: Y.Doc, noteId: string): VersionContent {
  * merges in where it was typed. Throws ReconcileRefused (409) when the reconciled base would not export as the
  * version's body, the title would differ, or the result would lose an insert made after the base, with nothing
  * written; StaleBase when the base is not a state of the doc. `admit` runs once that is verified, before anything is
- * written, and throws to refuse: the state cap, or a restore point that could not be stored.
+ * written, and throws to refuse: the state cap, or a restore point that could not be stored. Returns the items the
+ * restore wrote for each of the version's comment spans, read before the merge can shift its ordinals.
  */
-export function restoreContent(live: Y.Doc, origin: unknown, target: VersionContent, admit: Admit, base: DecodedBase): boolean {
+export function restoreContent(live: Y.Doc, origin: unknown, target: VersionContent, admit: Admit, base: DecodedBase): RestoredSpans {
   // A version names each payload node's payload id, which the reconcile pairs by type instead.
   const state = JSON.parse(target.lexical, (key, value: unknown) => (key === '__regId' ? undefined : value)) as SerializedEditorState;
   const source = payloadSourceOf(live);
@@ -151,13 +185,16 @@ export function restoreContent(live: Y.Doc, origin: unknown, target: VersionCont
     }
     admit(diff, payloads);
   };
-  return reconcileBody(live, state, origin, keeping, {
+  let restored: RestoredSpans = {};
+  reconcileBody(live, state, origin, keeping, {
     mutate(doc) {
       writeTitle(doc, target.title, origin);
       importFrontmatter(doc, target.frontmatter, origin);
     },
     verify(mirror) {
       if (mirror.doc.getText('title').toString() !== target.title) throw new ReconcileRefused('mismatch', 'the restored title differs from the version');
+      restored = restoredSpans(mirror.doc, parseSpans(target.anchors));
     },
   }, from);
+  return restored;
 }

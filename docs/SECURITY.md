@@ -45,7 +45,7 @@ Local results are from 2026-10-08, branch `t/T8.3a`, on a `stack.mjs start` stac
 **P1, fixed in T8.3a**
 - **Unbounded request bodies.** Every JSON handler and better-auth read the whole body (`request.text()`, then `JSON.parse`). `/api/unfurl` read it before resolving the caller. So one unauthenticated POST of tens of MB could exhaust a 128 MB isolate and fail the other requests it was serving.
   - Fix: `worker/route.ts` caps every `/api` and `/api/auth` body before any handler runs. A declared length over the cap gets 413 without reading. A streamed body gets 413 once it passes the cap.
-  - Caps: 1 MiB for JSON; 16 MiB for `POST /api/docs` and `/push`, which carry a whole document; media uploads keep their own declared-length cap.
+  - Caps: 1 MiB for JSON; 24 MiB (`CREATE_BODY_MAX_BYTES`) for `POST /api/docs` and `/push`, which carry a whole document; media uploads keep their own declared-length cap and version restores their own base-sized cap (`versions.ts`).
 - **Frameable app pages.** The page CSP had no `frame-ancestors`. A same-site page (another port, a sibling subdomain) gets the Lax session cookie inside a frame, which is the attacker A§18's origin gate assumes, so it could clickjack an owner into sharing or trashing. Fix: `frame-ancestors 'self'`.
 
 **P2, recorded for follow-up**

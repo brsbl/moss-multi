@@ -102,6 +102,16 @@ function call(method: string, path: string, creds: Creds, body?: unknown): Promi
   }), env);
 }
 
+/** A push with `body` sent as is: a string of hand-escaped JSON, or a stream with no declared length. */
+function raw(docId: string, creds: Creds, body: string | ReadableStream<Uint8Array>, headers: Record<string, string> = {}): Promise<Response> {
+  return handleApi(new Request(`${BASE}/api/docs/${docId}/push`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: BASE, ...creds, ...headers },
+    body,
+    ...(typeof body === 'string' ? {} : { duplex: 'half' }),
+  } as RequestInit), env);
+}
+
 async function content(docId: string, creds: Creds): Promise<string> {
   const response = await call('GET', `/api/docs/${docId}/content`, creds);
   expect(response.status).toBe(200);
@@ -174,6 +184,54 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(await content(docId, cookieOf(ada))).toBe('Alpha one stays.\n\nNew tail.');
   });
 
+  it('refuses a drifted push whose merge with a person\'s deletion deletes most of the doc, unless forced (B354)', async () => {
+    const north = 'The first long paragraph describes the north beds, their soil, and the beans planted there in spring.';
+    const note = 'Short note.';
+    const south = 'The second long paragraph describes the south beds, their compost, and the squash that follows in summer.';
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const agent = await insertAgent(d1.db, ada);
+    /** A note the agent pulled, then Ada deleted its north paragraph. */
+    const drifted = async (): Promise<{ docId: string; base: string; kept: string }> => {
+      const docId = await seeded(ada, [north, note, south].join('\n\n'));
+      const base = await content(docId, bearer(agent.key));
+      expect((await push(docId, cookieOf(ada), { newText: [note, south].join('\n\n'), baseHash: sha(base) })).status).toBe(200);
+      return { docId, base, kept: await content(docId, cookieOf(ada)) };
+    };
+    const { docId, base, kept } = await drifted();
+    const next = [north, note].join('\n\n');
+    const refused = await push(docId, bearer(agent.key), { newText: next, baseHash: sha(base) });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ ok: false, reason: 'degenerate' });
+    expect(refused.body.deletedRatio).toBeGreaterThan(0.6);
+    expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(kept);
+    const forced = await push(docId, bearer(agent.key), { newText: next, baseHash: sha(base), force: true });
+    expect(forced.status).toBe(200);
+    expect(await content(docId, cookieOf(ada))).toBe(note);
+
+    const benign = await drifted();
+    const edited = benign.base.replace('the squash that follows', 'the pumpkins that follow');
+    const landed = await push(benign.docId, bearer(agent.key), { newText: edited, baseHash: sha(benign.base) });
+    expect(landed.status, 'a benign drifted push still lands').toBe(200);
+    expect(await content(benign.docId, cookieOf(ada))).toBe(benign.kept.replace('the squash that follows', 'the pumpkins that follow'));
+  });
+
+  it('lands an undrifted push of thousands of slightly changed paragraphs without --force; a deletion of most of them is refused (B338)', async () => {
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const paragraphs = Array.from({ length: 2_000 }, (_, i) => `Row ${String(i).padStart(4, '0')} carries a long and steady sentence about the garden beds.`);
+    const docId = await seeded(ada, paragraphs.join('\n\n'));
+    const base = await content(docId, cookieOf(ada));
+    const most = base.split('\n\n').slice(0, 500).join('\n\n').split('steady').join('Steady');
+    const refused = await push(docId, cookieOf(ada), { newText: most, baseHash: sha(base) });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ ok: false, reason: 'degenerate' });
+    expect(await content(docId, cookieOf(ada))).toBe(base);
+    // One character of every paragraph: no line survives unchanged, which a line diff alone cannot tell from a rewrite.
+    const next = base.split('steady').join('Steady');
+    const landed = await push(docId, cookieOf(ada), { newText: next, baseHash: sha(base) });
+    expect(landed.status, JSON.stringify(landed.body).slice(0, 300)).toBe(200);
+    expect(await content(docId, cookieOf(ada))).toBe(next);
+  }, 60_000);
+
   it('refuses with 409 push-unverified, naming the block, a push that would change words it did not edit', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const docId = await seeded(ada, 'Lead paragraph.\n\nWord&#160;gap here and more.\n\nTail paragraph.');
@@ -233,6 +291,66 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(capped.body).toMatchObject({ ok: false, reason: 'too-large' });
     expect(await content(docId, cookieOf(ada))).toBe(base);
   });
+
+  // T7.R: the route reads its body under its own cap (T3.S7's 64 KiB default refused any real push), after the push token.
+  it('lands a maximal push: newText and baseText at the 2 MB cap, every character JSON-escaped', async () => {
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const paragraph = (i: number) => `Paragraph ${String(i).padStart(5, '0')} ${'lorem ipsum dolor '.repeat(50)}`.trimEnd();
+    const paragraphs: string[] = [];
+    for (let size = 0; size + paragraph(paragraphs.length).length + 2 <= MARKDOWN_CAP_BYTES - 4096;) {
+      size += paragraph(paragraphs.length).length + 2;
+      paragraphs.push(paragraph(paragraphs.length));
+    }
+    const docId = await seeded(ada, paragraphs.join('\n\n'));
+    const base = await content(docId, cookieOf(ada));
+    const newText = base.replace('Paragraph 00007 lorem', 'Paragraph 00007 LOREM');
+    expect(newText).not.toBe(base);
+    for (const text of [base, newText]) {
+      expect(new TextEncoder().encode(text).byteLength).toBeGreaterThan(MARKDOWN_CAP_BYTES - 64 * 1024);
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(MARKDOWN_CAP_BYTES);
+    }
+    const escaped = (text: string) => {
+      const out: string[] = [];
+      for (let i = 0; i < text.length; i += 1) out.push(`\\u${text.charCodeAt(i).toString(16).padStart(4, '0')}`);
+      return out.join('');
+    };
+    const body = `{"newText":"${escaped(newText)}","baseHash":"${sha(base)}","baseText":"${escaped(base)}","force":false,"suggest":false}`;
+    expect(body.length).toBeGreaterThan(22 * 1024 * 1024);
+    const response = await raw(docId, cookieOf(ada), body);
+    const answer = (await response.json()) as Record<string, unknown>;
+    expect(response.status, JSON.stringify(answer)).toBe(200);
+    expect(answer).toMatchObject({ ok: true, mode: 'edit', failedHunks: [] });
+    expect(await content(docId, cookieOf(ada))).toBe(newText);
+  }, 300_000);
+
+  it('refuses a push body past its cap with 413 before buffering it: declared before the token, streamed after it', async () => {
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const docId = await seeded(ada, BODY);
+    const base = await content(docId, cookieOf(ada));
+    const cap = 12 * MARKDOWN_CAP_BYTES + 64 * 1024;
+    const unread = new ReadableStream<Uint8Array>({ pull() { throw new Error('the body was read'); } });
+    const declared = await raw(docId, cookieOf(ada), unread, { 'content-length': String(cap + 1) });
+    expect(declared.status).toBe(413);
+    expect(await declared.json()).toEqual({ ok: false, reason: 'too-large' });
+    expect(charged, 'a declared oversize takes no token').toEqual([]);
+
+    const chunk = 512 * 1024;
+    const read = { bytes: 0 };
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (read.bytes > cap + 2 * chunk) throw new Error('the body was read past its cap');
+        read.bytes += chunk;
+        controller.enqueue(new Uint8Array(chunk).fill(0x20));
+      },
+    });
+    const streamed = await raw(docId, cookieOf(ada), endless);
+    expect(streamed.status).toBe(413);
+    expect(await streamed.json()).toEqual({ ok: false, reason: 'too-large' });
+    expect(read.bytes, 'read no further than the cap').toBeLessThanOrEqual(cap + 2 * chunk);
+    expect(read.bytes, 'read past the 64 KiB default').toBeGreaterThan(cap);
+    expect(charged, 'the token was taken before the body was read').toEqual([ada.id]);
+    expect(await content(docId, cookieOf(ada))).toBe(base);
+  }, 120_000);
 
   it('charges 60 pushes a minute to the acting user: her agent spends her bucket, and another person\'s pushes do not', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');

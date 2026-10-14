@@ -233,6 +233,9 @@ const snapshotOf = (state: RendererState): RendererSnapshot => ({
   },
 });
 
+/** What the goldens compare: every file under /Moss, byte for byte, by its spelled path. */
+const compared = (volume: MemoryVolume) => volume.snapshot('/Moss');
+
 async function editorRead(host: MemoryHost) {
   const disk = await host.read(ID);
   if (disk.kind !== 'note') throw new Error(`read: ${disk.kind}`);
@@ -276,23 +279,15 @@ describe('the editor writes what Moss desktop writes', () => {
         expect(plan.write.ops.at(-1)?.file).toBe('meta');
       }
 
-      if (scenario.caseInsensitive) {
-        expect(markdownEntryCase(editorVolume.snapshot('/Moss'))).toEqual(markdownEntryCase(desktopVolume.snapshot('/Moss')));
-      } else {
-        expect(editorVolume.snapshot('/Moss')).toEqual(desktopVolume.snapshot('/Moss'));
-      }
+      // Every path is compared with its spelling, on both volumes: API 2's host keeps a same-file markdown entry's
+      // spelling, as desktop's rename of a temp over the path does on APFS.
+      expect(compared(editorVolume)).toEqual(compared(desktopVolume));
     });
   }
 });
 
-// API 1's MossNoteWrite step 4 has the host respell a same-inode markdown entry to exactly `<folderName>.md`, while
-// desktop's rename of a temp over the path keeps the entry's old spelling on APFS. The bytes and every other name
-// are the same; on a case-insensitive volume only the letter case of that one entry may differ.
-const markdownEntryCase = (snapshot: Record<string, string>) =>
-  Object.fromEntries(Object.entries(snapshot).map(([path, text]) => [path.endsWith('.md') ? path.replace(/(?<![^/])[^/]+$/, (name) => name.toLowerCase()) : path, text]));
-
-describe('the fixture host follows API 1 on a case-insensitive volume', () => {
-  it('a case-only retitle respells the markdown entry to <folderName>.md', async () => {
+describe('the fixture host follows API 2 on a case-insensitive volume', () => {
+  it('a case-only retitle keeps the markdown entry spelled as it was, and reports the candidate spelling', async () => {
     const scenario = SCENARIOS.find((candidate) => candidate.name === 'a case-only retitle on a case-insensitive volume')!;
     const volume = seedVolume(scenario);
     const host = new MemoryHost({ volume });
@@ -300,12 +295,12 @@ describe('the fixture host follows API 1 on a case-insensitive volume', () => {
     const plan = planSave(read, snapshotOf(scenario.edit({ content: read.content, commentMetadata: read.commentMetadata, layoutMetadata: read.layoutMetadata, commentColors: read.commentColors })), { now: NOW });
     if (plan.kind !== 'write') throw new Error('expected a write');
     await expect(host.write(ID, plan.write)).resolves.toMatchObject({ kind: 'saved', location: { folderName: 'plan', markdownName: 'plan.md' } });
-    expect(Object.keys(volume.snapshot('/Moss')).filter((path) => path.endsWith('.md'))).toEqual(['/Moss/Notes/Projects/plan/plan.md']);
+    expect(Object.keys(volume.snapshot('/Moss')).filter((path) => path.endsWith('.md'))).toEqual(['/Moss/Notes/Projects/plan/Plan.md']);
   });
 });
 
 describe('golden fixtures prove something', () => {
-  it('a wrong meta.json key order is caught (negative control)', async () => {
+  it('a meta.json that differs only in key order is caught (negative control)', async () => {
     const scenario = SCENARIOS[0];
     const desktopVolume = seedVolume(scenario);
     const desktop = createDesktopSave(desktopVolume);
@@ -313,10 +308,21 @@ describe('golden fixtures prove something', () => {
     await desktop.save(ID, record, scenario.edit(record), NOW);
     const editorVolume = seedVolume(scenario);
     const host = new MemoryHost({ volume: editorVolume });
-    const plan = planSave(await editorRead(host), snapshotOf(scenario.edit(record)), { now: NOW + 1 });
+    const plan = planSave(await editorRead(host), snapshotOf(scenario.edit(record)), { now: NOW });
     if (plan.kind !== 'write') throw new Error('expected a write');
     await host.write(ID, plan.write);
-    expect(editorVolume.snapshot('/Moss')).not.toEqual(desktopVolume.snapshot('/Moss'));
+    // The same save at the same time matches, so the reorder below is the only difference.
+    expect(compared(editorVolume)).toEqual(compared(desktopVolume));
+    const path = '/Moss/Notes/Projects/Plan/meta.json';
+    const bytes = editorVolume.readFile(path);
+    const parsed = JSON.parse(bytes) as Record<string, unknown>;
+    const tail = bytes.endsWith('\n') ? '\n' : '';
+    expect(JSON.stringify(parsed, null, 2) + tail).toBe(bytes);
+    const reordered = JSON.stringify(Object.fromEntries(Object.entries(parsed).reverse()), null, 2) + tail;
+    expect(JSON.parse(reordered)).toEqual(parsed);
+    expect(reordered).not.toBe(bytes);
+    editorVolume.silently(() => editorVolume.writeFile(path, reordered));
+    expect(compared(editorVolume)).not.toEqual(compared(desktopVolume));
   });
 
   it('every write the editor plans sends meta.json last and only changed sidecars', async () => {

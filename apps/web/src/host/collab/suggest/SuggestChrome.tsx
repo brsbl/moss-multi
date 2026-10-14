@@ -6,7 +6,7 @@ import { can } from '@moss-multi/protocol/roles';
 import { Eye, PencilLine } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useDocRole } from '../../access.ts';
-import { dismissUnsaved, lockedToSuggest, requestMode, useShownMode, useUnsaved } from './mode.ts';
+import { dismissUnsaved, lockedToSuggest, requestMode, useNoSuggestionRoom, useShownMode, useUnsaved } from './mode.ts';
 
 const TOOL = 'flex h-8 cursor-pointer items-center justify-center gap-1 rounded-md border border-border-clear px-2 text-xs text-ink-default transition-all duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/15 active:scale-90';
 const IDLE = 'hover:border-border-subtle hover:bg-surface-sidebar';
@@ -78,21 +78,28 @@ export function SuggestModeChip({ docId }: { docId: string }): ReactNode {
 /** In the notice band: what a closed suggestion could not keep, until dismissed (§5 refusal path). */
 export function SuggestUnsavedBand({ docId }: { docId: string | null }): ReactNode {
   const blocks = useUnsaved(docId);
+  const full = useNoSuggestionRoom(docId);
   const [copied, setCopied] = useState(false);
-  if (!docId || blocks.length === 0) return null;
+  if (!docId || (blocks.length === 0 && !full)) return null;
   const text = blocks.join('\n\n');
   return (
     <div {...{ [SUGGEST_UNSAVED_ATTR]: '' }} role="alert" className="flex items-center gap-3 border-b border-border-subtle bg-surface-raised-card px-4 py-2 text-xs text-ink-default">
-      <span className="min-w-0 flex-1">This suggestion was closed while you typed, so your last changes were not saved.</span>
-      <button
-        type="button"
-        className="underline"
-        onClick={() => {
-          void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => setCopied(false));
-        }}
-      >
-        {copied ? 'Copied' : 'Copy what wasn’t saved'}
-      </button>
+      <span className="min-w-0 flex-1">
+        {full
+          ? `This note has no room for more suggestions${blocks.length ? ', so your last changes were not saved' : ''}. An editor can still edit it.`
+          : 'This suggestion was closed while you typed, so your last changes were not saved.'}
+      </span>
+      {blocks.length ? (
+        <button
+          type="button"
+          className="underline"
+          onClick={() => {
+            void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => setCopied(false));
+          }}
+        >
+          {copied ? 'Copied' : 'Copy what wasn’t saved'}
+        </button>
+      ) : null}
       <button type="button" className="text-ink-muted underline" onClick={() => { setCopied(false); dismissUnsaved(docId); }}>
         Dismiss
       </button>

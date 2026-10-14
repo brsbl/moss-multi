@@ -38,6 +38,9 @@ export default defineConfig({
           include: ['scripts/**/*.test.mjs', 'apps/*/src/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
           exclude: ['**/node_modules/**', '**/fixtures/**', '**/*.harness.test.ts'],
           server: { deps: { inline: ['partyserver'] } },
+          // A hang guard, not a speed claim (a test that bounds time asserts it): REST tests over D1 take 2-3 s each,
+          // and a loaded runner took them past vitest's default 5 s (assets, sharing, revocation; T3.B27).
+          testTimeout: 30_000,
         },
       },
       {

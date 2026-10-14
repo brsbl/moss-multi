@@ -88,6 +88,12 @@ describe('the /api body cap', () => {
     expect(seen[0].body.length).toBe(JSON_BODY_CAP_BYTES + 1);
   });
 
+  it('leaves a version restore to its own cap, read after access and the write token (versions.ts)', async () => {
+    const { route, seen } = harness();
+    expect((await route('/api/docs/d1/versions/v1/restore', declared(DOC_BODY_CAP_BYTES + 1))).status).toBe(200);
+    expect(seen[0].body.length).toBe(DOC_BODY_CAP_BYTES + 1);
+  });
+
   it('caps no GET and nothing outside /api', async () => {
     const { route, read } = harness();
     expect((await route('/api/me')).status).toBe(200);

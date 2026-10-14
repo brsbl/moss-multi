@@ -2,7 +2,8 @@ import { getServerByName, Server, type Connection, type ConnectionContext, type 
 import { CLOSE, TRUSTED } from '@moss-multi/protocol/sync';
 import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, NAMED_VERSION_RATE, PUSH_RATE, REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, COMMENT_OP_RATE, DOC_CREATE_DAILY, DOC_CREATE_RATE, NAMED_VERSION_RATE, PUSH_RATE,
+  REMOTE_FETCH_RATE, REST_WRITE_RATE, SESSION_MAX_MS, SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE, UPLOAD_RATE,
 } from '@moss-multi/protocol/limits';
 import { liveCredentials, TRY_AGAIN, withDeadline } from './access-epoch.ts';
 import { windowed } from './doc/admission.ts';
@@ -37,15 +38,25 @@ export class RateWindow {
     private readonly max: number,
     private readonly windowMs: number,
     private readonly store?: AttemptStore,
+    /** Count only granted takes: a long window (a day) should not stay shut because a refused caller retried. */
+    private readonly grantsOnly = false,
   ) {}
 
   take(now = Date.now()): boolean {
     this.#attempts ??= this.store?.load() ?? [];
     const recent = windowed(this.#attempts, now, this.windowMs);
+    const granted = recent.length <= this.max;
+    if (!granted && this.grantsOnly) recent.pop();
     // Only the newest `max` matter to the next decision, so a flood never grows the list.
     this.#attempts = recent.slice(-this.max);
     this.store?.save(this.#attempts);
-    return recent.length <= this.max;
+    return granted;
+  }
+
+  /** Milliseconds until the oldest counted take leaves the window. */
+  waitMs(now = Date.now()): number {
+    const oldest = this.#attempts?.[0];
+    return oldest === undefined ? 0 : Math.max(0, oldest + this.windowMs - now);
   }
 }
 
@@ -69,7 +80,7 @@ function sqlAttempts(sql: SqlStorage, name: string): AttemptStore {
 }
 
 // One per principal, named by its id: workspace channel (one authenticated socket per tab, hibernatable), sign-out
-// registry, the REST write limit (A§5.2) and the upload limit (A§16). An upload window may also be named for a link
+// registry, the REST write limit and the note creation budget (A§5.2), and the upload limit (A§16). An upload window may also be named for a link
 // and an IP (`link:<hash>:<ip>`), which no principal is, so nothing connects to it.
 export class PrincipalDO extends Server<SyncEnv> {
   static options = { hibernate: true };
@@ -90,6 +101,8 @@ export class PrincipalDO extends Server<SyncEnv> {
   #reviews: RateWindow | null = null;
   #previews: RateWindow | null = null;
   #versions: RateWindow | null = null;
+  #creates: RateWindow | null = null;
+  #createsDaily: RateWindow | null = null;
   #registryReady = false;
   /** When the next access tick is due; null when nothing happened since the last one. */
   #tickAt: number | null = null;
@@ -286,6 +299,19 @@ export class PrincipalDO extends Server<SyncEnv> {
   takeUploadToken(): boolean {
     this.#uploads ??= new RateWindow(UPLOAD_RATE.max, UPLOAD_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'uploads'));
     return this.#uploads.take();
+  }
+
+  /**
+   * One note minted (created, imported or duplicated) by this user or their agents: true, or the milliseconds to wait
+   * past DOC_CREATE_RATE or DOC_CREATE_DAILY. The daily window counts only grants.
+   */
+  takeCreateToken(): true | number {
+    const now = Date.now();
+    this.#creates ??= new RateWindow(DOC_CREATE_RATE.max, DOC_CREATE_RATE.windowMs, sqlAttempts(this.ctx.storage.sql, 'doc-creates'));
+    if (!this.#creates.take(now)) return DOC_CREATE_RATE.windowMs;
+    this.#createsDaily ??= new RateWindow(DOC_CREATE_DAILY.max, DOC_CREATE_DAILY.windowMs,
+      sqlAttempts(this.ctx.storage.sql, 'doc-creates-daily'), true);
+    return this.#createsDaily.take(now) || this.#createsDaily.waitMs(now);
   }
 
   /** One server fetch of a caller-supplied URL (an unfurl, a remote image); false past REMOTE_FETCH_RATE. */

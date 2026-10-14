@@ -9,6 +9,7 @@ import { recordDigest, deleteUpdate, type RecordOp } from '@moss-multi/core/sugg
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64, CLOSE, CUSTOM_PREFIX, encodePayloadFrame, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
+import { PayloadStore } from '../../src/payloads.ts';
 import { payloadSourceOf } from '../../src/server-doc.ts';
 import { ForkShim } from '../../src/suggest/fork-shim.ts';
 import { opsOf, readMeta, readRecord, SUGGESTIONS } from '../../src/suggest/records.ts';
@@ -471,6 +472,15 @@ describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
     expect(await leases(back)).toHaveLength(2);
   });
 
+  it('refused frames that name one record, on one socket, each count toward the cooldown (T5.R2)', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    for (let i = 0; i < 2; i += 1) expect(await send(sam, { t: 'suggest-withdraw', record: 'nope' })).toMatchObject({ t: 'suggest-refused' });
+    expect(sam.closed, 'two refusals').toBeNull();
+    expect(await send(sam, { t: 'suggest-withdraw', record: 'nope' })).toMatchObject({ t: 'suggest-refused' });
+    expect(sam.closed?.code, 'three refusals of the same record').toBe(CLOSE.connectionLimit);
+  });
+
   it('role refusals of body frames count toward the cooldown', async () => {
     const opened = await seeded();
     const body = bodyState(opened.dobj.document);
@@ -485,9 +495,9 @@ describe('T5.2 loud refusal, rate and cooldown @p:mean-2 @p:tech-7', () => {
     expect(bodyState(opened.dobj.document)).toBe(body);
   });
 
-  it('suggest frames count toward the write rate (4420)', async () => {
+  it('suggest frames, the lease included, count toward the write rate (4420)', async () => {
     const original = DocDO.limits;
-    DocDO.limits = { ...original, writeRate: { max: 3, windowMs: 5_000 } };
+    DocDO.limits = { ...original, writeRate: { max: 4, windowMs: 5_000 } };
     try {
       const opened = await seeded();
       const sam = await on(opened, SAM);
@@ -675,7 +685,8 @@ describe('T5.2 a suggester body frame costs O(frame) @p:mean-2', () => {
       const body = bodyState(opened.dobj.document);
       const times: number[] = [];
       for (let run = 0; run < 5; run += 1) {
-        const sam = await on(opened, SAM);
+        // A principal per run: a refused frame counts toward its principal's cooldown.
+        const sam = await on(opened, { ...SAM, id: `sam-${paragraphs}-${run}@example.invalid` });
         const started = performance.now();
         await sam.deliver(syncFrame(2, forged));
         times.push(performance.now() - started);
@@ -690,5 +701,114 @@ describe('T5.2 a suggester body frame costs O(frame) @p:mean-2', () => {
     console.log(`T5.2 suggester body frame (${large.frame} B): ${small.ms.toFixed(2)} ms on ${small.bytes} B vs ${large.ms.toFixed(2)} ms on ${large.bytes} B`);
     expect(large.bytes).toBeGreaterThan(1_600_000);
     expect(large.ms).toBeLessThan(small.ms * 3 + 10);
+  });
+});
+
+describe('T5.B1 a sub-editor delete frame past its scan budget is refused, never dropped silently @p:mean-2', () => {
+  const ED_CLIENT = 0x5eed7001;
+  /**
+   * A new paragraph of `n` characters an editor typed one at a time at its start, so each stays its own struct, then
+   * deleted all but the last typed: `n - 1` tombstones and one live item, in that clock order. Returns the first clock.
+   */
+  function tombstones(doc: Y.Doc, n: number): number {
+    const ed = new Y.Doc();
+    ed.clientID = ED_CLIENT;
+    Y.applyUpdate(ed, Y.encodeStateAsUpdate(doc));
+    const sv = Y.encodeStateVector(ed);
+    const block = new Y.XmlText();
+    const root = ed.get('root', Y.XmlText);
+    ed.transact(() => {
+      block.setAttribute('__type', 'paragraph');
+      root.insertEmbed(root.length, block);
+    });
+    const from = Y.getState(ed.store, ED_CLIENT);
+    for (let i = 0; i < n; i += 1) block.insert(0, 'z');
+    block.delete(1, n - 1);
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(ed, sv));
+    ed.destroy();
+    return from;
+  }
+  const READER: Who = { id: 'reader-1@example.invalid', name: 'Rita Reader', role: 'viewer' };
+
+  it('a frame naming more tombstones than its budget before a live item is refused role, 4403, and counts toward the cooldown; a proved inert step 2 passes', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const from = tombstones(doc, 3_000);
+    const body = bodyState(doc);
+    // A reader's step 2 carries the doc's whole delete set, past its scan budget: proved inert, it passes.
+    const reader = await on(opened, READER);
+    await reader.deliver(syncFrame(2, deleteUpdate([{ client: ED_CLIENT, clock: from, len: 100 }])));
+    await reader.pump();
+    expect(reader.closed, 'inert frames pass').toBeNull();
+    expect(reader.events.filter((event) => event.t === 'write-refused')).toEqual([]);
+    const forged = deleteUpdate([{ client: ED_CLIENT, clock: from, len: 3_000 }]);
+    for (let i = 0; i < 3; i += 1) {
+      // The first as a socket's first frame, the others after the socket's own step 2.
+      const sam = i === 0 ? await connect(opened, SAM) : await on(opened, SAM);
+      await sam.deliver(syncFrame(2, forged));
+      await sam.pump();
+      expect(sam.events, `frame ${i}`).toContainEqual({ t: 'write-refused', reason: 'role' });
+      expect(sam.closed?.code, `frame ${i}`).toBe(CLOSE.revoked);
+    }
+    expect((await connect(opened, SAM)).closed?.code, 'three refusals start the cooldown').toBe(CLOSE.connectionLimit);
+    expect(bodyState(doc)).toBe(body);
+    expect(reader.closed, 'another principal is untouched').toBeNull();
+  });
+});
+
+describe('T5.B1 a payload op refused for its lease or a cap loads no payload doc @p:mean-2', () => {
+  /** The `__regId` of the note's first code block. */
+  function codeRegId(doc: Y.Doc): string {
+    const find = (parent: Y.XmlText): string | null => {
+      for (const op of parent.toDelta() as { insert: unknown }[]) {
+        if (op.insert instanceof Y.XmlElement && op.insert.getAttribute('__type') === 'code-block') return String(op.insert.getAttribute('__regId'));
+        if (op.insert instanceof Y.XmlText) {
+          const found = find(op.insert);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    const id = find(doc.get('root', Y.XmlText));
+    if (!id) throw new Error('no code block');
+    return id;
+  }
+
+  it('after a wake, ops refused lease and record-cap read no payload rows; a valid op reads them at most once', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const sam = await on(opened, SAM);
+    const [grant] = await leases(sam);
+    const id = codeRegId(doc);
+    const state = payloadSourceOf(doc).read(id);
+    expect(state, 'the code block serves its payload').not.toBeNull();
+    /** `text` typed at the payload's start under `client`, on a copy of it as the server holds it. */
+    const edit = (client: number, text: string): RecordOp => {
+      const copy = new Y.Doc();
+      Y.applyUpdate(copy, state!);
+      copy.clientID = client;
+      const sv = Y.encodeStateVector(copy);
+      copy.getText('payload').insert(0, text);
+      const update = Y.encodeStateAsUpdate(copy, sv);
+      copy.destroy();
+      return { doc: id, update };
+    };
+    expect(await send(sam, opsRequest(grant.record, forge(doc, (d) => firstBlock(d).insert(0, 'A '), grant.client)))).toMatchObject({ t: 'suggest-ack' });
+    const woken = await start(wake(opened));
+    sam.opened = woken;
+    const loads = vi.spyOn(PayloadStore.prototype, 'doc');
+    const query = vi.spyOn(woken.backing, 'query');
+    try {
+      const rowReads = () => query.mock.calls.filter(([sql]) => /FROM payload_updates WHERE reg_id/.test(sql)).length;
+      expect(await send(sam, opsRequest(grant.record, edit(0x5eed0004, 'x')))).toMatchObject({ t: 'suggest-refused', reason: 'lease' });
+      expect(await send(sam, opsRequest(grant.record, edit(grant.client, 'y'.repeat(270_000))))).toMatchObject({ t: 'suggest-refused', reason: 'record-cap' });
+      expect(loads, 'a refused op never loads the payload').not.toHaveBeenCalled();
+      expect(rowReads()).toBe(0);
+      expect(await send(sam, opsRequest(grant.record, edit(grant.client, 'p')))).toMatchObject({ t: 'suggest-ack', doc: id });
+      expect(rowReads(), 'a valid op loads it once').toBeLessThanOrEqual(1);
+    } finally {
+      loads.mockRestore();
+      query.mockRestore();
+    }
   });
 });

@@ -279,6 +279,35 @@ test('j16-review: a word replacement reads as the word removed and the word adde
   expect(await content(ada, docId)).toContain('Line 9');
 });
 
+test('j16-review: a code-block edit reads as its changed line before and after, never as character fragments @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Code below.\n\n```js\nconsole.log(x)\n```');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ben.observeEditor(docId);
+  await ui.body(ben, docId).locator('.moss-codeblock-pre').click();
+  const field = ui.body(ben, docId).getByPlaceholder('Enter code...');
+  await expect(field).toBeVisible();
+  await field.fill('console.debug(y)');
+  await expect(field).toHaveValue('console.debug(y)');
+  await acked(ben, docId, 'the code edit');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  const card = (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  const rows = card.locator(`[${SUGGESTION_ROW_ATTR}]`);
+  await expect(rows, 'one row for the one changed line').toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute(SUGGESTION_ROW_ATTR, 'change');
+  expect(await rows.first().locator('> span.min-w-0 > span:first-child').innerText(), 'the row reads the new line whole').toBe('console.debug(y)');
+  const row = await rows.first().innerText();
+  expect(row, 'a separator, then the label').toContain('console.debug(y) — block content');
+  expect(row, 'the old line, whole').toContain('"console.log(x)"');
+
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('console.debug(y)');
+});
+
 /** The open card's inserted and deleted row texts, once its preview has loaded. */
 async function cardRows(actor: Actor): Promise<{ card: Locator; inserted: string[]; deleted: string[] }> {
   const card = (await openPanel(actor)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);

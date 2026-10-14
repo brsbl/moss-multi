@@ -1,0 +1,106 @@
+diff --git a/dist/yjs.cjs b/dist/yjs.cjs
+index 5b5690eb2f172cd99d244ff33394ff59f44fe103..84e0502914e51d7db1b51d377b050a712fd6a31f 100644
+--- a/dist/yjs.cjs
++++ b/dist/yjs.cjs
+@@ -3246,22 +3246,36 @@ const tryGcDeleteSet = (ds, store, gcFilter) => {
+  * @param {StructStore} store
+  */
+ const tryMergeDeleteSet = (ds, store) => {
+-  // try to merge deleted / gc'd items
+-  // merge from right to left for better efficiency and so we don't miss any merge targets
++  // moss-multi patch (T3.S6): one pass over the span the deletions touch, with one splice. Merging run by run spliced
++  // the struct array once per run, so deleting n separate blocks (undoing a large paste) cost O(n²). Merging adjacent
++  // structs that can merge is always valid; this may also merge such a pair between two deleted ranges.
+   ds.clients.forEach((deleteItems, client) => {
+     const structs = /** @type {Array<GC|Item>} */ (store.clients.get(client));
+-    for (let di = deleteItems.length - 1; di >= 0; di--) {
+-      const deleteItem = deleteItems[di];
+-      // start with merging the item next to the last deleted item
+-      const mostRightIndexToCheck = math__namespace.min(structs.length - 1, 1 + findIndexSS(structs, deleteItem.clock + deleteItem.len - 1));
+-      for (
+-        let si = mostRightIndexToCheck, struct = structs[si];
+-        si > 0 && struct.id.clock >= deleteItem.clock;
+-        struct = structs[si]
+-      ) {
+-        si -= 1 + tryToMergeWithLefts(structs, si);
++    if (deleteItems.length === 0 || structs.length < 2) {
++      return
++    }
++    const first = deleteItems[0];
++    const last = deleteItems[deleteItems.length - 1];
++    const lo = math__namespace.max(findIndexSS(structs, first.clock) - 1, 0);
++    const hi = math__namespace.min(structs.length - 1, 1 + findIndexSS(structs, last.clock + last.len - 1));
++    let w = lo;
++    for (let r = lo + 1; r <= hi; r++) {
++      const left = structs[w];
++      const right = structs[r];
++      if (left.deleted === right.deleted && left.constructor === right.constructor && left.mergeWith(right)) {
++        if (right instanceof Item && right.parentSub !== null && /** @type {AbstractType<any>} */ (right.parent)._map.get(right.parentSub) === right) {
++          /** @type {AbstractType<any>} */ (right.parent)._map.set(right.parentSub, /** @type {Item} */ (left));
++        }
++      } else {
++        structs[++w] = right;
+       }
+     }
++    if (w < hi) {
++      structs.splice(w + 1, hi - w);
++    }
++    if (lo > 0) {
++      tryToMergeWithLefts(structs, lo);
++    }
+   });
+ };
+ 
+diff --git a/dist/yjs.mjs b/dist/yjs.mjs
+index 10d633d8e71171b2702c45376553832504921877..67462f317e0de5da7e4ded5295d51554c4481245 100644
+--- a/dist/yjs.mjs
++++ b/dist/yjs.mjs
+@@ -3209,22 +3209,36 @@ const tryGcDeleteSet = (ds, store, gcFilter) => {
+  * @param {StructStore} store
+  */
+ const tryMergeDeleteSet = (ds, store) => {
+-  // try to merge deleted / gc'd items
+-  // merge from right to left for better efficiency and so we don't miss any merge targets
++  // moss-multi patch (T3.S6): one pass over the span the deletions touch, with one splice. Merging run by run spliced
++  // the struct array once per run, so deleting n separate blocks (undoing a large paste) cost O(n²). Merging adjacent
++  // structs that can merge is always valid; this may also merge such a pair between two deleted ranges.
+   ds.clients.forEach((deleteItems, client) => {
+     const structs = /** @type {Array<GC|Item>} */ (store.clients.get(client));
+-    for (let di = deleteItems.length - 1; di >= 0; di--) {
+-      const deleteItem = deleteItems[di];
+-      // start with merging the item next to the last deleted item
+-      const mostRightIndexToCheck = math.min(structs.length - 1, 1 + findIndexSS(structs, deleteItem.clock + deleteItem.len - 1));
+-      for (
+-        let si = mostRightIndexToCheck, struct = structs[si];
+-        si > 0 && struct.id.clock >= deleteItem.clock;
+-        struct = structs[si]
+-      ) {
+-        si -= 1 + tryToMergeWithLefts(structs, si);
++    if (deleteItems.length === 0 || structs.length < 2) {
++      return
++    }
++    const first = deleteItems[0];
++    const last = deleteItems[deleteItems.length - 1];
++    const lo = math.max(findIndexSS(structs, first.clock) - 1, 0);
++    const hi = math.min(structs.length - 1, 1 + findIndexSS(structs, last.clock + last.len - 1));
++    let w = lo;
++    for (let r = lo + 1; r <= hi; r++) {
++      const left = structs[w];
++      const right = structs[r];
++      if (left.deleted === right.deleted && left.constructor === right.constructor && left.mergeWith(right)) {
++        if (right instanceof Item && right.parentSub !== null && /** @type {AbstractType<any>} */ (right.parent)._map.get(right.parentSub) === right) {
++          /** @type {AbstractType<any>} */ (right.parent)._map.set(right.parentSub, /** @type {Item} */ (left));
++        }
++      } else {
++        structs[++w] = right;
+       }
+     }
++    if (w < hi) {
++      structs.splice(w + 1, hi - w);
++    }
++    if (lo > 0) {
++      tryToMergeWithLefts(structs, lo);
++    }
+   });
+ };
+ 

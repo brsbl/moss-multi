@@ -2,19 +2,20 @@ diff --git a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx b/pac
 --- a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx
 +++ b/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx
 @@ -1,3 +1,4 @@
-+import { useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: shared-properties (A§10.4): same gate as the title
++import { useFieldBound, useFieldWritable } from '@moss-multi/host/collab/title-binding'; // moss-multi seam: shared-properties (A§10.4): same gate as the title
  import { useCallback } from 'react';
  import { useAtomValue, useSetAtom, useStore } from 'jotai';
  import { Plus } from 'lucide-react';
-@@ -35,6 +36,7 @@ const stableStringifyUnknown = (value: unknown): string => {
+@@ -35,6 +36,8 @@ const stableStringifyUnknown = (value: unknown): string => {
  export function PropertiesTabContent() {
    const focusedNoteId = useAtomValue(focusedNoteIdAtom);
    const noteId = focusedNoteId ?? NO_NOTE_SENTINEL;
 +  const writable = useFieldWritable(noteId);
++  const bound = useFieldBound(noteId); // moss-multi seam: shared-properties (A§10.4): no empty state before first sync
    const noteEntity = useAtomValue(noteEntityAtom(noteId));
    const frontmatter = useAtomValue(noteFrontmatterAtom(noteId));
    const store = useStore();
-@@ -59,7 +61,7 @@ export function PropertiesTabContent() {
+@@ -59,7 +62,7 @@ export function PropertiesTabContent() {
  
    const handleFieldChange = useCallback(
      (field: string, value: unknown) => {
@@ -23,7 +24,7 @@ diff --git a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx b/pac
        if (noteEntity?.trashedAt != null) return;
  
        const current = store.get(noteFrontmatterAtom(noteId)) ?? {};
-@@ -89,7 +91,7 @@ export function PropertiesTabContent() {
+@@ -89,7 +92,7 @@ export function PropertiesTabContent() {
        // Signal CanvasAreaContent to schedule autosave
        bumpDirtySignal((c) => c + 1);
      },
@@ -32,7 +33,16 @@ diff --git a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx b/pac
    );
  
    if (noteId === NO_NOTE_SENTINEL) {
-@@ -102,7 +104,7 @@ export function PropertiesTabContent() {
+@@ -98,11 +101,16 @@ export function PropertiesTabContent() {
+     );
+   }
+ 
++  // moss-multi seam: shared-properties (A§10.4): until the doc binds, its properties are unknown, not empty
++  if (frontmatter === null && !bound) {
++    return <div className="py-8" aria-busy="true" data-properties-unbound="" />;
++  }
++
+   if (frontmatter === null) {
      return (
        <div className="py-8 text-center">
          <p className="text-caption text-ink-faint">No properties yet</p>
@@ -41,7 +51,7 @@ diff --git a/packages/desktop/src/renderer/panels/PropertiesTabContent.tsx b/pac
            <button
              type="button"
              onClick={() => {
-@@ -121,11 +123,14 @@ export function PropertiesTabContent() {
+@@ -121,11 +129,14 @@ export function PropertiesTabContent() {
    }
  
    return (

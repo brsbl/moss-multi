@@ -68,11 +68,15 @@ const outdatedRest = (request: Request): boolean => {
 };
 
 const MEDIA_UPLOAD = /^\/api\/docs\/[^/]+\/assets$/;
+const VERSION_RESTORE = /^\/api\/docs\/[^/]+\/versions\/[^/]+\/restore$/;
 const DOC_BODY = /^\/api\/docs(?:\/[^/]+\/push)?$/;
 
-/** The most an /api body may hold (A§18), or null for a media upload, which checks its own declared length (assets.ts). */
+/**
+ * The most an /api body may hold (A§18), or null for a route that caps its own: a media upload by its declared length
+ * (assets.ts), and a restore, whose base can run to tens of MB and is read only after access and the write token (versions.ts).
+ */
 export function bodyCapFor(pathname: string): number | null {
-  if (MEDIA_UPLOAD.test(pathname)) return null;
+  if (MEDIA_UPLOAD.test(pathname) || VERSION_RESTORE.test(pathname)) return null;
   return DOC_BODY.test(pathname) ? DOC_BODY_CAP_BYTES : JSON_BODY_CAP_BYTES;
 }
 

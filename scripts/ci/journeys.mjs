@@ -16,16 +16,34 @@ export const ALL = 'all';
 export const GROUPS = {
   // Chrome, auth and invites.
   shell: ['j00-shell', 'j07', 'j10', 'j19'],
-  // Sharing and live access changes.
-  share: ['j08', 'j09'],
+  // Sharing.
+  share: ['j08'],
+  // Live access changes: demotion, removal, link revocation, sign-out.
+  access: ['j09'],
   // Server import against UI paste, and the protocol round trip.
   import: ['j00-import', 'j00-roundtrip'],
   // Persistence and co-editing; also any new j01 journey until it is placed.
   editing: ['j00-persist', 'j01'],
   // Sharing a note, presence and undo between peers.
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
-  // Code, HTML and formula fields across joins, moves and removals.
-  registers: ['j01-registers'],
+  // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
+  registers: ['j01-registers', 'j01-autolink'],
+  // Typing in a 40,000-line note against a small control (T3.B13).
+  large: ['j01-large'],
+  // Large markdown pastes, up to 2 MB, each landing whole for a peer.
+  paste: ['j01-paste'],
+  // Pastes of very many short blocks, into an empty note and between two paragraphs.
+  pasteblocks: ['j01-paste-blocks'],
+  // One large list or nested list pasted: about 10 MB of state in one block, in batches and frames under the cap.
+  pastelist: ['j01-paste-list'],
+  // One 5,000-row table pasted.
+  pastetable: ['j01-paste-table'],
+  // Pastes just past the size cap, with and without payloads, refused whole.
+  pastecap: ['j01-paste-cap'],
+  // A paste past the cap only with the deleted blocks' payloads the server still counts, refused whole.
+  pasteheld: ['j01-paste-held'],
+  // A peer's edits while a large paste is checked, its redo after a peer's new block, and a check list's order.
+  pasterace: ['j01-paste-race', 'j01-paste-check'],
   // Titles and properties.
   title: ['j02'],
   // A doc's connection: drops, stalls, limits.
@@ -44,10 +62,13 @@ export const GROUPS = {
   sync: ['j18-sync'],
   // Version history: the History view, restore under a peer.
   history: ['j17'],
-  // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent.
-  social: ['j15-social', 'j08-agents'],
+  // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
+  // frames.
+  social: ['j15-social', 'j08-agents', 'j15-comments-guard'],
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
+  // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
+  suggestPaste: ['j16-paste'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.

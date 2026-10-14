@@ -73,6 +73,31 @@ describe('computeMergedTarget keeps concurrent human edits @p:agt-1', () => {
   });
 });
 
+describe('the degenerate guard holds a drifted merge to the doc as well as the base (B354) @p:agt-1', () => {
+  const north = 'The first long paragraph describes the north beds, their soil, and the beans planted there in spring.';
+  const note = 'Short note.';
+  const south = 'The second long paragraph describes the south beds, their compost, and the squash that follows in summer.';
+  const base = [north, note, south].join('\n\n');
+  // The person deleted the north paragraph; the agent, from the older base, deletes the south one.
+  const current = [note, south].join('\n\n');
+
+  it('refuses complementary deletions that each pass against the base but together delete most of the doc', () => {
+    const next = [north, note].join('\n\n');
+    const alone = computeMergedTarget(base, base, next, { refuseDegenerate: true });
+    expect(alone, 'against the base alone the push is no wipe').toMatchObject({ degenerate: false, target: next });
+    const refused = computeMergedTarget(current, base, next, { refuseDegenerate: true });
+    expect(refused).toMatchObject({ degenerate: true, target: current, drifted: true, failedHunks: [], applied: 0 });
+    expect(refused.deletedRatio).toBeGreaterThan(0.6);
+    expect(computeMergedTarget(current, base, next), 'forced, it merges').toMatchObject({ degenerate: false, target: note });
+  });
+
+  it('still lands a benign drifted push', () => {
+    const next = base.replace('the squash that follows', 'the pumpkins that follow');
+    expect(computeMergedTarget(current, base, next, { refuseDegenerate: true }))
+      .toMatchObject({ degenerate: false, target: current.replace('the squash that follows', 'the pumpkins that follow'), failedHunks: [] });
+  });
+});
+
 describe('computeMergedTarget runs in linear time on pushed text up to the 2 MB push cap @p:agt-1', () => {
   const CAP = 2 * 1024 * 1024;
   /** Adversarial pushes: runs of one character, which a backtracking regex rescans from every position. */

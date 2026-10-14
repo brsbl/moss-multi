@@ -431,3 +431,112 @@ test('j17-history: a versions fetch that fails shows an error, never "No checkpo
   await ada.page.unroute(isOneVersion);
   await closeHistory(ada, id);
 });
+
+/** The version's markdown as the API keeps it. */
+async function versionMarkdown(actor: Actor, id: string, name: string): Promise<string> {
+  const version = (await listed(actor, id)).find((v) => v.name === name);
+  expect(version, `"${name}" is stored`).toBeDefined();
+  const response = await actor.context.request.get(`/api/docs/${id}/versions/${encodeURIComponent(version!.id)}`);
+  expect(response.status()).toBe(200);
+  return ((await response.json()) as { version: { markdown: string } }).version.markdown;
+}
+
+/** Every request this actor's page sends that `match` picks, as they are sent. */
+function requests(actor: Actor, match: (method: string, path: string) => boolean): string[] {
+  const seen: string[] = [];
+  actor.page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (match(request.method(), path)) seen.push(`${request.method()} ${path}`);
+  });
+  return seen;
+}
+
+test('j17-history: a named save and Diff vs current wait until this tab\'s typing is acked, and refuse without sending when it never is @p:mean-3', async ({ actors, stack }) => {
+  const { id, ben } = await sharedNote(actors, stack.baseUrl, { severable: true });
+  const sever = ben.sever;
+  if (!sever) throw new Error('ben is not severable');
+  // Each hold leaves Ben's resyncs unanswered, so his socket may go silent and reconnect once per hold.
+  ben.expectReconnects(3, id);
+  const versionsPath = `/api/docs/${id}/versions`;
+  const saves = requests(ben, (method, path) => method === 'POST' && path === versionsPath);
+  const reads = requests(ben, (method, path) => method === 'GET' && path === `/api/docs/${id}/content`);
+
+  // A save while Ben's words are still in flight: nothing is posted until the DocDO acks them, and the version has them.
+  sever.hold(id);
+  await ui.body(ben, id).getByText('A second line for the peer.').click();
+  await caretAfter(ben, id, 'for the peer.');
+  await ben.page.keyboard.type(' Unsent words.');
+  ben.typed({ docId: id, field: 'body', text: ' Unsent words.', ordered: false });
+  const view = await openHistory(ben, id);
+  await view.getByRole('textbox', { name: 'Version name', exact: true }).fill('Held save');
+  const save = view.getByRole('button', { name: 'Save version', exact: true });
+  await save.click();
+  await expect(save, 'the save waits, busy').toBeDisabled();
+  await ben.page.waitForTimeout(1_500);
+  expect(saves, 'no save is posted while Ben\'s typing is unacked').toEqual([]);
+  sever.deliverHeld();
+  await expect(row(ben, id, 'Held save'), 'the save lands once the typing is acked').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  expect(saves, 'one save, after the ack').toHaveLength(1);
+  expect(await versionMarkdown(ben, id, 'Held save'), 'the saved version holds the typing').toContain('for the peer. Unsent words.');
+  await closeHistory(ben, id);
+
+  // Diff vs current reads the note only once Ben's later typing is acked, so it shows it.
+  sever.hold(id);
+  await caretAfter(ben, id, 'Unsent words.');
+  await ben.page.keyboard.type(' Diffed words.');
+  ben.typed({ docId: id, field: 'body', text: ' Diffed words.', ordered: false });
+  const readsBefore = reads.length;
+  await openHistory(ben, id);
+  await expect(row(ben, id, 'Held save')).toHaveAttribute('aria-pressed', 'true');
+  await ben.page.waitForTimeout(1_500);
+  expect(reads.length, 'the current note is not read while Ben\'s typing is unacked').toBe(readsBefore);
+  sever.deliverHeld();
+  await expect(content(ben, id).locator('ins').filter({ hasText: 'Diffed words.' }), 'the diff shows the typing as added since').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await closeHistory(ben, id);
+
+  // Typing that is never acked: the save says so and sends nothing, and so does the diff.
+  sever.hold(id);
+  await caretAfter(ben, id, 'Diffed words.');
+  await ben.page.keyboard.type(' Never acked.');
+  ben.typed({ docId: id, field: 'body', text: ' Never acked.', ordered: false });
+  const savesBefore = saves.length;
+  const readsBeforeRefusal = reads.length;
+  const refused = await openHistory(ben, id);
+  await expect(refused.getByRole('alert').first(), 'Diff vs current refuses an unsynced note').toContainText('not synced', { timeout: BIND_TIMEOUT });
+  expect(reads.length, 'the refused diff read nothing').toBe(readsBeforeRefusal);
+  await refused.getByRole('textbox', { name: 'Version name', exact: true }).fill('Refused save');
+  await refused.getByRole('button', { name: 'Save version', exact: true }).click();
+  await expect(refused.locator('form').getByRole('alert'), 'the save refuses an unsynced note').toContainText('not synced', { timeout: BIND_TIMEOUT });
+  expect(saves.length, 'the refused save posted nothing').toBe(savesBefore);
+  expect((await listed(ben, id)).map((v) => v.name), 'and no version was created').not.toContain('Refused save');
+  sever.deliverHeld();
+  await ui.waitAcked(ben, id);
+  await closeHistory(ben, id);
+});
+
+test('j17-history: View shows a property-less note that starts with a rule whole, and still omits real frontmatter @p:mean-3', async ({ actors, stack }) => {
+  const golden = readFileSync(new URL('../../packages/sync/src/converter/fixtures/goldens/leading-rule.export.md', import.meta.url), 'utf8');
+  const { id, ada, adaPrincipal } = await sharedNote(actors, stack.baseUrl, { title: 'Leading rule', seed: golden });
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'Rules');
+  await historyView(ada, id).getByRole('button', { name: 'View', exact: true }).click();
+  const editor = content(ada, id).locator(`${LEXICAL_EDITOR_SELECTOR}[contenteditable]`);
+  await expect(editor, 'the prose between the leading rules shows').toContainText('A body that starts with a rule, with no frontmatter before it.');
+  await expect(editor).toContainText('title: not frontmatter');
+  await expect(editor).toContainText('Text after the YAML-looking lines.');
+  await expect(editor.locator('hr'), 'every rule shows, the leading one too').toHaveCount(3);
+  await closeHistory(ada, id);
+
+  // A note with properties: View shows the body, never the YAML.
+  const withProperties = await createNote(ada, stack.baseUrl, 'Properties note', false, '---\nstatus: draft\n---\nThe body under its properties.');
+  const again = await actors.open(adaPrincipal, { path: `/d/${withProperties}`, label: 'ada-properties' });
+  await ui.waitLive(again, withProperties);
+  await openHistory(again, withProperties);
+  await saveNamed(again, withProperties, 'With properties');
+  await historyView(again, withProperties).getByRole('button', { name: 'View', exact: true }).click();
+  const shown = content(again, withProperties).locator(`${LEXICAL_EDITOR_SELECTOR}[contenteditable]`);
+  await expect(shown).toContainText('The body under its properties.');
+  await expect(shown, 'the properties are not shown as body text').not.toContainText('status: draft');
+  await expect(shown.locator('hr'), 'nor as rules').toHaveCount(0);
+  await closeHistory(again, withProperties);
+});

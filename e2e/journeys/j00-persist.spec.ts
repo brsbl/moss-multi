@@ -280,6 +280,11 @@ test('j00-persist: split navigation never shows one note in both panes, and the 
   await ui.waitAcked(ada, b);
   const c = await ui.newNote(ada, { onlyPane: true });
   await ui.waitBodyLive(ada, c);
+  // B's typing ends in a trailing updated_at touch, up to 5 s later (TOUCH_INTERVAL_MS), that moves B to the top of the
+  // newest-first list; a row click while it lands hits B's neighbour instead (run 38389775492, WebKit). The rows are
+  // clicked once the list holds that order.
+  const order = () => ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`).evaluateAll((rows, attr) => rows.map((r) => r.getAttribute(attr)), DOC_ID_ATTR);
+  await expect.poll(order, { message: "B's last edit sorts it first", timeout: BIND_TIMEOUT }).toEqual([b, c, a]);
   // Each note switch closes the pane's socket before the next opens: B binds in three panes over the leg, A in two.
   ada.expectReconnects(2, b);
   ada.expectReconnects(1, a);

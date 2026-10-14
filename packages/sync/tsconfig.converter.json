@@ -23,6 +23,6 @@
     }
   },
   "include": ["src/converter/**/*.ts", "test/*.ts", "test/parity/**/*.ts", "test/views/**/*.ts", "test/workerd/**/*.ts", "measure/**/*.ts"],
-  // The anchor measurement and the DocDO's measurement Worker run the DocDO's modules, which tsconfig.json checks against the Workers types.
-  "exclude": ["measure/anchors.ts", "measure/anchors-worker.ts", "measure/doc-worker.ts"]
+  // The anchor measurement and the DO measurement Workers run the DOs' modules, which tsconfig.json checks against the Workers types.
+  "exclude": ["measure/anchors.ts", "measure/anchors-worker.ts", "measure/doc-worker.ts", "measure/search-worker.ts"]
 }

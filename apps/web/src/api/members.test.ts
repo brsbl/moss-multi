@@ -4,7 +4,7 @@
 // 404s on every doc route (A§8 non-disclosure).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { countingBinds, D1_MAX_PARAMS, migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser, unmeteredPrincipals } from '../test/principals.ts';
 import { redeem } from '../test/invites.ts';
 import { handleApi } from './router.ts';
 
@@ -30,7 +30,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: {} as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: unmeteredPrincipals as never };
   ada = await signedUpUser(env, 'members-ada', 'Ada');
   ben = await signedUpUser(env, 'members-ben', 'Ben');
   cy = await signedUpUser(env, 'members-cy', 'Cy');
@@ -330,5 +330,55 @@ describe('non-disclosure: a missing doc and an inaccessible one answer alike', (
     expect((await call('GET', `/api/docs/${docId}/members`, ada.cookie)).status).toBe(200);
     expect(await roleOf(dee.cookie, docId)).toBeNull();
     expect(created).toEqual([]);
+  });
+});
+
+describe('the mention roster: GET /api/docs/:id/members?scope=effective @p:ppl-3', () => {
+  /** A person with an account and no access anywhere yet. */
+  const person = async (name: string) => {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await d1.db.prepare('INSERT INTO user (id, name, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(id, name, `mm-t4b1-${name}-${id}@example.invalid`, now, now).run();
+    return id;
+  };
+  const roster = async (cookie: string, docId: string) =>
+    (await members(cookie, `/api/docs/${docId}/members?scope=effective`)).map((m) => [m.principalId, m.role]);
+
+  it('unions the owner, direct grants and every ancestor folder grant, each person once; a move out of a folder drops its grants', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    const elsewhere = await insertFolder(d1.db, ada, vault);
+    const docId = await insertDoc(d1.db, ada, { folderId: folder });
+    const [direct, inFolder, inVault, everywhere] = [await person('Direct'), await person('Folder'), await person('Vault'), await person('Many')];
+    await insertGrant(d1.db, { docId }, { id: direct }, 'commenter');
+    await insertGrant(d1.db, { docId }, { id: everywhere }, 'viewer');
+    await insertGrant(d1.db, { folderId: folder }, { id: inFolder }, 'viewer');
+    await insertGrant(d1.db, { folderId: folder }, { id: everywhere }, 'editor');
+    await insertGrant(d1.db, { folderId: vault }, { id: inVault }, 'commenter');
+    await insertGrant(d1.db, { folderId: vault }, { id: everywhere }, 'viewer');
+    await insertGrant(d1.db, { docId }, { id: ben.id }, 'viewer');
+    expect(await roster(ben.cookie, docId)).toEqual([
+      [ada.id, 'owner'], [direct, 'commenter'], [everywhere, 'editor'], [ben.id, 'viewer'], [inFolder, 'viewer'], [inVault, 'commenter'],
+    ]);
+    expect((await members(ben.cookie, `/api/docs/${docId}/members`)).map((m) => m.principalId), 'the direct-grant list is unchanged')
+      .toEqual([ada.id, direct, everywhere, ben.id]);
+    await d1.db.prepare('UPDATE docs SET folder_id = ? WHERE id = ?').bind(elsewhere, docId).run();
+    expect(await roster(ben.cookie, docId)).toEqual([
+      [ada.id, 'owner'], [direct, 'commenter'], [everywhere, 'viewer'], [ben.id, 'viewer'], [inVault, 'commenter'],
+    ]);
+  });
+
+  it('a link-only reader, signed in or not, gets nothing', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const docId = await insertDoc(d1.db, ada, { folderId: vault });
+    await insertGrant(d1.db, { docId }, { id: ben.id }, 'viewer');
+    const token = await insertLink(d1.db, { docId }, 'commenter');
+    expect((await call('GET', `/api/docs/${docId}?share=${token}`, cy.cookie)).status, 'the link opens the note').toBe(200);
+    for (const cookie of [cy.cookie, null]) {
+      const response = await call('GET', `/api/docs/${docId}/members?scope=effective`, cookie, undefined, { 'x-moss-share': token });
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain(ben.id);
+    }
   });
 });

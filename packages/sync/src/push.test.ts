@@ -2,12 +2,13 @@
 // live doc, then landed through the identity-preserving reconcile: untouched blocks keep their Yjs items, duplicate
 // blocks keep their positions, a `:::tabs` block stays one block whose panels merge, a peer's concurrent typing in
 // the same paragraph survives, and a degenerate push is refused unless forced. @p:agt-1 @p:tech-5 @p:tech-7
-import { $getRoot, $isElementNode, $isTextNode, type LexicalNode } from 'lexical';
+import { $createTextNode, $getRoot, $isElementNode, $isTextNode, type LexicalNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { liveUnits } from '@moss-multi/core/anchor-frame';
 import { readFrontmatter } from '@moss-multi/core/frontmatter';
 import { computeMergedTarget, mergeBudget } from '@moss-multi/core/merge';
+import { payloadDocsFor } from './payload-docs.ts';
 import { landPush } from './push.ts';
 import { bodyState, ReconcileRefused } from './reconcile.ts';
 import { exportDocMarkdown, importBody, serverWrite } from './server-doc.ts';
@@ -187,7 +188,39 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(exported(live)).toBe(most);
   });
 
-  it('refuses a drifted push whose merge runs out of budget midway: 409, nothing lands, forced or suggested (T7.S2)', () => {
+  it('refuses a drifted push whose merge with the doc deletes most of it, though the push alone would pass (B354)', () => {
+    const north = 'The first long paragraph describes the north beds, their soil, and the beans planted there in spring.';
+    const note = 'Short note.';
+    const south = 'The second long paragraph describes the south beds, their compost, and the squash that follows in summer.';
+    /** A note whose north paragraph a person deleted after the agent pulled it. */
+    const drifted = () => {
+      const doc = docOf([north, note, south].join('\n\n'));
+      const pulled = exported(doc);
+      serverWrite(doc, 'peer', () => {
+        $getRoot().getFirstChild()!.remove();
+      });
+      return { doc, pulled };
+    };
+    const { doc: live, pulled: base } = drifted();
+    const kept = exported(live);
+    expect(kept).toBe([note, south].join('\n\n'));
+    const next = [north, note].join('\n\n');
+    const refused = landPush(live, NOTE, { base, newText: next, force: false }, PUSH);
+    expect(refused).toMatchObject({ ok: false, reason: 'degenerate' });
+    expect((refused as { deletedRatio: number }).deletedRatio).toBeGreaterThan(0.6);
+    expect(exported(live), 'nothing landed').toBe(kept);
+    const fork = { client: 434343, ops: [] as { doc: string; update: Uint8Array }[] };
+    expect(landPush(live, NOTE, { base, newText: next, force: false, fork }, PUSH), '--suggest is refused the same way').toMatchObject({ ok: false, reason: 'degenerate' });
+    expect(fork.ops).toEqual([]);
+    expect(landPush(live, NOTE, { base, newText: next, force: true }, PUSH), 'forced, it lands').toMatchObject({ ok: true });
+    expect(exported(live)).toBe(note);
+    const benign = drifted();
+    const edited = benign.pulled.replace('the squash that follows', 'the pumpkins that follow');
+    expect(landPush(benign.doc, NOTE, { base: benign.pulled, newText: edited, force: false }, PUSH), 'a benign drifted push lands').toMatchObject({ ok: true, failedHunks: [] });
+    expect(exported(benign.doc)).toBe([note, south.replace('the squash that follows', 'the pumpkins that follow')].join('\n\n'));
+  });
+
+  it('refuses a drifted push whose merge runs out of budget midway: 409, nothing lands, forced or suggested (T7.S2, B340)', () => {
     // Twelve paragraphs each changed in many places: diffing them costs more than the small budget below.
     let seed = 11;
     const next = (): number => {
@@ -197,11 +230,21 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
       return (seed >>> 0) / 4294967296;
     };
     const letters = (n: number): string => Array.from({ length: n }, () => 'abcd'[Math.floor(next() * 4)]).join('');
-    const live = docOf(['Intro stays.', ...Array.from({ length: 12 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
+    // A code block's payload the push also changes: a refusal writes neither the body nor any payload doc.
+    const code = '```javascript\nconst a = 1;\n```';
+    const live = docOf(['Intro stays.', code, ...Array.from({ length: 12 }, (_, i) => `Paragraph ${i} ${letters(1_000)}`)].join('\n\n'));
     const base = exported(live);
-    const pushed = base.split('\n\n').map((text, p) => (p === 0 ? text : [...text].map((c, i) => (i > 12 && i % 5 === 0 ? 'abcd'[Math.floor(next() * 4)] : c)).join(''))).join('\n\n');
+    expect(base).toContain(code);
+    const pushed = base.split('\n\n').map((text, p) => (p < 2 ? text : [...text].map((c, i) => (i > 12 && i % 5 === 0 ? 'abcd'[Math.floor(next() * 4)] : c)).join(''))).join('\n\n')
+      .replace('const a = 1;', 'const a = 2;');
     typeAfter(live, 'Intro', ' (typed)');
     const kept = exported(live);
+    const states = () => ({
+      body: Y.encodeStateAsUpdate(live),
+      payloads: [...payloadDocsFor(live).docs].map(([id, doc]) => [id, Y.encodeStateAsUpdate(doc)] as const),
+    });
+    const held = states();
+    expect(held.payloads.length, 'the code block holds a payload doc').toBeGreaterThan(0);
     const refusal = (input: Partial<Parameters<typeof landPush>[2]>): ReconcileRefused => {
       const budget = mergeBudget(500_000);
       let error: unknown;
@@ -213,6 +256,7 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
       expect(budget.work, 'refused midway, once diffs had drawn on the budget').toBeLessThan(500_000);
       expect(error).toBeInstanceOf(ReconcileRefused);
       expect(exported(live), 'a refused push changes nothing').toBe(kept);
+      expect(states(), 'nor any byte of the body or a payload doc').toEqual(held);
       return error as ReconcileRefused;
     };
     const refused = refusal({});
@@ -225,6 +269,7 @@ describe('T7.2 structural push merge @p:agt-1 @p:tech-5', () => {
     expect(fork.ops, 'no suggestion op was collected').toEqual([]);
     expect(landPush(live, NOTE, { base, newText: pushed, force: false }, PUSH), 'the default budget lands it').toMatchObject({ ok: true, failedHunks: [] });
     expect(exported(live)).toBe(pushed.replace('Intro stays.', 'Intro (typed) stays.'));
+    expect(exported(live)).toContain('const a = 2;');
   });
 
   it('lands an undrifted push even with its budget spent: its edits need not be exact (T7.S2)', () => {
@@ -439,4 +484,47 @@ describe('a push never silently changes content it did not edit @p:agt-1 @p:tech
     expect(landPush(live, NOTE, { base, newText: next, force: false }, PUSH)).toMatchObject({ ok: true, changed: true });
     expect(exported(live)).toBe(next);
   });
+});
+
+/** The live root block whose text includes `text`, as its `client:clock` id. */
+function blockWith(doc: Y.Doc, text: string): string | null {
+  for (let item = doc.get('root', Y.XmlText)._start; item; item = item.right) {
+    if (item.deleted || !(item.content instanceof Y.ContentType)) continue;
+    if (item.content.type.toString().includes(text)) return `${item.id.client}:${item.id.clock}`;
+  }
+  return null;
+}
+
+describe('a push into a note a person is typing in keeps her paragraph hers (B344) @p:agt-1 @p:tech-5', () => {
+  for (const order of ['push first', 'typing first'] as const) {
+    it(`a fresh note's empty paragraph keeps the person's typing while a push inserts a paragraph (${order})`, () => {
+      const live = docOf('');
+      const base = exported(live);
+      const [paragraph] = blockIds(live);
+      expect(paragraph, 'a fresh note holds one empty paragraph').toBeDefined();
+      const peer = fork(live);
+      const observer = fork(live);
+      const before = Y.encodeStateVector(live);
+      // Ada types into the empty paragraph while the agent's push lands on the server.
+      serverWrite(peer, 'peer', () => {
+        const first = $getRoot().getFirstChild();
+        if (!$isElementNode(first)) throw new Error('no paragraph');
+        first.append($createTextNode('Ada types here'));
+      });
+      expect(landPush(live, NOTE, { base, newText: 'Agent paragraph.', force: false }, PUSH)).toMatchObject({ ok: true, failedHunks: [] });
+      const pushed = Y.encodeStateAsUpdate(live, before);
+      const typed = Y.encodeStateAsUpdate(peer, before);
+      // A third replica hears the two updates in this order; the server and Ada each hear the other's.
+      for (const update of order === 'push first' ? [pushed, typed] : [typed, pushed]) Y.applyUpdate(observer, update, 'remote');
+      Y.applyUpdate(live, typed, 'remote');
+      Y.applyUpdate(peer, pushed, 'remote');
+      const merged = exported(live);
+      expect(exported(peer), 'the replicas converge').toBe(merged);
+      expect(exported(observer)).toBe(merged);
+      const blocks = merged.split('\n\n').map((block) => block.trim());
+      expect(blocks, 'Ada\'s characters stay in a paragraph of their own').toContain('Ada types here');
+      expect(blocks, 'and the agent\'s paragraph is its own').toContain('Agent paragraph.');
+      for (const doc of [live, peer, observer]) expect(blockWith(doc, 'Ada types here'), 'her paragraph keeps its identity').toBe(paragraph);
+    });
+  }
 });
