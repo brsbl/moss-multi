@@ -25,7 +25,7 @@
     {"path":"packages/desktop/src/common/moss-html-dimensions.ts","pin":"762abb777","upstreamSha256":"b52c2fb363eb4b27950f2239ac9d7c75331ad9c229e6fad176afbbd4692b4cb2","mode":"verbatim"},
     {"path":"packages/desktop/src/common/moss-html-document.ts","pin":"762abb777","upstreamSha256":"087fd8e5f6aa832c9fb62baa0470a752044ab2820c6085c5a25749a54df357b9","mode":"verbatim"},
     {"path":"packages/desktop/src/common/moss-html-migration.ts","pin":"762abb777","upstreamSha256":"6abf08ea4be457ac84aa46a00bdbc97df0a1f4262bd157dc495d8b427bbf4f66","mode":"verbatim"},
-    {"path":"packages/desktop/src/common/moss-html-runtime.ts","pin":"762abb777","upstreamSha256":"09efe47bf33529c53eaea9e4c9c4f3b11862198ff88135c1d5c775c046759345","mode":"verbatim"},
+    {"path":"packages/desktop/src/common/moss-html-runtime.ts","pin":"762abb777","upstreamSha256":"09efe47bf33529c53eaea9e4c9c4f3b11862198ff88135c1d5c775c046759345","mode":"patched","patch":"patches/moss/packages/desktop/src/common/moss-html-runtime.ts.patch"},
     {"path":"packages/desktop/src/common/nodeTypeMap.ts","pin":"762abb777","upstreamSha256":"8ad6358cc58da25d52bf9123315758f449d72c5f903d65a9414a9dd38a205b8b","mode":"verbatim"},
     {"path":"packages/desktop/src/common/nodeUtils.ts","pin":"762abb777","upstreamSha256":"5db96de701be8c80f46d8953752bc12a417d1c9d1cf464e88e8c3ae7e0ce457e","mode":"verbatim"},
     {"path":"packages/desktop/src/common/note-markdown-migration-runner.ts","pin":"762abb777","upstreamSha256":"6da16a7bd2345d38cec3e5eb68d1e8efb2255a303a03a8c43638e92263cd2e7b","mode":"verbatim"},

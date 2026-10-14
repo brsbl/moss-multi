@@ -613,11 +613,11 @@ describe('RPC', () => {
     await editor.flush();
     await opened.dobj.trash('hold-1');
     d1.deleted = true;
-    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    expect(await opened.dobj.settle('hold-1')).toMatchObject({ deleted: true, open: false });
     const woken = await start(wake(opened));
     expect((await connect(woken, { role: 'editor' })).closed?.code, 'a settled trash is remembered').toBe(CLOSE.deleted);
     d1.deleted = false;
-    expect(await woken.dobj.settle()).toEqual({ deleted: false });
+    expect(await woken.dobj.settle()).toMatchObject({ deleted: false, open: true });
     const back = await connect(await start(wake(woken)), { role: 'editor' });
     await back.hello();
     expect(back.closed, 'a restored doc admits its editors').toBeNull();
@@ -629,9 +629,9 @@ describe('RPC', () => {
     const opened = await start(openDoc());
     await opened.dobj.trash('hold-1');
     await opened.dobj.trash('hold-2');
-    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: false });
+    expect(await opened.dobj.settle('hold-1')).toMatchObject({ deleted: false, open: false });
     expect((await connect(opened, { role: 'editor' })).closed?.code, 'hold-2 still closes it').toBe(CLOSE.deleted);
-    expect(await opened.dobj.settle(), 'a settle without its hold leaves it').toEqual({ deleted: false });
+    expect(await opened.dobj.settle(), 'a settle without its hold leaves it').toMatchObject({ deleted: false, open: false });
     expect((await connect(opened, { role: 'editor' })).closed?.code).toBe(CLOSE.deleted);
     await opened.dobj.settle('hold-2');
     const live = await connect(opened, { role: 'editor' });
@@ -675,6 +675,39 @@ describe('RPC', () => {
     await live.hello();
     expect(live.closed, 'the trash never committed, so the doc reopens').toBeNull();
   });
+
+  // An alarm left behind by the last socket woke the doc after a restart, before anything opened it (j04-hibernation
+  // and j00-roundtrip "hibernation not induced", T3.B27).
+  it('drops its alarm when the last socket closes with no hold waiting, and keeps a hold\'s', async () => {
+    liveness();
+    const opened = await start(openDoc());
+    const ada = await connect(opened, { id: 'ada', role: 'editor' });
+    const ben = await connect(opened, { id: 'ben', role: 'editor' });
+    expect(opened.backing.alarm, 'an open socket schedules its close').not.toBeNull();
+    await ada.drop();
+    expect(opened.backing.alarm, 'one socket is still open').not.toBeNull();
+    await ben.drop();
+    await vi.waitFor(() => expect(opened.backing.alarm, 'no socket and no hold: nothing is due').toBeNull());
+
+    const held = await connect(opened, { id: 'ada', role: 'editor' });
+    await opened.dobj.trash('hold-1');
+    await held.drop();
+    await Promise.resolve();
+    expect(opened.backing.alarm, 'the hold still settles on its alarm').not.toBeNull();
+  });
+
+  it("keeps a replacement socket's alarm when a stale socket with the same connection id closes", async () => {
+    liveness();
+    const opened = await start(openDoc());
+    const stale = await connect(opened, { id: 'ada', role: 'editor' }, undefined, 'reused-alarm');
+    const fresh = await connect(opened, { id: 'ada', role: 'editor' }, undefined, 'reused-alarm');
+    await fresh.hello();
+    expect(opened.backing.alarm).not.toBeNull();
+    await stale.drop();
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(fresh.closed).toBeNull();
+    expect(opened.backing.alarm, 'the replacement keeps its access tick and age alarm').not.toBeNull();
+  });
 });
 
 describe('answers', () => {
@@ -709,6 +742,10 @@ describe('answers', () => {
     const BUDGET = { docs: 4, windowMs: 10_000 };
     class Budgeted extends DocDO {
       static override limits = { ...DocDO.limits, answerBudget: BUDGET };
+    }
+    const CAP = 3;
+    class Capped extends DocDO {
+      static override limits = { ...DocDO.limits, answerBudget: BUDGET, anonymousSocketsPerAddress: CAP };
     }
     /** The full-state answers a socket was sent since `from`: each ends in exactly one step 2. */
     const answers = (client: TestClient, from: number) =>
@@ -764,23 +801,168 @@ describe('answers', () => {
       expect(Y.encodeStateVector(back.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
     });
 
-    it('anonymous link viewers each get their own budget, and their up-to-date resyncs cost little', async () => {
+    it('anonymous link viewers at different addresses each get their own budget, and their up-to-date resyncs cost little', async () => {
       const opened = await start(openDoc(new Backing(), Budgeted as never));
       const editor = await editorOn(opened);
       await typeTitle(editor, 'Shared by link');
       const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1' } as const;
       const viewers: TestClient[] = [];
       for (let i = 0; i < 6; i += 1) {
-        const viewer = await connect(opened, anonymous);
+        const viewer = await connect(opened, { ...anonymous, address: `198.51.100.${i + 1}` });
         await viewer.hello();
         viewers.push(viewer);
       }
       // The client's 4 s heartbeat resync: a step 1 from a synced doc, whose answer is only the delete set.
       for (let round = 0; round < 10; round += 1) for (const viewer of viewers) await viewer.hello();
       for (const viewer of viewers) expect(answers(viewer, 0), 'every step 1 answered at once').toBe(11);
-      const stranger = await connect(opened, anonymous);
+      const stranger = await connect(opened, { ...anonymous, address: '203.0.113.9' });
       await stranger.hello();
       expect(title(stranger.doc), 'a new stranger opens the note at once').toBe('Shared by link');
+    });
+
+    it('an anonymous viewer reconnecting within the window draws a bounded number of encodes, then converges (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Reconnect');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '198.51.100.7' } as const;
+      let encodes = 0;
+      for (let i = 0; i < 24; i += 1) {
+        const viewer = await connect(opened, anonymous);
+        await viewer.hello();
+        encodes += answers(viewer, 0);
+        await viewer.drop();
+      }
+      // The budget, plus the one answer that may run it into debt.
+      expect(encodes, 'reconnecting does not refill the budget').toBeLessThanOrEqual(BUDGET.docs + 1);
+      // An honest viewer's first sync is late, never unanswered, and a resync on it converges.
+      const honest = await connect(opened, anonymous);
+      await honest.hello();
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await honest.pump();
+      expect(honest.closed).toBeNull();
+      expect(title(honest.doc), 'the first sync converges').toBe('Reconnect');
+      await typeTitle(editor, ' again');
+      await honest.hello();
+      expect(title(honest.doc), 'a resync converges').toBe('Reconnect again');
+    });
+
+    it('parallel anonymous sockets from one address share one budget, and their number is capped (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Capped as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Parallel');
+      const anonymous = { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '2001:db8:1:2::/64' } as const;
+      const sockets: TestClient[] = [];
+      for (let i = 0; i < CAP; i += 1) sockets.push(await connect(opened, anonymous));
+      for (const socket of sockets) expect(socket.closed).toBeNull();
+      const extra = await connect(opened, anonymous);
+      expect(extra.closed?.code, 'past the cap a socket from that link and address is refused').toBe(CLOSE.connectionLimit);
+      const empty = step1(new Y.Doc());
+      for (let round = 0; round < 4; round += 1) for (const socket of sockets) await socket.deliver(empty);
+      const encodes = sockets.reduce((sum, socket) => sum + answers(socket, 0), 0);
+      expect(encodes, 'one budget across the sockets').toBeLessThanOrEqual(BUDGET.docs + 1);
+      // Another address, and the same address on another link, have budgets and sockets of their own.
+      for (const other of [{ ...anonymous, address: '203.0.113.5' }, { ...anonymous, share: 'tok-2' }]) {
+        const viewer = await connect(opened, other);
+        expect(viewer.closed).toBeNull();
+        await viewer.hello();
+        expect(title(viewer.doc), 'answered at once').toBe('Parallel');
+      }
+      // A closed socket frees its place; the budget it spent stays spent.
+      await sockets[0].drop();
+      const next = await connect(opened, anonymous);
+      expect(next.closed).toBeNull();
+      await next.hello();
+      expect(answers(next, 0), 'still over budget, it waits').toBe(0);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      await next.pump();
+      expect(title(next.doc)).toBe('Parallel');
+    });
+
+    it('signed-in readers keep one budget across sockets, uncapped by address (T3.B25)', async () => {
+      const opened = await start(openDoc(new Backing(), Capped as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Members');
+      const tabs: TestClient[] = [];
+      for (let i = 0; i < CAP + 2; i += 1) tabs.push(await connect(opened, { role: 'viewer', id: 'reader-many', address: '198.51.100.8' }));
+      for (const tab of tabs) expect(tab.closed).toBeNull();
+      const empty = step1(new Y.Doc());
+      for (const tab of tabs) await tab.deliver(empty);
+      expect(tabs.reduce((sum, tab) => sum + answers(tab, 0), 0), 'one principal, one budget').toBeLessThanOrEqual(BUDGET.docs + 1);
+      const other = await connect(opened, { role: 'viewer', id: 'reader-other', address: '198.51.100.8' });
+      await other.hello();
+      expect(title(other.doc), 'another principal at that address is answered at once').toBe('Members');
+    });
+
+    /** Rows of the persisted answer budgets (0 before the table exists). */
+    const budgetRows = (backing: Backing) => {
+      const tables = backing.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'answer_budgets'");
+      return tables.length ? Number(backing.query<{ n: number }>('SELECT COUNT(*) AS n FROM answer_budgets')[0].n) : 0;
+    };
+    /** A wake with the sockets kept: every client now delivers to the fresh instance. */
+    const hibernate = async (opened: Opened, clients: TestClient[]) => {
+      const woken = await start(wake(opened));
+      for (const client of clients) client.opened = woken;
+      return woken;
+    };
+
+    it.each([
+      ['a signed-in principal', { role: 'viewer', id: 'viewer-wake' }],
+      ['an anonymous link and address', { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: '198.51.100.9' }],
+    ] as const)('%s\'s spent budget survives hibernation (T3.B26)', async (_name, who) => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Hibernate');
+      const viewer = await connect(opened, who);
+      const empty = step1(new Y.Doc());
+      for (let i = 0; i < 16; i += 1) await viewer.deliver(empty);
+      expect(answers(viewer, 0)).toBeLessThanOrEqual(BUDGET.docs + 1);
+      const woken = await hibernate(opened, [editor, viewer]);
+      const from = viewer.socket.sent.length;
+      await viewer.deliver(empty);
+      expect(answers(viewer, from), 'a wake does not refill a spent budget: the step 1 waits').toBe(0);
+      await vi.advanceTimersByTimeAsync(BUDGET.windowMs);
+      expect(answers(viewer, from), 'answered once the budget refills').toBe(1);
+      await viewer.pump();
+      expect(title(viewer.doc)).toBe(title(woken.dobj.document));
+      expect(viewer.closed).toBeNull();
+    });
+
+    it('an honest client with a full budget is answered at once after a wake (T3.B26)', async () => {
+      const opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Honest');
+      const viewer = await connect(opened, { role: 'viewer', id: 'viewer-honest' });
+      await viewer.hello();
+      await hibernate(opened, [editor, viewer]);
+      await typeTitle(editor, ' again');
+      const from = viewer.socket.sent.length;
+      await viewer.hello();
+      expect(answers(viewer, from), 'answered with no added delay').toBe(1);
+      expect(title(viewer.doc)).toBe('Honest again');
+    });
+
+    it('persisted budgets stay bounded across many keys and wakes (T3.B26)', async () => {
+      let opened = await start(openDoc(new Backing(), Budgeted as never));
+      const editor = await editorOn(opened);
+      await typeTitle(editor, 'Bounded');
+      const empty = step1(new Y.Doc());
+      const KEYS = 6;
+      const t0 = Date.now();
+      for (let round = 0; round < 5; round += 1) {
+        const clients: TestClient[] = [editor];
+        for (let i = 0; i < KEYS; i += 1) {
+          const viewer = await connect(opened, { kind: 'anonymous', id: 'anonymous', role: 'viewer', session: null, share: 'tok-1', address: `198.51.${round}.${i}` });
+          for (let j = 0; j < 8; j += 1) await viewer.deliver(empty);
+          await viewer.drop();
+          clients.push(viewer);
+        }
+        expect(budgetRows(opened.backing), 'spent budgets are persisted').toBeGreaterThan(0);
+        // The editor's own small charges are persisted too.
+        expect(budgetRows(opened.backing), 'only budgets spent since they last refilled').toBeLessThanOrEqual(KEYS + 1);
+        opened = await hibernate(opened, clients);
+        // Every budget refills, with debt to spare. A harness wake resets the fake clock, so set it forward.
+        vi.setSystemTime(t0 + (round + 1) * 3 * BUDGET.windowMs);
+      }
     });
 
     it('a signed-in reader\'s visible tabs resyncing up to date stay answered at once', async () => {

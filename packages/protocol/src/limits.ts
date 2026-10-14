@@ -30,11 +30,15 @@ export const MAX_CONNECTIONS = 50;
 export const WRITE_RATE = { max: 300, windowMs: 5_000 } as const;
 
 /**
- * Full-state answers (a step 1 for the note or a payload) per principal per doc, or per anonymous socket (T3.S14):
- * `docs` whole states' worth at once, refilled over `windowMs`; each answer costs the share of the stored state it
- * sends. Past it a socket's latest step 1 per target waits for the refill, so a reconnect is late, never unanswered.
+ * Full-state answers (a step 1 for the note or a payload) per principal per doc, or per share link and client address
+ * for anonymous viewers (T3.S14, T3.B25): `docs` whole states' worth at once, refilled over `windowMs`; each answer
+ * costs the share of the stored state it sends. Past it a socket's latest step 1 per target waits for the refill, so a
+ * reconnect is late, never unanswered, and never refills it.
  */
 export const ANSWER_BUDGET = { docs: 8, windowMs: 20_000 } as const;
+
+/** Open anonymous sockets per doc from one share link and client address; past it a socket closes 4429 (T3.B25). */
+export const ANONYMOUS_SOCKETS_PER_ADDRESS = 8;
 
 export const AWARENESS_MAX_BYTES = 8 * 1024;
 

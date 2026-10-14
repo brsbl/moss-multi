@@ -28,6 +28,8 @@ export const GROUPS = {
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
   // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
   registers: ['j01-registers', 'j01-autolink'],
+  // Typing in a 40,000-line note against a small control (T3.B13).
+  large: ['j01-large'],
   // Large markdown pastes, up to 2 MB, each landing whole for a peer.
   paste: ['j01-paste'],
   // Pastes of very many short blocks, into an empty note and between two paragraphs.

@@ -231,7 +231,7 @@ This is a new DO and a deliberate divergence from glyphdown, forced by three req
 
 ### 5.3 SearchDO('global')
 
-Glyphdown's SearchDO as-is: FTS5 with bm25 weights (0, 5, 1), a LIKE fallback, and a `links` table. [S-gd §6.4] Bodies are always the converter's markdown export, never `toString()`. [L§4.14] Titles come from `Y.Text`. Wiki targets are indexed under both the normalized title and the filename stem. [R3] The DO re-feeds once on wake and on byte-identical pushes. SearchDO is unreachable from `/parties`.
+Glyphdown's SearchDO, with FTS5 (rows keyed by the entry's rowid) finding the allowed docs a query matches, a LIKE fallback, and a `links` table. [S-gd §6.4] Both engines rank by `scoreEntry` over the doc alone, never bm25, whose corpus statistics span every tenant (T3.B9). Bodies are always the converter's markdown export, never `toString()`. [L§4.14] Titles come from `Y.Text`. Wiki targets are indexed under both the normalized title and the filename stem. [R3] The DO re-feeds once on wake and on byte-identical pushes. SearchDO is unreachable from `/parties`.
 
 ## 6. D1 schema
 

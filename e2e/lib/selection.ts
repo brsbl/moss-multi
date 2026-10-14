@@ -29,6 +29,10 @@ export interface SelectionCase {
   within?: string;
   /** Which match of `within` (the editor: which code block), 0 by default. */
   nth?: number;
+  /** The selection ends at `to`'s first character instead (offset 0 of its text node). */
+  toStart?: boolean;
+  /** The selection is made backward, its anchor at the end. */
+  reversed?: boolean;
   expected: MossSelection;
 }
 
@@ -68,6 +72,60 @@ export const SELECTION_CASES: SelectionCase[] = [
       text: 'Second item\nNested',
       markdown: '- Second item\n    - Nested item',
       lines: { start: 10, end: 11 },
+      headings: ['Planting'],
+      blocks: [{ type: 'list', line: 9, heading: 'Planting' }],
+    },
+  },
+  {
+    name: 'ending at the start of the next list item',
+    from: 'First item',
+    to: 'Second item',
+    toStart: true,
+    expected: {
+      text: 'First item',
+      markdown: '- First item',
+      lines: { start: 9, end: 9 },
+      headings: ['Planting'],
+      blocks: [{ type: 'list', line: 9, heading: 'Planting' }],
+    },
+  },
+  {
+    name: 'ending at the start of the next list item, made backward',
+    from: 'First item',
+    to: 'Second item',
+    toStart: true,
+    reversed: true,
+    expected: {
+      text: 'First item',
+      markdown: '- First item',
+      lines: { start: 9, end: 9 },
+      headings: ['Planting'],
+      blocks: [{ type: 'list', line: 9, heading: 'Planting' }],
+    },
+  },
+  {
+    name: 'ending at the start of a nested list item',
+    from: 'Second item',
+    to: 'Nested item',
+    toStart: true,
+    expected: {
+      text: 'Second item',
+      markdown: '- Second item',
+      lines: { start: 10, end: 10 },
+      headings: ['Planting'],
+      blocks: [{ type: 'list', line: 9, heading: 'Planting' }],
+    },
+  },
+  {
+    name: 'from a nested list item to the start of the item after it',
+    from: 'Nested item',
+    to: 'Third item',
+    toStart: true,
+    reversed: true,
+    expected: {
+      text: 'Nested item',
+      markdown: '    - Nested item',
+      lines: { start: 11, end: 11 },
       headings: ['Planting'],
       blocks: [{ type: 'list', line: 9, heading: 'Planting' }],
     },
@@ -156,10 +214,21 @@ export const SELECTION_CASES: SelectionCase[] = [
   },
 ];
 
-/** Sets the DOM selection from `from`'s start to `to`'s end, searching the text under `root` (and `within`). */
-export async function selectText(page: Page, root: string, from: string, to: string, within?: string, nth = 0): Promise<void> {
+/**
+ * Sets the DOM selection from `from`'s start to `to`'s end (its start with `toStart`), searching the text under `root`
+ * (and `within`); `reversed` puts the anchor at the end.
+ */
+export async function selectText(
+  page: Page,
+  root: string,
+  from: string,
+  to: string,
+  within?: string,
+  nth = 0,
+  { toStart = false, reversed = false }: { toStart?: boolean; reversed?: boolean } = {},
+): Promise<void> {
   await page.evaluate(
-    ({ root, from, to, within, nth }) => {
+    ({ root, from, to, within, nth, toStart, reversed }) => {
       const scope = document.querySelector(root);
       const container = within ? scope?.querySelectorAll(within)[nth] : scope;
       if (!container) throw new Error(`no ${root} ${within ?? ''}`);
@@ -176,23 +245,30 @@ export async function selectText(page: Page, root: string, from: string, to: str
         throw new Error(`offset ${index} is past the text`);
       };
       const start = all.indexOf(from);
-      const end = all.indexOf(to, start) + to.length;
-      if (start < 0 || end < to.length) throw new Error(`no ${from} … ${to}`);
-      // An end exactly at a node's end resolves into that node, not the next one.
+      const found = all.indexOf(to, start);
+      const end = toStart ? found : found + to.length;
+      if (start < 0 || found < 0) throw new Error(`no ${from} … ${to}`);
+      // An end exactly at a node's end resolves into that node, not the next one; a start, or an end at `to`'s
+      // start, resolves into the next one.
       const a = locate(start);
       const b = locate(end);
-      if (a.offset === a.node.data.length) {
-        const next = nodes[nodes.indexOf(a.node) + 1];
-        if (next) Object.assign(a, { node: next, offset: 0 });
+      for (const point of toStart ? [a, b] : [a]) {
+        if (point.offset !== point.node.data.length) continue;
+        const next = nodes[nodes.indexOf(point.node) + 1];
+        if (next) Object.assign(point, { node: next, offset: 0 });
+      }
+      const selection = document.getSelection();
+      if (reversed) {
+        selection?.setBaseAndExtent(b.node, b.offset, a.node, a.offset);
+        return;
       }
       const range = document.createRange();
       range.setStart(a.node, a.offset);
       range.setEnd(b.node, b.offset);
-      const selection = document.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
     },
-    { root, from, to, within, nth },
+    { root, from, to, within, nth, toStart, reversed },
   );
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }

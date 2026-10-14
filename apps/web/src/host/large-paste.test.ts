@@ -12,10 +12,11 @@ import { expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { CLIENT_FRAME_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
+import { createConverterEditor } from '@moss-multi/sync/converter';
 import { seedPayload } from '@moss-multi/sync/payload-docs';
 import { MAP_REGISTERS } from '@moss-multi/sync/registers';
 import {
-  $insertBlocks, $keepElementPoints, $planPaste, $replaceEmptyNote, measurePayloads, Placer, type PastePlan, type PayloadSeed,
+  $insertBlocks, $keepElementPoints, $planPaste, $replaceEmptyNote, Measure, measurePayloads, Placer, scratchDoc, type PastePlan, type PayloadSeed,
 } from './large-paste.ts';
 
 const lexicalInsert = (nodes: LexicalNode[], selection: BaseSelection) => selection.insertNodes(nodes);
@@ -264,4 +265,31 @@ it('measures payloads as their first frames encode them: a chart’s keys severa
   expect(JSON.stringify(config).length).toBeLessThan(CLIENT_FRAME_MAX_BYTES);
   const { largest } = drain(measurePayloads([MAP_REGISTERS.chart.encode({ __config: config })]));
   expect(largest, 'the chart cannot go in one frame').toBeGreaterThan(CLIENT_FRAME_MAX_BYTES);
+});
+
+it('measures a paste as the live doc gains it, whatever its client id and clock (j01-paste-held)', () => {
+  // A 1-byte and a 5-byte client id, at a clock past 2^21 (a 4-byte clock): a scratch doc of its own random id, at
+  // clock 0, measured 52,000 paragraphs 1.3 MB off what they added to the note.
+  for (const clientID of [1, 2 ** 32 - 1]) {
+    const live = new Y.Doc();
+    live.clientID = clientID;
+    const text = live.getText('earlier');
+    text.insert(0, 'x'.repeat(3_000_000));
+    text.delete(0, 3_000_000);
+    const before = Y.encodeStateAsUpdate(live).byteLength;
+    // The editor's every node type, as the binding's exclusions name them.
+    const empty = createConverterEditor;
+    const fill = (editor: LexicalEditor) => editor.update(() => $getRoot().append(...blocks(4_000)), { discrete: true });
+
+    const scratch = empty();
+    const measure = new Measure(scratch, scratchDoc(live));
+    fill(scratch);
+    const measured = measure.end();
+
+    const twin = empty();
+    const gained = new Measure(twin, live);
+    fill(twin);
+    const added = gained.end() - before;
+    expect(Math.abs(measured - added), `client ${clientID}: measured ${measured}, added ${added}`).toBeLessThanOrEqual(32);
+  }
 });
