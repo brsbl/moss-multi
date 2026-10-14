@@ -97,7 +97,7 @@ const ARTIFACT_MS = 50;
 /**
  * Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. A socket's
  * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback,
- * one socket closed by a network drop may be replaced once more.
+ * one socket closed by a network drop may be replaced once more; a second drop fails.
  */
 export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>, { offLoopback = false }: Network = {}): string[] {
   const groups = new Map<string, SocketEntry[]>();
@@ -113,8 +113,9 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
     const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
     if (group.length === 0) continue;
-    const drop = offLoopback && group.some((s) => s.closedAt !== null && NETWORK_DROP.has(s.code ?? 0)) ? 1 : 0;
-    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + drop;
+    const drops = offLoopback ? group.filter((s) => s.closedAt !== null && NETWORK_DROP.has(s.code ?? 0)).length : 0;
+    if (drops > 1) problems.push(`${docId}: ${drops} network drops in one document, 1 allowed`);
+    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + Math.min(drops, 1);
     if (group.length > allowed) {
       const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}${s.error ? ' (errored)' : ''}`);
       problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${closes.join('; ')})`);
