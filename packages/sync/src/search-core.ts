@@ -203,6 +203,18 @@ export function parseHeadings(markdown: string): HeadingInfo[] {
   return headings;
 }
 
+// Native scans: a 2 MB line walked one character at a time in JS costs more than search's budget in workerd.
+const TITLE_END = /[\]|]/g;
+const LINE_BREAK = /[\n\r\u2028\u2029]/g;
+const SPACES = /\s*/y;
+const isLineBreak = (char: string): boolean => char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029';
+
+/** The index of the first line break at or after `from`, or the text's length. */
+function nextBreak(text: string, from: number): number {
+  LINE_BREAK.lastIndex = from;
+  return LINE_BREAK.exec(text)?.index ?? text.length;
+}
+
 /**
  * moss's stripWikiLinks, `text.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1')`, in one pass: a start that fails
  * at the `]` or `|` ending a non-empty title shares that end with every start before it, and one whose alias finds no
@@ -213,9 +225,10 @@ export function wikiLinkTexts(text: string): string {
   let last = 0;
   let at = text.indexOf('[[');
   while (at !== -1) {
-    let end = at + 2;
-    while (end < text.length && text[end] !== ']' && text[end] !== '|') end += 1;
-    if (end === text.length) break;
+    TITLE_END.lastIndex = at + 2;
+    const found = TITLE_END.exec(text);
+    if (!found) break;
+    const end = found.index;
     if (end === at + 2) {
       at = text.indexOf('[[', end + 1);
       continue;
@@ -236,9 +249,6 @@ export function wikiLinkTexts(text: string): string {
   return out + text.slice(last);
 }
 
-const isLineBreak = (char: string): boolean => char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029';
-const SPACE = /\s/;
-
 /**
  * The groups of `/^(#{1,4})\s+(.+)$/gm`, scanned line by line in linear time. As in the regex, the spaces may run
  * over line breaks, and spaces that run to the end leave their last non-break character as the text.
@@ -251,11 +261,14 @@ export function headingMatches(text: string): [string, string][] {
     let hashes = line;
     while (text[hashes] === '#') hashes += 1;
     let space = hashes;
-    if (hashes > line && hashes - line <= 4) while (space < text.length && SPACE.test(text[space]!)) space += 1;
+    if (hashes > line && hashes - line <= 4) {
+      SPACES.lastIndex = hashes;
+      SPACES.exec(text);
+      space = SPACES.lastIndex;
+    }
     if (space > hashes) {
       if (space < text.length) {
-        let end = space;
-        while (end < text.length && !isLineBreak(text[end]!)) end += 1;
+        const end = nextBreak(text, space);
         out.push([text.slice(line, hashes), text.slice(space, end)]);
         next = end;
       } else {
@@ -268,8 +281,7 @@ export function headingMatches(text: string): [string, string][] {
       }
     }
     // The next line starts after the next break at or after the match's end (or this line's start).
-    let at = next === -1 ? line : next;
-    while (at < text.length && !isLineBreak(text[at]!)) at += 1;
+    const at = nextBreak(text, next === -1 ? line : next);
     if (at >= text.length) break;
     line = at + 1;
   }
