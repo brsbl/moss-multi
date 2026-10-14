@@ -79,18 +79,22 @@ beforeEach(() => {
     requested.push(id);
     inFlight += 1;
     maxInFlight = Math.max(maxInFlight, inFlight);
-    return new Promise((resolve) => {
-      pending.push({
-        id,
-        answer: (status, body, retryAfter) => {
-          inFlight -= 1;
-          resolve({
-            ok: status >= 200 && status < 300,
-            status,
-            json: async () => body,
-            headers: { get: (name: string) => (name.toLowerCase() === 'retry-after' ? (retryAfter ?? null) : null) },
-          });
-        },
+    return new Promise((resolve, reject) => {
+      const answer: Pending['answer'] = (status, body, retryAfter) => {
+        inFlight -= 1;
+        resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => body,
+          headers: { get: (name: string) => (name.toLowerCase() === 'retry-after' ? (retryAfter ?? null) : null) },
+        });
+      };
+      pending.push({ id, answer });
+      // As fetch does: an aborted request rejects at once.
+      init?.signal?.addEventListener('abort', () => {
+        inFlight -= 1;
+        pending = pending.filter((request) => request.id !== id || request.answer !== answer);
+        reject(new DOMException('aborted', 'AbortError'));
       });
     });
   }));
@@ -175,6 +179,23 @@ it('reopening the panel shows the kept previews without asking again @p:mean-2 @
   expect(acceptOf('b').disabled).toBe(false);
 });
 
+// On staging a preview can still be on the way when the reader's review closes the record; its answer would be a 409
+// for a suggestion no longer open (T8.2). The review drops it, and the card previews nothing after it.
+it('a review sent while the card\'s preview is in flight aborts that preview and asks for none after it @p:R16', async () => {
+  await render('doc-review-race', [record('w', 1)]);
+  await show(['w']);
+  await advance(300);
+  expect(requested).toEqual(['w']);
+  const reject = [...card('w').querySelectorAll('button')].find((button) => button.textContent?.includes('Reject')) as HTMLButtonElement;
+  await act(async () => reject.click());
+  expect(signals.get('w')?.aborted, 'the preview in flight is dropped').toBe(true);
+  const review = pending.find((request) => request.id === '')!;
+  await act(async () => review.answer(200, { ok: true }));
+  await advance(1000);
+  expect(requested.filter((id) => id === 'w'), 'no preview after the review').toHaveLength(1);
+  expect(card('w').textContent).not.toContain('could not be loaded');
+});
+
 it('a 429 waits out its Retry-After, then the card loads and Accept works @p:mean-2 @p:R17', async () => {
   await render('doc-429', [record('x', 1), record('y', 0)]);
   await show(['x', 'y']);
@@ -194,21 +215,4 @@ it('a 429 waits out its Retry-After, then the card loads and Accept works @p:mea
   expect(card('x').textContent).toContain('No visible change yet.');
   expect(acceptOf('x').disabled).toBe(false);
   expect(acceptOf('y').disabled).toBe(false);
-});
-
-// On staging a preview can still be on the way when the reader's review closes the record; its answer would be a 409
-// for a suggestion no longer open (T8.2). The review drops it, and the card previews nothing after it.
-it('a review sent while the card\'s preview is in flight aborts that preview and asks for none after it @p:R16', async () => {
-  await render('doc-review-race', [record('w', 1)]);
-  await show(['w']);
-  await advance(300);
-  expect(requested).toEqual(['w']);
-  const reject = [...card('w').querySelectorAll('button')].find((button) => button.textContent?.includes('Reject')) as HTMLButtonElement;
-  await act(async () => reject.click());
-  expect(signals.get('w')?.aborted, 'the preview in flight is dropped').toBe(true);
-  const review = pending.find((request) => request.id === '')!;
-  await act(async () => review.answer(200, { ok: true }));
-  await advance(1000);
-  expect(requested.filter((id) => id === 'w'), 'no preview after the review').toHaveLength(1);
-  expect(card('w').textContent).not.toContain('could not be loaded');
 });

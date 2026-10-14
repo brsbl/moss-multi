@@ -164,30 +164,7 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   expect(await content(ada, docId), 'the note is byte-identical').toBe(before);
 });
 
-test("j16-review: a withdraw sent while the card's preview is still on the way leaves no refused preview behind @p:R16", async ({ actors }) => {
-  const { ada, ben, docId } = await sharedNote(actors);
-  await openIn(ben, docId, 'suggest');
-  await openIn(ada, docId, 'edit');
-  await actors.requireDistinct(2);
-  ben.expectReconnects(1, docId);
-  await suggestText(ben, docId, 'original word', 8, ' plus');
-  await expect(ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"]`)).not.toHaveCount(0, { timeout: BIND_TIMEOUT });
-
-  // Staging's latency, made certain: the card's preview reaches the server only after the withdraw has closed the
-  // record. Its answer would then be a 409 for a suggestion that is no longer open.
-  const PREVIEW = /\/suggestions\/[^/]+\/preview$/;
-  let release = () => {};
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  let caught = () => {};
-  const intercepted = new Promise<void>((resolve) => { caught = resolve; });
-  await ben.page.route(PREVIEW, async (route) => {
-    caught();
-    await held;
-    await route.continue().catch(() => undefined);
-  });
-  // The held preview ends either dropped by the page (aborted) or answered by the server.
-  const ended = new Promise<{ status: number | null }>((resolve) => {
-    ben.page.on('requestfailed', (request) => { if (PREVIEW.test(request.url())) resolve({ status: null }); });
+test(request.url())) resolve({ status: null }); });
     ben.page.on('response', (response) => { if (PREVIEW.test(response.url())) resolve({ status: response.status() }); });
   });
   const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);

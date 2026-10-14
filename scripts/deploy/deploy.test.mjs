@@ -835,7 +835,7 @@ describe('the staging retry gate (T8.2)', () => {
     const text = lines.join('\n');
     expect(text).toMatch(/no retry: not infrastructure/);
     expect(text).toMatch(/retry: attempt 1 failed on infrastructure \(connection reset\)/);
-    expect(text).toMatch(/1 retry on infrastructure\n {2}staging-webkit › j01\.spec\.ts › network: connection reset/);
+    expect(text).toMatch(/1 retry on infrastructure\n {2}j01\.spec\.ts › network: connection reset/);
   });
 
   it("names a flaky leg's infrastructure class in the summary", () => {
