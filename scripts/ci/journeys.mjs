@@ -36,6 +36,7 @@ export const GROUPS = {
   pasteblocks: ['j01-paste-blocks'],
   // One large list or nested list pasted: about 10 MB of state in one block, in batches and frames under the cap.
   pastelist: ['j01-paste-list'],
+  pastenested: ['j01-paste-nested'],
   // One 5,000-row table pasted.
   pastetable: ['j01-paste-table'],
   // Pastes just past the size cap, with and without payloads, refused whole.

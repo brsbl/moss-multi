@@ -2,7 +2,7 @@
 // actor of a test and checks the 9 invariants on all of them at the end.
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
-import type { APIRequestContext, Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
+import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { authKind, recordAuth } from './auth-pace.ts';
@@ -82,17 +82,6 @@ export class Actor implements ActorView {
 // Per worker process, so every principal minted in a run has its own email.
 let minted = 0;
 
-/**
- * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
- * idle fails the next request with "socket hang up", which the latency rehearsal hit on GETs and POSTs alike and the
- * hook stack hit in j18 (T8.2).
- */
-function freshConnections(request: APIRequestContext): void {
-  const send = request.fetch.bind(request);
-  request.fetch = ((input: Parameters<APIRequestContext['fetch']>[0], options: Parameters<APIRequestContext['fetch']>[1] = {}) =>
-    send(input, { ...options, headers: { connection: 'close', ...options.headers } })) as APIRequestContext['fetch'];
-}
-
 export class Actors {
   readonly list: Actor[] = [];
   readonly typed: Typed[] = [];
@@ -159,7 +148,6 @@ export class Actors {
         })
       : null;
     this.options.stack?.budget?.watch(context);
-    freshConnections(context.request);
     // The card's own sign-ins and sign-ups count against the auth limit setup paces under (auth-pace.ts).
     context.on('response', (response) => {
       const kind = authKind(response.url(), response.request().method());
