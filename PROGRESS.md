@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 54% done** (130 of 239 planned tasks verified)
+**Overall: 57% done** (131 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 63 / 63 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 13 / 14 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 14 / 15 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -150,6 +150,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T3.B14 verified: pasting an image or video over selected text keeps that text until the upload lands, so a refused upload changes nothing; closing an embedded editor waits for its pending pastes before the final save; a file paste with a block selected or no caret lands in the note; the PDF export tab keeps the share link; and the viewer's video seek is checked against ranged reads.
 - 2026-10-13 — T3.B8 verified: file-link hovers show the target note's text, the sidebar recovers from a hung listing or a dead socket and reconciles on its own, a reload during a read or change no longer errors or replays it, and the bell clears a notice when access is lost through a move.
 - 2026-10-13 — T3.B9 verified: search finds only the notes you can open and ranks them without other people's notes shifting the order, a search feed that fails is retried on its own, backlinks include sources the index had not yet seen, and the bridge keeps watching a note opened by URL and stops on one that was deleted or revoked.
+- 2026-10-13 — T4.P verified: comments now run on the fixed m3, so its access, body-cap, search and editor fixes hold with comments in place, and the full lane is green in Chromium and WebKit.
 
 ## T1.1s identity audit
 
@@ -603,3 +604,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: some acceptance evidence is unit-level, not journey-level — dropped-publication convergence is covered only by a unit test of the RECONCILE_MS refresh (file-link hover was verified in the checker's browser pass; the j05 negative control is t/T3.B8-negctl3, run 38453911157) → add a journey that drops one meta publication and asserts the sidebar converges.
 - T3.B9 (Search index correctness and cost) checker P2: an older successful search feed can clear a newer failed feed's retry — #feedSearch in packages/sync/src/doc-do.ts resets #feedRetryAt and #feedFailures on every success outside the `edits === this.#edits` generation check, and feeds (onSave, payload timer, reindex, alarm) can overlap, so feed A finishing after feed B failed clears B's retry and that revision stays unsearchable until the next edit or wake → guard the reset with the generation check and add an overlapping-feeds test.
 - T3.B9 (Search index correctness and cost) checker P2: B173's red-first failure was a mock type error, not a missing backlink — the tests-first commit changed the fake SearchDO.backlinks shape before the route read it, so the red run failed with 'ids.flatMap is not a function' and never reached the 'found on the first read' assertion (the green assertions are meaningful) → no code change; keep red-first mocks shape-compatible with the old route.
+- T4.P (m4 on the fixed m3) checker P2: rename validates the open sockets before awaiting the caller's authorization (packages/sync/src/doc-do.ts:986-987), so a reader revoked during that await can still get the new title if their kick is late; same code on m3, fix there by validating the caller and sockets together.
+- T4.P (m4 on the fixed m3) checker P2: j09 reload test (e2e/journeys/j09-revoke-live.spec.ts:189) still flakes in WebKit: removing interception before the last reload lets the last held read finish 200, so only 2 of 3 reads are cancelled; fix in m3 by keeping interception until the old page leaves while letting the new page's requests through.
