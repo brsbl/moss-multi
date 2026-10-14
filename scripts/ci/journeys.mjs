@@ -50,8 +50,8 @@ export const GROUPS = {
   session: ['j03', 'j04'],
   // Trash, folders, search, vaults, export.
   workspace: ['j05', 'j06', 'j12', 'j13', 'export'],
-  // Media, embeds and the demo note.
-  media: ['j11', 'j14'],
+  // Media, embeds and the demo note; comments on blocks and what a comment composer keeps (meaning's WebKit shard is full).
+  media: ['j11', 'j14', 'j15-comments-drafts'],
   // Comments, suggestions, history, agents.
   meaning: ['j15', 'j16', 'j17', 'j18'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
