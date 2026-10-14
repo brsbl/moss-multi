@@ -3,7 +3,6 @@
 // No request follows a redirect: a 3xx is an error, so a credential is only ever sent to the configured server.
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { CliError, NOT_SIGNED_IN } from './errors.ts';
-import { fieldSafe } from './output.ts';
 
 export interface DocRow {
   id: string;
@@ -75,8 +74,8 @@ function messageOf(text: string): string | null {
   try {
     const body = JSON.parse(text) as { message?: unknown; error?: unknown };
     const message = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : null;
-    // It ends up in a one-line error header, so a line break in it can't forge another line.
-    return message === null ? null : fieldSafe(message);
+    // Kept as sent (`sync --json` reports it); human output escapes it where it is printed.
+    return message;
   } catch {
     return null;
   }

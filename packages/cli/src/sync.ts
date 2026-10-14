@@ -13,7 +13,7 @@ import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import {
-  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
+  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
   renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
@@ -462,6 +462,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
     if (stopped(error)) return [];
     throw error;
   }
+  // The root as pinned when the command chose it: one swapped during the request is refused before it is scanned.
+  pinRoot(root);
   const rows = new Map(listed.map((row) => [row.id, row]));
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
@@ -585,7 +587,7 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
         }
       } catch (error) {
         if (error instanceof RateLimited) limitedMs = error.retryAfterSec * 1000;
-        err(`sync failed: ${failure(error)}`);
+        err(`sync failed: ${fieldSafe(failure(error))}`);
       }
       if (signal.aborted) break;
       if (limitedMs > 0) await pause(limitedMs, false);

@@ -63,7 +63,7 @@ export const isAllowedName = (name: string): boolean =>
   name !== '' && name !== '.' && name !== '..' && !BAD_NAME.test(name) && Buffer.byteLength(name, 'utf8') <= 255 &&
   ![...name].some((char) => char.charCodeAt(0) <= 0x1f || isUnsafeChar(char.charCodeAt(0)));
 
-/** Each workspace root's real path and identity, recorded at its first check in a command. */
+/** Each workspace root's real path and identity, recorded when the command selects it (`findRoot`, `pinRoot`). */
 const roots = new Map<string, { real: string; dev: number; ino: number }>();
 
 /** Starts a command: each root is recorded afresh at its first check. */
@@ -79,6 +79,15 @@ function pinnedRoot(root: string): string {
     throw new CliError(1, `the workspace at ${root} was moved or replaced while moss-multi was working, so nothing more was written`);
   }
   return real;
+}
+
+/**
+ * Records `root`'s identity for this command, or refuses it if it no longer matches the one recorded. Call it as soon
+ * as a command selects its root, before any network request or lock wait, so a root swapped meanwhile is never trusted.
+ */
+export function pinRoot(root: string): string {
+  pinnedRoot(root);
+  return root;
 }
 
 /** The nearest existing directory holding `root/rel` must resolve inside the root's real path. */
@@ -145,7 +154,7 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
 export function findRoot(start: string): string | null {
   let dir = resolve(start);
   for (;;) {
-    if (isDir(join(dir, STATE_DIR))) return dir;
+    if (isDir(join(dir, STATE_DIR))) return pinRoot(dir);
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -430,6 +439,8 @@ export async function lockWorkspace(root: string, waitMs = 5 * 60_000, signal?: 
   const body = JSON.stringify({ pid: process.pid, host: hostname(), nonce, at: Date.now() });
   const deadline = Date.now() + waitMs;
   for (;;) {
+    // A root swapped while this waited is refused before the lock is written through it.
+    pinRoot(root);
     try {
       writeFileSync(path, body, { flag: 'wx' });
       return {

@@ -12,7 +12,7 @@ import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop } from './sync.ts';
-import { confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, resetRootPins, sha256Hex } from './workspace.ts';
+import { confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, recordPull, resetRootPins, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -266,7 +266,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]');
       const path = resolve(cwd(), file);
       const workspace = findRoot(cwd());
-      const root = workspace ?? cwd();
+      const root = workspace ?? pinRoot(cwd());
       const moss = parsed.flags.has('moss');
       const title = value(parsed, 'title');
       const folderId = value(parsed, 'folder');
@@ -340,7 +340,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [ref, fileArg] = arity(parsed, 1, 2, 'pull <doc> [file] [--force]');
       const client = api();
       const id = await resolveDocId(client, ref);
-      const root = findRoot(cwd()) ?? cwd();
+      const root = findRoot(cwd()) ?? pinRoot(cwd());
       const tracked = readMeta(root, id);
       if (tracked?.mode === 'moss') throw new CliError(1, `${tracked.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
       let rel: string;
@@ -574,7 +574,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       } catch (error) {
         why = error instanceof Error ? error.message : String(error);
       }
-      if (!url) throw new CliError(1, `share incomplete: ${f(email)} is invited as ${role}, but its invite link could not be read (${why}); copy it from the doc's Share dialog`);
+      if (!url) throw new CliError(1, `share incomplete: ${f(email)} is invited as ${role}, but its invite link could not be read (${f(why)}); copy it from the doc's Share dialog`);
       line(`invited ${f(email)} as ${role}; send them ${f(url)}; access starts once they open it signed in with that email`);
     },
   };
@@ -591,7 +591,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     return exitCode;
   } catch (error) {
     if (error instanceof CliError) {
-      stderr(`moss-multi: ${error.message}`);
+      // A refusal (it has an HTTP status) may quote the server: it stays on the header's line.
+      stderr(`moss-multi: ${error.status === undefined ? error.message : fieldSafe(error.message)}`);
       return error.exitCode;
     }
     stderr(`moss-multi: ${error instanceof Error ? error.message : String(error)}`);
