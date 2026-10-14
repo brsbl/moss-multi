@@ -2,7 +2,8 @@
 // commenter comments on code, chart, canvas and image blocks from their headers; a viewer, a revoked commenter and a
 // trashed note are offered none. A composer keeps what the server did not take: a lost or refused write stays to retry,
 // a revision is sent as written, overlapping submits each land, a reply that fails comes back to its thread's open
-// reply box, a revert saved over an edit in flight lands last, and a block composer's retry stays on its block.
+// reply box on its own, a failed edit resubmitted unchanged is sent again, a revert saved over an edit in flight
+// lands last, and a block composer's retry stays on its block.
 import { readFileSync } from 'node:fs';
 import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
@@ -491,6 +492,57 @@ test('j15-comments: a revert to the stored text, saved while the edit before it 
   held.shift()!('pass');
   await expect(editBox, 'edit mode closes once the last save is taken').toBeHidden({ timeout: PEER_TIMEOUT });
   await stored('the revert lands after the edit before it').toEqual(['Original']);
+});
+
+test('j15-comments: a failed edit resubmitted unchanged is sent again, and edit mode stays open until it lands @p:mean-1', async ({ actors, stack }) => {
+  const { ada, stored, modes } = await heldWrites(actors, stack.baseUrl);
+  const editBox = thread(ada).locator('[data-comment-edit-composer] [contenteditable="true"]');
+  await gutter(ada).first().click();
+  await thread(ada).locator('[data-comment-message]').filter({ hasText: 'Original' }).getByRole('button', { name: /^Comment actions for / }).click();
+  await ada.page.getByRole('menuitem', { name: /^Edit / }).click();
+  await expect(editBox).toBeFocused();
+  modes.PATCH = 'fail';
+  await ada.page.keyboard.press('ControlOrMeta+a');
+  await ada.page.keyboard.type('Changed');
+  await ada.page.keyboard.press(SUBMIT);
+  await expect(ada.page.getByText(/couldn't be edited/).first(), 'the failure is announced').toBeVisible({ timeout: PEER_TIMEOUT });
+  await expect(editBox, 'the failed edit stays open with its text').toHaveText('Changed');
+  modes.PATCH = 'pass';
+  await editBox.click();
+  await ada.page.keyboard.press(SUBMIT);
+  await expect(editBox, 'the unchanged retry is taken and edit mode closes').toBeHidden({ timeout: PEER_TIMEOUT });
+  await stored('the retried edit lands').toEqual(['Changed']);
+});
+
+/** A reply's paragraphs, sorted: each failed reply the box took back is one. */
+const paragraphs = (text: string) => text.split(/\s*\n\s*/).filter(Boolean).sort();
+
+test("j15-comments: each failed reply comes back to the box on its own, even when its text is inside another's or the box's @p:mean-1", async ({ actors, stack }) => {
+  const { ada, id, cookie, stored, modes, held } = await heldWrites(actors, stack.baseUrl);
+  const replyBox = thread(ada).locator('[data-comment-reply-composer] [contenteditable="true"]');
+  await gutter(ada).first().click();
+  await expect(replyBox).toBeFocused();
+  for (const [index, text] of ['not ready', 'ready', 'Thanks'].entries()) {
+    modes.POST = 'hold';
+    await ada.page.keyboard.type(text);
+    await ada.page.keyboard.press(SUBMIT);
+    await expect.poll(() => held.length, { message: `the reply "${text}" is held` }).toBe(index + 1);
+  }
+  await ada.page.keyboard.type('Thanks again for this');
+  for (const release of held.splice(0)) release('fail');
+  const all = ['Thanks', 'Thanks again for this', 'not ready', 'ready'];
+  await expect.poll(async () => paragraphs(await replyBox.innerText()), { message: 'every failed reply is back beside what was typed', timeout: PEER_TIMEOUT })
+    .toEqual(all);
+  await replyBox.click();
+  await ada.page.keyboard.press(SUBMIT);
+  await stored('the resubmit lands as one reply').toHaveLength(2);
+  const reply = (await storedTexts(stack.baseUrl, id, cookie)).find((text) => text !== 'Original') ?? '';
+  expect(paragraphs(reply), 'it holds each failed reply once').toEqual(all);
+  await ada.page.keyboard.press('Escape');
+  await expect(thread(ada)).toBeHidden();
+  await gutter(ada).first().click();
+  await expect(replyBox).toBeFocused();
+  await expect(replyBox, 'no failed reply is left to offer').toHaveText('');
 });
 
 test('j15-comments: a reply that fails after its thread was closed and reopened comes back to the reply box @p:mean-1', async ({ actors, stack }) => {
