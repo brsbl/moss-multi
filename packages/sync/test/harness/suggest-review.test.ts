@@ -58,6 +58,8 @@ const SAM: Who = { id: SUGGESTER.id, name: SUGGESTER.name, role: 'suggester' };
 const SKY: Who = { id: OTHER_SUGGESTER.id, name: OTHER_SUGGESTER.name, role: 'suggester' };
 const ED: Who = { id: 'editor-1@example.invalid', name: 'Ed Editor', role: 'editor' };
 const EDITOR = { id: 'editor-1@example.invalid', role: 'editor' as const };
+/** Who renames the note in these cases (the harness installs no access check, so it is only named). */
+const RENAMER = { kind: 'user' as const, principalId: EDITOR.id, sessionId: 'sess-editor', shareToken: null };
 
 async function on(opened: Opened, who: Who): Promise<TestClient> {
   const client = await connect(opened, who);
@@ -192,7 +194,7 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     expect(second).toContain('Sky says. Indented words here.');
     expect(gates).toHaveBeenCalledTimes(2);
     // A body edit does too.
-    await opened.dobj.renameTitle('Renamed');
+    await opened.dobj.renameTitle('Renamed', RENAMER);
     gates.mockClear();
     await opened.dobj.exportWorking();
     expect(gates).toHaveBeenCalledTimes(2);
@@ -249,10 +251,10 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
       const gates = vi.mocked(applyRecord);
       gates.mockClear();
       expect(await opened.dobj.exportWorking()).toContain('More words.');
-      await opened.dobj.renameTitle('One');
+      await opened.dobj.renameTitle('One', RENAMER);
       expect(await opened.dobj.exportWorking()).toContain('More words.');
       expect(await opened.dobj.exportWorking(), 'cached, so not counted').toContain('More words.');
-      await opened.dobj.renameTitle('Two');
+      await opened.dobj.renameTitle('Two', RENAMER);
       gates.mockClear();
       expect(await opened.dobj.exportWorking()).toBeNull();
       expect(gates).not.toHaveBeenCalled();
@@ -271,7 +273,7 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
       const sam = await on(opened, SAM);
       await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
       expect(await opened.dobj.exportWorking()).toContain('More words.');
-      await opened.dobj.renameTitle('One');
+      await opened.dobj.renameTitle('One', RENAMER);
       expect(await opened.dobj.exportWorking()).toContain('More words.');
       // Evicted inside the window: the woken instance has no cache, and the window it spent is in storage.
       opened = await start(wake(opened));
@@ -426,7 +428,7 @@ describe('T5.S9 a review heals a missed restore settle from D1', () => {
     const shown = await preview(opened, id);
     await opened.dobj.trash('hold-1');
     d1.deleted = true;
-    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true });
+    expect(await opened.dobj.settle('hold-1')).toEqual({ deleted: true, open: false });
     d1.deleted = false;
     return { opened: await start(wake(opened)), id, shown };
   }
