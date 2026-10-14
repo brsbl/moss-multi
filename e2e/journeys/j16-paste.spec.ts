@@ -3,29 +3,11 @@
 // lands in one transaction, one frame, one suggestion; or it is refused whole, visibly, with nothing struck or sent
 // and the selection kept. One undo takes it back and one redo brings it back.
 import type { Actor } from '../lib/actors.ts';
-import { INPUT_REFUSAL_ATTR, SUGGEST_SENT_ATTR } from '../lib/contract.ts';
-import { grantDoc } from '../lib/grants.ts';
+import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
 import { pastePlain } from '../lib/paste.ts';
-import { caret, content, mod, openIn, painted, settled } from '../lib/suggest.ts';
+import { FORK_CLOSED, pasteHtml, sent, storedOrRefused, suggesting } from '../lib/suggest-paste.ts';
+import { caret, content, mod, painted, settled } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
-
-type Actors = Parameters<Parameters<typeof test>[2]>[0]['actors'];
-
-/** A note owned by ada, open in ben's window as a suggester. */
-async function suggesting(actors: Actors, markdown: string) {
-  const ada = await actors.open(await actors.principal('ada'));
-  const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown } });
-  expect(response.status()).toBe(201);
-  const docId = ((await response.json()) as { doc: { id: string } }).doc.id;
-  const benPrincipal = await actors.principal('ben');
-  await grantDoc(ada, docId, benPrincipal, 'suggester');
-  const ben = await actors.session(benPrincipal);
-  await openIn(ben, docId);
-  await ben.observeEditor(docId);
-  return { ada, ben, docId };
-}
-
-const sent = async (actor: Actor, docId: string): Promise<number> => Number(await ui.pane(actor, docId).getAttribute(SUGGEST_SENT_ATTR));
 
 test('j16-paste: a large paste over a selection, past the suggestion record cap, is refused whole: nothing struck or sent, the selection kept @p:mean-2 @p:R17', async ({ actors }) => {
   actors.solo('the owner only seeds the note; one suggester pastes');
@@ -172,9 +154,6 @@ test('j16-paste: a paste inside a 150 KB paragraph either lands as one suggestio
   await expect.poll(() => painted(ben, 'suggest-delete'), { message: 'and the strike' }).toEqual(['MID']);
 });
 
-/** The notice of a suggestion the DocDO closed after a refused frame. */
-const FORK_CLOSED = 'This suggestion was closed while you typed';
-
 /** A real clipboard paste of HTML with its plain-text flavor, as from a browser page. */
 const pasteRich = (actor: Actor, docId: string, html: string, plain: string) =>
   ui.body(actor, docId).evaluate((element, [h, p]) => {
@@ -300,39 +279,6 @@ const pasteMarkdown = (actor: Actor, docId: string, markdown: string) =>
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
   }, markdown);
 
-/** A real clipboard paste of HTML alone, as from a page that offers no plain-text flavor. */
-const pasteHtml = (actor: Actor, docId: string, html: string) =>
-  ui.body(actor, docId).evaluate((element, h) => {
-    const data = new DataTransfer();
-    data.setData('text/html', h);
-    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
-  }, html);
-
-/**
- * A paste is never admitted and then dropped: it is refused whole, visibly, with nothing sent or changed, or it is one
- * frame the DocDO stores and acknowledges.
- */
-async function storedOrRefused(actor: Actor, ada: Actor, docId: string, paste: () => Promise<unknown>, expected?: string): Promise<'stored' | 'refused'> {
-  const refusal = actor.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
-  const working = await content(ada, docId, 'working');
-  const text = await ui.body(actor, docId).textContent();
-  const before = await sent(actor, docId);
-  await paste();
-  await expect.poll(async () => ((await refusal.textContent()) ?? '').includes(' was added') || (await sent(actor, docId)) > before, { timeout: 60_000 }).toBe(true);
-  if ((await sent(actor, docId)) === before) {
-    await settled(actor, docId, 'the refused paste');
-    expect(await sent(actor, docId), 'nothing was sent').toBe(before);
-    expect(await ui.body(actor, docId).textContent(), 'nothing changed').toBe(text);
-    expect(await content(ada, docId, 'working'), 'no suggestion was made').toBe(working);
-    return 'refused';
-  }
-  await settled(actor, docId, 'the paste');
-  await expect(actor.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
-  await expect.poll(() => content(ada, docId, 'working'), { message: 'the paste is a pending suggestion' }).not.toBe(working);
-  if (expected !== undefined) expect(await content(ada, docId, 'working'), 'the whole paste is stored').toContain(expected);
-  return 'stored';
-}
-
 test('j16-paste: a chart whose JSON sits on the opening fence line is measured as the import makes it: stored whole or refused whole, never dropped @p:mean-2 @p:R17', async ({ actors }) => {
   actors.solo('the owner only seeds the note; one suggester pastes');
   const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
@@ -374,56 +320,3 @@ test('j16-paste: a clipboard copied in the pane is measured through the pane\'s 
   await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
 });
 
-const TABLE_NOTE = 'Ada original line.\n\n| alpha | beta |\n| --- | --- |\n| gamma | delta |';
-
-/** A mouse drag from the cell holding `from` to the cell holding `to`: Lexical selects the cells between. */
-async function dragCells(actor: Actor, docId: string, from: string, to: string): Promise<void> {
-  const cell = (text: string) => ui.body(actor, docId).locator('td, th', { hasText: text }).first();
-  // A cell many screens tall: its top in view, where the drag starts.
-  await cell(from).evaluate((element) => element.scrollIntoView({ block: 'start' }));
-  const start = (await cell(from).boundingBox())!;
-  const end = (await cell(to).boundingBox())!;
-  await actor.page.mouse.move(start.x + 8, start.y + 8);
-  await actor.page.mouse.down();
-  await actor.page.mouse.move(end.x + 8, end.y + 8, { steps: 8 });
-  await actor.page.mouse.up();
-  await expect(ui.body(actor, docId).locator('table.moss-table-selection'), 'the cells are selected').toHaveCount(1);
-}
-
-test('j16-paste: a short paste over table cells holding the suggester\'s own large text is refused whole, or its one undo brings that text back @p:mean-2 @p:R17', async ({ actors }) => {
-  actors.solo('the owner only seeds the note; one suggester pastes');
-  const { ada, ben, docId } = await suggesting(actors, TABLE_NOTE);
-  const body = ui.body(ben, docId);
-  await caret(ben, docId, 'gamma', 5);
-  const own = `Own ${'o'.repeat(110_000)}`;
-  expect(await storedOrRefused(ben, ada, docId, () => pastePlain(ben, docId, own)), 'the large paste in a cell lands').toBe('stored');
-  await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`)).toHaveText('', { timeout: 15_000 });
-  await dragCells(ben, docId, 'gamma', 'delta');
-  if (await storedOrRefused(ben, ada, docId, () => pasteHtml(ben, docId, '<p>short</p>')) === 'refused') return;
-  await ben.page.keyboard.press(`${mod}+z`);
-  await settled(ben, docId, 'the undo');
-  await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the undo is admitted').toHaveText('');
-  await expect(body, 'one undo brings his text back').toContainText(own.slice(0, 2_000));
-  await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
-});
-
-test('j16-paste: a paste over table cells, or a table pasted in a cell, never removes another author\'s text unstruck: refused whole, or struck and kept visible @p:mean-2 @p:R17', async ({ actors }) => {
-  actors.solo('the owner only seeds the note; one suggester pastes');
-  const { ada, ben, docId } = await suggesting(actors, TABLE_NOTE);
-  const body = ui.body(ben, docId);
-  const refusal = ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
-  await caret(ben, docId, 'alpha', 0);
-  await dragCells(ben, docId, 'alpha', 'delta');
-  if (await storedOrRefused(ben, ada, docId, () => pastePlain(ben, docId, 'cellpaste')) === 'stored') {
-    for (const word of ['alpha', 'beta', 'gamma', 'delta']) await expect(body, `${word} stays`).toContainText(word);
-    expect(await painted(ben, 'suggest-delete'), 'what it replaced is struck').not.toEqual([]);
-    return;
-  }
-  await expect(refusal).toHaveText('', { timeout: 15_000 });
-  // A table at a caret in a cell: Lexical writes its cells over the grid from there.
-  await caret(ben, docId, 'gamma', 5);
-  if (await storedOrRefused(ben, ada, docId, () => pasteHtml(ben, docId, '<table><tr><td>one</td><td>two</td></tr></table>')) === 'stored') {
-    for (const word of ['gamma', 'delta']) await expect(body, `${word} stays`).toContainText(word);
-    expect(await painted(ben, 'suggest-delete'), 'what it overwrote is struck').not.toEqual([]);
-  }
-});

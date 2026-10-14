@@ -1169,7 +1169,7 @@ const selectCells = (pane: ReturnType<typeof suggesting>, from: number, to: numb
 it('a short paste over table cells holding the suggester\'s own large text is refused whole, or its one undo brings that text back', { timeout: 120_000 }, () => {
   const pane = suggesting(TABLE_NOTE);
   try {
-    pane.select('gamma', 5);
+    pane.select('gamma', 5, 5);
     expect(storedOrRefused(pane, () => pane.paste([`Own ${'o'.repeat(110_000)}`])), 'the large paste in a cell lands').toBe('stored');
     pane.stopCapturing();
     // From the cell holding it to the next: the table plugin writes the paste into the anchor cell, removing his text.
@@ -1201,7 +1201,7 @@ it('a paste over table cells holding another author\'s text is refused whole, or
 it('a table pasted at a caret in a cell, which overwrites the cells from there, is refused whole, or strikes what it overwrites', { timeout: 120_000 }, () => {
   const pane = suggesting(TABLE_NOTE);
   try {
-    pane.select('gamma', 5);
+    pane.select('gamma', 5, 5);
     if (storedOrRefused(pane, () => pane.pasteData(htmlClipboard('<table><tr><td>one</td><td>two</td></tr></table>'))) === 'refused') return;
     for (const word of ['gamma', 'delta']) expect(pane.text(), `${word} stays, struck`).toContain(word);
     expect(pane.struck(), 'the overwritten text is struck').toBeGreaterThan(0);
