@@ -1,6 +1,7 @@
 // The DocDO's D1 projections (A§5.1; R3): Y.Text('title') projects docs.title and docs.filename, and principal
 // edits touch docs.updated_at. The DO is their only writer. An empty title never projects, so clearing a title and
-// typing it again cannot churn the filename. Writes run one at a time on one chain, in order.
+// typing it again cannot churn the filename. Writes run one at a time on one chain, in order. A failed title write
+// retries with backoff, coalesced to the latest title, and a wake reconciles a title D1 may still lack.
 import { filenameFor, slug } from '@moss-multi/core/filenames';
 
 /** Where the projections land: D1 in the Worker, a fake in the harness. */
@@ -13,20 +14,30 @@ export interface ProjectionTarget {
 
 export const TITLE_PROJECTION_MS = 750;
 export const TOUCH_INTERVAL_MS = 5_000;
+/** A failed title write retries after this, doubling up to TITLE_RETRY_MAX_MS. */
+export const TITLE_RETRY_MS = 1_000;
+export const TITLE_RETRY_MAX_MS = 60_000;
 
 export class Projections {
   #chain: Promise<void> = Promise.resolve();
   #title: string | null = null;
   #titleTimer: ReturnType<typeof setTimeout> | null = null;
-  #projected: string | null = null;
-  #error: unknown = null;
+  #projected: string | null;
+  /** The last title write's failure (the empty name's too) until one lands; a touch never clears it. */
+  #titleError: unknown = null;
+  #retryMs = TITLE_RETRY_MS;
   #touchedAt = Number.NEGATIVE_INFINITY;
   #touchTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** `projected`: the title D1 last took, as the DO recorded it; `onProjected` records each one that lands. */
   constructor(
     private readonly docId: string,
     private readonly target: ProjectionTarget,
-  ) {}
+    projected: string | null = null,
+    private readonly onProjected: (title: string) => void = () => undefined,
+  ) {
+    this.#projected = projected;
+  }
 
   /** The title changed: its trimmed text projects within 750 ms, coalesced with later changes. */
   title(text: string): void {
@@ -34,6 +45,12 @@ export class Projections {
     this.#title = value;
     if (!value) return;
     this.#titleTimer ??= setTimeout(() => this.#flushTitle(), TITLE_PROJECTION_MS);
+  }
+
+  /** On wake: a title D1 may lack (its write failed before an eviction) projects again. */
+  reconcile(text: string): void {
+    const value = text.trim();
+    if (value && value !== this.#projected) this.title(value);
   }
 
   /** A principal edited the doc: updated_at now, then at most every 5 s, with a trailing touch. */
@@ -51,11 +68,11 @@ export class Projections {
     }, TOUCH_INTERVAL_MS - (now - this.#touchedAt));
   }
 
-  /** Runs anything pending now, and resolves once every write so far has landed. */
+  /** Runs anything pending now, and resolves once every write so far has landed; throws when the title's failed. */
   async flush(): Promise<void> {
     if (this.#titleTimer) this.#flushTitle();
     await this.#chain;
-    if (this.#error) throw this.#error;
+    if (this.#titleError) throw this.#titleError;
   }
 
   #flushTitle(): void {
@@ -63,20 +80,45 @@ export class Projections {
     this.#titleTimer = null;
     this.#run(async () => {
       const value = this.#title;
-      if (!value || value === this.#projected) return;
-      await this.target.title(this.docId, value);
+      if (!value || value === this.#projected) {
+        this.#titleError = null;
+        return;
+      }
+      try {
+        await this.target.title(this.docId, value);
+      } catch (error) {
+        this.#titleError = error;
+        // The retry projects whatever the title is by then.
+        this.#titleTimer ??= setTimeout(() => this.#flushTitle(), this.#retryMs);
+        this.#retryMs = Math.min(this.#retryMs * 2, TITLE_RETRY_MAX_MS);
+        throw error;
+      }
       this.#projected = value;
+      this.#titleError = null;
+      this.#retryMs = TITLE_RETRY_MS;
+      this.onProjected(value);
     });
   }
 
-  /** Initial empty name: reserve its filename without authoring placeholder text. */
-  async initializeEmpty(): Promise<void> {
-    await this.target.title(this.docId, '');
+  /**
+   * Initial empty name: reserve its filename without authoring placeholder text. On the chain, so a title projected
+   * after it lands after it; skipped once the doc has a title.
+   */
+  initializeEmpty(): void {
+    this.#run(async () => {
+      if (this.#title) return;
+      try {
+        await this.target.title(this.docId, '');
+      } catch (error) {
+        this.#titleError = error;
+        throw error;
+      }
+      this.#titleError = null;
+    });
   }
 
   #run(write: () => Promise<void>): void {
-    this.#chain = this.#chain.then(async () => { await write(); this.#error = null; }).catch((error: unknown) => {
-      this.#error = error;
+    this.#chain = this.#chain.then(write).catch((error: unknown) => {
       console.error(`projection for ${this.docId} failed`, error);
     });
   }

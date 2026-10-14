@@ -46,7 +46,7 @@ for (const mime of ['text/markdown', 'text/plain']) {
 }
 
 for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).sort()) {
-  test(`j00 G1: ${name} server import equals UI paste @p:tech-4 @p:note-1`, async ({ actors, stack }) => {
+  test(`j00 G1: ${name} server import equals UI paste @p:tech-4@1 @p:note-1`, async ({ actors, stack }) => {
     const markdown = readFileSync(new URL(name, fixtures), 'utf8');
     const imported = await actors.session(await actors.principal('imported'));
     const pasted = await actors.session(await actors.principal('pasted'));
@@ -77,6 +77,9 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     await expect(ui.pane(pasted, pastedId)).toHaveAttribute('data-sync-unacked', '0');
     const authored = await renderedBody(pasted, pastedId);
     expect(authored, 'the paste changes the empty document (positive control)').not.toEqual(empty);
+    // The paste's click leaves the pointer where a chart can render under it, and a hovered chart shows its tooltip
+    // (WebKit, run 38337313073): the pointer leaves both bodies before they are compared.
+    for (const actor of [imported, pasted]) await actor.page.mouse.move(0, 0);
     await expect(async () => {
       expect(await renderedBody(imported, importedId)).toEqual(await renderedBody(pasted, pastedId));
     }).toPass({ timeout: 10_000 });

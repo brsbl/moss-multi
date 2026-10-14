@@ -16,8 +16,10 @@ export const ALL = 'all';
 export const GROUPS = {
   // Chrome, auth and invites.
   shell: ['j00-shell', 'j07', 'j10', 'j19'],
-  // Sharing and live access changes.
-  share: ['j08', 'j09'],
+  // Sharing.
+  share: ['j08'],
+  // Live access changes: demotion, removal, link revocation, sign-out.
+  access: ['j09'],
   // Server import against UI paste, and the protocol round trip.
   import: ['j00-import', 'j00-roundtrip'],
   // Persistence and co-editing; also any new j01 journey until it is placed.
@@ -26,6 +28,8 @@ export const GROUPS = {
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
   // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
   registers: ['j01-registers', 'j01-autolink'],
+  // Typing in a 40,000-line note against a small control (T3.B13).
+  large: ['j01-large'],
   // Large markdown pastes, up to 2 MB, each landing whole for a peer.
   paste: ['j01-paste'],
   // Pastes of very many short blocks, into an empty note and between two paragraphs.
@@ -50,8 +54,9 @@ export const GROUPS = {
   media: ['j11', 'j14'],
   // Comments, history, agents.
   meaning: ['j15', 'j17', 'j18'],
-  // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent.
-  social: ['j15-social', 'j08-agents'],
+  // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
+  // frames.
+  social: ['j15-social', 'j08-agents', 'j15-comments-guard'],
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.

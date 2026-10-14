@@ -3,7 +3,7 @@
 // rows for mentions and replies: users only, re-checked against their live access, never the actor.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertAgent, insertDoc, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const calls: { docId: string; input: Record<string, unknown> }[] = [];
@@ -302,4 +302,130 @@ describe('comment notifications: mentions and replies reach the bell @p:ppl-3 @p
     await d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(note, fay.id).run();
     expect(await bell(fay), 'the notice is re-checked against the live grant when read').toEqual([]);
   });
+});
+
+/**
+ * `db` with every prepared statement counted, and `before` run once ahead of the first statement that writes a
+ * notification, whether it runs alone or in a batch: the moment between resolving recipients and inserting their rows.
+ */
+function instrumented(db: D1Database, before: (() => Promise<void>) | null = null) {
+  let prepared = 0;
+  let hook = before;
+  const real = new WeakMap<object, D1PreparedStatement>();
+  const notifying = new WeakSet<object>();
+  const fire = async () => {
+    const run = hook;
+    hook = null;
+    if (run) await run();
+  };
+  const wrap = (statement: D1PreparedStatement, writes: boolean): D1PreparedStatement => {
+    const wrapped = new Proxy(statement, {
+      get(target, name) {
+        if (name === 'bind') return (...values: unknown[]) => wrap(target.bind(...values), writes);
+        const value = Reflect.get(target, name, target);
+        if (typeof value !== 'function') return value;
+        if (!writes || !['all', 'run', 'first', 'raw'].includes(String(name))) return value.bind(target);
+        return async (...args: unknown[]) => {
+          await fire();
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    real.set(wrapped, statement);
+    if (writes) notifying.add(wrapped);
+    return wrapped;
+  };
+  const wrappedDb = new Proxy(db, {
+    get(target, name) {
+      if (name === 'prepare') return (query: string) => {
+        prepared += 1;
+        return wrap(target.prepare(query), /INSERT INTO notifications/i.test(query));
+      };
+      if (name === 'batch') return async (statements: D1PreparedStatement[]) => {
+        if (statements.some((statement) => notifying.has(statement))) await fire();
+        return target.batch(statements.map((statement) => real.get(statement) ?? statement));
+      };
+      const value = Reflect.get(target, name, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db: wrappedDb, prepared: () => prepared };
+}
+
+describe('comment notifications are written only to people who can open the note at the insert @p:ppl-3 @p:mean-1', () => {
+  const mention = (name: string, id: string) => `⁣@person:${name}⁢${id}⁤`;
+  const rowsOf = async (docId: string) =>
+    (await d1.db.prepare("SELECT user_id AS userId, type FROM notifications WHERE json_extract(payload_json, '$.targetId') = ? ORDER BY user_id")
+      .bind(docId).all<{ userId: string; type: string }>()).results;
+  const sendWith = (dbEnv: typeof env, who: TestUser, path: string, body: unknown) => handleApi(new Request(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: BASE, cookie: who.cookie },
+    body: JSON.stringify(body),
+  }), dbEnv);
+  /** A person with an account and no access anywhere yet. */
+  const person = async (label: string) => {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await d1.db.prepare('INSERT INTO user (id, name, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(id, label, `mm-t4b1-${label}-${id}@example.invalid`, now, now).run();
+    return id;
+  };
+  let vault: string;
+  let folder: string;
+  beforeAll(async () => {
+    vault = await insertFolder(d1.db, ada, null);
+    folder = await insertFolder(d1.db, ada, vault);
+  });
+
+  it('notifies the owner and people with a direct, folder or vault grant, and no link-only non-member', async () => {
+    const note = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { docId: note }, { id: ben.id }, 'commenter');
+    const [direct, inFolder, inVault, linkOnly] = await Promise.all(['direct', 'folder', 'vault', 'link'].map(person));
+    await insertGrant(d1.db, { docId: note }, { id: direct! }, 'viewer');
+    await insertGrant(d1.db, { folderId: folder }, { id: inFolder! }, 'viewer');
+    await insertGrant(d1.db, { folderId: vault }, { id: inVault! }, 'commenter');
+    await insertLink(d1.db, { docId: note }, 'commenter');
+    verdict = { ok: true, id: 'g1', quote: 'brown fox' };
+    const text = [mention('Ada', ada.id), mention('D', direct!), mention('F', inFolder!), mention('V', inVault!), mention('L', linkOnly!)].join(' ');
+    expect((await sendWith(env, ben, `/api/docs/${note}/comments`, { id: 'g1', text, anchor: { start: 'AAA=', end: 'AAA=' } })).status).toBe(201);
+    expect(await rowsOf(note)).toEqual([ada.id, direct!, inFolder!, inVault!].sort().map((userId) => ({ userId, type: 'mention' })));
+  });
+
+  const changes: [string, (note: string, id: string) => Promise<unknown>][] = [
+    ['a recipient whose grant is removed', (note, id) => d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(note, id).run()],
+    ['a note sent to Trash', (note) => d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), note).run()],
+  ];
+  it.each(changes)('%s between resolution and insert gets no row', async (_, change) => {
+    const note = await insertDoc(d1.db, ada, { folderId: folder });
+    const reader = await person('reader');
+    await insertGrant(d1.db, { docId: note }, { id: reader }, 'viewer');
+    verdict = { ok: true, id: 'g2', quote: 'brown fox' };
+    const racing = instrumented(d1.db, async () => {
+      await change(note, reader);
+    });
+    const response = await sendWith({ ...env, DB: racing.db }, ada, `/api/docs/${note}/comments`, { id: 'g2', text: `Hi ${mention('R', reader)}`, anchor: { start: 'AAA=', end: 'AAA=' } });
+    expect(response.status).toBe(201);
+    expect(await rowsOf(note)).toEqual([]);
+  });
+
+  it('reads and writes the same number of statements for 1 recipient and for 20', async () => {
+    const note = await insertDoc(d1.db, ada, { folderId: folder });
+    const people: string[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      const id = await person(`many${i}`);
+      await insertGrant(d1.db, i % 2 ? { docId: note } : { folderId: folder }, { id }, 'viewer');
+      people.push(id);
+    }
+    const statements = async (ids: string[], commentId: string) => {
+      verdict = { ok: true, id: commentId, quote: 'brown fox' };
+      const counted = instrumented(d1.db);
+      const text = ids.map((id) => mention('P', id)).join(' ');
+      expect((await sendWith({ ...env, DB: counted.db }, ada, `/api/docs/${note}/comments`, { id: commentId, text, anchor: { start: 'AAA=', end: 'AAA=' } })).status).toBe(201);
+      return counted.prepared();
+    };
+    const one = await statements(people.slice(0, 1), 'n1');
+    const twenty = await statements(people, 'n20');
+    expect(twenty, 'no statement per recipient').toBe(one);
+    expect(await rowsOf(note)).toHaveLength(21);
+  }, 60_000);
 });

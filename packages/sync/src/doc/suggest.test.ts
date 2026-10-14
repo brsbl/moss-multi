@@ -799,3 +799,68 @@ describe('T5.4 cost at fuzz scale @p:mean-2', () => {
     expect(deep.first).toBeLessThan(few.first * 3 + 5);
   }, 300_000);
 });
+
+describe('T5.B1 leases held by deletes, and payload ops checked before the payload loads @p:mean-2', () => {
+  /** A fork of `live` under `client` that keeps its clock across writes. */
+  function forkWriter(live: Y.Doc, client: number) {
+    const doc = new Y.Doc();
+    doc.clientID = client;
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
+    return (text: string) => {
+      const sv = Y.encodeStateVector(doc);
+      firstBlock(doc).insert(0, text);
+      return Y.encodeStateAsUpdate(doc, sv);
+    };
+  }
+  const MINUTE = 60_000;
+
+  it("an author who only deletes for longer than the idle limit keeps the lease; an idle lease and another connection's deletes do not", () => {
+    let t = 1_000_000;
+    const live = seededBody();
+    const ingest = ingestOn(live, { now: () => t });
+    const grant = leaseOne(ingest, sam());
+    const write = forkWriter(live, grant.client);
+    expect(ingest.ops(sam(), grant.record, write('A '))).toMatchObject({ ok: true });
+    for (const [i, word] of ['world', 'cat', 'Hello', 'Indented'].entries()) {
+      t += 10 * MINUTE;
+      const done = i === 2
+        ? ingest.ops(sam(), grant.record, deleteUpdate(spansOfText(live, word)))
+        : ingest.delete(sam(), grant.record, { id: `d${i}`, targets: spansOfText(live, word) });
+      expect(done, word).toMatchObject({ ok: true, record: grant.record });
+    }
+    // 40 minutes after the insert, with no resume.
+    expect(ingest.ops(sam(), grant.record, write('B ')), 'the deletes kept the lease').toMatchObject({ ok: true, record: grant.record });
+    t += 31 * MINUTE;
+    expect(ingest.ops(sam(), grant.record, write('C ')), 'a genuinely idle lease').toEqual({ ok: false, reason: 'lease' });
+
+    const other = leaseOne(ingest, sam());
+    const mine = forkWriter(live, other.client);
+    expect(ingest.ops(sam(), other.record, mine('D '))).toMatchObject({ ok: true });
+    for (const [i, word] of ['world', 'cat', 'Hello', 'Indented'].entries()) {
+      t += 10 * MINUTE;
+      expect(ingest.delete(sam('c-other'), other.record, { id: `e${i}`, targets: spansOfText(live, word) }), word).toMatchObject({ ok: true });
+    }
+    expect(ingest.ops(sam(), other.record, mine('E ')), "another connection's deletes hold no lease of this one").toEqual({ ok: false, reason: 'lease' });
+  });
+
+  it('a payload op refused for its lease or a cap never loads the payload doc; a valid one loads it once', () => {
+    const live = seededBody();
+    const [id, held] = [...payloadDocsFor(live).docs][0];
+    let loads = 0;
+    const ingest = ingestOn(live, {
+      payloadDoc: (doc) => {
+        if (doc === id) loads += 1;
+        return doc === id ? held : undefined;
+      },
+    });
+    const mine = leaseOne(ingest, sam());
+    const edit = (client: number, text: string) => frame(held, client, (doc) => doc.getText('payload').insert(0, text));
+    expect(ingest.ops(sam(), mine.record, frame(live, mine.client, (doc) => append(doc, paragraph('mine'))))).toMatchObject({ ok: true, doc: 'body' });
+    loads = 0;
+    expect(ingest.ops(sam(), mine.record, { doc: id, update: edit(0x5eed0004, 'x') })).toEqual({ ok: false, reason: 'lease' });
+    expect(ingest.ops(sam(), mine.record, { doc: id, update: edit(mine.client, 'y'.repeat(SUGGEST_CAPS.recordOpsBytes)) })).toEqual({ ok: false, reason: 'record-cap' });
+    expect(loads, 'refused before the payload loads').toBe(0);
+    expect(ingest.ops(sam(), mine.record, { doc: id, update: edit(mine.client, 'p') })).toMatchObject({ ok: true, doc: id });
+    expect(loads, 'a valid op loads it once').toBe(1);
+  });
+});

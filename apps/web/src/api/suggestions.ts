@@ -1,6 +1,7 @@
 // The suggestion review REST API (docs/design/suggestions.md §4, §8): GET .../suggestions/:sid/preview for any reader,
 // POST .../accept {previewHash, digest} and .../reject for an editor or above, POST .../withdraw for a suggester or
-// above (the DocDO checks that the caller is the author). Each is counted per principal by its PrincipalDO, and the
+// above (the DocDO checks that the caller is the author). Each is counted per principal (a share link for an anonymous
+// reader, who may only preview) by its PrincipalDO, and the
 // DocDO re-authorizes the actor in the same serialized turn as the action (A§8), so the Worker's role is never the
 // last word. A new live suggestion writes the bell's rows for the people who can review it.
 import { getServerByName } from 'partyserver';
@@ -48,7 +49,10 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   const method = action === 'preview' ? 'GET' : 'POST';
   if (request.method !== method) return json({ error: 'method-not-allowed' }, 405, { allow: method });
   const principal = await resolvePrincipal(request, env);
-  if (!principal || principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to review suggestions' }, 401, NO_STORE);
+  // A share-link holder with no session may preview (a viewer's Review mode), and do nothing else.
+  if (!principal || (principal.type === 'anonymous' && action !== 'preview')) {
+    return json({ error: 'unauthenticated', message: 'Sign in to review suggestions' }, 401, NO_STORE);
+  }
   // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
   const body = method === 'POST' ? ((await readJsonObject(request)) ?? {}) : {};
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
@@ -59,7 +63,9 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   if (action === 'accept' && (typeof previewHash !== 'string' || !HASH.test(previewHash) || typeof digest !== 'string' || !HASH.test(digest))) {
     return json({ error: 'bad-request' }, 400, NO_STORE);
   }
-  const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+  // Every anonymous principal shares one id, so a link holder's budget is its link's, never one global bucket.
+  const budget = principal.type === 'anonymous' ? `anon:${await sha256Hex(principal.shareToken)}` : principal.id;
+  const principalDO = await getServerByName(env.PrincipalDO, budget);
   const allowed = action === 'preview' ? await principalDO.takePreviewToken() : await principalDO.takeReviewToken();
   if (!allowed) {
     const window = action === 'preview' ? SUGGEST_PREVIEW_RATE.windowMs : SUGGEST_REVIEW_RATE.windowMs;

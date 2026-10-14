@@ -8,7 +8,7 @@ import {
   BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, type Inserted, type RecordOp, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
+import { RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
@@ -487,6 +487,9 @@ export class SuggestFork {
   #asked = false;
   #leasing = false;
   #resuming = false;
+  /** Resume frames still unanswered, and the leases the answered ones granted. */
+  #resumeLeft = 0;
+  #resumed: LeaseGrant[] = [];
   #ready = false;
   #closed = false;
   #disposed = false;
@@ -588,8 +591,22 @@ export class SuggestFork {
     // Unanswered lease requests are not replayed: the resume mints spares.
     this.#waiting.unshift(...replay.filter((entry) => entry.request.t !== 'suggest-lease'));
     this.#leasing = false;
+    this.#resume();
+  }
+
+  /**
+   * Resumes this fork's leases on the current connection, `RESUME_MAX` a frame; everything else waits until the last
+   * frame's answer.
+   */
+  #resume(): void {
+    const clients = this.#resumable();
+    const chunks: number[][] = [];
+    for (let i = 0; i < clients.length; i += RESUME_MAX) chunks.push(clients.slice(i, i + RESUME_MAX));
+    if (chunks.length === 0) chunks.push([]);
     this.#resuming = true;
-    this.#send({ request: { t: 'suggest-lease', resume: this.#resumable(), fork: this.#id } });
+    this.#resumeLeft = chunks.length;
+    this.#resumed = [];
+    for (const resume of chunks) this.#send({ request: { t: 'suggest-lease', resume, fork: this.#id } });
   }
 
   /**
@@ -629,16 +646,22 @@ export class SuggestFork {
     }
     if (reply.t === 'suggest-leased') {
       if (resumed) {
-        const fresh = new Map(reply.leases.map((lease) => [lease.client, lease]));
+        // A frame of a resume this fork abandoned (a refusal halted it) changes nothing.
+        if (!this.#resuming) return;
+        this.#resumed.push(...reply.leases);
+        if (--this.#resumeLeft > 0) return;
+        const granted = this.#resumed;
+        this.#resumed = [];
+        const fresh = new Map(granted.map((lease) => [lease.client, lease]));
         const known = new Set(this.#leases.map((lease) => lease.client));
         this.#leases = this.#leases.map((lease) => fresh.get(lease.client) ?? lease);
         // A lease the resume minted beside the named ones is a spare, while F lacks one.
-        for (const lease of reply.leases) {
+        for (const lease of granted) {
           if (!known.has(lease.client) && !this.#used.has(lease.client) && this.#leases.length < 2) this.#leases.push(lease);
         }
-        this.#touch(reply.leases);
+        this.#touch(granted);
         this.#resuming = false;
-        this.#dropStored(new Map(reply.leases.map((lease) => [lease.client, lease.clocks ?? { [BODY_DOC]: lease.clock }])));
+        this.#dropStored(new Map(granted.map((lease) => [lease.client, lease.clocks ?? { [BODY_DOC]: lease.clock }])));
         this.#flush();
         return;
       }
@@ -766,8 +789,7 @@ export class SuggestFork {
     const active = this.#leases[0];
     if (request.t !== 'suggest-lease' && this.#ready && !this.#resuming && active && this.#now() - (this.#touched.get(active.client) ?? 0) >= LEASE_RENEW_MS) {
       // The active lease may have idled out on the DocDO: resume the leases on this connection first.
-      this.#resuming = true;
-      this.#send({ request: { t: 'suggest-lease', resume: this.#resumable(), fork: this.#id } });
+      this.#resume();
     }
     const entry = { request, op };
     if (this.#resuming) this.#waiting.push(entry);

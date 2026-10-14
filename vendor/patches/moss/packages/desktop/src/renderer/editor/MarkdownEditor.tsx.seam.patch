@@ -211,7 +211,19 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  const insertPlainTextFromPaste = (editor: LexicalEditor, text: string): boolean => {
    let canInsert = false;
  
-@@ -1138,7 +1243,22 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
+@@ -1091,7 +1196,10 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
+               (selection.focus.type === 'element' && selection.focus.getNode() === root);
+           }
+         });
+-        if (atRoot) {
++        // moss-multi seam: held-insertion (B188): a pasted media file goes to the media plugins, which insert it there
++        const media = Array.from((event as ClipboardEvent).clipboardData?.items ?? [])
++          .some((item) => item.kind === 'file' && /^(image|video)\//.test(item.type));
++        if (atRoot && !media) {
+           console.warn('[paste] Blocked paste at root-level selection — this is a Lexical edge case, not a user error');
+           event.preventDefault();
+           return true;
+@@ -1138,7 +1246,22 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
          return true;
        }
  
@@ -235,7 +247,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          const handled = insertPlainTextFromPaste(editor, pastedMarkdownCandidate);
          if (!handled) {
            return false;
-@@ -1152,40 +1272,10 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
+@@ -1152,40 +1275,10 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
        if (hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate)) {
          event.preventDefault();
          event.stopPropagation();
@@ -280,7 +292,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          }
          return insertMarkdownFromPaste(editor, pastedMarkdownCandidate);
        }
-@@ -1755,6 +1845,19 @@ function FloatingSelectionTools({
+@@ -1755,6 +1848,19 @@ function FloatingSelectionTools({
      };
    }, [onSelectedImageNodeKeyChange]);
    const floatingToolbarRef = useRef<HTMLDivElement | null>(null);
@@ -300,7 +312,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    // Scroll tracking — hide floating bar while scrolling
    const [isScrolling, setIsScrolling] = useState(false);
    const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-@@ -2548,6 +2651,7 @@ function FloatingSelectionTools({
+@@ -2548,6 +2654,7 @@ function FloatingSelectionTools({
  
    // Clear the temporary visual highlight applied while the link popover is open
    const clearLinkSelectionMark = useCallback(() => {
@@ -308,7 +320,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      editor.update(() => {
        const root = $getRoot();
        const textNodes: TextNode[] = [];
-@@ -2591,7 +2695,8 @@ function FloatingSelectionTools({
+@@ -2591,7 +2698,8 @@ function FloatingSelectionTools({
  
        const selection = selectLinkNodeContents(node);
        if ($isRangeSelection(selection) && !selection.isCollapsed()) {
@@ -318,7 +330,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        }
  
        setLinkInputState({
-@@ -2695,7 +2800,8 @@ function FloatingSelectionTools({
+@@ -2695,7 +2803,8 @@ function FloatingSelectionTools({
        // when the link popover steals focus. Uses a CSS custom property that
        // won't serialize to markdown.
        if (!selection.isCollapsed()) {
@@ -328,7 +340,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        }
  
        if (linkParent) {
-@@ -2721,6 +2827,7 @@ function FloatingSelectionTools({
+@@ -2721,6 +2830,7 @@ function FloatingSelectionTools({
    }, [editor]);
  
    const applyLink = useCallback((url: string) => {
@@ -336,7 +348,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      editor.update(() => {
        // Inline link-selection cleanup to avoid a separate update cycle
        const root = $getRoot();
-@@ -2752,6 +2859,7 @@ function FloatingSelectionTools({
+@@ -2752,6 +2862,7 @@ function FloatingSelectionTools({
    }, [editor]);
  
    const removeLink = useCallback(() => {
@@ -344,7 +356,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      editor.update(() => {
        // Inline link-selection cleanup to avoid a separate update cycle
        const root = $getRoot();
-@@ -2902,6 +3010,7 @@ function FloatingSelectionTools({
+@@ -2902,6 +3013,7 @@ function FloatingSelectionTools({
          };
        }
      });
@@ -352,7 +364,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
      // Get selection rect from DOM and show persistent highlight
      if (domSelection && domSelection.rangeCount > 0) {
-@@ -3551,7 +3660,7 @@ function FloatingSelectionTools({
+@@ -3551,7 +3663,7 @@ function FloatingSelectionTools({
  
    const trashedToolbar = (
      <div className="px-3 py-2 text-sm text-ink-muted">
@@ -361,7 +373,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      </div>
    );
  
-@@ -3565,7 +3674,7 @@ function FloatingSelectionTools({
+@@ -3565,7 +3677,7 @@ function FloatingSelectionTools({
    const showFloatingBar = (
      hasActiveSelection
      || !!linkInputState?.open
@@ -370,7 +382,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    // Calculate floating bar position from selection rect
    // Clamp below the topnav (~48px from viewport top) to avoid overlap
-@@ -3614,6 +3723,7 @@ function FloatingSelectionTools({
+@@ -3614,6 +3726,7 @@ function FloatingSelectionTools({
            <SelectionToolbarShell
              ref={floatingToolbarRef}
              style={floatingBarStyle}
@@ -378,7 +390,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
              data-floating-selection-toolbar="true"
            >
              <SelectionToolbarInner>
-@@ -3644,13 +3754,16 @@ function FloatingSelectionTools({
+@@ -3644,13 +3757,16 @@ function FloatingSelectionTools({
          </TooltipProvider>
        )}
        {/* Bottom bar — shown when NO text is selected (also hidden during scroll with active selection to prevent flash) */}
@@ -396,7 +408,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
              <SelectionToolbarShell
                className="flex-col"
                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-@@ -3760,11 +3873,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3760,11 +3876,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        paneId,
        enableSearchPlugin = true,
        editorMountVersion,
@@ -412,7 +424,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
    const latestEditorStateRef = useRef<EditorState | null>(null);
    const editorRef = useRef<LexicalEditor | null>(null);
    const lastContentChangeTagsRef = useRef<string | null>(null);
-@@ -3796,7 +3912,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3796,7 +3915,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
    // Capture editor instance when ready
    const handleEditorReady = useCallback((editor: LexicalEditor) => {
      editorRef.current = editor;
@@ -421,7 +433,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        onReady?.(editor);
        return;
      }
-@@ -3813,7 +3929,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3813,7 +3932,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        );
      });
      onReady?.(editor);
@@ -430,7 +442,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    const analyticsOwnerId = `${paneId ?? 'single'}:${noteId}:${editorMountVersion ?? 0}`;
  
-@@ -3850,7 +3966,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3850,7 +3969,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
  
    const initialConfig = useMemo<InitialConfigType>(
      () => {
@@ -439,7 +451,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
        const importMarkdownValue = (editor: LexicalEditor): void => {
          // Strip any residual comment footer from the value (defensive —
-@@ -3870,18 +3986,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3870,18 +3989,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          // Strip leading H1 from body — it lives in the dedicated title field
          let bodyForEditor = strippedContent;
          const h1Match = bodyForEditor.match(/^#(?!#)\s+(.*?)(?:\s*#*)?\s*(?:\n|$)/);
@@ -464,7 +476,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          ? (editor: LexicalEditor) => {
              if (initialSerializedState) {
                try {
-@@ -3903,7 +4020,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3903,7 +4023,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          html: {
            import: MARKDOWN_EDITOR_HTML_IMPORT
          },
@@ -473,7 +485,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          nodes: MARKDOWN_EDITOR_NODES,
          onError(error) {
            throw error;
-@@ -3912,6 +4029,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -3912,6 +4032,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        };
      },
      [
@@ -481,7 +493,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        editorStateCacheKey,
        hasInitialSerializedStateProp,
        initialSerializedState,
-@@ -4132,6 +4250,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4132,6 +4253,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        layoutMetadata?: NoteLayoutMetadata;
      }
    ): { success: boolean; frontmatter: Record<string, unknown> | null; h1Title: string | null; body: string; comments: CommentMetadataMap } => {
@@ -492,7 +504,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      const editor = editorRef.current;
      if (!editor) {
        return { success: false, frontmatter: null, h1Title: null, body: markdown, comments: {} };
-@@ -4151,8 +4273,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4151,8 +4276,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
      // Strip leading H1 from body — it lives in the dedicated title field
      const h1Result = extractLeadingH1(strippedContent);
  
@@ -501,7 +513,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
      const scrollContainer = options?.scrollContainer;
      const savedScrollTop = scrollContainer?.scrollTop ?? 0;
  
-@@ -4178,7 +4298,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4178,7 +4301,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          }
          const root = $getRoot();
          root.clear();
@@ -511,7 +523,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          $postImportNormalize(commentMetadata, undefined, {
            layoutMetadata: options?.layoutMetadata
          });
-@@ -4209,7 +4330,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4209,7 +4333,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        console.error('[MarkdownEditor] In-place update failed:', error);
        return { success: false, frontmatter: fmResult.data, h1Title: h1Result.h1Title, body: h1Result.body, comments: commentMetadata };
      }
@@ -520,7 +532,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  
    useImperativeHandle(
      ref,
-@@ -4234,10 +4355,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4234,10 +4358,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
        updateContentFromMarkdown
      ]
    );
@@ -535,7 +547,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
        <CurrentNoteIdEditorPlugin />
        <div className="relative animate-[fadeIn_150ms_ease-out]" data-lexical-editor>
          <RichTextPlugin
-@@ -4260,14 +4384,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4260,14 +4387,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
            placeholder={<Placeholder>{placeholder ?? 'Start typing...'}</Placeholder>}
            ErrorBoundary={LexicalErrorBoundary}
          />
@@ -552,7 +564,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          <HorizontalRulePlugin />
          <TablePlugin hasCellMerge={false} hasHorizontalScroll />
          <TableColumnLayoutPlugin />
-@@ -4275,14 +4399,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4275,14 +4402,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          {!readOnly && <TableActionMenuPlugin noteId={noteId} />}
          {!readOnly && <TableExitPlugin />}
          <CodeHighlighterPlugin />
@@ -569,7 +581,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
            <MathCalculationPlugin
              noteId={noteId}
              onDraftPillActiveChange={setIsFormulaDraftPillActive}
-@@ -4297,13 +4421,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4297,13 +4424,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          <InAppHyperlinkPlugin noteId={noteId} />
          <CommentPlugin noteId={noteId} />
          <CommentAnchorTrackerPlugin noteId={noteId} />
@@ -586,7 +598,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          <CollapsibleHeadingPlugin noteId={noteId} />
          {enableSearchPlugin ? <SearchPlugin /> : null}
          {!readOnly && <CodeFormatBoundaryPlugin />}
-@@ -4319,7 +4445,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -4319,7 +4448,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          {!readOnly && <WebpageEmbedPastePlugin />}
          {!readOnly && <EditorInputSamplingPlugin />}
          {!readOnly && <FocusGuardPlugin />}
