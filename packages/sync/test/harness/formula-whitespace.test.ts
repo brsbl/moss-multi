@@ -58,7 +58,7 @@ describe('a formula with a long blank run costs linear time @p:tech-8', () => {
 
   it('through the DocDO create', async () => {
     await expectLinear(async (markdown) => ({ markdown, dobj: (await start(openDoc(new Backing(crypto.randomUUID()), FedDoc as never))).dobj }),
-      async ({ markdown, dobj }) => dobj.create({ folderId: 'f', ownerId: 'o', markdown }));
+      async ({ markdown, dobj }) => { await dobj.create({ folderId: 'f', ownerId: 'o', markdown }); });
   }, 300_000);
 
   it('through the stored-formula export and the search feed after a save', async () => {
