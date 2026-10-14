@@ -1,7 +1,15 @@
 diff --git a/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx b/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx
 --- a/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx
 +++ b/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx
-@@ -17,6 +17,8 @@ import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
+@@ -11,12 +11,16 @@ import { useEffect, useRef } from 'react';
+ import { $isListItemNode, $isListNode, ListItemNode } from '@lexical/list';
+ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+ import { $getNodeByKey } from 'lexical';
++// moss-multi seam: whole-paste (T3.S6): a large paste or its redo lands in batches.
++import { isLanding } from '@moss-multi/host/collab/landing';
+ 
+ import { EDITOR_UPDATE_TAGS } from './utils/editorUpdateTags';
+ 
  const SORT_DELAY_MS = 50;
  const CHECKLIST_SORT_IGNORED_TAGS = new Set<string>([
    'history-merge',
@@ -10,16 +18,17 @@ diff --git a/packages/desktop/src/renderer/editor/ChecklistSortPlugin.tsx b/pack
    EDITOR_UPDATE_TAGS.ignored.agentContentUpdate,
  ]);
  
-@@ -36,7 +38,7 @@ export function ChecklistSortPlugin(): null {
+@@ -36,7 +40,8 @@ export function ChecklistSortPlugin(): null {
  
    useEffect(() => {
      const unregister = editor.registerMutationListener(ListItemNode, (mutations, { updateTags }) => {
 -      if (hasIgnoredSortTag(updateTags)) {
-+      if (!editor.isEditable() || hasIgnoredSortTag(updateTags)) {
++      // A batch of a large paste or its redo adds items to a list placed earlier: not a toggle, never sorted.
++      if (!editor.isEditable() || hasIgnoredSortTag(updateTags) || isLanding(editor)) {
          return;
        }
  
-@@ -61,7 +63,7 @@ export function ChecklistSortPlugin(): null {
+@@ -61,7 +66,7 @@ export function ChecklistSortPlugin(): null {
          timerRef.current = null;
          reorderRafRef.current = requestAnimationFrame(() => {
            reorderRafRef.current = null;

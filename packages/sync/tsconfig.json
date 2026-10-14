@@ -24,7 +24,8 @@
   "include": [
     "src",
     "test/harness",
-    "measure/doc-worker.ts"
+    "measure/doc-worker.ts",
+    "measure/search-worker.ts"
   ],
   "exclude": [
     "src/converter"

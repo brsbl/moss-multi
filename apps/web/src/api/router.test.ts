@@ -3,7 +3,7 @@
 // are never attached by the browser, so they pass; reads are never gated.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { agentKey, BASE, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { agentKey, BASE, SECRET, signedUpUser, type AuthTestEnv, type TestUser, unmeteredPrincipals } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const created: string[] = [];
@@ -29,7 +29,7 @@ let ben: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: {} as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: unmeteredPrincipals as never };
   ada = await signedUpUser(env, 'gate-ada');
   ben = await signedUpUser(env, 'gate-ben', 'Ben');
 }, 60_000);

@@ -6,7 +6,9 @@ import { $convertFromMarkdownString, $convertToMarkdownString, type Transformer 
 import type { Klass, LexicalNode } from 'lexical';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { exportMarkdown, importMarkdown, MARKDOWN_EDITOR_TRANSFORMERS, type NoteBodyImportOptions } from '../../src/converter/index.ts';
-import { DEVIATING, FIXTURES, fixture, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
+import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
+import { DEVIATING, FIXTURES, fixture, SCALE_FIXTURES, stringify, transformerSignature } from '../../src/converter/fixtures.ts';
+import { CONVERTER_CASES, converterBody, LARGE_ORDINARY_NOTES, MULTILINE_CASES, multilineBody, ORDINARY_NOTES } from '../../measure/converter-cases.ts';
 
 declare const __MOSS_PRISTINE__: string;
 
@@ -74,6 +76,57 @@ describe('L3 parity with moss at the pin @p:tech-4', () => {
     expect(ours.tree).toBe(pristine.tree);
     expect(ours.markdown).toBe(pristine.markdown);
   });
+
+  // The linear matching (markdown/linear-match.ts, markdown/linear-import.ts) changes no output on these notes.
+  it.each(Object.entries(CONVERTER_CASES))('unclosed openers and many matches, %s', (_name, c) => {
+    for (const bytes of c.parityBytes ?? [40, 3_000]) {
+      const markdown = converterBody(c, bytes);
+      const ours = comparable(markdown, oursRoundTrip(markdown, {}));
+      const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));
+      expect(ours.tree).toBe(pristine.tree);
+      expect(ours.markdown).toBe(pristine.markdown);
+    }
+  });
+
+  // Notes of one short line repeated: the patched paragraph joins and tab split, and the bounded block scans and cell
+  // absorbs, change no output on them.
+  it.each(Object.entries(MULTILINE_CASES))('lines repeated, %s', (_name, c) => {
+    for (const bytes of c.parityBytes ?? [40, 2_000]) {
+      const markdown = multilineBody(c, bytes);
+      const ours = comparable(markdown, oursRoundTrip(markdown, {}));
+      const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));
+      expect(ours.tree).toBe(pristine.tree);
+      expect(ours.markdown).toBe(pristine.markdown);
+    }
+  });
+
+  // The first place two long outputs differ, or null.
+  const difference = (a: string, b: string) => {
+    if (a === b) return null;
+    let i = 0;
+    while (a[i] === b[i]) i += 1;
+    return { at: i, ours: a.slice(Math.max(0, i - 80), i + 80), pristine: b.slice(Math.max(0, i - 80), i + 80) };
+  };
+  // The scale note's fixtures less the deviating ones, repeated to 256 KB: moss's own pipeline takes minutes on the
+  // 2 MB scale note in jsdom (linear-import.golden.test.ts holds that one to Lexical's import). The dense notes of
+  // short paragraphs are compared at 512 KB, against moss's whole pipeline.
+  const mixedUnit = SCALE_FIXTURES.filter((f) => !DEVIATING.has(f.name)).map((f) => f.markdown).join('\n\n');
+  const ordinary: [string, () => string][] = [
+    ...Object.entries(ORDINARY_NOTES),
+    ...Object.entries(LARGE_ORDINARY_NOTES).map(([name, body]): [string, () => string] => [`${name}, at 512 KB`, () => body(512 * 1024)]),
+    ['a 256 KB note of mixed content', () => Array.from({ length: Math.ceil((256 * 1024) / mixedUnit.length) }, () => mixedUnit).join('\n\n')],
+  ];
+
+  // The work budget (markdown/linear-import.ts) cuts none of these, so each converts as moss converts it.
+  it.each(ordinary)('ordinary notes, %s', (_name, body) => {
+    const markdown = body();
+    const cut = linearImportStats.cut;
+    const ours = comparable(markdown, oursRoundTrip(markdown, {}));
+    expect(linearImportStats.cut - cut).toBe(0);
+    const pristine = comparable(markdown, pristineRoundTrip(markdown, {}));
+    expect(difference(ours.tree, pristine.tree)).toBeNull();
+    expect(difference(ours.markdown, pristine.markdown)).toBeNull();
+  }, 300_000);
 
   it('line-loss: moss drops the rejected lines, the converter keeps them (DEVIATIONS)', () => {
     const { markdown, options } = fixture('line-loss');

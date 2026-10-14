@@ -1,9 +1,10 @@
 // ported-from: packages/desktop/src/renderer/editor/utils/nested-editable-block.ts @ 762abb777
 import {
-  $convertFromMarkdownString,
   $convertToMarkdownString,
   type Transformer
 } from '@lexical/markdown';
+// moss-multi seam: linear-import (A§12; SP2)
+import { $convertFromMarkdownString } from '../markdown/linear-import';
 import { $createParagraphNode, type ElementNode, type LexicalNode } from 'lexical';
 
 export type NestedContentOptions = {

@@ -2,7 +2,7 @@
 // wakes empty, so the window lives in its storage and an exhausted identity stays refused after a wake. Also its
 // workspace channel: publishing reaches hibernated sockets, and clients cannot publish.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { REST_WRITE_RATE } from '@moss-multi/protocol/limits';
+import { REST_WRITE_RATE, UPLOAD_RATE } from '@moss-multi/protocol/limits';
 import { TRUSTED } from '@moss-multi/protocol/sync';
 import { PrincipalDO } from '../../src/principal-do.ts';
 import { Backing, FakeState, serverEnds } from './workerd.ts';
@@ -63,6 +63,23 @@ describe('PrincipalDO write window across wakes @p:tech-8', () => {
     for (let i = 0; i < REST_WRITE_RATE.max; i += 1) a.dobj.takeWriteToken();
     expect(a.dobj.takeWriteToken()).toBe(false);
     expect(open(new Backing('principal-b')).dobj.takeWriteToken()).toBe(true);
+  });
+});
+
+describe('PrincipalDO upload window across wakes (T3.1s)', () => {
+  it('refuses the upload past the window after an eviction, apart from the REST write window', () => {
+    let opened = open(new Backing('principal-uploads'));
+    for (let i = 0; i < UPLOAD_RATE.max; i += 1) expect(opened.dobj.takeUploadToken()).toBe(true);
+    expect(opened.dobj.takeUploadToken()).toBe(false);
+    expect(opened.dobj.takeWriteToken(), 'a rename is counted on its own window').toBe(true);
+
+    vi.advanceTimersByTime(10_000);
+    opened = wake(opened);
+    expect(opened.dobj.takeUploadToken()).toBe(false);
+
+    vi.advanceTimersByTime(UPLOAD_RATE.windowMs);
+    opened = wake(opened);
+    expect(opened.dobj.takeUploadToken()).toBe(true);
   });
 });
 

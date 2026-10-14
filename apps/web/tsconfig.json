@@ -13,7 +13,9 @@
     "allowImportingTsExtensions": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noEmit": true
+    "noEmit": true,
+    // A substitute loads under its vendored path (A§2.1), so it reaches host modules by the seam alias.
+    "paths": { "@moss-multi/host/*": ["./src/host/*"] }
   },
   "include": ["src", "vite.config.ts", "vite-provenance.ts", "../../packages/sync/src/moss-modules.d.ts"]
 }

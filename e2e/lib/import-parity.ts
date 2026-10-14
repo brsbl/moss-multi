@@ -26,6 +26,9 @@ export async function renderedBody(actor: Actor, docId: string) {
     const identities = /^(id|data-(?:.*-key|formula-id|note-id|doc-id|lexical-managed-linebreak)|aria-(?:controls|labelledby|describedby|activedescendant))$/;
     // Lexical's block cursor is selection paint, not a node. Table widths are per-viewer layout (A§10.9).
     root.querySelectorAll('[data-lexical-cursor]').forEach((cursor) => cursor.remove());
+    // A chart's tooltip, cursor and active dot follow the pointer or focus, not the note: a chart left focused or
+    // under the pointer by the paste showed its tooltip after the pointer moved away (WebKit, run 38373376016).
+    root.querySelectorAll('.recharts-tooltip-wrapper, .recharts-tooltip-cursor, .recharts-active-dot').forEach((paint) => paint.remove());
     root.querySelectorAll<HTMLElement>('table, col').forEach((table) => {
       table.style.removeProperty('width');
       table.style.removeProperty('min-width');
@@ -35,7 +38,9 @@ export async function renderedBody(actor: Actor, docId: string) {
     for (const node of [root, ...root.querySelectorAll('*')]) {
       for (const attr of [...node.attributes]) {
         if (identities.test(attr.name)) node.removeAttribute(attr.name);
-        else node.setAttribute(attr.name, attr.value.replace(/url\(#([^)]+)\)/g, (_, id: string) => `url(#${ids.get(id) ?? id})`));
+        // An asset route names its doc (T3.1); the two docs compared are different instances.
+        else node.setAttribute(attr.name, attr.value.replace(/url\(#([^)]+)\)/g, (_, id: string) => `url(#${ids.get(id) ?? id})`)
+          .replace(/\/api\/docs\/[^/]+\/assets\//g, '/api/docs/{doc}/assets/'));
       }
       node.classList.remove('selected', 'selected-editor');
       if (!node.getAttribute('class')) node.removeAttribute('class');

@@ -1,5 +1,5 @@
 // The DocDO's payload docs (A§10.10; docs/design/registers.md rules 5, 6, 8 and 10), Yjs-level with no Lexical. Each
-// code, HTML or formula payload is a Y.Doc keyed by its block's `__regId`, stored in its own SQLite rows. The naming
+// code, HTML, formula, chart or sketch payload is a Y.Doc keyed by its block's `__regId`, stored in its own SQLite rows. The naming
 // index (id → the live elements that name it) is kept from each note transaction's own structs, so its cost is the
 // transaction. A payload is served (fanned out, its step 1 answered, read by duplicates and exports) only while an
 // element names it and the element came from the server or from someone who could already read it; otherwise it is
@@ -7,7 +7,10 @@
 // an element naming a withheld id serves it only when its author was already one of the payload's readers, and the
 // server renames anyone else's element to a fresh, empty id, so nobody's later move or undo of it can reveal the text.
 import * as Y from 'yjs';
-import { newPayloadId, PAYLOAD_LOADED, REGISTER_FIELDS } from './payload-docs.ts';
+import { fieldsOf, MAP_REGISTERS } from './map-codecs.ts';
+import { isPayloadType, NameIndex, newPayloadId, PAYLOAD_LOADED, REGISTER_FIELDS } from './payload-docs.ts';
+
+export { NameIndex };
 
 /** The janitor's note writes (dedupe, migration): no client tracks them, and the index records no change for them. */
 export const JANITOR = 'payload-janitor';
@@ -18,7 +21,7 @@ export const PAYLOAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const PAYLOAD_DOCS_HELD = 256;
 /** Per-payload compaction thresholds. */
 const COMPACT_ROWS = 100;
-const COMPACT_BYTES = 256 * 1024;
+export const COMPACT_BYTES = 256 * 1024;
 /** Rows cap at 2 MB; a larger state is stored as consecutive parts. */
 const PART_BYTES = 1.5 * 1024 * 1024;
 
@@ -36,112 +39,19 @@ export interface PayloadWork {
   held: number;
 }
 
-/** A changed id: the elements naming it that the batch added, each with its transaction's origin. */
-interface Change {
-  added: Map<Y.XmlElement, unknown>;
-}
-
-/**
- * id → the live elements naming it, from each transaction's own structs: the elements it integrated (and the `__regId`
- * and `__type` attributes it set or removed) and the ones it deleted, including every element inside a deleted or
- * recreated paragraph or container (Yjs deletes a subtree item by item). `take()` returns the ids changed since the
- * last call.
- */
-export class NameIndex {
-  readonly live = new Map<string, Set<Y.XmlElement>>();
-  readonly #ids = new WeakMap<Y.XmlElement, string>();
-  #changed = new Map<string, Change>();
-
-  constructor(doc: Y.Doc, private readonly ignore: unknown) {
-    doc.on('afterTransaction', (transaction: Y.Transaction) => this.#index(doc, transaction));
-  }
-
-  named(id: string): boolean {
-    return (this.live.get(id)?.size ?? 0) > 0;
-  }
-
-  take(): Map<string, Change> {
-    const out = this.#changed;
-    this.#changed = new Map();
-    return out;
-  }
-
-  #index(doc: Y.Doc, transaction: Y.Transaction): void {
-    const origin = transaction.origin;
-    const record = origin !== this.ignore;
-    transaction.afterState.forEach((after, client) => {
-      const before = transaction.beforeState.get(client) ?? 0;
-      if (after === before) return;
-      const structs = doc.store.clients.get(client) ?? [];
-      for (let i = Y.findIndexSS(structs, before); i < structs.length; i++) {
-        const struct = structs[i];
-        if (!(struct instanceof Y.Item) || struct.deleted) continue;
-        if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
-          this.#set(struct.content.type, record, origin);
-        } else if (naming(struct)) {
-          this.#set(struct.parent as Y.XmlElement, record, origin);
-        }
-      }
-    });
-    Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
-      if (!(struct instanceof Y.Item)) return;
-      if (struct.content instanceof Y.ContentType && struct.content.type instanceof Y.XmlElement) {
-        this.#drop(struct.content.type, record);
-      } else if (naming(struct)) {
-        // A removed `__regId` or `__type` (a replaced one is also re-filed above, to the same effect).
-        this.#set(struct.parent as Y.XmlElement, record, origin);
-      }
-    });
-  }
-
-  #note(id: string, record: boolean): Change | undefined {
-    if (!record) return undefined;
-    let change = this.#changed.get(id);
-    if (!change) this.#changed.set(id, (change = { added: new Map() }));
-    return change;
-  }
-
-  /** Files a live element under its current id (moving it if its id changed). */
-  #set(element: Y.XmlElement, record: boolean, origin: unknown): void {
-    const attr: unknown = element.getAttribute('__regId');
-    const id = REGISTER_FIELDS[String(element.getAttribute('__type'))] && typeof attr === 'string' && attr ? attr : undefined;
-    const previous = this.#ids.get(element);
-    if (previous === id) {
-      if (id === undefined || this.live.get(id)?.has(element)) return;
-    } else if (previous !== undefined) {
-      this.#drop(element, record);
-    }
-    if (id === undefined) return;
-    let set = this.live.get(id);
-    if (!set) this.live.set(id, (set = new Set()));
-    this.#note(id, record)?.added.set(element, origin);
-    set.add(element);
-    this.#ids.set(element, id);
-  }
-
-  #drop(element: Y.XmlElement, record: boolean): void {
-    const id = this.#ids.get(element);
-    const set = id === undefined ? undefined : this.live.get(id);
-    if (!set?.has(element)) return;
-    this.#note(id!, record);
-    set.delete(element);
-    this.#ids.delete(element);
-    if (!set.size) this.live.delete(id!);
-  }
-}
-
-/** An attribute item that decides what a live element names: its `__regId` or its `__type`. */
-function naming(struct: Y.Item): boolean {
-  return (struct.parentSub === '__regId' || struct.parentSub === '__type') && struct.parent instanceof Y.XmlElement && !struct.parent._item?.deleted;
-}
-
 interface Meta {
   bytes: number;
   /** Since when it has been withheld (ms): unnamed, or named only by an element its readers did not make. */
   withheldSince: number | null;
+  /** Rows, and their bytes, appended since the last compaction: what the next one would fold in. */
   rows: number;
   rowBytes: number;
 }
+
+/** `payload_updates.part`: the last row of an appended update, a row continued by the next, a compaction's last row. */
+const PART_LAST = 0;
+const PART_CONTINUED = 1;
+const PART_COMPACTED = 2;
 
 function blob(bytes: Uint8Array): ArrayBuffer {
   const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
@@ -174,10 +84,13 @@ export class PayloadStore {
   readonly #sql: SqlStorage;
   readonly #now: () => number;
   #settling = false;
+  /** True while a client frame applies; `#due` holds the ids whose compaction waits for its purge. */
+  #deferring = false;
+  readonly #due = new Set<string>();
   /** Stored bytes of every payload, kept as they change. */
   #totalBytes = 0;
   /**
-   * Bytes each principal wrote into payloads while they were withheld, counted while the payload is withheld: a reveal
+   * Bytes each principal wrote into payloads, served or withheld, counted while the payload is withheld: a reveal
    * stops counting them and withholding it again counts them again; a drop forgets them. Kept in `payload_withheld`
    * too, so neither a wake nor a reveal resets anyone's allowance.
    */
@@ -234,6 +147,11 @@ export class PayloadStore {
     return this.#meta.has(id) || this.#docs.has(id);
   }
 
+  /** Every stored payload's id. */
+  ids(): Iterable<string> {
+    return this.#meta.keys();
+  }
+
   /** Encoded bytes of every stored payload, named or withheld, for the state cap. */
   get totalBytes(): number {
     return this.#totalBytes;
@@ -285,13 +203,15 @@ export class PayloadStore {
     let parts: Uint8Array[] = [];
     for (const row of this.#sql.exec<{ data: ArrayBuffer; part: number }>('SELECT data, part FROM payload_updates WHERE reg_id = ? ORDER BY seq', id).toArray()) {
       const bytes = new Uint8Array(row.data);
+      const part = Number(row.part);
       rows += 1;
       rowBytes += bytes.byteLength;
       parts.push(bytes);
-      if (Number(row.part) === 0) {
-        Y.applyUpdate(doc, parts.length === 1 ? parts[0] : concat(parts), PAYLOAD_LOADED);
-        parts = [];
-      }
+      if (part === PART_CONTINUED) continue;
+      Y.applyUpdate(doc, parts.length === 1 ? parts[0] : concat(parts), PAYLOAD_LOADED);
+      parts = [];
+      // Only the rows after the last compaction count toward the next.
+      if (part === PART_COMPACTED) rows = rowBytes = 0;
     }
     const meta = this.#meta.get(id);
     if (meta) Object.assign(meta, { rows, rowBytes });
@@ -321,9 +241,34 @@ export class PayloadStore {
     return out;
   }
 
-  /** A write to a payload: a connection's frame (`origin` the connection) or the server's own. */
+  /** The server's own write to a payload. */
   write(id: string, update: Uint8Array, origin: unknown): void {
     Y.applyUpdate(this.doc(id), update, origin);
+  }
+
+  /**
+   * A client's frame. Nothing it carried may wait in the doc's pending queues, uncounted, to integrate under a later
+   * write: a parked struct or delete is dropped, as is whatever was left of a frame Yjs threw on, and false refuses the
+   * frame. Only then may the id compact, so its rows never hold parked structs.
+   */
+  applyFrame(id: string, update: Uint8Array, origin: unknown): boolean {
+    const doc = this.doc(id);
+    let threw = false;
+    this.#deferring = true;
+    try {
+      Y.applyUpdate(doc, update, origin);
+    } catch {
+      threw = true;
+    } finally {
+      this.#deferring = false;
+    }
+    const store = doc.store;
+    const unresolved = threw || store.pendingStructs !== null || store.pendingDs !== null;
+    store.pendingStructs = null;
+    store.pendingDs = null;
+    for (const due of this.#due) this.#compact(due);
+    this.#due.clear();
+    return !unresolved;
   }
 
   /**
@@ -394,18 +339,20 @@ export class PayloadStore {
     if (origin === PAYLOAD_LOADED) return;
     this.#persist(id, update);
     this.options.persisted?.(id, update, origin);
+    // A writer's bytes are theirs while the payload is served too: withholding it later counts them (B038).
+    const principal = this.options.principalOf(origin);
+    if (principal !== null) {
+      this.#attribute(id, principal, update.byteLength);
+      this.#sql.exec(
+        'INSERT INTO payload_withheld (reg_id, principal, bytes) VALUES (?, ?, ?) ON CONFLICT(reg_id, principal) DO UPDATE SET bytes = bytes + excluded.bytes',
+        id, principal, update.byteLength,
+      );
+    }
     if (this.served(id)) {
       this.options.broadcast(id, update, origin);
       return;
     }
     this.work.withheld += 1;
-    const principal = this.options.principalOf(origin);
-    if (principal === null) return;
-    this.#attribute(id, principal, update.byteLength);
-    this.#sql.exec(
-      'INSERT INTO payload_withheld (reg_id, principal, bytes) VALUES (?, ?, ?) ON CONFLICT(reg_id, principal) DO UPDATE SET bytes = bytes + excluded.bytes',
-      id, principal, update.byteLength,
-    );
   }
 
   #attribute(id: string, principal: string, bytes: number): void {
@@ -428,15 +375,21 @@ export class PayloadStore {
       this.#meta.set(id, meta);
     }
     if (update.byteLength > PART_BYTES) {
-      this.#compact(id);
+      this.#compactWhenSafe(id);
       return;
     }
-    this.#sql.exec('INSERT INTO payload_updates (reg_id, data, part) VALUES (?, ?, 0)', id, blob(update));
+    this.#sql.exec('INSERT INTO payload_updates (reg_id, data, part) VALUES (?, ?, ?)', id, blob(update), PART_LAST);
     meta.rows += 1;
     meta.rowBytes += update.byteLength;
     this.#resize(meta, meta.bytes + update.byteLength);
-    if (meta.rows > COMPACT_ROWS || meta.rowBytes > COMPACT_BYTES) this.#compact(id);
-    else this.#writeMeta(id, meta);
+    this.#writeMeta(id, meta);
+    if (meta.rows > COMPACT_ROWS || meta.rowBytes > COMPACT_BYTES) this.#compactWhenSafe(id);
+  }
+
+  /** Inside a client frame's apply, the compaction waits for applyFrame's purge: it would encode parked structs. */
+  #compactWhenSafe(id: string): void {
+    if (this.#deferring) this.#due.add(id);
+    else this.#compact(id);
   }
 
   /** Swaps an id's rows for its re-encoded state, in parts under the row cap. */
@@ -447,9 +400,10 @@ export class PayloadStore {
       this.#sql.exec('DELETE FROM payload_updates WHERE reg_id = ?', id);
       for (let offset = 0; offset < state.byteLength; offset += PART_BYTES) {
         const last = offset + PART_BYTES >= state.byteLength;
-        this.#sql.exec('INSERT INTO payload_updates (reg_id, data, part) VALUES (?, ?, ?)', id, blob(state.subarray(offset, offset + PART_BYTES)), last ? 0 : 1);
+        this.#sql.exec('INSERT INTO payload_updates (reg_id, data, part) VALUES (?, ?, ?)', id, blob(state.subarray(offset, offset + PART_BYTES)), last ? PART_COMPACTED : PART_CONTINUED);
       }
-      Object.assign(meta, { rows: Math.ceil(state.byteLength / PART_BYTES), rowBytes: state.byteLength });
+      // The snapshot's size is `bytes`, which admission counts; the next compaction waits for new rows.
+      Object.assign(meta, { rows: 0, rowBytes: 0 });
       this.#resize(meta, state.byteLength);
       this.#writeMeta(id, meta);
     });
@@ -510,26 +464,36 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
+/** A payload's first value: text, or a compound payload's encoded keys. */
+export type PayloadSeed = string | Map<string, unknown>;
+
 /**
- * M1 docs kept payloads in `Y.Map('registers')`, and pre-register docs in the element's own attribute. Each becomes a
- * payload doc written by the server alone, under a fresh random id (an M1 id may be a guessable import id), and the
- * map entries and legacy attributes are deleted (GC drops their bytes). Returns whether the note changed.
+ * M1 docs kept payloads in `Y.Map('registers')` (a chart's or sketch's as a nested Y.Map), and pre-register docs in the
+ * element's own attributes. Each becomes a payload doc written by the server alone, under a fresh random id (an M1 id
+ * may be a guessable import id), and the map entries and legacy attributes are deleted (GC drops their bytes).
+ * Returns whether the note changed.
  */
-export function migratePayloads(note: Y.Doc, write: (id: string, text: string) => void): boolean {
+export function migratePayloads(note: Y.Doc, write: (id: string, value: PayloadSeed) => void): boolean {
   const registers = note.getMap<unknown>('registers');
   const naming = new Map<string, Y.XmlElement[]>();
-  const legacy: [Y.XmlElement, string, string, string | null][] = [];
+  const legacy: [Y.XmlElement, string[], PayloadSeed, string | null][] = [];
   const visit = (type: Y.XmlText | Y.XmlElement) => {
     const attrs = type.getAttributes() as Record<string, unknown>;
-    const field = REGISTER_FIELDS[String(attrs.__type)];
-    if (field && type instanceof Y.XmlElement) {
+    const kind = String(attrs.__type);
+    if (isPayloadType(kind) && type instanceof Y.XmlElement) {
       const id = typeof attrs.__regId === 'string' && attrs.__regId ? attrs.__regId : null;
       if (id) {
         const list = naming.get(id);
         if (list) list.push(type); else naming.set(id, [type]);
       }
-      // M1 set an id and kept the attribute, so an element may carry both; its register is the newer text.
-      if (typeof attrs[field] === 'string') legacy.push([type, field, attrs[field] as string, id]);
+      // M1 set an id and kept the attribute, so an element may carry both; its register is the newer value.
+      const field = REGISTER_FIELDS[kind];
+      const codec = MAP_REGISTERS[kind];
+      if (field && typeof attrs[field] === 'string') legacy.push([type, [field], attrs[field] as string, id]);
+      else if (codec) {
+        const fields = codec.fields.filter(name => attrs[name] !== undefined);
+        if (fields.length) legacy.push([type, fields, codec.encode(fieldsOf(attrs, codec)), id]);
+      }
     }
     const children = type instanceof Y.XmlText ? type.toDelta().map((op: { insert?: unknown }) => op.insert) : type.toArray();
     for (const child of children) if (child instanceof Y.XmlText || child instanceof Y.XmlElement) visit(child);
@@ -537,28 +501,29 @@ export function migratePayloads(note: Y.Doc, write: (id: string, text: string) =
   visit(note.get('root', Y.XmlText));
   if (!registers.size && !legacy.length) return false;
   const renamed: [Y.XmlElement, string][] = [];
-  const texts: [string, string][] = [];
-  for (const [old, text] of registers) {
-    if (!(text instanceof Y.Text)) continue;
+  const values: [string, PayloadSeed][] = [];
+  const isRegister = (value: unknown) => value instanceof Y.Text || value instanceof Y.Map;
+  for (const [old, value] of registers) {
+    if (!isRegister(value)) continue;
     const id = newPayloadId();
-    texts.push([id, text.toString()]);
+    values.push([id, value instanceof Y.Text ? value.toString() : new Map((value as Y.Map<unknown>).entries())]);
     for (const element of naming.get(old) ?? []) renamed.push([element, id]);
   }
   const fields: [Y.XmlElement, string][] = [];
-  for (const [element, field, text, old] of legacy) {
-    fields.push([element, field]);
-    if (old !== null && registers.get(old) instanceof Y.Text) continue;
+  for (const [element, names, value, old] of legacy) {
+    for (const name of names) fields.push([element, name]);
+    if (old !== null && isRegister(registers.get(old))) continue;
     const id = newPayloadId();
-    texts.push([id, text]);
+    values.push([id, value]);
     renamed.push([element, id]);
   }
   // Renamed first, so a payload an element names is written as named; an orphan entry stays withheld.
   note.transact(() => {
     for (const key of [...registers.keys()]) registers.delete(key);
     for (const [element, id] of renamed) element.setAttribute('__regId', id);
-    // The note keeps no payload text: the legacy field goes too.
+    // The note keeps no payload value: the legacy fields go too.
     for (const [element, field] of fields) element.removeAttribute(field);
   }, JANITOR);
-  for (const [id, text] of texts) write(id, text);
+  for (const [id, value] of values) write(id, value);
   return true;
 }

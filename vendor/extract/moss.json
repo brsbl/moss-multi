@@ -167,5 +167,5 @@
   "rewrite": [{ "file": "utils/chartDefaults.ts", "from": "@moss/shared", "to": "@moss/shared/lib/colors" }],
   "specifiers": { "@lexical/code": "@lexical/code-core" },
   "imports": { "MarkdownEditor.tsx": ["./nodes/register-views"] },
-  "templates": ["nodes/node-views.ts", "nodes/register-views.tsx", "markdown/fixes.ts", "markdown/pipeline.ts", "markdown/format-whitespace.ts"]
+  "templates": ["nodes/node-views.ts", "nodes/register-views.tsx", "markdown/fixes.ts", "markdown/linear-match.ts", "markdown/linear-import.ts", "markdown/pipeline.ts", "markdown/format-whitespace.ts"]
 }

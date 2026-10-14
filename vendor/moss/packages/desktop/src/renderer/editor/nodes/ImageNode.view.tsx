@@ -159,7 +159,8 @@ function ImageComponent({
 
   // Render error state — still selectable and removable: a missing asset must
   // not leave an undeletable block in the note.
-  // moss-multi seam: local asset delivery lands in M3; never request Electron's protocol in a browser.
+  // moss-multi seam: web-assets (A§16): uploaded media loads from its asset route; a file only moss desktop has (an
+  // absolute or nested local path) is never requested through Electron's protocol, and says why it is missing.
   const desktopAsset = displaySrc.startsWith('moss-asset:');
   if (hasError || desktopAsset) {
     const missingLabel = (obsidianRef || src).trim();
@@ -169,7 +170,7 @@ function ImageComponent({
         data-block-decorator-key={nodeKey}
         onClick={handleContainerClick}
       >
-        <span>{`"${missingLabel}" could not be found.`}</span>
+        <span>{desktopAsset ? `"${missingLabel}" is a desktop file that isn't available on the web.` : `"${missingLabel}" could not be found.`}</span>
         <span className="ml-2 inline-flex items-center gap-2">
           {!desktopAsset && <button
             type="button"

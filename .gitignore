@@ -16,3 +16,5 @@ playwright-report/
 .oracle/
 e2e/parity/oracle/moss/
 .cache/
+packages/viewer/release/
+packages/editor/release/

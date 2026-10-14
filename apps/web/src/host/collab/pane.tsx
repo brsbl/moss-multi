@@ -22,6 +22,7 @@ import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
+import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
@@ -29,6 +30,7 @@ import { bindFrontmatter } from './frontmatter-binding.ts';
 import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity, startPresence } from './presence.ts';
 import { cursorController } from './cursors.ts';
+import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
@@ -143,8 +145,12 @@ class PaneBinding {
     const stop = subscribeTerminal(() => {
       if (this.#session) this.#apply(this.#session.state);
     });
+    const stopLanding = subscribeLanding(() => {
+      if (this.#session && this.#editor === editor) this.#apply(this.#session.state);
+    });
     return () => {
       stop();
+      stopLanding();
       if (this.#editor === editor) this.#editor = null;
     };
   }
@@ -181,7 +187,7 @@ class PaneBinding {
     const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role ? 'unbound' : state.canWrite && can(this.#role, 'edit') && !state.writePaused ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
-    editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
+    editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked || isLanding(editor) ? '1' : '0');
     const session = this.#session;
     if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live');
     this.set({
@@ -299,11 +305,12 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
       if (!session.stopPresence) {
         const stopPresence = startPresence(id, session.provider);
         const stopCursors = cursors.start(session.provider);
-        session.stopPresence = () => { stopPresence(); stopCursors(); };
+        const stopDirLift = liftDirOnLargeRemote(editor, session.doc);
+        session.stopPresence = () => { stopPresence(); stopCursors(); stopDirLift(); };
       }
       return session.provider as unknown as Provider;
     },
-    [binding, cursors],
+    [binding, cursors, editor],
   );
   return (
     <LexicalCollaboration>

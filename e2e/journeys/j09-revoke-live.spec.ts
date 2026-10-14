@@ -4,7 +4,7 @@
 // not. Signing out in one window ends the same session's other window (`session-ended`). Cold: in the idle window a
 // DocDO hibernates in, a revoked doc link's and a revoked folder link's holders land no frame after the wake.
 import { randomBytes } from 'node:crypto';
-import type { BrowserContext, Locator, Page } from '@playwright/test';
+import type { BrowserContext, Locator, Page, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR,
@@ -138,6 +138,93 @@ test('j09 removal: removing a member ends the note for them in place (revoked) @
   expect(ben.telemetry.sockets.filter((s) => s.docId === docId), 'no reconnect after revoked').toHaveLength(opened);
 });
 
+// WebKit logs a fetch a navigation cancels as "…due to access control checks", a page error: the note's access read
+// is aborted as the page leaves (host/leave.ts).
+test('j09 reload: reloading while the note’s access read is in flight logs no page error @p:ppl-2', async ({ actors }) => {
+  actors.solo('one window reloading over its own note');
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  // The reload goes out as soon as the route's access read (GET /api/docs/:id) does, on the real network, a few times.
+  const accessRead = (request: { url: () => string; method: () => string }) => request.method() === 'GET' && new URL(request.url()).pathname === `/api/docs/${docId}`;
+  for (let round = 0; round < 6; round += 1) {
+    const asked = ada.page.waitForRequest(accessRead, { timeout: 30_000 });
+    if (round === 0) await ada.page.goto(`/d/${docId}`, { waitUntil: 'commit' });
+    else await ada.page.reload({ waitUntil: 'commit' });
+    await asked;
+  }
+  // Held: the server's answer waits until the page has left, so each reload finds the route's read in flight. The page
+  // records, as it hides, every access read still unanswered and whether the page's leave had aborted it.
+  const accessPath = `/api/docs/${docId}`;
+  await ada.page.context().addInitScript((path: string) => {
+    const reads: { aborted: boolean; answered: boolean }[] = [];
+    const native = window.fetch;
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.pathname !== path || (init?.method ?? 'GET') !== 'GET') return native.call(window, input, init);
+      const read = { aborted: Boolean(init?.signal?.aborted), answered: false };
+      reads.push(read);
+      init?.signal?.addEventListener('abort', () => { read.aborted = true; });
+      const answer = native.call(window, input, init);
+      answer.then(() => { read.answered = true; }, () => undefined);
+      return answer;
+    };
+    window.addEventListener('pagehide', () => {
+      const cut = JSON.parse(sessionStorage.getItem('j09-cut') ?? '[]') as boolean[];
+      for (const read of reads) if (!read.answered) cut.push(read.aborted);
+      sessionStorage.setItem('j09-cut', JSON.stringify(cut));
+    });
+  }, accessPath);
+  const held: Route[] = [];
+  const heldPath = (url: URL) => url.pathname === accessPath;
+  const hold = (route: Route) => { held.push(route); };
+  await ada.page.route(heldPath, hold);
+  for (let round = 0; round < 3; round += 1) {
+    const asked = ada.page.waitForRequest(accessRead, { timeout: 30_000 });
+    await ada.page.reload({ waitUntil: 'commit' });
+    await asked;
+    await expect.poll(() => held.length, { message: 'the route read is held' }).toBeGreaterThan(round);
+  }
+  // Released only once the last held page has left (Chromium sends a paused request on as its route goes).
+  await ada.page.reload({ waitUntil: 'commit' });
+  await ada.page.unroute(heldPath, hold);
+  for (const route of held) await route.continue().catch(() => undefined);
+  const cut = await ada.page.evaluate(() => JSON.parse(sessionStorage.getItem('j09-cut') ?? '[]') as boolean[]);
+  expect(cut.length, 'each held round left a read in flight').toBeGreaterThanOrEqual(3);
+  expect(cut, "the page's leave aborted every access read the reload found in flight").toEqual(cut.map(() => true));
+  ada.observations.delete(docId);
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+  await ui.waitOpen(ada, docId, 'live');
+  expect(ada.telemetry.pageErrors.map((error) => error.message), 'no page error from a read the reload cut off').toEqual([]);
+});
+
+test('j09 demote then remove: removing Ben within 4 s of a demotion leaves only the ended notice (T3.S20) @p:ppl-2', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'editor');
+  const ben = await openRecorded(actors, benPrincipal, `/d/${docId}`);
+  await ui.waitOpen(ben, docId, 'live');
+  await actors.requireDistinct(2);
+  ben.expectReconnects(1, docId);
+  ben.expectHttp(404, ACCESS_ASK);
+  const refusal = ui.pane(ben, docId).locator('[data-input-refusal]');
+
+  const dialog = await ui.openShare(ada, docId);
+  await chooseAccess(dialog, benPrincipal.name, 'Can view');
+  await expect(refusal, 'the demotion alone says the note is view-only').toHaveText(VIEW_ONLY, { timeout: LIVE_TIMEOUT });
+  const shownAt = Date.now();
+  await ui.waitOpen(ben, docId, 'readonly');
+  // Removed at once through the members API (the dialog's clicks take too long in WebKit): the view-only notice
+  // would otherwise still show for its 4 s.
+  const removed = await ada.context.request.delete(`/api/docs/${docId}/members`, { headers: { origin: stack.baseUrl }, data: { principalId: ben.principal!.id } });
+  expect(removed.status(), 'the removal is saved').toBe(200);
+  await expect(ui.pane(ben, docId), 'the note ends for him').toHaveAttribute(TERMINAL_REASON_ATTR, 'revoked', { timeout: LIVE_TIMEOUT });
+  await expect(refusal, 'and no longer says he can view it').not.toHaveText(VIEW_ONLY, { timeout: 500 });
+  expect(Date.now() - shownAt, 'checked while the view-only notice would still show').toBeLessThan(3_800);
+  await expect(ui.pane(ben, docId).locator(`[${CONNECTION_BANNER_ATTR}="revoked"]`)).toHaveText(/Your access to this note has ended\./);
+  await actors.checkpoint('demoted-then-removed');
+});
+
 test('j09 link: revoking a link closes everyone who opened the note through it, signed in or not @p:ppl-2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
@@ -162,7 +249,7 @@ test('j09 link: revoking a link closes everyone who opened the note through it, 
   await actors.checkpoint('link-revoked');
 });
 
-test('j09 sign-out: signing out in one window ends the same session in the other (session-ended) @p:ppl-2 @p:ppl-1', async ({ actors }) => {
+test('j09 sign-out: signing out in one window ends the same session in the other (session-ended) @p:ppl-2 @p:ppl-1@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const ben = await openShell(actors, 'ben');

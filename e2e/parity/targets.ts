@@ -27,9 +27,18 @@ export interface Target {
   maxBlob: number;
   /**
    * A gesture both sides make before capture. `trash-open-note`: the open note's sidebar row → Trash, then the
-   * footer's Trash view, which shows that note read-only.
+   * footer's Trash view, which shows that note read-only. `open-settings`: Settings is open (the story opens it; the
+   * candidate presses the sidebar's Settings), over an opaque backdrop on both sides.
    */
-  prepare?: 'trash-open-note';
+  prepare?: 'trash-open-note' | 'open-settings';
+  /** The captured element, when not the shell. */
+  crop?: string;
+  /**
+   * Web sections moss has no counterpart for (`selector`, `count` of them), kept in the candidate's layout. The oracle
+   * gets a spacer as tall as each, appended to `container`; both sides paint the sections' rects out, and those rects
+   * must match the spacers', so a section that moves moss chrome (or is moved by it) fails.
+   */
+  webSections?: { selector: string; count: number; container: string };
 }
 
 export const TARGETS: Target[] = [
@@ -39,6 +48,10 @@ export const TARGETS: Target[] = [
   { id: 'shell-empty', story: 'app--empty-notes', seed: 'fresh', focusEditor: false, masks: ['[data-collab-chrome]'], floor: 0.05, maxBlob: 16 },
   // The owner's trash view (T2.3). The retention notice's words differ by design (one module writes trash copy and
   // never counts days down), so only that pill is masked; it is wider than moss's and centred on the same point.
+  // Settings (T3.6). The oracle drops the sections the web withholds (Workspace Location, Default Markdown Editor, Note
+  // Intelligence, Connected Folders); the candidate's Account and Agents sections, which moss has no story for, stay in
+  // layout against spacers in the oracle, so moss's dialog frame, header and Appearance section compare around them.
+  { id: 'settings', story: 'settings-modal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', webSections: { selector: '[role="dialog"] [data-collab-chrome]', count: 2, container: '[role="dialog"] > .overflow-y-auto' } },
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
 ];
 

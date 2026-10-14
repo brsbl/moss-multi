@@ -14,6 +14,9 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: register payloads (A§10.10)
+import { RegisterDraft } from '@moss-multi/host/collab/registers';
+import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
 import type { ChartConfig, ChartPalette, ChartType } from '../utils/chartDefaults';
 import {
   BLOCK_HEADER_CLASSNAME,
@@ -69,6 +72,8 @@ function ChartEditView({
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
   const [jsonText, setJsonText] = useState(() => serializeChartConfig(initialConfig));
+  // moss-multi seam: register payloads (A§10.10): the draft follows its edits so a save keeps each data point's identity.
+  const [draft] = useState(() => new RegisterDraft(initialConfig, serializeChartConfig(initialConfig)));
   const [validation, setValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: true });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -87,9 +92,10 @@ function ChartEditView({
   const handleDone = useCallback(() => {
     const result = parseChartConfig(jsonText);
     if (result.valid && result.config) {
+      draft.identify(result.config);
       onDone(result.config);
     }
-  }, [jsonText, onDone]);
+  }, [jsonText, onDone, draft]);
 
   useEffect(() => {
     const flushDraft = () => {
@@ -163,7 +169,10 @@ function ChartEditView({
       <textarea
         ref={textareaRef}
         value={jsonText}
-        onChange={(e) => setJsonText(e.target.value)}
+        onChange={(e) => {
+          draft.edit(e.target.value, e.target.selectionEnd);
+          setJsonText(e.target.value);
+        }}
         onKeyDown={handleKeyDown}
         className="w-full resize-y rounded-md border border-surface-panel bg-surface-raised-control p-canvas-surface-pad font-mono text-sm text-ink-default focus:border-ink-default/20 focus:outline-none focus:ring-1 focus:ring-ink-default/20"
         rows={12}
@@ -289,7 +298,9 @@ function ChartWrapper({
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const [isEditing, setIsEditing] = useState(false);
   // moss-multi seam: read-only-decorators (T2.3): a closed body takes no chart edit; an edit left open closes without writing
-  const editable = useIsEditorEditable();
+  // moss-multi seam: register payloads (A§10.10): a chart whose payload has not arrived is read-only, as a text field is.
+  const payloadWritable = useMapRegisterWritable(editor, nodeKey);
+  const editable = useIsEditorEditable() && payloadWritable;
   useEffect(() => {
     if (!editable) setIsEditing(false);
   }, [editable]);
@@ -341,14 +352,17 @@ function ChartWrapper({
     [isSelected, setSelected, clearSelection]
   );
 
+  // moss-multi seam: register payloads (A§10.10): the JSON draft writes only what changed since it opened.
+  const editBaseRef = useRef(config);
   const handleEditClick = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       if (!editor.isEditable()) return; // moss-multi seam: read-only-decorators (T2.3)
+      editBaseRef.current = config;
       setIsEditing(true);
     },
-    [editor]
+    [config, editor]
   );
 
   const handleTypeChange = useCallback(
@@ -369,7 +383,8 @@ function ChartWrapper({
             type: newType,
             title: newTitle
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -389,7 +404,8 @@ function ChartWrapper({
               palette: newPalette
             }
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -406,7 +422,8 @@ function ChartWrapper({
             ...config,
             title: newTitle
           };
-          node.setConfig(updatedConfig);
+          // moss-multi seam: register payloads (A§10.10): write only what this control changed.
+          node.setConfig(updatedConfig, config);
         }
       });
     },
@@ -419,7 +436,7 @@ function ChartWrapper({
       editor.update(() => {
         const node = $getNodeByKey(nodeKey);
         if (node && $isChartNode(node)) {
-          node.setConfig(newConfig);
+          node.setConfig(newConfig, editBaseRef.current);
         }
       });
       setIsEditing(false);
@@ -622,5 +639,5 @@ function ChartWrapper({
 
 // moss-multi seam: node-views (A§12)
 registerNodeView(ChartNode.getType(), function decorate(this: ChartNode): JSX.Element {
-    return <ChartWrapper config={this.__config} nodeKey={this.__key} commentIds={this.__commentIds} />;
+    return <ChartWrapper config={this.getConfig()} nodeKey={this.__key} commentIds={this.__commentIds} />;
   });

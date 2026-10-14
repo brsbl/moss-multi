@@ -1,13 +1,49 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/VideoNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/VideoNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/VideoNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/VideoNode.view.tsx
-@@ -88,7 +88,8 @@ function VideoComponent({
+@@ -52,6 +52,7 @@ function VideoComponent({
+   const [isPlayerReady, setIsPlayerReady] = useState(false);
+   const [thumbLoaded, setThumbLoaded] = useState(false);
+   const [thumbMissing, setThumbMissing] = useState(false);
++  const [frameFailed, setFrameFailed] = useState(false);
+   const [thumbVersion, setThumbVersion] = useState(0);
+   const [videoVersion, setVideoVersion] = useState(0);
+   const [useAssetFallback, setUseAssetFallback] = useState(false);
+@@ -88,7 +89,8 @@ function VideoComponent({
      isYouTube || useAssetFallback ? assetSrc : mediaServerSrc ?? assetSrc;
    const thumbPath = `assets/video-thumb-${computeContentHash(src)}.png`;
    const thumbBaseSrc = isYouTube ? null : toDisplaySrc(thumbPath, noteId);
 -  const thumbSrc = thumbBaseSrc
-+  // moss-multi seam: no Electron thumbnail requests while local media is staged.
++  // moss-multi seam: web-assets (A§16): thumbnails are derived by moss desktop only; never request Electron's protocol.
 +  const thumbSrc = thumbBaseSrc && !thumbBaseSrc.startsWith('moss-asset:')
      ? `${thumbBaseSrc}${thumbBaseSrc.includes('?') ? '&' : '?'}v=${thumbVersion}`
      : null;
  
+@@ -96,6 +98,7 @@ function VideoComponent({
+     clearVideoRetryTimer();
+     setThumbLoaded(false);
+     setThumbMissing(false);
++    setFrameFailed(false);
+     setThumbVersion(0);
+     setHasError(false);
+     setVideoVersion(0);
+@@ -301,6 +304,19 @@ function VideoComponent({
+                 onError={handleThumbnailError}
+                 draggable={false}
+               />
++            ) : displaySrc && !displaySrc.startsWith('moss-asset:') && !frameFailed ? (
++              // moss-multi seam: web-assets (A§16): with no derived thumbnail, the clip's own first frame is its poster;
++              // a desktop-only path has no web URL, so it never requests Electron's protocol.
++              <video
++                src={`${displaySrc}#t=0.001`}
++                preload="metadata"
++                muted
++                playsInline
++                aria-hidden="true"
++                className="pointer-events-none block aspect-video w-full bg-ink-default object-contain"
++                data-video-thumbnail-state="frame"
++                onError={() => setFrameFailed(true)}
++              />
+             ) : (
+               <div
+                 className="aspect-video w-full bg-ink-default/5"

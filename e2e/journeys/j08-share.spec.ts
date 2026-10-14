@@ -6,6 +6,7 @@
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
 import { createHash, randomBytes } from 'node:crypto';
+import type { Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { acceptInvite, grant, grantDoc } from '../lib/grants.ts';
@@ -40,7 +41,7 @@ async function fingerprint(actor: Actor, path: string) {
   };
 }
 
-test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'s sidebar @p:ppl-2 @evidence', async ({ actors, stack }) => {
+test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'s sidebar @p:ppl-2@2 @evidence', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
   await ada.goto('/');
@@ -111,7 +112,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await actors.checkpoint('folder-link-landing');
 });
 
-test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2 @p:note-4 @evidence', async ({ actors }) => {
+test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2@2 @p:note-4 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
@@ -150,7 +151,41 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   await actors.checkpoint('vault-shared');
 });
 
-test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2 @evidence', async ({ actors, browserName }) => {
+test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no create, rename or trash @p:ppl-2@2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const cyPrincipal = await actors.principal('cy');
+  const cy = await actors.session(cyPrincipal);
+  await cy.goto('/');
+  await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+
+  await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
+  const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
+  await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
+  await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is a co-owner of the vault').toContainText('Owner');
+  await ada.page.keyboard.press('Escape');
+  // The share is an invite (T2.8): Cy follows it before the vault is his.
+  const vaultId = ((await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } }).vault.id;
+  await acceptInvite(ada, { folderId: vaultId }, cyPrincipal);
+  // Redeemed in another session, as a followed link would be; Cy's open tab reads the listing again.
+  await cy.page.reload();
+  await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+
+  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  const shared = cy.page.getByRole('menuitem', { name: 'Home owner', exact: true });
+  await expect(shared, "Ada's vault reaches Cy's switcher as owner").toBeVisible({ timeout: LIVE_TIMEOUT });
+  await shared.click();
+  await expect(cy.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeEnabled({ timeout: LIVE_TIMEOUT });
+  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  const menu = cy.page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: 'Home owner', exact: true }), 'the switcher is open').toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a co-owner may share the vault').toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'New vault', exact: true }), 'New vault belongs to the owned section').toHaveCount(0);
+  await cy.page.keyboard.press('Escape');
+  await expect(cy.page.getByRole('button', { name: 'Vault actions', exact: true }), "only the vault's owner renames or trashes it").toHaveCount(0);
+});
+
+test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2@2 @evidence', async ({ actors, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const dialog = await ui.openShare(ada, docId);
@@ -187,7 +222,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   expect(await ui.fieldText(stranger, docId, 'body')).toBe(TEXT);
 });
 
-test('j08 link: an editor link is viewer signed out, editor signed in without a grant, and the max with a grant @p:ppl-2', async ({ actors }) => {
+test('j08 link: an editor link is viewer signed out, editor signed in without a grant, and the max with a grant @p:ppl-2@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const cyPrincipal = await actors.principal('cy');
@@ -216,7 +251,7 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   await actors.requireDistinct(3);
 });
 
-test('j08 link: an editor folder link lifts a viewer grant to editor, and lands a signed-in visitor without a grant on the folder @p:ppl-2', async ({ actors, stack }) => {
+test('j08 link: an editor folder link lifts a viewer grant to editor, and lands a signed-in visitor without a grant on the folder @p:ppl-2@2', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
   const headers = { origin: stack.baseUrl };
@@ -251,7 +286,7 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   await actors.requireDistinct(3);
 });
 
-test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2 @evidence', async ({ actors }) => {
+test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2@2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const otherId = await ui.createNote(ada);
@@ -297,7 +332,7 @@ test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s
   await actors.requireDistinct(2);
 });
 
-test('j08 privacy: an email with no account answers like one with an account, and non-owners see no emails @p:ppl-2', async ({ actors, stack }) => {
+test('j08 privacy: an email with no account answers like one with an account, and non-owners see no emails @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
@@ -317,7 +352,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
     const response = await posted;
     answers.push({ status: response.status(), body: await response.json() });
     await expect(dialog.getByRole('status'), 'the same confirmation either way').toHaveText(`Shared with ${email}.`);
-    await expect(dialog.getByLabel('Email', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
+    await expect(dialog.getByLabel('Email or agent ID', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
   }
   await ada.page.unroute(members);
   expect(answers[0].status).toBe(201);
@@ -389,7 +424,7 @@ async function offered(actor: Actor, docId: string): Promise<string[]> {
   return [...row, ...more, ...share].sort();
 }
 
-test('j08 ranks: menus grow with rank from viewer to owner, and only the owner trashes or shares @p:ppl-2', async ({ actors, stack }) => {
+test('j08 ranks: menus grow with rank from viewer to owner, and only the owner trashes or shares @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const ranks = [['ben', 'viewer'], ['cy', 'commenter'], ['dee', 'editor']] as const;
@@ -432,7 +467,7 @@ function writeFrames(actor: Actor): { count: () => number } {
   return { count: () => writes };
 }
 
-test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block controls are inert and send no frame @p:ppl-2', async ({ actors, stack }) => {
+test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block controls are inert and send no frame @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const box = (actor: Actor) => ui.body(actor, docId).locator('li[role="checkbox"]').filter({ hasText: 'ranked task' });
@@ -502,17 +537,25 @@ test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block co
   await actors.requireDistinct(4);
 });
 
-test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2', async ({ actors, stack }) => {
+test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, docId, benPrincipal, 'editor');
   const ben = await actors.session(benPrincipal);
-  // Every role the workspace listing names becomes one this client has never heard of.
-  await ben.page.route('**/api/workspace**', async (route) => {
-    const response = await route.fetch();
-    await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
-  });
+  // Every role the server names becomes one this client has never heard of: the listing's, and the note's own read
+  // (GET /api/docs/:id), which the tab also remembers: its real role, answered after the listing, is the likely way
+  // the row menu offered an editor's actions in WebKit (runs 38060395030, 38278446839, 38283893079).
+  const unknownRole = async (route: Route) => {
+    try {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
+    } catch {
+      // The page gave up on the request (a superseded read); nothing reaches it to rewrite.
+    }
+  };
+  await ben.page.route('**/api/workspace**', unknownRole);
+  await ben.page.route(`**/api/docs/${docId}`, unknownRole);
   await ben.goto('/');
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
