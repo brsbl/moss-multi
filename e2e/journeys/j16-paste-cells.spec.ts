@@ -24,7 +24,7 @@ async function dragCells(actor: Actor, docId: string, from: string, to: string):
   await expect(ui.body(actor, docId).locator('table.moss-table-selection'), 'the cells are selected').toHaveCount(1);
 }
 
-test('j16-paste: a short paste over table cells holding the suggester\'s own large text is refused whole, or its one undo brings that text back @p:mean-2 @p:R17', async ({ actors }) => {
+test('j16-paste-cells: a short paste over table cells holding the suggester\'s own large text is refused whole, or its one undo brings that text back @p:mean-2 @p:R17', async ({ actors }) => {
   actors.solo('the owner only seeds the note; one suggester pastes');
   const { ada, ben, docId } = await suggesting(actors, TABLE_NOTE);
   const body = ui.body(ben, docId);
@@ -41,7 +41,7 @@ test('j16-paste: a short paste over table cells holding the suggester\'s own lar
   await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
 });
 
-test('j16-paste: a paste over table cells, or a table pasted in a cell, never removes another author\'s text unstruck: refused whole, or struck and kept visible @p:mean-2 @p:R17', async ({ actors }) => {
+test('j16-paste-cells: a paste over table cells, or a table pasted in a cell, never removes another author\'s text unstruck: refused whole, or struck and kept visible @p:mean-2 @p:R17', async ({ actors }) => {
   actors.solo('the owner only seeds the note; one suggester pastes');
   const { ada, ben, docId } = await suggesting(actors, TABLE_NOTE);
   const body = ui.body(ben, docId);
