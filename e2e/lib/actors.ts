@@ -9,7 +9,7 @@ import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor } from './detectors.js';
 import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
-  actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
+  actorFindings, awaitingRecovery, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
 import { mintPrincipal, newPrincipal, poolPrincipal, seededPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
@@ -92,6 +92,8 @@ export function recordsScreens(stack: Pick<Stack, 'baseUrl'> | null): boolean {
 
 // Per worker process, so every principal minted in a run has its own email.
 let minted = 0;
+/** How long, off loopback, a dropped doc socket's replacement may take to reach sync once the leg ends. */
+const RECOVERY_MS = 15_000;
 
 /**
  * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
@@ -285,10 +287,22 @@ export class Actors {
   }
 
   async assertInvariants(): Promise<void> {
+    await this.awaitRecoveries();
     const findings = await this.findings();
     this.testInfo.annotations.push({ type: 'invariants', description: JSON.stringify({ findings: findings.length }) });
     if (findings.length > 0) await this.fail(findings, 'invariants');
     this.options.stack?.budget?.assert(this.journey);
+  }
+
+  /**
+   * Off loopback, a doc socket the network dropped near the end of a leg may still be reconnecting: its replacement
+   * gets up to RECOVERY_MS to reach sync before invariant 3 judges the drop. Nothing is waited for on loopback.
+   */
+  private async awaitRecoveries(): Promise<void> {
+    if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
+    const deadline = Date.now() + RECOVERY_MS;
+    const pending = () => this.list.some((actor) => !actor.page.isClosed() && awaitingRecovery(actor.telemetry.sockets));
+    while (pending() && Date.now() < deadline) await new Promise((done) => setTimeout(done, 250));
   }
 
   /** Attaches the census and, where recording is allowed, a 2x PNG of each offending actor, then fails the test. */

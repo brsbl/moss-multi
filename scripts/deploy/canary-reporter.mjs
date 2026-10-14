@@ -94,13 +94,17 @@ export function numericValues(message) {
 }
 
 /**
- * A console error's fixed class: a resource load failure with its status, a WebSocket failure, or nothing.
+ * A console error's fixed class: a resource load failure with its status, a WebSocket failure and which socket, or nothing.
  * @param {string} detail
  */
 const consoleKind = (detail) => {
   const load = /Failed to load resource: the server responded with a status of (\d{3})/.exec(detail);
   if (load) return ` (load ${load[1]})`;
-  return /WebSocket/i.test(detail) ? ' (websocket)' : '';
+  if (!/WebSocket/i.test(detail)) return '';
+  // Which socket, as a fixed label: never its URL, which carries ids and tokens.
+  if (/\/parties\/doc-d-o\//.test(detail)) return ' (websocket: doc)';
+  if (/\/api\/workspace\/ws\b/.test(detail)) return ' (websocket: workspace)';
+  return ' (websocket: other)';
 };
 
 /**

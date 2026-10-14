@@ -61,6 +61,14 @@ export interface Network {
 const recovered = (dropped: SocketEntry, group: SocketEntry[]): boolean =>
   group.some((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.synced === true);
 
+/**
+ * Off loopback, whether a 1006 drop's replacement is still connecting: a later socket of its doc and document is open
+ * and has not reached sync yet. The invariants wait a bounded time for it before they judge the drop (actors.ts).
+ */
+export const awaitingRecovery = (sockets: SocketEntry[]): boolean =>
+  [...socketGroups(sockets).values()].some((group) => group.some((dropped) => dropped.code === NETWORK_DROP && !recovered(dropped, group) &&
+    group.some((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.closedAt === null && s.synced !== true)));
+
 /** Invariant 3's socket groups: per page document (else navigation count) and doc. */
 const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
   const groups = new Map<string, SocketEntry[]>();

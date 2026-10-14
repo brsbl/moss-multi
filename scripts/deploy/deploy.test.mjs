@@ -548,9 +548,10 @@ describe('canary recording', () => {
       const text = { message: `expect(received).toBe(expected)\n\nExpected: "${SESSION}"\nReceived: "SYNTHETIC text"`, stack: '' };
       expect(failureTrace({ errors: [text] })).toEqual(['kind expect']);
       const kinds = { message: [
-        'invariants: 3 finding(s)',
+        'invariants: 4 finding(s)',
         `  invariant 1 [ada] console error: Failed to load resource: the server responded with a status of 404 () (${URL_STAGING}/api/docs/x/backlinks)`,
         `  invariant 1 [ben] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/parties/doc-d-o/x?token=SECRET' failed`,
+        `  invariant 1 [cy] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/api/workspace/ws' failed: SECRET`,
         '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; #1 closed after 12 ms: 1013 unvalidated SECRET, then 1006; #2 closed after 40 ms: asked 1000; #3 open)',
         '  invariant 3 [ben] 9f8e7d6c: a socket dropped (1006) and no later socket of its document reached sync',
         '  invariant 3 [cy] 9f8e7d6c: 1 try-again closes (1013), 0 declared',
@@ -558,7 +559,8 @@ describe('canary recording', () => {
       const facts = failureTrace({ errors: [kinds] });
       expect(facts).toEqual([
         'invariant 1 [ada] console error (load 404)',
-        'invariant 1 [ben] console error (websocket)',
+        'invariant 1 [ben] console error (websocket: doc)',
+        'invariant 1 [cy] console error (websocket: workspace)',
         'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; 12 ms (1013 then 1006), 40 ms (asked 1000), open)',
         'invariant 3 [ben] a 1006 drop never recovered to sync',
         'invariant 3 [cy] 1 try-again closes (1013), 0 declared',

@@ -11,11 +11,12 @@ import { promisify } from 'node:util';
 import { request } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { recordsScreens } from '../lib/actors.ts';
+import { authHeadroom, paceAuth, recordAuth } from '../lib/auth-pace.ts';
 import { RequestBudget } from '../lib/budget.ts';
 import { probeSocket } from '../lib/doc-client.ts';
 import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
-import { errorProblems, socketProblems } from '../lib/invariants.ts';
+import { awaitingRecovery, errorProblems, socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
@@ -171,6 +172,25 @@ test.describe('doc sockets per document (invariant 3)', () => {
   });
 });
 
+test('the auth pace carries its counts to the next worker of the run (a restart after a failure), off the hook stack', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'auth-pace-'));
+  try {
+    const path = join(dir, 'auth-pace.json');
+    paceAuth('https://staging.example', path);
+    for (let i = 0; i < 9; i += 1) recordAuth('sign-in');
+    // A fresh worker reads them back, so its next sign-in waits out the window instead of meeting a 429.
+    paceAuth('https://staging.example', path);
+    test.info().setTimeout(0);
+    const started = Date.now();
+    const waited = authHeadroom('sign-in', 3).then(() => Date.now() - started);
+    const early = await Promise.race([waited, new Promise<number>((done) => setTimeout(() => done(-1), 1_000))]);
+    expect(early, 'the next sign-in waits').toBe(-1);
+    paceAuth(null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
   const OFF = { offLoopback: true };
   const socket = (openedAt: number, closedAt: number | null, code: number | null = null, extra: Partial<SocketEntry> = {}): SocketEntry => ({
@@ -187,6 +207,13 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems([socket(0, 100, 1006)], new Map(), OFF)).not.toEqual([]);
     // Only a later socket recovers it: the one before the drop synced, the one after never did.
     expect(socketProblems([socket(0, 100, 1000, { synced: true }), socket(200, 300, 1006), socket(400, null)], new Map([['d', 1]]), OFF)).not.toEqual([]);
+  });
+  test("a drop whose replacement is still connecting is awaited; a recovered, replaced-and-closed or lone one is not", () => {
+    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, null)])).toBe(true);
+    expect(awaitingRecovery([socket(0, 100, 1006), synced(200)])).toBe(false);
+    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, 300, 1000)])).toBe(false);
+    expect(awaitingRecovery([socket(0, 100, 1006)])).toBe(false);
+    expect(awaitingRecovery([socket(0, null)])).toBe(false);
   });
   test('off loopback, a 1013 the journey did not declare fails, even recovered and within its declared reconnects', () => {
     expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map(), OFF)).not.toEqual([]);
