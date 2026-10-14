@@ -11,7 +11,8 @@ import {
   $getRoot, $getSelection, $isRangeSelection, $setSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
   type LexicalEditor,
 } from 'lexical';
-import { $createTableSelectionFrom, $isTableCellNode, $isTableNode, type TableCellNode, type TableNode } from '@lexical/table';
+import { $createTableSelectionFrom, $isTableCellNode, $isTableNode, registerTablePlugin, type TableCellNode, type TableNode } from '@lexical/table';
+import { mergeRegister } from '@lexical/utils';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { markdownToState } from '../../../../../../packages/sync/src/converter/index.ts';
@@ -50,7 +51,8 @@ afterEach(() => {
  * plain text a paragraph per line break (CR, LF or CRLF, as the paste handler normalizes them).
  */
 function pasteStack(target: LexicalEditor): () => void {
-  return target.registerCommand(PASTE_COMMAND, (event) => {
+  // The table plugin, as the pane registers it: cells selected, or a table pasted in a cell, overwrite cells.
+  return mergeRegister(registerTablePlugin(target), target.registerCommand(PASTE_COMMAND, (event) => {
     const data = (event as ClipboardEvent).clipboardData;
     if (!data) return false;
     const markdown = data.getData('text/markdown').replace(/\r\n?/g, '\n');
@@ -59,9 +61,9 @@ function pasteStack(target: LexicalEditor): () => void {
     target.update(() => {
       const selection = $getSelection();
       if (!selection) return;
-      // A table-cell selection takes rich content into its focus cell (TableSelection.insertNodes).
+      // Cells selected: Lexical's rich paste, which the table plugin writes into the grid from the anchor cell.
       if (!$isRangeSelection(selection)) {
-        if (rich) $insertDataTransferForRichText(data, selection, target);
+        $insertDataTransferForRichText(data, selection, target);
         return;
       }
       if (markdown) {
@@ -81,7 +83,7 @@ function pasteStack(target: LexicalEditor): () => void {
       });
     });
     return true;
-  }, COMMAND_PRIORITY_EDITOR);
+  }, COMMAND_PRIORITY_EDITOR));
 }
 
 /** A clipboard holding `text` as plain text, as a paste event carries it. */
@@ -1150,6 +1152,59 @@ it('a paste over a table-cell selection is measured in that cell: past the cap, 
     const html = `<p>${'x'.repeat(300_000)}</p>`;
     const clipboard = { types: ['text/html'], getData: (type: string) => (type === 'text/html' ? html : '') } as unknown as DataTransfer;
     expect(storedOrRefused(pane, () => pane.pasteData(clipboard))).toBe('refused');
+  } finally {
+    pane.dispose();
+  }
+});
+
+const TABLE_NOTE = 'Ada original line.\n\n| alpha | beta |\n| --- | --- |\n| gamma | delta |\n';
+const htmlClipboard = (html: string) => ({ types: ['text/html'], getData: (type: string) => (type === 'text/html' ? html : '') }) as unknown as DataTransfer;
+/** Cells `from` to `to` of the note's table selected, as a drag across them makes. */
+const selectCells = (pane: ReturnType<typeof suggesting>, from: number, to: number) => pane.editor.update(() => {
+  const table = $getRoot().getChildren().find($isTableNode)!;
+  const cells = table.getChildren().flatMap((row) => (row as TableNode).getChildren().filter($isTableCellNode)) as TableCellNode[];
+  $setSelection($createTableSelectionFrom(table, cells[from], cells[to]));
+}, { discrete: true });
+
+it('a short paste over table cells holding the suggester\'s own large text is refused whole, or its one undo brings that text back', { timeout: 120_000 }, () => {
+  const pane = suggesting(TABLE_NOTE);
+  try {
+    pane.select('gamma', 5);
+    expect(storedOrRefused(pane, () => pane.paste([`Own ${'o'.repeat(110_000)}`])), 'the large paste in a cell lands').toBe('stored');
+    pane.stopCapturing();
+    // From the cell holding it to the next: the table plugin writes the paste into the anchor cell, removing his text.
+    selectCells(pane, 2, 3);
+    if (storedOrRefused(pane, () => pane.pasteData(htmlClipboard('<p>short</p>'))) === 'refused') return;
+    pane.undo();
+    expect(refusalMessage(), 'its undo is admitted').toBe('');
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'and stored').toBe(false);
+    expect(pane.text(), 'one undo brings his text back').toContain(`Own ${'o'.repeat(110_000)}`);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a paste over table cells holding another author\'s text is refused whole, or strikes that text and keeps it visible', { timeout: 120_000 }, () => {
+  const pane = suggesting(TABLE_NOTE);
+  try {
+    selectCells(pane, 0, 3);
+    if (storedOrRefused(pane, () => pane.paste(['cellpaste'])) === 'refused') return;
+    for (const word of ['alpha', 'beta', 'gamma', 'delta']) expect(pane.text(), `${word} stays, struck`).toContain(word);
+    expect(pane.struck(), 'the replaced text is struck').toBeGreaterThan(0);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a table pasted at a caret in a cell, which overwrites the cells from there, is refused whole, or strikes what it overwrites', { timeout: 120_000 }, () => {
+  const pane = suggesting(TABLE_NOTE);
+  try {
+    pane.select('gamma', 5);
+    if (storedOrRefused(pane, () => pane.pasteData(htmlClipboard('<table><tr><td>one</td><td>two</td></tr></table>'))) === 'refused') return;
+    for (const word of ['gamma', 'delta']) expect(pane.text(), `${word} stays, struck`).toContain(word);
+    expect(pane.struck(), 'the overwritten text is struck').toBeGreaterThan(0);
   } finally {
     pane.dispose();
   }
