@@ -144,6 +144,8 @@ it('a payload made and deleted offline is neither resent nor unacked until the t
   await vi.advanceTimersByTimeAsync(300);
   const socket = latest();
   socket.open();
+  serverStep1(socket, Y.encodeStateVector(new Y.Doc()));
+  await vi.advanceTimersByTimeAsync(1_000);
   const writes = (id: string) => socket.sent.filter((frame) => {
     const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
     return payload?.id === id && payload.step !== PAYLOAD_STEP1;
@@ -166,6 +168,9 @@ it('an empty block named while online stays shared: its offline writes after a d
   await vi.advanceTimersByTimeAsync(300);
   const socket = latest();
   socket.open();
+  // The payloads resend once the server's step 1 has been answered (comments.md §6).
+  serverStep1(socket, Y.encodeStateVector(new Y.Doc()));
+  await vi.advanceTimersByTimeAsync(1_000);
   const writes = socket.sent.filter((frame) => {
     const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
     return payload?.id === 'shared' && payload.step !== PAYLOAD_STEP1;
