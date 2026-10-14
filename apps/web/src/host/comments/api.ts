@@ -86,6 +86,21 @@ export function failedDrafts(docId: string, slot: DraftSlot): Draft[] {
   return held(docId, slot).filter((draft) => draft.failed !== undefined);
 }
 
+/** Who is told when a submit in a slot fails: the composer open on it, whichever instance sent the submit. */
+const failureListeners = new Map<string, Set<() => void>>();
+
+/** Calls `listener` each time a submit in `slot` fails; returns the unsubscribe. */
+export function onDraftFailed(docId: string, slot: DraftSlot, listener: () => void): () => void {
+  const key = draftKey(docId, slot);
+  const set = failureListeners.get(key) ?? new Set();
+  set.add(listener);
+  failureListeners.set(key, set);
+  return () => {
+    set.delete(listener);
+    if (!set.size && failureListeners.get(key) === set) failureListeners.delete(key);
+  };
+}
+
 /** Puts `entry` last in its slot (the latest submit, whose answer the composer waits on), or with `remove` drops it. */
 function place(docId: string, slot: DraftSlot, entry: Draft, remove = false): void {
   const list = held(docId, slot).filter((draft) => draft !== entry);
@@ -106,7 +121,10 @@ function submit(
   place(docId, slot, entry);
   entry.done = write().then((result) => {
     if (result.ok) place(docId, slot, entry, true);
-    else entry.failed = result.error;
+    else {
+      entry.failed = result.error;
+      for (const listener of [...(failureListeners.get(draftKey(docId, slot)) ?? [])]) listener();
+    }
     return result;
   });
   return entry;

@@ -8,7 +8,7 @@ import { createEditor } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { rememberRole } from '../access.ts';
-import { failedDraftText, mutate, submitted } from './adapter.ts';
+import { failedDraftText, failedDraftTexts, latestEditText, mutate, onDraftFailed, submitted } from './adapter.ts';
 import { createComment, draftOf } from './api.ts';
 import type { Minted } from './mint.ts';
 import { modelFor } from './model.ts';
@@ -283,4 +283,39 @@ it('a viewer submits nothing and keeps no draft', () => {
   expect(submitted('doc-viewer', 'reply:p1')).toBeNull();
   expect(draftOf('doc-viewer', 'reply:p1')).toBeUndefined();
   expect(server.calls).toEqual([]);
+});
+
+it('a reply that fails is announced to whoever listens on its thread then, not only to the box that sent it', async () => {
+  const { editor } = boundEditor('doc-late-fail');
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  server.mode = 'network-before';
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Slow reply' });
+  const answer = submitted('doc-late-fail', 'reply:p1')!;
+  // The thread closed and reopened meanwhile: a new box listens.
+  const heard: string[][] = [];
+  const stop = onDraftFailed('doc-late-fail', 'reply:p1', () => heard.push(failedDraftTexts('doc-late-fail', 'reply:p1')));
+  open();
+  expect(await answer).toEqual({ ok: false, error: 'network' });
+  expect(heard, 'the open box hears the failure with its text').toEqual([['Slow reply']]);
+  stop();
+  server.gate = new Promise((resolve) => { open = resolve; });
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Another' });
+  open();
+  await submitted('doc-late-fail', 'reply:p1');
+  expect(heard, 'a closed box hears nothing').toHaveLength(1);
+});
+
+it("an edit compares against the text this tab's saves leave, so a revert saved over a save in flight is sent", async () => {
+  const { editor } = boundEditor('doc-revert');
+  expect(latestEditText('doc-revert', 'c1'), 'no save held').toBeNull();
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Changed' });
+  expect(latestEditText('doc-revert', 'c1'), 'the save in flight').toBe('Changed');
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Original' });
+  open();
+  expect(await submitted('doc-revert', 'edit:c1')).toEqual({ ok: true });
+  expect(server.edits.map((edit) => edit.text), 'the revert is stored last').toEqual(['Changed', 'Original']);
+  expect(latestEditText('doc-revert', 'c1')).toBeNull();
 });
