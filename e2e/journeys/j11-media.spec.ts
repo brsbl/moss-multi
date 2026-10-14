@@ -657,6 +657,7 @@ async function nearCapProbe(actor: Actor, docId: string, name: string, sent: Buf
 }
 
 test('j11-media: SP9 near-cap probe: a 95 MiB video stores whole, its hash and a 206 tail read exact; a truncated upload fails the probe @p:note-8 @staging', async ({ actors, browserName }) => {
+  actors.solo('a storage probe: one uploader, no collaboration');
   test.skip(browserName !== 'chromium', 'an API probe: the engine plays no part');
   test.setTimeout(240_000);
   const ada = await openShell(actors, 'ada');
