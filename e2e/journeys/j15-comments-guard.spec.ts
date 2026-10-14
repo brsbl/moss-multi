@@ -226,7 +226,8 @@ const FIXTURES: Fixture[] = [
 ];
 
 for (const fixture of FIXTURES) {
-  test(`j15-comments-guard: ${fixture.name} land nothing in comments, park nothing, and stay so after a DocDO reset @p:tech-3`, async ({ actors, stack }) => {
+  // local-only: resets the DocDO through the loopback hook.
+  test(`j15-comments-guard: ${fixture.name} land nothing in comments, park nothing, and stay so after a DocDO reset @local-only @p:tech-3`, async ({ actors, stack }) => {
     actors.solo('one editor sends raw frames; the guard refuses by struct, never by who else is connected');
     const ada = await actors.principal('ada');
     const cookie = cookieHeader(await signIn(stack.baseUrl, ada));

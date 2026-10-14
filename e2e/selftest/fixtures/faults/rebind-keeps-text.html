@@ -7,6 +7,8 @@
     clearTimeout(timer);
     timer = setTimeout(() => {
       const text = body.querySelector('p').textContent;
+      // An unbound field gives up focus, as the shell's does (invariant 9 is not this fixture's).
+      body.blur();
       body.setAttribute('contenteditable', 'false');
       body.setAttribute('data-body-binding', 'unbound');
       body.querySelector('p').textContent = '';

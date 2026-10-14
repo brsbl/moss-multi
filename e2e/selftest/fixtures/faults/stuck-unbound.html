@@ -5,6 +5,8 @@
   body.addEventListener('input', () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      // An unbound field gives up focus, as the shell's does (invariant 9 is not this fixture's).
+      body.blur();
       body.setAttribute('contenteditable', 'false');
       body.setAttribute('data-body-binding', 'unbound');
       document.documentElement.setAttribute('data-unbound', 'true');
