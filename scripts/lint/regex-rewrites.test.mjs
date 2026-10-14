@@ -18,7 +18,6 @@ const USE = {
   all: (re, text) => [...text.matchAll(re)].map(groups),
   count: (re, text) => (text.match(re) ?? []).length,
 };
-const lower = (name) => name.toLowerCase();
 
 /** [what, files with the new literal, old, new, use, extra arg, alphabet, prefixes, attack]. */
 const REWRITES = [
@@ -66,7 +65,6 @@ const REWRITES = [
     [''],
     (n) => `${'\uFFFD'.repeat(n)}a`,
   ],
-  ['last path segment', [['packages/editor/src/desktop/pipeline.golden.test.ts', '/(?<![^/])[^/]+$/']], /[^/]+$/, /(?<![^/])[^/]+$/, 'replace', lower, ['/', 'A', 'b'], [''], (n) => `${'A'.repeat(n)}/`],
   [
     'import lines',
     [['packages/editor/src/host/moss-editor-host.test.ts', String.raw`/^[^\S\n\r\u2028\u2029]*import[\s{*]/m`]],

@@ -12,12 +12,18 @@ import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
 import { actingUserId, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
-import { NO_STORE, notFound, readJsonObject, unauthenticated } from './respond.ts';
+import { NO_STORE, notFound, parseJsonObject, readCapped, unauthenticated } from './respond.ts';
 
 export const PUSH_ROUTE = /^\/api\/docs\/([^/]+)\/push$/;
 
 const HASH = /^[0-9a-f]{64}$/;
 const encoder = new TextEncoder();
+
+/**
+ * The cap on a push body: newText and baseText at the note cap with every UTF-16 unit JSON-escaped as six bytes, plus
+ * the envelope. A maximal legitimate push fits; nothing larger is buffered.
+ */
+export const PUSH_BODY_MAX_BYTES = 6 * 2 * MARKDOWN_CAP_BYTES + 64 * 1024;
 
 const answer = (body: PushResponse, status: number, headers: Record<string, string> = {}) => json(body, status, { ...NO_STORE, ...headers });
 
@@ -36,16 +42,25 @@ export async function handlePush(request: Request, env: DocsEnv, docId: string):
   if (request.method !== 'POST') return json({ error: 'method-not-allowed' }, 405, { allow: 'POST' });
   const principal = await resolvePrincipal(request, env);
   if (!principal || principal.type === 'anonymous') return unauthenticated();
-  // The body is read before access resolves, so a stalled body cannot outlive a revocation or a trash.
-  const body = await readJsonObject(request);
-  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
-  if (!access || access.deleted) return notFound();
+  const resolve = () => resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  // A push body can run to megabytes, so it is read only for a principal who may push at all, after a declared
+  // oversize is refused and the acting person's push token is taken (an agent spends its owner's; denied attempts count).
+  const early = await resolve();
+  if (!early || early.deleted) return notFound();
+  if (!roleAtLeast(early.role, 'suggester')) return answer({ ok: false, reason: 'forbidden' }, 403);
+  if (Number(request.headers.get('content-length') ?? 0) > PUSH_BODY_MAX_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
   const person = actingUserId(principal) ?? principal.id;
   const limiter = await getServerByName(env.PrincipalDO, person);
   if (!(await limiter.takePushToken())) {
     const after = String(PUSH_RATE.windowMs / 1000);
     return answer({ ok: false, reason: 'rate-limited', retryAfterSec: Number(after) }, 429, { 'retry-after': after });
   }
+  const text = await readCapped(request, PUSH_BODY_MAX_BYTES);
+  if (text === 'too-large') return answer({ ok: false, reason: 'too-large' }, 413);
+  const body = text === null ? null : parseJsonObject(text);
+  // Access resolves again once the body is in, so a revocation, demotion or trash during a slow body still wins.
+  const access = await resolve();
+  if (!access || access.deleted) return notFound();
   const { newText, baseHash, baseText, force, suggest } = body ?? {};
   // A suggestion needs suggester; an edit, editor (A§8 capabilities).
   if (!roleAtLeast(access.role, suggest === true ? 'suggester' : 'editor')) return answer({ ok: false, reason: 'forbidden' }, 403);

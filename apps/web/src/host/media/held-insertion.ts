@@ -5,79 +5,148 @@ import {
   $getRoot,
   $getSelection,
   $isElementNode,
+  $isNodeSelection,
   $isRangeSelection,
   $isTextNode,
   $setSelection,
   type EditorState,
+  type LexicalEditor,
 } from 'lexical';
 
 /**
  * Where an awaited upload or copy lands (A§16; A§0 invariant 2). Moss saved a selection's keys and offsets at paste
  * time and replayed them after the upload: on a live doc, text typed meanwhile by a peer or this user shifts those
- * offsets, and a replayed range deletes whatever now sits there. A held point is collapsed at paste time (the
- * selected text goes then, as any paste replaces it) and follows every later change to its text, so the media lands
- * between the same characters and deletes nothing.
+ * offsets, and a replayed range deletes whatever now sits there. A held insertion keeps the pasted-over text until
+ * the media lands: each end of the selection follows every later change to its text, so the media replaces the same
+ * characters and deletes nothing typed meanwhile, and a refused or failed upload leaves the document untouched.
  */
 export interface HeldInsertionPoint {
-  /** Inside an update: selects the held point, or the document's end if its node is gone, and stops tracking. */
+  /**
+   * Inside an update: selects the held range, removes its text and leaves the caret there, or selects the document's
+   * end if both its ends are gone; stops tracking.
+   */
   $restore(): boolean;
-  /** Stops tracking without inserting, for a refused or failed upload. */
+  /** Stops tracking without touching the document, for a refused or failed upload. */
   release(): void;
 }
 
-/** Inside an update with a range selection (a paste handler): removes the selected text and holds the caret. */
+interface HeldEnd {
+  follow(state: EditorState): void;
+  /** The end's place now, or null when its node is gone. */
+  $resolve(): { key: string; offset: number; type: 'text' | 'element' } | null;
+}
+
+/** One end of the held range, at `key`/`offset`; an element point is held as the child it precedes. */
+function holdEnd(key: string, type: 'text' | 'element', start: number): HeldEnd {
+  let offset = start;
+  const node = $getNodeByKey(key);
+  const before = type === 'element' && $isElementNode(node) ? (node.getChildAtIndex(offset)?.getKey() ?? null) : null;
+  let text = type === 'text' && $isTextNode(node) ? node.getTextContent() : '';
+  return {
+    follow(state) {
+      if (type !== 'text') return;
+      const next = state.read(() => {
+        const current = $getNodeByKey(key);
+        return $isTextNode(current) ? current.getTextContent() : null;
+      });
+      if (next === null || next === text) return;
+      offset = shiftOffset(text, next, offset);
+      text = next;
+    },
+    $resolve() {
+      const current = $getNodeByKey(key);
+      if (type === 'text' && $isTextNode(current) && current.isAttached()) {
+        return { key, offset: Math.min(offset, current.getTextContentSize()), type };
+      }
+      if (type === 'element' && $isElementNode(current) && current.isAttached()) {
+        const child = before ? $getNodeByKey(before) : null;
+        const at = child && child.getParent()?.getKey() === key ? child.getIndexWithinParent()
+          : before ? Math.min(offset, current.getChildrenSize()) : current.getChildrenSize();
+        return { key, offset: at, type };
+      }
+      return null;
+    },
+  };
+}
+
+// Every held insertion still waiting on its upload, per editor, so a final save can wait for them (B189).
+const pending = new WeakMap<LexicalEditor, Set<Promise<void>>>();
+
+/**
+ * Inside an update (a paste handler): holds the range selection's two ends where they are, or, with a node selected
+ * (an image the user clicked), the point after the last selected node. Null when the editor has no selection.
+ */
 export function $holdInsertionPoint(): HeldInsertionPoint | null {
   const selection = $getSelection();
-  if (!$isRangeSelection(selection)) return null;
-  if (!selection.isCollapsed()) selection.removeText();
-  const { key, type } = selection.anchor;
-  let offset = selection.anchor.offset;
-  const anchor = $getNodeByKey(key);
-  // An element point is held as the child it precedes, so children added or removed before it keep it in place.
-  const before = type === 'element' && $isElementNode(anchor) ? (anchor.getChildAtIndex(offset)?.getKey() ?? null) : null;
-  let text = type === 'text' && $isTextNode(anchor) ? anchor.getTextContent() : '';
+  let ends: [HeldEnd, HeldEnd | null];
+  if ($isRangeSelection(selection)) {
+    const { anchor, focus } = selection;
+    ends = [holdEnd(anchor.key, anchor.type, anchor.offset), selection.isCollapsed() ? null : holdEnd(focus.key, focus.type, focus.offset)];
+  } else if ($isNodeSelection(selection)) {
+    const nodes = selection.getNodes();
+    const last = nodes[nodes.length - 1];
+    const parent = last?.getParent();
+    if (!last || !parent) return null;
+    ends = [holdEnd(parent.getKey(), 'element', last.getIndexWithinParent() + 1), null];
+  } else {
+    return null;
+  }
 
   const editor = $getEditor();
-  const follow = ({ editorState }: { editorState: EditorState }) => {
-    if (type !== 'text') return;
-    const next = editorState.read(() => {
-      const node = $getNodeByKey(key);
-      return $isTextNode(node) ? node.getTextContent() : null;
-    });
-    if (next === null || next === text) return;
-    offset = shiftOffset(text, next, offset);
-    text = next;
-  };
-  let stop: (() => void) | null = editor.registerUpdateListener(follow);
+  let stop: (() => void) | null = editor.registerUpdateListener(({ editorState }) => {
+    for (const end of ends) end?.follow(editorState);
+  });
+  let settle = () => {};
+  const settled = new Promise<void>((resolve) => { settle = resolve; });
+  const holds = pending.get(editor) ?? new Set();
+  pending.set(editor, holds);
+  holds.add(settled);
   const release = () => {
     stop?.();
     stop = null;
+    holds.delete(settled);
+    settle();
   };
 
   return {
     $restore() {
       release();
-      const node = $getNodeByKey(key);
-      const point = $createRangeSelection();
-      if (type === 'text' && $isTextNode(node) && node.isAttached()) {
-        const at = Math.min(offset, node.getTextContentSize());
-        point.anchor.set(key, at, 'text');
-        point.focus.set(key, at, 'text');
-      } else if (type === 'element' && $isElementNode(node) && node.isAttached()) {
-        const child = before ? $getNodeByKey(before) : null;
-        const at = child && child.getParent()?.getKey() === key ? child.getIndexWithinParent()
-          : before ? Math.min(offset, node.getChildrenSize()) : node.getChildrenSize();
-        point.anchor.set(key, at, 'element');
-        point.focus.set(key, at, 'element');
-      } else {
+      const [from, to] = ends.map((end) => end?.$resolve() ?? null);
+      const start = from ?? to;
+      const end = ends[1] ? (to ?? from) : start;
+      if (!start || !end) {
         $getRoot().selectEnd();
         return true;
       }
-      $setSelection(point);
+      const range = $createRangeSelection();
+      range.anchor.set(start.key, start.offset, start.type);
+      range.focus.set(end.key, end.offset, end.type);
+      $setSelection(range);
+      if (!range.isCollapsed()) range.removeText();
       return true;
     },
     release,
   };
+}
+
+/**
+ * A file paste's insertion (B188): the selection held as $holdInsertionPoint does, or, with no selection while the
+ * editor's body holds focus, the document's end. Null only when the body is not focused, so the paste is not taken.
+ */
+export function $holdMediaInsertion(): HeldInsertionPoint | null {
+  const held = $holdInsertionPoint();
+  if (held) return held;
+  const body = $getEditor().getRootElement();
+  const focused = body?.ownerDocument.activeElement;
+  if (!body || !focused || !body.contains(focused)) return null;
+  $getRoot().selectEnd();
+  return $holdInsertionPoint();
+}
+
+/** Resolves once every insertion held in `editor` has landed or been released, its last update committed. */
+export async function settleHeldInsertions(editor: LexicalEditor): Promise<void> {
+  for (let holds = pending.get(editor); holds && holds.size > 0; holds = pending.get(editor)) await Promise.all([...holds]);
+  editor.read(() => undefined);
 }
 
 /**

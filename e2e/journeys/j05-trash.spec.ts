@@ -13,6 +13,7 @@ import {
   SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grant, grantDoc } from '../lib/grants.ts';
+import { declares } from '../lib/invariants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 import { TRASH_COPY } from '../../packages/protocol/src/retention.ts';
@@ -40,8 +41,17 @@ const trashRow = (actor: Actor, docId: string): Locator => actor.page.locator(`[
 const banner = (actor: Actor, docId: string): Locator => ui.pane(actor, docId).locator(`[${CONNECTION_BANNER_ATTR}]`);
 const docSockets = (actor: Actor, docId: string) => actor.telemetry.sockets.filter((socket) => socket.docId === docId && socket.epoch === actor.telemetry.epoch);
 /** 4xx answers this window saw since `since`. */
-const clientErrors = (actor: Actor, since: number) =>
-  actor.telemetry.http.filter((entry) => entry.at >= since && entry.status >= 400 && entry.status < 500).map((entry) => `${entry.status} ${entry.method} ${entry.url}`);
+const clientErrors = (actor: Actor, since: number) => actor.telemetry.http
+  .filter((entry) => entry.at >= since && entry.status >= 400 && entry.status < 500 && !declares(actor.declaredHttp, entry.status, entry.url))
+  .map((entry) => `${entry.status} ${entry.method} ${entry.url}`);
+
+/**
+ * The one 4xx a trash may cause (B178): a backlinks read of the note already on the wire when the trash commits gets
+ * the route's 404. The bridge aborts it and sends none after, so this declares exactly that path; any other 4xx fails.
+ */
+const declareTrashRace = (docId: string, ...actors: Actor[]) => {
+  for (const actor of actors) actor.expectHttp(404, `/api/docs/${docId}/backlinks`);
+};
 
 /** Ada's note with a title and a body, acked, and Ben an editor on it (declared setup). */
 async function sharedNote(actors: Actors, ben: Principal): Promise<{ ada: Actor; docId: string }> {
@@ -54,8 +64,9 @@ async function sharedNote(actors: Actors, ben: Principal): Promise<{ ada: Actor;
   return { ada, docId };
 }
 
-/** Ada trashes the note from its row's context menu in moss's sidebar. */
-async function trashFromSidebar(ada: Actor, docId: string): Promise<void> {
+/** Ada trashes the note from its row's context menu in moss's sidebar; `peers` have it open too. */
+async function trashFromSidebar(ada: Actor, docId: string, ...peers: Actor[]): Promise<void> {
+  declareTrashRace(docId, ada, ...peers);
   await noteRow(ada, docId).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Trash', exact: true }).click();
 }
@@ -160,7 +171,7 @@ test('j05-trash: Ada trashes a note while Ben types; everything in Ben goes iner
   await ben.page.keyboard.press(toEnd);
   const typing = ben.page.keyboard.type(' and Ben keeps typing through it', { delay: 40 });
   const trashedAt = Date.now();
-  await trashFromSidebar(ada, docId);
+  await trashFromSidebar(ada, docId, ben);
   await expectTerminalInPlace(ben, docId, new RegExp(`^${BODY}`));
   await typing;
   const opened = docSockets(ben, docId).length;
@@ -186,7 +197,7 @@ test('j05-trash: Ben, black-holed while the trash lands, goes terminal when his 
 
   // Nothing reaches Ben, not even the DocDO's 4410: his window still thinks it is live.
   sever.blackhole({ swallowCloses: true });
-  await trashFromSidebar(ada, docId);
+  await trashFromSidebar(ada, docId, ben);
   await expect(noteRow(ada, docId)).toHaveCount(0, { timeout: PEER_MS });
   await ui.body(ben, docId).click();
   await ben.page.keyboard.press(toEnd);
@@ -214,7 +225,7 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   expect(other.status()).toBe(201);
   const { doc: { id: otherId } } = (await other.json()) as { doc: { id: string } };
   await expect(noteRow(ada, otherId)).toBeVisible({ timeout: PEER_MS });
-  await trashFromSidebar(ada, docId);
+  await trashFromSidebar(ada, docId, ben);
   await expectTerminalInPlace(ben, docId, BODY);
   await expect(ui.pane(ada, otherId), 'moss opens the next note').toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
 
@@ -230,6 +241,10 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await ben.goto(`/d/${docId}`);
   await expect(ben.page.getByRole('heading', { name: DENIAL }), 'a fresh load gets the denial page').toBeVisible({ timeout: BOOT_TIMEOUT });
   await expect(ben.page.locator(`[${EDITOR_PANE_ATTR}]`)).toHaveCount(0);
+  // Ben waits on an open workspace, so the restore must reach his sidebar live (A§11), with no navigation.
+  await ben.goto('/');
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expect(noteRow(ben, docId), 'not in Ben’s notes while trashed').toHaveCount(0);
 
   // Ada's Trash: the note, when it went there, and its content read-only under the 30-day promise.
   await recordRefusals(ada);
@@ -256,13 +271,12 @@ test('j05-trash: a fresh load of a trashed note is the one 404; Ada reads it rea
   await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
   await expect(ada.page.getByRole('button', { name: 'Trash', exact: true }), 'moss returns to the notes').toBeVisible();
   await expect(noteRow(ada, docId), 'back in Ada’s notes').toBeVisible({ timeout: PEER_MS });
+  // Before anyone edits the note again, so only the restore's own workspace event can bring it to Ben.
+  await expect(noteRow(ben, docId), 'back in Ben’s notes, live').toBeVisible({ timeout: PEER_MS });
   await ui.openNote(ada, docId);
   await ui.typeBody(ada, docId, ' and Ada after the restore');
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
 
-  await ben.goto('/');
-  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
-  await expect(noteRow(ben, docId), 'back in Ben’s notes').toBeVisible({ timeout: PEER_MS });
   await ui.openNote(ben, docId);
   await expect.poll(() => ui.fieldText(ben, docId, 'body'), { timeout: PEER_MS }).toBe(`${BODY} and Ada after the restore`);
   await ui.typeBody(ben, docId, ' then Ben');
@@ -276,6 +290,7 @@ test('j05-trash: a note dropped on the sidebar’s Trash button goes to Trash, a
   const docId = await ui.createNote(ada);
   await ui.typeTitle(ada, docId, 'Dropped on Trash', { enter: true });
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  declareTrashRace(docId, ada);
   await noteRow(ada, docId).locator('[draggable="true"]').dragTo(ada.page.getByRole('button', { name: 'Trash', exact: true }));
   await expect(noteRow(ada, docId), 'the dropped note leaves the notes').toHaveCount(0, { timeout: PEER_MS });
   await ada.page.keyboard.press('ControlOrMeta+2');
@@ -307,7 +322,7 @@ test('j05-trash: a code block, a chart and a body H1 survive the trash: no contr
   await expect(benChart.locator('textarea'), 'Ben is editing the chart').toBeVisible();
 
   await expect(noteRow(ada, docId)).toBeVisible({ timeout: PEER_MS });
-  await trashFromSidebar(ada, docId);
+  await trashFromSidebar(ada, docId, ben);
   await expectTerminalInPlace(ben, docId, /^Findings[\s\S]*Details here\./);
   await expectLanguageFixed(ben, ui.pane(ben, docId));
   await expectChartFixed(ben, benChart);
@@ -334,6 +349,7 @@ test('j05-trash: a note trashed while open and then restored comes back live in 
 
   // Her other window trashes the note under this open pane, then restores it (declared setup: that window's API calls).
   const origin = new URL(ada.page.url()).origin;
+  declareTrashRace(docId, ada);
   expect((await ada.context.request.delete(`${origin}/api/docs/${docId}`, { headers: { origin } })).status()).toBe(200);
   await expect(ui.pane(ada, docId), 'the open note goes terminal in place').toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_MS });
   ada.expectReconnects(1, docId);

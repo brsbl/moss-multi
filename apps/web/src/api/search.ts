@@ -79,20 +79,24 @@ async function search(request: Request, env: SearchEnv): Promise<Response> {
   if (!stub) return unavailable();
   const ask = { query, allowedDocIds: [...allowed.keys()], limit };
   let answer = await stub.search(ask);
-  // A doc the index has never been fed (created before search, or a feed that failed) feeds itself now, and the
-  // search waits briefly for it so a cold doc is found on this search, not only on a later one.
-  if (answer.unindexed.length) {
-    const fed = backfill(env, answer.unindexed);
-    waitUntil(fed);
-    const done = await Promise.race([fed.then(() => true), new Promise<false>((resolve) => setTimeout(resolve, BACKFILL_WAIT_MS, false))]);
-    if (done) answer = await stub.search(ask);
-  }
+  if (await backfilled(env, answer.unindexed)) answer = await stub.search(ask);
   // D1 names the doc: the index's copy of a title can trail a rename by a save.
   const results: SearchResultRow[] = answer.results.flatMap((hit) => {
     const row = allowed.get(hit.docId);
     return row ? [{ id: row.id, title: row.title, snippet: hit.snippet, folderId: row.folderId, updatedAt: row.updatedAt }] : [];
   });
   return json({ results }, 200, NO_STORE);
+}
+
+/**
+ * A doc the index has never been fed (created before search, or a feed that failed) feeds itself now, and the read
+ * waits briefly for it so a cold doc is found on this read, not only on a later one. True once every feed has run.
+ */
+async function backfilled(env: SearchEnv, docIds: string[]): Promise<boolean> {
+  if (docIds.length === 0) return false;
+  const fed = backfill(env, docIds);
+  waitUntil(fed);
+  return Promise.race([fed.then(() => true), new Promise<false>((resolve) => setTimeout(resolve, BACKFILL_WAIT_MS, false))]);
 }
 
 async function backfill(env: SearchEnv, docIds: string[]): Promise<void> {
@@ -122,8 +126,10 @@ async function backlinks(request: Request, env: SearchEnv, docId: string): Promi
   const stub = await index(env);
   if (!stub) return unavailable();
   const stem = target.filename.startsWith('pending-') ? '' : target.filename.replace(/\.md$/, '');
-  const ids = await stub.backlinks({ keys: [wikiKey(target.title), wikiKey(stem), idKey(docId)], allowedDocIds: allowed });
-  const linked: LinkedDoc[] = ids.flatMap((id) => {
+  const ask = { keys: [wikiKey(target.title), wikiKey(stem), idKey(docId)], allowedDocIds: allowed };
+  let answer = await stub.backlinks(ask);
+  if (await backfilled(env, answer.unindexed)) answer = await stub.backlinks(ask);
+  const linked: LinkedDoc[] = answer.sources.flatMap((id) => {
     const row = discovered.get(id);
     return row ? [{ id: row.id, title: row.title, folderId: row.folderId, updatedAt: row.updatedAt }] : [];
   }).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));

@@ -2,7 +2,7 @@
 // target; untouched blocks keep their Yjs items; a peer's concurrent insert into an untouched block survives; comment
 // anchors on untouched text survive. Plus the edited-block, payload and verify-or-refuse cases.
 import fc from 'fast-check';
-import { $getRoot, $isElementNode, $isTextNode, type ElementNode, type LexicalNode, type SerializedEditorState, type TextNode } from 'lexical';
+import { $getRoot, $isElementNode, $isTextNode, $parseSerializedNode, type ElementNode, type LexicalNode, type SerializedEditorState, type TextNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { anchorText, liveUnits, mintAnchor, type Anchor } from '@moss-multi/core/anchor-frame';
@@ -41,6 +41,17 @@ function blockItems(doc: Y.Doc): Y.Item[] {
   const items: Y.Item[] = [];
   for (let item = doc.get('root', Y.XmlText)._start; item; item = item.right) {
     if (!item.deleted && item.content instanceof Y.ContentType) items.push(item);
+  }
+  return items;
+}
+
+/** The inline decorators' own items (Y.XmlElement) nested in each block's text, in tree order. */
+function inlineItems(doc: Y.Doc): Y.Item[] {
+  const items: Y.Item[] = [];
+  for (const block of blockItems(doc)) {
+    for (let item = (block.content as Y.ContentType).type._start; item; item = item.right) {
+      if (!item.deleted && item.content instanceof Y.ContentType && item.content.type instanceof Y.XmlElement) items.push(item);
+    }
   }
   return items;
 }
@@ -358,11 +369,15 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     };
     const before = formulaOf(live);
     expect(before.id).toBeTruthy();
+    const [formulaItem] = inlineItems(live);
+    expect(formulaItem).toBeDefined();
     const peer = fork(live);
     payloadText(payloadDocsFor(peer).hold(before.id!)).insert(0, '1+');
 
     reconcileBody(live, bodyState(targetDoc), RESTORE);
     expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+    expect(formulaItem!.deleted, 'the formula keeps its own item').toBe(false);
+    expect(inlineItems(live)[0] === formulaItem).toBe(true);
     const after = formulaOf(live);
     expect(after.id).toBe(before.id);
     expect(after.result).toBe('6');
@@ -462,13 +477,15 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
     const cases = [
       { body: (p: string) => `Para one.\n\n\`\`\`js\n${p}\n\`\`\``, before: `A${mid}Z`, after: `B${mid}Y`, insert: 'PEER', cut: 150 },
       { body: (p: string) => `Para one.\n\n\`\`\`moss-html\n${p}\n\`\`\``, before: `<p>A${mid}Z</p>`, after: `<p>B${mid}Y</p>`, insert: 'PEER', cut: 150 },
-      { body: (p: string) => `Total {{${p}|1}} here.`, before: `2+${sum}3`, after: `4+${sum}5`, insert: '9+', cut: 150 },
+      { body: (p: string) => `Total {{${p}|1}} here.`, before: `2+${sum}3`, after: `4+${sum}5`, insert: '9+', cut: 150, inline: 1 },
     ];
-    for (const { body, before, after, insert, cut } of cases) {
+    for (const { body, before, after, insert, cut, inline = 0 } of cases) {
       const live = docOf(body(before));
       const targetDoc = docOf(body(after));
       const id = payloadIdOf(live);
       const blocks = blockItems(live);
+      const inlines = inlineItems(live);
+      expect(inlines.length).toBe(inline);
       const text = () => payloadText(payloadDocsFor(live).hold(id));
       expect(text().toString()).toBe(before);
       const middleIds = [cut - 100, cut, cut + 100].map((at) => itemIdAt(text(), at));
@@ -481,6 +498,9 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
       const kept = blockItems(live);
       expect(kept.length).toBe(blocks.length);
       kept.forEach((item, i) => expect(item === blocks[i], `block ${i} keeps its item`).toBe(true));
+      const keptInline = inlineItems(live);
+      expect(keptInline.length).toBe(inlines.length);
+      keptInline.forEach((item, i) => expect(item === inlines[i] && !item.deleted, `inline ${i} keeps its item`).toBe(true));
       expect(text().toString()).toBe(after);
       for (const [at, itemId] of [cut - 100, cut, cut + 100].map((at, i) => [at, middleIds[i]!] as const)) {
         expect(itemIdAt(text(), at), `the item at ${at} is kept`).toEqual(itemId);
@@ -491,5 +511,94 @@ describe('T6.1 identity-preserving reconcile @p:mean-3 @p:tech-5', () => {
       expect(payloadText(payloadDocsFor(peer).hold(id)).toString()).toBe(text().toString());
       expect(exportDocMarkdown(peer)).toBe(exportDocMarkdown(live));
     }
+  });
+
+  it('the inline identity check fails for a formula recreated with its own payload (negative control, B323)', () => {
+    const live = docOf('Total {{2+3|5}} here.');
+    const id = payloadIdOf(live);
+    const [formulaItem] = inlineItems(live);
+    expect(formulaItem).toBeDefined();
+    serverWrite(live, RESTORE, () => {
+      const node = ($getRoot().getFirstChild() as ElementNode).getChildren().find((child) => child.getType() === 'formula')!;
+      const fresh = $parseSerializedNode(node.exportJSON());
+      (fresh as unknown as { __regId: string }).__regId = id;
+      node.replace(fresh);
+    });
+    expect(payloadIdOf(live)).toBe(id);
+    expect(payloadText(payloadDocsFor(live).hold(id)).toString()).toBe('2+3');
+    expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf('Total {{2+3|5}} here.')));
+    expect(formulaItem!.deleted).toBe(true);
+    expect(inlineItems(live)[0] === formulaItem).toBe(false);
+  });
+
+  it('any reorder of unchanged blocks keeps every block item, or is refused writing nothing (B332)', () => {
+    const order = fc.array(block, { minLength: 2, maxLength: 6 }).chain((base) =>
+      fc.tuple(fc.constant(base), fc.shuffledSubarray(base.map((_, i) => i), { minLength: base.length, maxLength: base.length })));
+    fc.assert(fc.property(order, ([base, perm]) => {
+      const blocks = base.map((b, i) => render(b.kind, `k${i}x`, b.words, ''));
+      const before = [...blocks, SENTINEL].join('\n\n');
+      const live = docOf(before);
+      const targetDoc = docOf([...perm.map((i) => blocks[i]!), SENTINEL].join('\n\n'));
+      // Only true reorders: adjacent lists of one kind merge in markdown, which changes the blocks themselves.
+      const sigs = (doc: Y.Doc) => children(bodyState(doc)).map(stableStringify).sort();
+      fc.pre(stableStringify(sigs(live)) === stableStringify(sigs(targetDoc)));
+      const items = blockItems(live);
+      const vector = Y.encodeStateVector(live);
+      try {
+        reconcileBody(live, bodyState(targetDoc), RESTORE);
+        expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+      } catch (error) {
+        expect(error).toBeInstanceOf(ReconcileRefused);
+        expect(Y.encodeStateVector(live)).toEqual(vector);
+        expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf(before)));
+      }
+      items.forEach((item, i) => expect(item.deleted, `block ${i} keeps its item`).toBe(false));
+    }), { numRuns: 40 });
+  });
+
+  // Each block is unique and unchanged; the target only reorders them. The four-block permutation lets tier 2 take one
+  // end of a crossing move (Charlie reconciled into Alpha), so the guard must see the move before tier 2 runs.
+  it.each([
+    ['a swap between fixed blocks', ['Intro', 'First', 'Second', 'Tail'], ['Intro', 'Second', 'First', 'Tail']],
+    ['two adjacent swaps', ['Alpha', 'Bravo', 'Charlie', 'Delta'], ['Bravo', 'Alpha', 'Delta', 'Charlie']],
+    ['a rotation', ['Alpha', 'Bravo', 'Charlie', 'Delta'], ['Bravo', 'Charlie', 'Delta', 'Alpha']],
+    ['a reversal', ['Alpha', 'Bravo', 'Charlie', 'Delta'], ['Delta', 'Charlie', 'Bravo', 'Alpha']],
+  ])('%s keeps every block, its anchor and a withheld peer insert, or is refused writing nothing (B332)', (_, from, to) => {
+    const body = (names: string[]) => names.map((name) => `${name} unique block.`).join('\n\n');
+    const before = body(from);
+    const live = docOf(before);
+    const targetDoc = docOf(body(to));
+    const items = blockItems(live);
+    const anchors = from.map((name) => anchorOn(live, `${name} unique`));
+    // The peer types into every block, so whichever one a copy would recreate holds a withheld insert.
+    const peer = fork(live);
+    serverWrite(peer, 'peer', () => {
+      from.forEach((name, i) => $firstText($getRoot().getChildAtIndex(i))!.setTextContent(`${name} PEER unique block.`));
+    });
+    const vector = Y.encodeStateVector(live);
+
+    let refused = false;
+    try {
+      reconcileBody(live, bodyState(targetDoc), RESTORE);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReconcileRefused);
+      expect((error as ReconcileRefused).status).toBe(409);
+      refused = true;
+    }
+    if (refused) {
+      expect(Y.encodeStateVector(live)).toEqual(vector);
+      expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(docOf(before)));
+    } else {
+      expect(exportDocMarkdown(live)).toBe(exportDocMarkdown(targetDoc));
+    }
+    from.forEach((name, i) => {
+      expect(items[i]!.deleted, `${name} keeps its item`).toBe(false);
+      expect(anchorText(live, anchors[i]!), `${name} keeps its anchor`).toBe(`${name} unique`);
+    });
+    share(peer, live);
+    share(live, peer);
+    const merged = exportDocMarkdown(live);
+    for (const name of from) expect(merged, `${name} shows the peer insert`).toContain(`${name} PEER unique block.`);
+    expect(exportDocMarkdown(peer)).toBe(merged);
   });
 });

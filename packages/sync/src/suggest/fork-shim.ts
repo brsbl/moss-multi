@@ -28,6 +28,9 @@ export function bindEditor(doc: Y.Doc): { editor: LexicalEditor; binding: Bindin
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
   const stopRegisters = bindRegisters(editor, doc, { serializedImports: true });
+  // The client's registers hold every payload its tree names. Here each commit's text walk reads them, which Lexical
+  // runs only for a text-content listener (patches/lexical@0.48.0.patch).
+  const stopText = editor.registerTextContentListener(noop);
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
@@ -43,6 +46,7 @@ export function bindEditor(doc: Y.Doc): { editor: LexicalEditor; binding: Bindin
     undo,
     dispose: () => {
       undo.destroy();
+      stopText();
       stopUpdates();
       stopRegisters();
       stopWhitespace();

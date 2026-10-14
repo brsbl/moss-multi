@@ -3,6 +3,7 @@
 // as Diff vs current or in a read-only, unbound MarkdownEditor; Restore asks through moss's ConfirmationDialog.
 // With no versions it is moss's VersionHistoryEmptyState, where an editor saves a first named checkpoint. A failed
 // fetch is said as an error, never shown as an empty history. The live editor stays mounted and bound underneath.
+import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { MarkdownEditor } from '@moss-desktop/renderer/editor/MarkdownEditor';
 import { VersionHistoryEmptyState } from '@moss/shared/components/notes/VersionHistoryEmptyState';
 import { Button } from '@moss/shared/components/ui/button';
@@ -10,7 +11,8 @@ import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dial
 import { Input } from '@moss/shared/components/ui/input';
 import { noteEntityAtom } from '@moss/shared/state/note-atoms';
 import {
-  HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR, type HistoryViewState,
+  HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, VERSION_BADGE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
+  type HistoryViewState,
 } from '@moss-multi/protocol/dom-contract';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { captureRestoreBase, type RestoreBase } from '@moss-multi/sync/restore-base';
@@ -19,7 +21,7 @@ import { ArrowLeft, Clock, History, RotateCcw, Tag } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
-import { heldDocOf } from '../collab/doc-session.ts';
+import { heldDocOf, waitDocsAcked } from '../collab/doc-session.ts';
 import { displayTitle } from '../collab/title-binding.ts';
 import { versionPreviewNoteId } from '../media/web-asset-url.ts';
 import { timeAgo } from '../surfaces/NotificationsBell.tsx';
@@ -43,6 +45,9 @@ interface VersionText {
 }
 
 const NAME_MAX = 80;
+/** How long a save or a diff waits for this tab's own edits to be acked, as the trash guard does. */
+const ACK_WAIT_MS = 5_000;
+const UNSYNCED = 'Your latest edits are not synced yet.';
 
 // Which notes have History open.
 const open = new Set<string>();
@@ -92,10 +97,14 @@ const docUrl = (docId: string) => `/api/docs/${encodeURIComponent(docId)}`;
 const refusal = (json: Record<string, unknown>, fallback: string): string =>
   typeof json.message === 'string' ? json.message : json.error === 'rate-limited' ? 'Too many requests. Try again in a minute.' : fallback;
 
-/** The note's body as markdown, without its frontmatter: what the read-only editor renders. */
+/**
+ * The note's body as markdown, without its frontmatter: what the read-only editor renders. A leading section is
+ * frontmatter only when it parses as a properties mapping, as the import reads it; a note with no properties can
+ * start with a rule.
+ */
 function bodyOf(markdown: string): string {
-  const match = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(markdown);
-  return match ? markdown.slice(match[0].length).replace(/^\r?\n/, '') : markdown;
+  const parts = splitFrontmatter(markdown);
+  return parts.hasFrontmatter && !parts.error ? parts.body.replace(/^\r?\n/, '') : markdown;
 }
 
 function formatBytes(n: number): string {
@@ -109,14 +118,14 @@ const BADGE = 'inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-mi
 function VersionBadge({ kind }: { kind: VersionKind }): ReactNode {
   if (kind === 'named') {
     return (
-      <span className={`${BADGE} bg-surface-note-selected/70 text-accent-brand-pressed`}>
+      <span {...{ [VERSION_BADGE_ATTR]: '' }} className={`${BADGE} bg-surface-note-selected/70 text-accent-brand-pressed`}>
         <Tag aria-hidden className="h-2.5 w-2.5" />
         Named
       </span>
     );
   }
-  if (kind === 'restore-point') return <span className={`${BADGE} bg-surface-badge text-accent-terracotta`}>Restore point</span>;
-  return <span className={`${BADGE} bg-surface-badge text-ink-muted`}>Auto</span>;
+  if (kind === 'restore-point') return <span {...{ [VERSION_BADGE_ATTR]: '' }} className={`${BADGE} bg-surface-badge text-accent-terracotta`}>Restore point</span>;
+  return <span {...{ [VERSION_BADGE_ATTR]: '' }} className={`${BADGE} bg-surface-badge text-ink-muted`}>Auto</span>;
 }
 
 /** In the top bar: History, for a signed-in person who can open the note. */
@@ -153,6 +162,11 @@ function SaveVersion({ docId, onSaved, compact }: { docId: string; onSaved: (id:
     setBusy(true);
     setError(null);
     try {
+      // The version is what the server holds, so this tab's own typing reaches it first; unsynced, nothing is sent.
+      if (!(await waitDocsAcked([docId], ACK_WAIT_MS))) {
+        setError(`${UNSYNCED} The version was not saved; try again in a moment.`);
+        return;
+      }
       const result = await call(`${docUrl(docId)}/versions`, { name: trimmed });
       if (!result.ok) {
         setError(refusal(result.json, 'The version could not be saved.'));
@@ -313,15 +327,22 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
     // `texts` is read only to skip a version already loaded, so it is not a dependency.
   }, [docId, selected?.id, textRound]);
 
-  // The current note, read again whenever the diff is asked for.
+  // The current note, read again whenever the diff is asked for, once this tab's own typing has reached the server.
   useEffect(() => {
     if (mode !== 'diff' || !selected) return;
     let live = true;
     setCurrent({ state: 'loading' });
-    call(`${docUrl(docId)}/content`).then(
-      ({ ok, text, json }) => live && setCurrent(ok ? { state: 'ready', value: text } : { state: 'error', message: refusal(json, 'The current note could not be loaded.') }),
-      () => live && setCurrent({ state: 'error', message: 'The current note could not be loaded. The server could not be reached.' }),
-    );
+    void waitDocsAcked([docId], ACK_WAIT_MS).then((acked) => {
+      if (!live) return;
+      if (!acked) {
+        setCurrent({ state: 'error', message: `${UNSYNCED} The note can be compared once they are.` });
+        return;
+      }
+      call(`${docUrl(docId)}/content`).then(
+        ({ ok, text, json }) => live && setCurrent(ok ? { state: 'ready', value: text } : { state: 'error', message: refusal(json, 'The current note could not be loaded.') }),
+        () => live && setCurrent({ state: 'error', message: 'The current note could not be loaded. The server could not be reached.' }),
+      );
+    });
     return () => {
       live = false;
     };

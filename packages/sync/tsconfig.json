@@ -26,7 +26,8 @@
     "test/harness",
     "measure/anchors.ts",
     "measure/anchors-worker.ts",
-    "measure/doc-worker.ts"
+    "measure/doc-worker.ts",
+    "measure/search-worker.ts"
   ],
   "exclude": [
     "src/converter"

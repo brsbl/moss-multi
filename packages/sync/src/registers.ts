@@ -3,7 +3,7 @@
 // the node's own fields are a render cache that never ride the wire. Getters read the payload doc, setters write minimal diffs to it, and only the client (or server
 // mirror) that mints an id writes its payload's first text, in the update that creates its element.
 import {
-  $getEditor, $getNodeByKey, $getRoot, $isElementNode, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
+  $getEditor, $getNodeByKey, COLLABORATION_TAG, type EditorState, type LexicalEditor, type LexicalNode, type NodeKey,
 } from 'lexical';
 import * as Y from 'yjs';
 import { diffAtCaret, diffText, rebaseOps, SERVER_CELL_BUDGET } from '@moss-multi/core/text-diff';
@@ -164,9 +164,10 @@ export function readMapEntries(node: LexicalNode): Map<string, unknown> | undefi
 }
 
 /** A node's payload value as its first write carries it: its text, or its compound fields' encoded keys. */
-function seedOf(node: RegisterNode): string | Map<string, unknown> {
+export function seedOf(node: LexicalNode): string | Map<string, unknown> {
+  const fields = node as RegisterNode;
   const codec = MAP_REGISTERS[node.getType()];
-  return codec ? codec.encode(fieldsOf(node, codec)) : String(node[REGISTER_FIELDS[node.getType()]] ?? '');
+  return codec ? codec.encode(fieldsOf(fields, codec)) : String(fields[REGISTER_FIELDS[node.getType()]] ?? '');
 }
 
 /** Gives a node a new id whose first text this editor writes when the update commits (rule 2). */
@@ -182,14 +183,14 @@ function $mint(registry: Registry, node: RegisterNode, id: string = newPayloadId
  */
 export function $assignRegisterIds(): void {
   const registry = currentRegistry();
-  const walk = (node: LexicalNode) => {
-    if (isPayloadType(node.getType())) {
-      if (registry) $mint(registry, node as RegisterNode);
-      else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
-    }
-    if ($isElementNode(node)) for (const child of node.getChildren()) walk(child);
+  const assign = (node: LexicalNode) => {
+    if (registry) $mint(registry, node as RegisterNode);
+    else ((node as RegisterNode).getWritable() as RegisterNode).__regId = newPayloadId();
   };
-  walk($getRoot());
+  // Every node the update holds, rather than a walk of the tree: an import makes millions, and the walk looked each
+  // one up by key. A payload node counts only in the tree; ids are random, so the order is immaterial.
+  const nodes = $getEditor()._pendingEditorState!._nodeMap;
+  for (const node of nodes.values()) if (isPayloadType(node.__type) && node.isAttached()) assign(node);
 }
 
 /**

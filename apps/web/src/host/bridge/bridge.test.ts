@@ -57,7 +57,7 @@ describe('the T0.5a bridge', () => {
     void listed.then(settled, settled);
     controller.abort();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(fetch.mock.calls[0]?.[1]?.signal?.aborted, 'the read carries the leave, with its deadline').toBe(true);
     expect(settled, 'a leave never fails the read').not.toHaveBeenCalled();
     leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
     stay();
@@ -91,6 +91,36 @@ describe('the T0.5a bridge', () => {
     stay();
     expect((await listed).map((note) => note.id), 'the page stayed, so the read is sent again').toEqual(['d1']);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  // An opened note's backlinks read, in flight as the page navigated, was WebKit's "…due to access control checks"
+  // page error (j01-presence, run 38410412024; T3.B27).
+  it("holds an opened note's backlinks read while the page leaves, and sends it again if the page stays", async () => {
+    const controller = new AbortController();
+    let stay = () => undefined as void;
+    const stayed = new Promise<void>((resolve) => { stay = resolve; });
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>((input, init) => {
+      if (!String(input).endsWith('/backlinks')) return Promise.resolve(Response.json(LISTING));
+      signals.push(init?.signal);
+      if (signals.length > 1) return Promise.resolve(Response.json({ backlinks: [] }));
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+    let leave = { signal: controller.signal, stayed };
+    const api = createBridge({ pathname: () => '/', fetch, leaving: () => leave });
+    await api.notes.getAll();
+    await api.notes.getById('d1');
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(signals[0]?.aborted).toBe(false);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signals[0]?.aborted, 'the read carries the leave').toBe(true);
+    expect(signals, 'held while the page leaves').toHaveLength(1);
+    leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
+    stay();
+    await vi.waitFor(() => expect(signals, 'the page stayed, so the read is sent again').toHaveLength(2));
   });
 
   it('keeps every subscription callable', () => {
@@ -344,6 +374,21 @@ describe('the T3.7 bridge: tab, print and download (R4; A§9 Export)', () => {
     const viaOpener = createBridge({ pathname: () => '/pdf-export', fetch: quiet(), browser: hooks({ session: memory(), openerSession: () => session }) });
     expect(await viaOpener.notes.getPdfExportSession(id)).toEqual(expected);
     expect(await child.notes.getPdfExportSession('another'), 'an unknown session is none').toBeNull();
+  });
+
+  it("opens the /pdf-export tab with the page's share link, so a link reader's images load there (B171)", async () => {
+    const openWindow = vi.fn(() => true);
+    const api = createBridge({ pathname: () => '/d/d1', fetch: quiet(), share: () => 'tok en/1?&', browser: hooks({ openWindow, session: memory() }) });
+    const id = await api.notes.createPdfExportSession('d1', { title: 'Plans', markdown: '' });
+    expect(await api.notes.openPdfExportPreview(id)).not.toBeNull();
+    expect(await api.notes.openPdfExportRenderSurface(id)).not.toBeNull();
+    for (const [opened] of openWindow.mock.calls as unknown as [string][]) {
+      const url = new URL(opened, 'https://moss.example');
+      expect(url.pathname).toBe('/pdf-export');
+      expect(url.searchParams.get('pdfExportSessionId')).toBe(id);
+      expect(url.searchParams.get('share'), 'the share link rides along, whole').toBe('tok en/1?&');
+      expect([...url.searchParams.keys()].sort()).toEqual(['pdfExportSessionId', 'share']);
+    }
   });
 
   it('reports a blocked print tab as a failed open', async () => {

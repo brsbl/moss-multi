@@ -2,7 +2,7 @@
 import {
   isOutdated, OUTDATED_ERROR, OUTDATED_STATUS, PROTOCOL_HEADER, PROTOCOL_PARAM, protocolOf,
 } from '@moss-multi/protocol/client-protocol';
-import { DOC_BODY_CAP_BYTES, JSON_BODY_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { JSON_BODY_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { CLOSE } from '@moss-multi/protocol/sync';
 import type { Build } from '../provenance.ts';
 import { HTML_FRAME_PATH, htmlFrameResponse } from './html-frame.ts';
@@ -68,12 +68,17 @@ const outdatedRest = (request: Request): boolean => {
 };
 
 const MEDIA_UPLOAD = /^\/api\/docs\/[^/]+\/assets$/;
+const VERSION_RESTORE = /^\/api\/docs\/[^/]+\/versions\/[^/]+\/restore$/;
 const DOC_BODY = /^\/api\/docs(?:\/[^/]+\/push)?$/;
 
-/** The most an /api body may hold (A§18), or null for a media upload, which checks its own declared length (assets.ts). */
+/**
+ * The most an /api body may hold (A§18), or null for a route that caps its own after admission, so a refused caller's
+ * body is never read: a media upload by its declared length (assets.ts), a note create and a push, which carry a whole
+ * document (docs.ts, push.ts), and a restore, whose base can run to tens of MB (versions.ts).
+ */
 export function bodyCapFor(pathname: string): number | null {
-  if (MEDIA_UPLOAD.test(pathname)) return null;
-  return DOC_BODY.test(pathname) ? DOC_BODY_CAP_BYTES : JSON_BODY_CAP_BYTES;
+  if (MEDIA_UPLOAD.test(pathname) || VERSION_RESTORE.test(pathname) || DOC_BODY.test(pathname)) return null;
+  return JSON_BODY_CAP_BYTES;
 }
 
 const tooLarge = () => json({ error: 'too-large', message: 'The request body is too large.' }, 413, { 'cache-control': 'no-store' });

@@ -1,11 +1,14 @@
 // An agent's push is attributed with Bot-badged presence (T7.3; A§10.7, A§17): the DocDO adds a server-owned awareness
 // entry for about 15 s, refreshed before a client's 12 s sweep could drop it, then removes it. Only presence-allowed
-// sockets hear it, and a socket cannot take the entry over.
+// sockets hear it, and a socket cannot take the entry over. A timer-driven refresh or removal first re-validates the
+// sockets (A§8), so a revoked reader whose kick was missed hears none of it.
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
+import { encodePartyPrincipal, TRUSTED } from '@moss-multi/protocol/sync';
 import { sha256Hex } from '../../src/doc/bases.ts';
-import { connect, openDoc, start, type Opened, type TestClient } from './do-harness.ts';
+import { DocDO } from '../../src/doc-do.ts';
+import { Backing, connect, openDoc, start, type Opened, type TestClient } from './do-harness.ts';
 
 beforeEach(() => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] }));
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
@@ -125,4 +128,65 @@ it('a socket cannot take over the agent entry or clear it', async () => {
   await ben.deliver(frame(benState, 99));
   await ben.deliver(frame(null, 100));
   expect(bots(opened).map(([id]) => id)).toEqual([botId]);
+});
+
+/** A socket the Worker admitted under the doc's access epoch `owner:1`. */
+const admitted = (id: string) => ({ headers: {
+  [TRUSTED.principal]: encodePartyPrincipal({ id, kind: 'user', name: id }),
+  [TRUSTED.role]: 'editor', [TRUSTED.session]: `sess-${id}`, [TRUSTED.resolvedAt]: String(Date.now()), [TRUSTED.epoch]: 'owner:1',
+} });
+
+it('a timer-driven refresh or removal reaches only sockets that still have access, even when a kick was missed (B351)', async () => {
+  // D1's view: an epoch, and who may read. Revoking Ben moves the epoch and drops him, with no kick delivered.
+  let epoch = 'owner:1';
+  const readers = new Set(['ada', 'ben', AGENT.id]);
+  class CheckedDocDO extends DocDO {
+    static override access = () => ({
+      stamp: (_docId: string, sessions: string[], agents: string[]) => Promise.resolve({ key: epoch, sessions: new Set(sessions), agents: new Set(agents) }),
+      resolve: (_docId: string, who: { principalId: string }) => Promise.resolve(readers.has(who.principalId) ? { role: 'editor' as const, presence: true } : null),
+    });
+  }
+  const opened = await start(openDoc(new Backing(), CheckedDocDO as never));
+  await opened.dobj.create({ folderId: 'f', ownerId: 'ada', markdown: BODY });
+  const ada = await connect(opened, admitted('ada'));
+  const ben = await connect(opened, admitted('ben'));
+  const base = await opened.dobj.pullMarkdown();
+  expect(await agentPush(opened, base, base.replace('Peas next.', 'Peas next, then squash.'))).toMatchObject({ ok: true });
+  const [[botId]] = bots(opened) as [[number, unknown]];
+  expect(heard(ben).some(([id]) => id === botId), 'Ben hears the agent while he may read').toBe(true);
+
+  epoch = 'owner:2';
+  readers.delete('ben');
+  const benHeard = heard(ben).length;
+  const adaHeard = heard(ada).length;
+  await vi.advanceTimersByTimeAsync(9_000);
+  expect(heard(ben), 'the revoked socket hears no refresh').toHaveLength(benHeard);
+  expect(heard(ada).length, 'a permitted peer still does').toBeGreaterThan(adaHeard);
+  await vi.advanceTimersByTimeAsync(AGENT_PRESENCE_MS);
+  expect(bots(opened), 'the entry still expires').toHaveLength(0);
+  expect(heard(ben), 'nor its removal').toHaveLength(benHeard);
+  expect(heard(ada).at(-1), 'which the permitted peer hears').toEqual([botId, expect.any(Number), null]);
+});
+
+it('a refresh whose validation cannot answer is not sent, and the entry still expires on time (B351)', async () => {
+  let failing = false;
+  class FlakyDocDO extends DocDO {
+    static override access = () => ({
+      stamp: (_docId: string, sessions: string[], agents: string[]) => (failing
+        ? Promise.reject(new Error('D1 down'))
+        : Promise.resolve({ key: 'owner:1', sessions: new Set(sessions), agents: new Set(agents) })),
+      resolve: () => Promise.resolve({ role: 'editor' as const, presence: true }),
+    });
+  }
+  const opened = await start(openDoc(new Backing(), FlakyDocDO as never));
+  await opened.dobj.create({ folderId: 'f', ownerId: 'ada', markdown: BODY });
+  const ada = await connect(opened, admitted('ada'));
+  const base = await opened.dobj.pullMarkdown();
+  expect(await agentPush(opened, base, base.replace('Peas next.', 'Peas next, then squash.'))).toMatchObject({ ok: true });
+  expect(bots(opened)).toHaveLength(1);
+  failing = true;
+  const adaHeard = heard(ada).length;
+  await vi.advanceTimersByTimeAsync(AGENT_PRESENCE_MS + 1_000);
+  expect(heard(ada), 'nothing is sent without a validation').toHaveLength(adaHeard);
+  expect(bots(opened), 'the entry expires on time').toHaveLength(0);
 });
