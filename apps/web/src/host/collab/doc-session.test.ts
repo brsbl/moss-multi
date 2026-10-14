@@ -482,10 +482,93 @@ it('detaches an outbox stalled at its budget with writes still queued and conver
   expect(terminalOf('doc')).toBeNull();
   expect(fresh.closes).toEqual([]);
 });
-it('asks the DocDO to reserve a multi-frame write before its frames (B209)', async () => {
+/** The paste reservation API (B209), looked up so the rest of the file runs while it is missing. */
+type Ticket = { id: string; answer: string; settled: Promise<void>; land(): void; end(): void };
+const reservePaste = (doc: Y.Doc, bytes: number): Ticket | null =>
+  (sessionModule as { reservePaste?: (doc: Y.Doc, bytes: number) => Ticket | null }).reservePaste?.(doc, bytes) ?? null;
+const customSent = (socket: FakeSocket) => socket.sent.filter((frame): frame is string => typeof frame === 'string').map((frame) => JSON.parse(frame.slice('__YPS:'.length)) as { t: string; p?: unknown; b?: number });
+/** The tag sent right before each write frame of `socket`, or null for an untagged write. */
+const writeTags = (socket: FakeSocket) => socket.sent.flatMap((frame, i) => {
+  if (writeOf(frame) === null) return [];
+  const before = socket.sent[i - 1];
+  return [typeof before === 'string' && before.includes('"t":"paste"') ? (JSON.parse(before.slice('__YPS:'.length)) as { p: string[] }).p : null];
+});
+it('reserves a large paste by its id before any of it lands, waits for the answer, and tags each frame that writes it (B209)', async () => {
   const socket = latest(); socket.open(); session.provider.synced = true;
-  sessionModule.reserveWrite(session.doc, 1234.5);
-  expect(socket.sent.at(-1)).toBe('__YPS:{"t":"reserve","b":1235}');
+  const ticket = reservePaste(session.doc, 1_000);
+  expect(ticket, 'a session reserves for its doc').not.toBeNull();
+  expect(customSent(socket).at(-1)).toEqual({ t: 'reserve', p: ticket!.id, b: 1_030 });
+  expect(ticket!.answer).toBe('pending');
+  serverEvent(socket, { t: 'reserved', p: ticket!.id });
+  await ticket!.settled;
+  expect(ticket!.answer).toBe('reserved');
+  ticket!.land();
+  session.doc.getText('title').insert(0, 'pasted');
+  expect(writeTags(socket), 'the paste\'s frame names it').toEqual([[ticket!.id]]);
+  ticket!.end();
+  // Still unacked: a later frame may carry the paste's writes, so it names the paste too.
+  await vi.advanceTimersByTimeAsync(0);
+  session.doc.getText('title').insert(0, 'typed ');
+  expect(writeTags(socket).at(-1)).toEqual([ticket!.id]);
+  expect(socket.closes).toEqual([]);
+});
+it('refuses only the new paste when its reserve is refused: nothing of it is written and the socket stays (B209)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const ticket = reservePaste(session.doc, 1_000);
+  serverEvent(socket, { t: 'reserve-refused', p: ticket!.id });
+  await ticket!.settled;
+  expect(ticket!.answer).toBe('refused');
+  expect(socket.sent.some((frame) => writeOf(frame) !== null)).toBe(false);
+  expect(session.state.resync, 'no reload').toBe(false);
+  expect(socket.closes).toEqual([]);
+});
+it('sends an unanswered reserve again on the next socket, and tags the ledger replay with the pastes it carries (B209)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const landed = reservePaste(session.doc, 1_000);
+  serverEvent(socket, { t: 'reserved', p: landed!.id });
+  await landed!.settled;
+  landed!.land();
+  session.doc.getText('title').insert(0, 'pasted');
+  landed!.end();
+  const waiting = reservePaste(session.doc, 2_000);
+  socket.ended(1006);
+  await vi.advanceTimersByTimeAsync(5_000);
+  const fresh = latest();
+  expect(fresh).not.toBe(socket);
+  fresh.open();
+  expect(customSent(fresh).filter((event) => event.t === 'reserve'), 'the unanswered reserve, again').toEqual([{ t: 'reserve', p: waiting!.id, b: 2_060 }]);
+  expect(writeTags(fresh)[0], 'the replay names the paste whose writes it carries').toEqual([landed!.id]);
+  expect(sentTitle(fresh)).toBe('pasted');
+});
+it('holds the frames of a paste that lands before its answer: a refusal drops them, keeps what went before, and rebinds (B209)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  session.doc.getText('title').insert(0, 'before ');
+  const ticket = reservePaste(session.doc, 1_000);
+  // A key pressed while the reserve is unanswered lands the paste at once; its frames wait for the answer.
+  ticket!.land();
+  session.doc.getText('title').insert(7, 'pasted');
+  ticket!.end();
+  session.doc.getText('title').insert(13, ' typed');
+  expect(sentTitle(socket), 'only the edit before the paste went out').toBe('before ');
+  serverEvent(socket, { t: 'reserve-refused', p: ticket!.id });
+  await ticket!.settled;
+  await vi.advanceTimersByTimeAsync(0);
+  expect(sentTitle(socket), 'nothing of the paste, or after it, is sent').toBe('before ');
+  expect(session.state.resync, 'the pane rebinds to what the server holds').toBe(true);
+  expect(socket.closes).toEqual([]);
+});
+it('sends the held frames of a paste that landed before its answer once it is reserved (B209)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const ticket = reservePaste(session.doc, 1_000);
+  ticket!.land();
+  session.doc.getText('title').insert(0, 'pasted');
+  ticket!.end();
+  expect(sentTitle(socket)).toBe('');
+  serverEvent(socket, { t: 'reserved', p: ticket!.id });
+  await ticket!.settled;
+  expect(sentTitle(socket)).toBe('pasted');
+  expect(writeTags(socket)).toEqual([[ticket!.id]]);
+  expect(session.state.resync).toBe(false);
 });
 it('counts payloads as the DocDO\'s total plus unacked local growth: a paste that fits only beside the larger of the two is refused, and the ack neither loses nor double-counts the growth (B207)', async () => {
   const { pasteFits } = await import('../large-paste.ts');

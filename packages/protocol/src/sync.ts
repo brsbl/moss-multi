@@ -95,6 +95,9 @@ export type ServerEvent =
    * without `pb` means none.
    */
   | { t: 'usage'; pb: number }
+  /** The answer to a `reserve` (ClientEvent): the room for paste `p` is held, or it is refused whole (T3.B4). */
+  | { t: 'reserved'; p: string }
+  | { t: 'reserve-refused'; p: string }
   | { t: 'doc-deleted' };
 
 /** The same coverage for one payload doc (A§10.10), keyed by its block id in the ack's `p`. */

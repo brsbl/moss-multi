@@ -533,110 +533,137 @@ describe('admission and the write classifier', () => {
     expect(opened.dobj.document.getText('title').toString()).toBe('a'.repeat(32 * 1024));
   });
 
-  it('commits each of two near-cap pastes interleaved after their preflight wholly, or refuses it wholly (B209)', async () => {
+  describe('paste reservations (B209)', () => {
     const limits = { ...DocDO.limits, stateCapBytes: 1024 * 1024 };
     class Reserving extends DocDO {
       static override limits = limits;
     }
-    const opened = await start(openDoc(new Backing(), Reserving as never));
-    const ada = await editorOn(opened);
-    const ben = await editorOn(opened);
-    await typeTitle(ada, 's'.repeat(16 * 1024));
-    await ben.pump();
-    // Each paste: five frames of 6,000 characters, measured before any is sent (the client's preflight).
+    const custom = (event: object) => `${CUSTOM_PREFIX}${JSON.stringify(event)}`;
+    const bytes = (frames: Uint8Array[]) => frames.reduce((sum, frame) => sum + frame.byteLength, 0);
+    /** Five frames of 6,000 `char`s, measured before any is sent (the client's preflight). */
     const paste = (client: TestClient, char: string) => {
       const title = client.doc.getText('title');
       for (let i = 0; i < 5; i += 1) title.insert(title.length, char.repeat(6_000));
       return client.drain();
     };
-    const adaFrames = paste(ada, 'a');
-    const benFrames = paste(ben, 'b');
-    const bytes = (frames: Uint8Array[]) => frames.reduce((sum, frame) => sum + frame.byteLength, 0);
-    const held = Y.encodeStateAsUpdate(opened.dobj.document).byteLength;
-    // Either paste fits beside what the DocDO holds; both together do not.
-    limits.stateCapBytes = held + Math.max(bytes(adaFrames), bytes(benFrames)) + Math.floor(Math.min(bytes(adaFrames), bytes(benFrames)) / 2);
-    await ada.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b: bytes(adaFrames) })}`);
-    await ben.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b: bytes(benFrames) })}`);
-    for (let i = 0; i < 5; i += 1) {
-      if (ada.socket.readyState === 1) await ada.deliver(adaFrames[i]);
-      if (ben.socket.readyState === 1) await ben.deliver(benFrames[i]);
-    }
-    await ada.pump();
-    await ben.pump();
-    const landed = opened.dobj.document.getText('title').toString();
-    const count = (char: string) => landed.split(char).length - 1;
-    expect([0, 30_000], 'Ada\'s paste lands whole or not at all').toContain(count('a'));
-    expect([0, 30_000], 'Ben\'s paste lands whole or not at all').toContain(count('b'));
-    expect(count('a') + count('b'), 'one of them lands').toBe(30_000);
-    const refused = count('a') === 0 ? ada : ben;
-    expect(refused.events).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
-    expect(refused.closed?.code).toBe(CLOSE.writeRefused);
-  });
-
-  it('adds a second reserve to what the socket still holds, so a paste sent while an earlier one is queued is still atomic (B209)', async () => {
-    const limits = { ...DocDO.limits, stateCapBytes: 1024 * 1024 };
-    class Reserving extends DocDO {
-      static override limits = limits;
-    }
-    const opened = await start(openDoc(new Backing(), Reserving as never));
-    const ada = await editorOn(opened);
-    const ben = await editorOn(opened);
-    await typeTitle(ada, 's'.repeat(16 * 1024));
-    await ben.pump();
-    const paste = (client: TestClient, char: string) => {
-      const title = client.doc.getText('title');
-      for (let i = 0; i < 5; i += 1) title.insert(title.length, char.repeat(6_000));
-      return client.drain();
+    const reserve = (client: TestClient, p: string, b: number) => client.deliver(custom({ t: 'reserve', p, b }));
+    /** Each frame right behind the tag naming the paste it writes for, as the outbox sends them. */
+    const send = async (client: TestClient, p: string, frames: Uint8Array[]) => {
+      for (const frame of frames) {
+        if (client.socket.readyState !== 1) return;
+        await client.deliver(custom({ t: 'paste', p: [p] }));
+        await client.deliver(frame);
+      }
     };
-    const bytes = (frames: Uint8Array[]) => frames.reduce((sum, frame) => sum + frame.byteLength, 0);
-    const reserve = (client: TestClient, frames: Uint8Array[]) => client.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b: bytes(frames) })}`);
-    const first = paste(ada, 'a');
-    const second = paste(ada, 'b');
-    const bens = paste(ben, 'c');
-    const held = Y.encodeStateAsUpdate(opened.dobj.document).byteLength;
-    // All three do not fit; with Ada's first paste counted only as its first two frames, they would.
-    limits.stateCapBytes = held + bytes(first) + bytes(second) + bytes(bens) - Math.floor(bytes(first.slice(2)) / 2);
-    await reserve(ada, first);
-    await ada.deliver(first[0]);
-    await ada.deliver(first[1]);
-    // Ada's second paste: its reserve is a string, so it passes the first paste's frames still queued in her outbox.
-    await reserve(ada, second);
-    await reserve(ben, bens);
-    for (const frame of [...first.slice(2), ...second]) if (ada.socket.readyState === 1) await ada.deliver(frame);
-    for (const frame of bens) if (ben.socket.readyState === 1) await ben.deliver(frame);
-    await ada.pump();
-    await ben.pump();
-    const landed = opened.dobj.document.getText('title').toString();
-    const count = (char: string) => landed.split(char).length - 1;
-    expect(count('a'), 'Ada\'s first paste lands whole').toBe(30_000);
-    expect(count('b'), 'Ada\'s second paste lands whole').toBe(30_000);
-    expect(count('c'), 'Ben\'s paste, which no longer fits, is refused whole').toBe(0);
-    expect(ada.closed).toBeNull();
-    expect(ben.events).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
-  });
-
-  it('lets a reservation no write used lapse for good: reserving again neither renews it nor holds new room (B209)', async () => {
-    const limits = { ...DocDO.limits, stateCapBytes: 1024 * 1024 };
-    class Reserving extends DocDO {
-      static override limits = limits;
+    const answer = async (client: TestClient, p: string) => {
+      await client.pump();
+      return client.events.find((event) => (event.t === 'reserved' || event.t === 'reserve-refused') && event.p === p)?.t ?? null;
+    };
+    const count = (opened: Opened, char: string) => opened.dobj.document.getText('title').toString().split(char).length - 1;
+    async function two() {
+      limits.stateCapBytes = 1024 * 1024;
+      const opened = await start(openDoc(new Backing(), Reserving as never));
+      const ada = await connect(opened, { id: 'ada', role: 'editor' });
+      await ada.hello();
+      const ben = await connect(opened, { id: 'ben', role: 'editor' });
+      await ben.hello();
+      await typeTitle(ada, 's'.repeat(16 * 1024));
+      await ben.pump();
+      return { opened, ada, ben, held: () => Y.encodeStateAsUpdate(opened.dobj.document).byteLength };
     }
-    const opened = await start(openDoc(new Backing(), Reserving as never));
-    const ada = await editorOn(opened);
-    const ben = await editorOn(opened);
-    const held = Y.encodeStateAsUpdate(opened.dobj.document).byteLength;
-    limits.stateCapBytes = held + 64 * 1024;
-    const reserve = (b: number) => ada.deliver(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'reserve', b })}`);
-    await reserve(48 * 1024);
-    vi.setSystemTime(Date.now() + 20_000);
-    // Sent again before it lapses: it adds, but does not restart the idle clock.
-    await reserve(1024);
-    expect(ada.closed, 'within the room: not refused').toBeNull();
-    vi.setSystemTime(Date.now() + 15_000);
-    // Lapsed with no write, then reserved again: the socket holds nothing.
-    await reserve(48 * 1024);
-    await typeTitle(ben, 'b'.repeat(32 * 1024));
-    expect(ben.closed, "Ada's idle reservations hold no room").toBeNull();
-    expect(opened.dobj.document.getText('title').toString()).toBe('b'.repeat(32 * 1024));
+
+    it('answers two near-cap reserves in order: the second, past the cap beside the first, is refused before any frame and its socket stays open', async () => {
+      const { opened, ada, ben, held } = await two();
+      const a = paste(ada, 'a');
+      const b = paste(ben, 'b');
+      // Either paste fits beside what the DocDO holds; both together do not.
+      limits.stateCapBytes = held() + bytes(a) + Math.floor(bytes(b) / 2);
+      await reserve(ada, 'A', bytes(a));
+      await reserve(ben, 'B', bytes(b));
+      expect(await answer(ada, 'A')).toBe('reserved');
+      expect(await answer(ben, 'B'), 'refused whole, before any of it is sent').toBe('reserve-refused');
+      await send(ada, 'A', a);
+      expect(count(opened, 'a'), "Ada's paste lands whole").toBe(30_000);
+      expect(count(opened, 'b')).toBe(0);
+      expect(ben.closed, 'a refused reserve never closes the socket').toBeNull();
+      expect(ada.closed).toBeNull();
+      expect(ben.events.some((event) => event.t === 'write-refused')).toBe(false);
+    });
+
+    it('a later reserve refused beside an earlier paste still landing leaves that paste whole', async () => {
+      const { opened, ada, ben, held } = await two();
+      const first = paste(ada, 'a');
+      const second = paste(ada, 'b');
+      const room = 40_000;
+      // Ben's reserve fits beside all of Ada's first paste; her second does not fit beside both.
+      limits.stateCapBytes = held() + bytes(first) + room + Math.floor(bytes(second) / 2);
+      await reserve(ada, 'A', bytes(first));
+      expect(await answer(ada, 'A')).toBe('reserved');
+      await send(ada, 'A', first.slice(0, 2));
+      await reserve(ben, 'R', room);
+      expect(await answer(ben, 'R'), "Ben's reserve fits beside the rest of Ada's first paste").toBe('reserved');
+      // Her second paste's reserve passes the first paste's frames still queued in her outbox.
+      await reserve(ada, 'B', bytes(second));
+      expect(await answer(ada, 'B')).toBe('reserve-refused');
+      expect(ada.closed, 'the refusal closes nothing').toBeNull();
+      await send(ada, 'A', first.slice(2));
+      expect(count(opened, 'a'), "Ada's first paste lands whole").toBe(30_000);
+      expect(count(opened, 'b')).toBe(0);
+      expect(ada.closed).toBeNull();
+    });
+
+    it('keeps a paste\'s reservation when its socket drops partway: a writer in between is refused and the replay on the next socket lands whole', async () => {
+      const { opened, ada, ben, held } = await two();
+      const a = paste(ada, 'a');
+      // Ben's write fits beside the part of Ada's paste that landed, not beside all of it.
+      const w = 20_000;
+      limits.stateCapBytes = held() + bytes(a) + Math.floor(w / 2);
+      await reserve(ada, 'A', bytes(a));
+      expect(await answer(ada, 'A')).toBe('reserved');
+      await send(ada, 'A', a.slice(0, 2));
+      await ada.drop();
+      await typeTitle(ben, 'w'.repeat(w));
+      expect(ben.closed?.code, "the room Ada's paste reserved is still held").toBe(CLOSE.writeRefused);
+      const back = await connect(opened, { id: 'ada', role: 'editor' }, ada.doc);
+      // The ledger replay goes first on the fresh socket, tagged with its paste.
+      await send(back, 'A', a.slice(2));
+      await back.hello();
+      expect(count(opened, 'a'), 'the paste lands whole').toBe(30_000);
+      expect(count(opened, 'w')).toBe(0);
+      expect(back.closed).toBeNull();
+    });
+
+    it('keeps a paste\'s reservation through a wake mid-paste', async () => {
+      const { opened, ada, ben, held } = await two();
+      const a = paste(ada, 'a');
+      const w = 20_000;
+      limits.stateCapBytes = held() + bytes(a) + Math.floor(w / 2);
+      await reserve(ada, 'A', bytes(a));
+      expect(await answer(ada, 'A')).toBe('reserved');
+      await send(ada, 'A', a.slice(0, 2));
+      const woken = await start(wake(opened));
+      ada.opened = woken;
+      ben.opened = woken;
+      await typeTitle(ben, 'w'.repeat(w));
+      expect(ben.closed?.code, 'the reservation outlives the instance').toBe(CLOSE.writeRefused);
+      await send(ada, 'A', a.slice(2));
+      expect(count(woken, 'a'), 'the paste lands whole').toBe(30_000);
+      expect(count(woken, 'w')).toBe(0);
+      expect(ada.closed).toBeNull();
+    });
+
+    it('lets a reservation no write used lapse for good: reserving the same paste again does not renew it', async () => {
+      const { opened, ada, ben, held } = await two();
+      limits.stateCapBytes = held() + 64 * 1024;
+      await reserve(ada, 'A', 48 * 1024);
+      expect(await answer(ada, 'A')).toBe('reserved');
+      vi.setSystemTime(Date.now() + 20_000);
+      await reserve(ada, 'A', 48 * 1024);
+      vi.setSystemTime(Date.now() + 15_000);
+      await typeTitle(ben, 'b'.repeat(32 * 1024));
+      expect(ben.closed, "Ada's idle reservation holds no room").toBeNull();
+      expect(count(opened, 'b')).toBe(32 * 1024);
+    });
   });
 
   it('closes 4401 without a principal and 4429 for a 51st connection', async () => {

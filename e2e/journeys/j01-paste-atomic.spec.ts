@@ -1,0 +1,143 @@
+// j01-paste-atomic (T3.B4, B209): a large paste is wholly committed or wholly refused beside other writers. Its
+// reserve holds room at the DocDO for all of it before any of it lands; the reservation belongs to the paste, so it
+// outlives the socket that made it and the DocDO instance that took it, and a reserve refused beside it closes
+// nothing. Ben is a protocol-level client (doc-client.ts) holding room with a reserve of his own, a writer Ada's
+// preflight cannot see. Ada's doc socket runs through a sever proxy that loses her acks, so her paste's frames go out
+// a part at a time, and can black-hole her socket while she reconnects.
+//
+// The note is created through POST /api/docs as declared setup.
+import type { LexicalEditor } from 'lexical';
+import * as Y from 'yjs';
+import { STATE_CAP_BYTES } from '../../packages/protocol/src/limits.ts';
+import type { ServerEvent } from '../../packages/protocol/src/sync.ts';
+import type { Actor, Actors } from '../lib/actors.ts';
+import { INPUT_REFUSAL_ATTR } from '../lib/contract.ts';
+import { cookieHeader, openDocClient, type DocClient } from '../lib/doc-client.ts';
+import { grantDoc } from '../lib/grants.ts';
+import { exported, importNote, pastePlain } from '../lib/paste.ts';
+import { signIn } from '../lib/principals.ts';
+import type { Stack } from '../lib/stack.ts';
+import { expect, test, ui } from '../lib/test.ts';
+
+/** About 3 MB of state: past the 1.5 MB an outbox sends unacked, so a part of it waits for acks. */
+const A = Array.from({ length: 2_000 }, (_, i) => `Alpha ${i} ${'a'.repeat(990)}.`).join('\n\n');
+/** About 1 MB of state. */
+const B = Array.from({ length: 700 }, (_, i) => `Bravo ${i} ${'b'.repeat(990)}.`).join('\n\n');
+/** A paste's reserve holds this much more than its measured bytes (doc-session.ts RESERVE_SLACK). */
+const SLACK = 1.03;
+
+const count = (text: string, word: string) => text.split(`${word} `).length - 1;
+const stateBytes = (client: DocClient) => Y.encodeStateAsUpdate(client.doc).byteLength;
+
+/** The body text Ada's editor holds includes `text`. */
+const holds = (actor: Actor, docId: string, text: string) => ui.body(actor, docId).evaluate((element, wanted) => {
+  const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+  return editor.getEditorState().read(() => editor.getEditorState()._nodeMap.get('root')!.getTextContent().includes(wanted));
+}, text).catch(() => false);
+
+/** What the latest paste's admission measured it adds (`moss-paste-admission`). */
+const lastAdds = (actor: Actor) => actor.page.evaluate(() => {
+  const marks = performance.getEntriesByName('moss-paste-admission');
+  return ((marks.at(-1) as PerformanceMark | undefined)?.detail as { adds: number } | undefined)?.adds ?? 0;
+});
+
+/** Ben's answer to the reserve `p`, waiting up to `ms` for it; null when none came. */
+async function answer(ben: DocClient, p: string, ms = 10_000): Promise<string | null> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const found = ben.events.find((event) => (event as { p?: unknown }).p === p) as (ServerEvent & { t: string }) | undefined;
+    if (found || Date.now() > deadline) return found?.t ?? null;
+    await new Promise((done) => setTimeout(done, 200));
+  }
+}
+
+async function open(actors: Actors, stack: Stack) {
+  const ada = await actors.session(await actors.principal('ada'), { severable: true });
+  const docId = await importNote(ada, stack, 'Paste target', 'Kept.');
+  const principal = await actors.principal('ben');
+  await grantDoc(ada, docId, principal);
+  await ada.goto(`/d/${docId}`);
+  await ui.waitLive(ada, docId);
+  await ada.observeEditor(docId);
+  const ben = await openDocClient(stack.baseUrl, docId, cookieHeader(await signIn(stack.baseUrl, principal)));
+  await ben.synced;
+  await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
+  await ada.page.keyboard.press('End');
+  return { ada, ben, docId };
+}
+
+/** Ada pastes A with her acks lost: the part the outbox may send unacked goes out, the rest waits. */
+async function pasteHeld(ada: Actor, docId: string): Promise<number> {
+  ada.sever!.loseAcks();
+  await pastePlain(ada, docId, A);
+  await expect.poll(() => holds(ada, docId, 'Alpha 1999 '), { message: 'A lands in Ada\'s editor', timeout: 180_000 }).toBe(true);
+  return Math.ceil((await lastAdds(ada)) * SLACK);
+}
+
+/** Every line of A on the server and in Ada's editor, none of B, and the note still takes typing. */
+async function expectWhole(ada: Actor, docId: string): Promise<void> {
+  await ui.waitAcked(ada, docId, 240_000);
+  const text = await exported(ada, docId);
+  expect(count(text, 'Alpha'), 'every line of the paste reached the server').toBe(2_000);
+  expect(count(text, 'Bravo'), 'nothing of a refused paste did').toBe(0);
+  expect(await holds(ada, docId, 'Bravo 0 '), 'nor Ada\'s editor').toBe(false);
+  await ui.typeBody(ada, docId, ' Still typing.');
+  await ui.waitAcked(ada, docId, 60_000);
+  await expect.poll(async () => (await exported(ada, docId)).includes('Still typing.'), { message: 'the note stays editable', timeout: 60_000 }).toBe(true);
+}
+
+test('j01-paste-atomic: a paste refused at its reserve beside another writer’s room closes nothing, and the earlier paste still landing lands whole @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(480_000);
+  const { ada, ben, docId } = await open(actors, stack);
+  // Each stall at the outbox's budget reconnects and replays (STUCK_MS) while the acks are lost.
+  ada.expectReconnects(6, docId);
+  try {
+    const before = stateBytes(ben);
+    const reserved = await pasteHeld(ada, docId);
+    // Ben holds room that fits beside all of A, but not beside A and B; Ada's preflight cannot see it.
+    ben.custom({ t: 'reserve', p: 'ben-room', b: STATE_CAP_BYTES - before - reserved - 200_000 });
+    const bens = await answer(ben, 'ben-room');
+    await pastePlain(ada, docId, B);
+    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'B is refused, visibly').toContainText('size limit', { timeout: 120_000 });
+    ada.sever!.restore();
+    await expectWhole(ada, docId);
+    expect(bens, 'Ben\'s room was held').toBe('reserved');
+  } finally {
+    ben.close();
+  }
+});
+
+for (const cut of ['reconnect', 'wake'] as const) {
+  test(`j01-paste-atomic: a paste whose socket ${cut === 'wake' ? 'and DocDO instance end' : 'reconnects'} partway keeps its room, so a writer in between is refused and the paste lands whole @p:col-1`, async ({ actors, stack }) => {
+    test.setTimeout(480_000);
+    const { ada, ben, docId } = await open(actors, stack);
+    // Black-holed, Ada's socket reads as silent and reconnects (4408) every 12 s; so do the replays while acks are lost.
+    ada.expectReconnects(10, docId);
+    try {
+      const before = stateBytes(ben);
+      const reserved = await pasteHeld(ada, docId);
+      ada.sever!.blackhole();
+      const base = await stack.docInstance(docId);
+      if (cut === 'wake') {
+        // The DocDO serving the paste ends; Ada reconnects into the black hole, and Ben wakes a new instance.
+        await stack.resetDoc(docId);
+        await ben.online(60_000);
+      } else {
+        // Ada's half-open socket reads as silent (12 s) and reconnects, into the black hole.
+        await ada.page.waitForTimeout(16_000);
+      }
+      const landed = stateBytes(ben);
+      const rest = reserved - (landed - before);
+      expect(rest, 'part of the paste is still to come').toBeGreaterThan(500_000);
+      // Room that fits beside what landed, but not beside the rest of the paste.
+      ben.custom({ t: 'reserve', p: 'ben-room', b: STATE_CAP_BYTES - landed - Math.floor(rest / 2) });
+      const bens = await answer(ben, 'ben-room');
+      if (cut === 'wake') expect((await stack.docInstance(docId)).instanceId, 'a new DocDO instance answered').not.toBe(base.instanceId);
+      ada.sever!.restore();
+      await expectWhole(ada, docId);
+      expect(bens, 'Ben\'s reserve was refused beside the paste\'s room').toBe('reserve-refused');
+    } finally {
+      ben.close();
+    }
+  });
+}

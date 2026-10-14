@@ -54,6 +54,10 @@ export interface DocClient {
   type(text: string): void;
   /** Resolves once a server ack covers everything this client wrote. */
   acked(): Promise<void>;
+  /** Sends a client event (`__YPS:<json>`) on the open socket. */
+  custom(event: object): void;
+  /** Resolves once the socket is open and synced again (the provider reconnects on its own). */
+  online(timeoutMs?: number): Promise<void>;
   /** Idempotent. */
   close(): void;
 }
@@ -129,6 +133,8 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
           return [...local].every(([client, clock]) => (acked.get(client) ?? 0) >= clock);
         });
       }),
+    custom: (event) => provider.sendMessage(JSON.stringify(event)),
+    online: (timeoutMs = 30_000) => until('an open, synced socket', () => provider.wsconnected && provider.synced, timeoutMs),
     close: () => {
       if (closed) return;
       closed = true;
