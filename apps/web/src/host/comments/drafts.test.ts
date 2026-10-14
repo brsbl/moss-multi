@@ -115,7 +115,9 @@ it('a retry with revised text after a lost answer saves the revision, for a root
   mutate(editor, { type: 'reply', parentId: 'p1', text: 'Reply one' });
   expect(await submitted('doc-revise', 'reply:p1')).toEqual({ ok: false, error: 'network' });
   server.mode = 'ok';
-  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Reply two' });
+  // The box was given the failed reply's text, and the revision replaces it.
+  const offered = failedReplies('doc-revise', 'reply:p1').map((draft) => draft.id);
+  carrying('doc-revise', 'p1', offered, () => mutate(editor, { type: 'reply', parentId: 'p1', text: 'Reply two' }));
   expect(await submitted('doc-revise', 'reply:p1')).toEqual({ ok: true });
   expect([...server.landed.values()].map((body) => body.text), 'every text the server was sent is stored once')
     .toEqual(['Version one', 'Version two', 'Reply one', 'Reply two']);
