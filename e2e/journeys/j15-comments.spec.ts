@@ -755,3 +755,107 @@ test("j15-comments: a commenter's composers keep what the server did not take; a
     message: "the resubmit stores both failed replies' text", timeout: PEER_TIMEOUT,
   }).toEqual([expect.stringMatching(/Twin reply A[\s\S]*Twin reply B/)]);
 });
+
+/**
+ * Ada alone on a note with a code block, with a comment 'Original' on "quick brown", and a switch on her comment
+ * writes per method: `fail` answers a declared 408 without reaching the server, `hold` waits for the test.
+ */
+async function heldWrites(actors: Actors, baseUrl: string) {
+  actors.solo("one author's composers against her own held and failed writes; the stored records are read by a protocol client");
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.session(adaPrincipal);
+  const seed = `${SEED}\n\n\`\`\`js\nconst answer = 42;\n\`\`\``;
+  const created = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { markdown: seed } });
+  expect(created.status()).toBe(201);
+  const { doc: { id } } = await created.json() as { doc: { id: string } };
+  await ada.goto(`/d/${id}`);
+  await ui.waitLive(ada, id);
+  await ada.observeEditor(id);
+  const cookie = (await ada.context.cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
+  const stored = (message: string) => expect.poll(() => storedTexts(baseUrl, id, cookie), { message, timeout: PEER_TIMEOUT });
+  const prefix = `/api/docs/${id}/comments`;
+  const modes: Record<string, 'pass' | 'fail' | 'hold'> = { POST: 'pass', PATCH: 'pass' };
+  const held: ((outcome: 'pass' | 'fail') => void)[] = [];
+  ada.expectHttp(408, new RegExp(`^${prefix}(/[^/]+)?$`));
+  const timedOut = { status: 408, contentType: 'application/json', body: JSON.stringify({ error: 'timeout' }) };
+  await ada.page.route((url) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`), async (route) => {
+    const method = route.request().method();
+    let mode = modes[method] ?? 'pass';
+    if (mode === 'hold') {
+      modes[method] = 'pass';
+      mode = await new Promise<'pass' | 'fail'>((resolve) => held.push(resolve));
+    }
+    return mode === 'fail' ? route.fulfill(timedOut) : route.fallback();
+  });
+  await select(ada, id, 'quick brown');
+  await comment(ada, 'Original');
+  await stored('the comment lands').toEqual(['Original']);
+  return { ada, id, cookie, stored, modes, held };
+}
+
+test('j15-comments: a revert to the stored text, saved while the edit before it is in flight, is what lands @p:mean-1', async ({ actors, stack }) => {
+  const { ada, stored, modes, held } = await heldWrites(actors, stack.baseUrl);
+  const editBox = thread(ada).locator('[data-comment-edit-composer] [contenteditable="true"]');
+  await gutter(ada).first().click();
+  await thread(ada).locator('[data-comment-message]').filter({ hasText: 'Original' }).getByRole('button', { name: /^Comment actions for / }).click();
+  await ada.page.getByRole('menuitem', { name: /^Edit / }).click();
+  await expect(editBox).toBeFocused();
+  modes.PATCH = 'hold';
+  await ada.page.keyboard.press('ControlOrMeta+a');
+  await ada.page.keyboard.type('Changed');
+  await ada.page.keyboard.press(SUBMIT);
+  await expect.poll(() => held.length, { message: 'the first save is held' }).toBe(1);
+  await expect(editBox, 'edit mode stays open while the save is in flight').toBeFocused();
+  await ada.page.keyboard.press('ControlOrMeta+a');
+  await ada.page.keyboard.type('Original');
+  await ada.page.keyboard.press(SUBMIT);
+  held.shift()!('pass');
+  await expect(editBox, 'edit mode closes once the last save is taken').toBeHidden({ timeout: PEER_TIMEOUT });
+  await stored('the revert lands after the edit before it').toEqual(['Original']);
+});
+
+test('j15-comments: a reply that fails after its thread was closed and reopened comes back to the reply box @p:mean-1', async ({ actors, stack }) => {
+  const { ada, stored, modes, held } = await heldWrites(actors, stack.baseUrl);
+  const replyBox = thread(ada).locator('[data-comment-reply-composer] [contenteditable="true"]');
+  await gutter(ada).first().click();
+  await expect(replyBox).toBeFocused();
+  modes.POST = 'hold';
+  await ada.page.keyboard.type('Slow reply');
+  await ada.page.keyboard.press(SUBMIT);
+  await expect.poll(() => held.length, { message: 'the reply is held' }).toBe(1);
+  await ada.page.keyboard.press('Escape');
+  await expect(thread(ada)).toBeHidden();
+  await gutter(ada).first().click();
+  await expect(replyBox).toBeFocused();
+  held.shift()!('fail');
+  await expect(replyBox, 'the reply that failed after the thread reopened comes back').toHaveText('Slow reply', { timeout: PEER_TIMEOUT });
+  await ada.page.keyboard.press(SUBMIT);
+  await stored('the reply is sent from the box once').toEqual(['Original', 'Slow reply']);
+});
+
+test("j15-comments: Cmd+Shift+A in a code block's editor opens a block composer whose retry stays on the block @p:mean-1", async ({ actors, stack }) => {
+  const { ada, id, cookie, modes } = await heldWrites(actors, stack.baseUrl);
+  const key = await ui.body(ada, id).evaluate((element) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    return [...editor.getEditorState()._nodeMap.values()].find((node) => node.getType() === 'code-block')?.getKey() ?? '';
+  });
+  expect(key, 'the note renders a code block').not.toBe('');
+  const code = ui.body(ada, id).locator(`[data-block-decorator-key="${key}"]`).first();
+  await code.scrollIntoViewIfNeeded();
+  await code.locator('pre').first().click();
+  await expect(code.locator('textarea'), "the code block's editor takes focus").toBeFocused();
+  modes.POST = 'fail';
+  await ada.page.keyboard.press(COMMENT_KEY);
+  const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
+  await expect(composer.getByRole('textbox').first()).toBeFocused();
+  await ada.page.keyboard.type('On the code');
+  await ada.page.keyboard.press(SUBMIT);
+  await expect(ada.page.getByText(/couldn't be saved/).first(), 'the failure is announced').toBeVisible({ timeout: PEER_TIMEOUT });
+  await expect(composer.getByRole('textbox').first(), 'the failed comment stays in the composer').toHaveText('On the code');
+  modes.POST = 'pass';
+  await ada.page.keyboard.press(SUBMIT);
+  await expect(composer, 'the retry is taken').toBeHidden({ timeout: PEER_TIMEOUT });
+  await expect.poll(() => storedAnchors(stack.baseUrl, id, cookie, ['On the code']), {
+    message: 'the retried comment is stored on the code block', timeout: PEER_TIMEOUT,
+  }).toEqual([{ text: 'On the code', kind: 'block', type: 'code-block' }]);
+});
