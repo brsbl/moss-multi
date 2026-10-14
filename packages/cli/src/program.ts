@@ -9,10 +9,10 @@ import { createApi, type Api } from './api.ts';
 import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConfig, writeConfig } from './config.ts';
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
-import { jsonSafe, redact, ttySafe } from './output.ts';
+import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop } from './sync.ts';
-import { confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
+import { confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, resetRootPins, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -122,11 +122,29 @@ const readable = (text: string) => text.replace(/\u2063@person:([^\u2062\u2063\u
 const toLf = (text: string) => text.replace(/\r\n?/g, '\n');
 const decoder = new TextDecoder('utf-8', { fatal: false });
 
+/** Why `url` may not carry a credential, or null when it may: https, or plain http only to this machine. */
+function transportRefusal(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `not a server URL: ${url}`;
+  }
+  // Credentials travel in plaintext over http, so it is allowed only to this machine.
+  if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK.test(parsed.hostname))) return null;
+  return `not a server URL: ${url}; use https:// (plain http:// is allowed only for localhost)`;
+}
+
+/** A server-supplied field inside a one-line record. */
+const f = fieldSafe;
+
 export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<number> {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? (() => process.cwd());
   const fetchImpl = deps.fetchImpl ?? fetch;
   const foldsCase = deps.foldsCase ?? probeFoldsCase;
+  // A workspace root's identity is recorded once per command, so one moved or swapped mid-command fails closed.
+  resetRootPins();
   const stdout = deps.stdout ?? ((chunk) => process.stdout.write(chunk));
   const rawStderr = deps.stderr ?? ((line) => process.stderr.write(`${line}\n`));
   // Everything but `cat` and the usage text goes through these: credentials redacted, control characters escaped.
@@ -140,15 +158,9 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   const server = (override?: string): string => {
     const url = override ? normalizeServer(override) : resolveConfig(env).serverUrl;
     if (!url) throw new CliError(1, 'no server: set MOSS_MULTI_SERVER or run `moss-multi login --server <url>`');
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new CliError(1, `not a server URL: ${url}`);
-    }
-    // Credentials travel in plaintext over http, so it is allowed only to this machine.
-    if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK.test(parsed.hostname))) return url;
-    throw new CliError(1, `not a server URL: ${url}; use https:// (plain http:// is allowed only for localhost)`);
+    const refused = transportRefusal(url);
+    if (refused) throw new CliError(1, refused);
+    return url;
   };
   const api = (signal?: AbortSignal): Api => {
     const config = resolveConfig(env);
@@ -185,22 +197,25 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         if (!key.startsWith(AGENT_KEY_PREFIX)) throw new CliError(1, `an agent key starts with ${AGENT_KEY_PREFIX}; mint one in Settings → Agents`);
         const me = await createApi({ serverUrl, token: key, fetchImpl }).me();
         writeConfig(env, { serverUrl, apiKey: key });
-        line(`signed in as agent ${me.name}; key saved to ${configPath(env)}`);
+        line(`signed in as agent ${f(me.name)}; key saved to ${configPath(env)}`);
         return;
       }
       const token = await deviceLogin(serverUrl, { fetchImpl, out: line, ...(deps.sleep ? { sleep: deps.sleep } : {}), ...(deps.openUrl ? { openUrl: deps.openUrl } : {}) });
       secrets.add(token);
       const me = await createApi({ serverUrl, token, fetchImpl }).me();
       writeConfig(env, { serverUrl, sessionToken: token });
-      line(`signed in as ${me.email ?? me.name}; session saved to ${configPath(env)}`);
+      line(`signed in as ${f(me.email ?? me.name)}; session saved to ${configPath(env)}`);
     },
 
     async logout(rest) {
       arity(parseArgs(rest, [], []), 0, 0, 'logout');
       const { hadCredentials, sessionToken } = clearCredentials(env);
       const serverUrl = resolveConfig(env).serverUrl;
-      if (sessionToken && serverUrl) {
-        // The stored session is forgotten either way; say so if the server did not end it.
+      // The session goes out as a bearer, so only over https or to this machine; it is forgotten here either way.
+      const refused = sessionToken && serverUrl ? transportRefusal(serverUrl) : null;
+      if (refused) stderr(`remote sign-out was not attempted (${refused}); the session ends when it expires`);
+      else if (sessionToken && serverUrl) {
+        // Say so if the server did not end it.
         const ended = await createApi({ serverUrl, token: sessionToken, fetchImpl }).signOut().catch(() => false);
         if (!ended) stderr(`the server at ${serverUrl} did not confirm the sign-out; the session ends when it expires`);
       }
@@ -211,7 +226,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     async whoami(rest) {
       arity(parseArgs(rest, [], []), 0, 0, 'whoami');
       const me = await api().me();
-      line(me.type === 'agent' ? `agent ${me.name} (${me.id})` : `${me.email ?? me.name} (${me.id})`);
+      line(me.type === 'agent' ? `agent ${f(me.name)} (${f(me.id)})` : `${f(me.email ?? me.name)} (${f(me.id)})`);
     },
 
     async list(rest) {
@@ -219,7 +234,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       arity(parsed, 0, 0, 'list [--json]');
       const docs = await api().listDocs();
       if (parsed.flags.has('json')) return json(docs);
-      for (const doc of docs) line(`${doc.id}  ${doc.title.trim() || 'Untitled'}`);
+      for (const doc of docs) line(`${f(doc.id)}  ${f(doc.title.trim()) || 'Untitled'}`);
     },
 
     async vaults(rest) {
@@ -227,7 +242,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       arity(parsed, 0, 0, 'vaults [--json]');
       const vaults = await api().listVaults();
       if (parsed.flags.has('json')) return json(vaults);
-      for (const vault of vaults) line(`${vault.id}  ${vault.name}${vault.owned ? '' : ` (${vault.role})`}`);
+      for (const vault of vaults) line(`${f(vault.id)}  ${f(vault.name)}${vault.owned ? '' : ` (${f(vault.role)})`}`);
     },
 
     async cat(rest) {
@@ -307,7 +322,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [ref, title] = arity(parseArgs(rest, [], []), 2, 2, 'mv <doc> <new title>');
       const client = api();
       const doc = await client.rename(await resolveDocId(client, ref), title);
-      line(`renamed to "${doc.title}"`);
+      line(`renamed to "${f(doc.title)}"`);
     },
 
     async rm(rest) {
@@ -385,20 +400,29 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         }
         if (response.reason === 'rate-limited') throw new CliError(1, `push refused: rate limited${response.retryAfterSec ? `; try again in ${response.retryAfterSec} s` : ''}`);
         if (response.reason === 'too-large') throw new CliError(1, 'push refused: too large; a note holds at most 2 MB of markdown');
-        if (response.reason === 'push-unverified' || response.reason === 'suggest-refused') throw new CliError(1, `push refused: ${response.message}`);
+        if (response.reason === 'push-unverified' || response.reason === 'suggest-refused') throw new CliError(1, `push refused: ${f(response.message)}`);
         if (response.reason === 'forbidden') {
           throw new CliError(1, parsed.flags.has('suggest')
             ? 'push refused: you can\'t suggest changes to this doc (it needs suggest access or more)'
             : 'push refused: you can\'t edit this doc (it needs edit access); with suggest access, push with --suggest');
         }
-        throw new CliError(1, `push refused: ${response.reason}`);
+        throw new CliError(1, `push refused: ${f(String(response.reason))}`);
       }
       if (response.mode === 'suggest') {
         // The doc is unchanged until someone accepts, so the file and its base stay as they are.
-        line(`suggested ${meta.file} (suggestion ${response.suggestionId})`);
+        line(`suggested ${meta.file} (suggestion ${f(response.suggestionId)})`);
         const left = response.failedHunks ?? [];
         for (const hunk of left) stderr(`failed hunk:\n${hunk}`);
         if (left.length > 0) throw new CliError(EXIT.failedHunks, `${left.length} hunk(s) could not be placed and are not in the suggestion`);
+        return;
+      }
+      if (parsed.flags.has('suggest') && response.applied === 0) {
+        // The server made no suggestion (nothing to suggest, or no hunk placed): the file and its base stay as they are.
+        for (const hunk of response.failedHunks) stderr(`failed hunk:\n${hunk}`);
+        if (response.failedHunks.length > 0) {
+          throw new CliError(EXIT.failedHunks, `nothing was suggested: ${response.failedHunks.length} hunk(s) could not be placed; pull again and re-apply them`);
+        }
+        line(`${meta.file}: nothing was suggested; the push changes nothing in the doc`);
         return;
       }
       if (response.failedHunks.length > 0) {
@@ -476,14 +500,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const client = api();
       const versions = await client.versions(await resolveDocId(client, ref));
       if (parsed.flags.has('json')) return json(versions);
-      for (const version of versions) line(`${version.id}  ${new Date(version.createdAt).toISOString()}  ${version.kind}${version.name ? `  ${version.name}` : ''}`);
+      for (const version of versions) line(`${f(version.id)}  ${new Date(version.createdAt).toISOString()}  ${f(version.kind)}${version.name ? `  ${f(version.name)}` : ''}`);
     },
 
     async snapshot(rest) {
       const [ref, name] = arity(parseArgs(rest, [], []), 2, 2, 'snapshot <doc> <name>');
       const client = api();
       const version = await client.snapshot(await resolveDocId(client, ref), name);
-      line(version.id);
+      line(f(version.id));
     },
 
     async comments(rest) {
@@ -495,9 +519,9 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (comments.length === 0) return line('no comments');
       for (const comment of comments) {
         const state = [comment.resolved ? 'resolved' : '', comment.status === 'orphaned' ? 'detached' : ''].filter(Boolean).join(', ');
-        const head = `${comment.parentId ? '  ↳ ' : ''}${comment.id}  ${comment.author.name}${comment.author.type === 'agent' ? ' (agent)' : ''}`;
-        line(`${head}: ${readable(comment.text)}${state ? `  (${state})` : ''}`);
-        if (!comment.parentId && comment.quote) line(`    on "${comment.quote}"`);
+        const head = `${comment.parentId ? '  ↳ ' : ''}${f(comment.id)}  ${f(comment.author.name)}${comment.author.type === 'agent' ? ' (agent)' : ''}`;
+        line(`${head}: ${f(readable(comment.text))}${state ? `  (${state})` : ''}`);
+        if (!comment.parentId && comment.quote) line(`    on "${f(comment.quote)}"`);
       }
     },
 
@@ -509,7 +533,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (parsed.flags.has('json')) return json(suggestions);
       if (suggestions.length === 0) return line('no open suggestions');
       for (const suggestion of suggestions) {
-        line(`${suggestion.id}  ${suggestion.author.name}  ${suggestion.status}  ${new Date(suggestion.createdAt).toISOString()}${suggestion.outdated ? '  (outdated)' : ''}`);
+        line(`${f(suggestion.id)}  ${f(suggestion.author.name)}  ${f(suggestion.status)}  ${new Date(suggestion.createdAt).toISOString()}${suggestion.outdated ? '  (outdated)' : ''}`);
       }
     },
 
@@ -525,7 +549,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const comment = await client.comment(await resolveDocId(client, ref), {
         id, text, ...(quote !== undefined ? { anchor: { quote } } : { parentId: reply }),
       });
-      line(comment.id);
+      line(f(comment.id));
     },
 
     async share(rest) {
@@ -535,8 +559,23 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (!role) throw new CliError(1, 'the role is view, comment, suggest or edit');
       const client = api();
       const id = await resolveDocId(client, ref);
-      await client.share(id, who.includes('@') ? { email: who, role } : { agentId: who, role });
-      line(`shared with ${who} as ${role}`);
+      if (!who.includes('@')) {
+        await client.share(id, { agentId: who, role });
+        line(`shared with ${f(who)} as ${role}`);
+        return;
+      }
+      // An email share is an invite: access starts only once its personal link is redeemed, so print that link.
+      const answer = await client.share(id, { email: who, role });
+      const email = typeof answer.shared?.email === 'string' ? answer.shared.email : who.trim().toLowerCase();
+      let url: string | undefined;
+      let why = 'the server listed no invite for that email';
+      try {
+        url = (await client.invites(id)).find((invite) => invite.email.toLowerCase() === email)?.url;
+      } catch (error) {
+        why = error instanceof Error ? error.message : String(error);
+      }
+      if (!url) throw new CliError(1, `share incomplete: ${f(email)} is invited as ${role}, but its invite link could not be read (${why}); copy it from the doc's Share dialog`);
+      line(`invited ${f(email)} as ${role}; send them ${f(url)}; access starts once they open it signed in with that email`);
     },
   };
 

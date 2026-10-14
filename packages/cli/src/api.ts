@@ -3,6 +3,7 @@
 // No request follows a redirect: a 3xx is an error, so a credential is only ever sent to the configured server.
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { CliError, NOT_SIGNED_IN } from './errors.ts';
+import { fieldSafe } from './output.ts';
 
 export interface DocRow {
   id: string;
@@ -73,7 +74,9 @@ export type Api = ReturnType<typeof createApi>;
 function messageOf(text: string): string | null {
   try {
     const body = JSON.parse(text) as { message?: unknown; error?: unknown };
-    return typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : null;
+    const message = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : null;
+    // It ends up in a one-line error header, so a line break in it can't forge another line.
+    return message === null ? null : fieldSafe(message);
   } catch {
     return null;
   }
@@ -213,7 +216,9 @@ export function createApi(options: ApiOptions) {
     comments: async (id: string) => (await json<{ comments: CommentRow[] }>(`${doc(id)}/comments`)).comments,
     suggestions: async (id: string) => (await json<{ suggestions: SuggestionRow[] }>(`${doc(id)}/suggestions`)).suggestions,
     share: async (id: string, input: { email: string; role: string } | { agentId: string; role: string }) =>
-      json<unknown>(`${doc(id)}/members`, { method: 'POST', body: body(input) }),
+      json<{ shared?: { email?: unknown; role?: unknown } }>(`${doc(id)}/members`, { method: 'POST', body: body(input) }),
+    /** The doc's open invites with their copyable links (owners only). */
+    invites: async (id: string) => (await json<{ invites: { email: string; role: string; url: string }[] }>(`${doc(id)}/invites`)).invites,
     /** The auth routes refuse an unsafe request without an Origin; the server's own origin is the one they accept. */
     signOut: async (): Promise<boolean> =>
       (await call('/api/auth/sign-out', { method: 'POST', body: '{}', headers: { origin: new URL(base).origin } })).ok,

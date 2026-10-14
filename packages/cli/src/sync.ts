@@ -10,6 +10,7 @@ import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
 import { noteMedia } from './media.ts';
+import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import {
   confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
@@ -517,7 +518,8 @@ export function syncExitCode(results: SyncResult[]): number {
 export function describe(result: SyncResult): string {
   const name = result.from ? `${result.from} → ${result.file}` : result.file;
   const hunks = (result.hunks ?? []).map((hunk) => `\nfailed hunk:\n${hunk}`).join('');
-  return `${result.action} ${name}${result.message ? `: ${result.message}` : ''}${hunks}`;
+  // The message may quote the server (a title, a refusal): it stays on its line.
+  return `${result.action} ${name}${result.message ? `: ${fieldSafe(result.message)}` : ''}${hunks}`;
 }
 
 export interface WatchOptions {
