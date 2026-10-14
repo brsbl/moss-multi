@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (183 of 230 planned tasks verified)
+**Overall: 80% done** (184 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 14 / 15 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 21 / 21 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 17 / 17 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 16 / 16 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 17 / 17 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -205,6 +205,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T5.P verified: suggestions now run on the fixed m4, so comments and every m3 fix hold with Suggest mode in place, and a formula with a non-text stored result no longer breaks the suggestion text walk.
 - 2026-10-13 — T6.B1 verified: saved versions keep their stored bodies, because the cleanup sweep now skips anything a version row or a pending move still needs, moves run one at a time, and a named save revoked mid-save leaves nothing behind.
 - 2026-10-13 — T6.P verified: history now runs on the current m5, so versions, view, diff and restore hold with suggestions, comments and every m3 fix in place.
+- 2026-10-14 — T7.P verified: agent sync, Bot presence and the watch daemon now run on the current m6, so versions, suggestions, comments and every m3 fix hold with agents in place, and a 2 MB heading stays inside search's budget.
 
 ## T1.1s identity audit
 
