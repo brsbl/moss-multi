@@ -3,14 +3,17 @@
 // paste's batches (T3.S6). Before it is dispatched it is admitted against every suggestion cap, the deletion of a
 // selection it replaces included, then lands with that strike as one undo step (one op, one record), or is refused
 // whole with nothing changed (suggestions.md §5). Its undo and its redo are one step each.
+import { $generateNodesFromSerializedNodes, $insertDataTransferForRichText, $insertGeneratedNodes } from '@lexical/clipboard';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestRequest } from '@moss-multi/protocol/suggest';
 import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
 import {
   $getRoot, $getSelection, $isRangeSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
+  type LexicalEditor,
 } from 'lexical';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
+import { markdownToState } from '../../../../../../packages/sync/src/converter/index.ts';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
 import { GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src/payload-docs.ts';
@@ -39,6 +42,41 @@ afterEach(() => {
   vi.runAllTimers();
   vi.useRealTimers();
 });
+
+/**
+ * The pane's paste, here and in the copy a Suggest-mode paste is measured on: markdown through moss's own import (a
+ * chart fence becomes a chart), HTML or a Lexical clipboard as @lexical/clipboard inserts it (Lexical's rich paste),
+ * plain text a paragraph per line break (CR, LF or CRLF, as the paste handler normalizes them).
+ */
+function pasteStack(target: LexicalEditor): () => void {
+  return target.registerCommand(PASTE_COMMAND, (event) => {
+    const data = (event as ClipboardEvent).clipboardData;
+    if (!data) return false;
+    const markdown = data.getData('text/markdown').replace(/\r\n?/g, '\n');
+    const rich = data.getData('text/html') || data.getData('application/x-lexical-editor');
+    const text = data.getData('text/plain').replace(/\r\n?/g, '\n');
+    target.update(() => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection)) return;
+      if (markdown) {
+        $insertGeneratedNodes(target, $generateNodesFromSerializedNodes(markdownToState(markdown).root.children), selection);
+        return;
+      }
+      if (rich) {
+        $insertDataTransferForRichText(data, selection, target);
+        return;
+      }
+      text.split('\n').forEach((line, i) => {
+        const at = $getSelection();
+        if (!$isRangeSelection(at)) return;
+        if (i > 0) at.insertParagraph();
+        const next = $getSelection();
+        if (line && $isRangeSelection(next)) next.insertText(line);
+      });
+    });
+    return true;
+  }, COMMAND_PRIORITY_EDITOR);
+}
 
 /** A clipboard holding `text` as plain text, as a paste event carries it. */
 const plainClipboard = (text: string) => ({
@@ -100,22 +138,8 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
       selection.removeText();
       return true;
     }, COMMAND_PRIORITY_EDITOR),
-    // Lexical's own plain-text paste: each line break (CR, LF or CRLF, as the paste handler normalizes them) a
-    // paragraph break, the text inserted at the selection.
-    editor.registerCommand(PASTE_COMMAND, (event) => {
-      const text = ((event as ClipboardEvent).clipboardData?.getData('text/plain') ?? '').replace(/\r\n?/g, '\n');
-      editor.update(() => {
-        text.split('\n').forEach((line, i) => {
-          const selection = $getSelection();
-          if (!$isRangeSelection(selection)) return;
-          if (i > 0) selection.insertParagraph();
-          const at = $getSelection();
-          if (line && $isRangeSelection(at)) at.insertText(line);
-        });
-      });
-      return true;
-    }, COMMAND_PRIORITY_EDITOR),
-    registerSuggestRouting(editor, fork),
+    pasteStack(editor),
+    registerSuggestRouting(editor, fork, { pasteStack: () => pasteStack }),
   ];
   const unsaved: string[] = [];
   fork.on((event) => {
@@ -131,7 +155,7 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
   editor.update(() => $getRoot().getLastChildOrThrow().selectEnd(), { discrete: true });
   /** A real paste command of `lines`, as plain text, committed at once (the browser commits it in a microtask). */
   const pasteData = (clipboardData: DataTransfer) => editor.update(() => {
-    editor.dispatchCommand(PASTE_COMMAND, { clipboardData, preventDefault: () => {} } as unknown as ClipboardEvent);
+    editor.dispatchCommand(PASTE_COMMAND, { clipboardData, preventDefault: () => {}, stopPropagation: () => {} } as unknown as ClipboardEvent);
   }, { discrete: true });
   const paste = (lines: string[]) => pasteData(plainClipboard(lines.join('\n')));
   return {
@@ -191,6 +215,36 @@ function noticed(): string {
   const message = refusalMessage();
   vi.runAllTimers();
   return message;
+}
+
+/**
+ * A paste is never admitted and then dropped (suggestions.md §5, PRODUCT line 34): either it lands as one op the DocDO
+ * stores and acknowledges, or it is refused whole, visibly, with nothing sent or changed and the selection kept.
+ */
+function storedOrRefused(pane: ReturnType<typeof suggesting>, paste: () => void): 'stored' | 'refused' {
+  const text = pane.text();
+  const selected = pane.selected();
+  const before = pane.requests();
+  const sent = pane.fork.sent;
+  paste();
+  const notice = refusalMessage();
+  if (notice) {
+    expect(notice, 'refused visibly').toMatch(/suggest/i);
+    expect(pane.requests(), 'nothing was sent, no strike either').toBe(before);
+    expect(pane.fork.struck(), 'nothing is struck').toEqual([]);
+    expect(pane.text(), 'F is unchanged').toBe(text);
+    expect(pane.selected(), 'the selection is kept').toBe(selected);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+    return 'refused';
+  }
+  vi.runAllTimers();
+  expect(pane.fork.sent - sent, 'the paste is one op').toBe(1);
+  pane.pump();
+  expect(pane.fork.closed, 'the DocDO stores the paste').toBe(false);
+  expect(pane.unsaved, 'nothing offered back').toEqual([]);
+  return 'stored';
 }
 
 /** Whether a fresh pane admits a paste of `line` at its last paragraph's end: the paste fits every cap alone. */
@@ -326,7 +380,7 @@ it('a paste that would take the open record it extends past the record cap is re
     expect(held, 'the first paste landed, a fair share of the cap').toBeGreaterThan(cap * 0.3);
     expect(held, 'under half the cap').toBeLessThan(cap * 0.5);
     // The second, at the same caret, fits every cap alone (a fresh pane admits it), not with what the record holds.
-    const second = [`second ${'x'.repeat(70_000)}`];
+    const second = [`second ${'x'.repeat(100_000)}`];
     expect(admittedAlone(second[0]), 'the second paste alone fits').toBe(true);
     const text = pane.text();
     const before = pane.requests();
@@ -382,7 +436,7 @@ it('a paste that builds on an older open record after its group rotated counts t
     // first paste's items, so its record merges the first one (client.ts #forward). Alone the second paste fits every
     // cap (a fresh pane admits it); merged with the first it does not.
     pane.idle(GROUP_IDLE_MS + 1_000);
-    const second = `second ${'x'.repeat(70_000)}`;
+    const second = `second ${'x'.repeat(100_000)}`;
     expect(admittedAlone(second), 'the second paste alone fits').toBe(true);
     const text = pane.text();
     const before = pane.changes();
@@ -621,7 +675,7 @@ it('an admitted paste near the record cap at a paragraph end is stored with its 
   expect(landed, 'a paste well under the cap is admitted').toBeGreaterThan(0);
 });
 
-it('a rich paste whose kept attributes take it past the record cap is refused whole, though its text alone fits', { timeout: 120_000 }, () => {
+it('a rich paste whose kept attributes may take it past the record cap is measured with them: stored whole or refused whole, never dropped', { timeout: 120_000 }, () => {
   const pane = suggesting('Ada original line.\n\nSecond line.\n');
   try {
     // A link's href and title become its node's properties in the fork: about 100 KB here, besides 15 KB of text.
@@ -631,14 +685,7 @@ it('a rich paste whose kept attributes take it past the record cap is refused wh
       types: ['text/html', 'text/plain'],
       getData: (type: string) => (type === 'text/html' ? html : type === 'text/plain' ? plain : ''),
     } as unknown as DataTransfer;
-    const text = pane.text();
-    const before = pane.requests();
-    pane.pasteData(clipboard);
-    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
-    expect(pane.requests(), 'nothing was sent').toBe(before);
-    expect(pane.text(), 'F is unchanged').toBe(text);
-    pane.pump();
-    expect(pane.fork.closed, 'input stays open').toBe(false);
+    storedOrRefused(pane, () => pane.pasteData(clipboard));
   } finally {
     pane.dispose();
   }
@@ -1010,34 +1057,54 @@ const markdownClipboard = (text: string) => ({
   getData: (type: string) => (type === 'text/markdown' || type === 'text/plain' ? text : ''),
 }) as unknown as DataTransfer;
 
-it('a paste whose line breaks are carriage returns counts each as the paragraph the paste handler makes of it: past the cap, refused whole', { timeout: 120_000 }, () => {
+it('a paste whose line breaks are carriage returns is measured as the paragraphs the paste handler makes of them: stored whole or refused whole', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
-    const text = pane.text();
-    const before = pane.requests();
-    pane.pasteData(markdownClipboard('a\r\r'.repeat(1_000)));
-    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
-    expect(pane.requests(), 'nothing was sent').toBe(before);
-    expect(pane.text(), 'F is unchanged').toBe(text);
-    pane.pump();
-    expect(pane.fork.closed, 'input stays open').toBe(false);
+    storedOrRefused(pane, () => pane.pasteData(markdownClipboard('a\r\r'.repeat(1_000))));
   } finally {
     pane.dispose();
   }
 });
 
-it('a pasted chart counts the payload its config encodes to (two entries per array element): past the cap, refused whole', { timeout: 120_000 }, () => {
+it('a pasted chart is measured with the payload its config encodes to (two entries per array element): past the cap, refused whole', { timeout: 120_000 }, () => {
   const pane = suggesting();
   try {
     const config = { type: 'bar', data: [{ label: 'a', value: 1 }], options: { samples: new Array(20_000).fill(0) } };
-    const text = pane.text();
-    const before = pane.requests();
-    pane.pasteData(markdownClipboard(`\`\`\`moss-chart\n${JSON.stringify(config)}\n\`\`\`\n`));
-    expect(noticed(), 'refused visibly').toMatch(/suggest/i);
-    expect(pane.requests(), 'nothing was sent').toBe(before);
-    expect(pane.text(), 'F is unchanged').toBe(text);
-    pane.pump();
-    expect(pane.fork.closed, 'input stays open').toBe(false);
+    expect(storedOrRefused(pane, () => pane.pasteData(markdownClipboard(`\`\`\`moss-chart\n${JSON.stringify(config)}\n\`\`\`\n`)))).toBe('refused');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a chart whose JSON sits on the opening fence line is measured as the import makes it: stored whole or refused whole, never dropped', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    // Lexical's code transformer reads the rest of the opening line as the code; moss makes a chart of it.
+    const config = { type: 'bar', data: [{ label: 'a', value: 1 }], options: { samples: new Array(20_000).fill(0) } };
+    expect(storedOrRefused(pane, () => pane.pasteData(markdownClipboard(`\`\`\`moss-chart ${JSON.stringify(config)}\n\`\`\`\n`)))).toBe('refused');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('whitespace-preserving HTML makes a tab node per tab: the paste is measured with them, stored whole or refused whole, never dropped', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    const html = `<b style="white-space: pre-wrap">${'\t'.repeat(20_000)}</b>`;
+    const clipboard = { types: ['text/html'], getData: (type: string) => (type === 'text/html' ? html : '') } as unknown as DataTransfer;
+    expect(storedOrRefused(pane, () => pane.pasteData(clipboard))).toBe('refused');
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('a short paste of whitespace-preserving HTML with tabs lands whole, its tab nodes stored with it', { timeout: 120_000 }, () => {
+  const pane = suggesting();
+  try {
+    const html = `<b style="white-space: pre-wrap">a\tb\tc</b>`;
+    const clipboard = { types: ['text/html'], getData: (type: string) => (type === 'text/html' ? html : '') } as unknown as DataTransfer;
+    expect(storedOrRefused(pane, () => pane.pasteData(clipboard))).toBe('stored');
+    expect(pane.text()).toContain('a\tb\tc');
   } finally {
     pane.dispose();
   }

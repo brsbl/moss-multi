@@ -105,11 +105,11 @@ test('j16-paste: a large paste in a new group that builds on the author\'s earli
   await settled(ben, docId, 'the typing');
   const working = await content(ada, docId, 'working');
   // At the end of the block before the first paste, three blocks away again: a new group whose paste builds on the
-  // first suggestion and so merges it. Alone it fits every cap, with nothing after it in its block (the next leg
-  // admits a paste of this size); with the first one it does not.
+  // first suggestion and so merges it. Alone it fits every cap with its redo, with nothing after it in its block (the
+  // near-cap leg admits a paste of this size); with the first one it does not.
   await caret(ben, docId, 'Fourth line.', 12);
   const before = await sent(ben, docId);
-  await pastePlain(ben, docId, `Second tail ${'g'.repeat(70_000)}`);
+  await pastePlain(ben, docId, `Second tail ${'g'.repeat(90_000)}`);
   await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'refused visibly').toContainText('too large for one suggestion', { timeout: 60_000 });
   await settled(ben, docId, 'the refused paste');
   expect(await sent(ben, docId), 'nothing was sent').toBe(before);
@@ -289,4 +289,67 @@ test('j16-paste: a rich paste whose kept link attributes take it past the record
   await settled(ben, docId, 'the paste');
   await expect.poll(() => content(ada, docId, 'working'), { message: 'the paste is one pending suggestion' }).toContain('Linked kkk');
   await expect(ben.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
+});
+
+/** A real clipboard paste of markdown with its plain-text flavor, as from a markdown editor. */
+const pasteMarkdown = (actor: Actor, docId: string, markdown: string) =>
+  ui.body(actor, docId).evaluate((element, m) => {
+    const data = new DataTransfer();
+    data.setData('text/markdown', m);
+    data.setData('text/plain', m);
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+  }, markdown);
+
+/** A real clipboard paste of HTML alone, as from a page that offers no plain-text flavor. */
+const pasteHtml = (actor: Actor, docId: string, html: string) =>
+  ui.body(actor, docId).evaluate((element, h) => {
+    const data = new DataTransfer();
+    data.setData('text/html', h);
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+  }, html);
+
+/**
+ * A paste is never admitted and then dropped: it is refused whole, visibly, with nothing sent or changed, or it is one
+ * frame the DocDO stores and acknowledges.
+ */
+async function storedOrRefused(actor: Actor, ada: Actor, docId: string, paste: () => Promise<unknown>): Promise<'stored' | 'refused'> {
+  const refusal = actor.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
+  const working = await content(ada, docId, 'working');
+  const text = await ui.body(actor, docId).textContent();
+  const before = await sent(actor, docId);
+  await paste();
+  await expect.poll(async () => ((await refusal.textContent()) ?? '').includes(' was added') || (await sent(actor, docId)) > before, { timeout: 60_000 }).toBe(true);
+  if ((await sent(actor, docId)) === before) {
+    await settled(actor, docId, 'the refused paste');
+    expect(await sent(actor, docId), 'nothing was sent').toBe(before);
+    expect(await ui.body(actor, docId).textContent(), 'nothing changed').toBe(text);
+    expect(await content(ada, docId, 'working'), 'no suggestion was made').toBe(working);
+    return 'refused';
+  }
+  await settled(actor, docId, 'the paste');
+  expect(await sent(actor, docId) - before, 'the paste is one frame').toBe(1);
+  await expect(actor.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
+  await expect.poll(() => content(ada, docId, 'working'), { message: 'the paste is a pending suggestion' }).not.toBe(working);
+  return 'stored';
+}
+
+test('j16-paste: a chart whose JSON sits on the opening fence line is measured as the import makes it: stored whole or refused whole, never dropped @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
+  await caret(ben, docId, 'Second line.', 12);
+  // Lexical's code transformer reads the rest of the opening line as the code: a chart whose payload far outgrows its
+  // 40 KB of JSON (two entries per array element), past the record cap.
+  const config = { type: 'bar', data: [{ label: 'a', value: 1 }], options: { samples: new Array(20_000).fill(0) } };
+  expect(await storedOrRefused(ben, ada, docId, () => pasteMarkdown(ben, docId, `\`\`\`moss-chart ${JSON.stringify(config)}\n\`\`\`\n`))).toBe('refused');
+});
+
+test('j16-paste: whitespace-preserving HTML makes a tab node per tab: the paste is measured with them, stored whole or refused whole, never dropped @p:mean-2 @p:R17', async ({ actors }) => {
+  actors.solo('the owner only seeds the note; one suggester pastes');
+  const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line.');
+  await caret(ben, docId, 'Second line.', 12);
+  // 20,000 tabs in 20 KB of HTML: Lexical makes each its own node, far past the record cap.
+  expect(await storedOrRefused(ben, ada, docId, () => pasteHtml(ben, docId, `<b style="white-space: pre-wrap">${'\t'.repeat(20_000)}</b>`))).toBe('refused');
+  // A short one lands whole, its tab nodes with it.
+  await expect(ben.page.locator(`[${INPUT_REFUSAL_ATTR}]`)).toHaveText('', { timeout: 15_000 });
+  expect(await storedOrRefused(ben, ada, docId, () => pasteHtml(ben, docId, '<b style="white-space: pre-wrap">a\tb\tc</b>'))).toBe('stored');
 });

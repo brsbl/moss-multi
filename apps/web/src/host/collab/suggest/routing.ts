@@ -201,7 +201,10 @@ function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.
   return { units, start };
 }
 
-export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork): () => void {
+/** The pane's own paste handlers and transforms, registered on an editor: a Suggest-mode paste runs them on a copy first. */
+export type PasteStack = (editor: LexicalEditor) => () => void;
+
+export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork, _options: { pasteStack?: () => PasteStack | null } = {}): () => void {
   const manager = (): Y.UndoManager | null => (editor as unknown as Record<symbol, Y.UndoManager | undefined>)[UNDO_MANAGER] ?? null;
   const undone: Strike[] = [];
   const redone: Strike[] = [];
