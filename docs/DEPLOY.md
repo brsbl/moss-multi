@@ -68,6 +68,14 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
 
 CI rehearses the same canary on every full lane, against a production-mode local stack: the `canary` job in `ci.yml`. A `ci.yml` dispatch with `-f staging_suite=true` rehearses the full suite the same way: each journey shard on a stack with no test hooks, per-run principals and the `staging-<engine>` projects, with traces kept because the stack is loopback. Its jobs are named `rehearsal`, so `deploy-staging` never takes such a run as a tested full lane. Add `-f latency_ms=<n>` to delay every loopback packet by n ms (tc netem), so staging-only timing failures reproduce where traces are allowed.
 
+## Last staging pass (T8.F, 2026-10-14)
+
+The final m8 build, `6bc3c66`, from a green full lane (CI run 38571733279):
+- **Deploy:** green (run 38577040961). `/api/version` matched the tested commit and `bundleHash`, every test hook answered 404, and the canary's 16 legs passed.
+- **Full suite:** not run. The growth cap refused it, since staging holds 16,586 users and a full suite adds about 1,800, past 18,000 (run 38576842836). Purging or fresh staging names is the owner's decision.
+- **Security sweep:** 52 of 52 checks passed (docs/SECURITY.md).
+- **Demo:** the re-run kept every comment, suggestion, version and link. It added only the "Every node family" body and its two media files. The note's earlier body predated the heading four, embed pill and web embed, so it was cleared through the UI and the run pasted it again.
+
 ## Demo content
 
 `scripts/demo.mjs` builds the demo folder in two test accounts through the real UI, then captures the signature shot. It drives one bb Browser Automation session through `scripts/qa.mjs`, so run it on a machine with bb.
