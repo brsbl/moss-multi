@@ -13,13 +13,13 @@ const TABLE_NOTE = 'Ada original line.\n\n| alpha | beta |\n| --- | --- |\n| gam
 /** A mouse drag from the cell holding `from` to the cell holding `to`: Lexical selects the cells between. */
 async function dragCells(actor: Actor, docId: string, from: string, to: string): Promise<void> {
   const cell = (text: string) => ui.body(actor, docId).locator('td, th', { hasText: text }).first();
-  // A cell many screens tall: its top in view, where the drag starts.
-  await cell(from).evaluate((element) => element.scrollIntoView({ block: 'start' }));
+  // The table's first row in mid-view, clear of the bar above the note: a cell many screens tall below it starts in view.
+  await ui.body(actor, docId).locator('tr').first().evaluate((element) => element.scrollIntoView({ block: 'center' }));
   const start = (await cell(from).boundingBox())!;
   const end = (await cell(to).boundingBox())!;
-  await actor.page.mouse.move(start.x + 8, start.y + 8);
+  await actor.page.mouse.move(start.x + 30, start.y + 20);
   await actor.page.mouse.down();
-  await actor.page.mouse.move(end.x + 8, end.y + 8, { steps: 8 });
+  await actor.page.mouse.move(end.x + 30, end.y + 20, { steps: 10 });
   await actor.page.mouse.up();
   await expect(ui.body(actor, docId).locator('table.moss-table-selection'), 'the cells are selected').toHaveCount(1);
 }

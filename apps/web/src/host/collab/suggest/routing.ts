@@ -205,7 +205,7 @@ function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.
 /** A paste the pane could not measure (its paste handlers still loading, or the copy failed): nothing goes in. */
 const UNMEASURED = 'This paste could not be checked against the suggestion limits, so none of it was added. Try again.';
 /** A paste Lexical would write over table cells, removing what they hold: a suggestion cannot strike it there. */
-const OVER_CELLS = 'Pasting over table cells cannot be suggested yet, so none of it was added. Paste inside one cell instead.';
+const OVER_CELLS = 'Pasting over table cells cannot be suggested yet, so none of it was added.';
 
 /**
  * `pasteStack`: the pane's own paste handlers and content transforms (paste-stack.ts), which a paste runs on a copy of
