@@ -63,6 +63,10 @@ function fakeServer() {
     refuseInvites: null as null | { status: number; body: unknown },
     /** Whether an email share adds its invite to the list. */
     inviteOnShare: true,
+    /** Runs while a GET /api/docs (the doc list) is in flight, before it answers. */
+    onList: null as null | (() => void),
+    /** Answers this one route with a refusal. */
+    refuseRoute: null as null | { method: string; path: string; status: number; body: unknown },
   };
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
@@ -98,10 +102,16 @@ function fakeServer() {
     }
     if (auth !== `Bearer ${state.token}`) return reply(401, { error: 'unauthenticated' });
     if (state.refuse) return reply(state.refuse.status, state.refuse.body);
+    if (state.refuseRoute && state.refuseRoute.method === method && state.refuseRoute.path === url.pathname) {
+      return reply(state.refuseRoute.status, state.refuseRoute.body);
+    }
     if (path === '/api/me') {
       return reply(200, { principal: state.token === KEY ? { type: 'agent', id: 'agent-1', name: 'Scribe' } : { type: 'user', id: 'user-1', name: 'Ada', email: 'ada@example.invalid' } });
     }
-    if (path === '/api/docs' && method === 'GET') return reply(200, { docs });
+    if (path === '/api/docs' && method === 'GET') {
+      state.onList?.();
+      return reply(200, { docs });
+    }
     if (path === '/api/vaults') return reply(200, { vaults: [{ id: 'v', name: 'Home', role: 'owner', owned: true }] });
     if (path === '/api/docs' && method === 'POST' && state.createNew) {
       const { id, filename } = state.createNew;
@@ -1291,6 +1301,55 @@ describe('CLI safety (T7.B3)', () => {
     expect(result.code).toBe(1);
     expect(readdirSync(join(outside, 'sub'))).toEqual([]);
     expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+  });
+
+  it('a sync whose workspace root is swapped for a link during the doc list exits 1 and reads, uploads and writes nothing outside (B356)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    writeFileSync(join(dir, 'beans.md'), 'Beans, inside.\n');
+    mkdirSync(join(outside, '.moss-multi'));
+    writeFileSync(join(outside, 'secret.md'), 'Outside, never uploaded.\n');
+    server.state.createNew = { id: ID_D, filename: 'secret.md' };
+    server.state.onList = () => {
+      server.state.onList = null;
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const before = server.seen.length;
+    const result = await cli(['sync']);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('moved or replaced');
+    expect(server.seen.slice(before).filter((request) => request.method !== 'GET'), 'nothing uploaded').toEqual([]);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+    expect(readdirSync(outside).sort()).toEqual(['.moss-multi', 'secret.md']);
+  });
+
+  it('a pull with no file whose workspace root is swapped for a link during the doc list exits 1 and writes nothing outside (B356)', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    mkdirSync(join(outside, '.moss-multi'));
+    server.state.onList = () => {
+      server.state.onList = null;
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const result = await cli(['pull', ID_B]);
+    expect(result.code).toBe(1);
+    expect(readdirSync(outside).sort()).toEqual(['.moss-multi']);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+  });
+
+  it('sync --json keeps a server message as sent; the human line escapes it (B358)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    writeFileSync(join(dir, 'beans.md'), 'Beans.\n');
+    server.state.refuseRoute = { method: 'POST', path: '/api/docs', status: 500, body: { message: 'boom\nagain' } };
+    const json = await cli(['sync', '--json']);
+    expect(json.code).toBe(1);
+    const results = JSON.parse(json.out) as { action: string; message?: string }[];
+    expect(results.find((result) => result.action === 'failed')?.message).toContain('boom\nagain');
+    const human = await cli(['sync']);
+    expect(human.code).toBe(1);
+    const failed = human.err.split('\n').filter((line) => line.startsWith('failed'));
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('boom\\nagain');
   });
 
   it('a server title or message with a line break prints as one line with a visible \\n; --json keeps the title (B358)', async () => {
