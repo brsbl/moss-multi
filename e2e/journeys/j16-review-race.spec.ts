@@ -73,4 +73,18 @@ test("j16-review-race: a withdraw sent while the card's preview is still on the 
   });
   // The held preview ends either dropped by the page (aborted) or answered by the server.
   const ended = new Promise<{ status: number | null }>((resolve) => {
-    ben.page.on('requestfailed', (request) => { if (PREVIEW.
+    ben.page.on('requestfailed', (request) => { if (PREVIEW.test(request.url())) resolve({ status: null }); });
+    ben.page.on('response', (response) => { if (PREVIEW.test(response.url())) resolve({ status: response.status() }); });
+  });
+  const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await intercepted;
+  await own.getByRole('button', { name: 'Withdraw' }).click();
+  await expect(cards(ben, 'withdrawn')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  release();
+  const outcome = await Promise.race([ended, ben.page.waitForTimeout(15_000).then(() => 'pending' as const)]);
+  expect(outcome, 'the held preview ends').not.toBe('pending');
+  if (outcome !== 'pending') expect(outcome.status, 'dropped, or answered without a 409').not.toBe(409);
+  await ben.page.unroute(PREVIEW);
+  await closePanel(ben);
+  await expect(ui.body(ben, docId), "it leaves the author's window").not.toContainText('plus', { timeout: BIND_TIMEOUT });
+});

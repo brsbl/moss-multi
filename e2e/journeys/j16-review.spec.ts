@@ -164,22 +164,6 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   expect(await content(ada, docId), 'the note is byte-identical').toBe(before);
 });
 
-test(request.url())) resolve({ status: null }); });
-    ben.page.on('response', (response) => { if (PREVIEW.test(response.url())) resolve({ status: response.status() }); });
-  });
-  const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
-  await intercepted;
-  await own.getByRole('button', { name: 'Withdraw' }).click();
-  await expect(cards(ben, 'withdrawn')).toHaveCount(1, { timeout: BIND_TIMEOUT });
-  release();
-  const outcome = await Promise.race([ended, ben.page.waitForTimeout(15_000).then(() => 'pending' as const)]);
-  expect(outcome, 'the held preview ends').not.toBe('pending');
-  if (outcome !== 'pending') expect(outcome.status, 'dropped, or answered without a 409').not.toBe(409);
-  await ben.page.unroute(PREVIEW);
-  await closePanel(ben);
-  await expect(ui.body(ben, docId), "it leaves the author's window").not.toContainText('plus', { timeout: BIND_TIMEOUT });
-});
-
 test("j16-review: a struck delete opens its card from the owner's body, and the card lists what it deletes @p:mean-2 @p:R17", async ({ actors }) => {
   const { ada, ben, docId } = await sharedNote(actors);
   await openIn(ben, docId, 'suggest');
