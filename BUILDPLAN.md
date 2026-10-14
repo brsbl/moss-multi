@@ -483,6 +483,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** the fixed principal pool reused across runs, a request budget per run, a check that `.dev.vars` is never uploaded, and a review of DO storage growth. **Done:** green.
 - **T8.2 The full suite on staging** `[A·codex]`
   - **Scope:** run every journey except `@local-only` legs against the deployed bytes, with wake proven through the owner-only instance route. **Done:** green.
+  - **Required red-first test (from T3.B11):** run j11-media's SP9 near-cap probe (`@staging`) against the staging Worker and record Worker memory and duration telemetry for the near-cap upload; a truncated upload is its red control.
 - **T8.3 Security sweep** `[B·codex]`
   - **Scope:** an adversarial pass on staging: header stripping, existence leaks, CSP, SSRF, limits including auth 429s, token threading, sign-out. Only P0 and P1 findings are fixed here. **Done:** green.
 - **T8.4 MIGRATION.md** `[C·fresh]`
