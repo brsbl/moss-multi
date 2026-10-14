@@ -104,21 +104,24 @@ const REASONS: Record<string, string> = {
 };
 const reasonText = (reason: string) => REASONS[reason] ?? 'It could not be applied.';
 
-async function call(url: string, body?: unknown): Promise<{ ok: boolean; status: number; json: Record<string, unknown>; retryAfter: string | null }> {
+async function call(url: string, body?: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; json: Record<string, unknown>; retryAfter: string | null }> {
   // A role that comes from a share link travels with every call, as the comment API's does.
   const share = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share');
   const headers: Record<string, string> = { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) };
   const response = await fetch(url, body === undefined
-    ? { method: 'GET', credentials: 'same-origin', headers }
-    : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    ? { method: 'GET', credentials: 'same-origin', headers, signal }
+    : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   return { ok: response.ok, status: response.status, json, retryAfter: response.headers.get('retry-after') };
 }
 
 // One loader for every panel: the preview budget is the reader's, across notes.
-const previews = createPreviewLoader((docId, id) => call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(id)}/preview`));
+const previews = createPreviewLoader((docId, id, signal) => call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(id)}/preview`, undefined, signal));
 
 const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
+
+/** Records this window accepted, rejected or withdrawn, by doc and id, so a remounted card previews none of them. */
+const reviewedHere = new Set<string>();
 
 function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   docId: string;
@@ -134,9 +137,13 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   const [onScreenRef, onScreen] = useOnScreen(root);
   const [expanded, setExpanded] = useState(false);
   const digest = useMemo(() => `${recordDigest(record)}@${opened}`, [record, opened]);
-  // Fetched again when its ops change or on refresh (the body moved under it); only while the card can be seen.
-  const [preview, refresh] = useLoadedPreview(previews, docId, meta.id, digest, open && (onScreen || active || expanded));
+  const reviewedKey = `${docId}\u0000${meta.id}`;
   const [busy, setBusy] = useState(false);
+  // Once a review action is under way or has closed the record, the card previews nothing more, even before the
+  // closed record reaches this window.
+  const [reviewed, setReviewed] = useState(() => reviewedHere.has(reviewedKey));
+  // Fetched again when its ops change or on refresh (the body moved under it); only while the card can be seen.
+  const [preview, refresh] = useLoadedPreview(previews, docId, meta.id, digest, open && !busy && !reviewed && (onScreen || active || expanded));
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const cardRef = useCallback((element: HTMLDivElement | null) => {
@@ -155,11 +162,16 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
 
   const act = async (action: 'accept' | 'reject' | 'withdraw') => {
     setBusy(true);
+    // A preview still on the way would reach a record this action closes.
+    previews.cancel(docId, meta.id);
     setError(null);
     const body = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
     try {
       const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, body);
-      if (!result.ok) {
+      if (result.ok) {
+        reviewedHere.add(reviewedKey);
+        setReviewed(true);
+      } else {
         const reason = String(result.json.error ?? 'refused');
         setError(reasonText(reason));
         // The note changed since this preview: fetch the one an accept must now name.

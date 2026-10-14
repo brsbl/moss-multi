@@ -14,7 +14,7 @@ export interface PreviewAnswer {
   retryAfter: string | null;
 }
 
-export type PreviewFetcher = (docId: string, id: string) => Promise<PreviewAnswer>;
+export type PreviewFetcher = (docId: string, id: string, signal: AbortSignal) => Promise<PreviewAnswer>;
 
 /** Preview requests in flight at once. */
 export const PREVIEW_CONCURRENCY = 2;
@@ -40,6 +40,8 @@ interface Entry {
   value: Preview;
   wanters: number;
   inflight: boolean;
+  /** Ends the request in flight (cancel). */
+  abort: AbortController | null;
   /** The reader pressed Try again: one request goes even while paused. */
   asked: boolean;
 }
@@ -72,7 +74,7 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
     const name = `${docId}\u0000${id}`;
     let entry = entries.get(name);
     if (!entry) {
-      entry = { docId, id, round: 0, want: '', fetched: null, shown: null, value: LOADING, wanters: 0, inflight: false, asked: false };
+      entry = { docId, id, round: 0, want: '', fetched: null, shown: null, value: LOADING, wanters: 0, inflight: false, abort: null, asked: false };
       entries.set(name, entry);
     }
     return entry;
@@ -102,10 +104,16 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
   const run = async (entry: Entry, key: string) => {
     active += 1;
     entry.inflight = true;
-    const answer = await fetcher(entry.docId, entry.id).catch((): PreviewAnswer | null => null);
+    const abort = new AbortController();
+    entry.abort = abort;
+    const answer = await fetcher(entry.docId, entry.id, abort.signal).catch((): PreviewAnswer | null => null);
     active -= 1;
     entry.inflight = false;
-    if (answer?.status === 429) {
+    entry.abort = null;
+    if (abort.signal.aborted) {
+      // Cancelled: nothing settles, and a reader who wants it again asks again.
+      if (entry.wanters > 0) pending.add(entry);
+    } else if (answer?.status === 429) {
       pausedUntil = Math.max(pausedUntil, Date.now() + retryAfterMs(answer.retryAfter));
       entry.shown = key;
       entry.value = { state: 'failed', reason: 'rate-limited' };
@@ -148,6 +156,12 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
         released = true;
         entry.wanters -= 1;
       };
+    },
+    /** Drops the record's request in flight or waiting: a review action closes it, so its preview would be refused. */
+    cancel(docId: string, id: string): void {
+      const entry = entryOf(docId, id);
+      pending.delete(entry);
+      entry.abort?.abort();
     },
     /** Asks again (the note changed since the preview, or the reader retries a failure). */
     refresh(docId: string, id: string, digest: string): void {
