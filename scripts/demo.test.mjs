@@ -76,6 +76,13 @@ describe('demoPrincipals', () => {
     expect(() => demoPrincipals({ prefix: '', secret: 's' })).toThrow(/prefix/);
     expect(() => demoPrincipals({ prefix: 'demo', secret: '' })).toThrow(/secret/);
   });
+
+  it('refuses a prefix whose accounts the staging prune or the canary pool would take', () => {
+    for (const prefix of ['mm', 'mm-demo', 'canary', 'canary-x']) {
+      expect(() => demoPrincipals({ prefix, secret: 's' }), prefix).toThrow(/prefix/);
+    }
+    expect(demoPrincipals({ prefix: 'mmdemo', secret: 's' })[0].email).toBe('mmdemo-ada@example.invalid');
+  });
 });
 
 describe('writeDemoRun', () => {

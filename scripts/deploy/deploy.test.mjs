@@ -803,6 +803,24 @@ describe('the staging retry gate (T8.2)', () => {
     expect(retryClass(undefined)).toBeNull();
   });
 
+  it('refuses a retry when any of the attempt\'s errors is not infrastructure, whichever came first', async () => {
+    // The actors fixture checks the invariants after the body, so their error follows the body's.
+    const invariantAfterReset = [
+      { message: 'apiRequestContext.post: socket hang up' },
+      { message: 'invariants: 1 finding(s)\n  invariant 7 [ada] d: lost text' },
+    ];
+    expect(retryClass(invariantAfterReset)).toBeNull();
+    expect(retryClass([{ message: 'Error: expect(received).toBe(expected)' }, { message: 'page.goto: net::ERR_CONNECTION_RESET' }])).toBeNull();
+    expect(retryClass([{ message: 'page.goto: net::ERR_CONNECTION_RESET' }, { message: 'apiRequestContext.post: socket hang up' }])).toBe('connection reset');
+    const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
+    try {
+      expect(recordVerdict(outputDir, 'mixed', 0, invariantAfterReset)).toBeNull();
+      await expect(gateRetry({ testId: 'mixed', retry: 1, project: { outputDir } }, 50)).rejects.toThrow(/retry refused/);
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it('lets a retry run only after its failed attempt was recorded as infrastructure', async () => {
     const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
     try {
@@ -855,9 +873,9 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
   it('selects only per-run principals older than the cutoff, never the canary pool or the demo accounts', () => {
     const { count, select } = pruneSql(NOW);
     for (const sql of [count, select]) {
+      // `mm-%` already leaves out the canary pool and the demo accounts (demo.mjs refuses an `mm` prefix).
       expect(sql).toMatch(/email LIKE 'mm-%@example\.invalid'/);
-      expect(sql).toMatch(/email NOT LIKE 'canary-%'/);
-      expect(sql).toMatch(/email NOT LIKE 'demo-%'/);
+      expect(sql).not.toMatch(/NOT LIKE/);
       expect(sql).toContain(`created_at < ${NOW - 2 * 60 * 60 * 1000}`);
     }
     expect(select).toMatch(new RegExp(`ORDER BY created_at LIMIT ${PRUNE_CAP + 1}$`));
