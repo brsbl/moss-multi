@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (184 of 230 planned tasks verified)
+**Overall: 78% done** (185 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 14 / 15 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 21 / 21 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 17 / 17 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 17 / 17 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 18 / 18 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -233,11 +233,20 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 - The [tests-first export run](https://github.com/brsbl/moss-multi/actions/runs/37164692835) reproduced a dependent formula exporting frozen `4` instead of recomputed `6`. Export now carries the real doc identity into evaluation; the regression also covers a foreign-note fallback, an unchanged live Y.Doc, export-cache invalidation and wake.
 - The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
+- 2026-10-14 — T7.S6 verified: a note's `assets/` images and videos now travel with `add`, `pull`, `push` and `sync`: a file missing on either side is copied over, neither side is overwritten, a name the server stores differently moves the note's reference with it, and a failed transfer is reported as failed.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S6's checker (210bbd2, 2026-10-14)
+
+- T7.S6 checker P2 (A media 429 on a tracked note does not stop the pass): noteMedia rethrows CliError(429), but the tracked-note loop in packages/cli/src/sync.ts only rethrows RateLimited, so the 429 becomes a 'failed' result, the pass moves on and watch never backs off; untracked adopt handles it; the note's text is retried next pass.
+- T7.S6 checker P2 (Media refs stop at spaces and parentheses, and code fences are scanned): mediaRefs ends a name at a space, ')' or a quote even inside <...>, and scans raw text, so an example inside a code fence is uploaded and can be rewritten after a collision; percent-encoded names work.
+- T7.S6 checker P2 (Collision renames are not saved before an interrupted pass): the original-to-stored rename map lives only in memory, so a 429 or abort before the note is rewritten makes the next pass upload those collision files again.
+- T7.S6 checker P2 (The refused-upload test fails before the request reaches the server): the 11 MB PNG is rejected by the CLI's own size check before any POST, so no server-refused upload (403 or 429) is exercised; a failed transfer is still reported failed with exit 1.
+- T7.S6 checker P2 (Duplicate and misleading media messages): a local media file that differs from the server's copy is reported failed twice per sync (before and after reconcile), and a server rename that only cleaned up the name ('my photo.png' to 'my-photo.png') is reported as the server 'already holds another my photo.png'.
 
 ### From T7.B2's checker (2103d86, 2026-10-12)
 
