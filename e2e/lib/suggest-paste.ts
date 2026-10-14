@@ -56,6 +56,7 @@ export async function storedOrRefused(actor: Actor, ada: Actor, docId: string, p
   await settled(actor, docId, 'the paste');
   await expect(actor.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
   await expect.poll(() => content(ada, docId, 'working'), { message: 'the paste is a pending suggestion' }).not.toBe(working);
-  if (expected !== undefined) expect(await content(ada, docId, 'working'), 'the whole paste is stored').toContain(expected);
+  // Its text whole, emphasis markers aside (the export marks each bold run between tabs on its own).
+  if (expected !== undefined) expect((await content(ada, docId, 'working')).replaceAll('*', ''), 'the whole paste is stored').toContain(expected);
   return 'stored';
 }
