@@ -680,6 +680,13 @@ function copyData(source: DataTransfer | null): DataTransfer {
   return copy;
 }
 
+/** A copy, cut or paste key: Cmd/Ctrl+C, X or V (Shift too), Ctrl/Shift+Insert, Shift+Delete. */
+function clipboardKey({ key, ctrlKey, metaKey, shiftKey, altKey }: KeyboardEvent): boolean {
+  if (altKey) return false;
+  if ((ctrlKey || metaKey) && ['c', 'x', 'v'].includes(key.toLowerCase())) return true;
+  return (key === 'Insert' && (ctrlKey || shiftKey)) || (key === 'Delete' && shiftKey && !ctrlKey && !metaKey);
+}
+
 function holdInput(editor: LexicalEditor, input: HeldInput): void {
   let queue = heldInput.get(editor);
   if (!queue) heldInput.set(editor, (queue = []));
@@ -689,6 +696,7 @@ function holdInput(editor: LexicalEditor, input: HeldInput): void {
 /**
  * An event aimed at `editor` while its paste waits for the reserve's answer: keys, text input and pastes wait, to be
  * replayed; a click in the note does nothing (the caret stays where the paste goes); a cut or a drop is refused, visibly.
+ * A copy, cut or paste key goes on uncancelled, so its clipboard event follows.
  * A composition cannot be held back, and goes on where the caret is.
  */
 function holdEvent(editor: LexicalEditor, event: Event): void {
@@ -700,7 +708,12 @@ function holdEvent(editor: LexicalEditor, event: Event): void {
   if (event.type === 'keydown') {
     const { key, code, ctrlKey, metaKey, shiftKey, altKey, isComposing } = event as KeyboardEvent;
     if (isComposing || MODIFIER_KEYS.has(key)) return;
-    input = { kind: 'key', init: { key, code, ctrlKey, metaKey, shiftKey, altKey, bubbles: true, cancelable: true } };
+    if (clipboardKey(event as KeyboardEvent)) {
+      // The browser's copy, cut or paste follows only an uncancelled keydown; that event is held or refused below.
+      event.stopImmediatePropagation();
+      return;
+    }
+    input ={ kind: 'key', init: { key, code, ctrlKey, metaKey, shiftKey, altKey, bubbles: true, cancelable: true } };
   } else if (event.type === 'beforeinput') {
     const { inputType, data } = event as InputEvent;
     if (!event.cancelable || !(inputType in INPUT_COMMANDS || (inputType.startsWith('insert') && data))) return;

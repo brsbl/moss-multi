@@ -144,7 +144,8 @@ export function splitAnswer(update: Uint8Array, limit: number): Uint8Array[] {
   while (ready.length > 0) {
     const client = ready.pop()!;
     const run = byClient.get(client)!;
-    let at = next.get(client)!;
+    const from = next.get(client)!;
+    let at = from;
     while (at < run.length) {
       const struct = run[at];
       const missing = dependencies(struct).find((id) => !present(id));
@@ -159,13 +160,16 @@ export function splitAnswer(update: Uint8Array, limit: number): Uint8Array[] {
       at += 1;
     }
     next.set(client, at);
-    const woken = waiting.get(client);
+    // Only progress wakes the clients waiting on this one: two clients each waiting on the other would otherwise
+    // wake each other forever.
+    const woken = at > from ? waiting.get(client) : undefined;
     if (woken) {
       waiting.delete(client);
       ready.push(...woken.filter((other) => other !== client));
     }
   }
-  // A cycle cannot come from Yjs; anything left goes in client order, as the receiver would hold it pending anyway.
+  // A cycle (only a crafted frame makes one) or a dependency outside the update: anything left goes in client order,
+  // as the receiver would hold it pending anyway.
   for (const [client, run] of byClient) ordered.push(...run.slice(next.get(client)!));
 
   const budget = Math.max(1, limit - HEADER_BYTES);
