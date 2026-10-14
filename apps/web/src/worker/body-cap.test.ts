@@ -1,7 +1,7 @@
 // T8.3a: every /api request body is bounded before any handler reads it (A§18 limits). A body is buffered whole by
 // request.text() and JSON.parse, so without a cap one unauthenticated 90 MB POST holds the isolate's 128 MB.
 import { describe, expect, it, vi } from 'vitest';
-import { DOC_BODY_CAP_BYTES, JSON_BODY_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { CREATE_BODY_MAX_BYTES, JSON_BODY_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { Build } from '../provenance.ts';
 import { routeRequest, type RouteDeps } from './route.ts';
 
@@ -74,11 +74,11 @@ describe('the /api body cap', () => {
     expect(seen[1].body.length).toBe(JSON_BODY_CAP_BYTES);
   });
 
-  it('gives a note create and a push the larger document cap', async () => {
+  it('leaves a note create and a push to their own cap, read after admission (docs.ts, push.ts; doc-body-admission.test.ts)', async () => {
     for (const path of ['/api/docs', '/api/docs/d1/push']) {
-      const { route } = harness();
-      expect((await route(path, declared(JSON_BODY_CAP_BYTES + 1))).status, path).toBe(200);
-      expect((await route(path, declared(DOC_BODY_CAP_BYTES + 1))).status, path).toBe(413);
+      const { route, seen } = harness();
+      expect((await route(path, declared(CREATE_BODY_MAX_BYTES + 1))).status, path).toBe(200);
+      expect(seen[0].body.length, path).toBe(CREATE_BODY_MAX_BYTES + 1);
     }
   });
 
@@ -90,8 +90,8 @@ describe('the /api body cap', () => {
 
   it('leaves a version restore to its own cap, read after access and the write token (versions.ts)', async () => {
     const { route, seen } = harness();
-    expect((await route('/api/docs/d1/versions/v1/restore', declared(DOC_BODY_CAP_BYTES + 1))).status).toBe(200);
-    expect(seen[0].body.length).toBe(DOC_BODY_CAP_BYTES + 1);
+    expect((await route('/api/docs/d1/versions/v1/restore', declared(CREATE_BODY_MAX_BYTES + 1))).status).toBe(200);
+    expect(seen[0].body.length).toBe(CREATE_BODY_MAX_BYTES + 1);
   });
 
   it('caps no GET and nothing outside /api', async () => {

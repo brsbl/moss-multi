@@ -78,14 +78,17 @@ async function send(path: string, cookie?: string) {
 }
 
 describe('a create or push body is read only after admission', () => {
-  it.each([
-    ['a signed-out create', () => '/api/docs', () => undefined, 401],
-    ['a signed-out push', () => `/api/docs/${docId}/push`, () => undefined, 401],
-    ['a push to a note the caller cannot open', () => `/api/docs/${docId}/push`, () => ben.cookie, 404],
-  ] as const)('%s is refused without its body being pulled', async (_label, path, cookie, status) => {
-    const answer = await send(path(), cookie());
-    expect(answer.status).toBe(status);
-    expect(answer.pulled).toBeLessThanOrEqual(2 * CHUNK);
+  it('refuses a signed-out create or push, and a push to a note the caller cannot open, without pulling the body', async () => {
+    const cases: [string, string | undefined, number][] = [
+      ['/api/docs', undefined, 401],
+      [`/api/docs/${docId}/push`, undefined, 401],
+      [`/api/docs/${docId}/push`, ben.cookie, 404],
+    ];
+    for (const [path, cookie, status] of cases) {
+      const answer = await send(path, cookie);
+      expect(answer.status, path).toBe(status);
+      expect(answer.pulled, path).toBeLessThanOrEqual(2 * CHUNK);
+    }
   });
 
   it('refuses a create past the create budget with 429 before reading its body', async () => {
