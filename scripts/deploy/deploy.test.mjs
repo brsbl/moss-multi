@@ -403,8 +403,11 @@ describe('the staging suite @p:R15', () => {
         expect(project.grepInvert.test('j03 a leg @local-only @p:col-6')).toBe(true);
         expect(project.grepInvert.test('j04-hibernation: proven through the owner-only route @staging')).toBe(false);
         expect({ ...config.use, ...project.use }).toMatchObject({ browserName: engine, trace: 'off', screenshot: 'off', video: 'off' });
-        expect(project.retries, 'a staging leg runs once more after a failure, and fails the run if that fails too').toBe(1);
+        expect(project.retries, 'a staging leg that fails runs once more, to name it flaky in the summary').toBe(1);
       }
+      // A leg that passes only on its retry still fails the run: a lost-text or access failure that passes on fresh
+      // principals is a product failure, not noise.
+      expect(config.failOnFlakyTests, 'a flaky staging leg fails the run').toBe(true);
       expect(config.retries, 'nowhere else').toBe(0);
       expect(config.projects.filter((p) => p.retries !== undefined).map((p) => p.name)).toEqual(['staging-chromium', 'staging-webkit']);
     } finally {
