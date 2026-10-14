@@ -82,7 +82,7 @@ async function searchesTheNote(actor: Actor, docId: string, size: Viewport): Pro
 }
 
 for (const size of TIER_A) {
-  test(`j10 ${size.name}: a stranger opens the link, reads, signs up on the card and lands on the same note, with 0, 1 and 2 others there @tierA @p:tech-9 @p:ppl-2 @p:ppl-1 @evidence`, async ({ actors, stack }) => {
+  test(`j10 ${size.name}: a stranger opens the link, reads, signs up on the card and lands on the same note, with 0, 1 and 2 others there @tierA @p:tech-9@2 @p:ppl-2 @p:ppl-1 @evidence`, async ({ actors, stack }) => {
     const adaPrincipal = await actors.principal('ada');
     const ada = await actors.session(adaPrincipal, { viewport: size });
     const docId = await adaNote(ada, stack.baseUrl);
@@ -146,7 +146,7 @@ for (const size of TIER_A) {
     await actors.requireDistinct(2);
   });
 
-  test(`j10 ${size.name}: revoked and forged links show the denial page, whose Sign in is tappable @tierA @p:tech-9 @p:ppl-2 @evidence`, async ({ actors, stack }) => {
+  test(`j10 ${size.name}: revoked and forged links show the denial page, whose Sign in is tappable @tierA @p:tech-9@2 @p:ppl-2 @evidence`, async ({ actors, stack }) => {
     actors.solo('the denial page is a stranger alone; Ada is setup only');
     const ada = await actors.session(await actors.principal('ada'));
     const docId = await adaNote(ada, stack.baseUrl);
@@ -174,7 +174,7 @@ for (const size of TIER_A) {
   });
 }
 
-test('j10 390x844: a folder link lands a stranger on the folder, whose note list and notes are reachable @tierA @p:tech-9 @p:ppl-2 @evidence', async ({ actors, stack }) => {
+test('j10 390x844: a folder link lands a stranger on the folder, whose note list and notes are reachable @tierA @p:tech-9@2 @p:ppl-2 @evidence', async ({ actors, stack }) => {
   actors.solo('the folder landing is a stranger alone; Ada is setup only');
   const ada = await actors.session(await actors.principal('ada'));
   const headers = { origin: stack.baseUrl };
@@ -213,7 +213,7 @@ test('j10 390x844: a folder link lands a stranger on the folder, whose note list
   await expectReachable(stranger, 'the notes panel over the note', PANEL);
 });
 
-test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu keep every control reachable @p:tech-9', async ({ actors, stack }) => {
+test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu keep every control reachable @p:tech-9@2', async ({ actors, stack }) => {
   actors.solo('the Tier B sweep is the owner alone at 390 px');
   const ada = await actors.session(await actors.principal('ada'), { viewport: PHONE });
   const headers = { origin: stack.baseUrl };

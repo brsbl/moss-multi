@@ -1,5 +1,5 @@
 diff --git a/dist/LexicalYjs.dev.js b/dist/LexicalYjs.dev.js
-index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235b80e1a7e 100644
+index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f196c4d7c9c 100644
 --- a/dist/LexicalYjs.dev.js
 +++ b/dist/LexicalYjs.dev.js
 @@ -380,6 +380,26 @@ class CollabElementNode {
@@ -66,7 +66,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
            const collabNode = $getOrInitCollabNodeFromSharedType(binding, sharedType, this);
            if (node instanceof CollabTextNode && length > 0 && length < node._text.length) {
              // Trying to insert in the middle of a text node; split the text.
-@@ -653,12 +678,17 @@ class CollabElementNode {
+@@ -653,12 +678,22 @@ class CollabElementNode {
      let nextChildrenSet;
      let prevIndex = 0;
      let nextIndex = 0;
@@ -78,13 +78,19 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
        const nextKey = nextChildren[nextIndex];
        if (prevKey === nextKey) {
          // Nove move, create or remove
-         this._syncChildFromLexical(binding, nextIndex, nextKey, prevNodeMap, dirtyElements, dirtyLeaves);
+-        this._syncChildFromLexical(binding, nextIndex, nextKey, prevNodeMap, dirtyElements, dirtyLeaves);
++        // moss-multi patch (T3.B13): a child that is the same node as before and not dirty has nothing to sync; syncing
++        // every child of the root cost most of each keystroke in a note of 40,000 blocks. An edit below a child marks
++        // it dirty; a whole new state shares no nodes with the previous one, and history states never reach here.
++        if (dirtyElements.has(nextKey) || dirtyLeaves.has(nextKey) || prevNodeMap.get(nextKey) !== lexical.$getNodeByKey(nextKey)) {
++          this._syncChildFromLexical(binding, nextIndex, nextKey, prevNodeMap, dirtyElements, dirtyLeaves);
++        }
 +        const synced = this._children[nextIndex];
 +        offset += synced === undefined ? 0 : synced.getSize();
          prevIndex++;
          nextIndex++;
        } else {
-@@ -672,7 +702,7 @@ class CollabElementNode {
+@@ -672,7 +707,7 @@ class CollabElementNode {
          const prevHasNextKey = prevChildrenSet.has(nextKey);
          if (!nextHasPrevKey) {
            // Remove
@@ -93,7 +99,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
            prevIndex++;
          } else {
            // Create or replace
-@@ -680,13 +710,14 @@ class CollabElementNode {
+@@ -680,13 +715,14 @@ class CollabElementNode {
            const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
            collabNodeMap.set(nextKey, collabNode);
            if (prevHasNextKey) {
@@ -110,7 +116,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
          }
        }
      }
-@@ -697,20 +728,36 @@ class CollabElementNode {
+@@ -697,20 +733,36 @@ class CollabElementNode {
          const key = nextChildren[nextIndex];
          const nextChildNode = lexical.$getNodeByKeyOrThrow(key);
          const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
@@ -150,7 +156,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
      if (collabNode instanceof CollabElementNode) {
        xmlText.insertEmbed(offset, collabNode._xmlText);
      } else if (collabNode instanceof CollabTextNode) {
-@@ -724,9 +771,13 @@ class CollabElementNode {
+@@ -724,9 +776,13 @@ class CollabElementNode {
      } else if (collabNode instanceof CollabDecoratorNode) {
        xmlText.insertEmbed(offset, collabNode._xmlElem);
      }
@@ -165,7 +171,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
      const children = this._children;
      const child = children[index];
      if (child === undefined) {
-@@ -735,7 +786,6 @@ class CollabElementNode {
+@@ -735,7 +791,6 @@ class CollabElementNode {
        }
        return;
      }
@@ -173,7 +179,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
      if (!(offset !== -1)) {
        formatDevErrorMessage(`splice: expected offset to be greater than zero`);
      }
-@@ -1393,9 +1443,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+@@ -1393,9 +1448,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
  function spliceString(str, index, delCount, newText) {
    return str.slice(0, index) + newText + str.slice(index + delCount);
  }
@@ -188,7 +194,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
    const children = node._children;
    const childrenLength = children.length;
    for (; i < childrenLength; i++) {
-@@ -1414,7 +1466,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1414,7 +1471,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: diffLength,
          node: child,
          nodeIndex: i,
@@ -198,7 +204,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
        };
      }
      if (index > offset) {
-@@ -1422,14 +1475,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1422,14 +1480,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: 0,
          node: child,
          nodeIndex: i,
@@ -217,7 +223,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
        };
      }
    }
-@@ -1437,7 +1492,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1437,7 +1497,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
      length: 0,
      node: null,
      nodeIndex: 0,
@@ -227,7 +233,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
    };
  }
  function doesSelectionNeedRecovering(selection) {
-@@ -1465,32 +1521,30 @@ function syncWithTransaction(binding, fn) {
+@@ -1465,32 +1526,30 @@ function syncWithTransaction(binding, fn) {
    binding.doc.transact(fn, binding);
  }
  function $moveSelectionToPreviousNode(anchorNodeKey, currentEditorState) {
@@ -285,7 +291,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a2cd773a91c42f446e0e416326d10235
  }
  
 diff --git a/dist/LexicalYjs.dev.mjs b/dist/LexicalYjs.dev.mjs
-index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18c73595c9 100644
+index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..9b13bcb3e96dfd8d21359d32ff850df094eb3efb 100644
 --- a/dist/LexicalYjs.dev.mjs
 +++ b/dist/LexicalYjs.dev.mjs
 @@ -378,6 +378,26 @@ class CollabElementNode {
@@ -352,7 +358,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
            const collabNode = $getOrInitCollabNodeFromSharedType(binding, sharedType, this);
            if (node instanceof CollabTextNode && length > 0 && length < node._text.length) {
              // Trying to insert in the middle of a text node; split the text.
-@@ -651,12 +676,17 @@ class CollabElementNode {
+@@ -651,12 +676,22 @@ class CollabElementNode {
      let nextChildrenSet;
      let prevIndex = 0;
      let nextIndex = 0;
@@ -364,13 +370,19 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
        const nextKey = nextChildren[nextIndex];
        if (prevKey === nextKey) {
          // Nove move, create or remove
-         this._syncChildFromLexical(binding, nextIndex, nextKey, prevNodeMap, dirtyElements, dirtyLeaves);
+-        this._syncChildFromLexical(binding, nextIndex, nextKey, prevNodeMap, dirtyElements, dirtyLeaves);
++        // moss-multi patch (T3.B13): a child that is the same node as before and not dirty has nothing to sync; syncing
++        // every child of the root cost most of each keystroke in a note of 40,000 blocks. An edit below a child marks
++        // it dirty; a whole new state shares no nodes with the previous one, and history states never reach here.
++        if (dirtyElements.has(nextKey) || dirtyLeaves.has(nextKey) || prevNodeMap.get(nextKey) !== $getNodeByKey(nextKey)) {
++          this._syncChildFromLexical(binding, nextIndex, nextKey, prevNodeMap, dirtyElements, dirtyLeaves);
++        }
 +        const synced = this._children[nextIndex];
 +        offset += synced === undefined ? 0 : synced.getSize();
          prevIndex++;
          nextIndex++;
        } else {
-@@ -670,7 +700,7 @@ class CollabElementNode {
+@@ -670,7 +705,7 @@ class CollabElementNode {
          const prevHasNextKey = prevChildrenSet.has(nextKey);
          if (!nextHasPrevKey) {
            // Remove
@@ -379,7 +391,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
            prevIndex++;
          } else {
            // Create or replace
-@@ -678,13 +708,14 @@ class CollabElementNode {
+@@ -678,13 +713,14 @@ class CollabElementNode {
            const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
            collabNodeMap.set(nextKey, collabNode);
            if (prevHasNextKey) {
@@ -396,7 +408,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
          }
        }
      }
-@@ -695,20 +726,36 @@ class CollabElementNode {
+@@ -695,20 +731,36 @@ class CollabElementNode {
          const key = nextChildren[nextIndex];
          const nextChildNode = $getNodeByKeyOrThrow(key);
          const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
@@ -436,7 +448,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
      if (collabNode instanceof CollabElementNode) {
        xmlText.insertEmbed(offset, collabNode._xmlText);
      } else if (collabNode instanceof CollabTextNode) {
-@@ -722,9 +769,13 @@ class CollabElementNode {
+@@ -722,9 +774,13 @@ class CollabElementNode {
      } else if (collabNode instanceof CollabDecoratorNode) {
        xmlText.insertEmbed(offset, collabNode._xmlElem);
      }
@@ -451,7 +463,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
      const children = this._children;
      const child = children[index];
      if (child === undefined) {
-@@ -733,7 +784,6 @@ class CollabElementNode {
+@@ -733,7 +789,6 @@ class CollabElementNode {
        }
        return;
      }
@@ -459,7 +471,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
      if (!(offset !== -1)) {
        formatDevErrorMessage(`splice: expected offset to be greater than zero`);
      }
-@@ -1391,9 +1441,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+@@ -1391,9 +1446,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
  function spliceString(str, index, delCount, newText) {
    return str.slice(0, index) + newText + str.slice(index + delCount);
  }
@@ -474,7 +486,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
    const children = node._children;
    const childrenLength = children.length;
    for (; i < childrenLength; i++) {
-@@ -1412,7 +1464,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1412,7 +1469,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: diffLength,
          node: child,
          nodeIndex: i,
@@ -484,7 +496,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
        };
      }
      if (index > offset) {
-@@ -1420,14 +1473,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1420,14 +1478,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: 0,
          node: child,
          nodeIndex: i,
@@ -503,7 +515,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
        };
      }
    }
-@@ -1435,7 +1490,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1435,7 +1495,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
      length: 0,
      node: null,
      nodeIndex: 0,
@@ -513,7 +525,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..50806902bb2348fcc75d985ce0602a18
    };
  }
  function doesSelectionNeedRecovering(selection) {
-@@ -1463,32 +1519,30 @@ function syncWithTransaction(binding, fn) {
+@@ -1463,32 +1524,30 @@ function syncWithTransaction(binding, fn) {
    binding.doc.transact(fn, binding);
  }
  function $moveSelectionToPreviousNode(anchorNodeKey, currentEditorState) {

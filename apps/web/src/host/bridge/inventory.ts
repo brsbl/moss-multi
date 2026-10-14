@@ -36,8 +36,8 @@ export const INVENTORY: Record<string, InventoryEntry> = {
   'notes.getAll': real('GET /api/workspace, mapped to NoteMetadataRecord in seconds under Notes; opened notes carry backlinks'),
   'notes.getMetadataByIds': real('the same listing, filtered'),
   'notes.getById': real("listing metadata plus this viewer's local extras; content '' for a doc that will bind, GET /api/trash/:id for a trashed one"),
-  'notes.getContent': staged(1, "the DocDO export behind a limit of 3 (T1.8); '' until then"),
-  'notes.getFrontmatterSuggestions': staged(1, 'per-vault keys and values with Properties (T1.4); {} until then'),
+  'notes.getContent': real('GET /api/docs/:id/content, the DocDO export, at most 3 in flight; undefined for a note the caller cannot read'),
+  'notes.getFrontmatterSuggestions': stub("{}: moss asks only after its own REST save, which a bound note never runs"),
   'notes.getHeadings': real('GET /api/docs/:id/headings: h1–h4 of the DO export (A§15)'),
   'notes.create': real('POST /api/docs; the DocDO seeds the doc and "Untitled" is never authored'),
   'notes.update': {
@@ -46,7 +46,7 @@ export const INVENTORY: Record<string, InventoryEntry> = {
     fields: {
       content: real('refused loudly, before any request: the bridge cannot wipe a doc (P:Tech)'),
       title: real('Y.Text write when bound, otherwise a DocDO rename'),
-      pinned: staged(2, "user_doc_prefs; this viewer's localStorage until then"),
+      pinned: real("this viewer's localStorage, so a pin is never anyone else's (user_doc_prefs is unbuilt)"),
       layoutMetadata: real('localStorage, per viewer (R11)'),
       collapsedHeadings: real('localStorage, per viewer (R11)'),
       commentMetadata: staged(4, 'CRDT comments (M4); ignored until then'),
@@ -68,8 +68,8 @@ export const INVENTORY: Record<string, InventoryEntry> = {
   'notes.exportMarkdown': real('a download of GET /api/docs/:id/content, the DocDO export (A§12)'),
   'notes.onExternalFileOpen': stub('never fires'),
   'notes.onInternalFileOpen': real('fires on popstate to /d/$docId'),
-  'notes.onDiskChange': staged(2, 'metadata-only events from the workspace channel (T2.1); silent until then'),
-  'notes.onMetadataReindexed': staged(1, 'fires after a vault switch (T1.2); silent until then'),
+  'notes.onDiskChange': real('metadata-only events from the workspace channel (T2.1), and ([], []) after a vault switch or folder change'),
+  'notes.onMetadataReindexed': stub("silent: a vault switch's onDiskChange([], []) is moss's full hydrate"),
   'notes.onRequestFlush': stub('never fires: the Y.Doc persists every update'),
   'notes.flushComplete': stub('no-op'),
 

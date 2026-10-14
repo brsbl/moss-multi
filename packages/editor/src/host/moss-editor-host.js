@@ -200,13 +200,20 @@ const buildFolderName = (base, suffix) => {
 
 /**
  * The key a volume tells names apart by. APFS compares names normalization-insensitively, case-sensitive or not; a
- * case-insensitive volume also folds case fully (σ and ς, ß and ss). A name that over-matches only takes a suffix.
+ * case-insensitive volume also folds case fully (σ and ς; ẞ, ß, ſs and ss). Folding repeats to a fixed point so
+ * every spelling of one name gets one key; a name that over-matches only takes a suffix.
  * @param {string} name
  * @param {boolean} caseInsensitive
  */
 const volumeKey = (name, caseInsensitive) => {
-  const normalized = name.normalize('NFD');
-  return caseInsensitive ? normalized.toUpperCase().toLowerCase().normalize('NFD') : normalized;
+  let key = name.normalize('NFD');
+  if (!caseInsensitive) return key;
+  let previous;
+  do {
+    previous = key;
+    key = key.toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+  } while (key !== previous);
+  return key;
 };
 
 /**

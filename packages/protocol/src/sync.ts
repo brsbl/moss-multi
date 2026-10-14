@@ -60,6 +60,18 @@ export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved' |
 /** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
 export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);
 
+/**
+ * Why the DocDO refused a REST rename in its own serialized turn: the doc is in Trash or held closed (`deleted`), or the
+ * caller can no longer edit it (`revoked`).
+ */
+export type RenameRefusal = 'deleted' | 'revoked';
+
+/** The DocDO's RenameRefusedError's reason, also as DO RPC delivers it; null for any other error. */
+export const renameRefusalOf = (error: unknown): RenameRefusal | null => {
+  const match = error instanceof Error ? /^(?:RenameRefusedError: )?rename-(deleted|revoked)$/.exec(error.message) : null;
+  return match ? (match[1] as RenameRefusal) : null;
+};
+
 export type ServerEvent =
   /** A write that did not land; the close follows. */
   | { t: 'write-refused'; reason: WriteRefusalReason }
@@ -179,6 +191,8 @@ export const TRUSTED = {
   resolvedAt: 'x-moss-resolved-at',
   /** The doc's access epoch, read before the role was resolved: a DocDO re-resolves a socket admitted under an older one. */
   epoch: 'x-moss-epoch',
+  /** An anonymous socket's client address bucket at upgrade (A§7): its answer budget and socket cap are per link and address. */
+  address: 'x-moss-address',
 } as const;
 
 export const PRINCIPAL_KINDS = ['user', 'agent', 'anonymous'] as const;

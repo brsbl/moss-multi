@@ -30,6 +30,12 @@ export function useFieldWritable(docId: string): boolean {
     () => bound.get(docId)?.writable ?? false, () => false);
 }
 
+/** Whether a pane of this tab has bound the doc (its first sync came), so its fields show the doc, not a placeholder. */
+export function useFieldBound(docId: string): boolean {
+  return useSyncExternalStore((listener) => { fieldListeners.add(listener); return () => { fieldListeners.delete(listener); }; },
+    () => bound.has(docId), () => false);
+}
+
 /** The doc's title as its binding holds it now, or null when no pane of this tab binds it. */
 export function liveTitle(docId: string): string | null {
   return bound.get(docId)?.text ?? null;
@@ -171,6 +177,7 @@ export class TitleField {
     const text = readField(doc, 'title');
     this.#render(text, null);
     this.project(docId, text);
+    changed();
   }
 
   /** The doc this pane bound is gone; only that binding's own release unbinds. */
@@ -222,7 +229,7 @@ export class TitleField {
   /** A rename from outside the field (the bridge): rendered as a peer's change would be. */
   writeText(text: string): boolean {
     const binding = this.#binding;
-    if (!binding || !this.#open) return false;
+    if (!binding || !this.#open || binding.docId !== this.#noteId) return false;
     const before = readField(binding.doc, 'title');
     if (!writeField(binding.doc, 'title', text, TITLE_LOCAL_ORIGIN)) return true;
     this.#render(text, diffText(before, text));
