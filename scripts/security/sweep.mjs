@@ -254,7 +254,19 @@ export function createSweep(baseUrl) {
    * arrived, so there the declared bytes are sent (spaces) and the Worker's answer to the whole body counts. The
    * answer's body is kept up to 4 KiB, and the timeout holds until it has ended.
    */
-  function oversized(method, path, headers, length, body) {
+  async function oversized(method, path, headers, length, body) {
+    // Locally, wrangler's proxy pools the connection a refused, half-read body left behind, and a POST lost on it is
+    // not replayed (patches/wrangler, T3.B22), so each one waits out the pool's 5 s idle close after the last.
+    if (!edge) await new Promise((resolve) => setTimeout(resolve, Math.max(0, lastOversized + 5_500 - Date.now())));
+    try {
+      return await sendOversized(method, path, headers, length, body);
+    } finally {
+      lastOversized = Date.now();
+    }
+  }
+  let lastOversized = 0;
+
+  function sendOversized(method, path, headers, length, body) {
     const url = new URL(path, base);
     const client = url.protocol === 'https:' ? https : http;
     if (!body && edge) body = Buffer.alloc(length, 0x20);
@@ -513,9 +525,6 @@ export function createSweep(baseUrl) {
     const over = Buffer.from(JSON.stringify({ pad: 'x'.repeat(JSON_BODY_CAP) }));
     const streamed = await oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, over.byteLength, over);
     check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is the Worker's too-large 413`, workerTooLarge(streamed), describeAnswer(streamed));
-    // Locally, wrangler's proxy pools the connection a refused, half-read body left behind, and a POST lost on it is
-    // not replayed (patches/wrangler, T3.B22), so the upload waits out the pool's 5 s idle close first.
-    if (!edge) await new Promise((resolve) => setTimeout(resolve, 5_500));
     const huge = await oversized('POST', `/api/docs/${doc.id}/assets?filename=big.png`, { ...write(ada), 'content-type': 'image/png' }, 10 * 1024 * 1024 + 1);
     check('limits', `an image over 10 MB is the Worker's too-large 413 ${how}`, workerTooLarge(huge), describeAnswer(huge));
 
