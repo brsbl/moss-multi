@@ -113,9 +113,10 @@ describe('the T0.5a bridge', () => {
     await api.notes.getAll();
     await api.notes.getById('d1');
     await vi.waitFor(() => expect(signals).toHaveLength(1));
-    expect(signals[0], 'the read carries the leave').toBe(controller.signal);
+    expect(signals[0]?.aborted).toBe(false);
     controller.abort();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signals[0]?.aborted, 'the read carries the leave').toBe(true);
     expect(signals, 'held while the page leaves').toHaveLength(1);
     leave = { signal: new AbortController().signal, stayed: new Promise(() => undefined) };
     stay();
