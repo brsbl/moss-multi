@@ -2,7 +2,7 @@
 // discovery closure (A§8), so a doc the caller cannot open never comes back, whatever the index holds.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertDoc, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
 
 const asked: { method: string; input: Record<string, unknown> }[] = [];
@@ -26,7 +26,11 @@ const SearchDO = {
     },
     backlinks: async (input: { keys: string[]; allowedDocIds: string[] }) => {
       asked.push({ method: 'backlinks', input });
-      return linking.filter((id) => input.allowedDocIds.includes(id));
+      const fed = (id: string) => !unindexed.includes(id) || reindexed.includes(id);
+      return {
+        sources: linking.filter((id) => input.allowedDocIds.includes(id) && fed(id)),
+        unindexed: input.allowedDocIds.filter((id) => !fed(id)),
+      };
     },
   }),
 };
@@ -124,6 +128,24 @@ describe('GET /api/docs/:id/backlinks', () => {
     expect(asked.at(-1)?.input.keys).toEqual(['launch-plan', 'launch-plan-2', `id:${target}`]);
     const forBen = await (await get(`/api/docs/${target}/backlinks`, ben.cookie)).json() as { backlinks: { id: string; title: string }[] };
     expect(forBen.backlinks).toEqual([expect.objectContaining({ id: visible, title: 'Kickoff' })]);
+  });
+
+  // B173: a linking source the index was never fed was missing; the search route backfilled, this one did not.
+  it('feeds the allowed sources the index lacks and answers with them on the first read, never another tenant’s or vault’s', async () => {
+    const target = await named(ada, 'Home base', 'home-base.md');
+    const source = await named(ada, 'Unfed source', 'unfed-source.md');
+    const theirs = await named(ben, 'Ben unfed', 'ben-unfed.md');
+    const otherVault = await insertFolder(d1.db, ada, null);
+    const elsewhere = await insertDoc(d1.db, ada, { folderId: otherVault });
+    linking = [source, theirs, elsewhere];
+    unindexed = [source, theirs, elsewhere];
+    const response = await get(`/api/docs/${target}/backlinks`, ada.cookie);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { backlinks: { id: string }[] };
+    expect(body.backlinks.map((link) => link.id), 'found on the first read').toEqual([source]);
+    expect(reindexed, 'only the allowed, same-vault source is fed').toEqual([source]);
+    for (const { input } of asked) expect(input.allowedDocIds).not.toContain(theirs);
+    for (const { input } of asked) expect(input.allowedDocIds).not.toContain(elsewhere);
   });
 
   it('is the one 404 for a doc the caller cannot open', async () => {

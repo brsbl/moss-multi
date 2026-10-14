@@ -17,6 +17,8 @@ export interface Attachment {
   role: Role;
   sessionId: string | null;
   shareToken: string | null;
+  /** The client address bucket the Worker saw at upgrade, for an anonymous socket; null when unknown. */
+  address?: string | null;
   presenceAllowed?: boolean;
   /** Minted at connect: suggestion leases bind to it, since a client may reuse its partyserver connection id. */
   nonce?: string;
@@ -28,6 +30,8 @@ export interface Attachment {
   epoch?: string;
   /** Not yet validated by the DocDO (A§8): it hears no broadcast and none of its frames apply until it is. */
   pending?: boolean;
+  /** The withheld payload ids this socket has written (digests), so a wake keeps counting them; absent: none. */
+  withheld?: string[];
 }
 
 /** The Worker's trusted headers, or null with no principal or no known role. */
@@ -42,6 +46,7 @@ export function attachmentFrom(headers: Headers): Attachment | null {
     role,
     sessionId: headers.get(TRUSTED.session) || null,
     shareToken: headers.get(TRUSTED.share) || null,
+    address: headers.get(TRUSTED.address) || null,
     presenceAllowed: headers.get(TRUSTED.presence) === '1' || (headers.get(TRUSTED.presence) === null && principal.kind !== 'anonymous' && !headers.get(TRUSTED.share)),
     resolvedAt: Number(headers.get(TRUSTED.resolvedAt)) || 0,
     epoch: headers.get(TRUSTED.epoch) ?? '',

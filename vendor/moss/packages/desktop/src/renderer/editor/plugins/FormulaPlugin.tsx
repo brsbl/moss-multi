@@ -519,6 +519,8 @@ function FormulaEditPopover({
   const [suggestionState, setSuggestionState] = useState<PopoverSuggestionState | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const expressionInputRef = useRef<HTMLInputElement | null>(null);
+  // moss-multi: where a typeahead pick puts the caret, once the field shows the picked name.
+  const pickedCaretRef = useRef<{ expression: string; caret: number } | null>(null);
   const latestDraftRef = useRef<FormulaDraft>({
     name: editingFormula.name,
     expression: editingFormula.expression
@@ -739,16 +741,26 @@ function FormulaEditPopover({
           end: caretAfter
         }
       });
-      requestAnimationFrame(() => {
-        const input = expressionInputRef.current;
-        if (input) {
-          input.focus({ preventScroll: true });
-          input.setSelectionRange(caretAfter, caretAfter);
-        }
-      });
+      // moss-multi: the caret goes after the name once the field shows it, in this task (the layout effect below). In a
+      // frame, a late one (Chromium under load) moved it back after the user typed on: `+2` landed as `2+`.
+      pickedCaretRef.current = { expression: nextExpression, caret: caretAfter };
     },
     [expression, suggestionState, writeTouched]
   );
+
+  useLayoutEffect(() => {
+    const picked = pickedCaretRef.current;
+    const input = expressionInputRef.current;
+    if (!picked || !input) {
+      return;
+    }
+    pickedCaretRef.current = null;
+    if (input.value !== picked.expression) {
+      return;
+    }
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(picked.caret, picked.caret);
+  });
 
   // moss-multi: set by a deliberate close, so the focus it hands back writes nothing.
   const closedRef = useRef(false);

@@ -7,6 +7,7 @@ import { MemoryHost, MemoryVolume, seedNote } from './testing/memory-host.js';
 import { isMossAssetName } from './host/moss-editor-host.js';
 import { assembleContent, type EditorContent, type RendererSnapshot } from './desktop/pipeline';
 import { isNoteRelativeCompanionPath } from './desktop/note-store.port';
+import { adoptCommentColors, commentColorsOf, hydrateNoteComments, type CommentsMap } from './comment-state';
 import { EditorSession, TIMING, type SessionSurface } from './session';
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -32,34 +33,44 @@ class FakeSurface implements SessionSurface {
   editable = false;
   live = { title: '', body: '', comments: {} as RendererSnapshot['commentMetadata'] };
   views: unknown[] = [];
-  colors: Record<string, number> = {};
-  commit?: () => void;
+  /** The comments map as moss's renderer holds it, hydrated as the real surface hydrates it. */
+  comments: CommentsMap = {};
+  commit?: () => void | Promise<void>;
+  settleMedia?: () => Promise<void>;
   frozen = false;
+  /** Every freeze call: a full one (unmount) lets focus go, an input-only one (a load, a removal) keeps it. */
+  freezes: { frozen: boolean; keepFocus: boolean }[] = [];
   /** The chunk a body holding CHART needs before it shows, as the real surface's lazy views: held while set. */
   chunk: Promise<void> | null = null;
+  /** A load's settling frame, after the content is in, as the real surface's nextFrame: held while set. */
+  settling: Promise<void> | null = null;
 
   prepare(content: EditorContent) {
     return content.body.includes('CHART') ? this.chunk : null;
   }
 
-  freeze(frozen: boolean) {
+  freeze(frozen: boolean, options?: { keepFocus?: boolean }) {
     this.frozen = frozen;
+    this.freezes.push({ frozen, keepFocus: options?.keepFocus === true });
   }
 
-  load(content: EditorContent, options: { keepView: boolean }) {
+  load(content: EditorContent, options: { keepView: boolean }): void | Promise<void> {
     this.loaded = content;
     this.loads.push(options);
     this.live = { title: content.title, body: content.body, comments: content.commentMetadata };
-    this.colors = { ...(content.commentColors ?? {}) };
+    this.comments = hydrateNoteComments(content);
+    return this.settling ?? undefined;
+  }
+
+  /** moss's comment UI adds a comment (a reply from an open composer) in the user's color. */
+  addComment(id: string, comment: RendererSnapshot['commentMetadata'][string]) {
+    this.live.comments = { ...this.live.comments, [id]: comment };
+    this.comments = { ...this.comments, [id]: { id, ...comment, color: 0 } };
   }
 
   /** As the real surface: a color the user did not change takes the new baseline's. */
   adoptCommentColors(previous: Record<string, number> | undefined, next: Record<string, number> | undefined) {
-    for (const id of new Set([...Object.keys(previous ?? {}), ...Object.keys(next ?? {})])) {
-      if (this.colors[id] !== previous?.[id]) continue;
-      if (next?.[id] === undefined) delete this.colors[id];
-      else this.colors[id] = next[id];
-    }
+    this.comments = adoptCommentColors(this.comments, previous, next) ?? this.comments;
   }
 
   snapshot(): RendererSnapshot {
@@ -68,7 +79,7 @@ class FakeSurface implements SessionSurface {
       content: assembleContent(this.loaded, { title: this.live.title, body: this.live.body }),
       commentMetadata: this.live.comments,
       layoutMetadata: { version: 1, tableCount: 0, tables: [] },
-      intents: { frontmatterMetaUpdates: {}, commentColors: { ...this.colors } },
+      intents: { frontmatterMetaUpdates: {}, commentColors: commentColorsOf(this.comments) },
     };
   }
 
@@ -104,6 +115,29 @@ function mount(options: { restoreDraft?: ConstructorParameters<typeof EditorSess
 function type(session: EditorSession, body: string) {
   surface.live.body = body;
   session.markEdited();
+}
+
+const COMMENTED = '# Plan\n\n%%m:a:start%%Alpha%%m:a:end%% and %%m:b:start%%beta%%m:b:end%%\n';
+/** COMMENTED's body, edited, with both anchors kept. */
+const EDITED = '%%m:a:start%%Alpha%%m:a:end%% and %%m:b:start%%beta%%m:b:end%%, edited\n';
+
+/** Submits a reply from moss's already-open comment composer: it lands, and is reported, unless input is frozen. */
+function reply(session: EditorSession, id: string, text: string): boolean {
+  if (surface.frozen) return false;
+  surface.addComment(id, { text, createdAt: 1_790_000_000, updatedAt: 1_790_000_000, source: 'user', parentId: 'a' });
+  session.markEdited();
+  return true;
+}
+
+/** A note whose body anchors comment `a` (the user's) and `b` (an agent's), with legacy colors in meta.json. */
+function seedComments(colors: Record<string, number>) {
+  const at = 1_780_000_300;
+  const comments = { a: { text: 'Mine', createdAt: at, updatedAt: at, source: 'user' }, b: { text: 'From the agent', createdAt: at + 1, updatedAt: at + 1, source: 'agent' } };
+  volume.silently(() => {
+    volume.writeFile(`${DIR}/Plan.md`, COMMENTED);
+    volume.writeFile(`${DIR}/comments.json`, JSON.stringify(comments));
+    volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: colors }, null, 2));
+  });
 }
 
 /** Lets I/O (crypto.subtle in the host's version tokens) complete, one real loop turn at a time. */
@@ -307,26 +341,26 @@ describe('conflicts with the Mac app', () => {
   });
 
   it('a meta-only change to comment colors is kept by the next body save', async () => {
-    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 1 } }, null, 2)));
+    seedComments({ a: 0, b: 3 });
     const session = mount();
     await session.ready;
-    volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 3 } }, null, 2));
+    volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 4, b: 3 } }, null, 2));
     await settle(250);
-    type(session, 'Edited\n');
+    type(session, EDITED);
     await settle(1_500);
-    expect(markdownOnDisk()).toBe('# Plan\n\nEdited\n');
-    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 3 });
+    expect(markdownOnDisk()).toBe(`# Plan\n\n${EDITED}`);
+    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 4, b: 3 });
   });
 
   it('a comment color changed in meta.json during a save is kept by the silent meta retry', async () => {
-    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 1 } }, null, 2)));
+    seedComments({ a: 0, b: 3 });
     const session = mount();
     await session.ready;
-    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 3 } }, null, 2)));
-    type(session, 'Edited\n');
+    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 4, b: 3 } }, null, 2)));
+    type(session, EDITED);
     await settle(1_500);
-    expect(markdownOnDisk()).toBe('# Plan\n\nEdited\n');
-    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 3 });
+    expect(markdownOnDisk()).toBe(`# Plan\n\n${EDITED}`);
+    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 4, b: 3 });
     expect(session.status).toBe('clean');
   });
 
@@ -357,6 +391,133 @@ describe('conflicts with the Mac app', () => {
     const flushed = await session.flush();
     if (flushed.kind !== 'removed') throw new Error(`expected removed, got ${flushed.kind}`);
     expect(flushed.draft.files.markdown).toBe('# Plan\n\nChart value 9\n');
+  });
+});
+
+describe('a removal reports the edits its commit publishes', () => {
+  /** As the real surface's commit: drafts flush while editable, and their updates are counted a macrotask later. */
+  function lateDraft(session: EditorSession) {
+    const gate: { publish?: () => void } = {};
+    surface.commit = () => {
+      if (!surface.editable || surface.live.body === 'Chart value 9\n') return;
+      return new Promise<void>((done) => {
+        gate.publish = () => {
+          surface.live.body = 'Chart value 9\n';
+          session.markEdited();
+          done();
+        };
+      });
+    };
+    return gate;
+  }
+
+  it('a clean note whose commit publishes an open chart draft is reported removed once, with unsaved edits, and keeps the draft', async () => {
+    const session = mount();
+    await session.ready;
+    const gate = lateDraft(session);
+    volume.unlink(`${DIR}/meta.json`);
+    await settle(250);
+    expect(gate.publish).toBeDefined();
+    // A second removal (a host reload finding the note gone) while the first one's commit settles.
+    await expect(session.reload()).resolves.toMatchObject({ kind: 'removed' });
+    gate.publish!();
+    await settle();
+    expect(session.status).toBe('removed');
+    expect(surface.editable).toBe(false);
+    expect(surface.frozen).toBe(false);
+    expect(events.filter((event) => event.kind === 'removed')).toEqual([expect.objectContaining({ reason: 'notFound', hadUnsavedEdits: true })]);
+    const flushed = await session.flush();
+    if (flushed.kind !== 'removed') throw new Error(`expected removed, got ${flushed.kind}`);
+    expect(flushed.draft.files.markdown).toBe('# Plan\n\nChart value 9\n');
+  });
+
+  it('a clean note with no draft is reported removed once, with no unsaved edits', async () => {
+    const session = mount();
+    await session.ready;
+    volume.unlink(`${DIR}/meta.json`);
+    await settle(250);
+    expect(session.status).toBe('removed');
+    expect(surface.editable).toBe(false);
+    expect(surface.frozen).toBe(false);
+    expect(events.filter((event) => event.kind === 'removed')).toEqual([expect.objectContaining({ reason: 'notFound', hadUnsavedEdits: false })]);
+  });
+
+  it('an unmount while the removal commit settles tears down with no removed event after it', async () => {
+    const session = mount();
+    await session.ready;
+    const gate = lateDraft(session);
+    volume.unlink(`${DIR}/meta.json`);
+    await settle(250);
+    expect(gate.publish).toBeDefined();
+    await expect(session.unmount({ discardUnsaved: true })).resolves.toMatchObject({ kind: 'unmounted', flush: { kind: 'removed' } });
+    gate.publish!();
+    await settle();
+    expect(session.status).toBe('unmounted');
+    expect(kinds()).not.toContain('removed');
+  });
+});
+
+describe('input is frozen while a reload settles', () => {
+  beforeEach(() => {
+    seedComments({ a: 0, b: 3 });
+  });
+
+  it('a reply submitted from an open composer during the settling frame is blocked or saved, never reported clean and lost', async () => {
+    const session = mount();
+    await session.ready;
+    const gate: { release?: () => void } = {};
+    surface.settling = new Promise<void>((resolve) => (gate.release = resolve));
+    volume.writeFile(`${DIR}/Plan.md`, `${COMMENTED}\nChanged in Moss\n`);
+    await settle(250);
+    expect(surface.loads).toHaveLength(2);
+    const accepted = reply(session, 'r1', 'A reply');
+    surface.settling = null;
+    gate.release!();
+    await settle(2_000);
+    const flushed = await session.flush();
+    const comments = JSON.parse(volume.readFile(`${DIR}/comments.json`)) as Record<string, { text: string }>;
+    if (accepted) expect(comments.r1?.text).toBe('A reply');
+    else expect({ flushed: flushed.kind, r1: comments.r1 }).toEqual({ flushed: 'clean', r1: undefined });
+    expect(kinds()).toContain('reloaded');
+    // Input comes back with editing, and a reply then is saved.
+    expect({ editable: surface.editable, frozen: surface.frozen }).toEqual({ editable: true, frozen: false });
+    expect(reply(session, 'r2', 'Later')).toBe(true);
+    await expect(session.flush()).resolves.toMatchObject({ kind: 'saved' });
+    expect(JSON.parse(volume.readFile(`${DIR}/comments.json`)).r2.text).toBe('Later');
+  });
+
+  it('an unmount during the settling frame owns the freeze: the reload never gives input back', async () => {
+    const session = mount();
+    await session.ready;
+    const gate: { release?: () => void } = {};
+    surface.settling = new Promise<void>((resolve) => (gate.release = resolve));
+    volume.writeFile(`${DIR}/Plan.md`, `${COMMENTED}\nChanged in Moss\n`);
+    await settle(250);
+    expect(surface.loads).toHaveLength(2);
+    expect(surface.freezes.at(-1)).toEqual({ frozen: true, keepFocus: true });
+    await expect(session.unmount()).resolves.toMatchObject({ kind: 'unmounted' });
+    expect(surface.freezes.at(-1)).toEqual({ frozen: true, keepFocus: false });
+    surface.settling = null;
+    gate.release!();
+    await settle();
+    expect({ editable: surface.editable, frozen: surface.frozen }).toEqual({ editable: false, frozen: true });
+    expect(reply(session, 'late', 'Too late')).toBe(false);
+    expect(kinds()).not.toContain('reloaded');
+  });
+});
+
+describe('comment colors follow moss hydration', () => {
+  it("legacy stored colors hydrate as their comments' source colors and are saved that way, through a meta.json refresh", async () => {
+    seedComments({ a: 1, b: 0 });
+    const session = mount();
+    await session.ready;
+    // Moss rewrites meta.json alone, with other legacy colors.
+    volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 2, b: 2 } }, null, 2));
+    await settle(250);
+    type(session, EDITED);
+    await settle(1_500);
+    expect(markdownOnDisk()).toBe(`# Plan\n\n${EDITED}`);
+    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 0, b: 3 });
   });
 });
 
@@ -795,6 +956,54 @@ describe('the fixture host', () => {
   });
 });
 
+describe('the fixture host, folder allocation', () => {
+  it('a rename onto a folder the listing missed moves to the next suffix and leaves that folder alone', async () => {
+    const OTHER_META = { ...META, id: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d', title: 'Q3 Plan' };
+    const other = seedNote(volume, ['Notes', 'Projects', 'Q3 Plan'], { markdown: '# Q3 Plan\n\nOther note\n', meta: OTHER_META });
+    const before = volume.snapshot(`${other}/`);
+    // A volume that equates names the allocator does not see as taken: the exclusive rename meets EEXIST.
+    const readdir = volume.readdir.bind(volume);
+    volume.readdir = (dir: string) => readdir(dir).filter((entry) => entry.name !== 'Q3 Plan');
+    const session = mount();
+    await session.ready;
+    surface.live.title = 'Q3 Plan';
+    session.markEdited();
+    await settle(1_500);
+    expect(volume.snapshot(`${other}/`)).toEqual(before);
+    expect(volume.isFile('/Moss/Notes/Projects/Q3 Plan (1)/Q3 Plan (1).md')).toBe(true);
+    expect(session.location?.folderName).toBe('Q3 Plan (1)');
+    expect(session.status).not.toBe('conflict');
+  });
+
+  it('as API 2 step 3: a second EEXIST after allocating once more returns raced and touches neither folder', async () => {
+    const seeded = ['Q3 Plan', 'Q3 Plan (1)'].map((title, index) =>
+      seedNote(volume, ['Notes', 'Projects', title], {
+        markdown: `# ${title}\n\nOther note\n`,
+        meta: { ...META, id: `9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6${index}`, title },
+      }),
+    );
+    const before = seeded.map((dir) => volume.snapshot(`${dir}/`));
+    // The listing misses both folders, so the first and the re-allocated rename both meet EEXIST.
+    const readdir = volume.readdir.bind(volume);
+    volume.readdir = (dir: string) => readdir(dir).filter((entry) => !entry.name.startsWith('Q3 Plan'));
+    const write = host.write.bind(host);
+    const results: Awaited<ReturnType<typeof host.write>>[] = [];
+    host.write = async (noteId, request) => {
+      const result = await write(noteId, request);
+      results.push(result);
+      return result;
+    };
+    const session = mount();
+    await session.ready;
+    surface.live.title = 'Q3 Plan';
+    session.markEdited();
+    await settle(1_500);
+    expect(results[0]).toMatchObject({ kind: 'conflict', reason: 'raced' });
+    expect(seeded.map((dir) => volume.snapshot(`${dir}/`))).toEqual(before);
+    expect(volume.exists('/Moss/Notes/Projects/Q3 Plan (2)')).toBe(false);
+  });
+});
+
 describe('the fixture host, step 6', () => {
   it('a file another writer replaces after its own op is caught by the final re-read', async () => {
     const session = mount();
@@ -838,19 +1047,22 @@ describe('drafts and receipts', () => {
   });
 
   it("restoring a receipt whose files are already on disk writes the receipt's comment colors", async () => {
-    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...META, commentColors: { a: 1 } }, null, 2)));
+    seedComments({ a: 0, b: 3 });
     const first = mount();
     await first.ready;
-    type(first, 'Saved\n');
+    type(first, EDITED);
     const saved = await first.flush();
     if (saved.kind !== 'saved') throw new Error('expected saved');
     await first.unmount();
+    // Moss rewrites meta.json's colors after the save.
+    const meta = JSON.parse(volume.readFile(`${DIR}/meta.json`));
+    volume.silently(() => volume.writeFile(`${DIR}/meta.json`, JSON.stringify({ ...meta, commentColors: { a: 4, b: 4 } }, null, 2)));
 
-    const receipt = { ...saved.receipt, intents: { ...saved.receipt.intents, commentColors: { a: 4 } } };
-    const restored = mount({ restoreDraft: receipt });
+    const restored = mount({ restoreDraft: saved.receipt });
     await restored.ready;
     await expect(restored.flush()).resolves.toMatchObject({ kind: 'saved' });
-    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 4 });
+    expect(saved.receipt.intents.commentColors).toEqual({ a: 0, b: 3 });
+    expect(JSON.parse(volume.readFile(`${DIR}/meta.json`)).commentColors).toEqual({ a: 0, b: 3 });
   });
 
   it('a draft on the same base opens dirty and saves', async () => {
@@ -983,6 +1195,44 @@ describe('assets', () => {
     const stored = await session.putAsset({ data: new Blob(['x']), filename: '../evil..name.tiff', mimeType: 'image/tiff', purpose: 'comment' });
     expect(stored.relativePath).toMatch(/^assets\/image-\d+-[0-9a-f]{8}\.png$/);
   });
+
+  /**
+   * B189: a paste over "beta" whose upload the host holds, the unmount started meanwhile. The surface's settleMedia is
+   * the paste's whole chain, as the real surface's is: the upload, then the media in place of the selection, or, when
+   * the upload fails, the selection left as it was.
+   */
+  for (const outcome of ['stored', 'refused'] as const) {
+    it(`an unmount while a pasted image uploads waits for it to ${outcome === 'stored' ? 'land in place of the selection' : 'fail, keeping the text'} (B189)`, async () => {
+      const session = mount();
+      await session.ready;
+      type(session, 'Alpha beta gamma\n');
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const put = host.assets.put;
+      host.assets.put = async (noteId, asset) => {
+        await gate;
+        return outcome === 'stored' ? put(noteId, asset) : { kind: 'refused' as const, reason: 'tooLarge' as const };
+      };
+      const pasted = session.putAsset({ data: new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }), filename: 'shot.png', mimeType: 'image/png', purpose: 'body' })
+        .then((stored) => type(session, `Alpha ![shot](${stored.relativePath}) gamma\n`), () => undefined);
+      surface.settleMedia = () => pasted;
+      // Every markdown the session writes: the final write must be the first, never one holding the paste's place.
+      const writes: string[] = [];
+      const write = host.write.bind(host);
+      host.write = async (noteId, request) => {
+        for (const op of request.ops) if (op.kind === 'put' && op.file === 'markdown') writes.push(op.text);
+        return write(noteId, request);
+      };
+      const unmounting = session.unmount();
+      await vi.advanceTimersByTimeAsync(100);
+      release();
+      const result = await unmounting;
+      expect(result.kind).toBe('unmounted');
+      expect(writes, 'one write, after the paste settled').toHaveLength(1);
+      if (outcome === 'stored') expect(markdownOnDisk()).toMatch(/^# Plan\n\nAlpha !\[shot\]\(assets\/shot-\d+-[0-9a-f]{8}\.png\) gamma\n$/);
+      else expect(markdownOnDisk()).toBe('# Plan\n\nAlpha beta gamma\n');
+    });
+  }
 });
 
 describe('confinement (security review of the contract)', () => {

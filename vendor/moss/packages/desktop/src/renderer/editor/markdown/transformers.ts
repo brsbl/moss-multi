@@ -8,7 +8,7 @@ import { HeadingNode, QuoteNode } from '@lexical/rich-text';
 import { $isListItemNode, ListItemNode, ListNode } from '@lexical/list';
 import { $createLinkNode, $isLinkNode, AutoLinkNode, LinkNode } from '@lexical/link';
 import { $findMatchingParent } from '@lexical/utils';
-import { $createParagraphNode, $createTextNode, $getEditor, $getRoot, $getSelection, $isDecoratorNode, $isElementNode, $isLineBreakNode, $isParagraphNode, $isRangeSelection, $isRootNode, $isTextNode, $setSelection, type BaseSelection, IS_BOLD, IS_ITALIC, IS_STRIKETHROUGH, type LexicalNode, LineBreakNode, TextNode } from 'lexical';
+import { $createParagraphNode, $createRangeSelection, $createTextNode, $getEditor, $getRoot, $getSelection, $isDecoratorNode, $isElementNode, $isLineBreakNode, $isParagraphNode, $isRangeSelection, $isRootNode, $isTextNode, $setSelection, type BaseSelection, IS_BOLD, IS_ITALIC, IS_STRIKETHROUGH, type LexicalNode, LineBreakNode, TextNode } from 'lexical';
 import type { NoteLayoutMetadata } from '../../../common/noteTypes';
 import { MOSS_CANVAS_FENCE_NAME, buildMarkdownFence } from '../../../common/markdown-fences';
 import { $isCommentableDecorator } from '../utils/commentable-node';
@@ -179,7 +179,22 @@ const OBSIDIAN_HIGHLIGHT_TRANSFORMER: TextMatchTransformer = {
     if (markdownStyleAttributeHasSerifFontFamily(styleAttribute)) {
       setTextNodeFontFamily(highlightedNode, 'serif');
     }
+    // moss-multi seam: highlight-caret (T3.B13): typed (a selection exists; imports run without one), the caret lands
+    // after the highlight with the text's own style, as Lexical's format shortcuts leave it, so what is typed next is
+    // not highlighted.
+    const selection = $getSelection();
+    const format = textNode.getFormat();
+    const style = textNode.getStyle();
     textNode.replace(highlightedNode);
+    if ($isRangeSelection(selection)) {
+      const caret = $createRangeSelection();
+      const end = highlightedNode.getTextContentSize();
+      caret.anchor.set(highlightedNode.getKey(), end, 'text');
+      caret.focus.set(highlightedNode.getKey(), end, 'text');
+      caret.format = format;
+      caret.style = style;
+      $setSelection(caret);
+    }
     return highlightedNode;
   },
   trigger: '=',

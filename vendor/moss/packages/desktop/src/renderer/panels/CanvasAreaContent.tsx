@@ -4962,6 +4962,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                   void commitTitleChange();
                 }}
                 onKeyDown={(event) => {
+                  // moss-multi seam: bound-pane (A§2.2): an IME composition owns Enter and arrows until compositionend
+                  if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   if (handleTitleEmojiKeyDown(event)) {
                     return;
                   }

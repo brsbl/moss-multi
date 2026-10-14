@@ -14,13 +14,15 @@
 // SearchDO bodies of unclosed openers, exiting non-zero past the per-request CPU and linear-scaling budgets. The
 // converter also imports and exports notes of unclosed openers (packages/sync/measure/converter-cases.ts) as single
 // lines from 1 KB to 2 MB, exiting non-zero past LINE_BUDGET_MS.
+// Table notes go through the converter and the DocDO's create, exiting non-zero when a leg errs or takes more than
+// IMPORT_BUDGET_MS, a 2 MB note past the cell budget is not refused as doc-cap, or a table within it does not land whole.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createConnection } from 'node:net';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
@@ -309,12 +311,34 @@ const PAYLOAD_ROUNDS = 2;
 const PAYLOAD_NOTES = { small: 300, large: 3_000 };
 // Mean workerd CPU per payload frame (parse, gates, load, apply, persist, fan-out to the other sockets, ack).
 const PAYLOAD_FRAME_BUDGET_MS = 3;
-// workerd RSS growth over the frame rounds; payload docs held in memory are bounded (PAYLOAD_DOCS_HELD).
+// workerd RSS growth over the frame rounds; payload docs held in memory are bounded (PAYLOAD_DOCS_HELD). Growth runs
+// from a baseline taken after an unmeasured warm-up round to the RSS after the last round, each settled for
+// PAYLOAD_SETTLE_MS and the median of PAYLOAD_RSS_SAMPLES readings; the peak over the rounds has a hard bound.
 const PAYLOAD_RSS_BUDGET_MB = 64;
+const PAYLOAD_RSS_PEAK_MB = 256;
+const PAYLOAD_RSS_SAMPLES = 5;
+const PAYLOAD_SETTLE_MS = 1_000;
 const PAYLOAD_SCALING = 3;
 const PAYLOAD_DOCS_HELD = 256;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** workerd RSS after PAYLOAD_SETTLE_MS, PAYLOAD_RSS_SAMPLES readings 100 ms apart. */
+async function settledRssKb(server) {
+  await sleep(PAYLOAD_SETTLE_MS);
+  const readings = [];
+  for (let i = 0; i < PAYLOAD_RSS_SAMPLES; i += 1) {
+    if (i > 0) await sleep(100);
+    readings.push(workerdStats(server.child.pid).rssKb);
+  }
+  return readings;
+}
+
+/** A payload note's RSS growth (settled, median to median) and peak over its settled baseline, in MB. */
+export function payloadRss({ rss }) {
+  const base = median(rss.baselineKb);
+  return { growthMb: round((median(rss.settledKb.at(-1)) - base) / 1024), peakMb: round((rss.peakKb - base) / 1024) };
+}
 
 async function payloadSocket(server, docId, principal, prefix) {
   const ws = new WebSocket(`${server.origin.replace(/^http/, 'ws')}/parties/doc-d-o/${docId}?_pk=${principal}&principal=${principal}`);
@@ -359,34 +383,44 @@ async function measurePayloadNote(server, blocks, Y, protocol) {
   };
   const per = Math.ceil(ids.length / PAYLOAD_SOCKETS);
   const mine = (k) => ids.slice(k * per, (k + 1) * per);
-  const before = workerdStats(server.child.pid);
-  let peakRssKb = before.rssKb;
-  const sampler = setInterval(() => {
-    peakRssKb = Math.max(peakRssKb, workerdStats(server.child.pid).rssKb);
-  }, 20);
-  let cpuMs = 0;
   let frames = 0;
-  try {
-    for (let pass = 0; pass < PAYLOAD_ROUNDS; pass += 1) {
-      // The write rate counts frames per socket per window: wait it out between rounds.
-      if (pass > 0) await sleep(5_200);
-      const start = workerdStats(server.child.pid).cpuMs;
-      sockets.forEach((socket, k) => {
-        socket.acked.clear();
-        for (const id of mine(k)) {
-          socket.wrote.add(id);
-          socket.ws.send(protocol.encodePayloadFrame(id, protocol.PAYLOAD_UPDATE, tiny()));
-          frames += 1;
-        }
-      });
-      const deadline = performance.now() + 120_000;
-      while (sockets.some((socket, k) => socket.acked.size < mine(k).length)) {
-        const closed = sockets.find((socket) => socket.closed);
-        if (closed) throw new Error(`a socket closed: ${closed.closed}\n${server.logs.value}`);
-        if (performance.now() > deadline) throw new Error(`round ${pass}: frames unacked after 120 s\n${server.logs.value}`);
-        await sleep(50);
+  // One round: every socket sends a frame for each of its ids; resolves with the workerd CPU spent once all are acked.
+  const sendRound = async (pass) => {
+    const start = workerdStats(server.child.pid).cpuMs;
+    sockets.forEach((socket, k) => {
+      socket.acked.clear();
+      for (const id of mine(k)) {
+        socket.wrote.add(id);
+        socket.ws.send(protocol.encodePayloadFrame(id, protocol.PAYLOAD_UPDATE, tiny()));
+        frames += 1;
       }
-      cpuMs += workerdStats(server.child.pid).cpuMs - start;
+    });
+    const deadline = performance.now() + 120_000;
+    while (sockets.some((socket, k) => socket.acked.size < mine(k).length)) {
+      const closed = sockets.find((socket) => socket.closed);
+      if (closed) throw new Error(`a socket closed: ${closed.closed}\n${server.logs.value}`);
+      if (performance.now() > deadline) throw new Error(`round ${pass}: frames unacked after 120 s\n${server.logs.value}`);
+      await sleep(50);
+    }
+    return workerdStats(server.child.pid).cpuMs - start;
+  };
+  // The write rate counts frames per socket per window: wait it out between rounds.
+  const WINDOW_MS = 5_200;
+  let cpuMs = 0;
+  let sampler = null;
+  const rss = { baselineKb: [], settledKb: [], peakKb: 0 };
+  try {
+    await sendRound('warm-up');
+    rss.baselineKb = await settledRssKb(server);
+    rss.peakKb = Math.max(...rss.baselineKb);
+    sampler = setInterval(() => {
+      rss.peakKb = Math.max(rss.peakKb, workerdStats(server.child.pid).rssKb);
+    }, 20);
+    frames = 0;
+    for (let pass = 0; pass < PAYLOAD_ROUNDS; pass += 1) {
+      await sleep(WINDOW_MS);
+      cpuMs += await sendRound(pass);
+      rss.settledKb.push(await settledRssKb(server));
     }
   } finally {
     clearInterval(sampler);
@@ -397,7 +431,7 @@ async function measurePayloadNote(server, blocks, Y, protocol) {
     blocks,
     frames,
     frameCpuMs: Math.round((cpuMs / frames) * 100) / 100,
-    rssMb: round((peakRssKb - before.rssKb) / 1024),
+    rss,
     held: work.held,
     widestAck: Math.max(...sockets.map((socket) => socket.widestAck)),
     foreign: sockets.reduce((sum, socket) => sum + socket.foreign, 0),
@@ -419,10 +453,84 @@ async function measurePayloadFrames(port) {
   }
 }
 
+// Table imports (A§12; SP2): through the converter alone and through the real DocDO's create (import, binding and
+// admission), each in a fresh worker after a warm-up. The create refuses a 2 MB note of rows past the import's cell
+// budget (dense cells, or narrow rows each padded to a wide header) as doc-cap (413) and lands a table within it whole,
+// its export the converter's; every create within IMPORT_BUDGET_MS of workerd CPU, never an error. A table at the edge of
+// the budget is reported only: what the create costs past the converter grows with the doc's state, as the 2 MB scale
+// note's does.
+const TABLE_TIMEOUT_MS = 30_000;
+const tableHeader = (cells) => `|${' h |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`;
+const tableRows = (cells, row, bytes) => `${tableHeader(cells)}${row.repeat(Math.floor((bytes - tableHeader(cells).length) / row.length))}`;
+const DENSE_ROW = `|${'a|'.repeat(64)}\n`;
+const TABLE_CASES = [
+  { name: 'dense one-letter cells, 64 a row, past the cell budget', markdown: tableRows(64, DENSE_ROW, 2 * 1024 * 1024), create: 413 },
+  { name: 'two-cell rows padded to a 4,096-column header, past the cell budget', markdown: tableRows(4_096, '| b | c |\n', 2 * 1024 * 1024), create: 413 },
+  { name: 'dense one-letter cells, 64 a row, 8,192 cells', markdown: `${tableHeader(64)}${DENSE_ROW.repeat(127)}`, create: 200 },
+  { name: 'dense one-letter cells, 64 a row, 17,984 cells (the edge of the budget; reported)', markdown: `${tableHeader(64)}${DENSE_ROW.repeat(280)}`, create: 200, reported: true },
+];
+
+/** One request in a fresh worker after a warm-up: its workerd CPU and answer (and its export's hash), or why it failed. */
+async function tableRequest(port, worker, path, markdown, exportPath) {
+  const server = await startWorker(worker, port);
+  let before = null;
+  try {
+    const warm = await fetch(`${server.origin}${path}warm`, { method: 'POST', body: tableRows(8, `|${'a|'.repeat(8)}\n`, 8 * 1024) });
+    if (!warm.ok) throw new Error(`warm-up: HTTP ${warm.status} ${await warm.text()}`);
+    before = workerdStats(server.child.pid);
+    const response = await fetch(`${server.origin}${path}note`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) });
+    const text = await response.text();
+    const cpuMs = workerdStats(server.child.pid).cpuMs - before.cpuMs;
+    let answer = null;
+    try {
+      answer = JSON.parse(text);
+    } catch {
+      // reported below
+    }
+    const ok = response.status === 200 || (response.status === 413 && answer?.error === 'doc-cap');
+    if (!ok) return { cpuMs, status: response.status, answer, failed: `HTTP ${response.status} ${text.slice(0, 160)}` };
+    // The export runs after the CPU is read: it only shows what landed.
+    const exported = response.status === 200 ? await (await fetch(`${server.origin}${exportPath}`, { signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) })).json() : null;
+    return { cpuMs, status: response.status, answer, hash: exported?.hash };
+  } catch (error) {
+    const timedOut = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError';
+    return { cpuMs: before ? workerdStats(server.child.pid).cpuMs - before.cpuMs : undefined, failed: timedOut ? `ran past ${TABLE_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0] };
+  } finally {
+    await stop(server.child);
+  }
+}
+
+async function measureTableImports(port) {
+  const results = [];
+  for (const { name, markdown, create: expected, reported } of TABLE_CASES) {
+    const converter = await tableRequest(port, 'converter', '/import?', markdown, '/export?hash');
+    const create = await tableRequest(port + 1, 'docdo', '/create?doc=', markdown, '/export?doc=note');
+    port += 2;
+    const problems = [];
+    for (const [leg, r] of [['converter', converter], ['DocDO create', create]]) {
+      if (r.failed) problems.push(`${leg}: ${r.failed}`);
+      // The converter alone keeps the rows past the budget as text (the multiline cases hold that path to SP2).
+      else if (!reported && leg === 'DocDO create' && r.cpuMs > IMPORT_BUDGET_MS) problems.push(`${leg}: ${r.cpuMs} ms of workerd CPU, over ${IMPORT_BUDGET_MS} ms`);
+    }
+    if (!create.failed && !reported && create.status !== expected) problems.push(`DocDO create: HTTP ${create.status}, not ${expected}`);
+    if (!create.failed && create.status === 200 && !converter.failed && create.hash !== converter.hash) {
+      problems.push(`DocDO create: its export (${create.hash}) is not the converter's (${converter.hash})`);
+    }
+    results.push({ name, bytes: markdown.length, converter, create, reported, problems });
+  }
+  return results;
+}
+
+function tableImportProblems(results) {
+  return results.flatMap((r) => r.problems.map((problem) => `${r.name}: ${problem}`));
+}
+
 // The search index (A§5.3): one global SearchDO indexes every doc and snippets every hit, so a body full of openers
 // with no closer (packages/sync/measure/search-cases.ts) must cost it linear work. Each case runs in a fresh worker; a
-// request past SEARCH_TIMEOUT_MS fails the case. The larger run must cost at most SEARCH_SCALING times the smaller.
-const SEARCH_SIZES = [200_000, 400_000];
+// request past SEARCH_TIMEOUT_MS fails the case. At 400,000 chars a request may cost at most SEARCH_SCALING times its
+// 200,000-char median; every sample at every size, up to PRODUCT's 2 MB note cap, is held to SEARCH_BUDGET_MS. After
+// the adversarial bodies, the warm doc is searched again in the same SearchDO: the same snippet, within the budget.
+export const SEARCH_SIZES = [200_000, 400_000, 2 * 1024 * 1024];
 const SEARCH_RUNS = 3;
 // Workerd CPU per request (index, search with its snippet, headings) at every size.
 const SEARCH_BUDGET_MS = 100;
@@ -430,29 +538,39 @@ const SEARCH_SCALING = 3;
 const SEARCH_TIMEOUT_MS = 10_000;
 // 10 ms CPU ticks: scaling compares against no less than this.
 const SEARCH_FLOOR_MS = 20;
+const SEARCH_OPS = ['indexCpuMs', 'searchCpuMs', 'headingsCpuMs'];
 
 async function measureSearchCase(name, opener, port, searchBody) {
   const server = await startWorker('search', port);
   const request = (path, body) => timedRequest(server, path, { method: 'POST', body, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
   const sizes = [];
+  const warm = {};
   try {
     await request('/index?doc=warm', 'quokka [[Warm Up]] <b>warm</b>');
-    await request('/search?doc=warm&q=quokka');
+    warm.snippet = JSON.parse((await request('/search?doc=warm&q=quokka')).body).snippet;
     for (const chars of SEARCH_SIZES) {
-      const body = searchBody(opener, chars);
+      // Exactly `chars` long, so the full-cap body is a note at the cap, not past it.
+      const body = searchBody(opener, chars).slice(0, chars);
       const doc = `case-${chars}`;
-      const runs = { index: [], search: [], headings: [] };
+      const runs = { indexCpuMs: [], searchCpuMs: [], headingsCpuMs: [] };
       for (let run = 0; run < SEARCH_RUNS; run += 1) {
-        runs.index.push((await request(`/index?doc=${doc}`, body)).cpuMs);
-        runs.search.push((await request(`/search?doc=${doc}&q=quokka`)).cpuMs);
-        runs.headings.push((await request('/headings', `# ${body}`)).cpuMs);
+        runs.indexCpuMs.push((await request(`/index?doc=${doc}`, body)).cpuMs);
+        runs.searchCpuMs.push((await request(`/search?doc=${doc}&q=quokka`)).cpuMs);
+        runs.headingsCpuMs.push((await request('/headings', `# ${body}`)).cpuMs);
       }
-      sizes.push({ chars, indexCpuMs: median(runs.index), searchCpuMs: median(runs.search), headingsCpuMs: median(runs.headings) });
+      const size = { chars, maxCpuMs: {} };
+      for (const op of SEARCH_OPS) {
+        size[op] = median(runs[op]);
+        size.maxCpuMs[op] = Math.max(...runs[op]);
+      }
+      sizes.push(size);
     }
-    return { name, sizes };
+    const after = await request('/search?doc=warm&q=quokka');
+    warm.after = { snippet: JSON.parse(after.body).snippet, cpuMs: after.cpuMs };
+    return { name, sizes, warm };
   } catch (error) {
     const reason = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError' ? `a request ran past ${SEARCH_TIMEOUT_MS / 1000} s` : String(error.message).split('\n')[0];
-    return { name, sizes, failed: reason };
+    return { name, sizes, warm, failed: reason };
   } finally {
     await stop(server.child);
   }
@@ -776,20 +894,24 @@ function adversarialBudgetProblems(results) {
   return problems;
 }
 
-const SEARCH_OPS = ['indexCpuMs', 'searchCpuMs', 'headingsCpuMs'];
-
 /** Every way the search runs miss the stated budget (empty when they meet it). */
-function searchBudgetProblems(results) {
+export function searchBudgetProblems(results) {
   const problems = [];
   for (const r of results) {
     if (r.failed) {
       problems.push(`${r.name}: ${r.failed}`);
       continue;
     }
+    for (const chars of SEARCH_SIZES) if (!r.sizes.some((size) => size.chars === chars)) problems.push(`${r.name}, ${chars} chars: not measured`);
     for (const size of r.sizes) {
-      for (const op of SEARCH_OPS) if (size[op] > SEARCH_BUDGET_MS) problems.push(`${r.name}, ${size.chars} chars: ${op} ${size[op]} ms`);
+      for (const op of SEARCH_OPS) if (size.maxCpuMs[op] > SEARCH_BUDGET_MS) problems.push(`${r.name}, ${size.chars} chars: ${op} ${size.maxCpuMs[op]} ms`);
     }
-    const [small, large] = r.sizes;
+    const after = r.warm?.after;
+    if (!after) problems.push(`${r.name}: no ordinary search after the adversarial requests`);
+    else if (after.snippet !== r.warm.snippet) problems.push(`${r.name}: the ordinary search after the adversarial requests returned ${JSON.stringify(after.snippet)}, not ${JSON.stringify(r.warm.snippet)}`);
+    else if (after.cpuMs > SEARCH_BUDGET_MS) problems.push(`${r.name}: the ordinary search after the adversarial requests took ${after.cpuMs} ms`);
+    const [small, large] = SEARCH_SIZES.slice(0, 2).map((chars) => r.sizes.find((size) => size.chars === chars));
+    if (!small || !large) continue;
     for (const op of SEARCH_OPS) {
       if (large[op] > SEARCH_SCALING * Math.max(small[op], SEARCH_FLOOR_MS)) problems.push(`${r.name}: ${op} grew from ${small[op]} ms to ${large[op]} ms`);
     }
@@ -900,6 +1022,7 @@ async function main() {
   const ordinary = await measureOrdinary(port + 99);
   const multiline = await measureMultiline(port + 200);
   const entityTabs = await measureEntityTabs(port + 300);
+  const tables = await measureTableImports(port + 400);
 
   const coldOf = (name, key) => round(median(cold[name].map((sample) => sample[key])));
   const families = ratios.filter((r) => !r.name.startsWith('scale note'));
@@ -945,13 +1068,14 @@ async function main() {
       ? [`| Payload frames (T1.F2) | FAILED: ${payloads.failed} |`]
       : payloads.notes.map(
           (n) =>
-            `| ${n.frames} tiny payload frames over ${n.blocks} ids, ${PAYLOAD_SOCKETS} editors, ${PAYLOAD_ROUNDS} rounds: workerd CPU per frame, mean | ${n.frameCpuMs} ms (budget ${PAYLOAD_FRAME_BUDGET_MS} ms); RSS growth ${n.rssMb} MB (budget ${PAYLOAD_RSS_BUDGET_MB} MB); payload docs held ${n.held} (at most ${PAYLOAD_DOCS_HELD}); widest ack ${n.widestAck} ids, ${n.foreign} not the socket's own |`,
+            `| ${n.frames} tiny payload frames over ${n.blocks} ids, ${PAYLOAD_SOCKETS} editors, ${PAYLOAD_ROUNDS} rounds: workerd CPU per frame, mean | ${n.frameCpuMs} ms (budget ${PAYLOAD_FRAME_BUDGET_MS} ms); settled RSS growth ${payloadRss(n).growthMb} MB (budget ${PAYLOAD_RSS_BUDGET_MB} MB), peak ${payloadRss(n).peakMb} MB (bound ${PAYLOAD_RSS_PEAK_MB} MB); payload docs held ${n.held} (at most ${PAYLOAD_DOCS_HELD}); widest ack ${n.widestAck} ids, ${n.foreign} not the socket's own |`,
         )),
     ...searches.flatMap((r) => [
       ...r.sizes.map(
         (size) =>
-          `| Search, ${r.name} × ${size.chars} chars: workerd CPU per request (index / search and snippet / headings), median of ${SEARCH_RUNS} | ${size.indexCpuMs} / ${size.searchCpuMs} / ${size.headingsCpuMs} ms (budget ${SEARCH_BUDGET_MS} ms) |`,
+          `| Search, ${r.name} × ${size.chars} chars: workerd CPU per request (index / search and snippet / headings), median (max) of ${SEARCH_RUNS} | ${SEARCH_OPS.map((op) => `${size[op]} (${size.maxCpuMs[op]})`).join(' / ')} ms (budget ${SEARCH_BUDGET_MS} ms) |`,
       ),
+      ...(r.warm?.after ? [`| Search, ${r.name}: the warm doc searched again after the adversarial requests | ${r.warm.after.cpuMs} ms${r.warm.after.snippet === r.warm.snippet ? '' : `, WRONG snippet ${JSON.stringify(r.warm.after.snippet)}`} (budget ${SEARCH_BUDGET_MS} ms) |`] : []),
       ...(r.failed ? [`| Search, ${r.name} | FAILED: ${r.failed} |`] : []),
     ]),
     ...adversarial.flatMap((r) => {
@@ -984,6 +1108,10 @@ async function main() {
         : `| Lines repeated, ${r.name}: workerd CPU (import / export) | ${r.sizes.map((size) => `${kb(size.bytes)} ${size.importCpuMs} / ${size.exportCpuMs} ms`).join(', ')} (growth at most ${ADVERSARIAL_SCALING}x) |`,
     ),
     `| Entity tabs, one line of \`&#9;\` × ${ENTITY_TAB_COUNTS.join(' / ')}: workerd CPU (import / export) | ${entityTabs.sizes.map((size) => `${size.importCpuMs} / ${size.exportCpuMs} ms${size.cut ? ' (kept literal)' : ''}`).join(', ')}${entityTabs.failed ? `; FAILED: ${entityTabs.failed}` : ''} (line budget ${LINE_BUDGET_MS} ms, growth at most ${ADVERSARIAL_SCALING}x a doubling) |`,
+    ...tables.map((t) => {
+      const part = (r) => `${r.cpuMs ?? '?'} ms${r.status ? `, HTTP ${r.status}` : ''}${r.answer?.work === undefined ? '' : `, work ${Math.round(r.answer.work / 1e6)}M`}${r.answer?.cut ? `, ${r.answer.cut} cut` : ''}${r.answer?.blocks ? `, ${r.answer.blocks} blocks` : ''}${r.answer?.stateBytes ? `, state ${mb(r.answer.stateBytes)}` : ''}${r.failed ? `, FAILED: ${r.failed}` : ''}`;
+      return `| Table import, ${t.name}, ${kb(t.bytes)}: workerd CPU, converter / DocDO create | ${part(t.converter)} / ${part(t.create)}${t.problems.length ? `; FAILED: ${t.problems.join('; ')}` : ''} (budget ${t.reported ? 'reported only' : `${IMPORT_BUDGET_MS} ms`}) |`;
+    }),
     `| State-to-markdown ratio r, worst family | ${worst.ratio.toFixed(2)} (${worst.name}) |`,
     '',
     '| Fixture | Markdown B | Y.Doc state B | Ratio |',
@@ -1042,6 +1170,11 @@ async function main() {
     console.error(`measure-converter: entity-tab lines over budget or growing faster than linearly in workerd: ${tabProblems.join('; ')}`);
     process.exitCode = 1;
   }
+  const tableProblems = tableImportProblems(tables);
+  if (tableProblems.length > 0) {
+    console.error(`measure-converter: table imports failed, refused wrongly or over ${seconds(IMPORT_BUDGET_MS)} in workerd: ${tableProblems.join('; ')}`);
+    process.exitCode = 1;
+  }
   const payloadProblems = payloads.failed ? [payloads.failed] : payloadBudgetProblems(payloads.notes);
   if (payloadProblems.length > 0) {
     console.error(`measure-converter: payload frames over budget in workerd: ${payloadProblems.join('; ')}`);
@@ -1050,11 +1183,13 @@ async function main() {
 }
 
 /** Every way the payload-frame runs miss the stated budget (empty when they meet it). */
-function payloadBudgetProblems(notes) {
+export function payloadBudgetProblems(notes) {
   const problems = [];
   for (const n of notes) {
     if (n.frameCpuMs > PAYLOAD_FRAME_BUDGET_MS) problems.push(`${n.blocks} ids: ${n.frameCpuMs} ms of CPU per frame`);
-    if (n.rssMb > PAYLOAD_RSS_BUDGET_MB) problems.push(`${n.blocks} ids: RSS grew ${n.rssMb} MB`);
+    const { growthMb, peakMb } = payloadRss(n);
+    if (growthMb > PAYLOAD_RSS_BUDGET_MB) problems.push(`${n.blocks} ids: RSS grew ${growthMb} MB after settling`);
+    if (peakMb > PAYLOAD_RSS_PEAK_MB) problems.push(`${n.blocks} ids: RSS peaked ${peakMb} MB over the settled baseline`);
     if (n.held > PAYLOAD_DOCS_HELD) problems.push(`${n.blocks} ids: ${n.held} payload docs held`);
     if (n.foreign > 0) problems.push(`${n.blocks} ids: acks named ${n.foreign} ids the socket did not write`);
   }
@@ -1066,7 +1201,9 @@ function payloadBudgetProblems(notes) {
   return problems;
 }
 
-main().catch((error) => {
-  console.error(`measure-converter: ${error.stack ?? error.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`measure-converter: ${error.stack ?? error.message}`);
+    process.exitCode = 1;
+  });
+}

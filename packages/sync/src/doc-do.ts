@@ -3,17 +3,19 @@ import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
+import { digest as sha256 } from 'lib0/hash/sha256';
 import { writeSyncStep1 } from 'y-protocols/sync';
-import { splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
+import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ACK_COALESCE_MS, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES,
-  WORKING_EXPORT_DOC_RATE, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES,
+  DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WORKING_EXPORT_DOC_RATE, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
-  type ServerEvent, type WriteRefusalReason,
+  type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, deletesCovered, EVERYONE, parseFrame, revocationCode, stateBytesAfter, windowed, WriteRate, type Attachment, type DeleteSet,
@@ -29,20 +31,23 @@ import {
   acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, IDLE_BATCH, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
 } from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
-import { publishMeta } from './fanout.ts';
+import { publishMeta, publishReopened, type FanoutEnv, type Holder } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { seedPayload } from './payload-docs.ts';
 import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
-import { writeTitle } from './server-title.ts';
+import { titleDiff } from './server-title.ts';
 import { splitUpdate } from './update-pieces.ts';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
 /** How long after a payload-only edit the doc feeds search (the note's own saves cover note edits). */
 const PAYLOAD_FEED_MS = 2_000;
+/** A failed search feed is retried by the alarm after this, doubling per failure up to FEED_RETRY_MAX_MS. */
+const FEED_RETRY_MS = 5_000;
+const FEED_RETRY_MAX_MS = 10 * 60_000;
 /** The `search-fed` meta while the index holds this doc's content; bump it when an index entry's shape changes. */
 const SEARCH_FEED_VERSION = '2';
 
@@ -68,6 +73,12 @@ export interface DocLimits {
   inboxBytes: number;
   /** How long a validation waits for D1 before failing closed (L§4.7). */
   accessDeadlineMs: number;
+  /** Full-state answers per principal: `docs` whole states at once, refilled over `windowMs` (T3.S14). */
+  answerBudget: { docs: number; windowMs: number };
+  /** Open anonymous sockets from one share link and client address (T3.B25). */
+  anonymousSocketsPerAddress: number;
+  /** The bytes of step 1s one socket may have waiting for that budget; past it one waits without its vector. */
+  waitingAnswerBytesPerConnection: number;
 }
 
 export interface CreateDocInput {
@@ -129,6 +140,17 @@ const CLASSIFY_BUDGET_PER_BYTE = 8;
 /** Suggest frames that can mint retained state: all of them short-circuit while a connection has no room. */
 const GROWTH: ReadonlySet<string> = new Set(['suggest-lease', 'suggest-ops', 'suggest-delete', 'suggest-undelete', 'suggest-merge']);
 
+/** How long after a failed recovery event the alarm publishes it again. */
+const RECOVER_RETRY_MS = 10_000;
+/** The signed-in sockets a hold closed that a recovery tells, at most. */
+const MAX_HOLDERS = 256;
+
+/** A settle's outcome: `open` once D1 has the doc live and no hold is left. */
+export interface Settled {
+  deleted: boolean;
+  open: boolean;
+}
+
 /** A queue that runs each job after the previous one settles; a rejection reaches its caller, not the next job. */
 const serializer = () => {
   let gate: Promise<unknown> = Promise.resolve();
@@ -151,12 +173,21 @@ export type SuggestionNotifier = (notice: { docId: string; author: string; recor
 
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
 const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
+const FORBIDDEN: CommentResult = { ok: false, status: 403, error: 'forbidden' };
 
 /** A server write that would pass the state cap (A§5.1 Limits). */
 export class DocCapError extends Error {
   constructor() {
     super('doc-cap');
     this.name = 'DocCapError';
+  }
+}
+
+/** A REST rename the DocDO refused in its serialized turn, writing nothing (A§8). */
+export class RenameRefusedError extends Error {
+  constructor(readonly reason: RenameRefusal) {
+    super(`rename-${reason}`);
+    this.name = 'RenameRefusedError';
   }
 }
 
@@ -234,6 +265,45 @@ function send(connection: Connection, message: Uint8Array): void {
  * reads the doc starts with ready(), so a stub that outlives an eviction never reads an empty doc.
  */
 
+/** A state vector naming no client: the whole doc is missing. */
+const EMPTY_VECTOR = Y.encodeStateVector(new Map());
+
+/**
+ * The budget a step 1 draws on: its principal's, or for an anonymous link viewer its link's at its client address, so
+ * reconnecting or opening sockets in parallel does not multiply it (T3.S14, T3.B25).
+ */
+function budgetKey(attachment: Attachment): string {
+  return attachment.kind === 'anonymous' ? `\u0000link:${attachment.shareToken ?? ''}\u0000${attachment.address ?? ''}` : attachment.principalId;
+}
+
+/** A sync step 1's state vector, a view into `message`. */
+function stateVectorOf(message: ArrayBuffer | ArrayBufferView): Uint8Array {
+  const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+  const decoder = decoding.createDecoder(bytes);
+  decoding.readVarUint(decoder);
+  decoding.readVarUint(decoder);
+  return decoding.readVarUint8Array(decoder);
+}
+
+/** The share of `doc`'s clocks `vector` lacks: 1 for a fresh client, 0 for one up to date. */
+function missingShare(doc: Y.Doc, vector: Uint8Array): number {
+  const theirs = Y.decodeStateVector(vector);
+  let total = 0;
+  let missing = 0;
+  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(doc))) {
+    total += clock;
+    missing += Math.max(0, clock - (theirs.get(client) ?? 0));
+  }
+  return total > 0 ? missing / total : 0;
+}
+
+/** A withheld id as an attachment keeps it: 72 bits of its SHA-256, so 64 of them fit beside the rest. */
+const withheldKey = (id: string): string => bytesToBase64(sha256(new TextEncoder().encode(id)).subarray(0, 9));
+
+/** The least share of a whole state an answer costs, so tiny answers are bounded in number too. */
+const MIN_ANSWER_SHARE = 1 / 4096;
+/** The least share of its target an answer costs: every encode walks the target's whole delete set. */
+const MIN_TARGET_SHARE = 1 / 32;
 /** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
@@ -257,6 +327,9 @@ export class DocDO extends YServer<SyncEnv> {
     inboxBytes: 8 * 1024 * 1024,
     accessDeadlineMs: ACCESS_DEADLINE_MS,
     workingRate: WORKING_EXPORT_DOC_RATE,
+    answerBudget: ANSWER_BUDGET,
+    anonymousSocketsPerAddress: ANONYMOUS_SOCKETS_PER_ADDRESS,
+    waitingAnswerBytesPerConnection: 128 * 1024,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);
@@ -278,6 +351,9 @@ export class DocDO extends YServer<SyncEnv> {
   static access: (env: SyncEnv) => AccessCheck | null = () => null;
   /** Who hears of a new live suggestion (the bell); installed by the Worker. */
   static suggestionNotices: (env: SyncEnv) => SuggestionNotifier | null = () => null;
+
+  /** Where the alarm publishes a recovery once a hold no route let go ends with the doc live (A§8). */
+  static fanout: (env: SyncEnv) => FanoutEnv | null = (env) => (env?.DB && env.PrincipalDO ? { DB: env.DB, PrincipalDO: env.PrincipalDO } : null);
 
   /** Where search feeds land; null leaves the doc unindexed. */
   static searchFeed: (env: SyncEnv) => SearchFeed | null = (env) => (env?.SearchDO ? {
@@ -308,6 +384,9 @@ export class DocDO extends YServer<SyncEnv> {
   #quietSave: ReturnType<typeof setTimeout> | undefined;
   /** Whether the stored `search-fed` meta is cleared (an edit the index may lack). */
   #searchStale = false;
+  /** When the alarm retries a failed feed, and the failures in a row behind it. */
+  #feedRetryAt: number | null = null;
+  #feedFailures = 0;
   /** A feed queued by a payload edit; payload docs do not trigger the note's debounced save. */
   #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
@@ -323,10 +402,14 @@ export class DocDO extends YServer<SyncEnv> {
   #frameDeletes: DeleteSet | undefined;
   /** Settles run one at a time, so the last one applies the newest D1 read. */
   readonly #queue = serializer();
-  /** Withheld payload ids each connection has written, bounded per connection. In memory: a wake starts at none. */
-  readonly #withheldWrites = new WeakMap<Connection, Set<string>>();
-  /** Frames waiting for the validation that starts after they arrived. */
-  #inbox: [Connection, WSMessage][] = [];
+  /** Withheld payload ids each connection has written (digests), bounded per connection; kept in its attachment. */
+  readonly #withheldWrites = new WeakMap<Connection, Map<string, string | null>>();
+  /** Frames waiting for the validation that starts after they arrived, each with when it arrived. */
+  #inbox: [Connection, WSMessage, number][] = [];
+  /** The frames whose validation is in flight. */
+  #validating: [Connection, WSMessage, number][] = [];
+  /** Closes the senders whose oldest frame has waited a whole validation deadline. */
+  #expiry: ReturnType<typeof setTimeout> | undefined;
   /** Frames and bytes each socket has waiting, from arrival until applied or dropped, and their total bytes. */
   readonly #waiting = new Map<Connection, { frames: number; bytes: number }>();
   #waitingBytes = 0;
@@ -334,6 +417,15 @@ export class DocDO extends YServer<SyncEnv> {
   #pendingFlush: Promise<void> | null = null;
   /** Validations, admissions and frame batches run one at a time, in arrival order. */
   readonly #serial = serializer();
+  /**
+   * Each principal's answer budget in whole states, as of `at` (T3.S14). A spent one is also in `answer_budgets`, read
+   * on a key's first use after a wake, so hibernating does not refill it (T3.B26).
+   */
+  readonly #answerBudgets = new Map<string, { left: number; at: number }>();
+  #budgetTable = false;
+  /** Each socket's step 1s waiting for its budget, the latest per target ('' the note, else a payload id), and their bytes. */
+  readonly #waitingAnswers = new Map<Connection, { bytes: number; frames: Map<string, Uint8Array> }>();
+  #answerTimer: ReturnType<typeof setTimeout> | undefined;
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
   /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
@@ -429,7 +521,12 @@ export class DocDO extends YServer<SyncEnv> {
     };
     if (recordIds(this.document).some(unchecked)) this.#idleAt = Date.now();
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
-    if (target) this.#project(new Projections(this.name, target));
+    if (target) {
+      const projections = new Projections(this.name, target, store.meta('title-projected'), (title) => store.setMeta('title-projected', title));
+      this.#project(projections);
+      // A title whose projection failed before an eviction projects now.
+      projections.reconcile(this.document.getText('title').toString());
+    }
     // A wake re-feeds only a doc the index may lack (L§4.14): an edit whose feed never landed, or an older entry
     // shape; once onStart has served the waiting frames. A doc being created is fed by the save its content triggers.
     this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION;
@@ -472,7 +569,15 @@ export class DocDO extends YServer<SyncEnv> {
       maxConnections: this.#limits.maxConnections,
     });
     if (code !== null || !attachment) {
+      // A pane that re-asked while a hold persists is told too once the hold ends with the doc live.
+      if (code === CLOSE.deleted && holdsOf(store).size > 0 && attachment && attachment.kind !== 'anonymous') {
+        this.#keepHolders([{ principalId: attachment.principalId, shareToken: attachment.shareToken }]);
+      }
       connection.close(code ?? CLOSE.noPrincipal, 'refused');
+      return;
+    }
+    if (attachment.kind === 'anonymous' && this.#anonymousSockets(budgetKey(attachment)) >= this.#limits.anonymousSocketsPerAddress) {
+      connection.close(CLOSE.connectionLimit, 'refused');
       return;
     }
     if (this.#coolingDown(attachment.principalId)) {
@@ -503,7 +608,9 @@ export class DocDO extends YServer<SyncEnv> {
     // The payload bytes the cap counts, withheld ones too (a client holds only the payloads its tree names); none: 0.
     const payloadBytes = this.#payloads?.totalBytes ?? 0;
     if (payloadBytes > 0) this.sendCustomMessage(connection, JSON.stringify({ t: 'usage', pb: payloadBytes } satisfies ServerEvent));
-    if (attachment.presenceAllowed && this.document.awareness.getStates().size) {
+    // Presence as the admission's own validation left it: a link-only socket sees no one (A§8).
+    const admitted = attachmentOf(connection);
+    if (admitted && !admitted.pending && admitted.presenceAllowed && this.document.awareness.getStates().size) {
       connection.send(awarenessFrame(this.document.awareness, [...this.document.awareness.getStates().keys()]));
     }
     await this.#schedule(holdsOf(store));
@@ -533,7 +640,8 @@ export class DocDO extends YServer<SyncEnv> {
     }
     this.#waiting.set(connection, { frames: waiting.frames + 1, bytes: waiting.bytes + bytes });
     this.#waitingBytes += bytes;
-    this.#inbox.push([connection, message]);
+    this.#inbox.push([connection, message, Date.now()]);
+    this.#armExpiry();
     return this.#drain();
   }
 
@@ -555,6 +663,28 @@ export class DocDO extends YServer<SyncEnv> {
       this.#taken(queued, message);
       return false;
     });
+  }
+
+  /**
+   * A frame waits at most one validation deadline from its arrival, queued behind another validation or in its own
+   * (L§4.7): then its sender closes 1013 and every frame it has waiting drops, so a late validation applies none.
+   */
+  #armExpiry(): void {
+    if (this.#expiry !== undefined) return;
+    let oldest = Infinity;
+    for (const [connection, , at] of [...this.#inbox, ...this.#validating]) if (isOpen(connection)) oldest = Math.min(oldest, at);
+    if (oldest === Infinity) return;
+    this.#expiry = setTimeout(() => {
+      this.#expiry = undefined;
+      const due = Date.now() - this.#limits.accessDeadlineMs;
+      const expired = new Set<Connection>();
+      for (const [connection, , at] of [...this.#inbox, ...this.#validating]) if (at <= due) expired.add(connection);
+      for (const connection of expired) {
+        this.#dropWaiting(connection);
+        if (isOpen(connection)) connection.close(TRY_AGAIN, 'unvalidated');
+      }
+      this.#armExpiry();
+    }, Math.max(0, oldest + this.#limits.accessDeadlineMs - Date.now()));
   }
 
   #drain(): Promise<void> {
@@ -580,6 +710,18 @@ export class DocDO extends YServer<SyncEnv> {
   async #flush(): Promise<void> {
     this.#pendingFlush = null;
     const batch = this.#inbox.splice(0);
+    this.#validating = batch;
+    try {
+      await this.#flushBatch(batch);
+    } finally {
+      this.#validating = [];
+      clearTimeout(this.#expiry);
+      this.#expiry = undefined;
+      this.#armExpiry();
+    }
+  }
+
+  async #flushBatch(batch: [Connection, WSMessage, number][]): Promise<void> {
     const check = this.#accessCheck();
     if (check) {
       try {
@@ -594,12 +736,12 @@ export class DocDO extends YServer<SyncEnv> {
         return;
       }
     }
-    const deferred: [Connection, WSMessage][] = [];
-    for (const [connection, message] of batch) {
+    const deferred: [Connection, WSMessage, number][] = [];
+    for (const [connection, message, at] of batch) {
       const attachment = attachmentOf(connection);
       // Still being admitted: its frames wait for its own validation, which drains them.
       if (isOpen(connection) && (!attachment || attachment.pending)) {
-        deferred.push([connection, message]);
+        deferred.push([connection, message, at]);
         continue;
       }
       this.#taken(connection, message);
@@ -649,7 +791,8 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     if (frame.kind === 'step1') {
-      this.#answer(connection, message);
+      const vector = stateVectorOf(message);
+      if (this.#mayAnswer(connection, attachment, '', store.stateBytes, vector, () => this.document)) this.#answer(connection, vector);
       return;
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
@@ -721,12 +864,8 @@ export class DocDO extends YServer<SyncEnv> {
    * the provider reads as synced only once all of it has landed. y-partyserver sent it as one frame, and a peer behind
    * a large paste was sent megabytes it read as silence until they arrived (T3.S6b).
    */
-  #answer(connection: Connection, message: ArrayBuffer | ArrayBufferView): void {
-    const bytes = message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
-    const decoder = decoding.createDecoder(bytes);
-    decoding.readVarUint(decoder);
-    decoding.readVarUint(decoder);
-    const update = Y.encodeStateAsUpdate(this.document, decoding.readVarUint8Array(decoder));
+  #answer(connection: Connection, vector: Uint8Array): void {
+    const update = Y.encodeStateAsUpdate(this.document, vector);
     const pieces = update.byteLength > ANSWER_PIECE_BYTES ? splitUpdate(update, ANSWER_PIECE_BYTES).map((piece) => piece.update) : [update];
     for (const [index, piece] of pieces.entries()) send(connection, encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece));
   }
@@ -793,22 +932,187 @@ export class DocDO extends YServer<SyncEnv> {
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
     this.#acks.cancel(connection);
+    this.#waitingAnswers.delete(connection);
+    // A full budget is the same as none; a spent one stays until it refills, so reconnecting does not refill it.
+    const now = Date.now();
+    for (const key of [...this.#answerBudgets.keys()]) {
+      if (this.#budget(key, now).left >= this.#limits.answerBudget.docs) this.#answerBudgets.delete(key);
+    }
+    // The last socket gone: only a hold is still due, so no access tick or socket close wakes a closed doc. Sockets are
+    // compared by identity: a reconnect reuses its connection id, and its replacement may already be open.
+    const store = this.#store;
+    if (store && ![...this.#all()].some((other) => other !== connection)) {
+      this.#tickAt = null;
+      this.#schedule(holdsOf(store), connection).catch((error) => console.error('DocDO could not reschedule its alarm', error));
+    }
+  }
+
+  /** Open admitted anonymous sockets drawing on the budget `key`. */
+  #anonymousSockets(key: string): number {
+    let count = 0;
+    for (const connection of this.#all()) {
+      const attachment = attachmentOf(connection);
+      if (attachment?.kind === 'anonymous' && isOpen(connection) && budgetKey(attachment) === key) count += 1;
+    }
+    return count;
+  }
+
+  /** The persisted spent budgets, created on first use. */
+  #budgetSql(): SqlStorage {
+    const sql = this.ctx.storage.sql;
+    if (!this.#budgetTable) {
+      sql.exec('CREATE TABLE IF NOT EXISTS answer_budgets (key TEXT PRIMARY KEY, remaining REAL NOT NULL, at INTEGER NOT NULL)');
+      this.#budgetTable = true;
+    }
+    return sql;
+  }
+
+  /** Writes a charged budget through, and drops every persisted one that has refilled. */
+  #persistBudget(key: string, budget: { left: number; at: number }): void {
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const sql = this.#budgetSql();
+    sql.exec('DELETE FROM answer_budgets WHERE remaining + (? - at) * ? * 1.0 / ? >= ?', budget.at, docs, windowMs, docs);
+    sql.exec('INSERT OR REPLACE INTO answer_budgets (key, remaining, at) VALUES (?, ?, ?)', key, budget.left, budget.at);
+  }
+
+  /** A budget now, refilled since it was last read. */
+  #budget(key: string, now: number): { left: number; at: number } {
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const held = this.#answerBudgets.get(key)
+      ?? this.#budgetSql().exec<{ left: number; at: number }>('SELECT remaining AS left, at FROM answer_budgets WHERE key = ?', key).toArray()[0];
+    const budget = { left: held ? Math.min(docs, held.left + ((now - held.at) * docs) / windowMs) : docs, at: now };
+    this.#answerBudgets.set(key, budget);
+    return budget;
+  }
+
+  /**
+   * Whether a step 1 for `target` ('' the note, else a payload id; its doc and stored `bytes`) is answered now, checked
+   * before any encode. A signed-in principal has one budget across its sockets; anonymous sockets, which all share the
+   * id 'anonymous', have one per share link and client address, kept across reconnects (T3.B25). An answer costs the
+   * share of the stored state it sends, from the clocks `vector` lacks, and at least MIN_TARGET_SHARE of its target, so
+   * a synced client's resync costs little and a fresh one a whole target. It is answered while the budget is above
+   * zero; otherwise it waits as the socket's latest step 1 for `target` and is answered once the budget refills, so an
+   * honest reconnect or resync is late, never unanswered (T3.S14).
+   */
+  #mayAnswer(connection: Connection, attachment: Attachment, target: string, bytes: number, vector: Uint8Array, doc: () => Y.Doc): boolean {
+    const budget = this.#budget(budgetKey(attachment), Date.now());
+    if (budget.left <= 0) {
+      this.#wait(connection, target, vector);
+      return false;
+    }
+    // This answer covers any older step 1 for the same target.
+    this.#unwait(connection, target);
+    const total = (this.#store?.stateBytes ?? 0) + (this.#payloads?.totalBytes ?? 0);
+    const share = total > 0 ? Math.min(1, bytes / total) : 0;
+    budget.left -= Math.max(MIN_ANSWER_SHARE, share * Math.max(MIN_TARGET_SHARE, missingShare(doc(), vector)));
+    this.#persistBudget(budgetKey(attachment), budget);
+    return true;
+  }
+
+  /**
+   * Keeps `vector` as the socket's waiting step 1 for `target`. A socket's waiting vectors are bounded (A§8 waiting
+   * frames): one past the allowance waits as an empty vector, which the refill answers with the whole target.
+   */
+  #wait(connection: Connection, target: string, vector: Uint8Array): void {
+    this.#unwait(connection, target);
+    const waiting = this.#waitingAnswers.get(connection) ?? { bytes: 0, frames: new Map<string, Uint8Array>() };
+    const allowance = this.#limits.waitingAnswerBytesPerConnection;
+    // A copy: the vector is a view into the whole frame.
+    const kept = waiting.bytes + vector.byteLength + target.length <= allowance ? vector.slice() : EMPTY_VECTOR;
+    const bytes = kept.byteLength + target.length;
+    if (waiting.bytes + bytes > allowance) {
+      // Only a socket with thousands of payloads waiting gets here; it reconnects and asks again.
+      this.#waitingAnswers.delete(connection);
+      connection.close(TRY_AGAIN, 'answers full');
+      return;
+    }
+    waiting.bytes += bytes;
+    waiting.frames.set(target, kept);
+    this.#waitingAnswers.set(connection, waiting);
+    this.#scheduleAnswers();
+  }
+
+  #unwait(connection: Connection, target: string): void {
+    const waiting = this.#waitingAnswers.get(connection);
+    const held = waiting?.frames.get(target);
+    if (!waiting || !held) return;
+    waiting.frames.delete(target);
+    waiting.bytes -= held.byteLength + target.length;
+    if (waiting.frames.size === 0) this.#waitingAnswers.delete(connection);
+  }
+
+  /** Re-handles the waiting step 1s when the first waiting budget is above zero again. */
+  #scheduleAnswers(): void {
+    if (this.#answerTimer !== undefined) return;
+    const { docs, windowMs } = this.#limits.answerBudget;
+    const now = Date.now();
+    let due = Infinity;
+    for (const connection of this.#waitingAnswers.keys()) {
+      const attachment = attachmentOf(connection);
+      if (attachment) due = Math.min(due, Math.max(0, (-this.#budget(budgetKey(attachment), now).left * windowMs) / docs));
+    }
+    if (due === Infinity) return;
+    this.#answerTimer = setTimeout(() => {
+      this.#answerTimer = undefined;
+      const batch = [...this.#waitingAnswers].flatMap(([connection, { frames }]) =>
+        [...frames].map(([target, vector]) => [connection, target ? encodePayloadFrame(target, PAYLOAD_STEP1, vector) : encodeSyncFrame(0, vector)] as const));
+      this.#waitingAnswers.clear();
+      void this.#serial(() => this.#replayAnswers(batch)).catch((error) => console.error('DocDO waiting step 1s failed', error));
+    }, Math.ceil(due) + 1);
+  }
+
+  /**
+   * The waiting step 1s through the same validation and gates as a new frame, but not the inbox: they are bounded
+   * above, and replaying them through it would close a socket with many waiting. One still over budget waits again.
+   */
+  async #replayAnswers(batch: (readonly [Connection, Uint8Array])[]): Promise<void> {
+    const check = this.#accessCheck();
+    if (check) {
+      try {
+        await this.#validate(check);
+      } catch (error) {
+        console.error('DocDO could not validate access; refusing waiting step 1s', error);
+        for (const [connection] of batch) connection.close(TRY_AGAIN, 'unvalidated');
+        return;
+      }
+    }
+    for (const [connection, frame] of batch) {
+      if (!isOpen(connection)) continue;
+      try {
+        this.#handle(connection, frame);
+      } catch (error) {
+        console.error('DocDO waiting step 1 failed', error);
+      }
+    }
   }
 
   /**
    * Records the doc's folder and owner and writes its starting content: the seed, or an imported body. Idempotent:
-   * a repeated create changes nothing. Throws DocCapError for a body past the state cap.
+   * a repeated create changes nothing. Throws DocCapError for a body past the state cap or the converter's work budget,
+   * or frontmatter past its expansion budget.
    */
   async create(input: CreateDocInput): Promise<void> {
     const store = await this.#ready();
     this.#seed(store);
     if (store.meta('created') !== null) return;
+    const title = input.title?.trim();
+    // The body is admitted with the title's bytes, so a body and title past the cap together write neither.
+    const titleBytes = title ? (titleDiff(this.document, title)?.byteLength ?? 0) : 0;
     if (input.markdown) {
       const parts = splitFrontmatter(input.markdown);
+      // Frontmatter whose aliases name far more than its text holds is refused whole, as a body past the cap is.
+      if (parts.error === FRONTMATTER_EXPANSION_ERROR) throw new DocCapError();
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
       const sidecar = input.comments ? Object.fromEntries(coerceSidecar(input.comments)) : undefined;
-      const marks = importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads), frontmatter, sidecar);
+      let marks: ReturnType<typeof importBody>;
+      try {
+        marks = importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads, titleBytes), frontmatter, sidecar);
+      } catch (error) {
+        // Markdown that spends the converter's whole work budget is refused whole too.
+        if (error instanceof Error && (error.message === IMPORT_BUDGET_SPENT || error.message === FRONTMATTER_EXPANSION_ERROR)) throw new DocCapError();
+        throw error;
+      }
       // Right after the tree diff, in the same turn (comments.md §13).
       // The import's diff may be past a log row and not yet counted in stateBytes, so the room is measured.
       if (sidecar) {
@@ -816,30 +1120,57 @@ export class DocDO extends YServer<SyncEnv> {
         this.#comments?.importSidecar(sidecar, marks, input.author ?? input.ownerId, this.#limits.maxComments, room);
       }
     }
-    const title = input.title?.trim();
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
-    if (title) writeTitle(this.document, title, SERVER_TITLE);
+    if (title) this.#writeTitle(store, title);
     this.#comments?.flush();
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
-    if (!title) await this.#projections?.initializeEmpty();
+    if (!title) this.#projections?.initializeEmpty();
     await this.#projections?.flush();
     store.setMeta('created', '1');
   }
 
   /**
    * A rename from outside the doc's sockets (REST, CLI): a minimal write to Y.Text('title') that every open client
-   * merges, projected before it returns.
+   * merges, projected before it returns. In one serialized turn it settles a doc it last knew in Trash, then
+   * re-validates the open sockets and re-resolves the caller's write authority (A§8), and writes with nothing awaited
+   * after that check. Throws RenameRefusedError for a doc in Trash or held closed, or a caller who can no longer edit,
+   * and DocCapError for a title past the state cap, changing nothing.
    */
-  async renameTitle(text: string): Promise<void> {
-    await this.#ready();
-    // Every open socket hears the rename, so each must still have access (A§8 pull validation).
+  async renameTitle(text: string, caller: SocketIdentity): Promise<void> {
+    const store = await this.#ready();
     const check = this.#accessCheck();
-    if (check) await this.#serial(() => this.#validate(check));
-    writeTitle(this.document, text, SERVER_TITLE);
-    this.#comments?.flush();
+    await this.#serial(async () => {
+      // Liveness settles first, so the caller's authority is the last thing read before the write.
+      const liveness = this.#liveness();
+      if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && liveness) await this.#queue(() => this.#settle([]));
+      if (check) {
+        // Every open socket hears the rename, so each must still have access (A§8 pull validation).
+        await this.#validate(check);
+        await this.#authorize(check, caller);
+      }
+      if (store.meta('deleted') === '1' || holdsOf(store).size > 0) throw new RenameRefusedError('deleted');
+      this.#writeTitle(store, text);
+      this.#comments?.flush();
+    });
     this.#projections?.touch();
     await this.#projections?.flush();
+  }
+
+  /** The caller as a fresh admission would resolve it, under the validation deadline; throws unless it may edit. */
+  async #authorize(check: AccessCheck, caller: SocketIdentity): Promise<void> {
+    const attachment: Attachment = { ...caller, name: '', role: 'editor' };
+    const { verdicts: [verdict] } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, [{ attachment }], race));
+    if (verdict === CLOSE.deleted) throw new RenameRefusedError('deleted');
+    if (typeof verdict === 'number') throw new RenameRefusedError('revoked');
+  }
+
+  /** A server write of the title, admitted against the state cap first (A§5.1 Limits). */
+  #writeTitle(store: DocStore, text: string): void {
+    const diff = titleDiff(this.document, text);
+    if (!diff) return;
+    this.#admitServerWrite(store, diff, []);
+    Y.applyUpdate(this.document, diff, SERVER_TITLE);
   }
 
   /**
@@ -877,10 +1208,11 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * Every comment write (A§8 pull validation, T2.5): in one serialized write the open sockets are validated, the actor
-   * is re-resolved through the same check whether or not it has a socket (a live session or key, at least commenter,
-   * a live doc), and the write runs right after with no await between. A check that cannot answer refuses. With no
-   * access check installed (the Node harness), writes apply as frames do.
+   * Every comment write (A§8 pull validation, T2.5): in one serialized write the actor is re-resolved through the same
+   * check whether or not it has a socket (a live session or key, at least commenter, a live doc), then the open sockets
+   * are validated in one read that checks the actor again as a socket admitted at its epoch, and the write runs right
+   * after with no await between. A reader or actor revoked while the actor was read is refused with no kick needed.
+   * A check that cannot answer refuses. With no access check installed (the Node harness), writes apply as frames do.
    */
   async #commentWrite(actor: CommentActor | undefined, write: (store: DocStore, comments: DocComments) => CommentResult): Promise<CommentResult> {
     const store = await this.#ready();
@@ -897,8 +1229,17 @@ export class DocDO extends YServer<SyncEnv> {
       if (check) {
         let refused: CommentResult | null;
         try {
-          await this.#validate(check);
-          refused = await this.#authorizeActor(check, store, actor);
+          const resolvedAt = Date.now();
+          const authorized = await this.#authorizeActor(check, store, actor, resolvedAt);
+          refused = typeof authorized === 'string' ? null : authorized;
+          if (!refused) {
+            const verdict = await this.#validate(check, undefined, { ...actor, role: 'commenter', epoch: authorized } as Attachment);
+            if (verdict === CLOSE.sessionEnded) refused = { ok: false, status: 401, error: 'unauthenticated' };
+            else if (verdict === CLOSE.deleted) refused = { ok: false, status: 404, error: 'trashed' };
+            else if (typeof verdict === 'number') refused = FORBIDDEN;
+            // A kick that landed while the sockets were read outdates the actor's answer too.
+            else if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) refused = FORBIDDEN;
+          }
         } catch (error) {
           console.error('DocDO could not re-authorize a comment write; refusing it', error);
           return UNCONFIRMED;
@@ -911,24 +1252,27 @@ export class DocDO extends YServer<SyncEnv> {
     });
   }
 
-  /** The actor's verdict now: null while it may comment, else the refusal. Throws when D1 cannot answer. */
-  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined): Promise<CommentResult | null> {
-    const resolved = await this.#resolveActor(check, store, actor);
+  /**
+   * The actor's verdict now: the access epoch it was resolved at while it may comment, else the refusal. Throws when D1
+   * cannot answer.
+   */
+  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number): Promise<CommentResult | string> {
+    const resolved = await this.#resolveActor(check, store, actor, resolvedAt);
     if ('ok' in resolved) return resolved;
-    return roleAtLeast(resolved.role, 'commenter') ? null : { ok: false, status: 403, error: 'forbidden' };
+    return roleAtLeast(resolved.role, 'commenter') && resolved.epoch !== null ? resolved.epoch : FORBIDDEN;
   }
 
   /**
-   * The actor's live role now, or the refusal (no live credential, no access, a revocation). `anonymous`: a share-link
-   * holder with no session may act, resolved through its link (a preview). Throws when D1 cannot answer.
+   * The actor's live role now and the access epoch it was resolved at (null for a link holder, who has no credential to
+   * stamp), or the refusal (no live credential, no access, a revocation). `anonymous`: a share-link holder with no
+   * session may act, resolved through its link (a preview). Throws when D1 cannot answer.
    */
-  async #resolveActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, anonymous = false): Promise<CommentResult | { role: Role }> {
+  async #resolveActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number, anonymous = false): Promise<CommentResult | { role: Role; epoch: string | null }> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
     const linkOnly = anonymous && actor?.kind === 'anonymous' && !!actor.shareToken;
     if (!actor || (!linkOnly && actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
     if (actor.kind === 'user' && !session) return unauthenticated;
-    const resolvedAt = Date.now();
     const { stamp, access } = await withDeadline(this.#limits.accessDeadlineMs, async (race) => {
       const read = linkOnly ? null : await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
       return { stamp: read, access: await race(check.resolve(this.name, actor)) };
@@ -937,8 +1281,8 @@ export class DocDO extends YServer<SyncEnv> {
     if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
     if (access === null) return { ok: false, status: 404, error: 'not-found' };
     // A kick persisted while D1 answered outdates what it said.
-    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return { ok: false, status: 403, error: 'forbidden' };
-    return { role: access.role as Role };
+    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return FORBIDDEN;
+    return { role: access.role as Role, epoch: stamp?.key ?? null };
   }
 
   /**
@@ -961,10 +1305,28 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * Applies D1 (A§8): the doc is closed while D1 has it in Trash, and open again once D1 has it live and no other
-   * trash holds it. `hold` releases that trash's hold. Throws, changing nothing, when D1 cannot answer.
+   * trash holds it. `hold` releases that trash's hold; a release that opens the doc publishes its recovery before it
+   * returns, retried by the alarm if that fails. Throws, changing nothing, when D1 cannot answer; the alarm then
+   * settles the hold and publishes the recovery itself.
    */
-  settle(hold?: string): Promise<{ deleted: boolean }> {
-    return this.#queue(() => this.#settle(hold === undefined ? [] : [hold]));
+  async settle(hold?: string): Promise<Settled> {
+    const store = await this.#ready();
+    let settled: Settled;
+    try {
+      settled = await this.#queue(() => this.#settle(hold === undefined ? [] : [hold]));
+    } catch (error) {
+      if (hold !== undefined) {
+        this.#markRecover(store, Date.now());
+        await this.#schedule(holdsOf(store));
+      }
+      throw error;
+    }
+    if (settled.open && (hold !== undefined || store.meta('recover'))) {
+      this.#markRecover(store, Date.now());
+      await this.#recover(store, Date.now());
+      await this.#schedule(holdsOf(store));
+    }
+    return settled;
   }
 
   /** A hold whose route never settled it (A§5.1): settled from D1 once it has waited, retried while D1 cannot answer. */
@@ -996,8 +1358,14 @@ export class DocDO extends YServer<SyncEnv> {
         console.error('DocDO idle check failed', error);
       }
     }
+    if (this.#feedRetryAt !== null && this.#feedRetryAt <= now) {
+      this.#feedRetryAt = null;
+      await this.#feedSearch();
+    }
     const expired = [...holdsOf(store)].filter(([, until]) => until <= now).map(([hold]) => hold);
     if (expired.length > 0) {
+      // No route let these holds go, so nobody it closed has heard the doc may be live again.
+      this.#markRecover(store, now);
       try {
         await this.#queue(() => this.#settle(expired));
       } catch (error) {
@@ -1006,7 +1374,54 @@ export class DocDO extends YServer<SyncEnv> {
         return;
       }
     }
+    await this.#recover(store, now);
     await this.#schedule(holdsOf(store));
+  }
+
+  /**
+   * A recovery (A§8): once the holds have ended with the doc live, everyone who can discover it and every signed-in
+   * socket they closed hears it changed, so a pane left terminal reopens. Retried until it lands. Only what it
+   * published is acknowledged: a holder or a recovery recorded while it was publishing stays for the next one.
+   */
+  async #recover(store: DocStore, now: number): Promise<void> {
+    const due = store.meta('recover');
+    if (!due || Number(due) > now || holdsOf(store).size > 0) return;
+    const fanout = (this.constructor as typeof DocDO).fanout(this.env);
+    if (store.meta('deleted') === '1' || !fanout) {
+      this.#clearRecovery(store);
+      return;
+    }
+    const generation = store.meta('delivery');
+    try {
+      await publishReopened(fanout, new Map([[this.name, this.#holders(store)]]));
+    } catch (error) {
+      console.error('DocDO recovery event failed; retrying', error);
+      store.setMeta('recover', String(now + RECOVER_RETRY_MS));
+      return;
+    }
+    if (store.meta('delivery') === generation) this.#clearRecovery(store);
+  }
+
+  /** The signed-in sockets the holds closed. */
+  #holders(store: DocStore): Holder[] {
+    const raw = store.meta('held-out');
+    return raw ? (JSON.parse(raw) as Holder[]) : [];
+  }
+
+  /** A recovery is due at `at`; a recovery publishing now no longer acknowledges it. */
+  #markRecover(store: DocStore, at: number): void {
+    store.setMeta('recover', String(at));
+    this.#bumpDelivery(store);
+  }
+
+  #bumpDelivery(store: DocStore): void {
+    store.setMeta('delivery', String(Number(store.meta('delivery') ?? 0) + 1));
+  }
+
+  /** Nobody is left to tell: the holders and the pending recovery go. */
+  #clearRecovery(store: DocStore): void {
+    store.setMeta('held-out', '');
+    store.setMeta('recover', '');
   }
 
   /**
@@ -1121,7 +1536,7 @@ export class DocDO extends YServer<SyncEnv> {
         try {
           await this.#validate(check);
           // A link holder with no session may only read: a preview, whose floor is viewer.
-          resolved = await this.#resolveActor(check, store, input.actor, floor === 'viewer');
+          resolved = await this.#resolveActor(check, store, input.actor, Date.now(), floor === 'viewer');
         } catch (error) {
           console.error('DocDO could not re-authorize a suggestion review; refusing it', error);
           return { ok: false, status: 503, reason: 'unconfirmed' };
@@ -1289,15 +1704,17 @@ export class DocDO extends YServer<SyncEnv> {
    * Pull validation (A§8): reads the doc's access epoch and the sockets' credentials, then closes every socket whose
    * session ended (4402) or key was revoked (4403), and re-resolves each socket admitted under an older epoch, closing
    * it on a lowered or lost role (4403) or a doc in Trash (4410). A socket that keeps its role takes the new epoch.
-   * Throws, closing nothing, when D1 cannot answer.
+   * Throws, closing nothing, when D1 cannot answer. `actor`, a comment writer, is judged in the same read as a socket
+   * would be and its verdict returned, so the last D1 read before its write confirms it even with no socket open.
    */
-  async #validate(check: AccessCheck, only?: Connection[]): Promise<void> {
+  async #validate(check: AccessCheck, only?: Connection[], actor?: Attachment): Promise<number | Resolved | null> {
     const sockets = (only ?? [...this.#all()]).flatMap((connection) => {
       const attachment = attachmentOf(connection);
       return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
     });
-    if (sockets.length === 0) return;
-    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, sockets, race));
+    if (sockets.length === 0 && !actor) return null;
+    const subjects = actor ? [...sockets, { attachment: actor }] : sockets;
+    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, subjects, race));
     for (const [i, { connection, attachment }] of sockets.entries()) {
       const verdict = verdicts[i];
       if (!isOpen(connection)) continue;
@@ -1313,11 +1730,13 @@ export class DocDO extends YServer<SyncEnv> {
       if (verdict === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
       connection.close(verdict, verdict === CLOSE.sessionEnded ? 'session ended' : verdict === CLOSE.deleted ? 'deleted' : 'revoked');
     }
+    return actor ? verdicts[sockets.length] ?? null : null;
   }
 
   /**
    * Each socket's verdict: null to keep it as admitted, its access when re-resolved and kept, or the code that closes
-   * it. Every D1 read goes through `race`, the validation's deadline.
+   * it. Every D1 read goes through `race`, the validation's deadline. When a resolve ran, the stamp is read again after
+   * it and must be unchanged, so nothing judged on the first read lost access unseen; three changed reads throw.
    */
   async #verdicts(
     check: AccessCheck,
@@ -1325,33 +1744,40 @@ export class DocDO extends YServer<SyncEnv> {
     race: <R>(read: Promise<R>) => Promise<R>,
   ): Promise<{ stamp: Stamp; verdicts: (number | Resolved | null)[] }> {
     const unique = (ids: (string | null)[]) => [...new Set(ids.filter((id): id is string => id !== null))];
-    const stamp = await race(check.stamp(
-      this.name,
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null))),
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null))),
-    ));
-    const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
-    const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
-      if (attachment.kind === 'user' && attachment.sessionId !== null && !stamp.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
-      if (attachment.kind === 'agent' && !stamp.agents.has(attachment.principalId)) return CLOSE.revoked;
-      if (stamp.key && attachment.epoch === stamp.key) return null;
-      const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
-      let access = resolved.get(who);
-      if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
-      const now = await access;
-      if (now === 'deleted') return CLOSE.deleted;
-      if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
-      // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
-      return { role: attachment.role, presence: now.presence };
-    })));
-    return { stamp, verdicts };
+    const sessions = unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null)));
+    const agents = unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null)));
+    let stamp = await race(check.stamp(this.name, sessions, agents));
+    for (let pass = 1; ; pass += 1) {
+      const current = stamp;
+      const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
+      const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
+        if (attachment.kind === 'user' && attachment.sessionId !== null && !current.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
+        if (attachment.kind === 'agent' && !current.agents.has(attachment.principalId)) return CLOSE.revoked;
+        if (current.key && attachment.epoch === current.key) return null;
+        const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
+        let access = resolved.get(who);
+        if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
+        const now = await access;
+        if (now === 'deleted') return CLOSE.deleted;
+        if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
+        // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
+        return { role: attachment.role, presence: now.presence };
+      })));
+      if (resolved.size === 0) return { stamp, verdicts };
+      // A subject judged on the stamp may have lost access while the resolves awaited D1: a last read confirms the
+      // epoch and every live credential held, else the verdicts are taken again under the new stamp.
+      const again = await race(check.stamp(this.name, sessions, agents));
+      const held = again.key === stamp.key && [...stamp.sessions].every((id) => again.sessions.has(id)) && [...stamp.agents].every((id) => again.agents.has(id));
+      if (held) return { stamp, verdicts };
+      if (pass === 3) throw new Error('access kept changing while the sockets were validated');
+      stamp = again;
+    }
   }
 
   #liveness(): TrashedInD1 | null {
     return (this.constructor as typeof DocDO).liveness(this.env);
   }
 
-  /** `admitting`, a socket still in onConnect, is left for its own refusal. */
   /**
    * A doc closed without a hold may have missed the settle of a restore: D1 decides, before the hold and deleted
    * guards read it. Throws, changing nothing, when D1 cannot answer.
@@ -1361,40 +1787,69 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#queue(() => this.#settle([], admitting));
   }
 
-  async #settle(release: string[], admitting?: Connection): Promise<{ deleted: boolean }> {
+  /**
+   * `admitting`, a socket still in onConnect, is left for its own refusal. A D1 read past the access deadline throws
+   * before anything changes, freeing the queue; its late answer is ignored.
+   */
+  async #settle(release: string[], admitting?: Connection): Promise<{ deleted: boolean; open: boolean }> {
     const trashedInD1 = this.#liveness();
     if (!trashedInD1) throw new Error('DocDO has no D1 to settle from');
-    const deleted = await trashedInD1(this.name);
+    const deleted = await withDeadline(this.#limits.accessDeadlineMs, (race) => race(trashedInD1(this.name)));
     const store = await this.#ready();
     const holds = holdsOf(store);
     for (const hold of release) holds.delete(hold);
     store.setMeta('holds', JSON.stringify(Object.fromEntries(holds)));
     store.setMeta('deleted', deleted ? '1' : '0');
     if (deleted || holds.size > 0) this.#closeAll(admitting);
-    return { deleted };
+    // In Trash after all: nobody is told it reopened.
+    if (deleted) this.#clearRecovery(store);
+    return { deleted, open: !deleted && holds.size === 0 };
   }
 
-  /** The alarm goes off when the oldest hold has waited HOLD_MS, or the oldest socket reaches DOC_SOCKET_MAX_MS. */
-  async #schedule(holds: Map<string, number>): Promise<void> {
+  /**
+   * The alarm goes off when the oldest hold has waited HOLD_MS, the oldest socket reaches DOC_SOCKET_MAX_MS, or a failed
+   * search feed is due again; with nothing due (`closing` aside) there is none.
+   */
+  async #schedule(holds: Map<string, number>, closing?: Connection): Promise<void> {
     const due = [...holds.values()];
+    const recover = this.#store?.meta('recover');
+    if (recover && holds.size === 0) due.push(Number(recover));
     if (this.#tickAt !== null) due.push(this.#tickAt);
     if (this.#idleAt !== null) due.push(this.#idleAt);
+    if (this.#feedRetryAt !== null) due.push(this.#feedRetryAt);
     for (const connection of this.#all()) {
-      const attachment = attachmentOf(connection);
+      const attachment = connection === closing ? null : attachmentOf(connection);
       if (attachment) due.push(agesAt(attachment));
     }
-    if (due.length === 0) return;
-    await this.ctx.storage.setAlarm(Math.min(...due));
+    if (due.length === 0) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.min(...due));
   }
 
-  /** Every open socket hears the doc is gone, then closes 4410. */
+  /**
+   * Every open socket hears the doc is gone, then closes 4410. The signed-in ones are kept, so a link holder, whom
+   * discovery never names, can be told if the doc turns out live (A§8).
+   */
   #closeAll(except?: Connection): void {
     const event: ServerEvent = { t: 'doc-deleted' };
+    const closed: Holder[] = [];
     for (const connection of this.#all()) {
       if (connection.id === except?.id) continue;
+      const attachment = attachmentOf(connection);
+      if (attachment && attachment.kind !== 'anonymous') closed.push({ principalId: attachment.principalId, shareToken: attachment.shareToken });
       this.sendCustomMessage(connection, JSON.stringify(event));
       connection.close(CLOSE.deleted, 'deleted');
     }
+    this.#keepHolders(closed);
+  }
+
+  /** Records signed-in sockets a hold shut out, for the recovery to tell; a recovery publishing now keeps them. */
+  #keepHolders(closed: Holder[]): void {
+    const store = this.#store;
+    if (!store || closed.length === 0) return;
+    const kept = new Map(this.#holders(store).map((holder) => [`${holder.principalId}\u0000${holder.shareToken ?? ''}`, holder]));
+    for (const holder of closed) kept.set(`${holder.principalId}\u0000${holder.shareToken ?? ''}`, holder);
+    store.setMeta('held-out', JSON.stringify([...kept.values()].slice(-MAX_HOLDERS)));
+    this.#bumpDelivery(store);
   }
 
   async #ready(): Promise<DocStore> {
@@ -1426,8 +1881,16 @@ export class DocDO extends YServer<SyncEnv> {
         this.#store?.setMeta('search-fed', SEARCH_FEED_VERSION);
         this.#searchStale = false;
       }
+      this.#feedRetryAt = null;
+      this.#feedFailures = 0;
     } catch (error) {
       console.error(`search feed for ${this.name} failed`, error);
+      // Nothing else feeds an idle doc, so the alarm retries while the index may lack an edit.
+      if (this.#searchStale && this.#store) {
+        this.#feedRetryAt = Date.now() + Math.min(FEED_RETRY_MS * 2 ** this.#feedFailures, FEED_RETRY_MAX_MS);
+        this.#feedFailures += 1;
+        await this.#schedule(holdsOf(this.#store)).catch((scheduling) => console.error('DocDO could not schedule its feed retry', scheduling));
+      }
     }
   }
 
@@ -1493,8 +1956,9 @@ export class DocDO extends YServer<SyncEnv> {
     return base + update.byteLength > cap && base - payloads.bytesOf(id) + stateBytesAfter(doc, update) > cap;
   }
 
-  #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][]): void {
-    if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, 0))) throw new DocCapError();
+  /** `extra`: bytes a write still to come adds (create's title, admitted with its body). */
+  #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][], extra = 0): void {
+    if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, extra))) throw new DocCapError();
   }
 
   #connected(): boolean {
@@ -1513,6 +1977,7 @@ export class DocDO extends YServer<SyncEnv> {
     try {
       if (step === PAYLOAD_STEP1) {
         if (!payloads.served(id)) return;
+        if (!this.#mayAnswer(connection, attachment, id, payloads.bytesOf(id), data, () => payloads.doc(id))) return;
         send(connection, encodePayloadFrame(id, PAYLOAD_STEP2, Y.encodeStateAsUpdate(payloads.doc(id), data)));
         payloads.addReaders(id, [attachment.principalId]);
         return;
@@ -1546,23 +2011,48 @@ export class DocDO extends YServer<SyncEnv> {
       };
       if (this.#refused(connection, attachment, overCap, missing, undefined, leased)) return;
       payloads.addReaders(id, [attachment.principalId]);
-      const doc = payloads.doc(id);
-      Y.applyUpdate(doc, data, connection);
-      this.#acks.schedule(connection, deletes, id, coverage(doc, data));
+      if (!payloads.applyFrame(id, data, connection)) {
+        this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+        return;
+      }
+      this.#acks.schedule(connection, deletes, id, coverage(payloads.doc(id), data));
     } catch {
       // A frame that does not decode is dropped like an unknown one.
     }
   }
 
-  /** Counts `id` among the connection's withheld ids, unless that would pass the bound; served ones no longer count. */
+  /**
+   * Counts `id` among the connection's withheld ids, unless that would pass the bound; served ones no longer count.
+   * The ids live in the socket's attachment too, so a hibernated socket resumes with its count (B035).
+   */
   #mayWriteWithheld(connection: Connection, payloads: PayloadStore, id: string): boolean {
     let ids = this.#withheldWrites.get(connection);
-    if (!ids) this.#withheldWrites.set(connection, (ids = new Set()));
-    if (ids.has(id)) return true;
-    if (ids.size >= this.#limits.withheldIdsPerConnection) for (const held of ids) if (payloads.served(held)) ids.delete(held);
-    if (ids.size >= this.#limits.withheldIdsPerConnection) return false;
-    ids.add(id);
-    return true;
+    if (!ids) this.#withheldWrites.set(connection, (ids = new Map((attachmentOf(connection)?.withheld ?? []).map((key): [string, string | null] => [key, null]))));
+    const key = withheldKey(id);
+    if (ids.has(key)) {
+      ids.set(key, id);
+      return true;
+    }
+    let pruned = false;
+    if (ids.size >= this.#limits.withheldIdsPerConnection) {
+      // Keys hydrated after a wake carry no id: the stored payloads' digests name them.
+      const unknown = [...ids.values()].includes(null);
+      const stored = unknown ? new Map([...payloads.ids()].map((other): [string, string] => [withheldKey(other), other])) : null;
+      for (const [held, heldId] of ids) {
+        const known = heldId ?? stored?.get(held);
+        if (known !== undefined && payloads.served(known)) {
+          ids.delete(held);
+          pruned = true;
+        }
+      }
+    }
+    const admitted = ids.size < this.#limits.withheldIdsPerConnection;
+    if (admitted) ids.set(key, id);
+    if (admitted || pruned) {
+      const attachment = attachmentOf(connection);
+      if (attachment) attach(connection, { ...attachment, withheld: [...ids.keys()] });
+    }
+    return admitted;
   }
 
   /** A served payload's update to every socket but the one it came from; each recipient becomes one of its readers. */
@@ -1641,14 +2131,11 @@ export class DocDO extends YServer<SyncEnv> {
     const payloadBytes = this.#payloads?.totalBytes ?? 0;
     if (payloadBytes > 0) event.pb = payloadBytes;
     if (payloads.size) {
-      const acked: Record<string, PayloadAck> = {};
-      for (const [id, covered] of payloads) {
-        acked[id] = {
-          sv: bytesToBase64(Y.encodeStateVector(covered.sv)),
-          ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(covered.deletes, new Map()))),
-        };
-      }
-      event.p = acked;
+      // Own keys whatever the ids: an id such as `__proto__` would set a plain object's prototype and leave the JSON.
+      event.p = Object.fromEntries([...payloads].map(([id, covered]): [string, PayloadAck] => [id, {
+        sv: bytesToBase64(Y.encodeStateVector(covered.sv)),
+        ds: bytesToBase64(Y.encodeSnapshot(Y.createSnapshot(covered.deletes, new Map()))),
+      }]));
     }
     // sendCustomMessage skips a socket that has closed.
     this.sendCustomMessage(connection, JSON.stringify(event));

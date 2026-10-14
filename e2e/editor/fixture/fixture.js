@@ -108,6 +108,26 @@ window.editorFixture = {
     const write = MemoryHost.prototype.write.bind(host);
     host.write = ms ? async (noteId, request) => (await new Promise((done) => setTimeout(done, ms)), write(noteId, request)) : write;
   },
+  /** Holds every asset put until releaseAssets: 'stored' then stores it, 'refused' refuses it as too large. */
+  holdAssets() {
+    const host = state.host;
+    const put = MemoryHost.prototype.assetPut.bind(host);
+    const gate = new Promise((resolve) => {
+      state.releaseAssets = resolve;
+    });
+    state.heldPuts = 0;
+    host.assets.put = async (noteId, asset) => {
+      state.heldPuts += 1;
+      return (await gate) === 'refused' ? { kind: 'refused', reason: 'tooLarge', maxBytes: 10_000_000 } : put(noteId, asset);
+    };
+  },
+  /** How many asset puts holdAssets is holding or has held. */
+  heldAssets() {
+    return state.heldPuts ?? 0;
+  },
+  releaseAssets(outcome = 'stored') {
+    state.releaseAssets?.(outcome);
+  },
   /** The last unmount's result, with the receipt's markdown. */
   async unmountDetail(options) {
     const result = await state.handle.unmount(options);
