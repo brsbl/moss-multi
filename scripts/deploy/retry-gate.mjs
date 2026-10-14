@@ -1,13 +1,14 @@
-// The staging retry gate (A§21, T8.2). A staging leg may run once more only when its failed attempt failed on a named
-// infrastructure class: the first error's first line matched explicitly below. A product assertion, an invariant, a
-// timeout or anything unnamed is never retried: the retry attempt fails at once and the run fails. The run log
+// The staging retry gate (A§21, T8.2). A staging leg may run once more only when its failed attempt failed on named
+// infrastructure classes alone: every error's first line matched explicitly below. A product assertion, an invariant
+// (checked after the body, so it follows the body's error), a timeout or anything unnamed is never retried, even beside
+// an infrastructure error: the retry attempt fails at once and the run fails. The run log
 // (canary-reporter.mjs) writes each failed attempt's verdict where the retry reads it, and prints every retry.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, 'g');
 
-/** @type {[string, RegExp][]} The infrastructure classes a staging retry may follow, each matched on the first line of the attempt's first error. */
+/** @type {[string, RegExp][]} The infrastructure classes a staging retry may follow, each matched on the first line of an error. */
 export const INFRA_CLASSES = [
   // A fixture's own classification (e2e/lib/infra.ts): a Cloudflare error page, D1 7429, Worker 1101, an unreachable stack.
   ['infra-blocked', /\bInfraBlocked: /],
@@ -15,13 +16,21 @@ export const INFRA_CLASSES = [
   ['network changed', /\bnet::ERR_(?:NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED)\b|\bEAI_AGAIN\b/],
 ];
 
+/** @param {{ message?: string } | undefined} error */
+const classOf = (error) => {
+  const first = (error?.message ?? '').replace(ANSI, '').split('\n')[0];
+  return INFRA_CLASSES.find(([, pattern]) => pattern.test(first))?.[0] ?? null;
+};
+
 /**
- * The named infrastructure class of a failed attempt, or null when it failed on anything else (never retried).
+ * The named infrastructure class of a failed attempt (its first error's), or null when any of its errors is anything
+ * else (never retried).
  * @param {{ message?: string }[] | undefined} errors the attempt's errors, first the one that failed it
  */
 export function retryClass(errors) {
-  const first = (errors?.[0]?.message ?? '').replace(ANSI, '').split('\n')[0];
-  return INFRA_CLASSES.find(([, pattern]) => pattern.test(first))?.[0] ?? null;
+  if (!errors?.length) return null;
+  const classes = errors.map(classOf);
+  return classes.every((name) => name !== null) ? classes[0] : null;
 }
 
 /**

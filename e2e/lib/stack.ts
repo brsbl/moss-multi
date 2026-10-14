@@ -31,8 +31,13 @@ export interface CanaryState {
   budget: number;
   /** The natural idle before a wake is proven (≥ 15 s; SP14). */
   idleMs: number;
-  /** `pool`: the fixed canary principals (the default); `per-run`: fresh ones, for the full suite on staging (T8.2). */
-  principals?: 'pool' | 'per-run';
+  /**
+   * `pool`: the fixed canary principals (the default); `per-run`: fresh ones signed up for the full suite (T8.2);
+   * `seeded`: fresh ones the staging deploy wrote for this run (scripts/deploy/seed.mjs), signed in to by slot.
+   */
+  principals?: 'pool' | 'per-run' | 'seeded';
+  /** This shard's seeded slots: `mm-<token>-<slots>-<k>@example.invalid` for k below count, claimed under claimDir. */
+  seed?: { token: string; slots: string; count: number; passwordEnv: string; claimDir: string };
   /** The environment variable holding the pool's password secret. */
   poolSecretEnv: string;
   budgetPath: string;

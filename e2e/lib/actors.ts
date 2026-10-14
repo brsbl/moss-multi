@@ -11,7 +11,7 @@ import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
   actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
-import { mintPrincipal, newPrincipal, poolPrincipal, signIn, type Principal } from './principals.ts';
+import { mintPrincipal, newPrincipal, poolPrincipal, seededPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
 import type { Provenance, Stack } from './stack.ts';
 import { Telemetry } from './telemetry.ts';
@@ -131,7 +131,7 @@ export class Actors {
    */
   async principal(label: string): Promise<Principal> {
     const canary = this.options.stack?.canary;
-    if (canary && canary.principals !== 'per-run') {
+    if (canary && (canary.principals ?? 'pool') === 'pool') {
       const secret = process.env[canary.poolSecretEnv];
       if (!secret) throw new InfraBlocked(`the canary pool secret ${canary.poolSecretEnv} is not set`);
       const principal = await poolPrincipal(this.stack.baseUrl, secret, label);
@@ -139,7 +139,15 @@ export class Actors {
       return principal;
     }
     minted += 1;
-    const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
+    const seed = canary?.principals === 'seeded' ? canary.seed : undefined;
+    let principal: Principal;
+    if (seed) {
+      const password = process.env[seed.passwordEnv];
+      if (!password) throw new InfraBlocked(`the suite password ${seed.passwordEnv} is not set`);
+      principal = await seededPrincipal(this.stack.baseUrl, seed, password, this.options.runToken, label, minted);
+    } else {
+      principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
+    }
     this.principals.push(principal);
     return principal;
   }

@@ -98,6 +98,7 @@ jobs:
       commit: ${{ steps.provenance.outputs.commit }}
       bundleHash: ${{ steps.provenance.outputs.bundleHash }}
       clientHash: ${{ steps.provenance.outputs.clientHash }}
+      seedToken: ${{ steps.seed.outputs.token }}
     # Secrets reach only the steps that use them, never the dependency install.
     env:
       RUN_ID: ${{ inputs.ci_run_id }}
@@ -202,6 +203,24 @@ jobs:
           node "$WRANGLER" d1 execute moss-multi-staging --remote --json --config apps/web/dist/server/wrangler.json \
             --command "SELECT (SELECT count(*) FROM docs) AS docs, (SELECT count(*) FROM user) AS users" > "$RUNNER_TEMP/growth.json"
           node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json"
+      # Staging allows 30 sign-ups a day per address (auth.ts), far fewer than the suite's fresh accounts: this run's
+      # are written into D1 as a sign-up would, one password per run derived from the pool secret, only its hash in
+      # the SQL, which stays on the runner (scripts/deploy/seed.mjs). The prune takes them on a later run.
+      - name: Seed this run's suite principals
+        id: seed
+        if: inputs.suite == 'full'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
+        run: |
+          umask 077
+          token=$(node scripts/deploy/seed.mjs token "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")
+          sql="$RUNNER_TEMP/seed.sql"
+          trap 'rm -f "$sql"' EXIT
+          node scripts/deploy/seed.mjs sql "$sql" --token "$token"
+          node "$WRANGLER" d1 execute moss-multi-staging --remote --yes --config apps/web/dist/server/wrangler.json --file "$sql" > /dev/null
+          echo "token=$token" >> "$GITHUB_OUTPUT"
       - name: Deploy the tested bytes
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -286,8 +305,9 @@ jobs:
           if-no-files-found: ignore
 
   # The full suite on staging (A§21, T8.2), after a green canary: every journey but the @local-only legs (test hooks or
-  # stack control), in both engines, sharded eight ways. Per-run @example.invalid principals, so no pool secret; each
-  # shard has its own request budget; the wake is j04's owner-route leg. The canary's log and artifact policy holds.
+  # stack control), in both engines, sharded eight ways. Per-run @example.invalid principals the deploy seeded, each
+  # shard signing in to its own slots with the run's derived password (never the pool secret); each shard has its own
+  # request budget; the wake is j04's owner-route leg. The canary's log and artifact policy holds.
   suite:
     name: suite (${{ matrix.browser }}, ${{ matrix.shard }}/8)
     needs: [preflight, deploy, canary]
@@ -329,11 +349,27 @@ jobs:
           CLIENT: ${{ needs.deploy.outputs.clientHash }}
           BUDGET: ${{ inputs.suite_request_budget }}
           IDLE: ${{ inputs.idle_seconds }}
+          SEED_TOKEN: ${{ needs.deploy.outputs.seedToken }}
+          BROWSER: ${{ matrix.browser }}
+          SHARD: ${{ matrix.shard }}
         run: |
           node scripts/deploy/canary-state.mjs --out "$RUNNER_TEMP/canary/state.json" --base-url "$STAGING_URL" \
             --commit "$COMMIT" --bundle "$BUNDLE" --client "$CLIENT" --budget "$BUDGET" --idle-ms "$((IDLE * 1000))" \
-            --run-id "$RUN_ID" --principals per-run
+            --run-id "$RUN_ID" --principals seeded --seed-token "$SEED_TOKEN" --seed-slots "${BROWSER:0:1}$SHARD"
           echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
+      # The seeded accounts' password, masked before it reaches the environment; the pool secret stays in this step.
+      # A re-run of only the failed shards would sign in to slots its first attempt used: re-run every job instead.
+      - name: Suite password
+        env:
+          CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
+          SEED_TOKEN: ${{ needs.deploy.outputs.seedToken }}
+        run: |
+          if [ "$SEED_TOKEN" != "s${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]; then
+            echo "::error::the seeded principals are attempt ${SEED_TOKEN##*-}'s; re-run all jobs, not only the failed ones"; exit 1
+          fi
+          password=$(node scripts/deploy/seed.mjs password --token "$SEED_TOKEN")
+          echo "::add-mask::$password"
+          echo "MOSS_SUITE_PASSWORD=$password" >> "$GITHUB_ENV"
       - name: The journeys
         working-directory: e2e
         env:

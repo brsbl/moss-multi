@@ -338,11 +338,12 @@ describe('deploy-staging.yml', () => {
     expect(run.match(/--grep\b.*/g)).toEqual(['--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi']);
     expect(WORKFLOW.on.workflow_dispatch.inputs.suite_grep).toMatchObject({ type: 'string', default: '' });
     expect(job.steps.find((step) => /playwright test/.test(step.run ?? '')).env.GREP).toBe('${{ inputs.suite_grep }}');
-    // Per-run principals, never the pool secret, and this run's own budget.
+    // Per-run principals the deploy seeded, and this run's own budget. Only the step deriving the run's password holds
+    // the pool secret (seed.test.mjs).
     const state = job.steps.find((step) => /canary-state\.mjs/.test(step.run ?? ''));
-    expect(state.run).toMatch(/--principals per-run/);
+    expect(state.run).toMatch(/--principals seeded/);
     expect(state.run).toMatch(/--budget/);
-    expect(JSON.stringify(job)).not.toMatch(/CANARY_POOL_SECRET/);
+    expect(job.steps.filter((step) => /CANARY_POOL_SECRET/.test(JSON.stringify(step))).map((step) => step.name)).toEqual(['Suite password']);
   });
 });
 
