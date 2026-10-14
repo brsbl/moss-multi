@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 50% done** (114 of 230 planned tasks verified)
+**Overall: 50% done** (115 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 62 / 62 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 63 / 63 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -133,6 +133,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T3.B27 verified: the full CI lane now fails only on a real regression: linear-time tests count work instead of timing the runner, paste stall budgets scale by a same-page calibration, and the races behind the flaky journeys (backlinks 404 after a trash, hibernation induction, register picks, invariant 3, split navigation, socket hang-ups) are fixed or wait on the product's real signal.
 - 2026-10-13 — T3.B14 verified: pasting an image or video over selected text keeps that text until the upload lands, so a refused upload changes nothing; closing an embedded editor waits for its pending pastes before the final save; a file paste with a block selected or no caret lands in the note; the PDF export tab keeps the share link; and the viewer's video seek is checked against ranged reads.
 - 2026-10-13 — T3.B8 verified: file-link hovers show the target note's text, the sidebar recovers from a hung listing or a dead socket and reconciles on its own, a reload during a read or change no longer errors or replays it, and the bell clears a notice when access is lost through a move.
+- 2026-10-13 — T3.B9 verified: search finds only the notes you can open and ranks them without other people's notes shifting the order, a search feed that fails is retried on its own, backlinks include sources the index had not yet seen, and the bridge keeps watching a note opened by URL and stops on one that was deleted or revoked.
 
 ## T1.1s identity audit
 
@@ -539,3 +540,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: a visibility probe timer survives an answered pong — after an answered probe, a black-holed socket plus a second visibility change before the first timer fires gets no probe timer of its own, so the 60 s heartbeat check catches the dead socket instead of PROBE_MS → arm a fresh probe timer per probe.
 - T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: askFolderAccess releases the leave before the body is read on the AbortSignal.any fallback only — the read callback checks only the status, so with the listener fallback the leave no longer reaches a still-streaming body (native AbortSignal.any unaffected) → hold the leave through body consumption.
 - T3.B8 (Client workspace refresh, leave-abort and bridge inventory) checker P2: some acceptance evidence is unit-level, not journey-level — dropped-publication convergence is covered only by a unit test of the RECONCILE_MS refresh (file-link hover was verified in the checker's browser pass; the j05 negative control is t/T3.B8-negctl3, run 38453911157) → add a journey that drops one meta publication and asserts the sidebar converges.
+- T3.B9 (Search index correctness and cost) checker P2: an older successful search feed can clear a newer failed feed's retry — #feedSearch in packages/sync/src/doc-do.ts resets #feedRetryAt and #feedFailures on every success outside the `edits === this.#edits` generation check, and feeds (onSave, payload timer, reindex, alarm) can overlap, so feed A finishing after feed B failed clears B's retry and that revision stays unsearchable until the next edit or wake → guard the reset with the generation check and add an overlapping-feeds test.
+- T3.B9 (Search index correctness and cost) checker P2: B173's red-first failure was a mock type error, not a missing backlink — the tests-first commit changed the fake SearchDO.backlinks shape before the route read it, so the red run failed with 'ids.flatMap is not a function' and never reached the 'found on the first read' assertion (the green assertions are meaningful) → no code change; keep red-first mocks shape-compatible with the old route.
