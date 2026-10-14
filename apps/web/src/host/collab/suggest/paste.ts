@@ -10,11 +10,12 @@ import { attachPayloadDocs, isPayloadType, PAYLOAD_LOADED, PayloadDocs, payloadD
 import { bindRegisters, seedOf } from '@moss-multi/sync/registers';
 import { pendingPartBytes, type SuggestFork } from '@moss-multi/sync/suggest/client';
 import { registerFork, type ForkView } from '@moss-multi/sync/suggest/forks';
-import { $createTableSelection, $isTableSelection } from '@lexical/table';
+import { $isTableCellNode, $isTableNode, $isTableSelection } from '@lexical/table';
+import { $dfs, $findMatchingParent } from '@lexical/utils';
 import {
-  $createNodeSelection, $createRangeSelection, $getNodeByKeyOrThrow, $getRoot, $getSelection, $isElementNode, $isNodeSelection,
-  $isRangeSelection, $isRootOrShadowRoot, $isTextNode, $setSelection, createEditor, PASTE_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode,
-  type PointType, type TextNode,
+  $createNodeSelection, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isNodeSelection,
+  $isRangeSelection, $isRootOrShadowRoot, $isTextNode, $setSelection, COMMAND_PRIORITY_CRITICAL, createEditor, PASTE_COMMAND,
+  SELECTION_INSERT_CLIPBOARD_NODES_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode, type PointType, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
 import { noteBytes } from '../../large-paste.ts';
@@ -45,7 +46,6 @@ interface PastePoint {
 export type PasteAt =
   | { kind: 'range'; anchor: PastePoint; focus: PastePoint }
   | { kind: 'node'; paths: number[][] }
-  | { kind: 'table'; table: number[]; anchor: PastePoint; focus: PastePoint }
   // A selection the copy cannot rebuild: the paste is not measured, so it is refused.
   | { kind: 'unsupported' }
   | null;
@@ -79,11 +79,6 @@ export function $pasteAt(toEnd: boolean): PasteAt {
     return { kind: 'range', anchor: end, focus: end };
   }
   if ($isNodeSelection(selection)) return { kind: 'node', paths: selection.getNodes().map($pathOf) };
-  // Cells selected: Lexical's paste puts the clipboard in the focus cell (TableSelection.insertNodes).
-  if ($isTableSelection(selection)) {
-    const table = $pathOf($getNodeByKeyOrThrow(selection.tableKey));
-    return { kind: 'table', table, anchor: point(selection.anchor), focus: point(selection.focus) };
-  }
   return selection ? { kind: 'unsupported' } : null;
 }
 
@@ -93,14 +88,6 @@ function $select(at: PasteAt): void {
     return;
   }
   if (at.kind === 'unsupported') throw new Error('the copy cannot rebuild the selection');
-  if (at.kind === 'table') {
-    const selection = $createTableSelection();
-    selection.set($nodeAt(at.table).getKey(), $nodeAt(at.anchor.path).getKey(), $nodeAt(at.focus.path).getKey());
-    selection.anchor.set(selection.anchor.key, at.anchor.offset, at.anchor.type);
-    selection.focus.set(selection.focus.key, at.focus.offset, at.focus.type);
-    $setSelection(selection);
-    return;
-  }
   if (at.kind === 'node') {
     const selection = $createNodeSelection();
     for (const path of at.paths) selection.add($nodeAt(path).getKey());
@@ -122,15 +109,28 @@ const COPY_LOADED = Symbol('moss-multi:paste-copy-loaded');
 const COLLAB_UNDO_MANAGER = Symbol.for('@lexical/yjs/UndoManager');
 
 /**
+ * Whether Lexical's table plugin would write `nodes` over a table's cells, removing what they hold natively: over
+ * selected cells, or a table pasted with the selection in a cell (LexicalTablePluginHelpers, the clipboard command).
+ */
+export function $overwritesCells(nodes: readonly LexicalNode[], selection: BaseSelection | null): boolean {
+  if ($isTableSelection(selection)) return true;
+  if (!$isRangeSelection(selection)) return false;
+  const inCell = [selection.anchor, selection.focus].some((point) => $findMatchingParent(point.getNode(), $isTableCellNode) !== null);
+  return inCell && nodes.some((node) => $isTableNode(node) || $dfs(node).some(({ node: inner }) => $isTableNode(inner)));
+}
+
+/**
  * The bytes of ops pasting `event` at `at` writes in the fork, measured: a throwaway copy of the fork (its body and the
  * payload docs it holds, under its client) is bound to a headless editor with the source editor's nodes and HTML
  * import and the pane's `stack`, the same paste runs there as one update, and every update it makes in the copy's body
- * and payload docs is counted, as the fork forwards each as an op. Null when the copy cannot run it.
+ * and payload docs is counted, as the fork forwards each as an op. Null when the copy cannot run it; 'cells' when the
+ * paste writes over a table's cells ($overwritesCells), which a suggestion cannot strike.
  */
-export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack): number | null {
+export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack): number | 'cells' | null {
   const cleanup: (() => void)[] = [];
   let counting = false;
   let bytes = 0;
+  let cells = false;
   // An error in the copy is recorded, not thrown, so Lexical restores the pane's own update around it.
   let failed = false;
   try {
@@ -183,6 +183,10 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
       syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
     }));
     cleanup.push(stack(copy));
+    cleanup.push(copy.registerCommand(SELECTION_INSERT_CLIPBOARD_NODES_COMMAND, ({ nodes, selection }) => {
+      if ($overwritesCells(nodes, selection)) cells = true;
+      return false;
+    }, COMMAND_PRIORITY_CRITICAL));
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(fork.doc), COPY_LOADED);
     // The fork's client, set after the load: yjs gives a doc whose own client a remote update advanced a new one.
     doc.clientID = fork.doc.clientID;
@@ -195,6 +199,7 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
       copy.dispatchCommand(PASTE_COMMAND, event);
     }, { discrete: true });
     copy.update(noop, { discrete: true });
+    if (cells) return 'cells';
     return failed ? null : bytes;
   } catch {
     return null;

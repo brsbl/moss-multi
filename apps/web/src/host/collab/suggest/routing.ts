@@ -8,6 +8,7 @@
 // own text operations (trace.ts), or, where an operation rebuilds a node from its text, by aligning what the
 // transaction deleted around a struck character with what it wrote. Undo of their strike re-creates them, as the author's own, where they stood.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
+import { $isTableSelection } from '@lexical/table';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import type { Rewrites, SuggestFork } from '@moss-multi/sync/suggest/client';
 import {
@@ -203,6 +204,8 @@ function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.
 
 /** A paste the pane could not measure (its paste handlers still loading, or the copy failed): nothing goes in. */
 const UNMEASURED = 'This paste could not be checked against the suggestion limits, so none of it was added. Try again.';
+/** A paste Lexical would write over table cells, removing what they hold: a suggestion cannot strike it there. */
+const OVER_CELLS = 'Pasting over table cells cannot be suggested yet, so none of it was added. Paste inside one cell instead.';
 
 /**
  * `pasteStack`: the pane's own paste handlers and content transforms (paste-stack.ts), which a paste runs on a copy of
@@ -775,6 +778,12 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     // update: one undo step with the strike.
     editor.registerCommand(PASTE_COMMAND, (event) => {
       const selection = $getSelection();
+      // Lexical writes a paste over selected cells natively, from the anchor cell on: refused, nothing changed.
+      if ($isTableSelection(selection)) {
+        event.preventDefault();
+        refuseInput(OVER_CELLS);
+        return true;
+      }
       const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
       // Over only his own text Lexical's paste replaces it natively; over anything else the routing strikes the
       // selection and the paste goes in at its end ($routeRange).
@@ -783,6 +792,8 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack) : null;
       const notice = measured === null
         ? UNMEASURED
+        : measured === 'cells'
+        ? OVER_CELLS
         : $admitPaste(fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0);
       if (notice) {
         event.preventDefault();
@@ -790,7 +801,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
         return true;
       }
       // Nothing the copy wrote (files, which land later): the paste may make no step of its own to join.
-      const wrote = (measured ?? 0) > 0;
+      const wrote = typeof measured === 'number' && measured > 0;
       const routed = $routeRange(false, wrote);
       if ((routed === 'none' || routed === 'own') && wrote) {
         // At a caret, or over his own text only (no strike to join): the paste is its own step, apart from typing
