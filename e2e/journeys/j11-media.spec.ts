@@ -9,6 +9,8 @@
 // frame, and it seeks and plays through 206 responses. Alt text edited from the image's context menu reaches the peer
 // and the export. A paste over a selection keeps the selected text while its upload is held, both peers' typing
 // survives, and the media replaces exactly that text; a refused upload leaves the text and a peer's edit in place.
+// A private image one account loaded is never shown from the browser's cache to the next account signed in to the
+// same browser.
 //
 // Grants and links are declared setup through the members and links APIs; sharing is not this journey's promise.
 // Files reach the editor as browsers deliver them: a DataTransfer on drop and paste, and the file chooser for
@@ -590,4 +592,41 @@ test('j11-media: a paste over a selection is replaced when its held upload lands
   await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), {
     message: 'the export keeps the selected text and the peer edit', timeout: PEER_TIMEOUT,
   }).toContain(`![${PNG.name}](assets/${PNG.name})\n\noads!456`);
+});
+
+test('j11-media: a private image one account loaded never reaches the next account signed in to the same browser from its cache @p:note-8', async ({ actors }) => {
+  const [adaPerson, benPerson] = [await actors.principal('ada'), await actors.principal('ben')];
+  const shared = await actors.anonymous('/login', { label: 'shared-browser' });
+  const signInAs = async (person: Principal) => {
+    await ui.waitForLoginCard(shared);
+    await ui.signInThroughCard(shared, person);
+    await expect(shared.page, `${person.label} signs in`).toHaveURL((url) => url.pathname === '/', { timeout: BOOT_TIMEOUT });
+    await expect(shared.page.locator('html')).toHaveAttribute(APP_STATE_ATTR, 'ready', { timeout: BOOT_TIMEOUT });
+    await expect(shared.page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible({ timeout: BOOT_TIMEOUT });
+  };
+  await signInAs(adaPerson);
+  const { vault } = (await (await shared.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  const docId = await noteHolding(shared, vault.id, PNG, bytes(PNG.name));
+  const url = `/api/docs/${docId}/assets/${PNG.name}`;
+  // The page's own fetch, through the browser's HTTP cache, as an <img> loads it.
+  const read = () => shared.page.evaluate(async (path) => {
+    const response = await fetch(path);
+    return { status: response.status, length: (await response.arrayBuffer()).byteLength };
+  }, url);
+  const size = bytes(PNG.name).byteLength;
+  expect(await read(), "Ada's browser loads her image").toEqual({ status: 200, length: size });
+  expect(await read(), 'and reads it again').toEqual({ status: 200, length: size });
+  // The same account still revalidates to 304 and reads a range.
+  const etag = (await shared.context.request.get(url)).headers().etag ?? '';
+  expect((await shared.context.request.get(url, { headers: { 'if-none-match': etag } })).status(), 'her revalidation is a 304').toBe(304);
+  const part = await shared.context.request.get(url, { headers: { range: 'bytes=0-7' } });
+  expect(part.status(), 'her range read is a 206').toBe(206);
+  expect((await part.body()).byteLength).toBe(8);
+
+  await ui.signOutThroughSettings(shared);
+  await signInAs(benPerson);
+  shared.expectHttp(404, url);
+  const benRead = await read();
+  expect(benRead.status, "Ben's read of the same URL in the same browser is the server's 404").toBe(404);
+  expect(benRead.length, "no byte of Ada's image reaches him").not.toBe(size);
 });
