@@ -23,13 +23,14 @@ import { isYouTubeUrl } from '../utils/video-url';
 import { useCurrentNoteId } from '../CurrentNoteIdContext';
 import { imagesApi } from '../../api/electron';
 // moss-multi seam: held-insertion (A§16)
-import { $holdInsertionPoint, type HeldInsertionPoint } from '@moss-multi/host/media/held-insertion';
+import { $holdMediaInsertion, type HeldInsertionPoint } from '@moss-multi/host/media/held-insertion';
 
 const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
 
-// moss-multi seam: held-insertion (A§16): a replayed range deleted text typed during the upload; a held point follows it
+// moss-multi seam: held-insertion (A§16): a replayed range deleted text typed during the upload; a held range follows
+// it. A selected block or a focused body with no selection is a place too; with none the paste is not taken (B188).
 function captureSelection(): HeldInsertionPoint | null {
-  return $holdInsertionPoint();
+  return $holdMediaInsertion();
 }
 
 function restoreSelection(saved: HeldInsertionPoint): boolean {
@@ -99,10 +100,10 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
           const filePath = (videoFile as File & { path?: string }).path;
           // moss-multi seam: web-assets (A§16): a browser File has no path, so its bytes upload as an image's do
           if (!filePath) {
+            const pastedAt = captureSelection();
+            if (!pastedAt) return false;
             event.preventDefault();
             (event as ClipboardEvent).stopPropagation();
-            const pastedAt = captureSelection();
-            if (!pastedAt) return true;
             void readFileAsBase64(videoFile).then((data) => data ? imagesApi.save.invoke({
               data, filename: videoFile.name || 'video.mp4', mimeType: videoFile.type, noteId
             }) : null).then((result) => {
@@ -144,11 +145,11 @@ export function registerVideoPaste(editor: LexicalEditor, noteId: string | null)
         // Check for image files in clipboard (e.g., screenshot paste)
         const imageFile = Array.from(files).find(f => f.type.startsWith('image/'));
         if (imageFile) {
+          // moss-multi seam: held-insertion (B188): a file paste is taken only with a place for it, never dropped
+          const insertionPoint = captureSelection();
+          if (!insertionPoint) return false;
           event.preventDefault();
           (event as ClipboardEvent).stopPropagation();
-
-          const insertionPoint = captureSelection();
-          if (!insertionPoint) return true;
 
           void readFileAsBase64(imageFile).then((base64Data) => {
             if (!base64Data) return;

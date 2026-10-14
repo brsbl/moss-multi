@@ -190,6 +190,13 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   cy.expectHttp(403, /^\/api\/invites\/[0-9a-f]+\/accept$/);
   await expect(cy.page.getByRole('heading', { name: 'This invite is for another email' })).toBeVisible();
   await actors.checkpoint('invite-other-email');
+  // Switching accounts from there, in a second browser of Cy's, ends that session and comes back to this invite.
+  const cy2 = await actors.sameAs(cy, { path: ui.pathOf(url) });
+  cy2.expectHttp(403, /^\/api\/invites\/[0-9a-f]+\/accept$/);
+  await cy2.page.getByRole('button', { name: 'Sign in with another email', exact: true }).click();
+  await expect(cy2.page, 'sign-out lands on the card, next naming the invite')
+    .toHaveURL((u) => u.pathname === '/login' && u.searchParams.get('next') === ui.pathOf(url), { timeout: 30_000 });
+  expect((await cy2.context.request.get('/api/me')).status(), 'that session has ended').toBe(401);
   expect((await cy.context.request.get(`/api/docs/${target}`)).status(), 'and no access').toBe(404);
   cy.expectHttp(404, `/api/docs/${target}`);
 

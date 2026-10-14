@@ -3,7 +3,7 @@
 // a checkbox toggle and moved the done items first (run 37718593043: two pairs of 2 MB of mixed markdown swapped).
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { MAX_STALL_MS, normalized, pasteAndCheck, setup } from '../lib/paste.ts';
+import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /** A check list of `count` items, open and done alternating, as written: moss sorts done items first only on a toggle. */
@@ -16,11 +16,9 @@ function checklist(count: number): string {
 test('j01-paste-check: a 12,000-item check list pasted between two paragraphs lands in its own order, and its undo and redo keep it @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(900_000);
   const markdown = `${checklist(12_000)}\n\nEnd of the list.`;
-  const { ada, ben, docId, wire } = await setup(actors, stack, 'Before.\n\nAfter.');
-  const want = {
-    whole: await normalized(ada, stack, `Before.\n\n${markdown}\n\nAfter.`),
-    typed: await normalized(ada, stack, `Before.\n\n${markdown}Z\n\nAfter.`),
-  };
+  const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
+    references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${markdown}Z\n\nAfter.` },
+  });
   expect(want.whole, 'the reference export keeps the written order').toContain('- [ ] open 0\n- [x] done 1\n- [ ] open 2');
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');

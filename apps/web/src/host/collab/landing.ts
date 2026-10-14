@@ -24,7 +24,14 @@ export function setBatchGeometry(editor: LexicalEditor, run: () => void): () => 
   };
 }
 
-export const runBatchGeometry = (editor: LexicalEditor): void => geometry.get(editor)?.();
+/** Runs `editor`'s geometry hook; what it throws is reported, never thrown, so a paste's batches all land (T3.S6). */
+export function runBatchGeometry(editor: LexicalEditor): void {
+  try {
+    geometry.get(editor)?.();
+  } catch (error) {
+    console.warn('[moss] batch geometry failed:', error);
+  }
+}
 
 export function subscribeLanding(listener: () => void): () => void {
   listeners.add(listener);
