@@ -10,9 +10,10 @@ import { attachPayloadDocs, isPayloadType, PAYLOAD_LOADED, PayloadDocs, payloadD
 import { bindRegisters, seedOf } from '@moss-multi/sync/registers';
 import { pendingPartBytes, type SuggestFork } from '@moss-multi/sync/suggest/client';
 import { registerFork, type ForkView } from '@moss-multi/sync/suggest/forks';
+import { $createTableSelection, $isTableSelection } from '@lexical/table';
 import {
-  $createNodeSelection, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isNodeSelection, $isRangeSelection,
-  $isRootOrShadowRoot, $isTextNode, $setSelection, createEditor, PASTE_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode,
+  $createNodeSelection, $createRangeSelection, $getNodeByKeyOrThrow, $getRoot, $getSelection, $isElementNode, $isNodeSelection,
+  $isRangeSelection, $isRootOrShadowRoot, $isTextNode, $setSelection, createEditor, PASTE_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode,
   type PointType, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
@@ -41,7 +42,13 @@ interface PastePoint {
   offset: number;
   type: 'text' | 'element';
 }
-export type PasteAt = { kind: 'range'; anchor: PastePoint; focus: PastePoint } | { kind: 'node'; paths: number[][] } | null;
+export type PasteAt =
+  | { kind: 'range'; anchor: PastePoint; focus: PastePoint }
+  | { kind: 'node'; paths: number[][] }
+  | { kind: 'table'; table: number[]; anchor: PastePoint; focus: PastePoint }
+  // A selection the copy cannot rebuild: the paste is not measured, so it is refused.
+  | { kind: 'unsupported' }
+  | null;
 
 function $pathOf(node: LexicalNode): number[] {
   const path: number[] = [];
@@ -72,12 +79,26 @@ export function $pasteAt(toEnd: boolean): PasteAt {
     return { kind: 'range', anchor: end, focus: end };
   }
   if ($isNodeSelection(selection)) return { kind: 'node', paths: selection.getNodes().map($pathOf) };
-  return null;
+  // Cells selected: Lexical's paste puts the clipboard in the focus cell (TableSelection.insertNodes).
+  if ($isTableSelection(selection)) {
+    const table = $pathOf($getNodeByKeyOrThrow(selection.tableKey));
+    return { kind: 'table', table, anchor: point(selection.anchor), focus: point(selection.focus) };
+  }
+  return selection ? { kind: 'unsupported' } : null;
 }
 
 function $select(at: PasteAt): void {
   if (!at) {
     $setSelection(null);
+    return;
+  }
+  if (at.kind === 'unsupported') throw new Error('the copy cannot rebuild the selection');
+  if (at.kind === 'table') {
+    const selection = $createTableSelection();
+    selection.set($nodeAt(at.table).getKey(), $nodeAt(at.anchor.path).getKey(), $nodeAt(at.focus.path).getKey());
+    selection.anchor.set(selection.anchor.key, at.anchor.offset, at.anchor.type);
+    selection.focus.set(selection.focus.key, at.focus.offset, at.focus.type);
+    $setSelection(selection);
     return;
   }
   if (at.kind === 'node') {
@@ -115,7 +136,6 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
   try {
     const doc = new Y.Doc({ gc: fork.doc.gc });
     cleanup.push(() => doc.destroy());
-    doc.clientID = fork.doc.clientID;
     const own = fork.payloads;
     const body = payloadDocsFor(fork.body);
     const payloads = attachPayloadDocs(doc, new PayloadDocs((id) => {
@@ -128,7 +148,7 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
     };
     doc.on('update', count);
     payloads.onHold((_id, payload) => {
-      payload.clientID = doc.clientID;
+      payload.clientID = fork.doc.clientID;
       payload.on('update', count);
     });
     // A fork's doc: the paste handlers take it as Suggest mode's (large-paste.ts pastesInBatches).
@@ -136,7 +156,9 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
     const args = source._createEditorArgs;
     // Never given a root element, so nothing renders; not headless, since the pane's plugins take root listeners.
     const copy = createEditor({
-      namespace: 'moss-multi-paste-copy',
+      // The source's namespace: Lexical pastes a clipboard's serialized nodes only into an editor of the namespace
+      // that copied them, as the pane does a copy made in it.
+      namespace: source._config.namespace,
       nodes: args?.nodes,
       html: args?.html,
       theme: args?.theme,
@@ -162,6 +184,8 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
     }));
     cleanup.push(stack(copy));
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(fork.doc), COPY_LOADED);
+    // The fork's client, set after the load: yjs gives a doc whose own client a remote update advanced a new one.
+    doc.clientID = fork.doc.clientID;
     // The note as the binding reads it, untransformed, as the pane holds it.
     copy.update(noop, { discrete: true, skipTransforms: true });
     // The selection is committed first: the paste handlers read it from the editor's state, as in the pane.
