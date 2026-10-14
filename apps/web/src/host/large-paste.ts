@@ -675,7 +675,12 @@ function aimedAt(root: HTMLElement, target: EventTarget | null): boolean {
 function copyData(source: DataTransfer | null): DataTransfer {
   const copy = new DataTransfer();
   if (!source) return copy;
-  for (const type of source.types) if (type !== 'Files') copy.setData(type, source.getData(type));
+  // WebKit lists no types on a trusted paste's clipboardData, yet getData answers.
+  const types = source.types.length > 0 ? source.types : ['application/x-lexical-editor', 'text/html', 'text/uri-list', 'text/plain'];
+  for (const type of types) {
+    const data = type === 'Files' ? '' : source.getData(type);
+    if (data) copy.setData(type, data);
+  }
   for (const file of source.files) copy.items.add(file);
   return copy;
 }

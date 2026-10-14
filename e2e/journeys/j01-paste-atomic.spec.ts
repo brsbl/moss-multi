@@ -155,23 +155,10 @@ test('j01-paste-atomic: a keyboard paste made while a paste waits for its reserv
     await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
     await ada.page.keyboard.press('End');
     // The black hole leaves B's reserve unanswered: the paste waits for it, then gives up after 4 s.
-    await ada.page.evaluate(() => {
-      const log: string[] = [];
-      (window as unknown as { qaLog: string[] }).qaLog = log;
-      for (const type of ['keydown', 'keypress', 'keyup', 'paste', 'beforeinput', 'input', 'copy', 'cut']) {
-        window.addEventListener(type, (event) => {
-          const target = event.target as Element;
-          const data = (event as ClipboardEvent).clipboardData;
-          log.push(`${type} trusted=${event.isTrusted} target=${target?.nodeName} key=${(event as KeyboardEvent).key} types=${data ? [...data.types].join('|') : ''} text=${data ? JSON.stringify(data.getData('text/plain')) : ''} input=${(event as InputEvent).inputType}`);
-        }, true);
-        document.addEventListener(type, (event) => log.push(`doc ${type} prevented=${event.defaultPrevented}`), false);
-      }
-    });
     ada.sever!.blackhole();
     await pastePlain(ada, docId, B);
     await ada.page.keyboard.press('ControlOrMeta+V');
     await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'B is refused, visibly').toContainText('could not confirm room', { timeout: 60_000 });
-    console.log('QA-LOG', JSON.stringify(await ada.page.evaluate(() => (window as unknown as { qaLog: string[] }).qaLog), null, 1));
     ada.sever!.restore();
     await expect.poll(() => holds(ada, docId, 'Kept. ZQX'), { message: 'the keyboard paste lands where Ada made it', timeout: 60_000 }).toBe(true);
     await ui.waitAcked(ada, docId, 120_000);
