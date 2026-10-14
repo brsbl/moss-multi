@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { COLLABORATION_TAG, REDO_COMMAND, UNDO_COMMAND, type Klass, type LexicalEditor, type LexicalNode } from 'lexical';
 import * as Y from 'yjs';
-import { mapRegisterWritable, onRegisterChange, payloadTextOf, registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/sync/registers';
+import {
+  mapRegisterWritable, onRegisterChange, payloadTextOf, registerDoc, registerPayloads, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit,
+} from '@moss-multi/sync/registers';
 import { payloadText } from '@moss-multi/sync/payload-docs';
-import { applyOps, diffText, mapOffset, rebaseOps } from '@moss-multi/core/text-diff';
+import { applyOps, diffText, mapOffset, rebaseOps, type Delta } from '@moss-multi/core/text-diff';
 import { refuseInput } from '../refusal.ts';
+import { deltaOps } from './formula-merge.ts';
 
 type Input = HTMLInputElement | HTMLTextAreaElement;
 /** The payload text behind a node: its own payload doc's (A§10.10), held now. */
@@ -142,6 +145,7 @@ export function useRegisterDraft(
     const text = live ? payloadTextOf(editor, key) : undefined;
     const doc = text?.doc;
     if (!editing || !input || !doc || !text) return;
+    const payloadId = registerState(editor, key)?.id;
     const keyboard = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       if (!(event.metaKey || event.ctrlKey) || event.altKey || (key !== 'z' && key !== 'y')) return;
@@ -169,7 +173,14 @@ export function useRegisterDraft(
       input.removeEventListener('keydown', keyboard, true);
       input.removeEventListener('compositionstart', start);
       input.removeEventListener('compositionend', end);
-      composing.current?.doc.destroy(); composing.current = null;
+      // Unmounted mid-composition (a peer's move recreates the node): the preedit goes to the payload, which the field
+      // that follows it shows. compositionend has already applied and cleared a finished one.
+      const draft = composing.current;
+      composing.current = null;
+      if (!draft) return;
+      const target = (payloadId && registerPayloads(editor)?.get(payloadId)) || doc;
+      if (editor.isEditable()) Y.applyUpdate(target, Y.encodeStateAsUpdate(draft.doc, draft.base), REGISTER_LOCAL_ORIGIN);
+      draft.doc.destroy();
     };
   }, [editor, key, element, editing, write, live]);
   useOpenField(editor, key, id, element, editing && bound);
@@ -245,12 +256,13 @@ export function useFollowRegister(editor: LexicalEditor, key: string | null, mov
 }
 
 /**
- * A peer's change to a field's payload, `base` to `next`, merged into what the field shows, which may hold text it has
- * not written (an unfinished formula): the field keeps its own characters and its caret. Returns the merged text.
+ * A peer's change to a field's payload, `base` to `next` (`change`, the change itself, when known), merged into what
+ * the field shows, which may hold text it has not written (an unfinished formula): the field keeps its own characters
+ * and its caret. Returns the merged text.
  */
-export function mergeIntoField(input: Input | null, base: string, next: string): string {
+export function mergeIntoField(input: Input | null, base: string, next: string, change?: Delta): string {
   if (!input) return next;
-  const delta = rebaseOps(base, diffText(base, next), input.value);
+  const delta = rebaseOps(base, deltaOps(change, base, next) ?? diffText(base, next), input.value);
   const merged = applyOps(input.value, delta);
   repaint(input, merged, delta);
   return merged;
