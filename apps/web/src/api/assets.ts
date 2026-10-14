@@ -77,6 +77,16 @@ async function readDeclared(request: Request, length: number): Promise<Uint8Arra
   return offset === length ? bytes : 'too-short';
 }
 
+let deadlineOverride: number | null = null;
+
+/** Unit tests shorten every upload's body deadline to `ms` (null restores the size-scaled one). */
+export function setUploadDeadlineForTests(ms: number | null): void {
+  deadlineOverride = ms;
+}
+
+/** How long an upload of `size` bytes may take to arrive. */
+export const uploadDeadlineMs = (_size: number): number => deadlineOverride ?? Number.POSITIVE_INFINITY;
+
 /** Media bytes uploaded into the vault holding the folder bound at `folder`, over all its folders (the quota). */
 const vaultUsage = (folder: string, depth: string) => `(
     WITH RECURSIVE up(id, parent_id, depth) AS (
