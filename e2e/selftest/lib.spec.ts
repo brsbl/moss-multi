@@ -183,6 +183,9 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems([socket(0, 10, 1006), socket(20, null)], new Map())).not.toEqual([]);
     expect(socketProblems([socket(0, 10, 4408), socket(20, null)], new Map(), OFF)).not.toEqual([]);
     expect(socketProblems([socket(0, 10, 1006), socket(20, 30, 1006), socket(40, null)], new Map(), OFF)).not.toEqual([]);
+    // A second drop fails even when the page opens no third socket.
+    expect(socketProblems([socket(0, 10, 1006), socket(20, 30, 1006)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 10, 1013), socket(20, 30, 1006)], new Map(), OFF)).not.toEqual([]);
     expect(socketProblems([socket(0, 30, 1006), socket(20, null)], new Map(), OFF)).not.toEqual([]);
   });
   test("off loopback the browser's log line for that drop is not an error; any other socket's is", () => {
