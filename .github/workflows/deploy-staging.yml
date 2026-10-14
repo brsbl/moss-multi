@@ -108,7 +108,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
+          # 30 a page: a full lane's 70-odd jobs in one page of 100 answers 502 once the run has a rerun attempt.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=30" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
       # The gated commit: its migrations match the bytes, and its scripts judge them.
       - uses: actions/checkout@v6
         with:
