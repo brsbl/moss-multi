@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 72% done** (166 of 230 planned tasks verified)
+**Overall: 73% done** (167 of 230 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 63 / 63 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 14 / 15 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 21 / 21 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 16 / 16 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 17 / 17 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -188,6 +188,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T4.P verified: comments now run on the fixed m3, so its access, body-cap, search and editor fixes hold with comments in place, and the full lane is green in Chromium and WebKit.
 - 2026-10-13 — T5.P verified: suggestions now run on the fixed m4, so comments and every m3 fix hold with Suggest mode in place, and a formula with a non-text stored result no longer breaks the suggestion text walk.
 - 2026-10-13 — T6.B1 verified: saved versions keep their stored bodies, because the cleanup sweep now skips anything a version row or a pending move still needs, moves run one at a time, and a named save revoked mid-save leaves nothing behind.
+- 2026-10-13 — T6.P verified: history now runs on the current m5, so versions, view, diff and restore hold with suggestions, comments and every m3 fix in place.
 
 ## T1.1s identity audit
 
@@ -764,3 +765,4 @@ Local browser verification remains assigned to the independent checker under the
 - T6.B2 (Move refusal can be bypassed when exact alignment falls back to unique signatures on large duplicate-heavy bodies) checker P2: when align()'s middle table exceeds CHILD_CELL_BUDGET in packages/core/src/reconcile.ts it aligns only unique signatures, so repeated blocks get no exact pairs, crossesExact() puts every copy in gap 0 where counts cancel, and tier 2 pairs same-identity paragraphs by position; about 1,000 alternating A/B paragraphs restored to B/A are rewritten in place, moving anchors and withheld peer inserts to the other block's text instead of being refused.
 - T6.B1 (A spill held past its 1 h grace has no sweep protection) checker P2: the sweep skips keys held by a version row or a still-staged version, but not a named or auto spill whose put is still running or a staged move a later restore pruned; an R2 put stalled past SPILL_GRACE_MS lets another pass's sweep delete the key after the save publishes its row. Protect a key from its spill until the version row lands.
 - T6.B1 (The failed-auto test does not pin the immediate sweep) checker P2: `versions-lifecycle.test` asserts the failed auto version's cleanup only after wake(), so it still passes if the #versionsChanged() call in the #autoVersion catch is removed; assert the spill is gone before the wake.
+- T6.P (onClose compares connection ids, not socket identity, when deciding on the last-disconnect auto version) checker P2: a replacement socket that opens with the same connection id before the stale one closes is left out, so an auto version can be written while a peer is still connected (an early checkpoint, no lost edits); compare with `other !== connection && isOpen(other)` as m5's alarm logic does, and extend the reused-id harness case to assert no version is written.
