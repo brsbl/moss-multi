@@ -47,18 +47,27 @@ declare module '@moss-desktop/common/embed-iframe-policy' {
   };
 }
 
-declare module '@moss-desktop/common/markdown-fences' {
-  export function isMossCanvasFenceName(value: string | null | undefined): value is 'moss-canvas' | 'moss-sketch';
+// The pane's paste handlers and content transforms, which a Suggest-mode paste also runs on a copy (suggest/paste-stack.ts).
+declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
+  import type { LinkMatcher } from '@lexical/link';
+  import type { LexicalEditor } from 'lexical';
+  export const AUTOLINK_MATCHERS: LinkMatcher[];
+  export function registerPasteFormattingHandlers(editor: LexicalEditor): () => void;
 }
 
-declare module '@moss-desktop/renderer/editor/nodes/SketchNode' {
-  export function parseSketchBlock(text: string): { grid: boolean[]; labels: { id: string; text: string; col: number; row: number }[] };
+declare module '@moss-desktop/renderer/editor/AutoArrowPlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerAutoArrow(editor: LexicalEditor): () => void;
 }
 
-declare module '@moss-desktop/renderer/editor/utils/chartDefaults' {
-  export interface ChartCheck { valid: boolean; error?: string; config?: Record<string, unknown> }
-  export function validateChartConfig(config: unknown): ChartCheck;
-  export function parseChartConfig(text: string): ChartCheck;
+declare module '@moss-desktop/renderer/editor/plugins/SafePastePlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerSafePaste(editor: LexicalEditor): () => void;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/WebpageEmbedPastePlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerWebpageEmbedPaste(editor: LexicalEditor): () => void;
 }
 
 declare module '@moss-desktop/common/web-embed-url' {

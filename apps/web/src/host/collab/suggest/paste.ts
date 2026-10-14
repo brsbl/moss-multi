@@ -1,17 +1,20 @@
 // T5.S10 (suggestions.md §5): a Suggest-mode paste is Lexical's own paste, one editor update in the fork, never the
-// large paste's batches (large-paste.ts). Before it is dispatched (routing.ts) it is admitted whole against every
-// suggest limit by a bound no paste of the clipboard exceeds, or refused with nothing changed and the selection kept.
+// large paste's batches (large-paste.ts). Before it is dispatched (routing.ts) it is measured, not predicted: the same
+// paste runs first on a throwaway copy of the fork with the pane's own paste handlers and transforms, and the bytes of
+// the ops it writes there are admitted against every suggest limit, or the paste is refused with nothing changed.
+import { createHeadlessEditor } from '@lexical/headless';
+import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type IdSpan, type SuggestRefusal } from '@moss-multi/protocol/suggest';
-import { isMossCanvasFenceName } from '@moss-desktop/common/markdown-fences';
-import { parseSketchBlock } from '@moss-desktop/renderer/editor/nodes/SketchNode';
-import { parseChartConfig, validateChartConfig } from '@moss-desktop/renderer/editor/utils/chartDefaults';
-import { isPayloadType } from '@moss-multi/sync/payload-docs';
-import { MAP_REGISTERS, seedOf } from '@moss-multi/sync/registers';
-import { pendingPartBytes } from '@moss-multi/sync/suggest/client';
-import type { ForkView } from '@moss-multi/sync/suggest/forks';
+import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
+import { attachPayloadDocs, isPayloadType, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor } from '@moss-multi/sync/payload-docs';
+import { bindRegisters, seedOf } from '@moss-multi/sync/registers';
+import { pendingPartBytes, type SuggestFork } from '@moss-multi/sync/suggest/client';
+import { registerFork, type ForkView } from '@moss-multi/sync/suggest/forks';
 import {
-  $getSelection, $isElementNode, $isRangeSelection, $isRootOrShadowRoot, $isTextNode, type BaseSelection, type LexicalNode, type TextNode,
+  $createNodeSelection, $createRangeSelection, $getRoot, $getSelection, $isElementNode, $isNodeSelection, $isRangeSelection,
+  $isRootOrShadowRoot, $isTextNode, $setSelection, PASTE_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode,
+  type PointType, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
 import { noteBytes } from '../../large-paste.ts';
@@ -20,148 +23,162 @@ import { WRITE_REFUSED } from '../doc-session.ts';
 const utf8 = new TextEncoder();
 const bytesOf = (text: string): number => utf8.encode(text).byteLength;
 
-/** Bytes of ops a pasted character takes at most: Yjs writes text as UTF-8, with an item header per run. */
+/** Bytes of ops a restored character takes at most: Yjs writes text as UTF-8, with an item header per run. */
 const PER_BYTE = 1.25;
-/** Bytes of ops a line or an HTML node adds besides its text: a block and a node in it, their properties and headers. */
-const PER_LINE = 640;
-/** Bytes of ops an inline node adds (a format run, a link, a tab, a tag, a formula); each opens with a markup character. */
+/** Bytes of ops a restored run or leaf adds besides its text: its item and the properties it carries. */
 const PER_MARK = 320;
-const MARKUP = /[*_~`=^$[|#{\t]/g;
-/** A Lexical clipboard's JSON: each property becomes a map entry whose key and header are under twice its JSON. */
+/** A payload's seed as a restored copy: each entry a map item whose key and header are under twice its JSON. */
 const PER_JSON_BYTE = 3;
 
-/** A compound payload's entry: its key, its value and a map item's header. */
-const PER_ENTRY = 40;
+/** The pane's own paste handlers and content transforms, registered on an editor (suggest/paste-stack.ts). */
+export type PasteStack = (editor: LexicalEditor) => () => void;
 
-/**
- * Bytes of ops a compound payload (a chart's config, a sketch's grid and labels) takes in its payload doc, encoded as
- * the register writes it (map-codecs.ts): a chart writes two entries per array element, each keyed by its full path.
- */
-function encodedBytes(type: 'chart' | 'sketch', fields: Record<string, unknown>): number {
-  let bytes = 0;
-  for (const [key, value] of MAP_REGISTERS[type].encode(fields)) bytes += (bytesOf(key) + bytesOf(JSON.stringify(value) ?? '')) * PER_BYTE + PER_ENTRY;
-  return bytes;
+/** What PASTE_COMMAND carries. */
+export type PasteEvent = ClipboardEvent | InputEvent | KeyboardEvent;
+
+/** Where a point of the selection sits, by child index from the root: the same place in a copy bound to the same doc. */
+interface PastePoint {
+  path: number[];
+  offset: number;
+  type: 'text' | 'element';
 }
-const chartBytes = (config: unknown): number => (config && typeof config === 'object' ? encodedBytes('chart', { __config: config }) : 0);
-function sketchBytes(text: string): number {
-  const { grid, labels } = parseSketchBlock(text);
-  return encodedBytes('sketch', { __grid: grid, __labels: labels });
+export type PasteAt = { kind: 'range'; anchor: PastePoint; focus: PastePoint } | { kind: 'node'; paths: number[][] } | null;
+
+function $pathOf(node: LexicalNode): number[] {
+  const path: number[] = [];
+  for (let at: LexicalNode = node, parent = at.getParent(); parent; at = parent, parent = at.getParent()) path.unshift(at.getIndexWithinParent());
+  return path;
 }
 
-/** A fence line, after any blockquote, list-item or indent prefix: its marker and its language. */
-const FENCE = /^((?:[ \t>]|[-+*][ \t]|\d{1,9}[.)][ \t])*)(`{3,}|~{3,})[ \t]*([^\s`]*)/;
-
-/**
- * The compound payloads the Markdown import makes of `text`'s chart and canvas fences (normalize.ts): each block's
- * lines, read with and without its prefix, whichever reading encodes larger.
- */
-function fencedPayloadBytes(text: string): number {
-  const lines = text.split('\n');
-  let bytes = 0;
-  for (let i = 0; i < lines.length; i += 1) {
-    const open = FENCE.exec(lines[i]);
-    if (!open) continue;
-    const [, prefix, marker, language] = open;
-    const chart = language === 'moss-chart';
-    if (!chart && !isMossCanvasFenceName(language)) continue;
-    const kept: string[] = [];
-    const trimmed: string[] = [];
-    for (i += 1; i < lines.length; i += 1) {
-      const close = FENCE.exec(lines[i]);
-      if (close && close[2][0] === marker[0] && close[2].length >= marker.length && !close[3]) break;
-      kept.push(lines[i].replace(new RegExp(`^[ \\t>]{0,${prefix.length}}`), ''));
-      trimmed.push(lines[i].replace(/^[ \t>]*/, ''));
-    }
-    const sizes = [kept.join('\n'), trimmed.join('\n')].map((body) => {
-      if (!body.trim()) return 0;
-      if (!chart) return sketchBytes(body);
-      const parsed = parseChartConfig(body);
-      return parsed.valid ? chartBytes(parsed.config) : 0;
-    });
-    bytes += Math.max(...sizes);
+function $nodeAt(path: readonly number[]): LexicalNode {
+  let node: LexicalNode = $getRoot();
+  for (const index of path) {
+    const child: LexicalNode | null = $isElementNode(node) ? node.getChildAtIndex(index) : null;
+    if (!child) throw new Error('the copy does not hold the selection');
+    node = child;
   }
-  return bytes;
-}
-
-function textBound(raw: string): number {
-  if (!raw) return 0;
-  // The paste handlers read a CR or a CRLF as a line break (MarkdownEditor normalizeClipboardLineEndings).
-  const text = raw.replace(/\r\n?/g, '\n');
-  const lines = text.split('\n').length;
-  return bytesOf(text) * PER_BYTE + lines * PER_LINE + (text.match(MARKUP)?.length ?? 0) * PER_MARK + fencedPayloadBytes(text);
+  return node;
 }
 
 /**
- * Every element and text node of the HTML may become a block and a node in it (a table cell, its paragraph), and every
- * attribute of an element a property of its node (a link keeps its href, title, rel and target).
+ * The selection the paste goes in at, read before the routing changes it. `toEnd`: the routing strikes it and the paste
+ * goes in at its end (routing.ts $routeRange), so the copy pastes at that caret.
  */
-function htmlBound(html: string): number {
-  if (!html) return 0;
-  const parsed = new DOMParser().parseFromString(html, 'text/html');
-  let bound = 0;
-  const walker = parsed.createTreeWalker(parsed.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    bound += PER_LINE;
-    if (node.nodeType === Node.TEXT_NODE) {
-      bound += bytesOf(node.nodeValue ?? '') * PER_BYTE;
-      continue;
-    }
-    const element = node as Element;
-    for (const { name, value } of element.attributes) bound += (bytesOf(name) + bytesOf(value)) * PER_BYTE + PER_MARK;
-    // A chart's or a sketch's element (ChartNode, SketchNode importDOM) becomes a compound payload.
-    const config = element.getAttribute('data-chart-config');
-    if (config) {
-      try {
-        const checked = validateChartConfig(JSON.parse(config));
-        if (checked.valid) bound += chartBytes(checked.config);
-      } catch {
-        // Not JSON: no chart.
-      }
-    }
-    if (element.hasAttribute('data-sketch-grid')) bound += sketchBytes(element.getAttribute('data-sketch-grid') || element.textContent || '');
+export function $pasteAt(toEnd: boolean): PasteAt {
+  const selection = $getSelection();
+  const point = (at: PointType): PastePoint => ({ path: $pathOf(at.getNode()), offset: at.offset, type: at.type });
+  if ($isRangeSelection(selection)) {
+    if (!toEnd) return { kind: 'range', anchor: point(selection.anchor), focus: point(selection.focus) };
+    const end = point(selection.isBackward() ? selection.anchor : selection.focus);
+    return { kind: 'range', anchor: end, focus: end };
   }
-  return bound;
+  if ($isNodeSelection(selection)) return { kind: 'node', paths: selection.getNodes().map($pathOf) };
+  return null;
 }
 
-/** A Lexical clipboard: its JSON, and the compound payloads its chart and sketch nodes import to. */
-function lexicalBound(json: string): number {
-  if (!json) return 0;
+function $select(at: PasteAt): void {
+  if (!at) {
+    $setSelection(null);
+    return;
+  }
+  if (at.kind === 'node') {
+    const selection = $createNodeSelection();
+    for (const path of at.paths) selection.add($nodeAt(path).getKey());
+    $setSelection(selection);
+    return;
+  }
+  const selection = $createRangeSelection();
+  selection.anchor.set($nodeAt(at.anchor.path).getKey(), at.anchor.offset, at.anchor.type);
+  selection.focus.set($nodeAt(at.focus.path).getKey(), at.focus.offset, at.focus.type);
+  $setSelection(selection);
+}
+
+const noop = () => {};
+const quiet = {
+  awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
+  connect: noop, disconnect: noop, on: noop, off: noop,
+} as unknown as Provider;
+const COPY_LOADED = Symbol('moss-multi:paste-copy-loaded');
+const COLLAB_UNDO_MANAGER = Symbol.for('@lexical/yjs/UndoManager');
+
+/**
+ * The bytes of ops pasting `event` at `at` writes in the fork, measured: a throwaway copy of the fork (its body and the
+ * payload docs it holds, under its client) is bound to a headless editor with the source editor's nodes and HTML
+ * import and the pane's `stack`, the same paste runs there as one update, and every update it makes in the copy's body
+ * and payload docs is counted, as the fork forwards each as an op. Null when the copy cannot run it.
+ */
+export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack): number | null {
+  const doc = new Y.Doc({ gc: fork.doc.gc });
+  doc.clientID = fork.doc.clientID;
+  const own = fork.payloads;
+  const body = payloadDocsFor(fork.body);
+  const payloads = attachPayloadDocs(doc, new PayloadDocs((id) => {
+    const from = own.get(id) ?? body.get(id);
+    return from ? Y.encodeStateAsUpdate(from) : null;
+  }, (id) => own.has(id)));
+  let counting = false;
   let bytes = 0;
-  const visit = (node: unknown) => {
-    if (!node || typeof node !== 'object') return;
-    const { type, config, grid, children } = node as { type?: unknown; config?: unknown; grid?: unknown; children?: unknown };
-    if (type === 'chart') bytes += chartBytes(config);
-    if (type === 'sketch' && typeof grid === 'string') bytes += sketchBytes(grid);
-    if (Array.isArray(children)) children.forEach(visit);
+  const count = (update: Uint8Array, origin: unknown) => {
+    if (counting && origin !== COPY_LOADED && origin !== PAYLOAD_LOADED) bytes += update.byteLength;
   };
+  doc.on('update', count);
+  payloads.onHold((_id, payload) => {
+    payload.clientID = doc.clientID;
+    payload.on('update', count);
+  });
+  // A fork's doc: the paste handlers take it as Suggest mode's (large-paste.ts pastesInBatches).
+  registerFork(doc, fork);
+  const args = source._createEditorArgs;
+  // An error in the copy is recorded, not thrown, so Lexical restores the pane's own update around it.
+  let failed = false;
+  const copy = createHeadlessEditor({
+    namespace: 'moss-multi-paste-copy',
+    nodes: args?.nodes,
+    html: args?.html,
+    theme: args?.theme,
+    onError: () => {
+      failed = true;
+    },
+  });
+  const binding = createBinding(copy, quiet, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(copy));
+  const root = binding.root.getSharedType();
+  const undo = new Y.UndoManager(root, { trackedOrigins: new Set([binding]) });
+  (copy as unknown as Record<symbol, unknown>)[COLLAB_UNDO_MANAGER] = undo;
+  const observer: Parameters<Y.XmlText['observeDeep']>[0] = (events, transaction) => {
+    if (transaction.origin !== binding) syncYjsChangesToLexical(binding, quiet, events as never, false, noop);
+  };
+  root.observeDeep(observer);
+  const stops = [
+    // As the client binds them, but writing a new block's first payload text in the update that makes it.
+    bindRegisters(copy, doc, { serializedImports: true, payloads }),
+    copy.registerTextContentListener(noop),
+    copy.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
+      syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
+    }),
+    stack(copy),
+  ];
   try {
-    const parsed = JSON.parse(json) as { nodes?: unknown };
-    if (Array.isArray(parsed.nodes)) parsed.nodes.forEach(visit);
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(fork.doc), COPY_LOADED);
+    // The note as the binding reads it, untransformed, as the pane holds it.
+    copy.update(noop, { discrete: true, skipTransforms: true });
+    // The selection is committed first: the paste handlers read it from the editor's state, as in the pane.
+    copy.update(() => $select(at), { discrete: true });
+    counting = true;
+    copy.update(() => {
+      copy.dispatchCommand(PASTE_COMMAND, event);
+    }, { discrete: true });
+    copy.update(noop, { discrete: true });
+    return failed ? null : bytes;
   } catch {
-    // Not a Lexical clipboard: the paste handler ignores it.
+    return null;
+  } finally {
+    counting = false;
+    for (const stop of stops.reverse()) stop();
+    root.unobserveDeep(observer);
+    undo.destroy();
+    payloads.destroy();
+    doc.destroy();
   }
-  return bytesOf(json) * PER_JSON_BYTE + bytes;
-}
-
-/**
- * The most ops a paste of `data` can add, whichever of its kinds the paste handlers take (markdown or plain text,
- * HTML, a Lexical clipboard): the largest of their bounds.
- */
-export function clipboardBound(data: DataTransfer | null): number {
-  const read = (type: string): string => {
-    try {
-      return data?.getData(type) ?? '';
-    } catch {
-      return '';
-    }
-  };
-  return Math.max(
-    textBound(read('text/plain')),
-    textBound(read('text/markdown')),
-    textBound(read('text/uri-list')),
-    htmlBound(read('text/html')),
-    lexicalBound(read('application/x-lexical-editor')),
-  );
 }
 
 /** A node's own properties as the binding writes them (its JSON, children apart), plus an item header. */
@@ -225,19 +242,26 @@ const REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
   lease: 'Suggesting stopped before the paste went in, so none of it was added.',
 };
 
+/** What the pane's own editor may write beyond the copy (its other plugins' transforms): a share and a floor. */
+const COPY_SLACK = 1.05;
+const COPY_FLOOR = 1_024;
+
 /**
- * Admits, at the selection, a paste of at most `bound` bytes of ops that strikes `targets` (the body text it
- * replaces) and removes `owned` bytes of the author's own text ($ownedBytes): null when it fits every limit, else the
- * notice to show. A record's ops only grow, so it counts the paste, its one undo and its one redo: the bound twice
- * (the redo re-creates the paste), the rest of the block it lands in once for the paste and once more, as restored
- * copies (stepBytes), for each of its undo and its redo, the strike twice (the redo strikes again), and the own text once (the undo restores it). It
- * counts them against the record cap with what the record it lands in already holds (client.ts admit, which finds
- * that record as the DocDO does), the open records' ops, the room the DocDO last gave retained suggestion state, the open-suggestion cap, and the share of the note's cap
- * suggestions may fill (the rest is kept for edits) with the payloads the DocDO counts for the body. Every undo and redo is admitted again on its own (admitStep).
+ * Admits, at the selection, a paste whose ops measure `measured` bytes on the fork's copy (measurePaste), striking
+ * `targets` (the body text it replaces) and removing `owned` bytes of the author's own text ($ownedBytes): null when it
+ * fits every limit, else the notice to show. A record's ops only grow, so it counts the paste, its one undo and its one
+ * redo: the paste twice (the redo re-creates it), the rest of the block it splits once more and again as restored
+ * copies (stepBytes) for its undo and its redo, the strike twice (the redo strikes again), and the own text once (the
+ * undo restores it). It counts them against the record cap with what the record it lands in already holds (client.ts
+ * admit, which finds that record as the DocDO does, a continuation of an accepted one included), the open records'
+ * ops, the room the DocDO last gave retained suggestion state, the open-suggestion cap, and the share of the note's cap
+ * suggestions may fill with the payloads the DocDO counts for the body. Every undo and redo is admitted again on its
+ * own (admitStep).
  */
-export function $admitPaste(fork: ForkView, bound: number, targets: IdSpan[], owned = 0): string | null {
+export function $admitPaste(fork: ForkView, measured: number, targets: IdSpan[], owned = 0): string | null {
+  const paste = measured > 0 ? measured * COPY_SLACK + COPY_FLOOR : 0;
   const selection = $getSelection();
-  const adds = 2 * bound + (1 + 2 * PER_BYTE) * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0) + owned;
+  const adds = 2 * paste + (1 + 2 * PER_BYTE) * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0) + owned;
   if (noteBytes(fork.body) + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return WRITE_REFUSED['doc-cap'];
   // The blocks it spans: an older open record of the author's it builds on merges into its record.
   const tops = $isRangeSelection(selection)

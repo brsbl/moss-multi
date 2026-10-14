@@ -240,7 +240,8 @@ function storedOrRefused(pane: ReturnType<typeof suggesting>, paste: () => void)
     return 'refused';
   }
   vi.runAllTimers();
-  expect(pane.fork.sent - sent, 'the paste is one op').toBe(1);
+  // One op in the body, and one in each payload doc it writes (a chart's).
+  expect(pane.fork.sent - sent, 'the paste was sent').toBeGreaterThan(0);
   pane.pump();
   expect(pane.fork.closed, 'the DocDO stores the paste').toBe(false);
   expect(pane.unsaved, 'nothing offered back').toEqual([]);

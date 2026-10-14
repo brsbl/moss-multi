@@ -327,7 +327,6 @@ async function storedOrRefused(actor: Actor, ada: Actor, docId: string, paste: (
     return 'refused';
   }
   await settled(actor, docId, 'the paste');
-  expect(await sent(actor, docId) - before, 'the paste is one frame').toBe(1);
   await expect(actor.page.getByText(FORK_CLOSED), 'the suggestion stays open').toHaveCount(0);
   await expect.poll(() => content(ada, docId, 'working'), { message: 'the paste is a pending suggestion' }).not.toBe(working);
   return 'stored';

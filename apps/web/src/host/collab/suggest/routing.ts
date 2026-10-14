@@ -20,7 +20,7 @@ import * as Y from 'yjs';
 import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
 import { charsAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
-import { $admitPaste, $ownedBytes, admitStep, clipboardBound, type UndoStep } from './paste.ts';
+import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type UndoStep } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -201,10 +201,14 @@ function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.
   return { units, start };
 }
 
-/** The pane's own paste handlers and transforms, registered on an editor: a Suggest-mode paste runs them on a copy first. */
-export type PasteStack = (editor: LexicalEditor) => () => void;
+/** A paste the pane could not measure (its paste handlers still loading, or the copy failed): nothing goes in. */
+const UNMEASURED = 'This paste could not be checked against the suggestion limits, so none of it was added. Try again.';
 
-export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork, _options: { pasteStack?: () => PasteStack | null } = {}): () => void {
+/**
+ * `pasteStack`: the pane's own paste handlers and content transforms (paste-stack.ts), which a paste runs on a copy of
+ * the fork first (paste.ts measurePaste); null until they load.
+ */
+export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork, options: { pasteStack?: () => PasteStack | null } = {}): () => void {
   const manager = (): Y.UndoManager | null => (editor as unknown as Record<symbol, Y.UndoManager | undefined>)[UNDO_MANAGER] ?? null;
   const undone: Strike[] = [];
   const redone: Strike[] = [];
@@ -766,22 +770,29 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       $routeRange();
       return false;
     }, P),
-    // A paste (paste.ts): admitted whole before anything changes, or refused with the selection kept. Admitted, it
-    // strikes the selection and Lexical's own paste goes in at its end, in this update: one undo step with the strike.
+    // A paste (paste.ts): measured on a copy of the fork, then admitted whole before anything changes, or refused with
+    // the selection kept. Admitted, it strikes the selection and Lexical's own paste goes in at its end, in this
+    // update: one undo step with the strike.
     editor.registerCommand(PASTE_COMMAND, (event) => {
-      const data = 'clipboardData' in event ? event.clipboardData : 'dataTransfer' in event ? event.dataTransfer : null;
-      const bound = clipboardBound(data);
       const selection = $getSelection();
       const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
-      const notice = $admitPaste(fork, bound, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0);
+      // Over only his own text Lexical's paste replaces it natively; over anything else the routing strikes the
+      // selection and the paste goes in at its end ($routeRange).
+      const native = range !== null && range.body.length === 0 && range.mine.length + range.mineLeaves.length > 0;
+      const stack = options.pasteStack?.() ?? null;
+      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack) : null;
+      const notice = measured === null
+        ? UNMEASURED
+        : $admitPaste(fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0);
       if (notice) {
         event.preventDefault();
         refuseInput(notice);
         return true;
       }
-      // Nothing in it the bound reads (files): the paste may make no step of its own to join.
-      const routed = $routeRange(false, bound > 0);
-      if ((routed === 'none' || routed === 'own') && bound > 0) {
+      // Nothing the copy wrote (files, which land later): the paste may make no step of its own to join.
+      const wrote = (measured ?? 0) > 0;
+      const routed = $routeRange(false, wrote);
+      if ((routed === 'none' || routed === 'own') && wrote) {
         // At a caret, or over his own text only (no strike to join): the paste is its own step, apart from typing
         // just before or after it.
         manager()?.stopCapturing();
