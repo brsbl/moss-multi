@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (193 of 236 planned tasks verified)
+**Overall: 87% done** (206 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 19 / 19 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 13 / 13 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -139,7 +139,15 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-08 — T7.S1 verified: pushing a note with `%%m:` comment markers, images or trailing whitespace now converts in linear-time scans with the same output as moss, so a hostile 2 MB push can no longer stall the server.
 - 2026-10-08 — T7.S2 verified: a push merge now runs on one counted step budget instead of a clock, so a costly or hostile push can no longer stall the server; a drifted push past the budget is refused 409 `push-unverified` with nothing landed, and a degenerate push is refused before the doc's own edits are diffed.
 - 2026-10-08 — T7.S3 verified: search snippets and heading text now strip comment markers, code fences and wiki-links in linear-time scans, so a hostile note can no longer stall search indexing.
+- 2026-10-08 — T8.0 verified: every web bundle now names its client protocol on the doc socket and REST, and the server refuses an older bundle (socket closed 4426, REST 426) so it never writes, showing a prompt to reload instead.
+- 2026-10-08 — T8.4 verified: MIGRATION.md maps each part of moss-multi back onto moss desktop at the pin (vendor seams, bridge namespaces, converter extraction, collab layer, registers, comments, suggestions, history, server model, CLI), and CI fails if any of its file or symbol citations goes stale.
 - 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
+- 2026-10-08 — T8.D verified: the staging deploy pipeline exists and is validated by dry run: `env.staging`, a `deploy-staging.yml` that ships the exact tested `dist`, an `/api/version` check, test hooks answering 404 on staging, `.dev.vars` never uploaded, and a canary that uses a fixed pool of test principals under a request budget.
+- 2026-10-08 — T8.5p verified: `scripts/demo.mjs` builds a demo folder through the real UI on any stack (a launch plan and an every-node note with media, two test people's comment threads with replies and reactions, a peer's and an agent's pending suggestions, named versions and a view link), re-runs without duplicating, and captures the signature shot of a peer's caret and a suggestion beside rich blocks plus a short tour.
+- 2026-10-08 — T8.3a verified: `scripts/security/sweep.mjs` runs the adversarial security checklist (headers, header stripping, existence leaks, revocation, limits) against a production build in CI, an authorization matrix covers every `/api` route, request bodies are capped and app pages refuse foreign framing; docs/SECURITY.md records the results.
+- 2026-10-09 — T8.Ds verified: `deploy-staging.yml` now deploys only a green, same-repository branch CI run whose head is still on its branch, checked by `run-gate.mjs` before any checkout or secret, and the staging canary keeps no trace, screenshot or video, logs only test titles, statuses and durations, and uploads only `requests.json` and that summary.
+- 2026-10-09 — T8.3 verified: the security sweep now runs against staging and passes all 52 checks (headers, header stripping, existence leaks, origin gate, revocation, SSRF, body caps through the edge, rate limits including spoofed client IPs), with the staging column recorded in docs/SECURITY.md.
+- 2026-10-09 — T8.5 verified: `scripts/demo.mjs` builds the demo in one run with every reply and reaction landing, logs what each step added, and checks the signature shot of a peer's caret and a pending suggestion beside rich blocks live before and after capture, retaking it if the frame is wrong.
 - 2026-10-09 — T5.S7 verified: a reviewer's suggestion card now shows a code block edit as its changed line before and after, keeps re-added text at a stretch's end as unchanged, and builds its rows quickly on large suggestions.
 - 2026-10-09 — T5.S4 verified: suggestions and leases now fit inside a bounded share of a note's room, so a busy suggester can no longer fill a note and lock editors out of body and payload edits.
 - 2026-10-09 — T3.S9 verified: a formula with a long run of blank space before a number now imports, saves and feeds search in linear time, matching the same numbers moss does.
@@ -173,6 +181,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-10 — T3.B21 verified: the converter measurement now gates search at the full 2 MB note size for every opener family, fails on any single slow search sample, checks that ordinary search still works after the adversarial bodies, and judges payload memory on settled growth after a warm-up, so its budget verdicts no longer hinge on one noisy sample.
 - 2026-10-10 — T3.B26 verified: a spent answer budget is now kept in the note's storage, so a note server that sleeps and wakes no longer hands viewers or anonymous link holders a fresh budget of full-note encodes.
 - 2026-10-10 — T6.S9 verified: a stranger or viewer who sends a large restore body is now turned away (404 or 403) before the body is read, the restore's write token is charged to the person rather than the agent key, and a revocation, demotion or trash during a slow upload still wins.
+- 2026-10-12 — T8.B1 verified: the security sweep's body caps now count only the Worker's own JSON `too-large` 413, its revocation checks revoke only a socket the server has admitted and require a 4403 or 4402 close, and the authz matrix checks every `/api` route by method as well as path, with the exact refusal status and JSON error.
+- 2026-10-12 — T8.B2 verified: `scripts/demo.mjs` finishes a note an interrupted run left, refuses a second concurrent run through a per-stack lock, checks every node family (including a heading four, an embed pill and a web embed) live and after reload, builds exactly one of each thing it makes, and a CI `demo` job proves resume, first run and duplicate-free rerun.
+- 2026-10-12 — T8.B3 verified: Reload on an outdated note now asks before discarding unsent edits, an access check refused as client-outdated shows Reload instead of retrying, test actors capture screenshots only on loopback, the doc-link checker rejects call statements as declarations and reports citations under a missing root entry, and MIGRATION.md states `notes.getContent` and the at-pin content writers as they are.
 - 2026-10-12 — T5.S6 verified: a note with many open suggestions now checks at most a fixed batch of them per idle alarm, and a wake with no edits since the last check re-checks none, so the idle check stays cheap however many suggestions a note holds.
 - 2026-10-12 — T5.S13 verified: a suggester's refusal count and cooldown, and a connection's no-room window, now survive the note going to sleep and waking, so a hibernation no longer resets the refusal cooldown.
 - 2026-10-12 — T5.S9 verified: previewing, accepting, rejecting or withdrawing a suggestion now first heals a note whose restore settle was missed, refuses held and trashed notes, and answers 503 when the database cannot confirm, so a review never acts on a stale restore state.
@@ -243,10 +254,84 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
 - 2026-10-14 — T7.S6 verified: a note's `assets/` images and videos now travel with `add`, `pull`, `push` and `sync`: a file missing on either side is copied over, neither side is overwritten, a name the server stores differently moves the note's reference with it, and a failed transfer is reported as failed.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
+- 2026-10-14 — T8.R verified: shipping work now sits on the final M7, and a doc create or agent push body is read only after the caller's auth, access and rate token, so an unauthorized or rate-limited sender is refused before any upload is read.
+- 2026-10-15 — T8.Q verified: the shipping work now sits on the current M7, so staging carries M3–M7's media, comment-draft, quota and formula fixes, and the full CI lane is green on the restacked m8.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.Q's checker (8bd12eb, 2026-10-15)
+
+- T8.Q checker P2 (j01-paste-check stall bound still fails intermittently on m8; inherited): full-lane attempts measured 5218 ms against a 5000 ms bound and 5382 ms against a calibrated 5175 ms bound, and the pre-restack m8 head failed the same leg 2 of 4 times, while m7 measures 3.2–3.4 s and a repeat_each=3 dispatch (run 38742030233) passed (Chromium 4101/4356/4132 ms, WebKit about 500 ms); cause not established (runner variance or an m8 slowdown) → profile it under the owning paste task.
+- T8.Q checker P2 (PROGRESS total of 236 planned tasks may be stale): 236 dates from m7, where the M8 row was 0/5; m8's M8 row now has 13 tasks, so the planned total should grow by about 8 once recounted.
+
+### From T8.R's checker (b318c84, 2026-10-14)
+
+- T8.R checker P2 (Add a built-Worker test for create/push admission on a streamed body): doc-body-admission.test.ts runs the real routing, auth and a migrated D1 but fakes the PrincipalDO and DocDO namespaces and flips booleans for 429; add a remote-CI case on the built workerd stack with real rate windows and a slowly streamed body.
+- T8.R checker P2 (SECURITY.md still says /api/feedback has no rate limit): m7 already enforces FEEDBACK_DAILY = 20 per person per day (429 after, covered by write-bounds.test.ts); mark the historical finding at docs/SECURITY.md:55 resolved.
+
+### From T8.B3's checker (fa90832, 2026-10-12)
+
+- T8.B3 checker P2 (B383 path-by-syntax check omits directories ending in '/' and lowercase root-level files): looksLikePath (scripts/ci/doc-links.mjs:156-158) requires a known extension for slash paths and only all-caps .md names at the root, so a citation of a missing `gone/` folder or a missing root `config.json` / `readme.md` is still skipped; MIGRATION.md intentionally cites non-existent folders such as `assets/`, so a fix needs an opt-out for those.
+
+### From T8.B2's checker (f9b4e3c, 2026-10-12)
+
+- T8.B2 checker P2 (stale-lock takeover has a narrow compare-then-unlink race): acquireDemoLock (scripts/demo.mjs:212-213) checks the lock text is unchanged and unlinks in two syscalls, so another run can replace the stale lock in between and have its live lock unlinked, leaving two runs holding the stack.
+- T8.B2 checker P2 (a finished every-node note whose last-line marker was edited would be cleared and repasted): notePlan (e2e/qa/demo.js) treats a note as finished only by its 'Media uploaded from this machine:' line and the every-node note has no later-activity guard, so removing that line makes a rerun clear and repaste its body.
+- T8.B2 checker P2 (the 'live' every-family census runs after navigating back to the note, not right after the paste): everyNode calls openNote, which uses page.goto, so both censuses read a freshly loaded note and a paste-time-only render defect would pass.
+
+### From T8.B1's checker (b1b8119, 2026-10-12)
+
+- T8.B1 checker P2 (closesOnRevoke accepts a socket that closed before the revocation started): openSocket resolves `admitted` and `closed` independently, so a sync frame (or pong) and a 4403/4402 close in the same read both resolve before revoke() runs; record whether the socket was still open when revoke() started, fail if it had already closed, and add the negative control probe(s => s.write(Buffer.concat([SYNC, closeFrame(4403)]))) for the link, agent-key and sign-out legs.
+- T8.B1 checker P2 (an owner's agent key can rename the owner's vault; existing defect, also on m8): ownedVault compares the vault owner with actingUserId, which maps an agent to its owner, so renameVault succeeds for Ada's agent key although A§8 reserves owner-only actions for a signed-in person; refuse agent principals in ownedVault and add PATCH /api/vaults/:vault to AGENT_ADMIN.
+
+### From T8.5's checker (1cbe2ad, 2026-10-09)
+
+- T8.5 checker P2 (the signature check counts whole blocks, not the visible text): inspectSignature in e2e/qa/demo.js joins the full textContent of any block overlapping the view and signatureProblems only checks the strings are present, so a clipped paragraph whose required words are off-screen still passes; horizontal clipping and whether the suggestion is painted are unchecked, and demo.test.mjs never runs the DOM inspector.
+
+### From T8.3's checker (24262e0, 2026-10-09)
+
+- T8.3 checker P2 (staging body-cap probe accepts any 413, not specifically the Worker's JSON 413): off loopback `oversized()` in scripts/security/sweep.mjs returns only the status, so an edge or intermediary 413 would also pass; assert `application/json` and `{"error":"too-large"}`.
+- T8.3 checker P2 (the sweep's reporter is not restricted when run off loopback; Codex P1, downgraded): on staging its failure details, sign-up error text, error.stack and --json output can include response excerpts and the staging hostname (scripts/security/sweep.mjs:96, :325-329, :470-476); CI runs it only against the loopback smoke stack and off loopback only by hand to the operator's terminal, but it should apply the T8.Ds no-trace policy off loopback.
+- T8.3 checker P2 (the spoofed-header sign-in check does not prove which IP the limiter keys on): varying x-forwarded-for and x-real-ip with the same source and email would also pass under ipAddressHeaders ['x-forwarded-for'] (a shared bucket); auth.ts:53 correctly names cf-connecting-ip and auth.test.ts:119-135 covers it, so this is a coverage gap where docs/SECURITY.md:64 claims more than the check shows.
+
+### From T8.3a's checker (d72058b, 2026-10-08)
+
+- T8.3a checker P2 (the authz matrix's completeness check ignores HTTP methods): it matches rows by path only, so PATCH and DELETE /api/folders/:folder/members and HEAD on asset reads have no rows and a regression in only those methods would pass.
+- T8.3a checker P2 (the sweep's revocation socket checks do not wait for the socket to be admitted): the link socket opens alongside the revocation and the agent and sign-out cases sleep 500 ms, and any 44xx close or drop passes, so a handshake refused after revocation also passes; the j09 journeys prove the real behavior.
+- T8.3a checker P2 (several matrix cases count any status of 400 or above as a refusal): the caller-only, viewer-write and agent-admin cases would also pass on 405, 429 or 500; require the exact refusal status and JSON shape.
+- T8.3a checker P2 (the implementer's framing screenshot did not show frame-ancestors working): Chrome's Private Network Access blocked the data: page before frame-ancestors applied; the checker's rerun from a real second origin (localhost framing 127.0.0.1) confirmed the header refuses foreign frames.
+
+### From T8.5p's checker (5a1e2ca, 2026-10-08)
+
+- T8.5p checker P2 (Ben's reaction is missing after a first run): comments runs Ada, Ben, Ada, so Ada's reply on Ben's thread lands only in the last pass and Ben's 🎉 reaction on it is skipped until a second run; add all replies before reactions, or a final Ben pass.
+- T8.5p checker P2 (a run interrupted after the title is saved never finishes the note): the note step treats any note with that title as complete, so an interrupted paste or media upload is skipped on re-run and a later step (comment selection or the video shot) fails.
+- T8.5p checker P2 (no CI test runs the generator end to end): demo.test.mjs covers only the planners, config and step-script compilation; no journey runs buildDemo or a browser step, so a broken selector would pass CI.
+- T8.5p checker P2 (the every-node fixture omits some families): it has no embed pill, no web embed and no heading four, all of which are in j14's family census.
+- T8.5p checker P2 (concurrent runs on one host share a run directory): two invocations against the same stack, even with different --prefix values, overwrite each other's state.json and principals.json and can close each other's browser session; a lock or the prefix in the run id would prevent it.
+
+### From T8.D's checker (aff3e75, 2026-10-08)
+
+- T8.D checker P2 (request budget only partly counts and enforces requests): RequestBudget counts browser-context requests and sockets only, not Node fetch or APIRequestContext traffic (direct note creation, grants.ts invites, denial probes); Actors.principal charges a sign-in even for a cached pooled principal, sign-up and retries are not charged one by one, and the limit is checked only after each test.
+- T8.D checker P2 (canary creates new DocDOs each run): only principals are pooled; the canary journeys create about 12 new notes per run whose DocDO storage is never reclaimed, while A§21 recommends a fixed doc pool too; docs/METHOD.md records the growth but does not bound it.
+- Slop Cop PR #11: canary pool emails are public and squattable (derive identifiers from the secret or pre-provision).
+- Slop Cop PR #11: validate request_budget and idle_seconds in preflight, before any Cloudflare step.
+- T8.Ds checker P2 (explicit screenshots still record off loopback): Actors.checkpoint and fail call page.screenshot() and attach the PNG whatever the screenshot setting; nothing uploads them, but the runner holds them.
+- T8.Ds checker P2 (the gate and the artifact policy are proven by unit and YAML tests only): no remote negative control dispatches deploy-staging.yml with sentinel credentials, since it must not be dispatched before staging is approved.
+
+### From T8.4's checker (a30e669, 2026-10-08)
+
+- T8.4 checker P2 (MIGRATION.md says notes.getContent is the server export, but the bridge stubs it): `createBridge` returns empty content for every known note; the doc should separate the intended route from what exists today.
+- T8.4 checker P2 (the list of notes.update({content}) callers at the pin leaves out the normal save path): CanvasAreaContent's normal save and its conflict-recovery save also call it; the audit should include them or say it applies only after the bound-pane change.
+- T8.4 checker P2 (declares() counts a call at the start of a line as a declaration): the member regex matches any line starting with the identifier and '(', so a bare call such as mkdirSync(...) satisfies a path#Symbol citation and a citation can go stale unnoticed.
+- T8.4 checker P2 (citations under a missing top-level entry are skipped instead of reported): spans are recognized only when their first path component exists at the repo root, so a removed or renamed root-level file or directory silently drops its citations.
+
+### From T8.0's checker (02d9cbc, 2026-10-08)
+
+- T8.0 checker P2 (Reload on an outdated pane discards unacked edits without asking; Codex P1, downgraded): if MIN_CLIENT_PROTOCOL rises while a pane holds unacked offline edits, the session ends `outdated` and Reload calls reloadDocument() → allowUnload(), so the beforeunload guard never fires; unreachable while CLIENT_PROTOCOL = MIN_CLIENT_PROTOCOL = 1.
+- T8.0 checker P2 (a REST 426 before any doc session exists gives no reload prompt): reportOutdated() only ends existing sessions, so an access GET refused 426 maps to 'unavailable' in access.ts and retries; handle with the first real protocol bump.
+- T8.0 checker P2 (bundles from before T8.0 retry on 4426 instead of stopping): their closeAction treats unknown codes as 'retry', so they reconnect with backoff and the connection-lost banner rather than the Reload prompt, never writing; no pre-T8.0 bundle has shipped.
 
 ### From T7.S6's checker (210bbd2, 2026-10-14)
 

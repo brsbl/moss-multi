@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./client-protocol": "./src/client-protocol.ts",
     "./dom-contract": "./src/dom-contract.ts",
     "./html-frame": "./src/html-frame.ts",
     "./limits": "./src/limits.ts",
@@ -13,8 +14,8 @@
     "./retention": "./src/retention.ts",
     "./roles": "./src/roles.ts",
     "./suggest": "./src/suggest.ts",
-    "./title-line": "./src/title-line.ts",
     "./sync": "./src/sync.ts",
+    "./title-line": "./src/title-line.ts",
     "./workspace": "./src/workspace.ts"
   }
 }

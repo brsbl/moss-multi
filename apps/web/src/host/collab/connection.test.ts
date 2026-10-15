@@ -14,7 +14,7 @@ describe('connection truth', () => {
   it.each([1001, 1006, 1011, 1012, 1013, 4408, 4420])('keeps buffered edits on transient close %s', (code) => {
     expect(closeAction(code)).toEqual({ kind: 'retry' });
   });
-  it.each([[4401, 'session-ended'], [4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4429, 'conn-limit']] as const)(
+  it.each([[4401, 'session-ended'], [4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4426, 'outdated'], [4429, 'conn-limit']] as const)(
     'stops designed refusal %s', (code, reason) => expect(closeAction(code)).toEqual({ kind: 'terminal', reason }),
   );
   it('rechecks a changed grant and rebinds a refused write', () => {

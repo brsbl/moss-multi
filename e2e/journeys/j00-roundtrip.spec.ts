@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
-import { cookieHeader, openDocClient, probeSocket, type DocClient } from '../lib/doc-client.ts';
+import { cookieHeader, openDocClient, probeSocket, PROTOCOL_QUERY, type DocClient } from '../lib/doc-client.ts';
 import { induce } from '../lib/hibernate.ts';
 import { signIn } from '../lib/principals.ts';
 import { expect, test } from '../lib/test.ts';
@@ -127,7 +127,7 @@ test('j00-roundtrip: a page on another origin opens the doc socket with the sign
   // Ada's browser: her session cookie, a tab on the app, and a tab on a page elsewhere. The forged ?share= token
   // tells the refusals apart: a socket that arrived without the cookie would close 4404, not 4401.
   const victim = await actors.session(ada);
-  const target = { url: `${stack.baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${docId}?share=${randomUUID()}`, secret };
+  const target = { url: `${stack.baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${docId}?share=${randomUUID()}&${PROTOCOL_QUERY}`, secret };
   const elsewhere = await servePage(new URL(stack.baseUrl).hostname);
   try {
     const home = await victim.context.newPage();

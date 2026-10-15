@@ -11,7 +11,7 @@ import * as Y from 'yjs';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
 import { forged, raw } from '../../packages/sync/test/harness/raw-frames.ts';
-import { cookieHeader, openDocClient } from '../lib/doc-client.ts';
+import { cookieHeader, openDocClient, PROTOCOL_QUERY } from '../lib/doc-client.ts';
 import { signIn } from '../lib/principals.ts';
 import { expect, test } from '../lib/test.ts';
 
@@ -45,7 +45,7 @@ function syncMessage(kind: 1 | 2, update: Uint8Array): Uint8Array {
 
 /** Opens a doc socket, sends `frame` once the server has spoken, and resolves with the close code (null: still open after 3 s). */
 function sendRaw(baseUrl: string, docId: string, cookie: string, frame: Uint8Array): Promise<number | null> {
-  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?_pk=raw-${randomUUID()}`;
+  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${PROTOCOL_QUERY}&_pk=raw-${randomUUID()}`;
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, { headers: { origin: baseUrl, cookie } });
     let sent = false;

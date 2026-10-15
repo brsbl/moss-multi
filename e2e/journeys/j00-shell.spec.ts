@@ -309,7 +309,9 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
 });
 
 /** "+ Note", then the new note's id once its pane is live (its title binds in T1.4); `known` are the notes opened before. */
-async function openNewNote(actor: Actor, known: string[] = []): Promise<string> {
+async function openNewNote(actor: Actor, notes: string[] = []): Promise<string> {
+  // A canary pool principal reopens on its last-viewed note (A§4.2), so a pane open before the click is never the new one.
+  const known = [...notes, ...(await ui.paneIds(actor))];
   await actor.page.getByRole('button', { name: 'Create new note' }).click();
   const live = actor.page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`);
   let docId = '';

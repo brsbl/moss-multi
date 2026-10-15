@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { CLIENT_PROTOCOL, OUTDATED_ERROR, PROTOCOL_HEADER, PROTOCOL_PARAM } from '@moss-multi/protocol/client-protocol';
 import type { Build } from '../provenance.ts';
 import { routeRequest, type PartyAuth, type RouteDeps } from './route.ts';
 
@@ -37,6 +38,8 @@ function harness(auth: PartyAuth = { ok: true, headers: TRUSTED }) {
   const route = (path: string, init?: RequestInit) => routeRequest(new Request(`${ORIGIN}${path}`, init), deps);
   return { deps, forwarded, route };
 }
+
+const CURRENT = `${PROTOCOL_PARAM}=${CLIENT_PROTOCOL}`;
 
 const UPGRADE = {
   upgrade: 'websocket',
@@ -78,13 +81,13 @@ describe('/parties', () => {
 
   it('authorizes the room partyserver will route to', async () => {
     const { deps, route } = harness();
-    await route('/parties/doc-d-o/d_123?share=tok');
+    await route(`/parties/doc-d-o/d_123?share=tok&${CURRENT}`);
     expect(deps.authenticateParty).toHaveBeenCalledWith(expect.any(Request), 'd_123');
   });
 
   it('strips client x-moss-* and x-partykit-* headers and sets the trusted ones', async () => {
     const { forwarded, route } = harness();
-    const response = await route('/parties/doc-d-o/d_123', {
+    const response = await route(`/parties/doc-d-o/d_123?${CURRENT}`, {
       headers: {
         ...UPGRADE,
         'x-moss-principal': 'p_forged',
@@ -109,20 +112,74 @@ describe('/parties', () => {
 
   it('keeps Upgrade and Sec-WebSocket-* through the clone', async () => {
     const { forwarded, route } = harness();
-    await route('/parties/doc-d-o/d_123?share=tok', { headers: UPGRADE });
+    await route(`/parties/doc-d-o/d_123?share=tok&${CURRENT}`, { headers: UPGRADE });
     expect(forwarded).toHaveLength(1);
     const request = forwarded[0];
     for (const [name, value] of Object.entries(UPGRADE)) expect(request.headers.get(name)).toBe(value);
-    expect(request.url).toBe(`${ORIGIN}/parties/doc-d-o/d_123?share=tok`);
+    expect(request.url).toBe(`${ORIGIN}/parties/doc-d-o/d_123?share=tok&${CURRENT}`);
     expect(request.method).toBe('GET');
   });
 
   it('accepts and closes a denied upgrade instead of refusing the handshake', async () => {
     const { deps, route } = harness({ ok: false, code: 4404 });
-    const response = await route('/parties/doc-d-o/d_missing', { headers: UPGRADE });
+    const response = await route(`/parties/doc-d-o/d_missing?${CURRENT}`, { headers: UPGRADE });
     expect(deps.refuseSocket).toHaveBeenCalledWith(4404);
     expect(response.headers.get('x-close-code')).toBe('4404');
     expect(deps.routeParty).not.toHaveBeenCalled();
+  });
+});
+
+describe('client protocol (registers.md rule 10)', () => {
+  it.each(['', `?${PROTOCOL_PARAM}=0`, `?${PROTOCOL_PARAM}=old`, `?share=tok&${PROTOCOL_PARAM}=`])(
+    'closes a doc socket from an older bundle 4426 (%s) without authenticating or waking the DocDO',
+    async (query) => {
+      const { deps, route } = harness();
+      const response = await route(`/parties/doc-d-o/d_123${query}`, { headers: UPGRADE });
+      expect(deps.refuseSocket).toHaveBeenCalledWith(4426);
+      expect(response.headers.get('x-close-code')).toBe('4426');
+      expect(deps.authenticateParty).not.toHaveBeenCalled();
+      expect(deps.routeParty).not.toHaveBeenCalled();
+    },
+  );
+
+  it('answers an older bundle\'s non-upgrade party request 426', async () => {
+    const { deps, route } = harness();
+    const response = await route('/parties/doc-d-o/d_123');
+    expect(response.status).toBe(426);
+    expect(await response.json()).toMatchObject({ error: OUTDATED_ERROR });
+    expect(deps.routeParty).not.toHaveBeenCalled();
+  });
+
+  it('admits the current protocol', async () => {
+    const { deps, route } = harness();
+    const response = await route(`/parties/doc-d-o/d_123?${CURRENT}`, { headers: UPGRADE });
+    expect(response.headers.get('x-handler')).toBe('party');
+    expect(deps.refuseSocket).not.toHaveBeenCalled();
+  });
+
+  it.each(['/api/docs', '/api/auth/get-session', '/api/workspace/ws'])(
+    'refuses %s from an older bundle 426 before its handler', async (path) => {
+      const { deps, route } = harness();
+      const response = await route(path, { headers: { [PROTOCOL_HEADER]: '0' } });
+      expect(response.status).toBe(426);
+      expect(response.headers.get('content-type')).toMatch(/^application\/json/);
+      expect(await response.json()).toMatchObject({ error: OUTDATED_ERROR });
+      expect(response.headers.get('x-handler')).toBeNull();
+      expect(deps.handleApi).not.toHaveBeenCalled();
+      expect(deps.handleAuth).not.toHaveBeenCalled();
+      expect(deps.handleWorkspaceSocket).not.toHaveBeenCalled();
+    },
+  );
+
+  it('serves REST from the current bundle and from a client that sends no protocol (the CLI, agents)', async () => {
+    const { route } = harness();
+    expect((await route('/api/docs', { headers: { [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL) } })).headers.get('x-handler')).toBe('api');
+    expect((await route('/api/docs')).headers.get('x-handler')).toBe('api');
+  });
+
+  it('always answers /api/version, so an older bundle can learn what is deployed', async () => {
+    const response = await harness().route('/api/version', { headers: { [PROTOCOL_HEADER]: '0' } });
+    expect(response.status).toBe(200);
   });
 });
 

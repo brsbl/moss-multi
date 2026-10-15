@@ -2,6 +2,7 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { expect, test, ui } from '../lib/test.ts';
+import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '../../packages/protocol/src/client-protocol.ts';
 import { grantDoc } from '../lib/grants.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 const chips = (actor: Actor) => actor.page.locator('[data-presence-client]');
@@ -89,7 +90,7 @@ test('j01 presence: a spoofed awareness name never reaches a peer @p:col-2', asy
   const cookie = (await ben.context.cookies()).map(c => `${c.name}=${c.value}`).join('; ');
   const doc = new Y.Doc();
   const provider = new YProvider(new URL(stack.baseUrl).host, id, doc, {
-    party: 'doc-d-o', connect: false, disableBc: true,
+    party: 'doc-d-o', connect: false, disableBc: true, params: { [PROTOCOL_PARAM]: String(CLIENT_PROTOCOL) },
     WebSocketPolyfill: class extends WebSocket { constructor(url: string) { super(url, { headers: { cookie, origin: stack.baseUrl } }); } } as unknown as typeof globalThis.WebSocket,
   });
   try {

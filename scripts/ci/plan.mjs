@@ -15,10 +15,10 @@ const LONG_SHARD_MINUTES = 25;
 const LANES = ['auto', 'checks', 'e2e', 'full', 'parity', 'viewer'];
 const BROWSER_INPUTS = { both: BROWSERS, chromium: ['chromium'], webkit: ['webkit'] };
 
-// BUILDPLAN.md feeds trace.mjs, e2e/ markdown may feed the suite and vendor/ markdown is drift-checked,
-// so none of them is docs-only.
+// BUILDPLAN.md feeds trace.mjs, MIGRATION.md's citations are checked by doc-links.test.mjs, e2e/ markdown may feed
+// the suite and vendor/ markdown is drift-checked, so none of them is docs-only.
 export function isDocsOnlyPath(path) {
-  if (path === 'BUILDPLAN.md' || path.startsWith('e2e/') || path.startsWith('vendor/')) return false;
+  if (path === 'BUILDPLAN.md' || path === 'MIGRATION.md' || path.startsWith('e2e/') || path.startsWith('vendor/')) return false;
   return path.startsWith('docs/') || path.endsWith('.md');
 }
 
@@ -133,6 +133,16 @@ function schedulePlan(journeys, headSha, lastNightlySha) {
   return lanes({ build: true, browsers: BROWSERS }, 'nightly @slow legs', { slow: 'only' });
 }
 
+// The staging canary's rehearsal (T8.D) rides a Chromium journey run: every full lane, and a grep naming the canary.
+function canaryPlanned(plan) {
+  return plan.browsers.includes('chromium') && plan.slow !== 'only' && (!plan.grep || /canary|@staging/.test(plan.grep));
+}
+
+// The demo generator's smoke (T8.B2) rides the same runs, and a grep naming the demo.
+function demoPlanned(plan) {
+  return plan.browsers.includes('chromium') && plan.slow !== 'only' && (!plan.grep || /demo/.test(plan.grep));
+}
+
 // Pure: the event name, its payload, the changed paths (null when unknown), CI_DEGRADED, the journey files and,
 // nightly, main's head and the last green nightly's head decide the lanes and shards.
 export function computePlan({ event, payload = {}, changedFiles = null, degraded = false, journeys = [], headSha = '', lastNightlySha = '', closedMilestone = null }) {
@@ -148,7 +158,7 @@ export function computePlan({ event, payload = {}, changedFiles = null, degraded
     const milestoneExit = event === 'pull_request' && !pr?.draft && pr?.base?.ref === 'main' && /^m\d+$/.test(pr?.head?.ref ?? '');
     if (!milestoneExit && plan.traceMilestone !== null) plan.traceMilestone = Math.min(plan.traceMilestone, closedMilestone);
   }
-  return { ...plan, shards: shardsFor(plan, journeys) };
+  return { ...plan, canary: canaryPlanned(plan), demo: demoPlanned(plan), shards: shardsFor(plan, journeys) };
 }
 
 export function toOutputs(plan) {
@@ -161,6 +171,8 @@ export function toOutputs(plan) {
       `macos=${plan.macos}`,
       `parity=${plan.parity}`,
       `viewer=${plan.viewer}`,
+      `canary=${Boolean(plan.canary)}`,
+      `demo=${Boolean(plan.demo)}`,
       `grep=${plan.grep}`,
       `repeat=${plan.repeat}`,
       `slow=${plan.slow}`,
@@ -194,6 +206,8 @@ export function ciOk(needs) {
     editor: Boolean(plan.viewer),
     // The moss-editor-host artifact builds whenever the checks run.
     'editor-host': Boolean(plan.checks),
+    canary: Boolean(plan.canary),
+    demo: Boolean(plan.demo),
   };
   const problems = [];
   for (const [job, planned] of Object.entries(expected)) {

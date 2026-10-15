@@ -42,7 +42,7 @@ export type ConnectionState = (typeof CONNECTION_STATES)[number];
 
 /** On the pane. */
 export const TERMINAL_REASON_ATTR = 'data-terminal-reason';
-export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit'] as const;
+export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit', 'outdated'] as const;
 export type TerminalReason = (typeof TERMINAL_REASONS)[number];
 
 /** The reserved notice band under each pane's top bar (A§10.5): in flow, empty and zero-height until it has news. */

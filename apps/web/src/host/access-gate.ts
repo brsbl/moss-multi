@@ -1,14 +1,16 @@
 // The gate in front of a doc or folder route (A§4.2): asks once per document load whether the caller may open it.
 // Signed out with no link goes to /login?next=; a transient failure retries in place (R10); a denial renders the one
-// denial page, so moss never mounts behind it.
+// denial page, so moss never mounts behind it. A bundle the server refuses as outdated (registers.md rule 10), on this
+// ask or any earlier request, stops asking and offers a reload.
 import { useEffect, useRef, useState } from 'react';
 import { ACCESS_RETRY_MS } from './access.ts';
 import { setAppState } from './app-state.ts';
 import { LOGIN_PATH } from './auth-state.ts';
+import { clientOutdated, onOutdated } from './client-protocol.ts';
 import { leaveTo } from './navigation.ts';
 
-export type Gate = 'asking' | 'degraded' | 'open' | 'denied';
-export type GateAnswer = { kind: 'open' | 'denied' | 'signed-out' | 'unavailable' };
+export type Gate = 'asking' | 'degraded' | 'open' | 'denied' | 'outdated';
+export type GateAnswer = { kind: 'open' | 'denied' | 'signed-out' | 'outdated' | 'unavailable' };
 
 /** `ask` is a module function of the id, so the gate asks again only when the id changes. */
 export function useAccessGate(id: string, ask: (id: string) => Promise<GateAnswer>): { gate: Gate; retry: () => void } {
@@ -16,10 +18,16 @@ export function useAccessGate(id: string, ask: (id: string) => Promise<GateAnswe
   const wake = useRef<() => void>(() => undefined);
   useEffect(() => {
     let stopped = false;
+    // An outdated refusal from any request ends a retry wait at once.
+    const stopWaiting = onOutdated(() => wake.current());
     void (async () => {
       for (let attempt = 0; !stopped; attempt += 1) {
-        const answer = await ask(id);
+        const answer = clientOutdated() ? { kind: 'outdated' as const } : await ask(id);
         if (stopped) return;
+        if (answer.kind === 'outdated' || clientOutdated()) {
+          setGate('outdated');
+          return;
+        }
         if (answer.kind === 'signed-out') {
           leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`);
           return;
@@ -42,6 +50,7 @@ export function useAccessGate(id: string, ask: (id: string) => Promise<GateAnswe
     })();
     return () => {
       stopped = true;
+      stopWaiting();
       wake.current();
     };
   }, [id, ask]);

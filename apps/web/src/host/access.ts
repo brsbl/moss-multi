@@ -2,6 +2,7 @@
 // pane gates editing on it and the top bar offers Share on it; both read roles.ts, as the server does.
 import { isRole, type Role } from '@moss-multi/protocol/roles';
 import { useEffect, useSyncExternalStore } from 'react';
+import { refusedAsOutdated, reportOutdated } from './client-protocol.ts';
 import { heldRead } from './leave.ts';
 
 /** A doc's listing fields as `GET /api/docs/:id` returns them (epoch ms). */
@@ -19,6 +20,8 @@ export type DocAnswer =
   /** Missing, trashed or not the caller's: the API cannot tell them apart, and neither does the page. */
   | { kind: 'denied' }
   | { kind: 'signed-out' }
+  /** The server refuses this bundle (426 client-outdated): asking again cannot help, only a reload can. */
+  | { kind: 'outdated' }
   /** A transient failure: ask again, never conclude anything (R10). */
   | { kind: 'unavailable' };
 
@@ -67,6 +70,10 @@ async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocA
     }), async (response): Promise<DocAnswer> => {
       if (response.status === 404) return { kind: 'denied' };
       if (response.status === 401) return { kind: 'signed-out' };
+      if (await refusedAsOutdated(response)) {
+        reportOutdated();
+        return { kind: 'outdated' };
+      }
       if (!response.ok) return { kind: 'unavailable' };
       const body = (await response.json()) as { role?: unknown; doc?: AccessibleDoc };
       if (!isRole(body.role) || !body.doc) return { kind: 'unavailable' };
@@ -79,7 +86,7 @@ async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocA
 }
 
 /** `GET /api/folders/:id` for the folder landing (A§4.2): whether the caller, or the link it holds, opens the folder. */
-export async function askFolderAccess(folderId: string, fetcher: typeof fetch = (input, init) => fetch(input, init)): Promise<{ kind: 'open' | 'denied' | 'signed-out' | 'unavailable' }> {
+export async function askFolderAccess(folderId: string, fetcher: typeof fetch = (input, init) => fetch(input, init)): Promise<{ kind: 'open' | 'denied' | 'signed-out' | 'outdated' | 'unavailable' }> {
   const share = shareParam();
   try {
     return await heldRead((signal) => fetcher(`/api/folders/${encodeURIComponent(folderId)}`, {
@@ -89,6 +96,10 @@ export async function askFolderAccess(folderId: string, fetcher: typeof fetch = 
     }), async (response) => {
       if (response.status === 404) return { kind: 'denied' as const };
       if (response.status === 401) return { kind: 'signed-out' as const };
+      if (await refusedAsOutdated(response)) {
+        reportOutdated();
+        return { kind: 'outdated' as const };
+      }
       return { kind: response.ok ? 'open' as const : 'unavailable' as const };
     }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {

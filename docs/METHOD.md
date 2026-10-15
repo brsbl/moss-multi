@@ -43,6 +43,7 @@ Read this with PRODUCT.md, your BUILDPLAN entry and the A§ it cites, before wri
 - Hibernatable sockets must reply with `connection.close()` in `onClose` at the pinned 2025 compatibility date; otherwise the client remains CLOSING after sign-out. [T2.1]
 - `new Request(request, {headers})` drops the WebSocket upgrade headers; clone without init, then set headers. [L§4.7]
 - One launcher kills by process group; a "vite dev" pattern never matched "vite.js dev" and three rounds tested stale code. Check `/api/version` before any gate. [L§4.18]
+- Every `/api` and `/api/auth` body is capped in `worker/route.ts` before a handler reads it (1 MiB of JSON; T8.3a). A route whose body may be larger (a whole document, a restore base, an upload) is exempted in `bodyCapFor`, and then it must refuse on the declared length, admit (auth, access, rate token) and only then read with `readCapped`, as `docs.ts` and `push.ts` do.
 - `wrangler dev` needs `--inspector-port P+1000` (9229 collides across stacks); `vite preview` binds only `[::1]`. [L§5.3; L§4.18]
 - SP1 (T0.3): React 19.3.0, Start 1.168.32, Vite 8.1.5, plugin-react 6.0.2 and Tailwind 3.4.19 through PostCSS build and serve the Worker, so no React 19.2.8 fallback is needed. T0.5a: moss's aliases resolve in the client build and in CSS `@import` through `resolve.alias` in `apps/web/vite.config.ts`; no resolve transforms are needed.
 - Host code imports moss through `@moss-desktop/*`, declared in `apps/web/src/host/moss-modules.d.ts`, so apps/web's tsc stops at the vendor boundary; `tailwind.config.ts` stays out of tsconfig because moss's config imports its theme state. The moss chunk sits behind `import.meta.env.SSR` in `MossAppHost`, so the Worker bundle never carries it.
@@ -307,6 +308,18 @@ Measured in CI by `e2e/editor/load.spec.ts` (and `e2e/viewer/load.spec.ts`) on t
 - A negative probe needs a positive control: the slash-menu probes (`[role=option]`) matched nothing at all until a leg checked them against a command the menu shows. [T0.P]
 - Journeys import `test`, `expect` and `ui` from `e2e/lib/test.ts` only; its auto fixture checks the 9 invariants on every actor after every test. Declare intended exceptions on the actor (`expectHttp`, `expectReconnects`, `declareRemount`, `actors.solo(reason)`), never by loosening a detector. Typed strings must be distinctive (never a substring of other text in the field), since invariant 7 counts exact occurrences.
 - A new detector or invariant ships with a fault fixture in `e2e/selftest/fixtures/faults/` that only it flags.
+
+## Staging deploy (T8.D)
+
+- `deploy-staging.yml` ships the tested `web-dist` artifact, never a rebuild ([docs/DEPLOY.md](DEPLOY.md)). The tested dist's `server/wrangler.json` is a redirected config, which takes no `--env`, so `scripts/deploy/staging-config.mjs` lays `env.staging` over it. Its keys are every key a `CLOUDFLARE_ENV=staging` build changes (vite-plugin 1.46.0). A new key in `env.staging` goes into `OVERLAY_KEYS` in the same commit. The baked provenance `env` stays `ci` on staging; `bundleHash` is the proof.
+- The SSR 404 differs per response in its CSP nonce and the router's dehydrated timestamp, so "the same 404 as an unknown route" compares status, type and the document with those removed (`comparable` in `scripts/deploy/assert-deployed.mjs`).
+- A canary state (`scripts/deploy/canary-state.mjs`) turns the journeys' stack into a Worker with no hooks. `actors.principal(label)` returns the fixed pool principal `canary-<label>@example.invalid`, which signs in once per run, so the canary stays under the 10 sign-ins a minute that staging allows. Every Worker request counts against the run's budget (`e2e/lib/budget.ts`); `/assets/` does not invoke the Worker.
+- Pool principals keep state across runs. A canary leg must not depend on a fresh account: it creates what it reads, and it restores what it changes (the j00 theme leg ends on Light).
+- **DO storage growth review.** Soft delete never calls `deleteAll()`, so no DocDO, its update log or its versions is ever reclaimed. A Worker rename would orphan all of it (A§21). [L§4.7]
+  - Staging's growth is the canary's. A run creates about 12 notes, so about 12 DocDOs, each a few short paragraphs. The pool's three PrincipalDOs and SearchDO('global') are reused.
+  - Per note, versions are capped (A§14) and the state is capped, so each canary DocDO stays small.
+  - Each run adds about 12 rows to the pool owners' sidebars, and adds D1 sessions that expire.
+  - Review the growth when the Cloudflare dashboard shows Durable Object storage past 1 GB, or `canary-ada` past 1,000 notes. Either is a decision for the owner: purge with an explicit `deleteAll()` sweep, or move to fresh pool labels.
 
 ## Environment
 

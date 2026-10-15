@@ -757,6 +757,20 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** demo notes built through the UI in a test account on staging (R8), with live comments and pending suggestions; a share link to the demo vault posted with the staging URL so the owner can open it signed in as themselves; the signature shot: a peer's cursor and a suggestion in a long sentence beside rich nodes. **Done:** green.
 
 **Exit criteria:** every journey passes on the deployed build; staging `/api/version` equals the tested bytes; the critic passes on staging; the signature shot and demo link are posted inline.
+- **M8 coordinator notes** (2026-10-08). The owner said staging credentials come **later**: build everything that does not need the Cloudflare account now, then ask before deploying.
+  - **T8.0 (rule 10):** the DocDO refuses bundles that predate payload docs, plus a general minimum-client-version gate.
+  - **T8.D:** the deploy pipeline (T1.10 plus T8.1 hygiene), validated by dry run: `env.staging`, `deploy-staging.yml` deploying the exact tested `dist`, the `/api/version` assertion, test hooks returning 404, `.dev.vars` never uploaded, a fixed principal pool and a request budget.
+  - **T8.Ds** (Slop Cop P1s, PR #11): `deploy-staging.yml` gates the CI run with its own `run-gate.mjs` (same-repository branch run of ci.yml, green, head on its branch) before checking out the run's commit or reaching a secret; the canary records no trace, screenshot or video off loopback, its run log prints only titles, statuses and durations, and it uploads only `requests.json` and a title, status and duration summary.
+  - **T8.4:** MIGRATION.md.
+  - **T8.5p:** a demo-content and signature-shot generator that runs against any stack.
+  - **T8.3a:** an adversarial sweep against a local production build.
+  - **T8.B1** (backlog B364-B367): the sweep's body caps count only the Worker's JSON `too-large` 413, and its revocation legs revoke only an admitted socket (a sync frame, or a workspace `pong`) and require 4403 or 4402; the authz matrix checks completeness by method and path (folder-member PATCH and DELETE, asset HEAD, preview GET) and each caller-only, viewer and agent-key refusal's status and JSON error.
+  - **T8.B2** (backlog B370-B373): the demo generator finishes a note an interrupted run left (the paste, then each missing media file), takes an O_EXCL per-stack run lock with stale-lock recovery, requires every node family including a heading four, an embed pill and a web embed live and after reload, checks it built exactly one of each thing it makes, and runs in a CI `demo` job (resume after each interruption, a first run, a duplicate-free rerun).
+  - **T8.B3** (backlog B378, B380-B385): the outdated banner's Reload asks before discarding unacked edits, an access check refused as client-outdated shows Reload instead of retrying, the actors capture screenshots only on loopback, doc-links rejects call statements as declarations and checks paths under a missing root, and MIGRATION.md states `notes.getContent` and the at-pin content writers as they are.
+  - **T8.R** (restack, 2026-10-14): m8 merged onto the final m7 keeping both sides; the Worker body cap no longer undercuts a lower layer's own caps (create and push at `CREATE_BODY_MAX_BYTES`, a version restore left to its `RESTORE_BODY_MAX_BYTES`), `deploy-staging.yml` stays byte-identical to main's. **Done:** the full lane green on the m8 head.
+  - **T8.Q** (restack, 2026-10-15): m8 merged onto the current m7 (m3-m7's media, comment-draft, quota and formula fixes) keeping both sides; e2e sign-in keeps the canary pool's one session per run and resends a POST wrangler's proxy lost; `deploy-staging.yml` stays byte-identical to main's. **Done:** the full lane green on the m8 head.
+  - **After credentials:** T1.10/T8.2 run the suite on staging, T8.3 repeats the sweep on staging, and T8.5 builds the demo on staging.
+  - **Rules:** CLI QA uses `MOSS_MULTI_NO_OPEN=1`. Test principals only. Credentials only through `bb secret request` into `/Users/brsbl/.config/moss-multi/cloudflare.env`, never printed or read by agents.
 
 ---
 

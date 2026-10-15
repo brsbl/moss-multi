@@ -8,9 +8,13 @@ import { $createParagraphNode, $createTextNode, $getRoot, type ElementNode } fro
 import WebSocket from 'ws';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
+import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '../../packages/protocol/src/client-protocol.ts';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
 import { base64ToBytes, PAYLOAD_MESSAGE, type ServerEvent } from '../../packages/protocol/src/sync.ts';
 import type { SessionCookie } from './principals.ts';
+
+/** Every doc socket names the client protocol it speaks, as a browser bundle does (rule 10). */
+export const PROTOCOL_QUERY = `${PROTOCOL_PARAM}=${CLIENT_PROTOCOL}`;
 
 export const cookieHeader = (cookies: SessionCookie[]): string => cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
@@ -80,6 +84,7 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
     connect: false,
     disableBc: true,
     WebSocketPolyfill: socketWith(baseUrl, cookie) as unknown as typeof globalThis.WebSocket,
+    params: { [PROTOCOL_PARAM]: String(CLIENT_PROTOCOL) },
   });
   // This client holds no decorator payloads (A§10.10); their frames ride the same socket and are ignored here.
   provider.messageHandlers[PAYLOAD_MESSAGE] = () => {};
@@ -141,7 +146,7 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
 
 /** Opens a doc socket and reports whether the handshake completed and the close code (1006 when it was refused). */
 export function probeSocket(baseUrl: string, docId: string, cookie: string | null): Promise<{ opened: boolean; code: number }> {
-  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}`;
+  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${PROTOCOL_QUERY}`;
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, { headers: upgradeHeaders(baseUrl, cookie) });
     let opened = false;
@@ -193,7 +198,7 @@ export async function holdDocSockets(baseUrl: string, docId: string, cookie: str
   };
   try {
     for (let i = 0; i < n; i += 1) {
-      const socket = new WebSocket(`${url}?_pk=held-${i}-${randomUUID()}`, { headers: upgradeHeaders(baseUrl, cookie) });
+      const socket = new WebSocket(`${url}?${PROTOCOL_QUERY}&_pk=held-${i}-${randomUUID()}`, { headers: upgradeHeaders(baseUrl, cookie) });
       socket.on('error', noop);
       socket.on('close', () => closed.add(socket));
       sockets.push(socket);
