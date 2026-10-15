@@ -8,6 +8,7 @@ import { replaceNumericLiterals } from '@moss-desktop/renderer/editor/utils/form
 import { FIXTURES } from './fixtures.ts';
 
 // NUMERIC_LITERAL_REGEX in packages/desktop/src/renderer/editor/utils/formula-runtime.ts @ 762abb777.
+// eslint-disable-next-line regexp/no-super-linear-move -- moss's pattern is the golden reference
 const MOSS_NUMERIC_LITERAL_REGEX = /(\$)?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*([kKmMbB]?)(%?)/g;
 
 type Groups = [full: string, currency: string | undefined, rawNumber: string, unit: string, percent: string];

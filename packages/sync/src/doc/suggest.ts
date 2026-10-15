@@ -270,8 +270,11 @@ export interface IngestOptions {
    * serve (unknown or withheld), whose structs are left to accept. The in-memory payload docs by default.
    */
   payloadDoc?: (id: string) => Y.Doc | undefined;
-  /** Hears each record ingest creates, once its write landed; `continues` names the accepted record it follows. */
-  onCreated?: (id: string, author: string, continues?: string) => void;
+  /**
+   * Hears each record ingest creates, once its write landed; `continues` names the accepted record it follows, and
+   * `connection` is the creating suggester's.
+   */
+  onCreated?: (id: string, author: string, continues: string | undefined, connection: string) => void;
 }
 
 /** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
@@ -468,7 +471,7 @@ export class SuggestIngest {
       patchMeta(this.doc, target.id, { updatedAt: now, clients: [...new Set([...current.clients, ...meta.from.keys()])] });
     });
     placed();
-    if (target.create) this.options.onCreated?.(target.id, who.id, target.continues);
+    if (target.create) this.options.onCreated?.(target.id, who.id, target.continues, who.connection);
     this.#grow(target.id, update.byteLength);
     this.#bind(who, target, now);
     for (const lease of leases) {
@@ -497,7 +500,7 @@ export class SuggestIngest {
       partsOf(this.doc, target.id).push([stored]);
       patchMeta(this.doc, target.id, { updatedAt: now });
     });
-    if (target.create) this.options.onCreated?.(target.id, who.id, target.continues);
+    if (target.create) this.options.onCreated?.(target.id, who.id, target.continues, who.connection);
     this.#grow(target.id, bytes);
     this.#bind(who, target, now);
     return { ok: true, record: target.id, requested: record, doc: BODY_DOC, sv: this.#sv(target.id, BODY_DOC), parts: [part.id] };

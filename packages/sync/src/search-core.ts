@@ -6,23 +6,24 @@ import { slug } from '@moss-multi/core/filenames';
 export const SEARCH_DO_NAME = 'global';
 
 /**
- * The inside of each `[[Target]]`, `[[Target|noteId]]`, `[[Target#Heading]]`, never an embed (`![[img.png]]`): what
- * `/(?<!!)\[\[([^\]]+)\]\]/g` captures, scanned in linear time, since a run of `[` with no `]` makes that regex quadratic.
+ * The contents of `[[Target]]`, `[[Target|noteId]]`, `[[Target#Heading]]`; never an embed (`![[img.png]]`). What
+ * `/(?<!!)\[\[([^\]]+)\]\]/g` matched, in one pass: a start whose first `]` doesn't close the link can't be followed by
+ * one that does before that `]`, so the scan resumes after it (docs/METHOD.md).
  */
-function* wikiLinkContents(body: string): Generator<string> {
-  let close = -1;
-  for (let i = body.indexOf('[['); i !== -1; ) {
-    if (i > 0 && body[i - 1] === '!') {
-      i = body.indexOf('[[', i + 1);
+export function* wikiLinkContents(body: string): Generator<string> {
+  let at = body.indexOf('[[');
+  while (at !== -1) {
+    if (at > 0 && body[at - 1] === '!') {
+      at = body.indexOf('[[', at + 1);
       continue;
     }
-    if (close < i + 2) close = body.indexOf(']', i + 2);
+    const close = body.indexOf(']', at + 2);
     if (close === -1) return;
-    if (close > i + 2 && body[close + 1] === ']') {
-      yield body.slice(i + 2, close);
-      i = body.indexOf('[[', close + 2);
+    if (close > at + 2 && body[close + 1] === ']') {
+      yield body.slice(at + 2, close);
+      at = body.indexOf('[[', close + 2);
     } else {
-      i = body.indexOf('[[', i + 1);
+      at = body.indexOf('[[', close + 1);
     }
   }
 }
@@ -45,8 +46,8 @@ export const wikiKey = (raw: string): string => slug(raw);
  */
 export function extractWikiLinks(body: string): string[] {
   const out = new Set<string>();
-  for (const inside of wikiLinkContents(body)) {
-    const content = inside.trim();
+  for (const link of wikiLinkContents(body)) {
+    const content = link.trim();
     const pipe = content.lastIndexOf('|');
     const primary = pipe >= 0 ? content.slice(0, pipe) : content;
     const suffix = pipe >= 0 ? content.slice(pipe + 1).trim() : '';
@@ -69,54 +70,71 @@ export function buildFtsMatch(query: string): string | null {
   return tokens.length === 0 ? null : tokens.map((token) => `"${token}"*`).join(' ');
 }
 
-/**
- * moss's snippet cleaning (ipc-handlers notes:search at the pin): structure out, inline markdown kept for NoteCard.
- * Comments, tags and links are scanned in linear time; moss's regexes are quadratic on openers with no closer.
- */
+/** moss's snippet cleaning (ipc-handlers notes:search at the pin): structure out, inline markdown kept for NoteCard. */
 export function cleanForSnippet(body: string): string {
-  return unwrapLinks(removeSpans(removeSpans(body, '<!--', '-->'), '<', '>'))
+  return linkTexts(withoutTags(withoutComments(body)))
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^>\s?/gm, '')
-    .replace(/---+/g, '')
+    .replace(/-{3,}/g, '')
     .replace(/~~([^~]+)~~/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-/** `text.replace(/<open>[\s\S]*?<close>/g, '')` in linear time; `<[^>]*>` is the same scan, as `>` ends it. */
-function removeSpans(text: string, open: string, close: string): string {
+/** `text.replace(/<!--[\s\S]*?-->/g, '')` in one pass. */
+export const withoutComments = (text: string): string => withoutSpans(text, '<!--', '-->');
+
+/** `text.replace(/```[\s\S]*?```/g, '')` in one pass. */
+export const withoutFences = (text: string): string => withoutSpans(text, '```', '```');
+
+/** Drops each `open` through the first `close` after it; once an `open` has no `close` after it, no later one does. */
+function withoutSpans(text: string, open: string, close: string): string {
   let out = '';
-  let from = 0;
-  for (let i = text.indexOf(open); i !== -1; ) {
-    const end = text.indexOf(close, i + open.length);
-    // No close after this opener means none after any later one.
+  let last = 0;
+  for (let at = text.indexOf(open); at !== -1; at = text.indexOf(open, last)) {
+    const end = text.indexOf(close, at + open.length);
     if (end === -1) break;
-    out += text.slice(from, i);
-    from = end + close.length;
-    i = text.indexOf(open, from);
+    out += text.slice(last, at);
+    last = end + close.length;
   }
-  return out + text.slice(from);
+  return out + text.slice(last);
 }
 
-/** `text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')` in linear time. */
-function unwrapLinks(text: string): string {
+/** `text.replace(/<[^>]*>/g, '')` in one pass: once a `<` has no `>` after it, no later one does. */
+export function withoutTags(text: string): string {
   let out = '';
-  let from = 0;
-  let close = -1;
-  for (let i = text.indexOf('['); i !== -1; ) {
-    if (close < i + 1) close = text.indexOf(']', i + 1);
+  let last = 0;
+  for (let at = text.indexOf('<'); at !== -1; at = text.indexOf('<', last)) {
+    const close = text.indexOf('>', at + 1);
     if (close === -1) break;
-    if (text[close + 1] === '(') {
-      const end = text.indexOf(')', close + 2);
-      if (end === -1) break;
-      out += text.slice(from, i) + text.slice(i + 1, close);
-      from = end + 1;
-      i = text.indexOf('[', from);
-    } else {
-      i = text.indexOf('[', i + 1);
-    }
+    out += text.slice(last, at);
+    last = close + 1;
   }
-  return out + text.slice(from);
+  return out + text.slice(last);
+}
+
+/**
+ * `text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')` in one pass: every `[` before a start's first `]` shares that `]`,
+ * so a start that fails there resumes after it, and once a `](` has no `)` after it, no later one does.
+ */
+export function linkTexts(text: string): string {
+  let out = '';
+  let last = 0;
+  let at = text.indexOf('[');
+  while (at !== -1) {
+    const close = text.indexOf(']', at + 1);
+    if (close === -1) break;
+    if (text[close + 1] !== '(') {
+      at = text.indexOf('[', close + 1);
+      continue;
+    }
+    const end = text.indexOf(')', close + 2);
+    if (end === -1) break;
+    out += text.slice(last, at) + text.slice(at + 1, close);
+    last = end + 1;
+    at = text.indexOf('[', last);
+  }
+  return out + text.slice(last);
 }
 
 /**
@@ -175,43 +193,97 @@ export interface HeadingInfo {
   text: string;
 }
 
-/**
- * moss's stripWikiLinks (common/utils at the pin), `[[target|alias]]` to `target`, in linear time: its regex
- * `/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g` is quadratic on a run of `[` with no `]`.
- */
-function stripWikiLinks(text: string): string {
-  let out = '';
-  let from = 0;
-  let close = -1;
-  // The first `|` from the current opener on: -2 before the first look, -1 once none is left.
-  let pipe = -2;
-  for (let i = text.indexOf('[['); i !== -1; ) {
-    if (close < i + 2) close = text.indexOf(']', i + 2);
-    if (close === -1) break;
-    if (pipe !== -1 && pipe < i + 2) pipe = text.indexOf('|', i + 2);
-    const stop = pipe !== -1 && pipe < close ? pipe : close;
-    let end = -1;
-    if (stop > i + 2) {
-      if (stop === close) end = text[close + 1] === ']' ? close + 2 : -1;
-      else end = close > stop + 1 && text[close + 1] === ']' ? close + 2 : -1;
-    }
-    if (end === -1) {
-      i = text.indexOf('[[', i + 1);
-      continue;
-    }
-    out += text.slice(from, i) + text.slice(i + 2, stop);
-    from = end;
-    i = text.indexOf('[[', from);
-  }
-  return out + text.slice(from);
-}
-
 /** moss's getHeadings (note-store at the pin): h1–h4 outside fenced code, wiki-link syntax stripped. */
 export function parseHeadings(markdown: string): HeadingInfo[] {
-  const outsideCode = markdown.replace(/```[\s\S]*?```/g, '');
+  const outsideCode = withoutFences(markdown);
   const headings: HeadingInfo[] = [];
-  for (const match of outsideCode.matchAll(/^(#{1,4})\s+(.+)$/gm)) {
-    headings.push({ level: match[1].length as HeadingInfo['level'], text: stripWikiLinks(match[2]).trim() });
+  for (const [hashes, text] of headingMatches(outsideCode)) {
+    headings.push({ level: hashes.length as HeadingInfo['level'], text: wikiLinkTexts(text).trim() });
   }
   return headings;
+}
+
+// Native scans: a 2 MB line walked one character at a time in JS costs more than search's budget in workerd.
+const TITLE_END = /[\]|]/g;
+const LINE_BREAK = /[\n\r\u2028\u2029]/g;
+const SPACES = /\s*/y;
+const isLineBreak = (char: string): boolean => char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029';
+
+/** The index of the first line break at or after `from`, or the text's length. */
+function nextBreak(text: string, from: number): number {
+  LINE_BREAK.lastIndex = from;
+  return LINE_BREAK.exec(text)?.index ?? text.length;
+}
+
+/**
+ * moss's stripWikiLinks, `text.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1')`, in one pass: a start that fails
+ * at the `]` or `|` ending a non-empty title shares that end with every start before it, and one whose alias finds no
+ * `]]` shares that alias's `]`, so the scan resumes past it; once no `]` follows, nothing more matches.
+ */
+export function wikiLinkTexts(text: string): string {
+  let out = '';
+  let last = 0;
+  let at = text.indexOf('[[');
+  while (at !== -1) {
+    TITLE_END.lastIndex = at + 2;
+    const found = TITLE_END.exec(text);
+    if (!found) break;
+    const end = found.index;
+    if (end === at + 2) {
+      at = text.indexOf('[[', end + 1);
+      continue;
+    }
+    let close = end;
+    if (text[end] === '|') {
+      close = text.indexOf(']', end + 1);
+      if (close === -1) break;
+    }
+    if (text[close + 1] === ']' && close !== end + 1) {
+      out += text.slice(last, at) + text.slice(at + 2, end);
+      last = close + 2;
+      at = text.indexOf('[[', last);
+    } else {
+      at = text.indexOf('[[', close + 1);
+    }
+  }
+  return out + text.slice(last);
+}
+
+/**
+ * The groups of `/^(#{1,4})\s+(.+)$/gm`, scanned line by line in linear time. As in the regex, the spaces may run
+ * over line breaks, and spaces that run to the end leave their last non-break character as the text.
+ */
+export function headingMatches(text: string): [string, string][] {
+  const out: [string, string][] = [];
+  let line = 0;
+  while (line <= text.length) {
+    let next = -1;
+    let hashes = line;
+    while (text[hashes] === '#') hashes += 1;
+    let space = hashes;
+    if (hashes > line && hashes - line <= 4) {
+      SPACES.lastIndex = hashes;
+      SPACES.exec(text);
+      space = SPACES.lastIndex;
+    }
+    if (space > hashes) {
+      if (space < text.length) {
+        const end = nextBreak(text, space);
+        out.push([text.slice(line, hashes), text.slice(space, end)]);
+        next = end;
+      } else {
+        let last = text.length - 1;
+        while (last > hashes && isLineBreak(text[last]!)) last -= 1;
+        if (last > hashes) {
+          out.push([text.slice(line, hashes), text[last]!]);
+          next = last + 1;
+        }
+      }
+    }
+    // The next line starts after the next break at or after the match's end (or this line's start).
+    const at = nextBreak(text, next === -1 ? line : next);
+    if (at >= text.length) break;
+    line = at + 1;
+  }
+  return out;
 }

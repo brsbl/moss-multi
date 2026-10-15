@@ -436,7 +436,7 @@ export function extract({ manifest, read, exists, readTemplate }) {
     const registrations = removed
       .filter((s) => ts.isClassDeclaration(s) && manifest.modules.find((m) => m.path === map.get(s)).views.includes(s.name.text))
       .map((s) => viewRegistration(file, s));
-    if (registrations.length > 0) text = `${text.replace(/\n*$/, '\n')}\n${VIEW_SEAM}\n${registrations.join('\n\n')}\n`;
+    if (registrations.length > 0) text = `${text.replace(/(?<!\n)\n*$/, '\n')}\n${VIEW_SEAM}\n${registrations.join('\n\n')}\n`;
     outputs.set(residualPath(source), { kind: 'residual', sources: [source], upstreamPath: source, raw: text, moved: removed });
   }
 

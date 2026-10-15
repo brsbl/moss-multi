@@ -55,6 +55,10 @@ export const GROUPS = {
   media: ['j11', 'j14'],
   // Comments and agents.
   meaning: ['j15', 'j18'],
+  // The built CLI against the stack, and its pushes into notes being typed in.
+  cli: ['j18-cli', 'j18-agents'],
+  // The folder-watch daemon and sync against the stack.
+  sync: ['j18-sync'],
   // Version history: the History view, restore under a peer.
   history: ['j17'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
@@ -110,7 +114,7 @@ export function groupOf(file, groups = GROUPS) {
  * @param {string} text
  * @returns {number}
  */
-export const countLegs = (text) => (text.match(/^\s*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
+export const countLegs = (text) => (text.match(/^[^\S\n\r\u2028\u2029]*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
 
 /**
  * The journey spec files in `dir`, each with its group, whether any leg is tagged @slow, and its leg declarations.

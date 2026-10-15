@@ -24,6 +24,8 @@ import { $isCommentableDecorator, type CommentableNode } from './commentable-nod
 // import cycle is harmless (the binding is resolved before normalize* runs).
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { mapOutsideFencedCodeBlocksOnly } from '../markdown/normalize';
+// moss-multi seam: linear-markers (A§12): the marker regexes below are scans, as pushed and imported text reaches them
+import { commentMarkerIdList, replaceCommentWrappedImages, scanCommentMarkers, scanCommentWrappedAtxHeadings } from './comment-marker-scan';
 
 // ---------------------------------------------------------------------------
 // Hydration utility
@@ -92,20 +94,16 @@ export function hydrateComments(
 // Marker regex
 // ---------------------------------------------------------------------------
 
-/** Matches opening marker: {%c:id%} or {%c:id1,id2%} (allows optional whitespace) */
-const LEGACY_OPEN_MARKER = /\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}/g;
-/** Matches closing marker: {%/c%} */
-const LEGACY_CLOSE_MARKER = /\{%\/c%\}/g;
-/** Matches opening marker: %%m:id:start%% or %%m:id1,id2:start%% */
-const MODERN_OPEN_MARKER = /%%m:\s*([A-Za-z0-9_,\-\s]+?)\s*:start%%/g;
-/** Matches closing marker: %%m:id:end%% or %%m:id1,id2:end%% */
-const MODERN_CLOSE_MARKER = /%%m:\s*([A-Za-z0-9_,\-\s]+?)\s*:end%%/g;
+// moss-multi seam: linear-markers (A§12): LEGACY_OPEN_MARKER /\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}/g,
+// LEGACY_CLOSE_MARKER /\{%\/c%\}/g, MODERN_OPEN_MARKER /%%m:\s*([A-Za-z0-9_,\-\s]+?)\s*:start%%/g and
+// MODERN_CLOSE_MARKER /%%m:\s*([A-Za-z0-9_,\-\s]+?)\s*:end%%/g are scanCommentMarkers.
 /**
  * Matches ATX heading lines where an inline comment marker wraps the whole
  * heading, e.g. `{%c:c1%}### Heading{%/c%}` or `%%m:c1:start%%### Heading%%m:c1:end%%`.
  */
-const COMMENT_WRAPPED_ATX_HEADING_LINE =
-  /^([ \t]{0,3})((?:\{%c:\s*[A-Za-z0-9_,\-\s]+?\s*%\}|%%m:\s*[A-Za-z0-9_,\-\s]+?\s*:start%%))(#{1,6})([ \t]+)(.*?)(?:((?:\{%\/c%\}|%%m:\s*[A-Za-z0-9_,\-\s]+?\s*:end%%)))([ \t]*)$/gm;
+// moss-multi seam: linear-markers (A§12): COMMENT_WRAPPED_ATX_HEADING_LINE
+// /^([ \t]{0,3})((?:\{%c:\s*[A-Za-z0-9_,\-\s]+?\s*%\}|%%m:\s*[A-Za-z0-9_,\-\s]+?\s*:start%%))(#{1,6})([ \t]+)(.*?)(?:((?:\{%\/c%\}|%%m:\s*[A-Za-z0-9_,\-\s]+?\s*:end%%)))([ \t]*)$/gm
+// is scanCommentWrappedAtxHeadings.
 
 /**
  * Rewrites comment-wrapped ATX headings into `### ...` form so
@@ -113,21 +111,13 @@ const COMMENT_WRAPPED_ATX_HEADING_LINE =
  * original comment coverage over the heading content.
  */
 export function normalizeCommentWrappedAtxHeadings(markdown: string): string {
-  return markdown.replace(
-    COMMENT_WRAPPED_ATX_HEADING_LINE,
-    (_line, indent: string, open: string, hashes: string, spacing: string, content: string, close: string, trailing: string) =>
-      `${indent}${hashes}${spacing}${open}${content}${close}${trailing}`
-  );
+  // moss-multi seam: linear-markers (A§12): markdown.replace(COMMENT_WRAPPED_ATX_HEADING_LINE, (_line, indent, open,
+  // hashes, spacing, content, close, trailing) => `${indent}${hashes}${spacing}${open}${content}${close}${trailing}`)
+  return scanCommentWrappedAtxHeadings(markdown);
 }
 
-/** Opening marker (single capture group around the whole marker). */
-const COMMENT_OPEN_MARKER_SRC =
-  '(?:\\{%c:\\s*[A-Za-z0-9_,\\-\\s]+?\\s*%\\}|%%m:\\s*[A-Za-z0-9_,\\-\\s]+?\\s*:start%%)';
-/** Closing marker (legacy {%/c%} or modern %%m:id:end%%). */
-const COMMENT_CLOSE_MARKER_SRC =
-  '(?:\\{%\\/c%\\}|%%m:\\s*[A-Za-z0-9_,\\-\\s]+?\\s*:end%%)';
-/** Any comment marker (open OR close). Used to fence prose groups. */
-const COMMENT_ANY_MARKER_SRC = `(?:${COMMENT_OPEN_MARKER_SRC}|${COMMENT_CLOSE_MARKER_SRC})`;
+// moss-multi seam: linear-markers (A§12): COMMENT_OPEN_MARKER_SRC, COMMENT_CLOSE_MARKER_SRC and
+// COMMENT_ANY_MARKER_SRC, the parts of COMMENT_WRAPPED_IMAGE below, are scanned by replaceCommentWrappedImages.
 /**
  * A run of same-line characters that does NOT contain any comment marker. The
  * tempered token `(?!marker)[^\\n]` refuses to start a marker, so the lazy
@@ -135,7 +125,7 @@ const COMMENT_ANY_MARKER_SRC = `(?:${COMMENT_OPEN_MARKER_SRC}|${COMMENT_CLOSE_MA
  * marker that should end the pair, an adjacent open marker for a different
  * comment, or the markers of a second commented image on the same line).
  */
-const NON_MARKER_RUN = `(?:(?!${COMMENT_ANY_MARKER_SRC})[^\\n])*?`;
+// moss-multi seam: linear-markers (A§12): NON_MARKER_RUN = `(?:(?!${COMMENT_ANY_MARKER_SRC})[^\\n])*?`
 /**
  * Markdown image — either standard `![alt](src)` or an Obsidian embed
  * `![[ref]]`. The standard `src` balances exactly one level of inner parens so
@@ -148,8 +138,8 @@ const NON_MARKER_RUN = `(?:(?!${COMMENT_ANY_MARKER_SRC})[^\\n])*?`;
  * the non-paren runs exclude BOTH parens, so the optional inner `(...)` is the
  * only nesting allowed and the quantifiers don't nest unboundedly (no ReDoS).
  */
-const IMAGE_SRC =
-  '(?:!\\[[^\\]\\n]*\\]\\([^()\\n]*(?:\\([^()\\n]*\\)[^()\\n]*)*\\)|!\\[\\[[^\\]\\n]+\\]\\])';
+// moss-multi seam: linear-markers (A§12): IMAGE_SRC =
+// '(?:!\\[[^\\]\\n]*\\]\\([^()\\n]*(?:\\([^()\\n]*\\)[^()\\n]*)*\\)|!\\[\\[[^\\]\\n]+\\]\\])'
 /**
  * Matches an inline comment marker that wraps a markdown image. The image may
  * be the entire content (`%%m:c1:start%%![alt](src)%%m:c1:end%%`) or embedded
@@ -169,11 +159,9 @@ const IMAGE_SRC =
  * Captured groups: open marker, pre prose, image, post prose, close marker (may
  * be empty).
  */
-const COMMENT_WRAPPED_IMAGE = new RegExp(
-  `(${COMMENT_OPEN_MARKER_SRC})(${NON_MARKER_RUN})(${IMAGE_SRC})(${NON_MARKER_RUN})` +
-    `(?:(${COMMENT_CLOSE_MARKER_SRC})|(?=${COMMENT_OPEN_MARKER_SRC}))`,
-  'g'
-);
+// moss-multi seam: linear-markers (A§12): COMMENT_WRAPPED_IMAGE = new RegExp(
+//   `(${COMMENT_OPEN_MARKER_SRC})(${NON_MARKER_RUN})(${IMAGE_SRC})(${NON_MARKER_RUN})` +
+//     `(?:(${COMMENT_CLOSE_MARKER_SRC})|(?=${COMMENT_OPEN_MARKER_SRC}))`, 'g'), scanned by replaceCommentWrappedImages
 
 /**
  * Extracts the comment id(s) from an open or close marker so prose split out of
@@ -181,11 +169,9 @@ const COMMENT_WRAPPED_IMAGE = new RegExp(
  * raw marker if no id is found (legacy `{%/c%}` close markers carry no id).
  */
 function markerIdList(open: string): string | null {
-  const modern = open.match(/%%m:\s*([A-Za-z0-9_,\-\s]+?)\s*:(?:start|end)%%/);
-  if (modern) return modern[1].split(',').map((id) => id.trim()).join(',');
-  const legacy = open.match(/\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}/);
-  if (legacy) return legacy[1].split(',').map((id) => id.trim()).join(',');
-  return null;
+  // moss-multi seam: linear-markers (A§12): the ids of open.match(/%%m:\s*([A-Za-z0-9_,\-\s]+?)\s*:(?:start|end)%%/),
+  // else of open.match(/\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}/), each split on commas and trimmed
+  return commentMarkerIdList(open);
 }
 
 /**
@@ -210,8 +196,8 @@ function markerIdList(open: string): string | null {
  * comment.
  */
 function rewriteCommentWrappedImages(segment: string): string {
-  return segment.replace(
-    COMMENT_WRAPPED_IMAGE,
+  return replaceCommentWrappedImages( // moss-multi seam: linear-markers (A§12): segment.replace(COMMENT_WRAPPED_IMAGE, ...)
+    segment,
     (
       match,
       open: string,
@@ -337,49 +323,9 @@ interface MarkerMatch {
  * Returns them sorted by index (ascending).
  */
 function findMarkers(text: string): MarkerMatch[] {
-  const matches: MarkerMatch[] = [];
-
-  LEGACY_OPEN_MARKER.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = LEGACY_OPEN_MARKER.exec(text)) !== null) {
-    matches.push({
-      type: 'open',
-      index: m.index,
-      length: m[0].length,
-      ids: m[1].split(',').map((id) => id.trim()).filter((id) => id.length > 0)
-    });
-  }
-
-  MODERN_OPEN_MARKER.lastIndex = 0;
-  while ((m = MODERN_OPEN_MARKER.exec(text)) !== null) {
-    matches.push({
-      type: 'open',
-      index: m.index,
-      length: m[0].length,
-      ids: m[1].split(',').map((id) => id.trim()).filter((id) => id.length > 0)
-    });
-  }
-
-  LEGACY_CLOSE_MARKER.lastIndex = 0;
-  while ((m = LEGACY_CLOSE_MARKER.exec(text)) !== null) {
-    matches.push({
-      type: 'close',
-      index: m.index,
-      length: m[0].length
-    });
-  }
-
-  MODERN_CLOSE_MARKER.lastIndex = 0;
-  while ((m = MODERN_CLOSE_MARKER.exec(text)) !== null) {
-    matches.push({
-      type: 'close',
-      index: m.index,
-      length: m[0].length
-    });
-  }
-
-  matches.sort((a, b) => a.index - b.index);
-  return matches;
+  // moss-multi seam: linear-markers (A§12): each of LEGACY_OPEN_MARKER, MODERN_OPEN_MARKER, LEGACY_CLOSE_MARKER and
+  // MODERN_CLOSE_MARKER exec-looped from lastIndex 0, open ids split on commas, trimmed and non-empty, sorted by index
+  return scanCommentMarkers(text);
 }
 
 type CommentableEntry =

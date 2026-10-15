@@ -24,8 +24,8 @@ const DocDO = {
       acceptSuggestion: record('accept'),
       rejectSuggestion: record('reject'),
       withdrawSuggestion: record('withdraw'),
-      exportMarkdown: async (options?: unknown) => {
-        calls.push({ op: 'export', docId: id.name, input: options ?? null });
+      pullMarkdown: async () => {
+        calls.push({ op: 'export', docId: id.name, input: null });
         return '# clean';
       },
       exportWorking: async () => {
@@ -265,7 +265,7 @@ describe('the working export is metered before the DocDO (docs/design/suggestion
     expect((await content({ cookie: eve.cookie })).status).toBe(200);
   });
 
-  it('an agent is charged as itself: past its budget it gets 429 before the DocDO, and its owner and others still read', async () => {
+  it('an agent is charged as its owner: past her budget it gets 429 before the DocDO, as does she, and others still read', async () => {
     previewBudget = 2;
     const agent = await insertAgent(d1.db, ada);
     await insertGrant(d1.db, { docId }, { id: agent.id, type: 'agent' }, 'viewer');
@@ -273,10 +273,10 @@ describe('the working export is metered before the DocDO (docs/design/suggestion
     for (let i = 0; i < 4; i += 1) statuses.push((await content({ cookie: null, bearer: agent.key })).status);
     expect(statuses).toEqual([200, 200, 429, 429]);
     expect(working(), 'the refused reads never reached the DocDO').toBe(2);
-    expect(tokens.filter((token) => token === `preview:${agent.id}`)).toHaveLength(4);
-    expect((await content({ cookie: ada.cookie })).status, 'its owner has her own budget').toBe(200);
+    expect(tokens.filter((token) => token === `preview:${ada.id}`)).toHaveLength(4);
+    expect((await content({ cookie: ada.cookie })).status, 'its owner shares the one budget').toBe(429);
     expect((await content({ cookie: cara.cookie })).status).toBe(200);
-    expect(working()).toBe(4);
+    expect(working()).toBe(3);
   });
 
   it("past the DocDO's per-document bound the export is 429, not an empty note", async () => {

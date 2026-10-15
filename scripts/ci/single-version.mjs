@@ -14,14 +14,14 @@ export function parseLockfile(text) {
   const lock = { version: '', overrides: new Map(), packages: new Map() };
   let section = '';
   for (const line of text.split('\n')) {
-    const top = /^([A-Za-z]\w*):\s*(.*)$/.exec(line);
+    const top = /^([A-Za-z]\w*):\s*((?:\S.*)?)$/.exec(line);
     if (top) {
       section = top[1];
       if (section === 'lockfileVersion') lock.version = unquote(top[2]);
       continue;
     }
     if (section === 'overrides') {
-      const entry = /^ {2}('[^']+'|"[^"]+"|[^\s:]+):\s*(.+)$/.exec(line);
+      const entry = /^ {2}('[^']+'|"[^"]+"|[^\s:]+):\s*(\S.*|[^\S\n\r\u2028\u2029])$/.exec(line);
       if (entry) lock.overrides.set(unquote(entry[1]), unquote(entry[2]));
     } else if (section === 'packages') {
       const entry = /^ {2}'?((?:@[^/\s']+\/)?[^@\s'/]+)@([^(\s':]+)/.exec(line);
