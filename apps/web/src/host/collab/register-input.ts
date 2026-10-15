@@ -187,7 +187,15 @@ export function useRegisterDraft(
       composing.current = null;
       if (!draft) return;
       const target = (payloadId && registerPayloads(editor)?.get(payloadId)) || doc;
-      if (editor.isEditable()) Y.applyUpdate(target, Y.encodeStateAsUpdate(draft.doc, draft.base), REGISTER_LOCAL_ORIGIN);
+      if (editor.isEditable()) {
+        // As at compositionend: merged with what arrived, then written under the target doc's own client.
+        Y.applyUpdate(draft.doc, Y.encodeStateAsUpdate(target, Y.encodeStateVector(draft.doc)));
+        const merged = payloadText(draft.doc).toString();
+        const targetText = payloadText(target);
+        if (merged !== targetText.toString()) {
+          target.transact(() => targetText.applyDelta(diffText(targetText.toString(), merged)), REGISTER_LOCAL_ORIGIN);
+        }
+      }
       draft.doc.destroy();
     };
   }, [editor, key, element, editing, write, live]);
