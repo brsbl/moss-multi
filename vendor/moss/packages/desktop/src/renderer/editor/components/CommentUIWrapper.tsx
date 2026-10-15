@@ -47,7 +47,7 @@ import { $isTabPanelNode } from '../nodes/TabPanelNode';
 import { EDITOR_UPDATE_TAGS } from '../utils/editorUpdateTags';
 // moss-multi seam: comments (comments.md §12): anchors, hits and writes go through the adapter
 // on a bound note only; an unbound editor (file-backed) keeps moss's own path below each seam
-import { anchorTarget, bound, commentsAtPoint, commentsOnDecorator, detachedRect, mutate, setActive, useCanComment } from '@moss-multi/host/comments/adapter';
+import { anchorTarget, bound, commentsOnDecorator, detachedRect, mutate, setActive, trackCommentHover, useCanComment } from '@moss-multi/host/comments/adapter';
 import { hidden } from '@moss-multi/host/affordances';
 
 interface CommentUIWrapperProps {
@@ -259,13 +259,14 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
     hoveredEditorCommentIdRef.current = comment.id;
   }, [editor, getHoveredRootComment]);
 
-  // moss-multi seam: comments (comments.md §11): a bound note's highlight has no element, so the pointer is hit-tested
-  const handleBoundCommentMouseMove = useCallback((event: MouseEvent) => {
+  // moss-multi seam: comments (comments.md §11): a bound note's highlight has no element, so the pointer is hit-tested,
+  // once per animation frame at its latest position (trackCommentHover)
+  const handleBoundCommentHit = useCallback((ids: string[]) => {
     if (!bound(editor)) return;
     {
       const liveCommentsMap = store.get(noteCommentsMapAtom(noteId));
       const hit = getNewestRootComment(
-        commentsAtPoint(editor, event.clientX, event.clientY)
+        ids
           .map((id) => liveCommentsMap[id])
           .filter((comment): comment is NoteComment => Boolean(comment))
       );
@@ -528,15 +529,21 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
   }, [editor, handleDecoratorCommentClick]);
 
   useEffect(() => {
-    return editor.registerRootListener((rootElement, previousRootElement) => {
+    let untrack = () => {}; // moss-multi seam: comments
+    const unregister = editor.registerRootListener((rootElement, previousRootElement) => {
       previousRootElement?.removeEventListener('mouseover', handleEditorCommentMouseOver);
-      previousRootElement?.removeEventListener('mousemove', handleBoundCommentMouseMove); // moss-multi seam: comments
+      untrack(); // moss-multi seam: comments
+      untrack = () => {};
       previousRootElement?.removeEventListener('mouseout', handleEditorCommentMouseOut);
       rootElement?.addEventListener('mouseover', handleEditorCommentMouseOver);
-      rootElement?.addEventListener('mousemove', handleBoundCommentMouseMove); // moss-multi seam: comments
+      if (rootElement) untrack = trackCommentHover(editor, rootElement, handleBoundCommentHit); // moss-multi seam: comments
       rootElement?.addEventListener('mouseout', handleEditorCommentMouseOut);
     });
-  }, [editor, handleBoundCommentMouseMove, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
+    return () => {
+      unregister();
+      untrack(); // moss-multi seam: comments: no hit-test fires after unmount
+    };
+  }, [editor, handleBoundCommentHit, handleEditorCommentMouseOut, handleEditorCommentMouseOver]);
 
   useEffect(() => {
     const handleOpenThread = (event: Event) => {
