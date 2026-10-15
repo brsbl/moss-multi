@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (192 of 236 planned tasks verified)
+**Overall: 82% done** (193 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 18 / 18 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 19 / 19 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -213,6 +213,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T4.Q verified: comments now run on m3's media-access, upload-quota and formula-merge fixes, with both sides kept and the full lane green on the m4 head.
 - 2026-10-14 — T5.Q verified: suggestions now run on m4's comment-draft, media and formula fixes, and an IME preedit flushed when its editor unmounts is merged and written under the note's own client, as compositionend writes it.
 - 2026-10-15 — T6.Q verified: history now runs on m5's comment-draft, media, quota and formula fixes, and e2e setup resends a sign-up or sign-in that wrangler's proxy dropped while a large note's auto version was being written.
+- 2026-10-15 — T7.Q verified: agent sync, Bot presence and the watch daemon now run on m6's comment-draft, media, quota and formula fixes, with both sides kept and the full lane green on the m7 head.
 
 ## T1.1s identity audit
 
@@ -898,3 +899,4 @@ Local browser verification remains assigned to the independent checker under the
 - T4.Q (m4 on the m3 fixes) checker P2, owned by m3 (from T3.B10): a duplicate refused after source access is lost returns a different 404 body: `apps/web/src/api/docs.ts:195-198` answers the late refusal (source revoked or trashed while the snapshot is pending) with refuse(404, 'not-found', <message>) while admission uses `notFound()` (respond.ts:8, no message), so the two denials are not byte-identical as A§8 requires (no unauthorized copy).
 - T5.Q (m5 on the m4 fixes) checker P2: no single regression test covers an unmounted Suggest-mode preedit — j01 covers unmounting a preedit in Edit mode and j16 covers compositionend in Suggest mode, but nothing exercises the combined unmount flush in register-input.ts (the red on 43da2b70 was a typecheck failure, not behavioral) → add a journey that unmounts an active Suggest-mode preedit while a peer edits, proven red against a draft-client apply.
 - T6.Q (No deterministic selftests for the setup auth resend) checker P2: setupPost's resend and mintPrincipal's 'already exists' recovery in e2e/lib/principals.ts have no focused selftests; add cases that an ordinary 503 stays a failure, a non-503 carrying the proxy text stays a failure, a second failed attempt stays a failure, and recovery returns the real user id.
+- T7.Q (Two dismissed CI failures have no baseline failure on record) checker P2: of the four failures dismissed in the full-lane reruns, note-store.linear (run 38535601745) and suggest-ingest T5.2 (run 38512418550) failed the same assertions on earlier base runs, but two have no baseline on record: the WebKit j15-comments-drafts uncaught 'ResizeObserver loop' on attempt 1 (comment code and journey identical to m6 1b681ff1; head and m6 both passed 8 of 8 repeats in runs 38717509595 and 38717513000) and suggest.test.ts:791 T5.4 'one fixed frame size in every scenario' (2 sizes instead of 1).
