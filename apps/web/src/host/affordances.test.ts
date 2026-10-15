@@ -76,7 +76,7 @@ describe('the hide registry', () => {
     const staged = Object.fromEntries(
       AFFORDANCES.filter((entry) => 'staged' in entry).map((entry) => [entry.id, { treatment: 'staged' as const, milestone: (entry as { staged: number }).staged, note: entry.reason }]),
     );
-    expect(Object.keys(staged).length).toBeGreaterThan(0);
+    // T4.4 unstaged the last entry (comment edit and delete); a later staged entry is held to the same expiry.
     expect(expiredStaged(staged, closedMilestone(process.env.TRACE_MILESTONE))).toEqual([]);
     expect(expiredStaged(staged, 4), 'every staged entry expires by M4').toEqual(Object.keys(staged));
   });

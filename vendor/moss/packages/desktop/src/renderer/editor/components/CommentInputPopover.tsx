@@ -27,6 +27,8 @@ import {
 import { imagesApi } from '../../api/electron';
 import { acquireCommentUiOpenFlag } from '../utils/comment-ui-open-flag';
 import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-boundary';
+import { MentionScope } from '@moss-multi/host/comments/mentions'; // moss-multi seam: comments (comments.md §12)
+import { submitted, useNoteBound } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments
 
 export interface CommentInputPopoverProps {
   /** Whether the popover is open */
@@ -63,6 +65,12 @@ export function CommentInputPopover({
   const [imageUrls, setImageUrls] = useState<string[]>([]);
   const focusLockReleaseRef = useRef<(() => void) | null>(null);
   const lightboxDismissGuardRef = useRef(false);
+  // moss-multi seam: comments: a bound submit settles later; each open or close starts a new composer session
+  const shared = useNoteBound(noteId);
+  const openGenerationRef = useRef(0);
+  const openDraftKeyRef = useRef<string | null>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
   const resolvedCollisionBoundary = useMemo(
     () => resolveCanvasCollisionBoundary(collisionBoundary, anchorRect),
     [anchorRect, collisionBoundary]
@@ -115,10 +123,12 @@ export function CommentInputPopover({
 
   // Draft save/restore keyed on open state
   useEffect(() => {
+    openGenerationRef.current += 1; // moss-multi seam: comments
     if (open) {
       // Restore draft if exists and <24h old; prune expired
       const inputState = store.get(commentInputStateAtom(noteId));
       const key = getDraftKey(inputState);
+      openDraftKeyRef.current = key; // moss-multi seam: comments
       const drafts = store.get(commentDraftAtom);
       const now = Date.now();
       const expiredKeys: string[] = [];
@@ -146,7 +156,9 @@ export function CommentInputPopover({
     } else {
       // Save draft if text is non-empty, then clear
       const inputState = store.get(commentInputStateAtom(noteId));
-      const key = getDraftKey(inputState);
+      // moss-multi seam: comments: the editor clears its target before this runs, so fall back to the key it opened on
+      const key = getDraftKey(inputState) ?? openDraftKeyRef.current;
+      openDraftKeyRef.current = null;
       if (key && (text.trim().length > 0 || imageUrls.length > 0)) {
         const drafts = new Map(store.get(commentDraftAtom));
         drafts.set(key, {
@@ -215,6 +227,28 @@ export function CommentInputPopover({
     const created = onCreate(trimmedText, imageUrls.length > 0 ? imageUrls : undefined);
     if (!created) return;
 
+    // moss-multi seam: comments (comments.md §4): on a bound note the composer keeps its text until the server takes the
+    // comment, so a refused or lost write stays here and a resubmit retries it; a success clears only this draft, never
+    // text typed after it was sent.
+    const answer = shared ? submitted(noteId, 'root') : null;
+    if (answer) {
+      const key = getDraftKey(store.get(commentInputStateAtom(noteId))) ?? openDraftKeyRef.current;
+      const generation = openGenerationRef.current;
+      void answer.then((result) => {
+        if (!result.ok) return;
+        const stillOpen = openGenerationRef.current === generation;
+        if (stillOpen && textRef.current.trim() !== trimmedText) return;
+        // A composer closed meanwhile saved its text as the draft: drop it only if it is what was sent.
+        const drafts = new Map(store.get(commentDraftAtom));
+        if (key && (stillOpen || drafts.get(key)?.text.trim() === trimmedText) && drafts.delete(key)) store.set(commentDraftAtom, drafts);
+        if (!stillOpen) return;
+        setImageUrls([]);
+        setText('');
+        onOpenChange(false);
+      });
+      return;
+    }
+
     // Clear matching draft before closing
     clearMatchingDraft();
 
@@ -242,6 +276,7 @@ export function CommentInputPopover({
   );
 
   return (
+    <MentionScope docId={noteId}>{/* moss-multi seam: comments: the composer's @ offers this note's people */}
     <Popover.Root open={isVisible} onOpenChange={handleRootOpenChange}>
       <Popover.Anchor virtualRef={virtualRef} />
       <Popover.Portal>
@@ -307,6 +342,7 @@ export function CommentInputPopover({
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+    </MentionScope>
   );
 }
 

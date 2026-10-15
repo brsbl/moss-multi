@@ -11,14 +11,13 @@ import { KeyboardShortcut } from '@moss/shared/components/ui/keyboard-shortcut';
 import { CodeBlockToolbar } from '../plugins/code-block/CodeBlockToolbar';
 import { resolveLanguage } from '../plugins/code-block/languages';
 import { StickyNote } from 'lucide-react';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { getThemeById } from '../plugins/code-block/themes';
 import { highlightCodeToHtml } from '../utils/code-highlighting';
 // moss-multi seam: read-only-decorators (T2.3): a read-only or terminal editor offers no code-block edit
 import { useIsEditorEditable } from '../components/media-primitives';
+import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
 import {
   BLOCK_HEADER_CLASSNAME,
   BLOCK_SURFACE_CLASSNAME,
@@ -58,6 +57,7 @@ function CodeBlockComponent({
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
   const editable = useIsEditorEditable(); // moss-multi seam: read-only-decorators (T2.3)
+  const canAddComment = useBlockCanComment(editor, editable); // moss-multi seam: comments (T4.B3)
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey) || resumeField(editor, nodeKey));
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -373,8 +373,8 @@ function CodeBlockComponent({
                 onDropdownOpenChange={setIsDropdownOpen}
                 readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
               />
-              {/* moss-multi seam: hide-registry (A§9) */}
-              {hidden('comments') ? null : (
+              {/* moss-multi seam: comments (T4.B3): Add comment follows the comment capability, so a commenter has it */}
+              {!canAddComment ? null : (
               <button
                 type="button"
                 onClick={(e) => {
@@ -383,6 +383,7 @@ function CodeBlockComponent({
                 }}
                 className="moss-code-toolbar-btn"
                 title="Add comment"
+                data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
               >
                 <StickyNote className="h-3 w-3" />
               </button>

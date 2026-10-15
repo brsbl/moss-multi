@@ -1,0 +1,172 @@
+// T5.0 spike, test 1 (docs/design/suggestions.md I1): every forged frame from the six review rounds and the commit
+// security reviews, sent as a suggester's body or payload frame, is refused by role before Yjs applies it.
+// Authorization reads the connection's role, never the frame, so the body's and every payload's encoded state are
+// byte-identical afterwards (T5.P adds the payload-doc cases).
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
+import { CLOSE, encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
+import { connect, openDoc, start, syncFrame } from './do-harness.ts';
+import { forged, gcStruct, raw } from './raw-frames.ts';
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
+});
+
+const SEED = ['Hello world and the cat.', '', 'abc', '', 'XYZ', '', '```js', 'seed', '```', '', 'Total {{1+1|2}} items.'].join('\n');
+
+const root = (doc: Y.Doc) => doc.get('root', Y.XmlText);
+/** The first live top-level block item. */
+function blockItem(doc: Y.Doc): Y.Item {
+  for (let item = root(doc)._start; item; item = item.right) if (!item.deleted && item.content instanceof Y.ContentType) return item;
+  throw new Error('no block');
+}
+const firstBlock = (doc: Y.Doc): Y.XmlText => (blockItem(doc).content as Y.ContentType).type as Y.XmlText;
+
+/** The first original text item of the first paragraph. */
+function helloItem(doc: Y.Doc): Y.Item {
+  for (let item = firstBlock(doc)._start; item; item = item.right) if (item.content instanceof Y.ContentString) return item;
+  throw new Error('no text');
+}
+
+function decorator(doc: Y.Doc, type: string): Y.XmlElement {
+  const find = (parent: Y.XmlText): Y.XmlElement | null => {
+    for (const op of parent.toDelta() as { insert: unknown }[]) {
+      if (op.insert instanceof Y.XmlElement && op.insert.getAttribute('__type') === type) return op.insert;
+      if (op.insert instanceof Y.XmlText) {
+        const found = find(op.insert);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  const found = find(root(doc));
+  if (!found) throw new Error(`no ${type}`);
+  return found;
+}
+
+/** What `write` does to a copy of the server's doc, as one update. */
+function forge(server: Y.Doc, write: (doc: Y.Doc) => void, client?: number): Uint8Array {
+  const doc = new Y.Doc({ gc: false });
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(server));
+  if (client !== undefined) doc.clientID = client;
+  const sv = Y.encodeStateVector(doc);
+  write(doc);
+  const update = Y.encodeStateAsUpdate(doc, sv);
+  doc.destroy();
+  return update;
+}
+
+/** A payload frame: what `write` does to a copy of payload `id` as the server holds it, under `client`. */
+type PayloadForgery = { payload: string; update: Uint8Array };
+function forgePayload(state: Uint8Array, id: string, write: (text: Y.Text) => void, client = 0x6fff7001): PayloadForgery {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, state);
+  doc.clientID = client;
+  const sv = Y.encodeStateVector(doc);
+  write(doc.getText('payload'));
+  const update = Y.encodeStateAsUpdate(doc, sv);
+  doc.destroy();
+  return { payload: id, update };
+}
+
+const codeId = (server: Y.Doc) => String(decorator(server, 'code-block').getAttribute('__regId'));
+
+/** A new paragraph holding a formula decorator that names `id`. */
+function paragraphNaming(doc: Y.Doc, id: string): void {
+  const paragraph = new Y.XmlText();
+  paragraph.setAttribute('__type', 'paragraph');
+  root(doc).insertEmbed(root(doc).length, paragraph);
+  const formula = new Y.XmlElement();
+  paragraph.insertEmbed(0, formula);
+  formula.setAttribute('__type', 'formula');
+  formula.setAttribute('__regId', id);
+}
+
+const textMap = (format: number) => new Y.Map<unknown>(Object.entries({ __type: 'text', __format: format, __style: '', __mode: 0, __detail: 0 }));
+
+const FORGED: [string, (server: Y.Doc, payloads: Map<string, Uint8Array>) => Uint8Array | PayloadForgery][] = [
+  ['a GC overlapping known clocks that hides a delete of original text', (server) => {
+    const hello = helloItem(server);
+    const S = hello.id.client;
+    return raw([gcStruct(Y.createID(S, 0), Y.getState(server.store, S) + 1)], [[S, hello.id.clock, 5]]);
+  }],
+  ['a clock gap that would park', (server) => {
+    const doc = new Y.Doc();
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(server));
+    doc.getMap('scratch').set('first', 1);
+    const sv = Y.encodeStateVector(doc);
+    firstBlock(doc).insert(3, 'x');
+    return Y.encodeStateAsUpdate(doc, sv);
+  }],
+  ["a write under another writer's client id", (server) => forge(server, (doc) => firstBlock(doc).insert(3, 'x'), helloItem(server).id.client)],
+  ['a tombstone placed after an original map value', (server) => {
+    let map = firstBlock(server)._start!;
+    while (map.deleted) map = map.right!;
+    const origin = (map.content as Y.ContentType).type._map.get('__format')!.id;
+    return raw([forged(Y.createID(424243, 0), { origin }, new Y.ContentDeleted(1))]);
+  }],
+  ['a formatting mark in the body', (server) => forge(server, (doc) => firstBlock(doc).format(1, 5, { bold: true }))],
+  ['a same-value attribute write', (server) => forge(server, (doc) => firstBlock(doc).setAttribute('__type', 'paragraph'))],
+  ['a same-value write the frame also deletes', (server) => forge(server, (doc) => doc.transact(() => {
+    firstBlock(doc).setAttribute('__type', 'paragraph');
+    firstBlock(doc).removeAttribute('__type');
+  }))],
+  ['a same-value write ordered before the live value, deleting it', (server) => {
+    const block = blockItem(server);
+    const live = (block.content as Y.ContentType).type._map.get('__type')!;
+    const item = new Y.Item(Y.createID(1, 0), null, live.origin, null, null, live.origin ? null : block.id, live.origin ? null : '__type', new Y.ContentAny(['paragraph']));
+    return raw([item], [[live.id.client, live.id.clock, 1]]);
+  }],
+  ['a text map placed before original text', (server) => forge(server, (doc) => firstBlock(doc).insertEmbed(1, textMap(1)))],
+  ['a new text map behind new characters', (server) => forge(server, (doc) => doc.transact(() => {
+    firstBlock(doc).insert(8, 'X');
+    firstBlock(doc).insertEmbed(8, textMap(1));
+  }))],
+  ['a recursive delete of a block', (server) => forge(server, (doc) => root(doc).delete(0, 1))],
+  ['an edit to an original payload', (server, payloads) => forgePayload(payloads.get(codeId(server))!, codeId(server), (text) => text.insert(0, 'forged '))],
+  ['a payload frame for a fresh payload no element names', () => forgePayload(Y.encodeStateAsUpdate(new Y.Doc()), 'unnamed-fresh', (text) => text.insert(0, 'hidden'))],
+  ['a fresh decorator aliasing an existing payload', (server) => forge(server, (doc) => paragraphNaming(doc, codeId(server)))],
+  ["a payload update outside the record's leases", (server, payloads) =>
+    forgePayload(payloads.get(codeId(server))!, codeId(server), (text) => text.insert(0, 'x'), helloItem(server).id.client)],
+  ['a write to the retired registers map', (server) => forge(server, (doc) => {
+    const map = new Y.Map<unknown>();
+    doc.getMap('registers').set('forged', map);
+    map.set('cell', 1);
+  })],
+  ['a decorator __regId retargeted', (server) => forge(server, (doc) => decorator(doc, 'code-block').setAttribute('__regId', 'elsewhere'))],
+  ['a forged split moving original text past an untouched block', (server) => forge(server, (doc) => doc.transact(() => {
+    const abc = (root(doc).toDelta() as { insert: Y.XmlText }[])[1].insert;
+    abc.delete(abc.length - 2, 2);
+    const copy = new Y.XmlText();
+    copy.setAttribute('__type', 'paragraph');
+    root(doc).insertEmbed(root(doc).length, copy);
+    copy.insert(0, 'bc');
+  }))],
+  ['a title write', (server) => forge(server, (doc) => doc.getText('title').insert(0, 'Forged '))],
+  ['a suggestions record write', (server) => forge(server, (doc) => doc.getMap('suggestions').set('forged', 'accepted'))],
+];
+
+describe('T5.0 a suggester body frame is refused by role @p:mean-2 @p:R17', () => {
+  it.each(FORGED)('%s', async (_name, make) => {
+    const opened = await start(openDoc());
+    await opened.dobj.create({ folderId: 'folder-1', ownerId: 'owner-1', markdown: SEED });
+    const before = Y.encodeStateAsUpdate(opened.dobj.document);
+    const payloads = new Map((await opened.dobj.snapshotForDuplicate()).payloads);
+    expect(payloads.size, 'the seed has payloads').toBeGreaterThan(0);
+    const suggester = await connect(opened, { role: 'suggester' });
+    await suggester.hello();
+    const forged = make(opened.dobj.document, payloads);
+    const update = forged instanceof Uint8Array ? forged : forged.update;
+    expect(update.byteLength).toBeGreaterThan(2);
+    await suggester.deliver(forged instanceof Uint8Array ? syncFrame(2, forged) : encodePayloadFrame(forged.payload, PAYLOAD_UPDATE, forged.update));
+    await suggester.pump();
+    expect(suggester.events).toContainEqual({ t: 'write-refused', reason: 'role' });
+    expect(suggester.closed?.code).toBe(CLOSE.revoked);
+    expect(Y.encodeStateAsUpdate(opened.dobj.document)).toEqual(before);
+    expect(new Map((await opened.dobj.snapshotForDuplicate()).payloads), 'every payload is byte-identical').toEqual(payloads);
+  });
+});

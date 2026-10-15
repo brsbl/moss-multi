@@ -12,8 +12,6 @@ import {
   DropdownMenuItem
 } from '@moss/shared/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: register payloads (A§10.10)
 import { RegisterDraft } from '@moss-multi/host/collab/registers';
 import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
@@ -26,6 +24,7 @@ import {
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 // moss-multi seam: read-only-decorators (T2.3)
 import { useIsEditorEditable } from '../components/media-primitives';
+import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { serializeChartConfig, parseChartConfig, CHART_PALETTES, DISPLAY_PALETTES, CHART_TYPES, CHART_TYPE_LABELS, getSafePalette } from '../utils/chartDefaults';
@@ -301,6 +300,7 @@ function ChartWrapper({
   // moss-multi seam: register payloads (A§10.10): a chart whose payload has not arrived is read-only, as a text field is.
   const payloadWritable = useMapRegisterWritable(editor, nodeKey);
   const editable = useIsEditorEditable() && payloadWritable;
+  const canAddComment = useBlockCanComment(editor, editable); // moss-multi seam: comments (T4.B3)
   useEffect(() => {
     if (!editable) setIsEditing(false);
   }, [editable]);
@@ -602,8 +602,8 @@ function ChartWrapper({
               </Tooltip>
             </TooltipProvider>
             ) : null}
-            {/* moss-multi seam: hide-registry (A§9) */}
-            {hidden('comments') ? null : (
+            {/* moss-multi seam: comments (T4.B3): Add comment follows the comment capability, so a commenter has it */}
+            {!canAddComment ? null : (
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -613,6 +613,7 @@ function ChartWrapper({
                       e.stopPropagation();
                       editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
                     }}
+                    data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
                     className="flex h-6 w-6 items-center justify-center rounded border border-surface-panel bg-surface-raised-control text-ink-muted shadow-sm hover:bg-surface-canvas hover:text-ink-default"
                   >
                     <StickyNote className="h-3 w-3" />

@@ -24,9 +24,13 @@ import { TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
-  docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
+  docOwner, openDocSession, subscribeDocOwners, waitDocsAcked, type DocSession, type SessionState,
 } from './doc-session.ts';
 import { bindFrontmatter } from './frontmatter-binding.ts';
+import { bindCommentAtoms } from '../comments/atoms.ts';
+import { setAckWaiter } from '../comments/api.ts';
+import { setMyPrincipalId } from '../comments/people.ts';
+import { markShared } from '../comments/paint.ts';
 import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity, startPresence } from './presence.ts';
 import { cursorController } from './cursors.ts';
@@ -72,9 +76,12 @@ class DocFields {
     if (this.#frontmatter?.doc === doc) return;
     this.#frontmatter?.stop();
     const stop = bindFrontmatter(this.store, docId, doc, canWrite);
+    setMyPrincipalId(localIdentity().awarenessData.user?.principalId ?? null);
+    setAckWaiter(waitDocsAcked);
+    const stopComments = bindCommentAtoms(this.store, docId, doc);
     const updated = () => this.store.set(syncNoteEntityAtom, { noteId: docId, updates: { updatedAt: Math.floor(Date.now() / 1000) } });
     doc.on('update', updated);
-    this.#frontmatter = { doc, stop: () => { stop(); doc.off('update', updated); } };
+    this.#frontmatter = { doc, stop: () => { stop(); stopComments(); doc.off('update', updated); } };
   }
 
   unbind(doc: Doc | null): void {
@@ -268,6 +275,8 @@ function BindingGate({ binding }: { binding: PaneBinding }): null {
  */
 function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding }): ReactNode {
   const [editor] = useLexicalComposerContext();
+  // Shared for the binding's whole life, plugin or not: comments never fall back to moss's local path meanwhile.
+  useLayoutEffect(() => markShared(editor, docId), [editor, docId]);
   useEffect(() => trackUndoFocus(editor), [editor]);
   const [excluded] = useState(() => excludedPropertiesFor(editor));
   const [identity] = useState(localIdentity);

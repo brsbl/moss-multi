@@ -50,6 +50,9 @@ function main(out) {
   // The node-family parity story (A§20) and the note it renders; oracle-only, never vendored.
   copyFileSync(join(HERE, 'DemoNote.stories.tsx'), join(TREE, 'packages/desktop/stories/DemoNote.stories.tsx'));
   copyFileSync(join(REPO, 'e2e/fixtures/demo-note.md'), join(TREE, 'packages/desktop/stories/demo-note.md'));
+  // The comment parity story (T4.3) and its note with one thread; oracle-only, never vendored.
+  copyFileSync(join(HERE, 'CommentNote.stories.tsx'), join(TREE, 'packages/desktop/stories/CommentNote.stories.tsx'));
+  for (const file of ['comment-note.md', 'comment-note.comments.json']) copyFileSync(join(REPO, 'e2e/fixtures', file), join(TREE, 'packages/desktop/stories', file));
   const outDir = resolve(out);
   // Ladle joins --outDir onto its cwd.
   const viteConfig = join(HERE, 'vite.oracle.mjs');
