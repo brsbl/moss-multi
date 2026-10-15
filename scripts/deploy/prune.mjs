@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // The staging prune (A§21, T8.2): before a suite=full deploy, deploy-staging.yml deletes the per-run principals earlier
-// suites signed up or seeded (`mm-*@example.invalid`, older than PRUNE_AGE_MS), at most PRUNE_CAP a run, so a full
-// suite stays under the growth cap (growth.mjs). Never the canary pool (`canary-*`) nor the demo accounts (`demo-*`,
-// and demo.mjs refuses an `mm` prefix) and their docs. It counts first (the dry run, printed), then deletes their grants, share links, invites and user rows; a
+// suites signed up or seeded, older than PRUNE_AGE_MS, at most PRUNE_CAP a run, so a full suite stays under the growth
+// cap (growth.mjs). It selects by a staging run's provenance in the email, never a bare `mm-` prefix: a staging run's
+// token (`mm-staging-<run id>-...`, deploy-staging's RUN_ID) or a seed token (`mm-s<run id>-<attempt>-<slots>-<k>`).
+// Never the canary pool (`canary-*`), the demo accounts (`demo-*`) or any other account, nor their docs. It counts first (the dry run, printed), then deletes their grants, share links, invites and user rows; a
 // user row's docs, folders, sessions, accounts and agents cascade. A DocDO's own storage is not reclaimed.
 //   node scripts/deploy/prune.mjs count-sql | select-sql      (the SQL for wrangler d1 execute --json)
 //   node scripts/deploy/prune.mjs plan COUNT.json SELECT.json OUT.sql
@@ -14,8 +15,10 @@ export const PRUNE_CAP = 6_000;
 /** Only principals older than this: none of a run still going (deploys are serialized; this is the margin). */
 export const PRUNE_AGE_MS = 2 * 60 * 60 * 1000;
 const BATCH = 100;
-/** A per-run principal (e2e/lib/principals.ts newPrincipal, scripts/deploy/seed.mjs seedEmail). */
-const PER_RUN = /^mm-[a-z0-9-]{1,200}@example\.invalid$/;
+/** A staging run's principal: e2e/lib/principals.ts newPrincipal under a staging RUN_ID, or scripts/deploy/seed.mjs seedEmail. */
+const PER_RUN = /^mm-(staging-\d{1,20}(-[a-z0-9]{1,24}){1,10}|s\d{1,20}-\d{1,4}-[cw][1-8]-\d{1,4})@example\.invalid$/;
+/** The same selection in SQLite: GLOB is case-sensitive and `_` is literal in it. PER_RUN checks every row it selects. */
+const PER_RUN_SQL = "(email GLOB 'mm-staging-[0-9]*-*@example.invalid' OR email GLOB 'mm-s[0-9]*-[0-9]*-[cw][1-8]-[0-9]*@example.invalid')";
 /** better-auth's ids: letters, digits, `-` and `_`. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -25,7 +28,7 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
  */
 export function pruneSql(now) {
   const cutoff = Math.floor(now - PRUNE_AGE_MS);
-  const where = `email LIKE 'mm-%@example.invalid' AND created_at < ${cutoff}`;
+  const where = `${PER_RUN_SQL} AND created_at < ${cutoff}`;
   return {
     count: `SELECT (SELECT count(*) FROM user WHERE ${where}) AS users, (SELECT count(*) FROM docs WHERE owner_user_id IN (SELECT id FROM user WHERE ${where})) AS docs`,
     // One more than the cap, so the plan can say more remain.
