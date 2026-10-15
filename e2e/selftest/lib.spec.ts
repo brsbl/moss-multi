@@ -224,6 +224,8 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map())).not.toEqual([]);
     expect(socketProblems([socket(0, 100, 4408), synced(200)], new Map(), OFF)).not.toEqual([]);
     expect(socketProblems([socket(0, 100, 1006), socket(200, 300, 1006, { synced: true }), synced(400)], new Map(), OFF)).not.toEqual([]);
+    // A second drop fails even when the page opens no third socket.
+    expect(socketProblems([socket(0, 100, 1006), socket(200, 300, 1006, { synced: true })], new Map(), OFF)).not.toEqual([]);
     expect(socketProblems([socket(0, 300, 1006), synced(200)], new Map(), OFF)).not.toEqual([]);
   });
   test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {

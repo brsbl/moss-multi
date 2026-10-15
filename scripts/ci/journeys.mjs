@@ -68,9 +68,8 @@ export const GROUPS = {
   social: ['j15-social', 'j08-agents', 'j15-comments-guard'],
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
-  // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step; and a withdraw racing its
-  // card's preview.
-  suggestPaste: ['j16-paste', 'j16-review-preview'],
+  // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
+  suggestPaste: ['j16-paste'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
   // A review racing its card's preview (T8.2), apart so the review shard fits its budget.
