@@ -113,13 +113,15 @@ export function writeRegister(node: LexicalNode, next: string): boolean {
   return true;
 }
 
-/** Node `node`'s compound payload doc while its value is there to read or edit; undefined otherwise. */
+/**
+ * Node `node`'s compound payload map once its state has arrived, empty or not (an empty one decodes to the codec's
+ * defaults and takes a first edit); undefined before, when the node's cache stands in and nothing writes.
+ */
 function heldMap(node: LexicalNode, registry: Registry | undefined): Y.Map<unknown> | undefined {
   const id = (node as RegisterNode).__regId;
   if (!registry || !id || registry.pending.has(id) || !MAP_REGISTERS[node.getType()]) return undefined;
-  const map = payloadMap(registry.host.hold(id));
-  // Not arrived yet: the node's cache stands in, and nothing writes against an empty base.
-  return map.size ? map : undefined;
+  const doc = registry.host.hold(id);
+  return registry.host.awaiting(id) ? undefined : payloadMap(doc);
 }
 
 /** The node's compound payload from its payload doc, or undefined when it has none (unbound, new, or not arrived). */
@@ -144,7 +146,9 @@ export function writeMapRegister(node: LexicalNode, next: Fields, base?: Fields)
   // A payload that has not arrived is read-only, as a text field is.
   if (!register) return true;
   const current = codec.decode(register);
-  const before = codec.encode(base ?? Object.fromEntries(Object.keys(next).map(field => [field, current[field]])), register);
+  // An empty payload holds nothing the caller's base can keep: its first edit writes every key (the base may be the
+  // node's cache, shown in its place).
+  const before = register.size === 0 ? new Map<string, unknown>() : codec.encode(base ?? Object.fromEntries(Object.keys(next).map(field => [field, current[field]])), register);
   const after = codec.encode(next, before);
   const implied = codec.implied?.(register);
   register.doc!.transact(() => {
@@ -212,8 +216,7 @@ export function mapRegisterWritable(editor: LexicalEditor, key: NodeKey): boolea
   const registry = registries.get(editor);
   const id = (editor.getEditorState()._nodeMap.get(key) as RegisterNode | undefined)?.__regId;
   if (!registry || !id || registry.pending.has(id)) return true;
-  const doc = registry.host.get(id);
-  return !!doc && !registry.host.awaiting(id) && payloadMap(doc).size > 0;
+  return registry.host.get(id) !== undefined && !registry.host.awaiting(id);
 }
 
 /** Calls `listener` when a payload is held, written first or arrives; editor updates are the caller's to watch. */

@@ -18,7 +18,7 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import {
-  actingUserId, actorLive, editsLiveFolder, liveLink, liveNotesBy, resolveDocAccess, resolveFolderAccess, writeActor, writeActorArgs, type WriteActor,
+  actingUserId, actorLive, editsLiveFolder, liveLink, liveNotesBy, readsLiveDoc, resolveDocAccess, resolveFolderAccess, writeActor, writeActorArgs, type WriteActor,
 } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
@@ -58,18 +58,20 @@ export interface DocRecord {
  * Inserts the row only while its folder is still live in its vault (a trash may be under way), `actor` can still edit
  * in it, and the acting user has fewer than LIVE_NOTE_CAP live notes, all in the one statement; null when the folder
  * or the access is gone, `full` at the cap. The cap is the creator's, never the vault's, so a collaborator cannot fill
- * an owner's vault shut.
+ * an owner's vault shut. A duplicate also needs `actor` to still read its live `sourceDocId` in that statement.
  */
 async function insertDoc(env: DocsEnv, db: Db, actor: WriteActor,
-  row: { folderId: string; ownerUserId: string; createdBy: string; actingUserId: string }): Promise<DocRecord | 'full' | null> {
+  row: { folderId: string; ownerUserId: string; createdBy: string; actingUserId: string; sourceDocId?: string }): Promise<DocRecord | 'full' | null> {
   const id = crypto.randomUUID();
   const now = Date.now();
   const doc = { id, folderId: row.folderId, title: '', filename: `pending-${id}.md`, createdAt: now, updatedAt: now };
   const vault = await vaultOf(db, row.folderId);
   const inserted = await env.DB.prepare(`WITH RECURSIVE ${upFrom(1)}
     INSERT INTO docs (id, owner_user_id, created_by, folder_id, title, filename, created_at, updated_at)
-    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND ${liveNotesBy(8)} < ${LIVE_NOTE_CAP} AND ${editsLiveFolder(1, 9)}`)
-    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault, row.actingUserId, ...writeActorArgs(actor, now)).run();
+    SELECT ?2, ?3, ?4, ?1, '', ?5, ?6, ?6 WHERE ${liveIn(7)} AND ${liveNotesBy(8)} < ${LIVE_NOTE_CAP} AND ${editsLiveFolder(1, 9)}
+      ${row.sourceDocId ? `AND ${readsLiveDoc(15, 9)}` : ''}`)
+    .bind(row.folderId, id, row.ownerUserId, row.createdBy, doc.filename, now, vault, row.actingUserId, ...writeActorArgs(actor, now),
+      ...(row.sourceDocId ? [row.sourceDocId] : [])).run();
   if ((inserted.meta?.changes ?? 0) > 0) return doc;
   const live = await env.DB.prepare(`SELECT ${liveNotesBy(1)} AS n`).bind(row.actingUserId).first<{ n: number }>();
   return (live?.n ?? 0) >= LIVE_NOTE_CAP ? 'full' : null;
@@ -188,9 +190,15 @@ async function duplicateDoc(request: Request, env: DocsEnv, docId: string): Prom
   const snapshot = await original.snapshotForDuplicate();
   const title = `${snapshot.title.trim() || 'Untitled'} copy`;
   const actor = writeActor(principal, shareTokenOf(request))!;
-  const doc = await insertDoc(env, db, actor, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
+  // The copy is made only while the caller still reads the source it snapshotted, media or none.
+  const doc = await insertDoc(env, db, actor,
+    { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId, sourceDocId: docId });
   if (doc === 'full') return noteCap();
-  if (!doc) return refuseInsert(env, db, principal, actor, folderId);
+  if (!doc) {
+    const still = await resolveDocAccess(db, principal, docId, shareTokenOf(request));
+    return still && !still.deleted ? refuseInsert(env, db, principal, actor, folderId)
+      : refuse(404, 'not-found', 'That note is no longer available, or you don’t have access to it.');
+  }
   const owner = folder.ownerUserId;
   return seeded(db, doc, folder.role, async () => {
     // The copy's media are the source's own record, so it shows the same files wherever it lands (A§16), placed only
