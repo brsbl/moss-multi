@@ -10,8 +10,8 @@ export const MEMBER_ROLES = ['viewer', 'commenter', 'suggester', 'editor'] as co
 /** Roles a grant or invite row stores. The vault owner is never stored; an `owner` grant makes a co-owner (P:People). */
 export const GRANT_ROLES = ROLES;
 
-/** What the share UI offers a person until suggestions ship (P:People); suggester stays in the schema only. */
-export const SHARE_ROLES = ['viewer', 'commenter', 'editor', 'owner'] as const;
+/** What the share UI offers a person (P:People). */
+export const SHARE_ROLES = ['viewer', 'commenter', 'suggester', 'editor', 'owner'] as const;
 export type ShareRole = (typeof SHARE_ROLES)[number];
 
 /** What the share UI offers a link: up to editor, and anonymous visitors read at viewer whatever it says. */
