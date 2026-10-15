@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 73% done** (173 of 237 planned tasks verified)
+**Overall: 74% done** (174 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 66 / 66 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 17 / 17 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -195,6 +195,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T3.B11 verified: a retried upload at the vault's quota now succeeds under its name or its -n name instead of being refused, an upload's memory stays within its declared size plus 1 MiB, a stalled upload is cut off with 408, an import into a full vault is refused before fetching, and the over-quota message says the vault's media storage is full.
 - 2026-10-14 — T4.Q verified: comments now run on m3's media-access, upload-quota and formula-merge fixes, with both sides kept and the full lane green on the m4 head.
 - 2026-10-14 — T5.Q verified: suggestions now run on m4's comment-draft, media and formula fixes, and an IME preedit flushed when its editor unmounts is merged and written under the note's own client, as compositionend writes it.
+- 2026-10-15 — T6.Q verified: history now runs on m5's comment-draft, media, quota and formula fixes, and e2e setup resends a sign-up or sign-in that wrangler's proxy dropped while a large note's auto version was being written.
 
 ## T1.1s identity audit
 
@@ -780,3 +781,4 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B11 (Asset quota, streaming reads and near-cap probe) checker P2: the B219 near-cap probe has no staging run and no Worker memory telemetry — j11-media's SP9 probe runs in CI on the local wrangler stack and records only byte count and upload time, and local workerd does not enforce the 128 MB isolate limit (evidence gap, no demonstrated failure) → add the staging leg with memory and duration telemetry to the m8 canary (T8.2).
 - T4.Q (m4 on the m3 fixes) checker P2, owned by m3 (from T3.B10): a duplicate refused after source access is lost returns a different 404 body: `apps/web/src/api/docs.ts:195-198` answers the late refusal (source revoked or trashed while the snapshot is pending) with refuse(404, 'not-found', <message>) while admission uses `notFound()` (respond.ts:8, no message), so the two denials are not byte-identical as A§8 requires (no unauthorized copy).
 - T5.Q (m5 on the m4 fixes) checker P2: no single regression test covers an unmounted Suggest-mode preedit — j01 covers unmounting a preedit in Edit mode and j16 covers compositionend in Suggest mode, but nothing exercises the combined unmount flush in register-input.ts (the red on 43da2b70 was a typecheck failure, not behavioral) → add a journey that unmounts an active Suggest-mode preedit while a peer edits, proven red against a draft-client apply.
+- T6.Q (No deterministic selftests for the setup auth resend) checker P2: setupPost's resend and mintPrincipal's 'already exists' recovery in e2e/lib/principals.ts have no focused selftests; add cases that an ordinary 503 stays a failure, a non-503 carrying the proxy text stays a failure, a second failed attempt stays a failure, and recovery returns the real user id.
