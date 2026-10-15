@@ -1,17 +1,17 @@
 # moss-multi progress
 
-**Overall: 85% done** (196 of 230 planned tasks verified)
+**Overall: 87% done** (205 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 63 / 63 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 14 / 15 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 21 / 21 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 17 / 17 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 17 / 17 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 66 / 66 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 19 / 19 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 12 / 12 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -217,6 +217,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T6.B1 verified: saved versions keep their stored bodies, because the cleanup sweep now skips anything a version row or a pending move still needs, moves run one at a time, and a named save revoked mid-save leaves nothing behind.
 - 2026-10-13 — T6.P verified: history now runs on the current m5, so versions, view, diff and restore hold with suggestions, comments and every m3 fix in place.
 - 2026-10-14 — T7.P verified: agent sync, Bot presence and the watch daemon now run on the current m6, so versions, suggestions, comments and every m3 fix hold with agents in place, and a 2 MB heading stays inside search's budget.
+- 2026-10-14 — T4.B3 verified: a comment, reply or edit that fails to send keeps its text as a retryable draft (a failed reply returns to its thread's reply box), a commenter can add comments on code, chart, canvas and image blocks from the block header, block highlights clear when their comments leave, and hovering checks comment ranges once per frame.
+- 2026-10-14 — T3.B10 verified: copying or duplicating a note's media now requires live read access to the source, an upload whose bytes do not match its declared image or video type is refused 415 before anything is stored, and a private image one account loaded is never served from the browser's cache to the next account signed in to the same browser.
+- 2026-10-14 — T3.B15 verified: two people editing the same formula or variable name now merge each other's changes at the right place without moving a caret inside a reference, a formula so crowded no reference marker is free resolves whole to the stored one with a notice, an IME preedit survives a peer moving its block, and an empty chart or sketch accepts its first edit.
+- 2026-10-14 — T3.B11 verified: a retried upload at the vault's quota now succeeds under its name or its -n name instead of being refused, an upload's memory stays within its declared size plus 1 MiB, a stalled upload is cut off with 408, an import into a full vault is refused before fetching, and the over-quota message says the vault's media storage is full.
+- 2026-10-14 — T4.Q verified: comments now run on m3's media-access, upload-quota and formula-merge fixes, with both sides kept and the full lane green on the m4 head.
+- 2026-10-14 — T5.Q verified: suggestions now run on m4's comment-draft, media and formula fixes, and an IME preedit flushed when its editor unmounts is merged and written under the note's own client, as compositionend writes it.
+- 2026-10-15 — T6.Q verified: history now runs on m5's comment-draft, media, quota and formula fixes, and e2e setup resends a sign-up or sign-in that wrangler's proxy dropped while a large note's auto version was being written.
+- 2026-10-15 — T7.Q verified: agent sync, Bot presence and the watch daemon now run on m6's comment-draft, media, quota and formula fixes, with both sides kept and the full lane green on the m7 head.
 
 ## T1.1s identity audit
 
@@ -244,6 +252,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 - The [tests-first export run](https://github.com/brsbl/moss-multi/actions/runs/37164692835) reproduced a dependent formula exporting frozen `4` instead of recomputed `6`. Export now carries the real doc identity into evaluation; the regression also covers a foreign-note fallback, an unchanged live Y.Doc, export-cache invalidation and wake.
 - The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
+- 2026-10-14 — T7.S6 verified: a note's `assets/` images and videos now travel with `add`, `pull`, `push` and `sync`: a file missing on either side is copied over, neither side is overwritten, a name the server stores differently moves the note's reference with it, and a failed transfer is reported as failed.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
 - 2026-10-14 — T8.R verified: shipping work now sits on the final M7, and a doc create or agent push body is read only after the caller's auth, access and rate token, so an unauthorized or rate-limited sender is refused before any upload is read.
 
@@ -317,6 +326,14 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T8.0 checker P2 (Reload on an outdated pane discards unacked edits without asking; Codex P1, downgraded): if MIN_CLIENT_PROTOCOL rises while a pane holds unacked offline edits, the session ends `outdated` and Reload calls reloadDocument() → allowUnload(), so the beforeunload guard never fires; unreachable while CLIENT_PROTOCOL = MIN_CLIENT_PROTOCOL = 1.
 - T8.0 checker P2 (a REST 426 before any doc session exists gives no reload prompt): reportOutdated() only ends existing sessions, so an access GET refused 426 maps to 'unavailable' in access.ts and retries; handle with the first real protocol bump.
 - T8.0 checker P2 (bundles from before T8.0 retry on 4426 instead of stopping): their closeAction treats unknown codes as 'retry', so they reconnect with backoff and the connection-lost banner rather than the Reload prompt, never writing; no pre-T8.0 bundle has shipped.
+
+### From T7.S6's checker (210bbd2, 2026-10-14)
+
+- T7.S6 checker P2 (A media 429 on a tracked note does not stop the pass): noteMedia rethrows CliError(429), but the tracked-note loop in packages/cli/src/sync.ts only rethrows RateLimited, so the 429 becomes a 'failed' result, the pass moves on and watch never backs off; untracked adopt handles it; the note's text is retried next pass.
+- T7.S6 checker P2 (Media refs stop at spaces and parentheses, and code fences are scanned): mediaRefs ends a name at a space, ')' or a quote even inside <...>, and scans raw text, so an example inside a code fence is uploaded and can be rewritten after a collision; percent-encoded names work.
+- T7.S6 checker P2 (Collision renames are not saved before an interrupted pass): the original-to-stored rename map lives only in memory, so a 429 or abort before the note is rewritten makes the next pass upload those collision files again.
+- T7.S6 checker P2 (The refused-upload test fails before the request reaches the server): the 11 MB PNG is rejected by the CLI's own size check before any POST, so no server-refused upload (403 or 429) is exercised; a failed transfer is still reported failed with exit 1.
+- T7.S6 checker P2 (Duplicate and misleading media messages): a local media file that differs from the server's copy is reported failed twice per sync (before and after reconcile), and a server rename that only cleaned up the name ('my photo.png' to 'my-photo.png') is reported as the server 'already holds another my photo.png'.
 
 ### From T7.B2's checker (2103d86, 2026-10-12)
 
@@ -952,3 +969,13 @@ Local browser verification remains assigned to the independent checker under the
 - T6.B1 (A spill held past its 1 h grace has no sweep protection) checker P2: the sweep skips keys held by a version row or a still-staged version, but not a named or auto spill whose put is still running or a staged move a later restore pruned; an R2 put stalled past SPILL_GRACE_MS lets another pass's sweep delete the key after the save publishes its row. Protect a key from its spill until the version row lands.
 - T6.B1 (The failed-auto test does not pin the immediate sweep) checker P2: `versions-lifecycle.test` asserts the failed auto version's cleanup only after wake(), so it still passes if the #versionsChanged() call in the #autoVersion catch is removed; assert the spill is gone before the wake.
 - T6.P (onClose compares connection ids, not socket identity, when deciding on the last-disconnect auto version) checker P2: a replacement socket that opens with the same connection id before the stale one closes is left out, so an auto version can be written while a peer is still connected (an early checkpoint, no lost edits); compare with `other !== connection && isOpen(other)` as m5's alarm logic does, and extend the reused-id harness case to assert no version is written.
+- T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: failed replies can come back in reverse submission order across frames — if reply B fails and is offered in one frame and the earlier reply A fails in a later frame, the reply box holds B then A (both texts survive; order is kept only among failures offered in the same frame, and the j15 leg sorts the paragraphs it reads back, so it does not check order).
+- T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: the refusal banner stays up after a successful retry until its 4 s timer expires, because success does not call settleRefusal for the matching refusal (carried-over P2).
+- T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: the block header Add comment button (`data-comment-entry`, a commenter's only enabled code-block header button) has an empty aria-label and no text, so it has no accessible name.
+- T3.B10 (Asset upload authority and content checks) checker P2: SVG sniffing rejects pathological-but-valid SVGs (U+FEFF/U+1680 in a namespace prefix; non-IBM037 EBCDIC code pages) — accepted by the coordinator as intended hardening of B166; nothing is released, so no shipped contract narrows.
+- T3.B15 (Register and formula collaborative editing) checker P2: astral token markers can collide with literal lone surrogates brought together by concurrent deletions — once every non-surrogate BMP unit is used, createTokenCodec reserves only astral code points already present as complete surrogate pairs, so a lone high and a lone low surrogate that two concurrent deletions bring together can form an assigned marker (e.g. U+F0000) and decode turns that literal text into a reference (needs a formula using every non-surrogate BMP unit plus lone surrogates) → also reserve astral code points a lone high or low surrogate in any source could form.
+- T3.B11 (Asset quota, streaming reads and near-cap probe) checker P2: the B219 near-cap probe has no staging run and no Worker memory telemetry — j11-media's SP9 probe runs in CI on the local wrangler stack and records only byte count and upload time, and local workerd does not enforce the 128 MB isolate limit (evidence gap, no demonstrated failure) → add the staging leg with memory and duration telemetry to the m8 canary (T8.2).
+- T4.Q (m4 on the m3 fixes) checker P2, owned by m3 (from T3.B10): a duplicate refused after source access is lost returns a different 404 body: `apps/web/src/api/docs.ts:195-198` answers the late refusal (source revoked or trashed while the snapshot is pending) with refuse(404, 'not-found', <message>) while admission uses `notFound()` (respond.ts:8, no message), so the two denials are not byte-identical as A§8 requires (no unauthorized copy).
+- T5.Q (m5 on the m4 fixes) checker P2: no single regression test covers an unmounted Suggest-mode preedit — j01 covers unmounting a preedit in Edit mode and j16 covers compositionend in Suggest mode, but nothing exercises the combined unmount flush in register-input.ts (the red on 43da2b70 was a typecheck failure, not behavioral) → add a journey that unmounts an active Suggest-mode preedit while a peer edits, proven red against a draft-client apply.
+- T6.Q (No deterministic selftests for the setup auth resend) checker P2: setupPost's resend and mintPrincipal's 'already exists' recovery in e2e/lib/principals.ts have no focused selftests; add cases that an ordinary 503 stays a failure, a non-503 carrying the proxy text stays a failure, a second failed attempt stays a failure, and recovery returns the real user id.
+- T7.Q (Two dismissed CI failures have no baseline failure on record) checker P2: of the four failures dismissed in the full-lane reruns, note-store.linear (run 38535601745) and suggest-ingest T5.2 (run 38512418550) failed the same assertions on earlier base runs, but two have no baseline on record: the WebKit j15-comments-drafts uncaught 'ResizeObserver loop' on attempt 1 (comment code and journey identical to m6 1b681ff1; head and m6 both passed 8 of 8 repeats in runs 38717509595 and 38717513000) and suggest.test.ts:791 T5.4 'one fixed frame size in every scenario' (2 sizes instead of 1).

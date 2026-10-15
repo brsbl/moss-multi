@@ -82,6 +82,12 @@ export const EDITOR_CANVAS_ATTR = 'data-editor-canvas';
 /** DS menus, dialogs, popovers, sheets and the phone notes overlay: the floating detector's allowlist. */
 export const OVERLAY_SURFACE_ATTR = 'data-overlay-surface';
 
+/**
+ * A block header's Add comment control (code, chart, canvas, media). The one control a `readonly` body may hold, so a
+ * commenter can comment on blocks.
+ */
+export const COMMENT_ENTRY_ATTR = 'data-comment-entry';
+
 /** moss's own floating selection toolbar. */
 export const FLOATING_TOOLBAR_ATTR = 'data-floating-selection-toolbar';
 

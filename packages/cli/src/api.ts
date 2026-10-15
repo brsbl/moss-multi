@@ -115,10 +115,11 @@ export function createApi(options: ApiOptions) {
   const base = options.serverUrl;
 
   async function call(path: string, init: RequestInit = {}, finish = false): Promise<Response> {
-    const stoppable = (init.method ?? 'GET') === 'GET' && !finish && options.signal ? { signal: options.signal } : {};
+    const read = (init.method ?? 'GET') === 'GET' || init.method === 'HEAD';
+    const stoppable = read && !finish && options.signal ? { signal: options.signal } : {};
     const headers = new Headers(init.headers);
     if (options.token) headers.set('authorization', `Bearer ${options.token}`);
-    if (init.body !== undefined) headers.set('content-type', 'application/json');
+    if (init.body !== undefined && !headers.has('content-type')) headers.set('content-type', 'application/json');
     try {
       return await fetchNoRedirect(fetchImpl, `${base}${path}`, { ...init, ...stoppable, headers });
     } catch (error) {
@@ -176,6 +177,33 @@ export function createApi(options: ApiOptions) {
         // Not a push answer: map the status below.
       }
       throw await refusal(response, 'that doc', text);
+    },
+    /** The sha256 of the doc's media file `name` (its ETag), or null when the doc has none by that name. */
+    assetHash: async (id: string, name: string): Promise<string | null> => {
+      const response = await call(`${doc(id)}/assets/${encodeURIComponent(name)}`, { method: 'HEAD' });
+      if (response.status === 404) return null;
+      if (!response.ok) throw await refusal(response, `assets/${name}`, '');
+      return /^"([0-9a-f]{64})"$/.exec(response.headers.get('etag') ?? '')?.[1] ?? '';
+    },
+    /** The doc's media file `name`, byte for byte. */
+    asset: async (id: string, name: string): Promise<Uint8Array> => {
+      const response = await call(`${doc(id)}/assets/${encodeURIComponent(name)}`);
+      if (!response.ok) throw await refusal(response, `assets/${name}`);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+    /** Uploads `bytes` into the doc as `name`; answers the name the doc stores them under, which may differ. */
+    uploadAsset: async (id: string, name: string, bytes: Uint8Array, contentType: string): Promise<string> => {
+      const response = await call(`${doc(id)}/assets?filename=${encodeURIComponent(name)}`, { method: 'POST', body: bytes, headers: { 'content-type': contentType } });
+      const text = await response.text();
+      if (!response.ok) {
+        const message = messageOf(text);
+        // The server's own words for what it refused (size, type, quota, rate), past the generic mapping.
+        if (message && ![401, 404].includes(response.status) && message !== 'forbidden') throw new CliError(1, message, response.status);
+        throw await refusal(response, 'that doc', text);
+      }
+      const answer = JSON.parse(text) as { filename?: unknown };
+      if (typeof answer.filename !== 'string') throw new CliError(1, 'the server answered the upload without a file name');
+      return answer.filename;
     },
     versions: async (id: string) => (await json<{ versions: VersionRow[] }>(`${doc(id)}/versions`)).versions,
     snapshot: async (id: string, name: string) =>
