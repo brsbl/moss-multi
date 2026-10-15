@@ -316,8 +316,14 @@ describe('deploy-staging.yml', () => {
   it('uploads only the credential-free canary files', () => {
     const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
     expect(uploads.length).toBeGreaterThanOrEqual(1);
-    for (const upload of uploads) {
-      expect(upload.with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+    const allowed = {
+      tail: [['e2e/canary-artifacts/tail-summary.json']],
+      other: [['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']],
+    };
+    for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
+      for (const upload of job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact'))) {
+        expect(allowed[name === 'tail' ? 'tail' : 'other'], name).toContainEqual(upload.with.path.trim().split('\n').map((line) => line.trim()).sort());
+      }
     }
   });
 
@@ -873,12 +879,13 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
   const counted = (users, docs) => JSON.stringify([{ results: [{ users, docs }], success: true, meta: {} }]);
   const row = (n, email = `mm-staging-1-1-chromium-3-w0-ada-${n}@example.invalid`) => ({ id: `u${n}`, email });
 
-  it('selects only per-run principals older than the cutoff, never the canary pool or the demo accounts', () => {
+  it('selects only per-run principals older than the cutoff, by their run provenance, never the canary pool or the demo accounts', () => {
     const { count, select } = pruneSql(NOW);
     for (const sql of [count, select]) {
-      // `mm-%` already leaves out the canary pool and the demo accounts (demo.mjs refuses an `mm` prefix).
-      expect(sql).toMatch(/email LIKE 'mm-%@example\.invalid'/);
-      expect(sql).not.toMatch(/NOT LIKE/);
+      // A staging run's token (`staging-<run id>`, the suite and canary RUN_ID) or this run's seed token, never a bare `mm-`.
+      expect(sql).toContain("email GLOB 'mm-staging-[0-9]*-*@example.invalid'");
+      expect(sql).toContain("email GLOB 'mm-s[0-9]*-[0-9]*-[cw][1-8]-[0-9]*@example.invalid'");
+      expect(sql).not.toMatch(/LIKE/);
       expect(sql).toContain(`created_at < ${NOW - 2 * 60 * 60 * 1000}`);
     }
     expect(select).toMatch(new RegExp(`ORDER BY created_at LIMIT ${PRUNE_CAP + 1}$`));
@@ -901,10 +908,17 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
   });
 
   it('refuses any row that is not a per-run principal, and an id that is not a plain id', () => {
-    for (const email of ['canary-ada@example.invalid', 'demo-ada@example.invalid', 'mm-x-ada-1@example.com', 'owner@gmail.com']) {
+    for (const email of [
+      'canary-ada@example.invalid', 'demo-ada@example.invalid', 'mm-x-ada-1@example.com', 'owner@gmail.com',
+      // An `mm-` account without a staging run's provenance: a demo or diagnostic account, never pruned.
+      'mm-x-ada-1@example.invalid', 'mm-demo-ada@example.invalid', 'mm-stagingx-1-ada-1@example.invalid', 'mm-s1-1-z9-1@example.invalid',
+    ]) {
       expect(() => prunePlan(counted(1, 0), selected([row(1, email)])), email).toThrow(/refusing/);
     }
-    expect(() => prunePlan(counted(1, 0), selected([{ id: "u1') OR 1=1 --", email: 'mm-x-ada-1@example.invalid' }]))).toThrow(/refusing/);
+    expect(() => prunePlan(counted(1, 0), selected([{ id: "u1') OR 1=1 --", email: 'mm-staging-1-w0-ada-1@example.invalid' }]))).toThrow(/refusing/);
+    // The canary job's own minted principals (RUN_ID staging-<run id>) and a suite shard's are per-run.
+    const plan = prunePlan(counted(2, 0), selected([row(1, 'mm-staging-38656278214-w0-ada-1@example.invalid'), row(2)]));
+    expect(plan.ids).toEqual(['u1', 'u2']);
   });
 
   it('prunes after the migrations and before the growth check of a full-suite deploy, its plan before any delete', () => {
