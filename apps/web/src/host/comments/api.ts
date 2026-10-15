@@ -1,7 +1,8 @@
 // The comment REST calls (docs/design/comments.md §4, §12). A new comment or reply shows at once as pending in the
 // doc's model, under the id the composer proposed, until the server's record arrives over the doc socket. An
 // `anchor-pending` answer means the server lacks an item the selection names (an edit not yet acked): the call waits
-// for this tab's acks and retries, at most 3 times. Any other refusal drops the pending comment and says why.
+// for this tab's acks and retries, at most 3 times. Any other refusal drops the pending comment and says why, and the
+// submit stays as a draft (its text, proposed id and anchor, parent or comment) for the composer to retry.
 import type { Anchor } from '@moss-multi/core/anchor-frame';
 import type { Doc } from 'yjs';
 import { shareToken } from '../media/web-asset-url.ts';
@@ -60,12 +61,81 @@ function pendingRecord(text: string, parentId?: string): CommentRecord {
   return { author: myPrincipalId() ?? '', text, createdAt: now(), updatedAt: now(), source: 'user', ...(parentId ? { parentId } : {}), reactions: {} };
 }
 
-async function send(docId: string, doc: Doc, id: string, body: Record<string, unknown>): Promise<void> {
+/** The server's answer to a bound composer's submit. */
+export type Completion = { ok: true } | { ok: false; error: string };
+/** Where a bound composer's draft lives in a doc: the new-comment composer, a thread's reply box, or a comment's edit. */
+export type DraftSlot = 'root' | `reply:${string}` | `edit:${string}`;
+/**
+ * A bound composer's submit, kept until the server takes it: its text, the id it proposed (the edited comment's for an
+ * edit), and the minted anchor or the parent. A failure marks it `failed` and keeps it for a retry.
+ */
+export interface Draft { id: string; text: string; anchor?: Minted; parentId?: string; failed?: string; done: Promise<Completion> }
+
+/** Each slot's submits, oldest first: in flight, or failed and kept until a retry or a later submit replaces them. */
+const drafts = new Map<string, Draft[]>();
+const draftKey = (docId: string, slot: DraftSlot) => `${docId}\n${slot}`;
+const held = (docId: string, slot: DraftSlot): Draft[] => drafts.get(draftKey(docId, slot)) ?? [];
+
+/** The slot's latest submit still held: in flight, or failed. */
+export function draftOf(docId: string, slot: DraftSlot): Draft | undefined {
+  return held(docId, slot).at(-1);
+}
+
+/** The slot's failed submits, oldest first. */
+export function failedDrafts(docId: string, slot: DraftSlot): Draft[] {
+  return held(docId, slot).filter((draft) => draft.failed !== undefined);
+}
+
+/** Who is told when a submit in a slot fails: the composer open on it, whichever instance sent the submit. */
+const failureListeners = new Map<string, Set<() => void>>();
+
+/** Calls `listener` each time a submit in `slot` fails; returns the unsubscribe. */
+export function onDraftFailed(docId: string, slot: DraftSlot, listener: () => void): () => void {
+  const key = draftKey(docId, slot);
+  const set = failureListeners.get(key) ?? new Set();
+  set.add(listener);
+  failureListeners.set(key, set);
+  return () => {
+    set.delete(listener);
+    if (!set.size && failureListeners.get(key) === set) failureListeners.delete(key);
+  };
+}
+
+/** Puts `entry` last in its slot (the latest submit, whose answer the composer waits on), or with `remove` drops it. */
+function place(docId: string, slot: DraftSlot, entry: Draft, remove = false): void {
+  const list = held(docId, slot).filter((draft) => draft !== entry);
+  if (!remove) list.push(entry);
+  if (list.length) drafts.set(draftKey(docId, slot), list);
+  else drafts.delete(draftKey(docId, slot));
+}
+
+/**
+ * Holds `draft` in `slot` while `write` runs: a success clears it and a failure marks it. The slot's failed drafts that
+ * `replaces` matches are dropped first, as this submit carries what the composer now holds in their place.
+ */
+function submit(
+  docId: string, slot: DraftSlot, draft: Omit<Draft, 'done' | 'failed'>, write: () => Promise<Completion>, replaces: (old: Draft) => boolean,
+): Draft {
+  for (const old of failedDrafts(docId, slot)) if (replaces(old)) place(docId, slot, old, true);
+  const entry: Draft = { ...draft, done: Promise.resolve<Completion>({ ok: true }) };
+  place(docId, slot, entry);
+  entry.done = write().then((result) => {
+    if (result.ok) place(docId, slot, entry, true);
+    else {
+      entry.failed = result.error;
+      for (const listener of [...(failureListeners.get(draftKey(docId, slot)) ?? [])]) listener();
+    }
+    return result;
+  });
+  return entry;
+}
+
+async function send(docId: string, doc: Doc, id: string, body: Record<string, unknown>): Promise<Completion> {
   const model = modelFor(doc);
   for (let attempt = 0; ; attempt += 1) {
     const result = await post(`/api/docs/${encodeURIComponent(docId)}/comments`, { id, ...body });
     // A lost answer to a write that landed: the record is already here.
-    if (result.ok || result.error === 'exists') return;
+    if (result.ok || result.error === 'exists') return { ok: true };
     if (result.error === 'anchor-pending' && attempt < RETRIES && (await waitDocsAcked([docId], ACK_WAIT_MS))) {
       // Acked here can still be in flight to the DocDO's store; give it a beat.
       await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
@@ -73,24 +143,59 @@ async function send(docId: string, doc: Doc, id: string, body: Record<string, un
     }
     model.dropPending(id);
     refuseInput(REFUSED[result.error ?? ''] ?? FAILED);
-    return;
+    return { ok: false, error: result.error ?? 'failed' };
   }
 }
 
-/** Creates a root comment on `minted`; it paints at once. */
+const sameAnchor = (a: Minted, b: Minted) => a.kind === b.kind && a.start === b.start && a.end === b.end;
+
+/**
+ * Creates a root comment on `minted`; it paints at once. A resubmit of the same text on the same anchor is the same
+ * comment: one still in flight is not sent again, and a failed one is retried under its proposed id, so a write whose
+ * answer was lost lands once. Any other text is a new comment, and replaces the anchor's failed drafts.
+ */
 export function createComment(docId: string, doc: Doc, minted: Minted, text: string): string {
-  const id = crypto.randomUUID();
+  const onAnchor = (draft: Draft) => draft.anchor !== undefined && sameAnchor(draft.anchor, minted);
+  const same = held(docId, 'root').filter((draft) => onAnchor(draft) && draft.text === text);
+  const inFlight = same.find((draft) => draft.failed === undefined);
+  if (inFlight) {
+    place(docId, 'root', inFlight);
+    return inFlight.id;
+  }
+  const id = same[0]?.id ?? crypto.randomUUID();
   const anchor: Anchor = { kind: minted.kind, start: minted.start, end: minted.end, status: 'anchored', quote: minted.quote };
   modelFor(doc).addPending(id, pendingRecord(text), anchor);
-  void send(docId, doc, id, { text, anchor: { kind: minted.kind, start: minted.start, end: minted.end, quote: minted.quote } });
+  submit(docId, 'root', { id, text, anchor: minted }, () =>
+    send(docId, doc, id, { text, anchor: { kind: minted.kind, start: minted.start, end: minted.end, quote: minted.quote } }), onAnchor);
   return id;
 }
 
-/** Adds a reply to the thread `parentId`; it shows at once. */
+/** The failed drafts a reply box holds (it was offered their text), per thread, while its submit runs: `carrying`. */
+const carried = new Map<string, ReadonlySet<string>>();
+
+/** Runs `send` with the reply box of `parentId` holding the failed drafts `ids`, so the reply it sends replaces them. */
+export function carrying<T>(docId: string, parentId: string, ids: Iterable<string>, send: () => T): T {
+  const key = draftKey(docId, `reply:${parentId}`);
+  carried.set(key, new Set(ids));
+  try {
+    return send();
+  } finally {
+    carried.delete(key);
+  }
+}
+
+/**
+ * Adds a reply to the thread `parentId`; it shows at once. Each submit is its own reply, even while an earlier one is
+ * in flight. A resubmit of a failed reply's exact text retries it under its proposed id. It replaces only that draft
+ * and the failed drafts its reply box holds (`carrying`); any other failed reply stays to be offered.
+ */
 export function replyTo(docId: string, doc: Doc, parentId: string, text: string): string {
-  const id = crypto.randomUUID();
+  const slot: DraftSlot = `reply:${parentId}`;
+  const holds = carried.get(draftKey(docId, slot)) ?? new Set<string>();
+  const failed = failedDrafts(docId, slot).filter((draft) => draft.text === text);
+  const id = (failed.find((draft) => holds.has(draft.id)) ?? failed[0])?.id ?? crypto.randomUUID();
   modelFor(doc).addPending(id, pendingRecord(text, parentId));
-  void send(docId, doc, id, { text, parentId });
+  submit(docId, slot, { id, text, parentId }, () => send(docId, doc, id, { text, parentId }), (old) => old.id === id || holds.has(old.id));
   return id;
 }
 
@@ -102,10 +207,48 @@ export async function resolveThread(docId: string, rootId: string, resolved: boo
 
 const commentPath = (docId: string, id: string) => `/api/docs/${encodeURIComponent(docId)}/comments/${encodeURIComponent(id)}`;
 
-/** Rewrites the caller's own comment; the new text arrives with the record. */
-export async function editComment(docId: string, id: string, text: string): Promise<void> {
-  const result = await post(commentPath(docId, id), { text }, 'PATCH');
-  if (!result.ok) refuseInput(REFUSED[result.error ?? ''] ?? "That comment couldn't be edited. Try again.");
+/** Each comment's last edit save, which the next one waits for: the server keeps whichever text arrives last. */
+const editTail = new Map<string, Promise<Completion>>();
+/** Each comment's text as this tab's last landed save left it. */
+const landedEdit = new Map<string, string>();
+
+/**
+ * Whether saving `text` over comment `id`, stored as `stored`, needs a write: it differs from the stored text, from
+ * the text this tab's saves in flight (else its last landed one) leave, or a save of it failed and waits for a retry.
+ */
+export function editNeedsSave(docId: string, id: string, text: string, stored: string): boolean {
+  const key = draftKey(docId, `edit:${id}`);
+  const list = held(docId, `edit:${id}`);
+  if (text !== stored || list.some((draft) => draft.failed !== undefined)) return true;
+  const leaves = list.filter((draft) => draft.failed === undefined).at(-1)?.text ?? landedEdit.get(key);
+  return leaves !== undefined && leaves !== text;
+}
+
+/**
+ * Rewrites the caller's own comment; the new text arrives with the record. Saves of one comment go out one at a time, in
+ * the order they were made, so an older revision never lands after a newer one, and a save that lands supersedes the
+ * comment's earlier failed ones.
+ */
+export function editComment(docId: string, id: string, text: string): Promise<Completion> {
+  const slot: DraftSlot = `edit:${id}`;
+  const key = draftKey(docId, slot);
+  const before = editTail.get(key);
+  const { done } = submit(docId, slot, { id, text }, async () => {
+    if (before) await before;
+    const result = await post(commentPath(docId, id), { text }, 'PATCH');
+    if (result.ok) {
+      landedEdit.set(key, text);
+      for (const old of failedDrafts(docId, slot)) place(docId, slot, old, true);
+      return { ok: true };
+    }
+    refuseInput(REFUSED[result.error ?? ''] ?? "That comment couldn't be edited. Try again.");
+    return { ok: false, error: result.error ?? 'failed' };
+  }, () => true);
+  editTail.set(key, done);
+  void done.then(() => {
+    if (editTail.get(key) === done) editTail.delete(key);
+  });
+  return done;
 }
 
 /** Deletes the caller's own comment, or with `thread` their whole thread; the deletion arrives with the records. */

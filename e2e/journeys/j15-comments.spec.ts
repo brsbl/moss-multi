@@ -2,7 +2,8 @@
 // and presses Cmd+Shift+A, writes the comment, and keeps typing; the highlight is CSS Custom Highlight paint derived
 // from the server's anchor record, so the peer sees it, bold across it never blinks it, and delete then Cmd+Z brings
 // it back. Threads open from the gutter, take replies and resolve; a commenter comments without editing; a detached
-// thread is listed with its quote. No marker reaches the DOM.
+// thread is listed with its quote. No marker reaches the DOM. Block comments and what a composer keeps are
+// j15-comments-drafts.
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { BODY_BINDING_ATTR, DOC_STATE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
