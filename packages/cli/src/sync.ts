@@ -2,22 +2,23 @@
 // tracked file is pulled, pushed (the server three-way merges) or both; an untracked `.md` becomes a doc titled
 // from its stem and the file takes the doc's filename; a server filename change renames the local file; a local
 // delete never reaches the server (the file is pulled again); failed hunks wait in `<file>.rej`. A moss vault note
-// goes through the moss interchange path (A§12) and its file stays in moss form. `watch` runs the same pass on debounced filesystem
-// events and an idle tick, over REST only.
+// goes through the moss interchange path (A§12) and its file stays in moss form. A note's `assets/` media go with it
+// (media.ts). `watch` runs the same pass on debounced filesystem events and an idle tick, over REST only.
 import { watch as watchFs, type Dirent, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative } from 'node:path';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
+import { noteMedia } from './media.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import {
-  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, readBase, readConfined, recordBase, recordPull, recordSynced,
+  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
   renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
 export type SyncAction =
   | 'up-to-date' | 'pulled' | 'pushed' | 'merged' | 'suggested' | 'repulled' | 'created' | 'renamed' | 'remote-gone'
-  | 'skipped-degenerate' | 'failed';
+  | 'skipped-degenerate' | 'failed' | 'uploaded' | 'downloaded';
 
 export interface SyncResult {
   file: string;
@@ -338,7 +339,24 @@ export interface AdoptOptions {
  * content), and the file takes the doc's filename and text. A moss note goes through the moss interchange path: its
  * title line names the doc, its comments.json comes too, and the file is left in moss form.
  */
-export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc }> {
+export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
+  const adopted = await createFrom(ctx, rel, options);
+  return { ...adopted, media: await syncMedia({ ...ctx, force: false }, adopted.doc.id, true) };
+}
+
+/**
+ * The note's media step (media.ts) on the file the doc tracks now. With `settle`, a note whose references moved to the
+ * names the server gave its files is pushed at once.
+ */
+async function syncMedia(ctx: SyncContext, docId: string, settle: boolean): Promise<SyncResult[]> {
+  const meta = readMeta(ctx.root, docId);
+  if (!meta || !exists(ctx.root, meta.file)) return [];
+  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: true, download: true }, docId, meta.file);
+  if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
+  return step.results;
+}
+
+async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc }> {
   const { root, client, folds } = ctx;
   const bytes = readConfined(root, rel);
   const text = toLf(decode(bytes));
@@ -460,7 +478,11 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       const row = rows.get(tracked.docId);
       const { meta, result } = followServerName(ctx, tracked, row, trackedMetas(root));
       if (result) results.push(result);
-      results.push(await reconcile(ctx, meta, row));
+      // Media first, so a pushed reference finds its file; a doc no longer listed is left to reconcile to report.
+      if (row) results.push(...(await syncMedia(ctx, meta.docId, false)));
+      const reconciled = await reconcile(ctx, meta, row);
+      results.push(reconciled);
+      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(ctx, meta.docId, true)));
     } catch (error) {
       if (stopped(error)) return results;
       if (error instanceof RateLimited) throw error;
@@ -472,7 +494,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
     if (stopped()) return results;
     touch();
     try {
-      results.push((await adopt(ctx, rel)).result);
+      const adopted = await adopt(ctx, rel);
+      results.push(adopted.result, ...adopted.media);
     } catch (error) {
       if (stopped(error)) return results;
       if (error instanceof CliError && error.status === 429) throw new RateLimited(60);

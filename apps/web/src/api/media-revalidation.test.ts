@@ -14,11 +14,15 @@ const uniquePng = () => new Uint8Array([...PNG, ...new TextEncoder().encode(`${D
 const hashOf = async (bytes: Uint8Array<ArrayBuffer>) =>
   [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
+/** `snapshot:<doc>` holds a duplicate's snapshot of its source, after every access check and before the copy is made. */
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
-  get: () => ({
+  get: (id: { name: string }) => ({
     setName: async () => undefined,
-    snapshotForDuplicate: async () => ({ title: 'Original', state: new Uint8Array([1]), payloads: [] }),
+    snapshotForDuplicate: async () => {
+      await pass(`snapshot:${id.name}`);
+      return { title: 'Original', state: new Uint8Array([1]), payloads: [] };
+    },
     createFromSnapshot: async () => undefined,
   }),
 };
@@ -317,5 +321,164 @@ describe('a media write in flight meets a change committed after its access chec
     expect(await docsIn(), 'no copy is left in the folder').toBe(docsBefore);
     const media = await d1.db.prepare('SELECT doc_id FROM doc_media WHERE content_hash = ?1').bind(await hashOf(bytes)).all<{ doc_id: string }>();
     expect(media.results.map((row) => row.doc_id).sort(), 'the source and the copy bind the file').toEqual([source, doc.id].sort());
+  });
+});
+
+describe('a copy re-checks its source where it commits, and a reused name its target (T3.B10: B186, B187)', () => {
+  const docsBy = async (user: TestUser) =>
+    (await d1.db.prepare('SELECT COUNT(*) AS n FROM docs WHERE created_by = ?1').bind(user.id).first<{ n: number }>())?.n;
+  const boundTo = async (hash: string) =>
+    (await d1.db.prepare('SELECT doc_id FROM doc_media WHERE content_hash = ?1').bind(hash).all<{ doc_id: string }>()).results.map((row) => row.doc_id).sort();
+  const copyBody = (source: string, relativePath: string, extra: Record<string, string> = {}) =>
+    ({ body: JSON.stringify({ sourceNoteId: source, sourceRelativePath: relativePath, ...extra }), headers: { 'content-type': 'application/json' } });
+
+  /** A note of Ada's holding unique bytes, and those bytes' hash and path. */
+  async function sourceHolding() {
+    const source = await insertDoc(d1.db, ada);
+    const bytes = uniquePng();
+    const seeded = await post(`/api/docs/${source}/assets?filename=source.png`, asUser(ada), { body: bytes, headers: { 'content-type': 'image/png' } });
+    expect(seeded.status, await seeded.clone().text()).toBe(201);
+    const { relativePath } = await seeded.json() as { relativePath: string };
+    return { source, hash: await hashOf(bytes), relativePath };
+  }
+
+  const LOSSES = [
+    ['its grant is removed', (source: string, user: TestUser) => run('DELETE FROM doc_members WHERE doc_id = ?1 AND principal_id = ?2', source, user.id)],
+    ['it is trashed', (source: string) => run('UPDATE docs SET deleted_at = ?2 WHERE id = ?1', source, Date.now())],
+  ] as const;
+
+  it.each(LOSSES)('a cross-note copy held at admission binds nothing once the source is lost: %s', async (_name, lose) => {
+    const { source, hash, relativePath } = await sourceHolding();
+    const target = await insertDoc(d1.db, cy);
+    await insertGrant(d1.db, { docId: source }, cy, 'viewer');
+    const admission = hold(`upload:${cy.id}`);
+    const copying = post(`/api/docs/${target}/assets/copy`, asUser(cy), copyBody(source, relativePath));
+    await admission.reach(copying);
+    await lose(source, cy);
+    admission.open();
+    const refused = await copying;
+    expect(refused.status, await refused.clone().text()).toBe(404);
+    expect(await boundTo(hash), 'only the source binds the file').toEqual([source]);
+  });
+
+  it("a cross-note copy held at admission binds nothing once the source's link is revoked", async () => {
+    const { source, hash, relativePath } = await sourceHolding();
+    const target = await insertDoc(d1.db, cy);
+    const link = await insertLink(d1.db, { docId: source }, 'viewer');
+    const admission = hold(`upload:${cy.id}`);
+    const copying = post(`/api/docs/${target}/assets/copy`, asUser(cy), copyBody(source, relativePath, { sourceShare: link }));
+    await admission.reach(copying);
+    await run('UPDATE share_links SET revoked_at = ?2 WHERE token = ?1', link, Date.now());
+    admission.open();
+    const refused = await copying;
+    expect(refused.status, await refused.clone().text()).toBe(404);
+    expect(await boundTo(hash)).toEqual([source]);
+  });
+
+  it('a cross-note copy held at admission lands while the caller still reads the source', async () => {
+    const { source, hash, relativePath } = await sourceHolding();
+    const target = await insertDoc(d1.db, cy);
+    await insertGrant(d1.db, { docId: source }, cy, 'viewer');
+    const admission = hold(`upload:${cy.id}`);
+    const copying = post(`/api/docs/${target}/assets/copy`, asUser(cy), copyBody(source, relativePath));
+    await admission.reach(copying);
+    admission.open();
+    const landed = await copying;
+    expect(landed.status, await landed.clone().text()).toBe(201);
+    expect(await boundTo(hash)).toEqual([source, target].sort());
+  });
+
+  it.each(LOSSES)('a duplicate carrying media held at admission makes no copy once the source is lost: %s', async (_name, lose) => {
+    const { source, hash } = await sourceHolding();
+    await insertGrant(d1.db, { docId: source }, ben, 'editor');
+    const before = await docsBy(ben);
+    const admission = hold(`upload:${ben.id}`);
+    const duplicating = post(`/api/docs/${source}/duplicate`, asUser(ben));
+    await admission.reach(duplicating);
+    await lose(source, ben);
+    admission.open();
+    const refused = await duplicating;
+    expect(refused.status, await refused.clone().text()).toBe(404);
+    expect(await docsBy(ben), 'no copy is made').toBe(before);
+    expect(await boundTo(hash), 'only the source binds the file').toEqual([source]);
+  });
+
+  it.each(LOSSES)('a duplicate with no media held at its snapshot makes no copy once the source is lost: %s', async (_name, lose) => {
+    const source = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: source }, ben, 'editor');
+    const before = await docsBy(ben);
+    const snapshot = hold(`snapshot:${source}`);
+    const duplicating = post(`/api/docs/${source}/duplicate`, asUser(ben));
+    await snapshot.reach(duplicating);
+    await lose(source, ben);
+    snapshot.open();
+    const refused = await duplicating;
+    expect(refused.status, await refused.clone().text()).toBe(404);
+    expect(await docsBy(ben), 'no copy is made').toBe(before);
+  });
+
+  it('a duplicate held at its snapshot is made, with its media, while the caller still reads the source', async () => {
+    const { source, hash } = await sourceHolding();
+    await insertGrant(d1.db, { docId: source }, ben, 'editor');
+    const snapshot = hold(`snapshot:${source}`);
+    const duplicating = post(`/api/docs/${source}/duplicate`, asUser(ben));
+    await snapshot.reach(duplicating);
+    snapshot.open();
+    const landed = await duplicating;
+    expect(landed.status, await landed.clone().text()).toBe(201);
+    const { doc } = await landed.json() as { doc: { id: string } };
+    expect(await boundTo(hash)).toEqual([source, doc.id].sort());
+  });
+
+  /** Ben's upload of unique bytes as `same.png` into a note he edits, landed once, so a retry finds the name bound. */
+  async function landedOnce() {
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, ben, 'editor');
+    const bytes = uniquePng();
+    const first = await post(`/api/docs/${docId}/assets?filename=same.png`, asUser(ben), { body: bytes, headers: { 'content-type': 'image/png' } });
+    expect(first.status, await first.clone().text()).toBe(201);
+    return { docId, bytes, first: await first.json() as { relativePath: string } };
+  }
+
+  it.each([
+    ['his grant is removed', (docId: string) => run('DELETE FROM doc_members WHERE doc_id = ?1 AND principal_id = ?2', docId, ben.id)],
+    ['the note is trashed', (docId: string) => run('UPDATE docs SET deleted_at = ?2 WHERE id = ?1', docId, Date.now())],
+  ] as const)('a retry of the same bytes held at admission is refused once %s, never answered 201', async (_name, lose) => {
+    const { docId, bytes } = await landedOnce();
+    const before = await footprint(docId, await hashOf(bytes));
+    const admission = hold(`upload:${ben.id}`);
+    const retrying = post(`/api/docs/${docId}/assets?filename=same.png`, asUser(ben), { body: bytes, headers: { 'content-type': 'image/png' } });
+    await admission.reach(retrying);
+    await lose(docId);
+    admission.open();
+    const refused = await retrying;
+    expect([403, 404], await refused.clone().text()).toContain(refused.status);
+    expect(await footprint(docId, await hashOf(bytes)), 'the rows are unchanged').toEqual(before);
+  });
+
+  it('a retry of the same bytes by a caller who still edits the note reuses the name with 201', async () => {
+    const { docId, bytes, first } = await landedOnce();
+    const before = await footprint(docId, await hashOf(bytes));
+    const again = await post(`/api/docs/${docId}/assets?filename=same.png`, asUser(ben), { body: bytes, headers: { 'content-type': 'image/png' } });
+    expect(again.status, await again.clone().text()).toBe(201);
+    expect((await again.json() as { relativePath: string }).relativePath).toBe(first.relativePath);
+    expect(await footprint(docId, await hashOf(bytes))).toEqual(before);
+  });
+
+  it('a copy onto a name the target already binds to the same bytes is refused once the target grant is removed', async () => {
+    const { source, hash, relativePath } = await sourceHolding();
+    const target = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId: source }, ben, 'viewer');
+    await insertGrant(d1.db, { docId: target }, ben, 'editor');
+    const first = await post(`/api/docs/${target}/assets/copy`, asUser(ben), copyBody(source, relativePath));
+    expect(first.status, await first.clone().text()).toBe(201);
+    const admission = hold(`upload:${ben.id}`);
+    const copying = post(`/api/docs/${target}/assets/copy`, asUser(ben), copyBody(source, relativePath));
+    await admission.reach(copying);
+    await run('DELETE FROM doc_members WHERE doc_id = ?1 AND principal_id = ?2', target, ben.id);
+    admission.open();
+    const refused = await copying;
+    expect([403, 404], await refused.clone().text()).toContain(refused.status);
+    expect(await boundTo(hash)).toEqual([source, target].sort());
   });
 });
