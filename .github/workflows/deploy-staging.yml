@@ -109,7 +109,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
+          # Pages of 30: GitHub answered 502 for every 100-job page of a re-run full lane (run 38671880296).
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=30" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
       # The gated commit: its migrations match the bytes, and its scripts judge them.
       - uses: actions/checkout@v6
         with:
@@ -337,7 +338,7 @@ jobs:
           deadline=$((SECONDS + 110 * 60))
           while [ "$SECONDS" -lt "$deadline" ] && kill -0 "$pid" 2> /dev/null; do
             sleep 60
-            jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq '.jobs[] | [.name, .status, (.conclusion // "")] | @tsv' || true)
+            jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=30" --jq '.jobs[] | [.name, .status, (.conclusion // "")] | @tsv' || true)
             if grep -qP '^canary\tcompleted\t(?!success)' <<< "$jobs"; then break; fi
             done_shards=$(grep -cP '^suite \(.*\tcompleted\t' <<< "$jobs" || true)
             if [ "$done_shards" -ge 16 ]; then break; fi
