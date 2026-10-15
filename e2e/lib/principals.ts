@@ -60,13 +60,21 @@ export function newPrincipal(runToken: string, label: string, n: number): Princi
 /** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
 export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
   const { email, name, password } = newPrincipal(runToken, label, n);
+  const resend = { lost: false };
   const response = await pastAuthLimit('sign-up', () => fetch(`${baseUrl}/api/auth/sign-up/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email, password, name }),
     signal: AbortSignal.timeout(15_000),
-  }));
+  }), () => { resend.lost = true; });
   const text = await response.text();
+  // A sign-up lost after the Worker stored it is answered "already exists" on the resend: sign in for its id.
+  if (resend.lost && !response.ok && /already exists/i.test(text)) {
+    const signedIn = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, { label, name, email, password, id: null }));
+    const signedText = await signedIn.text();
+    if (!signedIn.ok) throw new Error(`sign-in for ${email}: ${signedIn.status} ${signedText.slice(0, 200)}`);
+    return { label, name, email, password, id: (JSON.parse(signedText) as { user?: { id?: string } }).user?.id ?? null };
+  }
   if (!response.ok) throw new Error(`sign-up for ${email}: ${response.status} ${text.slice(0, 200)}`);
   const id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
   return { label, name, email, password, id };
@@ -112,7 +120,7 @@ export async function seededPrincipal(baseUrl: string, seed: NonNullable<CanaryS
  * paces itself under the limit (auth-pace.ts); a 429 that still comes (another job sharing the address) waits out the
  * window, at most six times.
  */
-async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Promise<Response> {
+async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>, onResend?: () => void): Promise<Response> {
   await authHeadroom(kind, RESERVE);
   let response = await post();
   for (let attempt = 0; attempt < 6 && response.status === 429; attempt += 1) {
@@ -125,6 +133,7 @@ async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Pro
   // mid-request. Please try sending the request again." (wrangler); the request is sent again, at most three times.
   for (let attempt = 0; attempt < 3 && response.status === 503 && /\bworker restarted mid-request\b/.test(await response.clone().text()); attempt += 1) {
     await new Promise((done) => setTimeout(done, 1_000));
+    onResend?.();
     response = await post();
   }
   if (response.status !== 429) recordAuth(kind);

@@ -197,9 +197,31 @@ export function metaForFile(root: string, file: string, folds = false): DocMeta 
 /** Whether two workspace paths name one file on this volume. */
 export const sameFile = (a: string, b: string, folds: boolean): boolean => samePath(a, b, folds);
 
-/** Writes `bytes` to a confined file through a temporary file and a rename. */
-export function writeConfined(root: string, file: string, bytes: Uint8Array): void {
-  writeInside(root, confined(root, file), bytes);
+/**
+ * Writes `bytes` to a confined file through a temporary file and a rename; with `expectHash` the file must still hash
+ * to it (null: still be absent).
+ */
+export function writeConfined(root: string, file: string, bytes: Uint8Array, expectHash?: string | null): void {
+  writeInside(root, confined(root, file), bytes, expectHash);
+}
+
+/** A media file last synced for a doc: its bytes' hash, and the size and mtime it had then, so an unchanged file is not hashed again. */
+export interface MediaState { hash: string; size: number; mtimeMs: number }
+
+/** The doc's synced media by name (`.moss-multi/<docId>/media.json`); empty when there is none or it is unreadable. */
+export function readMediaRecord(root: string, docId: string): Record<string, MediaState> {
+  const path = noLinks(root, stateRel(docId, 'media.json'));
+  if (!lstat(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, MediaState> : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeMediaRecord(root: string, docId: string, record: Record<string, MediaState>): void {
+  writeInside(root, stateRel(docId, 'media.json'), Buffer.from(`${JSON.stringify(record, null, 2)}\n`));
 }
 
 /** Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. */

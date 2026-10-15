@@ -22,6 +22,8 @@ export const askDocAccess = (): Promise<DocAnswer> => Promise.resolve({ kind: 'u
 
 export const askFolderAccess = (): Promise<{ kind: 'open' | 'denied' | 'signed-out' | 'unavailable' }> => Promise.resolve({ kind: 'unavailable' });
 
+export const useKnownRole = (docId: string | null): Role | null => (docId ? 'owner' : null);
+
 export const useDocRole = (docId: string | null): Role | null => (docId ? 'owner' : null);
 
 export const ACCESS_RETRY_MS: number[] = [];
