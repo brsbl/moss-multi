@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 57% done** (135 of 236 planned tasks verified)
+**Overall: 58% done** (136 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 66 / 66 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 15 / 15 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -155,6 +155,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T3.B10 verified: copying or duplicating a note's media now requires live read access to the source, an upload whose bytes do not match its declared image or video type is refused 415 before anything is stored, and a private image one account loaded is never served from the browser's cache to the next account signed in to the same browser.
 - 2026-10-14 — T3.B15 verified: two people editing the same formula or variable name now merge each other's changes at the right place without moving a caret inside a reference, a formula so crowded no reference marker is free resolves whole to the stored one with a notice, an IME preedit survives a peer moving its block, and an empty chart or sketch accepts its first edit.
 - 2026-10-14 — T3.B11 verified: a retried upload at the vault's quota now succeeds under its name or its -n name instead of being refused, an upload's memory stays within its declared size plus 1 MiB, a stalled upload is cut off with 408, an import into a full vault is refused before fetching, and the over-quota message says the vault's media storage is full.
+- 2026-10-14 — T4.Q verified: comments now run on m3's media-access, upload-quota and formula-merge fixes, with both sides kept and the full lane green on the m4 head.
 
 ## T1.1s identity audit
 
@@ -616,3 +617,4 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B10 (Asset upload authority and content checks) checker P2: SVG sniffing rejects pathological-but-valid SVGs (U+FEFF/U+1680 in a namespace prefix; non-IBM037 EBCDIC code pages) — accepted by the coordinator as intended hardening of B166; nothing is released, so no shipped contract narrows.
 - T3.B15 (Register and formula collaborative editing) checker P2: astral token markers can collide with literal lone surrogates brought together by concurrent deletions — once every non-surrogate BMP unit is used, createTokenCodec reserves only astral code points already present as complete surrogate pairs, so a lone high and a lone low surrogate that two concurrent deletions bring together can form an assigned marker (e.g. U+F0000) and decode turns that literal text into a reference (needs a formula using every non-surrogate BMP unit plus lone surrogates) → also reserve astral code points a lone high or low surrogate in any source could form.
 - T3.B11 (Asset quota, streaming reads and near-cap probe) checker P2: the B219 near-cap probe has no staging run and no Worker memory telemetry — j11-media's SP9 probe runs in CI on the local wrangler stack and records only byte count and upload time, and local workerd does not enforce the 128 MB isolate limit (evidence gap, no demonstrated failure) → add the staging leg with memory and duration telemetry to the m8 canary (T8.2).
+- T4.Q (m4 on the m3 fixes) checker P2, owned by m3 (from T3.B10): a duplicate refused after source access is lost returns a different 404 body: `apps/web/src/api/docs.ts:195-198` answers the late refusal (source revoked or trashed while the snapshot is pending) with refuse(404, 'not-found', <message>) while admission uses `notFound()` (respond.ts:8, no message), so the two denials are not byte-identical as A§8 requires (no unauthorized copy).
