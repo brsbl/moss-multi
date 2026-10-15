@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 56% done** (132 of 236 planned tasks verified)
+**Overall: 57% done** (135 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 63 / 63 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 66 / 66 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 15 / 15 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -152,6 +152,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T3.B9 verified: search finds only the notes you can open and ranks them without other people's notes shifting the order, a search feed that fails is retried on its own, backlinks include sources the index had not yet seen, and the bridge keeps watching a note opened by URL and stops on one that was deleted or revoked.
 - 2026-10-13 — T4.P verified: comments now run on the fixed m3, so its access, body-cap, search and editor fixes hold with comments in place, and the full lane is green in Chromium and WebKit.
 - 2026-10-14 — T4.B3 verified: a comment, reply or edit that fails to send keeps its text as a retryable draft (a failed reply returns to its thread's reply box), a commenter can add comments on code, chart, canvas and image blocks from the block header, block highlights clear when their comments leave, and hovering checks comment ranges once per frame.
+- 2026-10-14 — T3.B10 verified: copying or duplicating a note's media now requires live read access to the source, an upload whose bytes do not match its declared image or video type is refused 415 before anything is stored, and a private image one account loaded is never served from the browser's cache to the next account signed in to the same browser.
+- 2026-10-14 — T3.B15 verified: two people editing the same formula or variable name now merge each other's changes at the right place without moving a caret inside a reference, a formula so crowded no reference marker is free resolves whole to the stored one with a notice, an IME preedit survives a peer moving its block, and an empty chart or sketch accepts its first edit.
+- 2026-10-14 — T3.B11 verified: a retried upload at the vault's quota now succeeds under its name or its -n name instead of being refused, an upload's memory stays within its declared size plus 1 MiB, a stalled upload is cut off with 408, an import into a full vault is refused before fetching, and the over-quota message says the vault's media storage is full.
 
 ## T1.1s identity audit
 
@@ -610,3 +613,6 @@ Local browser verification remains assigned to the independent checker under the
 - T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: failed replies can come back in reverse submission order across frames — if reply B fails and is offered in one frame and the earlier reply A fails in a later frame, the reply box holds B then A (both texts survive; order is kept only among failures offered in the same frame, and the j15 leg sorts the paragraphs it reads back, so it does not check order).
 - T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: the refusal banner stays up after a successful retry until its 4 s timer expires, because success does not call settleRefusal for the matching refusal (carried-over P2).
 - T4.B3 (Comment client: draft retention, block comments, highlight paint and hover cost) checker P2: the block header Add comment button (`data-comment-entry`, a commenter's only enabled code-block header button) has an empty aria-label and no text, so it has no accessible name.
+- T3.B10 (Asset upload authority and content checks) checker P2: SVG sniffing rejects pathological-but-valid SVGs (U+FEFF/U+1680 in a namespace prefix; non-IBM037 EBCDIC code pages) — accepted by the coordinator as intended hardening of B166; nothing is released, so no shipped contract narrows.
+- T3.B15 (Register and formula collaborative editing) checker P2: astral token markers can collide with literal lone surrogates brought together by concurrent deletions — once every non-surrogate BMP unit is used, createTokenCodec reserves only astral code points already present as complete surrogate pairs, so a lone high and a lone low surrogate that two concurrent deletions bring together can form an assigned marker (e.g. U+F0000) and decode turns that literal text into a reference (needs a formula using every non-surrogate BMP unit plus lone surrogates) → also reserve astral code points a lone high or low surrogate in any source could form.
+- T3.B11 (Asset quota, streaming reads and near-cap probe) checker P2: the B219 near-cap probe has no staging run and no Worker memory telemetry — j11-media's SP9 probe runs in CI on the local wrangler stack and records only byte count and upload time, and local workerd does not enforce the 128 MB isolate limit (evidence gap, no demonstrated failure) → add the staging leg with memory and duration telemetry to the m8 canary (T8.2).
