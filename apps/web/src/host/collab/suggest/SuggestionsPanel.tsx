@@ -118,10 +118,10 @@ async function call(url: string, body?: unknown, signal?: AbortSignal): Promise<
 // One loader for every panel: the preview budget is the reader's, across notes.
 const previews = createPreviewLoader((docId, id, signal) => call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(id)}/preview`, undefined, signal));
 
-const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
-
 /** Records this window accepted, rejected or withdrawn, by doc and id, so a remounted card previews none of them. */
 const reviewedHere = new Set<string>();
+
+const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
 
 function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   docId: string;
@@ -137,12 +137,11 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   const [onScreenRef, onScreen] = useOnScreen(root);
   const [expanded, setExpanded] = useState(false);
   const digest = useMemo(() => `${recordDigest(record)}@${opened}`, [record, opened]);
-  const reviewedKey = `${docId}\u0000${meta.id}`;
   const [busy, setBusy] = useState(false);
-  // Once a review action is under way or has closed the record, the card previews nothing more, even before the
-  // closed record reaches this window.
+  // Fetched again when its ops change or on refresh (the body moved under it); only while the card can be seen. Once a
+  // review is under way or has closed the record here, nothing more, even before the closed record reaches this window.
+  const reviewedKey = `${docId}\u0000${meta.id}`;
   const [reviewed, setReviewed] = useState(() => reviewedHere.has(reviewedKey));
-  // Fetched again when its ops change or on refresh (the body moved under it); only while the card can be seen.
   const [preview, refresh] = useLoadedPreview(previews, docId, meta.id, digest, open && !busy && !reviewed && (onScreen || active || expanded));
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -162,9 +161,8 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
 
   const act = async (action: 'accept' | 'reject' | 'withdraw') => {
     setBusy(true);
-    // A preview still on the way would reach a record this action closes.
-    previews.cancel(docId, meta.id);
     setError(null);
+    previews.drop(docId, meta.id);
     const body = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
     try {
       const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, body);

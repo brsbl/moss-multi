@@ -40,10 +40,10 @@ interface Entry {
   value: Preview;
   wanters: number;
   inflight: boolean;
-  /** Ends the request in flight (cancel). */
-  abort: AbortController | null;
   /** The reader pressed Try again: one request goes even while paused. */
   asked: boolean;
+  /** Aborts the request in flight. */
+  abort: AbortController | null;
 }
 
 /** Seconds or an HTTP date, as Retry-After allows; DEFAULT_PAUSE_MS when absent or unreadable. */
@@ -74,7 +74,7 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
     const name = `${docId}\u0000${id}`;
     let entry = entries.get(name);
     if (!entry) {
-      entry = { docId, id, round: 0, want: '', fetched: null, shown: null, value: LOADING, wanters: 0, inflight: false, abort: null, asked: false };
+      entry = { docId, id, round: 0, want: '', fetched: null, shown: null, value: LOADING, wanters: 0, inflight: false, asked: false, abort: null };
       entries.set(name, entry);
     }
     return entry;
@@ -111,8 +111,7 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
     entry.inflight = false;
     entry.abort = null;
     if (abort.signal.aborted) {
-      // Cancelled: nothing settles, and a reader who wants it again asks again.
-      if (entry.wanters > 0) pending.add(entry);
+      // Dropped by a review: it settles nothing.
     } else if (answer?.status === 429) {
       pausedUntil = Math.max(pausedUntil, Date.now() + retryAfterMs(answer.retryAfter));
       entry.shown = key;
@@ -157,8 +156,11 @@ export function createPreviewLoader(fetcher: PreviewFetcher) {
         entry.wanters -= 1;
       };
     },
-    /** Drops the record's request in flight or waiting: a review action closes it, so its preview would be refused. */
-    cancel(docId: string, id: string): void {
+    /**
+     * A review of the record began: its preview in flight is aborted and none waits, so no request reaches a record
+     * the review closes (its answer would be a 409).
+     */
+    drop(docId: string, id: string): void {
       const entry = entryOf(docId, id);
       pending.delete(entry);
       entry.abort?.abort();

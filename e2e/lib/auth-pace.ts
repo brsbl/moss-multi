@@ -2,7 +2,9 @@
 // (apps/web/src/auth/auth.ts), and better-auth resets a count only after 60 s with no allowed request. A run's auth
 // requests all come from this process, so it keeps a model of both counts and waits before a request would be refused:
 // setup leaves RESERVE requests for the legs that sign in or up through the card. Waits extend the running test's
-// timeout, since they are setup's and not the leg's.
+// timeout, since they are setup's and not the leg's. The model is kept in a file beside the stack state, because
+// Playwright starts a fresh worker after a failure while the server's counts carry on.
+import { readFileSync, writeFileSync } from 'node:fs';
 import { test } from '@playwright/test';
 
 export type AuthKind = 'sign-in' | 'sign-up';
@@ -14,12 +16,27 @@ const SLACK_MS = 1_500;
 export const RESERVE = 3;
 
 let enabled = false;
+let storePath: string | null = null;
 const counts = new Map<string, { count: number; last: number }>();
 
-/** Paces auth requests against `origin` (a stack with no test hooks), or stops pacing (null). */
-export function paceAuth(origin: string | null): void {
+/**
+ * Paces auth requests against `origin` (a stack with no test hooks), or stops pacing (null). With `path`, the counts an
+ * earlier worker of this run recorded there carry over, and each one recorded is written back.
+ */
+export function paceAuth(origin: string | null, path: string | null = null): void {
   enabled = origin !== null;
+  storePath = enabled ? path : null;
   counts.clear();
+  if (!storePath) return;
+  try {
+    const saved = JSON.parse(readFileSync(storePath, 'utf8')) as Record<string, { count: number; last: number }>;
+    for (const kind of ['sign-in', 'sign-up']) {
+      const state = saved[kind];
+      if (Number.isFinite(state?.count) && Number.isFinite(state?.last)) counts.set(kind, { count: state.count, last: state.last });
+    }
+  } catch {
+    // None recorded yet.
+  }
 }
 
 /** The auth limit a request to `url` counts against, if any. */
@@ -36,6 +53,7 @@ export function recordAuth(kind: AuthKind, at = Date.now()): void {
   const state = counts.get(kind);
   if (!state || at - state.last > WINDOW_MS) counts.set(kind, { count: 1, last: at });
   else counts.set(kind, { count: state.count + 1, last: at });
+  if (storePath) writeFileSync(storePath, JSON.stringify(Object.fromEntries(counts)));
 }
 
 /** Grows the running test's timeout by `ms`; a no-op outside a test. */

@@ -6,6 +6,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { retryClass } from './retry-gate.mjs';
 
 /** The run log off loopback: titles, statuses and durations, never error text or test output. */
 export const CANARY_REPORTER = fileURLToPath(new URL('./canary-reporter.mjs', import.meta.url));
@@ -38,16 +39,17 @@ export function recordingFor(baseUrl) {
 }
 
 /**
- * @typedef {{ status?: string, duration?: number }} Attempt
+ * @typedef {{ status?: string, duration?: number, errors?: { message?: string }[] }} Attempt
  * @typedef {{ title?: string, specs?: { title: string, tests?: { status?: string, results?: Attempt[] }[] }[], suites?: Suite[] }} Suite
  */
 
 /**
- * One row per test: the suite path and test title, the last attempt's status and duration.
+ * One row per test: the suite path and test title, the last attempt's status and duration, and for a leg that passed
+ * on its retry the infrastructure class its first attempt failed on (retry-gate.mjs; a label, never error text).
  * @param {{ suites?: Suite[] } | null} results
  */
 export function canarySummary(results) {
-  /** @type {{ title: string, status: string, duration: number }[]} */
+  /** @type {{ title: string, status: string, duration: number, retry?: string }[]} */
   const tests = [];
   /**
    * @param {Suite} suite
@@ -59,7 +61,8 @@ export function canarySummary(results) {
       for (const test of spec.tests ?? []) {
         const last = test.results?.at(-1);
         const status = test.status === 'flaky' ? 'flaky' : String(last?.status ?? 'skipped');
-        tests.push({ title: [...here, spec.title].join(' › '), status, duration: Number(last?.duration ?? 0) });
+        const row = { title: [...here, spec.title].join(' › '), status, duration: Number(last?.duration ?? 0) };
+        tests.push(status === 'flaky' ? { ...row, retry: retryClass(test.results?.[0]?.errors) ?? 'not infrastructure' } : row);
       }
     }
     for (const child of suite.suites ?? []) walk(child, here);

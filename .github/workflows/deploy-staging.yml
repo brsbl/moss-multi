@@ -98,6 +98,7 @@ jobs:
       commit: ${{ steps.provenance.outputs.commit }}
       bundleHash: ${{ steps.provenance.outputs.bundleHash }}
       clientHash: ${{ steps.provenance.outputs.clientHash }}
+      seedToken: ${{ steps.seed.outputs.token }}
     # Secrets reach only the steps that use them, never the dependency install.
     env:
       RUN_ID: ${{ inputs.ci_run_id }}
@@ -108,7 +109,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
-          # 30 a page: a full lane's 70-odd jobs in one page of 100 answers 502 once the run has a rerun attempt.
+          # Pages of 30: GitHub answered 502 for every 100-job page of a re-run full lane (run 38671880296).
           gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=30" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
       # The gated commit: its migrations match the bytes, and its scripts judge them.
       - uses: actions/checkout@v6
@@ -177,7 +178,23 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node "$WRANGLER" d1 migrations apply moss-multi-staging --remote --config apps/web/dist/server/wrangler.json
-      # A§21: nothing reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
+      # A§21: earlier suites' per-run principals (mm-*@example.invalid, over 2 h old; never the canary pool or the demo
+      # accounts) go before a full suite, at most PRUNE_CAP a run, counted first (scripts/deploy/prune.mjs). Their docs
+      # cascade with them. Only counts are printed; the selection stays on the runner.
+      - name: Prune earlier suite principals
+        if: inputs.suite == 'full'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          dir="$RUNNER_TEMP/prune"
+          mkdir -p "$dir"
+          d1() { node "$WRANGLER" d1 execute moss-multi-staging --remote --config apps/web/dist/server/wrangler.json "$@"; }
+          d1 --json --command "$(node scripts/deploy/prune.mjs count-sql)" > "$dir/count.json"
+          d1 --json --command "$(node scripts/deploy/prune.mjs select-sql)" > "$dir/select.json"
+          node scripts/deploy/prune.mjs plan "$dir/count.json" "$dir/select.json" "$dir/delete.sql"
+          if [ -s "$dir/delete.sql" ]; then d1 --yes --file "$dir/delete.sql" > /dev/null; echo "pruned"; fi
+      # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
       - name: Staging has room for a full suite
         if: inputs.suite == 'full'
         env:
@@ -187,6 +204,24 @@ jobs:
           node "$WRANGLER" d1 execute moss-multi-staging --remote --json --config apps/web/dist/server/wrangler.json \
             --command "SELECT (SELECT count(*) FROM docs) AS docs, (SELECT count(*) FROM user) AS users" > "$RUNNER_TEMP/growth.json"
           node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json"
+      # Staging allows 30 sign-ups a day per address (auth.ts), far fewer than the suite's fresh accounts: this run's
+      # are written into D1 as a sign-up would, one password per run derived from the pool secret, only its hash in
+      # the SQL, which stays on the runner (scripts/deploy/seed.mjs). The prune takes them on a later run.
+      - name: Seed this run's suite principals
+        id: seed
+        if: inputs.suite == 'full'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
+        run: |
+          umask 077
+          token=$(node scripts/deploy/seed.mjs token "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")
+          sql="$RUNNER_TEMP/seed.sql"
+          trap 'rm -f "$sql"' EXIT
+          node scripts/deploy/seed.mjs sql "$sql" --token "$token"
+          node "$WRANGLER" d1 execute moss-multi-staging --remote --yes --config apps/web/dist/server/wrangler.json --file "$sql" > /dev/null
+          echo "token=$token" >> "$GITHUB_OUTPUT"
       - name: Deploy the tested bytes
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -270,9 +305,64 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # What the Worker and its Durable Objects failed at while the suite ran (T8.2): `wrangler tail --status error`,
+  # reduced to counts under fixed names (scripts/deploy/tail-summary.mjs). The tail's own output is never printed:
+  # it holds URLs, headers and log lines. It stops once every suite shard finished, or the canary failed.
+  tail:
+    needs: [preflight, deploy]
+    if: inputs.suite == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      WRANGLER: apps/web/node_modules/wrangler/bin/wrangler.js
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Tail staging while the suite runs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p e2e/canary-artifacts
+          out=e2e/canary-artifacts/tail-summary.json
+          node scripts/deploy/tail-summary.mjs run "$out" -- node "$WRANGLER" tail moss-multi-staging --format json --status error &
+          pid=$!
+          deadline=$((SECONDS + 110 * 60))
+          while [ "$SECONDS" -lt "$deadline" ] && kill -0 "$pid" 2> /dev/null; do
+            sleep 60
+            jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=30" --jq '.jobs[] | [.name, .status, (.conclusion // "")] | @tsv' || true)
+            if grep -qP '^canary\tcompleted\t(?!success)' <<< "$jobs"; then break; fi
+            done_shards=$(grep -cP '^suite \(.*\tcompleted\t' <<< "$jobs" || true)
+            if [ "$done_shards" -ge 16 ]; then break; fi
+          done
+          kill -TERM "$pid" 2> /dev/null || true
+          wait "$pid" || true
+          cat "$out"
+          if jq -e '(.limitMinutes | length) > 0' "$out" > /dev/null; then
+            echo "::warning::an isolate passed its memory or CPU limit during the suite, resetting the Durable Objects it held: see limitMinutes in tail-summary.json"
+          fi
+      - name: Upload the tail summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: staging-tail-${{ github.run_attempt }}
+          path: |
+            e2e/canary-artifacts/tail-summary.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The full suite on staging (A§21, T8.2), after a green canary: every journey but the @local-only legs (test hooks or
-  # stack control), in both engines, sharded eight ways. Per-run @example.invalid principals, so no pool secret; each
-  # shard has its own request budget; the wake is j04's owner-route leg. The canary's log and artifact policy holds.
+  # stack control), in both engines, sharded eight ways. Per-run @example.invalid principals the deploy seeded, each
+  # shard signing in to its own slots with the run's derived password (never the pool secret); each shard has its own
+  # request budget; the wake is j04's owner-route leg. The canary's log and artifact policy holds.
   suite:
     name: suite (${{ matrix.browser }}, ${{ matrix.shard }}/8)
     needs: [preflight, deploy, canary]
@@ -314,11 +404,27 @@ jobs:
           CLIENT: ${{ needs.deploy.outputs.clientHash }}
           BUDGET: ${{ inputs.suite_request_budget }}
           IDLE: ${{ inputs.idle_seconds }}
+          SEED_TOKEN: ${{ needs.deploy.outputs.seedToken }}
+          BROWSER: ${{ matrix.browser }}
+          SHARD: ${{ matrix.shard }}
         run: |
           node scripts/deploy/canary-state.mjs --out "$RUNNER_TEMP/canary/state.json" --base-url "$STAGING_URL" \
             --commit "$COMMIT" --bundle "$BUNDLE" --client "$CLIENT" --budget "$BUDGET" --idle-ms "$((IDLE * 1000))" \
-            --run-id "$RUN_ID" --principals per-run
+            --run-id "$RUN_ID" --principals seeded --seed-token "$SEED_TOKEN" --seed-slots "${BROWSER:0:1}$SHARD"
           echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
+      # The seeded accounts' password, masked before it reaches the environment; the pool secret stays in this step.
+      # A re-run of only the failed shards would sign in to slots its first attempt used: re-run every job instead.
+      - name: Suite password
+        env:
+          CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
+          SEED_TOKEN: ${{ needs.deploy.outputs.seedToken }}
+        run: |
+          if [ "$SEED_TOKEN" != "s${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]; then
+            echo "::error::the seeded principals are attempt ${SEED_TOKEN##*-}'s; re-run all jobs, not only the failed ones"; exit 1
+          fi
+          password=$(node scripts/deploy/seed.mjs password --token "$SEED_TOKEN")
+          echo "::add-mask::$password"
+          echo "MOSS_SUITE_PASSWORD=$password" >> "$GITHUB_ENV"
       - name: The journeys
         working-directory: e2e
         env:

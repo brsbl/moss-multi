@@ -93,8 +93,11 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   const dialog = await ui.openShare(ada, docId);
   await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveValue('editor');
   const patched = ada.page.waitForResponse((response) => response.url().endsWith(`/api/docs/${docId}/members`) && response.request().method() === 'PATCH');
-  const sentAt = Date.now();
+  // From the demotion's request, not the menu interaction before it: on a deployed stack the click alone is not instant.
+  const sent = ada.page.waitForRequest((request) => request.url().endsWith(`/api/docs/${docId}/members`) && request.method() === 'PATCH')
+    .then(() => Date.now());
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
+  const sentAt = await sent;
   expect((await patched).status(), 'the demotion is saved').toBe(200);
   await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveValue('viewer');
   await expect(dialog.getByRole('status'), 'and says so').toContainText('Can view');

@@ -1,7 +1,9 @@
 // Per-run principals (S-test §3.3). Sign-up and sign-in go through the real auth API as declared setup (the auth
 // journey uses the login UI instead); the guard makes the owner's accounts unreachable by construction.
 import { createHmac, randomBytes } from 'node:crypto';
+import { claimSlot, seedEmail } from '../../scripts/deploy/seed.mjs';
 import { authHeadroom, type AuthKind, extendTimeout, recordAuth, RESERVE } from './auth-pace.ts';
+import type { CanaryState } from './stack.ts';
 
 export const EXAMPLE_DOMAIN = '@example.invalid';
 
@@ -70,6 +72,41 @@ export async function mintPrincipal(baseUrl: string, runToken: string, label: st
   return { label, name, email, password, id };
 }
 
+/** A seeded principal's sign-in session, handed to its first browser context (session tokens are single-issue). */
+const seededSessions = new Map<string, SessionCookie[]>();
+
+/**
+ * A per-run principal the staging deploy wrote for this run (scripts/deploy/seed.mjs): staging allows 30 sign-ups a day
+ * per address, far fewer than the suite needs. Claims this shard's next slot, signs in, names it as `newPrincipal`
+ * would, and opens its workspace, which makes the home vault a sign-up's hook would have made. Past the slots, it
+ * signs up as `mintPrincipal` does.
+ */
+export async function seededPrincipal(baseUrl: string, seed: NonNullable<CanaryState['seed']>, password: string, runToken: string, label: string, n: number): Promise<Principal> {
+  const slot = claimSlot(seed.claimDir, seed.count);
+  if (slot === null) return mintPrincipal(baseUrl, runToken, label, n);
+  const { name } = newPrincipal(runToken, label, n);
+  const principal: Principal = { label, name, email: seedEmail(seed.token, seed.slots, slot), password, id: null };
+  assertTestEmail(principal.email);
+  const response = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
+  const text = await response.clone().text();
+  if (!response.ok) throw new Error(`sign-in for seeded ${principal.email}: ${response.status} ${text.slice(0, 200)}`);
+  principal.id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
+  const cookies = sessionCookies(response, baseUrl, principal.email);
+  const cookie = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  const named = await fetch(`${baseUrl}/api/auth/update-user`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: baseUrl, cookie },
+    body: JSON.stringify({ name }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!named.ok) throw new Error(`naming seeded ${principal.email}: ${named.status}`);
+  const workspace = await fetch(`${baseUrl}/api/workspace`, { headers: { cookie }, signal: AbortSignal.timeout(15_000) });
+  if (!workspace.ok) throw new Error(`the workspace of seeded ${principal.email}: ${workspace.status}`);
+  await workspace.arrayBuffer();
+  seededSessions.set(`${baseUrl} ${principal.email}`, cookies);
+  return principal;
+}
+
 /**
  * Sign-up and sign-in are limited per address off the hook stack (auth.ts): staging and the canary rehearsal. Setup
  * paces itself under the limit (auth-pace.ts); a 429 that still comes (another job sharing the address) waits out the
@@ -82,6 +119,12 @@ async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Pro
     const waitMs = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65) * 1000 + 500;
     extendTimeout(waitMs);
     await new Promise((done) => setTimeout(done, waitMs));
+    response = await post();
+  }
+  // The local dev server can restart its worker while a POST is in flight and answer 503 "Your worker restarted
+  // mid-request. Please try sending the request again." (wrangler); the request is sent again, at most three times.
+  for (let attempt = 0; attempt < 3 && response.status === 503 && /\bworker restarted mid-request\b/.test(await response.clone().text()); attempt += 1) {
+    await new Promise((done) => setTimeout(done, 1_000));
     response = await post();
   }
   if (response.status !== 429) recordAuth(kind);
@@ -134,6 +177,11 @@ export async function signIn(baseUrl: string, principal: Principal): Promise<Ses
   assertTestEmail(principal.email);
   const pooled = principal.pooled ? pooledSessions.get(`${baseUrl} ${principal.email}`) : undefined;
   if (pooled) return pooled.map((cookie) => ({ ...cookie }));
+  const seeded = seededSessions.get(`${baseUrl} ${principal.email}`);
+  if (seeded) {
+    seededSessions.delete(`${baseUrl} ${principal.email}`);
+    return seeded;
+  }
   const response = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
   if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
   const cookies = sessionCookies(response, baseUrl, principal.email);

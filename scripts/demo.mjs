@@ -136,6 +136,8 @@ export function demoConfig({ url } = {}) {
 /** Ada and Ben for this prefix: test addresses only, each password an HMAC of the secret and the address. */
 export function demoPrincipals({ prefix = 'demo', secret }) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(prefix)) fail(`bad --prefix ${JSON.stringify(prefix)}: lowercase letters, digits and dashes`);
+  // `mm-*` accounts are the staging suite's, which the deploy prunes; `canary-*` are the canary pool's.
+  if (/^(?:mm|canary)(?:-|$)/.test(prefix)) fail(`bad --prefix ${JSON.stringify(prefix)}: mm and canary name the staging suite's and canary's accounts`);
   if (!secret) fail('no demo secret: set MOSS_DEMO_SECRET');
   return Object.entries(PEOPLE).map(([label, name]) => {
     const email = `${prefix}-${label}@example.invalid`;

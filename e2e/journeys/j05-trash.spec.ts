@@ -170,7 +170,8 @@ test('j05-trash: Ada trashes a note while Ben types; everything in Ben goes iner
   await ui.body(ben, docId).click();
   await ben.page.keyboard.press(toEnd);
   const typing = ben.page.keyboard.type(' and Ben keeps typing through it', { delay: 40 });
-  // A backlinks read in flight when the trash lands answers 404 (a background read, never shown); any other 4xx fails.
+  // Ben's typing makes each window re-read the note's backlinks; one in flight when the trash lands answers 404 (a
+  // background read, never shown, declared by trashFromSidebar). Any other 4xx still fails.
   const inFlight = `/api/docs/${docId}/backlinks`;
   const trashedAt = Date.now();
   await trashFromSidebar(ada, docId, ben);

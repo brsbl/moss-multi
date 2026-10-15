@@ -12,10 +12,12 @@ export interface SocketEntry {
   url: string; docId: string; epoch: number; openedAt: number; closedAt: number | null; error: string | null;
   /** The close the page heard (`code reason`), or that it asked for (`asked code`), so a reopen names its cause. */
   close: string | null;
-  /** The close event's code, when the page heard it (not on a routed page). */
+  /** The heard close event's code, when the page saw it (not on a routed page). */
   code?: number | null;
   /** The page document that opened it, when the page reported it (not on a routed page). */
   document?: string | null;
+  /** It received the server's sync step 2 (y-protocols message 0, 1): the doc reached sync on it. */
+  synced?: boolean;
 }
 export interface StampEntry { url: string; status: number | null; meta: string | null; client: string | null; at: number }
 
@@ -64,7 +66,7 @@ export class Telemetry {
           if (typeof url === 'string' && typeof document === 'string') t.socketDocument(url, document);
         }),
         page.addInitScript(
-          ({ path, binding, codeBinding, documentBinding }) => {
+          ({ path, binding, codeBinding, documents }) => {
             const bindings = window as unknown as Record<string, ((...args: unknown[]) => unknown) | undefined>;
             // This document's identity: a socket the previous document opened as it unloaded can reach the census
             // after this document's navigation response, so the navigation count alone would misfile it.
@@ -84,7 +86,7 @@ export class Telemetry {
                 super(url, protocols);
                 if (!new URL(this.url).pathname.startsWith(path)) return;
                 try {
-                  void bindings[documentBinding]?.(this.url, documentId);
+                  void bindings[documents]?.(this.url, documentId);
                 } catch {
                   // the census never breaks the page
                 }
@@ -99,7 +101,7 @@ export class Telemetry {
               }
             };
           },
-          { path: DOC_SOCKET_PATH, binding: PAGE_CLOSE_BINDING, codeBinding: PAGE_CLOSE_CODE_BINDING, documentBinding: SOCKET_DOCUMENT_BINDING },
+          { path: DOC_SOCKET_PATH, binding: PAGE_CLOSE_BINDING, codeBinding: PAGE_CLOSE_CODE_BINDING, documents: SOCKET_DOCUMENT_BINDING },
         ),
       ]).then(() => undefined);
     }
@@ -125,6 +127,9 @@ export class Telemetry {
       if (!entry) return;
       socket.on('close', () => { entry.closedAt ??= Date.now(); });
       socket.on('socketerror', (error) => { entry.error = String(error); });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload !== 'string' && payload[0] === 0 && payload[1] === 1) entry.synced = true;
+      });
     });
     page.on('load', () => {
       t.pending.push(t.stamp(page));
@@ -170,7 +175,7 @@ export class Telemetry {
     if (!entry) return;
     entry.close = entry.close ? `${entry.close}, then ${close}` : close;
     const code = Number.parseInt(close, 10);
-    entry.code = Number.isNaN(code) ? null : code;
+    if (Number.isInteger(code)) entry.code = code;
   }
 
   /** A routed page socket, as the proxy saw it open; `closed()` records its close, once. */

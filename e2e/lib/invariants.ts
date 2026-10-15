@@ -21,6 +21,8 @@ export interface ActorView {
   declaredHttp: DeclaredHttp[];
   /** Declared reconnects per doc id (`*` for every doc). */
   reconnects: Map<string, number>;
+  /** Declared try-again (1013) closes per doc id (`*` for every doc), judged off loopback (invariant 3). */
+  tryAgain?: Map<string, number>;
   /** Editor observations per doc id (invariant 4). */
   observations: Map<string, { mark: string; generation: string }>;
 }
@@ -42,14 +44,50 @@ const LOAD_FAILURE = /Failed to load resource: the server responded with a statu
 export const declares = (declared: DeclaredHttp[], status: number, url: string) =>
   declared.some((d) => d.status === status && pathMatches(url, d.path));
 
-/** Off loopback, a doc socket the network dropped (1006) or the server told to try again (1013); the client reconnects. */
-const NETWORK_DROP = new Set([1006, 1013]);
+/** A doc socket the network dropped: the close the page heard was abnormal. */
+const NETWORK_DROP = 1006;
+/** The server's try-again (packages/sync access-epoch.ts TRY_AGAIN): a close no journey sees unless it declares it. */
+const TRY_AGAIN = 1013;
 const SOCKET_FAILED = /^WebSocket connection to '([^']+)' failed/;
+/** How long after its socket closed the browser's console line about the failure may arrive. */
+const FAILED_LOG_MS = 2_000;
 
 export interface Network {
-  /** Against a deployed stack: one network drop per doc and document is recovered, not a finding (A§21). */
+  /** Against a deployed stack: one network drop per doc and document, recovered to sync, is not a finding (A§21). */
   offLoopback?: boolean;
 }
+
+/** A dropped socket is recovered when a later socket of its doc and document received the server's sync step 2. */
+const recovered = (dropped: SocketEntry, group: SocketEntry[]): boolean =>
+  group.some((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.synced === true);
+
+/**
+ * Off loopback, whether a 1006 drop's replacement is still connecting: a later socket of its doc and document is open
+ * and has not reached sync yet. The invariants wait a bounded time for it before they judge the drop (actors.ts).
+ */
+export const awaitingRecovery = (sockets: SocketEntry[]): boolean =>
+  [...socketGroups(sockets).values()].some((group) => group.some((dropped) => dropped.code === NETWORK_DROP && !recovered(dropped, group) &&
+    group.some((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.closedAt === null && s.synced !== true)));
+
+/** Invariant 3's socket groups: per page document (else navigation count) and doc. */
+const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
+  const groups = new Map<string, SocketEntry[]>();
+  for (const socket of sockets) {
+    const key = `${socket.document ? `doc:${socket.document}` : `epoch:${socket.epoch}`}\u0000${socket.docId}`;
+    groups.set(key, [...(groups.get(key) ?? []), socket]);
+  }
+  return groups;
+};
+
+/**
+ * Off loopback, the recovered network drops: the single 1006 of its doc and document whose replacement reached sync.
+ * Only the browser's own failure line for that socket, logged while it lived or just after, is left to invariant 3.
+ */
+const recoveredDrops = (sockets: SocketEntry[]): SocketEntry[] =>
+  [...socketGroups(sockets).values()].flatMap((group) => {
+    const drops = group.filter((s) => s.code === NETWORK_DROP);
+    return drops.length === 1 && recovered(drops[0], group) ? drops : [];
+  });
 
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
@@ -59,11 +97,12 @@ export function errorProblems(
   { offLoopback = false }: Network = {},
 ): string[] {
   const problems = census.pageErrors.map((e) => `page error: ${e.message}`);
-  const dropped = new Set(offLoopback ? (census.sockets ?? []).filter((s) => NETWORK_DROP.has(s.code ?? 0)).map((s) => s.url) : []);
+  const dropped = offLoopback ? recoveredDrops(census.sockets ?? []) : [];
   for (const entry of census.console) {
     if (entry.type !== 'error') continue;
-    // The browser logs the drop invariant 3 counts; the drop itself is judged there.
-    if (dropped.has(SOCKET_FAILED.exec(entry.text)?.[1] ?? '')) continue;
+    // The browser logs the drop invariant 3 judges: that socket's URL (its own _pk), while it lived or just after.
+    const failed = SOCKET_FAILED.exec(entry.text)?.[1];
+    if (failed && dropped.some((s) => s.url === failed && entry.at >= s.openedAt && entry.at <= (s.closedAt ?? s.openedAt) + FAILED_LOG_MS)) continue;
     // A declared 4xx also logs a load failure for that resource; it is the same, declared, event.
     const load = LOAD_FAILURE.exec(entry.text);
     const status = load ? Number(load[1]) : 0;
@@ -96,16 +135,19 @@ const ARTIFACT_MS = 50;
 
 /**
  * Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. A socket's
- * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback,
- * one socket closed by a network drop may be replaced once more; a second drop fails.
+ * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback, one
+ * network drop per doc and document (a heard 1006) is allowed only when a later socket of that document reached sync,
+ * and every 1013 (the server's try-again) is a finding unless the journey declared it (`expectTryAgain`).
  */
-export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>, { offLoopback = false }: Network = {}): string[] {
-  const groups = new Map<string, SocketEntry[]>();
-  for (const socket of sockets) {
-    const key = `${socket.document ? `doc:${socket.document}` : `epoch:${socket.epoch}`}\u0000${socket.docId}`;
-    groups.set(key, [...(groups.get(key) ?? []), socket]);
-  }
+export function socketProblems(
+  sockets: SocketEntry[],
+  reconnects: Map<string, number>,
+  { offLoopback = false }: Network = {},
+  tryAgain: Map<string, number> = new Map(),
+): string[] {
+  const groups = socketGroups(sockets);
   const problems: string[] = [];
+  const tryAgainSeen = new Map<string, number>();
   for (const all of groups.values()) {
     const { docId } = all[0];
     // A socket the browser reported closed within ARTIFACT_MS of opening, that the page never closed nor heard close, is
@@ -113,12 +155,23 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
     const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
     if (group.length === 0) continue;
-    const drops = offLoopback ? group.filter((s) => s.closedAt !== null && NETWORK_DROP.has(s.code ?? 0)).length : 0;
-    if (drops > 1) problems.push(`${docId}: ${drops} network drops in one document, 1 allowed`);
-    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + Math.min(drops, 1);
+    let drop = 0;
+    if (offLoopback) {
+      for (const socket of group) {
+        if (socket.code === TRY_AGAIN) tryAgainSeen.set(docId, (tryAgainSeen.get(docId) ?? 0) + 1);
+      }
+      const drops = group.filter((s) => s.code === NETWORK_DROP);
+      if (drops.length > 1) problems.push(`${docId}: ${drops.length} network drops (1006) in one document, 1 allowed`);
+      for (const dropped of drops) {
+        if (!recovered(dropped, group)) problems.push(`${docId}: a socket dropped (1006) and no later socket of its document reached sync`);
+      }
+      drop = drops.length === 1 && recovered(drops[0], group) ? 1 : 0;
+    }
+    const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + drop;
     if (group.length > allowed) {
-      const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}${s.error ? ' (errored)' : ''}`);
-      problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${closes.join('; ')})`);
+      // How each socket ended, for a log that may not print the census.
+      const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}`);
+      problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${group.filter((s) => s.error).length} errored; ${closes.join('; ')})`);
     }
     const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);
     events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -126,6 +179,10 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     let peak = 0;
     for (const [, delta] of events) peak = Math.max(peak, (open += delta));
     if (peak > 1) problems.push(`${docId}: ${peak} doc sockets open at once`);
+  }
+  for (const [docId, seen] of tryAgainSeen) {
+    const declared = (tryAgain.get(docId) ?? 0) + (tryAgain.get('*') ?? 0);
+    if (seen > declared) problems.push(`${docId}: ${seen} try-again closes (1013), ${declared} declared`);
   }
   return problems;
 }
@@ -148,7 +205,7 @@ export async function actorFindings(actor: ActorView, journey: string, version: 
   const findings = [
     ...errorProblems(actor.telemetry, actor.declaredHttp, journey, network).map(finding(1, actor.label)),
     ...stampProblems(actor.telemetry.stamps, version).map(finding(2, actor.label)),
-    ...socketProblems(actor.telemetry.sockets, actor.reconnects, network).map(finding(3, actor.label)),
+    ...socketProblems(actor.telemetry.sockets, actor.reconnects, network, actor.tryAgain).map(finding(3, actor.label)),
   ];
   if (actor.page.isClosed()) return findings;
   for (const [docId, { mark, generation }] of actor.observations) {

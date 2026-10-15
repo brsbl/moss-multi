@@ -2,16 +2,16 @@
 // actor of a test and checks the 9 invariants on all of them at the end.
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
-import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
+import type { APIRequestContext, Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor } from './detectors.js';
 import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
-  actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
+  actorFindings, awaitingRecovery, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
-import { mintPrincipal, newPrincipal, poolPrincipal, signIn, type Principal } from './principals.ts';
+import { mintPrincipal, newPrincipal, poolPrincipal, seededPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
 import type { Provenance, Stack } from './stack.ts';
 import { Telemetry } from './telemetry.ts';
@@ -32,6 +32,7 @@ export interface Viewport { width: number; height: number; mobile?: boolean }
 export class Actor implements ActorView {
   readonly declaredHttp: DeclaredHttp[] = [];
   readonly reconnects = new Map<string, number>();
+  readonly tryAgain = new Map<string, number>();
   readonly observations = new Map<string, { mark: string; generation: string }>();
 
   constructor(
@@ -52,6 +53,11 @@ export class Actor implements ActorView {
   /** Declares `n` extra doc-socket opens for `docId` (or every doc) in one document (invariant 3). */
   expectReconnects(n: number, docId = '*'): void {
     this.reconnects.set(docId, (this.reconnects.get(docId) ?? 0) + n);
+  }
+
+  /** Declares `n` try-again (1013) closes for `docId` (or every doc), which off loopback are otherwise findings (invariant 3). */
+  expectTryAgain(n: number, docId = '*'): void {
+    this.tryAgain.set(docId, (this.tryAgain.get(docId) ?? 0) + n);
   }
 
   /** Starts remount detection on the doc's body root (invariant 4); call again after a declared remount. */
@@ -79,8 +85,26 @@ export class Actor implements ActorView {
   }
 }
 
+/** Screenshots are taken against a loopback stack or a fixture page only: off loopback nothing is recorded (T8.Ds). */
+export function recordsScreens(stack: Pick<Stack, 'baseUrl'> | null): boolean {
+  return !stack || isLoopback(stack.baseUrl);
+}
+
 // Per worker process, so every principal minted in a run has its own email.
 let minted = 0;
+/** How long, off loopback, a dropped doc socket's replacement may take to reach sync once the leg ends. */
+const RECOVERY_MS = 15_000;
+
+/**
+ * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
+ * idle fails the next request with "socket hang up", which the latency rehearsal hit on GETs and POSTs alike and the
+ * hook stack hit in j18 (T8.2).
+ */
+function freshConnections(request: APIRequestContext): void {
+  const send = request.fetch.bind(request);
+  request.fetch = ((input: Parameters<APIRequestContext['fetch']>[0], options: Parameters<APIRequestContext['fetch']>[1] = {}) =>
+    send(input, { ...options, headers: { connection: 'close', ...options.headers } })) as APIRequestContext['fetch'];
+}
 
 export class Actors {
   readonly list: Actor[] = [];
@@ -109,7 +133,7 @@ export class Actors {
    */
   async principal(label: string): Promise<Principal> {
     const canary = this.options.stack?.canary;
-    if (canary && canary.principals !== 'per-run') {
+    if (canary && (canary.principals ?? 'pool') === 'pool') {
       const secret = process.env[canary.poolSecretEnv];
       if (!secret) throw new InfraBlocked(`the canary pool secret ${canary.poolSecretEnv} is not set`);
       const principal = await poolPrincipal(this.stack.baseUrl, secret, label);
@@ -117,7 +141,15 @@ export class Actors {
       return principal;
     }
     minted += 1;
-    const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
+    const seed = canary?.principals === 'seeded' ? canary.seed : undefined;
+    let principal: Principal;
+    if (seed) {
+      const password = process.env[seed.passwordEnv];
+      if (!password) throw new InfraBlocked(`the suite password ${seed.passwordEnv} is not set`);
+      principal = await seededPrincipal(this.stack.baseUrl, seed, password, this.options.runToken, label, minted);
+    } else {
+      principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
+    }
     this.principals.push(principal);
     return principal;
   }
@@ -148,6 +180,7 @@ export class Actors {
         })
       : null;
     this.options.stack?.budget?.watch(context);
+    freshConnections(context.request);
     // The card's own sign-ins and sign-ups count against the auth limit setup paces under (auth-pace.ts).
     context.on('response', (response) => {
       const kind = authKind(response.url(), response.request().method());
@@ -254,10 +287,22 @@ export class Actors {
   }
 
   async assertInvariants(): Promise<void> {
+    await this.awaitRecoveries();
     const findings = await this.findings();
     this.testInfo.annotations.push({ type: 'invariants', description: JSON.stringify({ findings: findings.length }) });
     if (findings.length > 0) await this.fail(findings, 'invariants');
     this.options.stack?.budget?.assert(this.journey);
+  }
+
+  /**
+   * Off loopback, a doc socket the network dropped near the end of a leg may still be reconnecting: its replacement
+   * gets up to RECOVERY_MS to reach sync before invariant 3 judges the drop. Nothing is waited for on loopback.
+   */
+  private async awaitRecoveries(): Promise<void> {
+    if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
+    const deadline = Date.now() + RECOVERY_MS;
+    const pending = () => this.list.some((actor) => !actor.page.isClosed() && awaitingRecovery(actor.telemetry.sockets));
+    while (pending() && Date.now() < deadline) await new Promise((done) => setTimeout(done, 250));
   }
 
   /** Attaches the census and, where recording is allowed, a 2x PNG of each offending actor, then fails the test. */
@@ -266,7 +311,7 @@ export class Actors {
     await this.testInfo.attach(`${where}-census.json`, { body: JSON.stringify({ findings, census }, null, 2), contentType: 'application/json' });
     for (const label of this.mayCapture ? new Set(findings.map((f) => f.actor)) : []) {
       const actor = this.list.find((a) => a.label === label);
-      if (actor && !actor.page.isClosed()) {
+      if (actor && !actor.page.isClosed() && recordsScreens(this.options.stack)) {
         // Evidence only: a capture Chromium refuses ("Unable to capture screenshot") must not replace the findings.
         const shot = await actor.page.screenshot().catch(() => null);
         if (shot) await this.testInfo.attach(`${where}-${label}.png`, { body: shot, contentType: 'image/png' });

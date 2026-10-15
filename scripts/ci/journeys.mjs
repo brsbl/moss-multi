@@ -73,6 +73,8 @@ export const GROUPS = {
   suggestPaste: ['j16-paste', 'j16-review-preview'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
+  // A review racing its card's preview (T8.2), apart so the review shard fits its budget.
+  reviewRace: ['j16-review-race'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.
   censusBlocks: ['j16-census-blocks'],
   censusNested: ['j16-census-nested'],

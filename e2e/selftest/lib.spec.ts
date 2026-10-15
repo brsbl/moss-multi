@@ -10,11 +10,13 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { request } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
+import { recordsScreens } from '../lib/actors.ts';
+import { authHeadroom, paceAuth, recordAuth } from '../lib/auth-pace.ts';
 import { RequestBudget } from '../lib/budget.ts';
 import { probeSocket } from '../lib/doc-client.ts';
 import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
-import { errorProblems, socketProblems } from '../lib/invariants.ts';
+import { awaitingRecovery, errorProblems, socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
@@ -157,46 +159,96 @@ test.describe('request budget', () => {
   });
 });
 
-test.describe('doc sockets by document (invariant 3)', () => {
+test.describe('doc sockets per document (invariant 3)', () => {
   const socket = (openedAt: number, closedAt: number | null, document?: string | null): SocketEntry =>
-    ({ url: `ws://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error: null, close: closedAt === null ? null : '1000', document });
+    ({ url: `ws://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error: null, close: null, document });
   test('two opens in one document fail, whichever epoch the navigation event gave them', () => {
-    expect(socketProblems([socket(0, 10, 'doc-a'), socket(20, null, 'doc-a')], new Map())).not.toEqual([]);
-    expect(socketProblems([socket(0, 10), socket(20, null)], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 'doc-a'), socket(200, null, 'doc-a')], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 100), socket(200, null)], new Map())).not.toEqual([]);
   });
   test("a socket the previous document opened as it unloaded is that document's, not the next one's", () => {
     // WebKit can deliver the old document's socket after the new navigation's response, at the new epoch.
-    expect(socketProblems([socket(0, 0, 'doc-a'), socket(39, null, 'doc-b')], new Map())).toEqual([]);
+    expect(socketProblems([socket(0, 100, 'doc-a'), socket(139, null, 'doc-b')], new Map())).toEqual([]);
   });
+});
+
+test('the auth pace carries its counts to the next worker of the run (a restart after a failure), off the hook stack', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'auth-pace-'));
+  try {
+    const path = join(dir, 'auth-pace.json');
+    paceAuth('https://staging.example', path);
+    for (let i = 0; i < 9; i += 1) recordAuth('sign-in');
+    // A fresh worker reads them back, so its next sign-in waits out the window instead of meeting a 429.
+    paceAuth('https://staging.example', path);
+    test.info().setTimeout(0);
+    const started = Date.now();
+    const waited = authHeadroom('sign-in', 3).then(() => Date.now() - started);
+    const early = await Promise.race([waited, new Promise<number>((done) => setTimeout(() => done(-1), 1_000))]);
+    expect(early, 'the next sign-in waits').toBe(-1);
+    paceAuth(null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
   const OFF = { offLoopback: true };
-  const socket = (openedAt: number, closedAt: number | null, code: number | null = null, error: string | null = null): SocketEntry =>
-    ({ url: `wss://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error, close: code === null ? null : String(code), code, document: 'doc-a' });
-  test('off loopback, one socket dropped abnormally (1006) or told to try again (1013), then replaced, passes', () => {
-    expect(socketProblems([socket(0, 10, 1006), socket(20, null)], new Map(), OFF)).toEqual([]);
-    expect(socketProblems([socket(0, 10, 1013), socket(20, null)], new Map(), OFF)).toEqual([]);
-    expect(socketProblems([socket(0, 10, 1006, 'socket error'), socket(20, null)], new Map(), OFF)).toEqual([]);
+  const socket = (openedAt: number, closedAt: number | null, code: number | null = null, extra: Partial<SocketEntry> = {}): SocketEntry => ({
+    url: `wss://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error: null,
+    close: code === null ? null : String(code), code, document: 'doc-a', ...extra,
+  });
+  const synced = (openedAt: number) => socket(openedAt, null, null, { synced: true });
+  test('off loopback, one 1006 drop whose replacement reached sync passes', () => {
+    expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map(), OFF)).toEqual([]);
+    expect(socketProblems([socket(0, 100, 1006, { error: 'socket error' }), synced(200)], new Map(), OFF)).toEqual([]);
+  });
+  test('off loopback, a drop whose replacement never reached sync fails', () => {
+    expect(socketProblems([socket(0, 100, 1006), socket(200, null)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1006)], new Map(), OFF)).not.toEqual([]);
+    // Only a later socket recovers it: the one before the drop synced, the one after never did.
+    expect(socketProblems([socket(0, 100, 1000, { synced: true }), socket(200, 300, 1006), socket(400, null)], new Map([['d', 1]]), OFF)).not.toEqual([]);
+  });
+  test("a drop whose replacement is still connecting is awaited; a recovered, replaced-and-closed or lone one is not", () => {
+    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, null)])).toBe(true);
+    expect(awaitingRecovery([socket(0, 100, 1006), synced(200)])).toBe(false);
+    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, 300, 1000)])).toBe(false);
+    expect(awaitingRecovery([socket(0, 100, 1006)])).toBe(false);
+    expect(awaitingRecovery([socket(0, null)])).toBe(false);
+  });
+  test('off loopback, a 1013 the journey did not declare fails, even recovered and within its declared reconnects', () => {
+    expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map([['d', 1]]), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map([['d', 1]]), OFF, new Map([['d', 1]]))).toEqual([]);
   });
   test('on loopback the same drop fails, and off loopback a refusal, a second drop or two sockets at once still fail', () => {
-    expect(socketProblems([socket(0, 10, 1006), socket(20, null)], new Map())).not.toEqual([]);
-    expect(socketProblems([socket(0, 10, 4408), socket(20, null)], new Map(), OFF)).not.toEqual([]);
-    expect(socketProblems([socket(0, 10, 1006), socket(20, 30, 1006), socket(40, null)], new Map(), OFF)).not.toEqual([]);
-    // A second drop fails even when the page opens no third socket.
-    expect(socketProblems([socket(0, 10, 1006), socket(20, 30, 1006)], new Map(), OFF)).not.toEqual([]);
-    expect(socketProblems([socket(0, 10, 1013), socket(20, 30, 1006)], new Map(), OFF)).not.toEqual([]);
-    expect(socketProblems([socket(0, 30, 1006), socket(20, null)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 4408), synced(200)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1006), socket(200, 300, 1006, { synced: true }), synced(400)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 300, 1006), synced(200)], new Map(), OFF)).not.toEqual([]);
   });
-  test("off loopback the browser's log line for that drop is not an error; any other socket's is", () => {
-    const dropped = socket(0, 10, 1006);
-    const census = (text: string) => ({
-      console: [{ type: 'error', text, url: '', at: 10 }], pageErrors: [], http: [], sockets: [dropped, socket(20, null)],
+  test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {
+    const dropped = socket(0, 100, 1006);
+    const census = (text: string, at = 100, sockets = [dropped, synced(200)]) => ({
+      console: [{ type: 'error', text, url: '', at }], pageErrors: [], http: [], sockets,
     });
     const drop = `WebSocket connection to '${dropped.url}' failed: The network connection was lost.`;
     expect(errorProblems(census(drop), [], 'j01', OFF)).toEqual([]);
     expect(errorProblems(census(drop), [], 'j01')).not.toEqual([]);
-    expect(errorProblems(census("WebSocket connection to 'wss://h/parties/doc-d-o/d?_pk=20' failed: x"), [], 'j01', OFF)).not.toEqual([]);
+    expect(errorProblems(census("WebSocket connection to 'wss://h/parties/doc-d-o/d?_pk=200' failed: x"), [], 'j01', OFF)).not.toEqual([]);
+    // Not recovered, or logged long after that socket closed: an error.
+    expect(errorProblems(census(drop, 100, [dropped, socket(200, null)]), [], 'j01', OFF)).not.toEqual([]);
+    expect(errorProblems(census(drop, 60_000), [], 'j01', OFF)).not.toEqual([]);
+    // A 1013's log line is never exempt.
+    const refused = socket(0, 100, 1013);
+    expect(errorProblems(census(`WebSocket connection to '${refused.url}' failed: x`, 100, [refused, synced(200)]), [], 'j01', OFF)).not.toEqual([]);
+  });
+});
+
+test.describe('recording off loopback (T8.Ds)', () => {
+  test('screenshots are taken against a loopback stack or a fixture page only', () => {
+    expect(recordsScreens(null)).toBe(true);
+    expect(recordsScreens({ baseUrl: 'http://127.0.0.1:8850' })).toBe(true);
+    expect(recordsScreens({ baseUrl: 'https://moss-multi-staging.example.workers.dev' })).toBe(false);
   });
 });
 

@@ -1,7 +1,9 @@
 // The only import journeys use: `test` with the stack, actors and phase clocks, and an auto fixture that checks
 // the 9 invariants on every actor after every test (S-test §3.3).
 import { randomBytes } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { test as base } from '@playwright/test';
+import { gateRetry } from '../../scripts/deploy/retry-gate.mjs';
 import { Actors } from './actors.ts';
 import { paceAuth } from './auth-pace.ts';
 import { Measure } from './measure.ts';
@@ -26,7 +28,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       const stack = Stack.fromState();
       await stack.assertProvenance();
       // A stack with no hooks has the production auth limit.
-      paceAuth(stack.canary ? stack.baseUrl : null);
+      paceAuth(stack.canary ? stack.baseUrl : null, stack.canary ? join(dirname(stack.canary.budgetPath), 'auth-pace.json') : null);
       await use(stack);
     },
     { scope: 'worker' },
@@ -35,6 +37,9 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   measure: async ({}, use, testInfo) => use(new Measure(testInfo)),
   actors: [
     async ({ browser, stackW, runToken }, use, testInfo) => {
+      // A retry (staging only) runs only after a failure on a named infrastructure class; any other failure stands.
+      const infra = await gateRetry(testInfo);
+      if (infra) testInfo.annotations.push({ type: 'retry', description: `after infrastructure: ${infra}` });
       testInfo.annotations.push({ type: 'browser', description: `${browser.browserType().name()} ${browser.version()}` });
       const actors = new Actors(browser, testInfo, { stack: stackW, runToken });
       await use(actors);
