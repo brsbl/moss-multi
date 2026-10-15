@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 87% done** (205 of 236 planned tasks verified)
+**Overall: 87% done** (206 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 19 / 19 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 12 / 12 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 13 / 13 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -255,10 +255,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T7.S6 verified: a note's `assets/` images and videos now travel with `add`, `pull`, `push` and `sync`: a file missing on either side is copied over, neither side is overwritten, a name the server stores differently moves the note's reference with it, and a failed transfer is reported as failed.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
 - 2026-10-14 — T8.R verified: shipping work now sits on the final M7, and a doc create or agent push body is read only after the caller's auth, access and rate token, so an unauthorized or rate-limited sender is refused before any upload is read.
+- 2026-10-15 — T8.Q verified: the shipping work now sits on the current M7, so staging carries M3–M7's media, comment-draft, quota and formula fixes, and the full CI lane is green on the restacked m8.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.Q's checker (8bd12eb, 2026-10-15)
+
+- T8.Q checker P2 (j01-paste-check stall bound still fails intermittently on m8; inherited): full-lane attempts measured 5218 ms against a 5000 ms bound and 5382 ms against a calibrated 5175 ms bound, and the pre-restack m8 head failed the same leg 2 of 4 times, while m7 measures 3.2–3.4 s and a repeat_each=3 dispatch (run 38742030233) passed (Chromium 4101/4356/4132 ms, WebKit about 500 ms); cause not established (runner variance or an m8 slowdown) → profile it under the owning paste task.
+- T8.Q checker P2 (PROGRESS total of 236 planned tasks may be stale): 236 dates from m7, where the M8 row was 0/5; m8's M8 row now has 13 tasks, so the planned total should grow by about 8 once recounted.
 
 ### From T8.R's checker (b318c84, 2026-10-14)
 
