@@ -2,7 +2,8 @@
 // moss-multi seam: local-view (A§10): edit-session identity stays in the existing local map.
 // moss-multi seam: register drafts merge while the formula popover stays open.
 import { mergeIntoField, nodeRegister, useFollowRegister, useRegisterWritable } from '@moss-multi/host/collab/register-input';
-import { applyOps, diffText, mapOffset, rebaseOps, registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/host/collab/registers';
+import { registerDoc, registerState, REGISTER_LOCAL_ORIGIN, writeRegisterEdit } from '@moss-multi/host/collab/registers';
+import { mergeStoredFormula, storedCaret, type Delta } from '@moss-multi/host/collab/formula-merge';
 import { $isBoundEditor } from '@moss-multi/host/collab/view-state';
 /**
  * FormulaPlugin - Keyboard navigation for formula nodes
@@ -135,20 +136,8 @@ const remapPositionedReferences = (
   });
 };
 
-// moss-multi: a reference's range in the humanized expression and its token's range in the stored one.
-interface TokenSpan {
-  start: number;
-  end: number;
-  rawStart: number;
-  rawEnd: number;
-}
-
 /** moss-multi: humanized `expression` in stored form, each tracked reference bound to its own token. */
-const bindTrackedReferences = (
-  expression: string,
-  references: PositionedFormulaReference[]
-): { raw: string; spans: TokenSpan[] } => {
-  const spans: TokenSpan[] = [];
+const bindTrackedReferences = (expression: string, references: PositionedFormulaReference[]): string => {
   let raw = '';
   let at = 0;
   const bound = references
@@ -156,78 +145,10 @@ const bindTrackedReferences = (
     .sort((a, b) => a.start - b.start);
   for (const reference of bound) {
     if (reference.start < at) continue;
-    raw += expression.slice(at, reference.start);
-    const rawStart = raw.length;
-    raw += createFormulaReferenceToken(reference);
-    spans.push({ start: reference.start, end: reference.end, rawStart, rawEnd: raw.length });
+    raw += expression.slice(at, reference.start) + createFormulaReferenceToken(reference);
     at = reference.end;
   }
-  return { raw: raw + expression.slice(at), spans };
-};
-
-/**
- * moss-multi: stored expressions with each distinct reference token as one private-use character, so a text merge
- * keeps or drops a token whole and never splices one token's ids into another's. `encode` returns the text and, per
- * token, its humanized range (`start`/`end`) and its one-character range (`rawStart`/`rawEnd`); `decode` restores it.
- */
-const createTokenCodec = (sources: readonly string[]) => {
-  const toUnit = new Map<string, string>();
-  const toToken = new Map<string, string>();
-  const used = new Set(sources.join(''));
-  let next = 0xe000;
-  const unitFor = (token: string): string => {
-    let unit = toUnit.get(token);
-    if (unit === undefined) {
-      while (used.has(String.fromCharCode(next))) next += 1;
-      unit = String.fromCharCode(next++);
-      toUnit.set(token, unit);
-      toToken.set(unit, token);
-    }
-    return unit;
-  };
-  const spansOf = (text: string): TokenSpan[] => {
-    const spans: TokenSpan[] = [];
-    let humanized = 0;
-    for (let i = 0; i < text.length; i += 1) {
-      const token = toToken.get(text[i]);
-      if (token === undefined) { humanized += 1; continue; }
-      const name = token.slice(2, token.indexOf('#'));
-      spans.push({ start: humanized, end: humanized + name.length, rawStart: i, rawEnd: i + 1 });
-      humanized += name.length;
-    }
-    return spans;
-  };
-  return {
-    encode: (raw: string) => {
-      const text = raw.replace(FORMULA_REFERENCE_TOKEN_REGEX, unitFor);
-      return { text, spans: spansOf(text) };
-    },
-    decode: (text: string) => {
-      let raw = '';
-      for (const unit of text) raw += toToken.get(unit) ?? unit;
-      return { raw, spans: spansOf(text) };
-    }
-  };
-};
-
-/** moss-multi: a humanized offset in stored form, or back; an offset inside a reference goes to its end. */
-const toStoredOffset = (offset: number, spans: TokenSpan[]): number => {
-  let shift = 0;
-  for (const span of spans) {
-    if (offset <= span.start) break;
-    if (offset < span.end) return span.rawEnd;
-    shift = span.rawEnd - span.end;
-  }
-  return offset + shift;
-};
-const toHumanizedOffset = (offset: number, spans: TokenSpan[]): number => {
-  let shift = 0;
-  for (const span of spans) {
-    if (offset <= span.rawStart) break;
-    if (offset < span.rawEnd) return span.end;
-    shift = span.end - span.rawEnd;
-  }
-  return offset + shift;
+  return raw + expression.slice(at);
 };
 
 /**
@@ -344,6 +265,8 @@ const POPOVER_WRITE_TAG = 'moss-multi-formula-popover-write';
 
 interface FormulaDraftChange {
   selectionStart?: number;
+  /** moss-multi: the name field's caret after its change, so its write places the edit where it was made. */
+  nameCaret?: number;
   /** moss-multi: the fields to write, those the person changed; every field when absent. */
   fields?: { name: boolean; expression: boolean };
   acceptedReference?: PositionedFormulaReference;
@@ -508,7 +431,8 @@ function FormulaEditPopover({
     before: string,
     after: string,
     draft: string,
-    selection: readonly number[]
+    selection: readonly number[],
+    delta?: Delta
   ) => { expression: string; selection: number[] };
   getSuggestions: (query: string) => FormulaSuggestion[];
 }): JSX.Element | null {
@@ -592,17 +516,17 @@ function FormulaEditPopover({
     let stopped = false;
     // The stored formula as last seen: the base a peer's change is merged from.
     let seen = text.toString();
-    const changed = (_event: unknown, transaction: { origin: unknown }) => {
+    const changed = (event: { delta: Delta }, transaction: { origin: unknown }) => {
       const local = transaction.origin === REGISTER_LOCAL_ORIGIN;
       const before = seen;
       const after = (seen = text.toString());
+      // The change itself, read while its event is current: it places an edit a diff of the texts cannot.
+      const delta = local ? undefined : event.delta;
       queueMicrotask(() => {
         if (stopped) return;
         const draft = readCurrentDraft();
         if (!draft) return;
-        const next = draft[payloadField];
-        const base = payloadBaseRef.current;
-        payloadBaseRef.current = next;
+        payloadBaseRef.current = draft[payloadField];
         if (local) return;
         // A popover opened before its payload arrived holds no draft (it was read-only): it shows the arrival at once,
         // and the new session that follows reads it again with its mode and references.
@@ -613,11 +537,11 @@ function FormulaEditPopover({
         // The merge writes nothing: the person's draft, with the peer's text and reference tokens, is written by their
         // next keystroke or on Enter or Apply.
         let merged: string;
-        if (symbolic) merged = mergeIntoField(nameInputRef.current, base, next);
+        if (symbolic) merged = mergeIntoField(nameInputRef.current, before, after, delta);
         else {
           const input = expressionInputRef.current;
           const shown = input?.value ?? latestDraftRef.current.expression;
-          const at = mergePeerExpression(before, after, shown, [input?.selectionStart ?? 0, input?.selectionEnd ?? 0]);
+          const at = mergePeerExpression(before, after, shown, [input?.selectionStart ?? 0, input?.selectionEnd ?? 0], delta);
           merged = at.expression;
           if (input) {
             input.value = merged;
@@ -673,11 +597,11 @@ function FormulaEditPopover({
   }, [editingFormula.session]);
 
   const handleNameChange = useCallback(
-    (nextName: string) => {
+    (nextName: string, selectionStart?: number | null) => {
       const nextDraft = { ...latestDraftRef.current, name: nextName };
       latestDraftRef.current = nextDraft;
       setName(nextName);
-      writeTouched(nextDraft);
+      writeTouched(nextDraft, { nameCaret: selectionStart ?? undefined });
     },
     [writeTouched]
   );
@@ -937,16 +861,18 @@ function FormulaEditPopover({
           {pinnedSide === 'top' ? suggestionListbox : null}
           <div data-formula-edit-popover="true" className="flex max-w-full items-center gap-1 px-2 py-1.5">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              {/* moss-multi seam: whole-pixel input widths (T3.B15): a peer's edit resizes the open popover, and WebKit
+                  re-measured a fractional width as the popover moved, a ResizeObserver loop error. */}
               <input
                 ref={nameInputRef}
                 aria-label="Formula name"
                 value={name}
                 readOnly={!writable}
-                onChange={(event) => handleNameChange(event.target.value)}
+                onChange={(event) => handleNameChange(event.target.value, event.target.selectionStart)}
                 onKeyDown={handleInputKeyDown}
                 placeholder="Name"
                 className={nameInputClassName}
-                style={{ width: `${getDraftInputWidthCh(name, 'Name')}ch` }}
+                style={{ width: `round(up, ${getDraftInputWidthCh(name, 'Name')}ch, 1px)` }}
               />
               <input
                 ref={expressionInputRef}
@@ -959,7 +885,7 @@ function FormulaEditPopover({
                 onKeyDown={handleInputKeyDown}
                 placeholder={expressionPlaceholder}
                 className={`${inputClassName} font-mono`}
-                style={{ width: `${getDraftInputWidthCh(expression, expressionPlaceholder)}ch` }}
+                style={{ width: `round(up, ${getDraftInputWidthCh(expression, expressionPlaceholder)}ch, 1px)` }}
               />
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -1311,14 +1237,18 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
       editReferenceBindingsRef.current = references;
 
       const nextName = draft.name.trim();
-      const nextExpression =
+      // moss-multi: the stored form before trimming, so each field's caret maps into the text it writes.
+      const reboundExpression =
         target.sourceMode === 'symbolic'
-          ? draft.expression.trim()
+          ? draft.expression
           : rebindHumanizedExpression(
               draft.expression,
               references,
               createBareNameResolver(target)
-            ).trim();
+            );
+      const nextExpression = reboundExpression.trim();
+      const nameCaret = storedCaret(draft.name, change?.nameCaret, draft.name);
+      const expressionCaret = storedCaret(reboundExpression, change?.selectionStart, draft.expression);
       // moss-multi: an executable draft is compared with its base in stored form, reference tokens included, so picking
       // another same-named reference is a change. Its base is the stored formula the draft was last merged with.
       const fields = change?.fields && target.sourceMode !== 'symbolic'
@@ -1359,20 +1289,20 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         const before = editStoredRef.current ?? targetNode.getFormula();
         // moss-multi: the target's formula as written, rebased onto the payload as it is now.
         let writtenFormula = targetNode.getFormula();
-        const writeFormula = (node: FormulaNode, next: string) => {
+        const writeFormula = (node: FormulaNode, next: string, caret: number | undefined) => {
           if (!registerDoc(editor)) {
             node.setFormula(next);
             if (node.getKey() === target.nodeKey) writtenFormula = next;
             return;
           }
-          const written = writeRegisterEdit(editor, node.getKey(), before, next);
+          const written = writeRegisterEdit(editor, node.getKey(), before, next, caret);
           if (written !== null && node.getKey() === target.nodeKey) editStoredRef.current = writtenFormula = written;
         };
 
         if (target.sourceMode === 'symbolic') {
           for (const node of instances) {
             if (writeName && node.getFormula() !== nextName) {
-              writeFormula(node, nextName);
+              writeFormula(node, nextName, nameCaret);
               changed = true;
             }
             if (writeName && node.getName() !== null) {
@@ -1395,7 +1325,7 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
         const normalizedName = nextName.length > 0 ? nextName : null;
         for (const node of instances) {
           if (writeExpression && node.getFormula() !== nextExpression) {
-            writeFormula(node, nextExpression);
+            writeFormula(node, nextExpression, expressionCaret);
             changed = true;
           }
           if (writeName && node.getName() !== normalizedName) {
@@ -1458,11 +1388,11 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
     [applyDraftToNode]
   );
 
-  // moss-multi: a peer's change to the stored formula, `before` to `after`, merged into the draft in stored form, so each
-  // reference token keeps its note and formula through the edit itself, never matched by its display name. Returns the
-  // merged draft and where `selection` belongs in it; the draft's tracked references become the merged text's.
+  // moss-multi: a peer's change to the stored formula, `before` to `after` (`delta`, the change itself), merged into the
+  // draft in stored form (mergeStoredFormula). Returns the merged draft and where `selection` belongs in it; the draft's
+  // tracked references become the merged text's.
   const mergePeerExpression = useCallback(
-    (before: string, after: string, draft: string, selection: readonly number[]) => {
+    (before: string, after: string, draft: string, selection: readonly number[], delta?: Delta) => {
       // The draft's own tracked references, which may name another same-named token than the stored ones; the stored
       // ones only when the tracking describes other text (the draft was re-read from the node).
       const stored = humanizeFormulaExpressionWithReferences(before);
@@ -1472,20 +1402,11 @@ export function FormulaPlugin({ noteId }: { noteId: string }) {
           : draft === stored.expression
             ? stored.references
             : remapPositionedReferences(editExpressionRef.current, draft, editReferenceBindingsRef.current);
-      const mine = bindTrackedReferences(draft, own);
-      // Each token is one unit in the merge: when both people retarget the same reference, both tokens are kept whole.
-      const codec = createTokenCodec([before, after, mine.raw]);
-      const base = codec.encode(before).text;
-      const ours = codec.encode(mine.raw);
-      const ops = rebaseOps(base, diffText(base, codec.encode(after).text), ours.text);
-      const result = codec.decode(applyOps(ours.text, ops));
+      const result = mergeStoredFormula(before, after, bindTrackedReferences(draft, own), selection, delta);
       const merged = humanizeFormulaExpressionWithReferences(result.raw);
       editExpressionRef.current = merged.expression;
       editReferenceBindingsRef.current = merged.references;
-      return {
-        expression: merged.expression,
-        selection: selection.map((at) => toHumanizedOffset(mapOffset(toStoredOffset(at, ours.spans), ops), result.spans))
-      };
+      return { expression: merged.expression, selection: result.selection };
     },
     []
   );
