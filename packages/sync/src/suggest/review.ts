@@ -8,8 +8,8 @@ import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
-  applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, ROOT_KINDS, yValue, type GateReason, type Hunk, type IdSpan,
-  type Inserted, type PayloadMirrors, type Projection,
+  applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, restoredCopies, ROOT_KINDS, yValue, type GateReason, type Hunk, type IdSpan,
+  type Inserted, type PayloadMirrors, type Projection, type Restored,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { attachPayloadSource, exportDocMarkdown, mirrorOf, payloadSourceOf } from '../server-doc.ts';
@@ -206,8 +206,8 @@ function mirrorWith(live: Y.Doc, payloads: Payloads): Y.Doc {
   return mirror;
 }
 
-const project = (doc: Y.Doc, payloads: Payloads, also: Iterable<string>): Projection =>
-  projectDoc(doc, (id) => payloads.doc(id), also);
+const project = (doc: Y.Doc, payloads: Payloads, also: Iterable<string>, restored?: Restored): Projection =>
+  projectDoc(doc, (id) => payloads.doc(id), also, restored);
 
 type Applied =
   | { ok: true; mirror: Y.Doc; payloads: Payloads; hydrated: Uint8Array; touched: Map<string, Uint8Array>; hunks: Hunk[] }
@@ -229,7 +229,8 @@ function apply(live: Y.Doc, id: string): Applied {
   }
   // Every payload the record writes is projected after it, named or not, so accept never lands a payload change the
   // preview did not show (I3). Before the record, G4 leaves only named payloads (already projected) and new ones.
-  const hunks = projectionDiff(before, project(mirror, payloads, result.payloads.keys()));
+  // Text an undo restored as copies (the rest of a split it took back) reads as the body text it restores.
+  const hunks = projectionDiff(before, project(mirror, payloads, result.payloads.keys(), restoredCopies(mirror, live)));
   return { ok: true, mirror, payloads, hydrated: result.hydrated, touched: result.payloads, hunks };
 }
 

@@ -44,7 +44,8 @@ interface PastePoint {
   type: 'text' | 'element';
 }
 export type PasteAt =
-  | { kind: 'range'; anchor: PastePoint; focus: PastePoint }
+  // With the selection's format and style, which Lexical gives the text and blocks a paste makes.
+  | { kind: 'range'; anchor: PastePoint; focus: PastePoint; format: number; style: string }
   | { kind: 'node'; paths: number[][] }
   // A selection the copy cannot rebuild: the paste is not measured, so it is refused.
   | { kind: 'unsupported' }
@@ -74,9 +75,11 @@ export function $pasteAt(toEnd: boolean): PasteAt {
   const selection = $getSelection();
   const point = (at: PointType): PastePoint => ({ path: $pathOf(at.getNode()), offset: at.offset, type: at.type });
   if ($isRangeSelection(selection)) {
-    if (!toEnd) return { kind: 'range', anchor: point(selection.anchor), focus: point(selection.focus) };
+    const { format, style } = selection;
+    if (!toEnd) return { kind: 'range', anchor: point(selection.anchor), focus: point(selection.focus), format, style };
+    // The routing moves the caret to the end and keeps the selection's format and style.
     const end = point(selection.isBackward() ? selection.anchor : selection.focus);
-    return { kind: 'range', anchor: end, focus: end };
+    return { kind: 'range', anchor: end, focus: end, format, style };
   }
   if ($isNodeSelection(selection)) return { kind: 'node', paths: selection.getNodes().map($pathOf) };
   return selection ? { kind: 'unsupported' } : null;
@@ -97,6 +100,8 @@ function $select(at: PasteAt): void {
   const selection = $createRangeSelection();
   selection.anchor.set($nodeAt(at.anchor.path).getKey(), at.anchor.offset, at.anchor.type);
   selection.focus.set($nodeAt(at.focus.path).getKey(), at.focus.offset, at.focus.type);
+  selection.format = at.format;
+  selection.style = at.style;
   $setSelection(selection);
 }
 

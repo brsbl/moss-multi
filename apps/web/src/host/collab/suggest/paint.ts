@@ -3,7 +3,7 @@
 // Edit mode, on B, each run of record items in C gets a wedge at its left body neighbour, a gutter bar beside its
 // block and a hover preview of its text; delete targets paint struck; a block a record restyles gets a dot.
 import type { Binding } from '@lexical/yjs';
-import { BODY_DOC, readsAsBody, regRefs } from '@moss-multi/core/suggest/apply';
+import { BODY_DOC, readsAsBody, regRefs, restoredCopies } from '@moss-multi/core/suggest/apply';
 import { SUGGEST_MARK_ATTR, OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
@@ -56,11 +56,13 @@ export function paintBound(owner: object, editor: LexicalEditor, binding: Bindin
 
 /**
  * Which items of `doc` (F or C) paint as pending inserts: items of `own` clients that B lacks, outside any block that
- * reads as it does in B (a split and its undo leave the split rest as copies: nothing a reader sees, nothing painted).
+ * reads as it does in B, and not copies restoring B's text (a split and its undo leave the split rest as copies:
+ * nothing a reader sees, nothing painted, whatever is typed beside them).
  */
 export function pendingInserts(doc: Y.Doc, own: ReadonlySet<number>, body?: Y.Doc | null): (id: Y.ID) => boolean {
   const unchanged = body ? readsAsBody(doc, body) : () => false;
-  return (id) => own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client)) && !unchanged(id);
+  const { copies } = body ? restoredCopies(doc, body) : { copies: new Map<string, Y.ID>() };
+  return (id) => own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client)) && !copies.has(idKey(id)) && !unchanged(id);
 }
 
 /** Every valid open record's delete targets. */
@@ -75,6 +77,7 @@ export function partTargets(body: Y.Doc, valid: ReadonlySet<string>): IdSpan[] {
 export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: Built): Map<string, IdSpan[]> {
   const out = new Map<string, IdSpan[]>();
   const unchanged = built ? readsAsBody(built.doc, body) : null;
+  const restored = built ? restoredCopies(built.doc, body).originals : null;
   for (const record of openRecords(body)) {
     if (!valid.has(record.meta.id)) continue;
     const spans: IdSpan[] = record.parts.flatMap((part) => part.targets);
@@ -88,7 +91,7 @@ export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: 
       }
       for (const [client, ranges] of ds.clients) {
         if (built!.clients.has(client)) continue;
-        for (const { clock, len } of ranges) spans.push(...outsideUnchanged(built!.doc, client, clock, len, unchanged!));
+        for (const { clock, len } of ranges) spans.push(...outsideUnchanged(built!.doc, client, clock, len, unchanged!, restored!));
       }
     }
     if (spans.length) out.set(record.meta.id, spans);
@@ -96,20 +99,30 @@ export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: 
   return out;
 }
 
-/** The parts of a removed span whose items sit outside blocks that read as they do in B (`readsAsBody`). */
-function outsideUnchanged(doc: Y.Doc, client: number, clock: number, len: number, unchanged: (id: Y.ID) => boolean): IdSpan[] {
+/**
+ * The parts of a removed span whose items sit outside blocks that read as they do in B (`readsAsBody`) and that no
+ * copy restores (`restored`, restoredCopies).
+ */
+function outsideUnchanged(doc: Y.Doc, client: number, clock: number, len: number, unchanged: (id: Y.ID) => boolean, restored: ReadonlySet<string>): IdSpan[] {
   const structs = doc.store.clients.get(client);
   const end = clock + len;
   if (!structs || clock >= Y.getState(doc.store, client)) return [{ client, clock, len }];
   const out: IdSpan[] = [];
+  const add = (from: number, to: number) => {
+    const last = out.at(-1);
+    if (last && last.clock + last.len === from) last.len += to - from;
+    else out.push({ client, clock: from, len: to - from });
+  };
   for (let i = Y.findIndexSS(structs, clock); i < structs.length && structs[i]!.id.clock < end; i++) {
     const struct = structs[i]!;
     if (struct instanceof Y.Item && unchanged(struct.id)) continue;
     const from = Math.max(clock, struct.id.clock);
     const to = Math.min(end, struct.id.clock + struct.length);
-    const last = out.at(-1);
-    if (last && last.clock + last.len === from) last.len += to - from;
-    else out.push({ client, clock: from, len: to - from });
+    if (!restored.size) {
+      add(from, to);
+      continue;
+    }
+    for (let at = from; at < to; at += 1) if (!restored.has(`${client}:${at}`)) add(at, at + 1);
   }
   return out;
 }
@@ -151,25 +164,56 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
     for (const id of payloadIdsOf(record)) if (refs.has(id) && !payloads.has(id)) payloads.set(id, record.meta.id);
   }
   const unchanged = readsAsBody(built.doc, body);
+  // Copies restoring B's text (the rest of an undone split) read as that text: no mark, and a mark after one sits
+  // after the character it restores.
+  const { copies } = restoredCopies(built.doc, body);
+  const lastOf = (item: Y.Item) => Y.createID(item.id.client, item.id.clock + item.length - 1);
+  const mark = (record: string, text: string, anchor: Y.ID | undefined, after: boolean) => {
+    const place = anchor && index.get(idKey(anchor));
+    if (!place) return;
+    const key = `${place.key}:${place.offset}:${record}`;
+    const held = marks.get(key);
+    if (held) held.text += text;
+    else marks.set(key, { kind: 'insert', place, after: after && place.offset >= 0, text, record });
+  };
   for (const [client, record] of built.clients) {
     for (const struct of built.doc.store.clients.get(client) ?? []) {
       if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null || unchanged(struct.id)) continue;
       const content = struct.content;
       // A text node's property map marks no text of its own.
       if (content instanceof Y.ContentType && content.type instanceof Y.Map) continue;
+      if (copies.has(idKey(struct.id)) && !(content instanceof Y.ContentString)) continue;
       let text: string;
       if (content instanceof Y.ContentString) text = content.str;
       else if (content instanceof Y.ContentType) text = content.type instanceof Y.XmlText ? `\n${plain(content.type as Y.AbstractType<unknown>)}` : '';
       else continue;
       let left = struct.left;
-      while (left && (left.deleted || built.clients.has(left.id.client))) left = left.left;
-      const anchor = left ? Y.createID(left.id.client, left.id.clock + left.length - 1) : (struct.parent as Y.AbstractType<unknown>)._item?.id;
-      const place = anchor && index.get(idKey(anchor));
-      if (!place) continue;
-      const key = `${place.key}:${place.offset}:${record}`;
-      const mark = marks.get(key);
-      if (mark) mark.text += text;
-      else marks.set(key, { kind: 'insert', place, after: !!left && place.offset >= 0 && left.content instanceof Y.ContentString, text, record });
+      let restoredLeft: Y.ID | undefined;
+      while (left && (left.deleted || built.clients.has(left.id.client))) {
+        restoredLeft = !left.deleted ? copies.get(idKey(lastOf(left))) : undefined;
+        if (restoredLeft) break;
+        left = left.left;
+      }
+      const anchor = restoredLeft ?? (left ? lastOf(left) : (struct.parent as Y.AbstractType<unknown>)._item?.id);
+      const after = !!left && left.content instanceof Y.ContentString;
+      if (!(content instanceof Y.ContentString) || !copies.size) {
+        mark(record, text, anchor, after);
+        continue;
+      }
+      // A run partly restored: each stretch of its own characters marks after the character before it.
+      let from = -1;
+      for (let i = 0; i <= text.length; i += 1) {
+        const was = i < text.length ? copies.get(`${struct.id.client}:${struct.id.clock + i}`) : undefined;
+        if (i < text.length && !was) {
+          if (from < 0) from = i;
+          continue;
+        }
+        if (from >= 0) {
+          const before = from === 0 ? anchor : copies.get(`${struct.id.client}:${struct.id.clock + from - 1}`);
+          mark(record, text.slice(from, i), before, from === 0 ? after : true);
+          from = -1;
+        }
+      }
     }
   }
   // A block whose own attributes a record changed, nested ones (a checked list item) included.
