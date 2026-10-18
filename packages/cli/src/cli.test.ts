@@ -1,6 +1,6 @@
 // The CLI against a fake server (T7.1): raw `cat`, doc references, `url`, `rm` copy and JSON, exit codes, key and
 // device sign-in, pull and push state, and the comments and suggestions read commands (T7.3). @p:agt-1
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -1533,5 +1533,83 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     expect(saved.code, saved.err).toBe(0);
     expect(dec(server.content.get(NEW))).toBe('Para one, edited by the agent.\n\nPara two.\n\nPara three.\n\nPara four, and my typing.\n');
     expect(readFileSync(file, 'utf8')).toBe(NOTE.replace('Para one.', 'Para one, edited by the agent.').replace('Para four.', 'Para four, and my typing.'));
+  });
+
+  // An agent's added paragraph the user reviews in moss (a reloaded editor) and removes (checker P1, attempt 1).
+  const UNWANTED = 'An agent paragraph the user does not want.\n\n';
+  const ADDED = B0.replace('Para three.', `${UNWANTED}Para three.`);
+  const pullAgentParagraph = async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    server.content.set(ID_B, enc(ADDED));
+    expect((await cli(['sync'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    expect(readFileSync(file, 'utf8')).toBe(ADDED);
+    return file;
+  };
+
+  it('deleting a just-pulled agent paragraph lands: a save holding exactly the prior text is a deliberate revert', async () => {
+    const file = await pullAgentParagraph();
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, ''));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(ID_B)), 'the server loses the agent paragraph').toBe(B0);
+    expect(readFileSync(file, 'utf8'), 'and so does the file').toBe(B0);
+    expect(JSON.parse(saved.out)).toContainEqual(expect.objectContaining({ docId: ID_B, action: 'pushed' }));
+    expect(JSON.stringify(JSON.parse(saved.out)), 'nothing says the pulled edit stays').not.toContain('pulled edit stays');
+  });
+
+  it('a deletion merged as a stale save says how to remove the edit, and deleting it again then lands', async () => {
+    const file = await pullAgentParagraph();
+    // Deleting and typing in one save looks exactly like a stale editor save: the pulled paragraph stays, visibly.
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, '').replace('Para four.', 'Para four, and my typing.'));
+    const first = await cli(['sync']);
+    expect(first.code, first.err).toBe(0);
+    expect(first.out, 'the output names the kept edit and how to remove it').toMatch(/pulled edit stays.*delete it again/);
+    const kept = ADDED.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B))).toBe(kept);
+    expect(readFileSync(file, 'utf8')).toBe(kept);
+
+    writeFileSync(file, kept.replace(UNWANTED, ''));
+    const again = await cli(['sync', '--json']);
+    expect(again.code, again.err).toBe(0);
+    const removed = B0.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'the second deletion is not locked out').toBe(removed);
+    expect(readFileSync(file, 'utf8')).toBe(removed);
+  });
+
+  it('a save made after an editor would have saved its old text is an ordinary edit, even when it removes the pulled edit', async () => {
+    const file = await pullAgentParagraph();
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, '').replace('Para four.', 'Para four, and my typing.'));
+    // Saved two minutes after the pull: moss saves a dirty editor within 15 s, so this editor had reloaded.
+    const later = new Date(Date.now() + 120_000);
+    utimesSync(file, later, later);
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const removed = B0.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B))).toBe(removed);
+    expect(readFileSync(file, 'utf8')).toBe(removed);
+    expect(server.state.pushes.at(-1)?.baseHash, 'pushed against the pulled base').toBe(sha256Hex(ADDED));
+  });
+
+  it('a moss note: a title-only web rename after a pulled agent edit keeps stale-save protection', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    server.content.set(NEW, enc(body.replace('Para one.', 'Para one, edited by the agent.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    server.docs.find((doc) => doc.id === NEW)!.title = 'Field notes renamed';
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('# Field notes renamed\n');
+
+    // The editor's body still predates the agent edit; moss takes an unchanged title line from disk when it saves.
+    writeFileSync(file, NOTE.replace('# Field notes', '# Field notes renamed').replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(NEW)), 'the agent edit survives the stale save').toBe('Para one, edited by the agent.\n\nPara two.\n\nPara three.\n\nPara four, and my typing.\n');
   });
 });
