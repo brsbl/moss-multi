@@ -431,6 +431,16 @@ it('keeps a busy tab connected for as long as frames keep arriving (B208)', asyn
   expect(socket.closes).toEqual([]);
   expect(sockets).toHaveLength(1);
 });
+it('reads a socket that hears only server events (acks) as alive, not silent', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const ds = base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map())));
+  for (let i = 0; i < 30; i += 1) {
+    serverEvent(socket, { t: 'ack', sv: base64(Y.encodeStateVector(session.doc)), ds });
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(socket.closes).toEqual([]);
+  expect(sockets).toHaveLength(1);
+});
 it('sends a fresh step 1 once the outstanding one is held back past its maximum, though peer updates keep arriving, and replays the unacked edit (B213)', async () => {
   const socket = latest(); socket.open(); session.provider.synced = true;
   session.doc.getText('title').insert(0, 'unacked');
