@@ -361,6 +361,30 @@ test('j18-sync scope: a scoped workspace syncs only its entry note and the notes
     expect(served.status(), 'a note that left the scope keeps its doc').toBe(200);
     expect(await served.text(), 'but its edits stop syncing').not.toContain('Edited after it left the scope.');
 
+    // A replica adds a link to Fresh, a note only this machine holds: the link arrived in a pull, so Fresh stays here
+    // until `scope confirm`.
+    const fresh = note('', 'Fresh', 'Only on this machine.');
+    const homeId = first.find((result) => result.file === home && result.action === 'created')!.docId!;
+    const replica = scratch();
+    try {
+      const fetched = await moss(['pull', homeId, 'home.md'], env, replica);
+      expect(fetched.code, fetched.stderr).toBe(0);
+      writeFileSync(join(replica, 'home.md'), `${readFileSync(join(replica, 'home.md'), 'utf8').trimEnd()} And [[Fresh]].\n`);
+      const pushed = await moss(['push', 'home.md'], env, replica);
+      expect(pushed.code, pushed.stderr).toBe(0);
+    } finally {
+      rmSync(replica, { recursive: true, force: true });
+    }
+    await syncJson();
+    expect(readFileSync(homeFile, 'utf8'), 'the replica\'s link is pulled').toContain('[[Fresh]]');
+    const held = await syncJson();
+    expect(created(held), 'a remote link uploads nothing').toEqual([]);
+    expect(held.find((result) => result.action === 'remote-link')?.file, 'and is reported').toBe(fresh);
+    expect(await titles(), 'Fresh stays off the server').not.toContain('Fresh');
+    const confirmed = await moss(['scope', 'confirm'], env, dir);
+    expect(confirmed.code, confirmed.stderr).toBe(0);
+    expect(created(await syncJson()), 'after `scope confirm` it syncs').toEqual([fresh]);
+
     const shopping = await importNote(ada, stack, 'Shopping', 'Milk.');
     const leak = await moss(['pull', shopping, join('Personal', 'Shopping.md')], env, dir);
     expect(leak.code, 'a doc is never pulled to a denied path').toBe(1);
