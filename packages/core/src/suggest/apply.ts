@@ -1005,7 +1005,7 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
         if ((struct.content instanceof Y.ContentString) !== strings) continue;
         // Read once a unit needs it: walking left is linear in the block.
         let map: string | null | undefined;
-        let bodyMap: { of: Y.Item; key: string | null } | null = null;
+        let bodyMap = null as { of: Y.Item; key: string | null } | null;
         for (let i = 0; i < struct.length; i += 1) {
           const original = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);
           const was = liveIn(body.store, original);
