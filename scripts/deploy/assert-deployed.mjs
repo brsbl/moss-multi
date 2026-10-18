@@ -4,7 +4,8 @@
 // path, with and without a hook header, answers exactly as an unknown route: a 404. deploy-staging.yml runs it against
 // staging; ci.yml's build job runs it against the production-mode smoke stack. ASSERT_HOOK_SECRET adds a probe with
 // that header: an e2e shard passes its hooks stack's secret and expects a failure, the check's negative control.
-//   node scripts/deploy/assert-deployed.mjs --base-url URL --expect-commit SHA --expect-bundle HASH --expect-client HASH [--wait SECONDS]
+// --pilot adds the pilot's read-only smoke (T8.P1): signed-out reads are 401 and a stranger's sign-up is refused.
+//   node scripts/deploy/assert-deployed.mjs --base-url URL --expect-commit SHA --expect-bundle HASH --expect-client HASH [--wait SECONDS] [--pilot]
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { servingProblems } from '../stack.mjs';
@@ -61,9 +62,36 @@ export async function deployedProblems(baseUrl, expected, hookOptions = {}) {
   return [...(await servingProblems(baseUrl, expected)), ...(await hookProblems(baseUrl, hookOptions))];
 }
 
+/**
+ * The pilot's read-only smoke (T8.P1), which can create no account: /api/me without a session is 401, and a sign-up
+ * for an email off the allowlist is refused SIGN_UP_NOT_ALLOWED. That sign-up uses an `@example.invalid` address and a
+ * password below every minimum, so even an open sign-up would refuse it.
+ */
+export async function pilotProblems(baseUrl) {
+  const problems = [];
+  const me = await fetch(`${baseUrl}/api/me`, { redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+  await me.body?.cancel();
+  if (me.status !== 401) problems.push(`GET /api/me signed out: ${me.status}, expected 401`);
+  const email = `pilot-smoke-${randomBytes(6).toString('hex')}@example.invalid`;
+  const signUp = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/json', origin: baseUrl },
+    body: JSON.stringify({ email, password: 'x', name: 'Pilot smoke' }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const code = await signUp.json().then((body) => body?.code, () => null);
+  if (signUp.status !== 403 || code !== 'SIGN_UP_NOT_ALLOWED') problems.push(`POST sign-up off the allowlist: ${signUp.status} ${code}, expected 403 SIGN_UP_NOT_ALLOWED`);
+  return problems;
+}
+
 function parse(argv) {
   const opts = {};
-  for (let i = 0; i < argv.length; i += 2) opts[argv[i].replace(/^--/, '')] = argv[i + 1];
+  for (let i = 0; i < argv.length; i += 1) {
+    const key = argv[i].replace(/^--/, '');
+    if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) opts[key] = argv[(i += 1)];
+    else opts[key] = true;
+  }
   return opts;
 }
 
@@ -81,11 +109,13 @@ async function main(argv) {
     let problems;
     try {
       problems = await deployedProblems(baseUrl, expected, { secret: process.env.ASSERT_HOOK_SECRET ?? '' });
+      if (opts.pilot) problems.push(...(await pilotProblems(baseUrl)));
     } catch (error) {
       problems = [`${baseUrl}: ${error.cause?.code ?? error.message}`];
     }
     if (problems.length === 0) {
       console.log(`deployed: ${baseUrl} serves ${expected.commit}:${expected.bundleHash}, and every test hook is the unknown-route 404`);
+      if (opts.pilot) console.log('pilot: signed-out reads are 401 and sign-up off the allowlist is refused');
       return 0;
     }
     if (Date.now() >= deadline) {

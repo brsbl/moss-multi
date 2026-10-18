@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isPilotTarget } from './staging-config.mjs';
 
 /** SP14: real Cloudflare hibernates after about 10 s idle; the canary idles at least 15 s. */
 export const MIN_IDLE_MS = 15_000;
@@ -15,6 +16,7 @@ export function canaryState({ baseUrl, expected, statePath, budget, idleMs, runI
   if (!(Number.isInteger(budget) && budget > 0)) throw new Error(`request budget must be a positive integer, got ${budget}`);
   if (!(Number.isInteger(idleMs) && idleMs >= MIN_IDLE_MS)) throw new Error(`idle must be at least ${MIN_IDLE_MS / 1000} s, got ${idleMs} ms`);
   for (const key of ['commit', 'bundleHash', 'clientHash']) if (!expected?.[key]) throw new Error(`expected ${key} is missing`);
+  if (isPilotTarget(baseUrl)) throw new Error('the canary never runs against the pilot deployment');
   return {
     runId,
     baseUrl: baseUrl.replace(/\/$/, ''),

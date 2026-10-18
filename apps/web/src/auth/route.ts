@@ -6,6 +6,7 @@ import type { AppEnv } from '../env.ts';
 import { appOrigin, crossOriginCookie } from '../worker/origin-gate.ts';
 import { json } from '../worker/route.ts';
 import { createAuth, SIGN_UP_ADDRESS_DAILY, SIGN_UP_PRUNE_BATCH, type AuthEnv } from './auth.ts';
+import { allowedEmails, SIGN_UP_NOT_ALLOWED, signUpAllowed } from './allowlist.ts';
 import { addressBucket } from './client-address.ts';
 import { isLoopbackUrl } from './config.ts';
 import { resolvePrincipal } from './principal.ts';
@@ -88,6 +89,18 @@ async function signUpRefused(request: Request, env: AuthEnv): Promise<Response |
     { ...NO_STORE, 'retry-after': String(Math.max(1, Math.ceil(wait / 1000))) });
 }
 
+/** The pilot's allowlist (T8.P1), before anything is counted: a sign-up for an email off the list is refused 403. */
+async function signUpNotAllowed(request: Request, env: AuthEnv): Promise<Response | null> {
+  if (request.method !== 'POST' || !new URL(request.url).pathname.startsWith('/api/auth/sign-up/') || !allowedEmails(env)) return null;
+  let email: unknown;
+  try {
+    email = ((await request.clone().json()) as { email?: unknown } | null)?.email;
+  } catch {
+    email = undefined;
+  }
+  return signUpAllowed(env, email) ? null : json(SIGN_UP_NOT_ALLOWED, 403, NO_STORE);
+}
+
 /**
  * better-auth reads a whole body; this hands it one read no further than JSON_BODY_MAX_BYTES, so an oversized one is
  * refused with 413 before it is buffered or counted. Null passes the request on as it is.
@@ -105,6 +118,8 @@ export async function handleAuthRoute(request: Request, env: AuthEnv & Partial<P
   const capped = await cappedBody(request);
   if (capped instanceof Response) return capped;
   if (capped) request = capped;
+  const notAllowed = await signUpNotAllowed(request, env);
+  if (notAllowed) return notAllowed;
   const tooMany = await signUpRefused(request, env);
   if (tooMany) return tooMany;
   const refused = await endSignedOutSession(request, env);

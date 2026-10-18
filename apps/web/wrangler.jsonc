@@ -1,4 +1,4 @@
-// Local bindings (A§4, A§5) at the top level; env.staging carries the permanent staging names of A§21.
+// Local bindings (A§4, A§5) at the top level; env.staging carries the permanent staging names of A§21, env.pilot the pilot's.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   // DO storage is bound to the Worker name: never rename it.
@@ -57,6 +57,37 @@
         }
       ],
       "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "moss-multi-staging-assets" }]
+    },
+    // The pilot (T8.P1; docs/DEPLOY.md): the owner's real notes, apart from staging. Permanent names, laid over the
+    // tested dist the same way (staging-config.mjs --target pilot). Sign-up is allowlist-only: the deploy sets the
+    // MOSS_ALLOWED_EMAILS secret, and an empty list admits no one.
+    "pilot": {
+      "name": "moss-multi-pilot",
+      "workers_dev": true,
+      "preview_urls": false,
+      "routes": [],
+      "observability": { "enabled": true },
+      "vars": {
+        "MOSS_TEST_HOOKS": "0",
+        "MOSS_SIGN_UP": "allowlist"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "DocDO", "class_name": "DocDO" },
+          { "name": "PrincipalDO", "class_name": "PrincipalDO" },
+          { "name": "SearchDO", "class_name": "SearchDO" }
+        ]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DocDO", "PrincipalDO", "SearchDO"] }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "moss-multi-pilot",
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "moss-multi-pilot-assets" }]
     }
   }
 }

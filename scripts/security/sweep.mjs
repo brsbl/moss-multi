@@ -11,6 +11,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { pathToFileURL } from 'node:url';
 import { comparable, hookProblems } from '../deploy/assert-deployed.mjs';
+import { isPilotTarget } from '../deploy/staging-config.mjs';
 
 const TIMEOUT_MS = 20_000;
 const MISSING = '00000000-0000-4000-8000-000000000000';
@@ -568,6 +569,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const opts = parseArgs(process.argv.slice(2));
   if (typeof opts['base-url'] !== 'string') {
     console.error('usage: node scripts/security/sweep.mjs --base-url URL [--json] [--skip-limits]');
+    process.exit(2);
+  }
+  // The sweep signs up principals and exhausts limits: never on the owner's pilot (T8.P1).
+  if (isPilotTarget(opts['base-url'])) {
+    console.error('refusing to sweep the pilot deployment: it holds the owner\'s real notes');
     process.exit(2);
   }
   const sweep = createSweep(opts['base-url']);

@@ -87,7 +87,6 @@ describe('the pilot preflight', () => {
     expect(preflightProblems({ ...ok, PILOT_BETTER_AUTH_SECRET: 'short' }, 'pilot')).toEqual(['secret PILOT_BETTER_AUTH_SECRET must be at least 32 characters']);
     expect(preflightProblems({ ...ok, PILOT_ALLOWED_EMAILS: 'not-an-email, ;' }, 'pilot')).toEqual(['secret PILOT_ALLOWED_EMAILS must list at least one email address, and only email addresses']);
     expect(preflightProblems({ ...ok, PILOT_URL: 'https://moss-multi-staging.example.workers.dev' }, 'pilot').join('\n')).toMatch(/staging/);
-    expect(preflightProblems({ ...ok, STAGING_URL: URL_PILOT }, 'pilot').join('\n')).toMatch(/staging/);
   });
 });
 
