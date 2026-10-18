@@ -155,6 +155,8 @@ describe('the auth store (the single auth-state writer)', () => {
     // The day-long sign-up limit never tells the person to wait a moment.
     expect(refusalMessage({ code: 'TOO_MANY_SIGN_UPS' }, 429)).toMatch(/today/);
     expect(refusalMessage({ code: 'TOO_MANY_SIGN_UPS' }, 429)).not.toMatch(/moment/);
+    // The pilot's allowlist (T8.P1): say why, and who can fix it.
+    expect(refusalMessage({ code: 'SIGN_UP_NOT_ALLOWED' }, 403)).toBe('Sign-up here is invite-only. Ask the owner to add your email address.');
   });
 
   it('names the active password minimum when a password is too short', async () => {
