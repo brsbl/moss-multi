@@ -3,6 +3,8 @@
 // each `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder. Stored
 // bytes are the type their name declares (T3.B10).
 import { readFileSync } from 'node:fs';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
@@ -568,6 +570,38 @@ describe('upload bounds (T3.1s)', () => {
     }
     await uploaded(await upload(ada.cookie, docId, 'after-stall.png', PNG, 'image/png'));
   }, 20_000);
+  it('lets each upload chunk be collected once copied, so a large body holds about its length, not twice it (B230, B219)', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const MIB = 1024 * 1024;
+    const CHUNKS = 24;
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    // Weak references only: a chunk the reader still holds stays alive through a full collection.
+    const sent: WeakRef<Uint8Array>[] = [];
+    let heldAtEnd = -1;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        // A new task per chunk, as a network body arrives, so no earlier chunk is pinned by the current job.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (sent.length === CHUNKS - 1) {
+          gc();
+          heldAtEnd = sent.filter((ref) => ref.deref() !== undefined).length;
+        }
+        const chunk = new Uint8Array(MIB).fill(sent.length);
+        if (sent.length === 0) chunk.set([0x1a, 0x45, 0xdf, 0xa3]);
+        sent.push(new WeakRef(chunk));
+        controller.enqueue(chunk);
+        if (sent.length === CHUNKS) controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const response = await call('POST', `/api/docs/${docId}/assets?filename=near-cap.webm`, ada.cookie, {
+      body, headers: { 'content-type': 'video/webm', 'content-length': String(CHUNKS * MIB) },
+    });
+    expect((await uploaded(response)).asset.size).toBe(CHUNKS * MIB);
+    // The chunk being copied may still be on the stack; every earlier one is garbage.
+    expect(heldAtEnd, 'measured before the last chunk').toBeGreaterThanOrEqual(0);
+    expect(heldAtEnd, `chunks of ${CHUNKS - 1} still reachable before the last arrives`).toBeLessThanOrEqual(2);
+  }, 60_000);
 });
 
 describe('upload storage bounds (T3.1s)', () => {
