@@ -8,7 +8,8 @@ import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestRequest } from '@moss-multi/protocol/suggest';
 import { SUGGEST_LIMITS } from '@moss-multi/protocol/suggest';
 import {
-  $getRoot, $getSelection, $isRangeSelection, $setSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND,
+  $getRoot, $getSelection, $isRangeSelection, $setSelection, COMMAND_PRIORITY_EDITOR, DELETE_CHARACTER_COMMAND, INSERT_PARAGRAPH_COMMAND, PASTE_COMMAND, REDO_COMMAND,
+  UNDO_COMMAND,
   type LexicalEditor,
 } from 'lexical';
 import { $createTableSelectionFrom, $isTableCellNode, $isTableNode, registerTablePlugin, type TableCellNode, type TableNode } from '@lexical/table';
@@ -17,17 +18,18 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { markdownToState } from '../../../../../../packages/sync/src/converter/index.ts';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
-import { GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
+import { Composite, destroyView, GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src/payload-docs.ts';
 import { REGISTER_LOCAL_ORIGIN } from '../../../../../../packages/sync/src/registers.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { closeRecord, openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
-import { nodeRegistry } from '../../../../../../packages/sync/src/suggest/review.ts';
+import { EMPTY_IDLE_MS, nodeRegistry, previewRecord, reviewPreview } from '../../../../../../packages/sync/src/suggest/review.ts';
 import { EDITOR, seededBody, select, spansOfText, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { refusalMessage } from '../../refusal.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
 import { stepBytes } from './paste.ts';
+import { pendingInserts, struckByRecord } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 
 /** The payload bytes the DocDO last said it counts for a doc (doc-session.ts), withheld payloads included. */
@@ -146,6 +148,12 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
       selection.removeText();
       return true;
     }, COMMAND_PRIORITY_EDITOR),
+    // Lexical's own Enter, after the routing's.
+    editor.registerCommand(INSERT_PARAGRAPH_COMMAND, () => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) selection.insertParagraph();
+      return true;
+    }, COMMAND_PRIORITY_EDITOR),
     pasteStack(editor),
     registerSuggestRouting(editor, fork, { pasteStack: () => pasteStack }),
   ];
@@ -198,6 +206,10 @@ function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n',
     }, { discrete: true }),
     redo: () => editor.update(() => {
       editor.dispatchCommand(REDO_COMMAND, undefined);
+    }, { discrete: true }),
+    /** Enter, one keystroke's update. */
+    enter: () => editor.update(() => {
+      editor.dispatchCommand(INSERT_PARAGRAPH_COMMAND, undefined);
     }, { discrete: true }),
     /** Backspace, one keystroke's update. */
     backspace: () => editor.update(() => {
@@ -1205,6 +1217,79 @@ it('a table pasted at a caret in a cell, which overwrites the cells from there, 
     if (storedOrRefused(pane, () => pane.pasteData(htmlClipboard('<table><tr><td>one</td><td>two</td></tr></table>'))) === 'refused') return;
     for (const word of ['gamma', 'delta']) expect(pane.text(), `${word} stays, struck`).toContain(word);
     expect(pane.struck(), 'the overwritten text is struck').toBeGreaterThan(0);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it.each([
+  ['a paste over another author\'s word, splitting its paragraph', 'paste'],
+  ['Enter mid-paragraph (the control)', 'enter'],
+] as const)('%s, then one undo, leaves nothing suggested: no hunk, nothing painted for either side, and the system closes the record once idle; a redo first brings it back', { timeout: 120_000 }, (_name, act) => {
+  const pane = suggesting();
+  try {
+    const original = pane.text();
+    const settle = () => {
+      vi.runAllTimers();
+      pane.pump();
+    };
+    const doIt = () => {
+      if (act === 'paste') {
+        pane.select('Intro line', 6, 10);
+        pane.paste(['Pasted one', 'Pasted two']);
+      } else {
+        pane.select('Intro line', 6, 6);
+        pane.enter();
+      }
+      settle();
+    };
+    /** The record's hunks. */
+    const hunks = () => {
+      const [record] = openRecords(pane.live);
+      const preview = previewRecord(pane.live, record!.meta.id);
+      if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
+      return preview.hunks.length;
+    };
+    /** The suggester's painted inserts in F, and the owner's Edit-mode strikes over B. */
+    const painted = () => {
+      const pending = pendingInserts(pane.fork.doc, pane.fork.ownClients(), pane.live);
+      let inserts = 0;
+      for (const [, structs] of pane.fork.doc.store.clients) {
+        for (const struct of structs) if (struct instanceof Y.Item && !struct.deleted && struct.content instanceof Y.ContentString && pending(struct.id)) inserts += struct.length;
+      }
+      const built = new Composite(pane.live).build();
+      try {
+        const struck = [...struckByRecord(pane.live, new Set(built.valid), built).values()].flat().reduce((sum, span) => sum + span.len, 0);
+        return { inserts, struck };
+      } finally {
+        destroyView(built);
+      }
+    };
+
+    doIt();
+    expect(pane.text()).not.toBe(original);
+    expect(hunks(), 'the change is shown').toBeGreaterThan(0);
+    pane.undo();
+    settle();
+    expect(pane.text(), 'one undo takes it back').toBe(original);
+    expect(hunks(), 'nothing is suggested after the undo').toBe(0);
+    expect(painted(), 'nothing is painted after the undo').toEqual({ inserts: 0, struck: 0 });
+
+    pane.redo();
+    settle();
+    expect(pane.text(), 'one redo brings it back').not.toBe(original);
+    expect(hunks(), 'and shows it again').toBeGreaterThan(0);
+    pane.undo();
+    settle();
+    expect(pane.text()).toBe(original);
+    expect(hunks(), 'nothing is suggested after the second undo').toBe(0);
+    expect(painted(), 'nothing is painted after the second undo').toEqual({ inserts: 0, struck: 0 });
+    expect(pane.fork.closed, 'nothing refused').toBe(false);
+
+    // Idle, the record that changes nothing is rejected by the system: no pending suggestion is left.
+    const [record] = openRecords(pane.live);
+    expect(reviewPreview(pane.live, record!.meta.id, { now: record!.meta.updatedAt + EMPTY_IDLE_MS })).toMatchObject({ ok: true, hunks: [], closed: true });
+    expect(openRecords(pane.live), 'no pending suggestion').toEqual([]);
   } finally {
     pane.dispose();
   }
