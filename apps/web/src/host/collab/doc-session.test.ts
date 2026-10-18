@@ -577,6 +577,31 @@ it('sends the held frames of a paste that landed before its answer once it is re
   expect(writeTags(socket)).toEqual([[ticket!.id]]);
   expect(session.state.resync).toBe(false);
 });
+it('releases a reserved paste\'s room once every write of it is acked, on the next socket when its writes were acked there (B209)', async () => {
+  const socket = live(latest());
+  const ticket = reservePaste(session.doc, 1_000);
+  serverEvent(socket, { t: 'reserved', p: ticket!.id });
+  await ticket!.settled;
+  ticket!.land();
+  session.doc.getText('title').insert(0, 'pasted');
+  ticket!.end();
+  await vi.advanceTimersByTimeAsync(0);
+  const releases = (s: FakeSocket) => customSent(s).filter((event) => event.t === 'release');
+  expect(releases(socket), 'its writes are not acked yet').toEqual([]);
+  // The socket drops before the ack; the replay on the next socket is acked there.
+  socket.ended(1006);
+  await vi.advanceTimersByTimeAsync(5_000);
+  const fresh = live(latest());
+  expect(releases(fresh)).toEqual([]);
+  const ds = base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map())));
+  serverEvent(fresh, { t: 'ack', sv: base64(Y.encodeStateVector(session.doc)), ds });
+  expect(releases(fresh)).toEqual([{ t: 'release', p: ticket!.id }]);
+  // A reserve answered after its paste gave up waiting is released at once.
+  const late = reservePaste(session.doc, 1_000);
+  (late as Ticket & { drop(): void }).drop();
+  serverEvent(fresh, { t: 'reserved', p: late!.id });
+  expect(releases(fresh).at(-1)).toEqual({ t: 'release', p: late!.id });
+});
 it('sends the writes made before a paste refused after a reconnect, and lets the lingering session go once they are acked (B209)', async () => {
   const socket = live(latest());
   // Sent on the first socket, never acked.

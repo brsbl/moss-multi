@@ -5,6 +5,7 @@ import { $createParagraphNode, $createTextNode, $getRoot, $isElementNode } from 
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE, CUSTOM_PREFIX } from '@moss-multi/protocol/sync';
+import { SESSION_MAX_MS } from '@moss-multi/protocol/limits';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
 import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
@@ -650,6 +651,69 @@ describe('admission and the write classifier', () => {
       expect(count(woken, 'a'), 'the paste lands whole').toBe(30_000);
       expect(count(woken, 'w')).toBe(0);
       expect(ada.closed).toBeNull();
+    });
+
+    it('keeps a started paste\'s reservation through a sleep long past the idle lapse and a wake: a write in between is refused and the replay lands whole', async () => {
+      const { opened, ada, ben, held } = await two();
+      const a = paste(ada, 'a');
+      const w = 20_000;
+      limits.stateCapBytes = held() + bytes(a) + Math.floor(w / 2);
+      await reserve(ada, 'A', bytes(a));
+      expect(await answer(ada, 'A')).toBe('reserved');
+      await send(ada, 'A', a.slice(0, 2));
+      await ada.drop();
+      // Ada's tab sleeps for hours, far past the lapse of a reservation no write has used, and the DO hibernates.
+      vi.setSystemTime(Date.now() + 6 * 60 * 60_000);
+      const woken = await start(wake(opened));
+      ben.opened = woken;
+      await typeTitle(ben, 'w'.repeat(w));
+      expect(ben.closed?.code, "the rest of Ada's paste keeps its room").toBe(CLOSE.writeRefused);
+      const back = await connect(woken, { id: 'ada', role: 'editor' }, ada.doc);
+      await send(back, 'A', a.slice(2));
+      await back.hello();
+      expect(count(woken, 'a'), 'the paste lands whole').toBe(30_000);
+      expect(count(woken, 'w')).toBe(0);
+      expect(back.closed).toBeNull();
+    });
+
+    it('lets a started reservation go once its writer\'s session has surely ended', async () => {
+      const { opened, ada, ben, held } = await two();
+      const a = paste(ada, 'a');
+      const w = 20_000;
+      limits.stateCapBytes = held() + bytes(a) + Math.floor(w / 2);
+      await reserve(ada, 'A', bytes(a));
+      expect(await answer(ada, 'A')).toBe('reserved');
+      await send(ada, 'A', a.slice(0, 2));
+      await ada.drop();
+      await ben.drop();
+      vi.setSystemTime(Date.now() + SESSION_MAX_MS + 60_000);
+      const again = await connect(opened, { id: 'ben', role: 'editor' }, ben.doc);
+      await again.hello();
+      await typeTitle(again, 'w'.repeat(w));
+      expect(again.closed).toBeNull();
+      expect(count(opened, 'w')).toBe(w);
+    });
+
+    it('frees what a landed paste left of its room once released, so eight pastes neither shrink the doc nor hold a ninth back', async () => {
+      const { opened, ada, ben, held } = await two();
+      for (let i = 0; i < 8; i += 1) {
+        const title = ada.doc.getText('title');
+        title.insert(title.length, 'p'.repeat(1_000));
+        const frames = ada.drain();
+        // Each reserve holds 4,000 bytes more than its paste writes, as the client's 3% does.
+        await reserve(ada, `P${i}`, bytes(frames) + 4_000);
+        expect(await answer(ada, `P${i}`)).toBe('reserved');
+        await send(ada, `P${i}`, frames);
+        await ada.deliver(custom({ t: 'release', p: `P${i}` }));
+      }
+      // Ben's write fits only once the 32,000 bytes the pastes left unused are free again.
+      limits.stateCapBytes = held() + 20_000;
+      await ben.pump();
+      await typeTitle(ben, 'w'.repeat(10_000));
+      expect(ben.closed).toBeNull();
+      expect(count(opened, 'w')).toBe(10_000);
+      await reserve(ada, 'P8', 1_000);
+      expect(await answer(ada, 'P8'), 'a ninth paste is not held back by eight landed ones').toBe('reserved');
     });
 
     it('lets a reservation no write used lapse for good: reserving the same paste again does not renew it', async () => {
