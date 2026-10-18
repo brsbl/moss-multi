@@ -4,6 +4,7 @@
 // desktop derives beside a note, which the web never has.
 
 import { isDesktopDerived } from '@moss-multi/protocol/media';
+import { forgetPastedShare, rememberPastedShare } from './pasted-shares.ts';
 
 export interface WebAsset {
   /** The URL as it appeared. */
@@ -70,7 +71,10 @@ export function parseWebAssetUrl(url: string): WebAsset | null {
   }
 }
 
-/** Every distinct asset route URL in clipboard HTML, as moss finds `moss-asset://` URLs there. */
+/**
+ * Every distinct asset route URL in clipboard HTML, as moss finds `moss-asset://` URLs there. The share link each
+ * carries is kept for the cross-note copy (pasted-shares.ts).
+ */
 export function webAssetsInHtml(html: string): WebAsset[] {
   const found: WebAsset[] = [];
   const seen = new Set<string>();
@@ -79,6 +83,9 @@ export function webAssetsInHtml(html: string): WebAsset[] {
     const asset = parseWebAssetUrl(url);
     if (!asset) continue;
     seen.add(url);
+    const share = new URLSearchParams(/\?([^#]*)/.exec(url.replace(/&amp;/g, '&'))?.[1] ?? '').get('share');
+    if (share) rememberPastedShare(asset.noteId, asset.relativePath, share);
+    else forgetPastedShare(asset.noteId, asset.relativePath);
     found.push(asset);
   }
   return found;

@@ -591,18 +591,18 @@ Designed in [docs/design/suggestions.md](design/suggestions.md) (T5.0, after a d
 
 **Upload.** `POST /api/docs/:id/assets?filename=` takes a raw body and requires editor or above on the doc, a signed-in editor link included.
 - Storage is content-addressed (`asset-blobs/sha256/<hash>`) with refcounts and versions. A name the doc's record or its folder already gives other bytes gets `-2`.
-- Allowed types are exactly png, jpg, jpeg, gif, webp, svg, mp4, webm and mov. Anything else gets 415.
+- Allowed types are exactly png, jpg, jpeg, gif, webp, svg, mp4, webm and mov. Anything else gets 415, and so do bytes that are not the type their name declares (a signature check per type; for SVG, an XML document whose root is `<svg>`), before any row or blob is written.
 - Caps: 10 MB for images and 95 MB for video, through the Worker (SP9).
 
 **References: a doc's media are its own record** (ruling, 2026-10-04). Access is granted per doc, so a read that resolved a note's media by filename in its folder let a doc-only grant reach other files there, through text, moves or copies; six T3.1 checks failed on it.
 - Markdown keeps moss's relative form, `![alt](assets/<file>)`. The substituted `asset-url.ts` maps that to `/api/docs/:docId/assets/<file>`, with the share token appended.
-- Each doc keeps a media record (`doc_media`, §6) mapping each `assets/<file>` it uses to the immutable bytes placed in it: an upload into this doc, a copy from a doc the copier can read (`POST /api/docs/:id/assets/copy`, moss's cross-note paste), or a duplicate, which takes the source's whole record. [S-ren §2.5]
+- Each doc keeps a media record (`doc_media`, §6) mapping each `assets/<file>` it uses to the immutable bytes placed in it: an upload into this doc, a copy from a doc the copier can read (`POST /api/docs/:id/assets/copy`, moss's cross-note paste), or a duplicate, which takes the source's whole record. [S-ren §2.5] A copy or duplicate commits only while the caller still reads the live source, in the statement that writes it; a copy's `sourceShare`, the link its pasted asset URL carried, opens only the source, and the page's link only the target. [T3.B10]
 - `GET /api/docs/:id/assets/<file>` resolves only through that doc's record, to that exact version, for any reader of the doc. It never looks a filename up in the doc's folder, so writing a filename into the note grants nothing, and no one, the folder's owner included, reads through a doc a file it was never given.
 - A move changes nothing: the record goes with the doc, so a path never binds to a different file in the destination folder and references are never renamed. A duplicate keeps its names too.
 - The folder `assets/` namespace (`assets`, unique `(folder_id, filename)`) only names uploaded versions collision-safely, to materialize export and sync (M7).
 
 **Serving.**
-- The current version is `private, max-age=0, stale-while-revalidate=86400` with ETag/304. A specific version is immutable.
+- Every read, a `?version=` one included, is `private, no-cache` with ETag/304, so a browser revalidates each time and never shows one account's cached media to the next one signed in there. [T3.B10]
 - HTTP Range (206) serves video.
 - SVG gets `content-security-policy: sandbox` and `nosniff`. [L§4.15; L§4.17]
 - Only a single file under `assets/` is uploaded media; moss desktop's derived files (`assets/.moss-cache/…`, `video-thumb-*`) and local paths stay unresolvable and read as desktop files. A web video poster is the clip's first frame. `GET /api/docs/:id/export` is the DocDO markdown for any reader.
@@ -681,7 +681,8 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 | `data-app-state` | html | `booting`, `ready`, `degraded` (ruling 10) |
 | `data-editor-pane` + `data-doc-id` | each pane root | the doc id |
 | `data-doc-state` | pane | `binding`, `retrying` (first-sync deadline passed), `live`, `offline`, `terminal`. `live` only after first sync **and** an editable root, set in one effect |
-| `data-title-binding`, `data-body-binding` | title field, body root | `unbound`, `live`, `readonly`, `terminal`. While not `live`, the element is non-focusable |
+| `data-title-binding`, `data-body-binding` | title field, body root | `unbound`, `live`, `readonly`, `terminal`. While not `live`, the element is non-focusable, and so is everything in it except, in a `readonly` body, a `data-comment-entry` |
+| `data-comment-entry` | a block header's Add comment (code, chart, canvas, media; vendor seam) | the commenter's block entry point |
 | `data-editor-generation` | body root | +1 on every Lexical editor creation (remount detector) |
 | `data-sync-unacked` | pane | `0` or `1` (§10.6) |
 | `data-notice-band` | reserved band below each pane’s top bar | connection and input-refusal notices |

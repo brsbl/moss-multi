@@ -2,7 +2,9 @@
 // pushes a local edit to the web and writes a web edit into the local file; a local delete never trashes the doc;
 // `init` makes a folder a workspace, and `sync` then turns an untracked file into a doc titled from its stem and renames the file to the doc's filename; a
 // moss vault note syncs through the moss interchange path with one title and its comments anchored, and its file stays in moss format; and `add
-// --title` on a file whose first line is that title shows the title once.
+// --title` on a file whose first line is that title shows the title once. A note's `assets/` media travel with it both
+// ways through the doc's asset routes: a name another note's media holds on the server is taken under the next free
+// name and the note's reference follows, and a transfer the server cannot take is reported as failed.
 //
 // The note being watched is imported through POST /api/docs as declared setup; import is not this journey's promise.
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -51,6 +53,15 @@ async function served(actor: Actor, docId: string): Promise<{ status: number; te
 }
 
 const readOr = (path: string): string => (existsSync(path) ? readFileSync(path, 'utf8') : '');
+const MEDIA = new URL('../fixtures/media/', import.meta.url);
+const fixture = (name: string): Buffer => readFileSync(new URL(name, MEDIA));
+/** A second PNG, other bytes than pattern.png, for the name collision. */
+const DOT_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
+
+async function asset(actor: Actor, docId: string, name: string): Promise<{ status: number; body: Buffer }> {
+  const response = await actor.context.request.get(`/api/docs/${docId}/assets/${name}`, { timeout: 30_000 });
+  return { status: response.status(), body: response.ok() ? await response.body() : Buffer.alloc(0) };
+}
 
 /** Opens the doc and waits for its body and title to bind. */
 async function openDoc(actor: Actor, docId: string): Promise<void> {
@@ -209,5 +220,90 @@ test('j18-sync add --title: a file whose first line is that title shows the titl
     expect(await ui.fieldText(ada, docId, 'body')).not.toContain('Tomato log');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync media: a note\'s image and video round-trip through sync and pull, a name collision takes the next free name, and a refused upload is reported as failed @p:agt-2 @p:R9 @p:note-8', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const dir = scratch();
+  const away = scratch();
+  const env = await agentEnv(ada, stack, dir);
+  type Result = { action: string; docId?: string; file: string; message?: string };
+  const syncJson = async (cwd: string): Promise<{ run: Run; results: Result[] }> => {
+    const run = await moss(['sync', '--json'], env, cwd);
+    return { run, results: run.stdout.trim() ? (JSON.parse(run.stdout) as Result[]) : [] };
+  };
+  try {
+    // Two moss notes in one vault folder, each with its own pattern.png: the server holds one name per folder.
+    for (const [name, bytes] of [['Garden', fixture('pattern.png')], ['Shed', DOT_PNG]] as const) {
+      mkdirSync(join(dir, name, 'assets'), { recursive: true });
+      writeFileSync(join(dir, name, 'assets', 'pattern.png'), bytes);
+    }
+    writeFileSync(join(dir, 'Garden', 'assets', 'clip.webm'), fixture('clip.webm'));
+    writeFileSync(join(dir, 'Garden', 'Garden.md'), '# Garden\n\nThe beds in May.\n\n![pattern](assets/pattern.png)\n\n![clip](assets/clip.webm)\n');
+    writeFileSync(join(dir, 'Shed', 'Shed.md'), '# Shed\n\nThe door.\n\n![pattern](assets/pattern.png)\n');
+    expect((await moss(['init'], env, dir)).code).toBe(0);
+
+    const first = await syncJson(dir);
+    expect(first.run.code, `${first.run.stderr}\n${first.run.stdout}`).toBe(0);
+    const docOf = (file: string) => first.results.find((result) => result.action === 'created' && result.file === file)?.docId;
+    const garden = docOf(join('Garden', 'Garden.md'));
+    const shed = docOf(join('Shed', 'Shed.md'));
+    expect(garden && shed, `both notes become docs: ${first.run.stdout}`).toBeTruthy();
+    expect(first.results.filter((result) => result.action === 'uploaded').map((result) => result.file).sort(), 'each file is uploaded once').toEqual([
+      join('Garden', 'assets', 'clip.webm'), join('Garden', 'assets', 'pattern.png'), join('Shed', 'assets', 'pattern.png'),
+    ]);
+    expect((await asset(ada, garden!, 'pattern.png')).body.equals(fixture('pattern.png')), 'the PNG reaches the server byte for byte').toBe(true);
+    expect((await asset(ada, garden!, 'clip.webm')).body.equals(fixture('clip.webm')), 'and so does the video').toBe(true);
+
+    // The collision: Shed's image takes the next free name, and its note (here and on the server) follows it.
+    expect((await asset(ada, shed!, 'pattern-2.png')).body.equals(DOT_PNG), 'Shed keeps its own image under the next free name').toBe(true);
+    expect(readFileSync(join(dir, 'Shed', 'Shed.md'), 'utf8'), 'the local note references the name it got').toContain('](assets/pattern-2.png)');
+    expect(readFileSync(join(dir, 'Shed', 'assets', 'pattern-2.png')).equals(DOT_PNG), 'the file is there under that name').toBe(true);
+    expect(readFileSync(join(dir, 'Shed', 'assets', 'pattern.png')).equals(DOT_PNG), 'the original file is left as it was').toBe(true);
+    expect((await served(ada, shed!)).text, 'the doc references it too').toContain('](assets/pattern-2.png)');
+    expect((await asset(ada, garden!, 'pattern.png')).body.equals(fixture('pattern.png')), 'Garden\'s image is untouched').toBe(true);
+
+    const second = await syncJson(dir);
+    expect(second.run.code, second.run.stderr).toBe(0);
+    expect(second.results.filter((result) => result.action !== 'up-to-date'), 'a second sync moves nothing').toEqual([]);
+
+    await openDoc(ada, garden!);
+    await expect.poll(() => ui.body(ada, garden!).locator('img[src*="/assets/pattern.png"]').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)
+      .catch(() => false), { message: 'the image renders on the web', timeout: BIND_TIMEOUT }).toBe(true);
+    await expect(ui.body(ada, garden!).locator('[data-video-node-kind="local"]'), 'and the video').toHaveCount(1, { timeout: BIND_TIMEOUT });
+    await expect(ui.body(ada, garden!).locator('[data-video-error-state]')).toHaveCount(0);
+    await actors.checkpoint('media-on-web');
+
+    // Down: pull writes the media beside the file, and sync brings back a file deleted here.
+    const awayEnv = { ...env, MOSS_MULTI_CONFIG_DIR: join(away, 'config') };
+    expect((await moss(['init'], awayEnv, away)).code).toBe(0);
+    const pulled = await moss(['pull', garden!, 'garden.md'], awayEnv, away);
+    expect(pulled.code, pulled.stderr).toBe(0);
+    expect(readFileSync(join(away, 'assets', 'pattern.png')).equals(fixture('pattern.png')), 'pull writes the PNG byte for byte').toBe(true);
+    expect(readFileSync(join(away, 'assets', 'clip.webm')).equals(fixture('clip.webm')), 'and the video').toBe(true);
+    rmSync(join(away, 'assets', 'clip.webm'));
+    const back = await moss(['sync', '--json'], awayEnv, away);
+    expect(back.code, back.stderr).toBe(0);
+    expect((JSON.parse(back.stdout) as Result[]).filter((result) => result.action === 'downloaded').map((result) => result.file), 'sync downloads it again')
+      .toEqual([join('assets', 'clip.webm')]);
+    expect(readFileSync(join(away, 'assets', 'clip.webm')).equals(fixture('clip.webm'))).toBe(true);
+
+    // A failed transfer: an image past the 10 MB cap is reported as failed, and the note's text still syncs.
+    mkdirSync(join(dir, 'Big', 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'Big', 'assets', 'huge.png'), Buffer.concat([fixture('pattern.png'), Buffer.alloc(11 * 1024 * 1024)]));
+    writeFileSync(join(dir, 'Big', 'Big.md'), '# Big\n\n![huge](assets/huge.png)\n');
+    const big = await syncJson(dir);
+    expect(big.run.code, `a failed transfer fails the sync: ${big.run.stdout}`).toBe(1);
+    const failed = big.results.find((result) => result.file === join('Big', 'assets', 'huge.png'));
+    expect(failed?.action, `the image is reported as failed: ${big.run.stdout}`).toBe('failed');
+    expect(failed?.message ?? '').toMatch(/10 MB/);
+    const bigDoc = big.results.find((result) => result.action === 'created')?.docId;
+    expect(bigDoc, 'the note itself is created').toBeTruthy();
+    expect((await asset(ada, bigDoc!, 'huge.png')).status, 'nothing reached the server').toBe(404);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(away, { recursive: true, force: true });
   }
 });

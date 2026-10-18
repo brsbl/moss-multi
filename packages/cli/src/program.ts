@@ -10,7 +10,8 @@ import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConf
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { jsonSafe, redact, ttySafe } from './output.ts';
-import { adopt, describe, readSidecar, syncExitCode, syncOnce, watchLoop } from './sync.ts';
+import { noteMedia, rewriteRefs } from './media.ts';
+import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop } from './sync.ts';
 import { confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
 
 export interface ProgramDeps {
@@ -156,6 +157,11 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   /** A command that finishes with a code other than 0 sets it here (`sync`); a CliError carries its own. */
   let exitCode: number = EXIT.ok;
   const docUrl = (client: Api, id: string) => `${client.serverUrl}/d/${encodeURIComponent(id)}`;
+  /** A note's media results, one line each (`toStderr`: all of them, when stdout carries the answer); a failure fails the command. */
+  const reportMedia = (results: SyncResult[], toStderr = false) => {
+    for (const result of results) (toStderr || result.action === 'failed' ? stderr : line)(describe(result));
+    if (results.some((result) => result.action === 'failed')) exitCode = EXIT.other;
+  };
   /**
    * The workspace for `sync` and `watch`: the one holding `dir` (default the working directory). They never make
    * one: a folder becomes a workspace through `init` or `pull`, so a stray `sync` cannot upload a code repository.
@@ -257,9 +263,11 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const lock = await lockWorkspace(workspace);
         try {
           if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
-          ({ doc } = await adopt({ root: workspace, client, folds: foldsCase(workspace) }, rel, {
+          const adopted = await adopt({ root: workspace, client, folds: foldsCase(workspace) }, rel, {
             moss, keepName: true, ...(title !== undefined ? { title, titleLine: true } : {}), ...(folderId ? { folderId } : {}),
-          }));
+          });
+          doc = adopted.doc;
+          reportMedia(adopted.media, true);
         } finally {
           lock.release();
         }
@@ -269,12 +277,21 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const comments = moss ? readSidecar(root, path) : undefined;
         // A moss note is named by its "# Title" line; any other file by --title or its stem, and only --title lifts a
         // first line that repeats it.
-        ({ doc } = await client.create({
+        const created = await client.create({
           ...(title !== undefined ? { title } : moss ? {} : { title: stem }), markdown, ...(moss || title !== undefined ? { titleLine: true } : {}),
           ...(comments ? { comments } : {}), ...(folderId ? { folderId } : {}),
-        }));
+        });
+        doc = created.doc;
         // A moss note with no title line takes its file's stem.
         if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
+        // Its media follow; a file stored under another name moves the doc's reference too.
+        const media = await noteMedia({ root, client, upload: true }, doc.id, path);
+        if (media.renames.size > 0) {
+          const base = created.content ?? decoder.decode(await client.content(doc.id, true));
+          const pushed = await client.push(doc.id, { newText: rewriteRefs(base, media.renames), baseHash: sha256Hex(base), baseText: base });
+          if (!pushed.ok) media.results.push({ docId: doc.id, file: confined(root, path), action: 'failed', message: `the doc still references the old media names: push refused (${pushed.reason})` });
+        }
+        reportMedia(media.results, true);
       }
       if (parsed.flags.has('json')) return json({ ...doc, url: docUrl(client, doc.id) });
       line(doc.id);
@@ -332,6 +349,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const bytes = await client.content(id);
       recordPull(root, id, rel, bytes, expectHash, foldsCase(root));
       line(`pulled ${rel} (${bytes.byteLength} bytes)`);
+      reportMedia((await noteMedia({ root, client, download: true }, id, rel)).results);
     },
 
     async push(rest) {
@@ -343,12 +361,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
       if (meta.mode === 'moss') throw new CliError(1, `${meta.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
+      const client = api();
+      // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
+      reportMedia((await noteMedia({ root, client, upload: true }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
         return;
       }
-      const client = api();
       const request: PushRequest = {
         newText: toLf(decoder.decode(local)),
         baseHash: meta.baseHash,
