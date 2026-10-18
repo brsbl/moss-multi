@@ -72,3 +72,28 @@ test('j16-paste-undo: an undone paste inside a paragraph, and an undone Enter, l
   await ben.declareRemount(docId);
 });
 
+
+test('j16-paste-undo: after an undone Enter, typing in the restored rest suggests only what was typed: neither side sees the rest painted or struck @p:mean-2 @p:R17', async ({ actors }) => {
+  test.setTimeout(180_000);
+  actors.solo('the owner seeds the note and reviews; one suggester types');
+  const { ada, ben, docId } = await suggesting(actors, 'Ada original line.\n\nSecond line here.');
+  const body = ui.body(ben, docId);
+  await caret(ben, docId, 'Ada original line.', 4);
+  await ben.page.keyboard.press('Enter');
+  await settled(ben, docId, 'the Enter');
+  await ben.page.keyboard.press(`${mod}+z`);
+  await settled(ben, docId, 'the undo of Enter');
+  await expect(body).toContainText('Ada original line.');
+  await caret(ben, docId, 'line.', 5);
+  await ben.page.keyboard.type('!');
+  await settled(ben, docId, 'the typed character');
+  await expect(body).toContainText('Ada original line.!');
+  await expect.poll(() => painted(ben, 'suggest-insert'), { message: 'only what he typed is painted' }).toEqual(['!']);
+  await expect.poll(() => painted(ben, 'suggest-delete')).toEqual([]);
+
+  await openIn(ada, docId, 'edit');
+  await expect(ui.body(ada, docId)).toContainText('Ada original line.');
+  await expect(ui.pane(ada, docId).locator(`[${SUGGEST_MARK_ATTR}="insert"]`), 'one insert mark').toHaveCount(1);
+  await expect(ui.pane(ada, docId).locator(`[${SUGGEST_MARK_ATTR}="insert"]`), 'for what he typed').toHaveAttribute('aria-label', 'Suggested insert: !');
+  await expect.poll(() => painted(ada, 'suggest-delete'), { message: 'none of her words struck' }).toEqual([]);
+});

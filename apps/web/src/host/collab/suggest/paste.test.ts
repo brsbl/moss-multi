@@ -24,11 +24,12 @@ import { REGISTER_LOCAL_ORIGIN } from '../../../../../../packages/sync/src/regis
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { closeRecord, openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
 import { EMPTY_IDLE_MS, nodeRegistry, previewRecord, reviewPreview } from '../../../../../../packages/sync/src/suggest/review.ts';
-import { EDITOR, seededBody, select, spansOfText, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
+import { EDITOR, seededBody, select, spansOfText, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
+import { describePreview } from '../../../../../../packages/core/src/suggest/describe.ts';
 import { refusalMessage } from '../../refusal.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
-import { stepBytes } from './paste.ts';
+import { $pasteAt, measurePaste, stepBytes } from './paste.ts';
 import { pendingInserts, struckByRecord } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 
@@ -1255,7 +1256,10 @@ it.each([
       const pending = pendingInserts(pane.fork.doc, pane.fork.ownClients(), pane.live);
       let inserts = 0;
       for (const [, structs] of pane.fork.doc.store.clients) {
-        for (const struct of structs) if (struct instanceof Y.Item && !struct.deleted && struct.content instanceof Y.ContentString && pending(struct.id)) inserts += struct.length;
+        for (const struct of structs) {
+          if (!(struct instanceof Y.Item) || struct.deleted || !(struct.content instanceof Y.ContentString)) continue;
+          for (let i = 0; i < struct.length; i += 1) if (pending(Y.createID(struct.id.client, struct.id.clock + i))) inserts += 1;
+        }
       }
       const built = new Composite(pane.live).build();
       try {
@@ -1292,5 +1296,130 @@ it.each([
     expect(openRecords(pane.live), 'no pending suggestion').toEqual([]);
   } finally {
     pane.dispose();
+  }
+});
+
+it.each([
+  ['a paste over another author\'s word, splitting its paragraph', 'paste'],
+  ['Enter mid-paragraph', 'enter'],
+] as const)('%s, undone, then typing in the restored rest suggests only what was typed: the rest is painted for neither side and the card shows only the typed characters', { timeout: 120_000 }, (_name, act) => {
+  const pane = suggesting();
+  try {
+    const settle = () => {
+      vi.runAllTimers();
+      pane.pump();
+    };
+    if (act === 'paste') {
+      pane.select('Intro line', 6, 10);
+      pane.paste(['Pasted one', 'Pasted two']);
+    } else {
+      pane.select('Intro line', 6, 6);
+      pane.enter();
+    }
+    settle();
+    pane.undo();
+    settle();
+    expect(pane.text()).toContain('Intro line stays.');
+    pane.stopCapturing();
+    // One character at the line's end, and one inside the restored rest.
+    pane.select('Intro line', 17, 17);
+    pane.type('!');
+    settle();
+    pane.stopCapturing();
+    pane.select('Intro line', 13, 13);
+    pane.type('?');
+    settle();
+    expect(pane.text()).toContain('Intro line st?ays.!');
+    expect(pane.fork.closed, 'nothing refused').toBe(false);
+
+    const pending = pendingInserts(pane.fork.doc, pane.fork.ownClients(), pane.live);
+    const inserted: string[] = [];
+    for (const [, structs] of pane.fork.doc.store.clients) {
+      for (const struct of structs) {
+        if (!(struct instanceof Y.Item) || struct.deleted || !(struct.content instanceof Y.ContentString)) continue;
+        for (let i = 0; i < struct.length; i += 1) if (pending(Y.createID(struct.id.client, struct.id.clock + i))) inserted.push(struct.content.str[i]!);
+      }
+    }
+    expect(inserted.sort(), 'the suggester sees only what he typed painted').toEqual(['!', '?']);
+    const built = new Composite(pane.live).build();
+    try {
+      const struck = [...struckByRecord(pane.live, new Set(built.valid), built).values()].flat().reduce((sum, span) => sum + span.len, 0);
+      expect(struck, 'the owner sees none of her words struck').toBe(0);
+    } finally {
+      destroyView(built);
+    }
+    const records = openRecords(pane.live);
+    const rows = records.flatMap((record) => {
+      const preview = previewRecord(pane.live, record.meta.id);
+      if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
+      return describePreview(preview);
+    });
+    expect(rows.filter((row) => row.kind !== 'insert').map((row) => row.text), 'the card removes nothing').toEqual([]);
+    expect(rows.map((row) => row.text).sort(), 'the card adds only the typed characters').toEqual(['!', '?']);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it.each([
+  ['at a caret', 5, 5],
+  ['over the styled words', 0, 11],
+] as const)('a many-line paste %s in highlighted text is measured with the selection\'s format and style, which every pasted line takes: the copy writes what the pane writes, stored whole or refused whole', { timeout: 120_000 }, (_name, anchor, focus) => {
+  const pane = suggesting('Intro ==highlighted words== stay.\n\nClosing line stays too.\n');
+  try {
+    // As the browser's selection takes them from the anchor's text node (Lexical $internalCreateRangeSelection).
+    const selectStyled = () => pane.editor.update(() => {
+      select('highlighted', anchor, focus);
+      const selection = $getSelection();
+      const node = textNode('highlighted');
+      if ($isRangeSelection(selection)) {
+        selection.format = node.getFormat();
+        selection.style = node.getStyle();
+      }
+    }, { discrete: true });
+    selectStyled();
+    expect(pane.editor.getEditorState().read(() => textNode('highlighted').getStyle()), 'the body text is highlighted').not.toBe('');
+    const lines = Array.from({ length: 200 }, (_, i) => `l${i}`);
+    const event = { clipboardData: plainClipboard(lines.join('\n')), preventDefault: () => {}, stopPropagation: () => {} } as unknown as ClipboardEvent;
+    let measured: number | 'cells' | null = null;
+    pane.editor.update(() => {
+      measured = measurePaste(pane.editor, pane.fork, event, $pasteAt(anchor !== focus), pasteStack);
+    }, { discrete: true });
+    expect(typeof measured, 'the copy ran the paste').toBe('number');
+    let written = 0;
+    const count = (update: Uint8Array) => {
+      written += update.byteLength;
+    };
+    pane.fork.doc.on('update', count);
+    selectStyled();
+    pane.pasteData(plainClipboard(lines.join('\n')));
+    pane.fork.doc.off('update', count);
+    expect(refusalMessage(), 'a short paste is admitted').toBeFalsy();
+    expect(written, 'the paste wrote').toBeGreaterThan(0);
+    expect(measured as unknown as number, 'the copy measures at least what the pane writes').toBeGreaterThanOrEqual(written);
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed, 'the DocDO stores it').toBe(false);
+  } finally {
+    pane.dispose();
+  }
+
+  // Near the record cap: every line takes the highlight's style twice (its paragraph's and its text's).
+  for (const length of [400, 550, 700]) {
+    const near = suggesting('Intro ==highlighted words== stay.\n\nClosing line stays too.\n');
+    try {
+      near.editor.update(() => {
+        select('highlighted', anchor, focus);
+        const selection = $getSelection();
+        const node = textNode('highlighted');
+        if ($isRangeSelection(selection)) {
+          selection.format = node.getFormat();
+          selection.style = node.getStyle();
+        }
+      }, { discrete: true });
+      storedOrRefused(near, () => near.pasteData(plainClipboard(Array.from({ length }, (_, i) => `line ${i}`).join('\n'))));
+    } finally {
+      near.dispose();
+    }
   }
 });
