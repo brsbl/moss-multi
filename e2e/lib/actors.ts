@@ -126,7 +126,6 @@ export class Actors {
       size ? { viewport: { width: size.width, height: size.height }, deviceScaleFactor: 2, isMobile: !!size.mobile, hasTouch: !!size.mobile } : {},
     );
     closeEachConnection(context.request);
-    await context.addInitScript(roDiag); // DIAG (temporary, T4.B3)
     let telemetry: Telemetry | null = null;
     // A routed page's doc sockets are counted by the proxy, which sees them open and close (Telemetry.install).
     const sever = options.severable
@@ -244,7 +243,6 @@ export class Actors {
         if (shot) await this.testInfo.attach(`${where}-${label}.png`, { body: shot, contentType: 'image/png' });
       }
     }
-    for (const actor of this.list) if (!actor.page.isClosed()) await roDump(actor).catch(() => undefined); // DIAG
     const lines = findings.map((f) => `  invariant ${f.invariant} [${f.actor}] ${f.detail}`);
     throw new Error(`${where}: ${findings.length} finding(s)\n${lines.join('\n')}`);
   }
@@ -252,30 +250,4 @@ export class Actors {
   async dispose(): Promise<void> {
     await Promise.all(this.list.map((actor) => actor.context.close().catch(() => undefined)));
   }
-}
-
-// DIAG (temporary, T4.B3): which ResizeObservers ran in the frames before a ResizeObserver loop error.
-function roDiag() {
-  const Native = window.ResizeObserver;
-  const log: unknown[][] = [];
-  (window as unknown as { __ro: unknown[][] }).__ro = log;
-  let n = 0;
-  const describe = (e: Element) => `${e.tagName}${e.id ? '#' + e.id : ''}.${String((e as HTMLElement).className).slice(0, 70)}${[...e.attributes].filter((a) => a.name.startsWith('data-')).map((a) => '[' + a.name + ']').join('').slice(0, 80)}`;
-  window.ResizeObserver = class extends Native {
-    constructor(cb: ResizeObserverCallback) {
-      const id = ++n;
-      const where = (new Error().stack || '').split('\n').slice(1, 7).map((s) => s.trim().slice(0, 140)).join(' < ');
-      super((entries, obs) => {
-        log.push([Math.round(performance.now()), id, entries.map((e) => `${describe(e.target)} ${e.contentRect.width}x${e.contentRect.height}`).join(','), where]);
-        if (log.length > 600) log.splice(0, 200);
-        return cb(entries, obs);
-      });
-    }
-  };
-  window.addEventListener('error', (e) => { if (/ResizeObserver/.test(String(e.message))) log.push([Math.round(performance.now()), 'LOOP', String(e.message)]); });
-}
-async function roDump(actor: Actor): Promise<void> {
-  const log = await actor.page.evaluate(() => (window as unknown as { __ro?: unknown[][] }).__ro ?? []);
-  const loop = log.findIndex((l) => l[1] === 'LOOP');
-  if (loop >= 0) console.log(`DIAGRO ${actor.label}`, JSON.stringify(log.slice(Math.max(0, loop - 30), loop + 3)));
 }
