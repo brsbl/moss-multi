@@ -82,14 +82,23 @@ const distance = (from: string, to: string): number =>
  * Pushed against the base, that save would revert the pulled edits; against the prior text only the typing lands.
  */
 function pushBase(root: string, meta: DocMeta, local: string): { hash: string; bytes?: Uint8Array; stale: boolean } {
-  const prior = readPrior(root, meta);
-  if (!prior || meta.prior!.hash === meta.baseHash) return { hash: meta.baseHash, stale: false };
+  const fresh = { hash: meta.baseHash, stale: false };
+  let savedAt: number;
+  try {
+    savedAt = lstatSync(join(root, confined(root, meta.file))).mtimeMs;
+  } catch {
+    return fresh;
+  }
+  const prior = readPrior(root, meta, savedAt);
+  if (!prior || meta.prior!.hash === meta.baseHash) return fresh;
   const priorText = toLf(decode(prior));
-  if (distance(priorText, local) >= distance(decode(readBase(root, meta.docId)), local)) return { hash: meta.baseHash, stale: false };
+  // moss only saves an editor whose body differs from what it loaded, so exactly the prior text is a deliberate revert.
+  if (local === priorText) return fresh;
+  if (distance(priorText, local) >= distance(decode(readBase(root, meta.docId)), local)) return fresh;
   return { hash: meta.prior!.hash, bytes: prior, stale: true };
 }
 
-const STALE = 'saved over a pulled edit by an editor holding the older text: merged against that text, so the pulled edit stays';
+const STALE = 'saved over a pulled edit by an editor holding the older text: merged against that text, so the pulled edit stays; to remove it, delete it again and save';
 
 const isMarkdown = (name: string) => extname(name).toLowerCase() === '.md';
 /** Directories that are someone else's: installed packages, and another repository or workspace nested inside. */
@@ -293,7 +302,9 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   /** The file becomes the doc's `text` in moss form, with the file's markers carried onto it; its body is kept as the prior text. */
   const write = (text: Uint8Array) => {
     const rendered = renderMoss(decode(text), title, remapMarkers(note.markers, note.clean, decode(text)));
-    recordSynced(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title, prior: Buffer.from(note.clean) });
+    // A title-only write leaves the body, and so the prior text an editor may hold, as they were.
+    const prior = sha256Hex(text) === meta.baseHash ? {} : { prior: Buffer.from(note.clean) };
+    recordSynced(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title, ...prior });
   };
   if (!localChanged || sha256Hex(note.clean) === meta.baseHash) {
     // Nothing to push: the body here is the base.

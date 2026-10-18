@@ -356,6 +356,17 @@ test('j18-sync stale save: an editor that saves its old text over a pulled agent
     expect(kept.text, 'the earlier edits stand').toContain('Para four, and my typing.');
     expect(readFileSync(file, 'utf8'), 'the file takes the server version').toContain('Para three, edited by the agent.');
     expect(readOr(`${file}.rej`), 'the typing waits beside the note').toContain('+, rewritten in the editor');
+
+    // Reviewing in a reloaded editor, the user removes a paragraph the agent just added: the removal lands.
+    const unwanted = '\n\nAn agent paragraph the user does not want.';
+    await agentEdit('Para one.', `Para one.${unwanted}`);
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain(unwanted);
+    writeFileSync(file, readFileSync(file, 'utf8').replace(unwanted, ''));
+    const removed = await moss(['sync'], env, mac);
+    expect(removed.code, `${removed.stdout}${removed.stderr}`).toBe(0);
+    expect((await served(ada, docId)).text, 'the server loses the agent paragraph').not.toContain('does not want');
+    expect(readFileSync(file, 'utf8'), 'and so does the file').not.toContain('does not want');
   } finally {
     rmSync(mac, { recursive: true, force: true });
     rmSync(linux, { recursive: true, force: true });

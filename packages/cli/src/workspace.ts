@@ -37,8 +37,11 @@ export interface DocMeta {
   prior?: { hash: string; at: number };
 }
 
-/** How long a prior text counts: an editor that saves later than this is taken to have reloaded the file. */
-export const PRIOR_MS = 10 * 60_000;
+/**
+ * How long after sync's write a save can still come from an editor holding the prior text: moss saves a dirty editor
+ * within its 15 s unsaved window (1.5 s when idle), and reloads a clean one. A later save is from a reloaded editor.
+ */
+export const PRIOR_MS = 60_000;
 
 /** What else a synced doc records beside its base. */
 export interface SyncedState {
@@ -231,9 +234,9 @@ export function readBase(root: string, docId: string): Uint8Array {
   return readFileSync(noLinks(root, stateRel(docId, 'base.md')));
 }
 
-/** The doc's prior text (DocMeta.prior) while it still counts, or null. */
-export function readPrior(root: string, meta: DocMeta, now = Date.now()): Uint8Array | null {
-  if (!meta.prior || now - meta.prior.at > PRIOR_MS) return null;
+/** The doc's prior text (DocMeta.prior) if the file was saved (`savedAt`, its mtime) while it still counts, or null. */
+export function readPrior(root: string, meta: DocMeta, savedAt: number): Uint8Array | null {
+  if (!meta.prior || savedAt - meta.prior.at > PRIOR_MS) return null;
   try {
     const bytes = readFileSync(noLinks(root, stateRel(meta.docId, 'prior.md')));
     return sha256Hex(bytes) === meta.prior.hash ? bytes : null;
