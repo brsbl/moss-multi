@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // What staging's Worker and Durable Objects did while a full suite ran (T8.2): deploy-staging.yml's tail job runs
-// `wrangler tail --format json --status error` and reduces each event to counts under fixed names, so the public log
+// one unfiltered `wrangler tail --format json` and reduces each failure to counts under fixed names, so the public log
 // and artifact never hold a URL, header, log line or error text (docs/DEPLOY.md). An isolate that passed its memory or
 // CPU limit resets every Durable Object it hosts, so the minutes it happened are kept to set against the failures.
-//   node scripts/deploy/tail-summary.mjs run OUT.json -- <command...>   (runs the tail; SIGTERM ends it and writes OUT)
-//   node scripts/deploy/tail-summary.mjs probe OUT.json -- <command...> (the same for SP9's probe uploads)
-//   node scripts/deploy/tail-summary.mjs check-probe OUT.json          (fails without the near-cap upload's telemetry)
+// The same stream gives SP9's probe uploads (ProbeSummary). One tail only: with a second, header-filtered tail the
+// first saw only the probe's events (runs 39116654098, 39130102453).
+//   node scripts/deploy/tail-summary.mjs run OUT.json [--probe PROBE.json] -- <command...>
+//                                          (runs the tail; SIGTERM ends it and writes OUT and PROBE)
+//   node scripts/deploy/tail-summary.mjs check-probe PROBE.json   (fails without the near-cap upload's telemetry)
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -111,6 +113,9 @@ export class TailSummary {
       return;
     }
     if (typeof event?.outcome !== 'string') return;
+    // The tail is unfiltered: only a failure counts, an outcome other than ok, a 5xx, or a thrown exception.
+    const failed = event.outcome !== 'ok' || Number(event.event?.response?.status) >= 500 || (Array.isArray(event.exceptions) && event.exceptions.length > 0);
+    if (!failed) return;
     this.events += 1;
     const outcome = OUTCOME.test(event.outcome) ? event.outcome : 'other';
     let source;
@@ -148,8 +153,8 @@ export class TailSummary {
 }
 
 /**
- * The header j11-media's SP9 near-cap probe sends on each upload, its value the upload's label. A second tail filters
- * on it (`--header`), so it sees every probe upload, not only the failures.
+ * The header j11-media's SP9 near-cap probe sends on each upload, its value the upload's label; the tail
+ * job picks the probe uploads out of its one unfiltered tail by it.
  */
 export const SP9_PROBE_HEADER = 'x-sp9-probe';
 const PROBE_LABELS = new Set(['near-cap', 'truncated']);
@@ -231,15 +236,16 @@ export function probeProblems(result) {
 
 /**
  * Runs `command` (the tail) and summarizes its stdout until it exits or this process gets SIGTERM or SIGINT, then
- * writes the summary to `out`. Its stderr is counted, never printed.
- * @param {string} out
+ * writes each summary to its file. Its stderr is counted, never printed.
+ * @param {[string, { push(chunk: string): void, result(): object }][]} outputs
  * @param {string[]} command
- * @param {{ push(chunk: string): void, result(): object }} summary
  */
-export function runTail(out, command, summary = new TailSummary()) {
+export function runTail(outputs, command) {
   let stderrLines = 0;
   const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-  child.stdout.setEncoding('utf8').on('data', (chunk) => summary.push(chunk));
+  child.stdout.setEncoding('utf8').on('data', (chunk) => {
+    for (const [, summary] of outputs) summary.push(chunk);
+  });
   child.stderr.setEncoding('utf8').on('data', (chunk) => {
     stderrLines += chunk.split('\n').length - 1;
   });
@@ -247,7 +253,7 @@ export function runTail(out, command, summary = new TailSummary()) {
   const finish = (exit) => {
     if (done) return;
     done = true;
-    writeFileSync(out, `${JSON.stringify({ ...summary.result(), tailExit: exit, tailStderrLines: stderrLines }, null, 2)}\n`);
+    for (const [out, summary] of outputs) writeFileSync(out, `${JSON.stringify({ ...summary.result(), tailExit: exit, tailStderrLines: stderrLines }, null, 2)}\n`);
   };
   const stop = () => {
     child.kill('SIGTERM');
@@ -260,10 +266,15 @@ export function runTail(out, command, summary = new TailSummary()) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [mode, out, dashes, ...command] = process.argv.slice(2);
-  if ((mode === 'run' || mode === 'probe') && out && dashes === '--' && command.length > 0) {
-    runTail(out, command, mode === 'probe' ? new ProbeSummary() : new TailSummary());
-  } else if (mode === 'check-probe' && out && dashes === undefined) {
+  const [mode, out, ...rest] = process.argv.slice(2);
+  const probe = rest[0] === '--probe' ? rest[1] : undefined;
+  const [dashes, ...command] = probe ? rest.slice(2) : rest;
+  if (mode === 'run' && out && dashes === '--' && command.length > 0) {
+    /** @type {[string, { push(chunk: string): void, result(): object }][]} */
+    const outputs = [[out, new TailSummary()]];
+    if (probe) outputs.push([probe, new ProbeSummary()]);
+    runTail(outputs, command);
+  } else if (mode === 'check-probe' && out && rest.length === 0) {
     let problems;
     try {
       problems = probeProblems(JSON.parse(readFileSync(out, 'utf8')));
@@ -273,7 +284,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     for (const problem of problems) console.error(`::error::SP9 telemetry: ${problem}`);
     process.exitCode = problems.length ? 1 : 0;
   } else {
-    console.error('usage: tail-summary.mjs run|probe OUT.json -- <command...> | check-probe OUT.json');
+    console.error('usage: tail-summary.mjs run OUT.json [--probe PROBE.json] -- <command...> | check-probe PROBE.json');
     process.exitCode = 1;
   }
 }

@@ -305,11 +305,11 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # What the Worker and its Durable Objects failed at while the suite ran (T8.2): `wrangler tail --status error`,
-  # reduced to counts under fixed names (scripts/deploy/tail-summary.mjs), and SP9's Worker telemetry: a second tail on
-  # the near-cap probe's header, its uploads' outcome, status, CPU and wall time. The tails' own output is never
-  # printed: it holds URLs, headers and log lines. They stop once every suite shard finished, or the canary failed; a
-  # tail that ends before that fails the job, as does missing SP9 telemetry.
+  # What the Worker and its Durable Objects failed at while the suite ran (T8.2): one unfiltered `wrangler tail`, its
+  # failures reduced to counts under fixed names (scripts/deploy/tail-summary.mjs), and from the same stream SP9's
+  # Worker telemetry: the near-cap probe's uploads (by their header), outcome, status, CPU and wall time. The tail's own
+  # output is never printed: it holds URLs, headers and log lines. It stops once every suite shard finished, or the
+  # canary failed; a tail that ends before that fails the job, as does missing SP9 telemetry.
   tail:
     needs: [preflight, deploy]
     if: inputs.suite == 'full'
@@ -338,10 +338,9 @@ jobs:
           mkdir -p e2e/canary-artifacts
           out=e2e/canary-artifacts/tail-summary.json
           probe=e2e/canary-artifacts/sp9-probe.json
-          node scripts/deploy/tail-summary.mjs run "$out" -- node "$WRANGLER" tail moss-multi-staging --format json --status error &
+          # One unfiltered tail: with a second, filtered tail beside it, this one saw only the other's events.
+          node scripts/deploy/tail-summary.mjs run "$out" --probe "$probe" -- node "$WRANGLER" tail moss-multi-staging --format json &
           pid=$!
-          node scripts/deploy/tail-summary.mjs probe "$probe" -- node "$WRANGLER" tail moss-multi-staging --format json --header x-sp9-probe &
-          probe_pid=$!
           early=''
           canary_failed=''
           while true; do
@@ -350,22 +349,22 @@ jobs:
             if grep -qP '^canary\tcompleted\t(?!success)' <<< "$jobs"; then canary_failed=1; break; fi
             done_shards=$(grep -cP '^suite \(.*\tcompleted\t' <<< "$jobs" || true)
             if [ "$done_shards" -ge 16 ]; then break; fi
-            if ! kill -0 "$pid" 2> /dev/null; then early="$early error"; fi
-            if ! kill -0 "$probe_pid" 2> /dev/null; then early="$early probe"; fi
-            if [ -n "$early" ]; then break; fi
+            if ! kill -0 "$pid" 2> /dev/null; then early=1; break; fi
           done
-          kill -TERM "$pid" "$probe_pid" 2> /dev/null || true
+          kill -TERM "$pid" 2> /dev/null || true
           wait "$pid" || true
-          wait "$probe_pid" || true
           cat "$out" "$probe"
           if jq -e '(.limitMinutes | length) > 0' "$out" > /dev/null; then
             echo "::warning::an isolate passed its memory or CPU limit during the suite, resetting the Durable Objects it held: see limitMinutes in tail-summary.json"
           fi
+          if jq -e '.overload > 0' "$out" > /dev/null; then
+            echo "::warning::the tail sampled under load: the summaries may miss events (overload in tail-summary.json)"
+          fi
           status=0
-          for which in $early; do
-            echo "::error::the $which tail ended before the suite finished"
+          if [ -n "$early" ]; then
+            echo "::error::the tail ended before the suite finished"
             status=1
-          done
+          fi
           # A grep-filtered run checks SP9's telemetry only when it made probe uploads.
           if [ -z "$canary_failed" ] && { [ -z "$SUITE_GREP" ] || jq -e '(.uploads | length) > 0' "$probe" > /dev/null; }; then
             node scripts/deploy/tail-summary.mjs check-probe "$probe" || status=1
