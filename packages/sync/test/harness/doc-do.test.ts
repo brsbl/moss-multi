@@ -663,9 +663,10 @@ describe('admission and the write classifier', () => {
       await send(ada, 'A', a.slice(0, 2));
       await ada.drop();
       await ben.drop();
-      // Ada's tab sleeps for hours, far past the lapse of a reservation no write has used, and the DO hibernates.
-      vi.setSystemTime(Date.now() + 6 * 60 * 60_000);
+      // The DO hibernates and Ada's tab sleeps for hours, far past the lapse of a reservation no write has used. The
+      // clock moves after the wake, whose clearAllTimers resets it.
       const woken = await start(wake(opened));
+      vi.setSystemTime(Date.now() + 6 * 60 * 60_000);
       const later = await connect(woken, { id: 'ben', role: 'editor' }, ben.doc);
       await later.hello();
       await typeTitle(later, 'w'.repeat(w));
