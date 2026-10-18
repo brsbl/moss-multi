@@ -3,7 +3,7 @@
 // Edit mode, on B, each run of record items in C gets a wedge at its left body neighbour, a gutter bar beside its
 // block and a hover preview of its text; delete targets paint struck; a block a record restyles gets a dot.
 import type { Binding } from '@lexical/yjs';
-import { BODY_DOC, regRefs } from '@moss-multi/core/suggest/apply';
+import { BODY_DOC, readsAsBody, regRefs } from '@moss-multi/core/suggest/apply';
 import { SUGGEST_MARK_ATTR, OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
@@ -48,10 +48,19 @@ export const covers = (spans: readonly IdSpan[], id: Y.ID) =>
  * body text, though a continuation writes on under its lease), `struck` spans as deletes.
  */
 export function paintBound(owner: object, editor: LexicalEditor, binding: Binding, own: ReadonlySet<number>, struck: readonly IdSpan[], body?: Y.Doc | null): void {
-  const pending = (id: Y.ID) => own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client));
+  const pending = pendingInserts(binding.doc, own, body);
   const insert = own.size ? rangesWhere(editor, binding, pending) : [];
   const strike = struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : [];
   paintRanges(owner, insert, strike);
+}
+
+/**
+ * Which items of `doc` (F or C) paint as pending inserts: items of `own` clients that B lacks, outside any block that
+ * reads as it does in B (a split and its undo leave the split rest as copies: nothing a reader sees, nothing painted).
+ */
+export function pendingInserts(doc: Y.Doc, own: ReadonlySet<number>, body?: Y.Doc | null): (id: Y.ID) => boolean {
+  const unchanged = body ? readsAsBody(doc, body) : () => false;
+  return (id) => own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client)) && !unchanged(id);
 }
 
 /** Every valid open record's delete targets. */
@@ -65,6 +74,7 @@ export function partTargets(body: Y.Doc, valid: ReadonlySet<string>): IdSpan[] {
  */
 export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: Built): Map<string, IdSpan[]> {
   const out = new Map<string, IdSpan[]>();
+  const unchanged = built ? readsAsBody(built.doc, body) : null;
   for (const record of openRecords(body)) {
     if (!valid.has(record.meta.id)) continue;
     const spans: IdSpan[] = record.parts.flatMap((part) => part.targets);
@@ -78,10 +88,28 @@ export function struckByRecord(body: Y.Doc, valid: ReadonlySet<string>, built?: 
       }
       for (const [client, ranges] of ds.clients) {
         if (built!.clients.has(client)) continue;
-        for (const { clock, len } of ranges) spans.push({ client, clock, len });
+        for (const { clock, len } of ranges) spans.push(...outsideUnchanged(built!.doc, client, clock, len, unchanged!));
       }
     }
     if (spans.length) out.set(record.meta.id, spans);
+  }
+  return out;
+}
+
+/** The parts of a removed span whose items sit outside blocks that read as they do in B (`readsAsBody`). */
+function outsideUnchanged(doc: Y.Doc, client: number, clock: number, len: number, unchanged: (id: Y.ID) => boolean): IdSpan[] {
+  const structs = doc.store.clients.get(client);
+  const end = clock + len;
+  if (!structs || clock >= Y.getState(doc.store, client)) return [{ client, clock, len }];
+  const out: IdSpan[] = [];
+  for (let i = Y.findIndexSS(structs, clock); i < structs.length && structs[i]!.id.clock < end; i++) {
+    const struct = structs[i]!;
+    if (struct instanceof Y.Item && unchanged(struct.id)) continue;
+    const from = Math.max(clock, struct.id.clock);
+    const to = Math.min(end, struct.id.clock + struct.length);
+    const last = out.at(-1);
+    if (last && last.clock + last.len === from) last.len += to - from;
+    else out.push({ client, clock: from, len: to - from });
   }
   return out;
 }
@@ -122,9 +150,10 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
     if (!valid.has(record.meta.id)) continue;
     for (const id of payloadIdsOf(record)) if (refs.has(id) && !payloads.has(id)) payloads.set(id, record.meta.id);
   }
+  const unchanged = readsAsBody(built.doc, body);
   for (const [client, record] of built.clients) {
     for (const struct of built.doc.store.clients.get(client) ?? []) {
-      if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null) continue;
+      if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null || unchanged(struct.id)) continue;
       const content = struct.content;
       // A text node's property map marks no text of its own.
       if (content instanceof Y.ContentType && content.type instanceof Y.Map) continue;
