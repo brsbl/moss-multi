@@ -74,7 +74,7 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
     expect(run).toMatch(/tail-summary\.mjs run/);
     expect(run).toMatch(/--status error/);
     const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact'));
-    expect(upload.with.path.trim()).toMatch(/tail-summary\.json$/);
+    expect(upload.with.path).toMatch(/tail-summary\.json/);
   });
 
   it('times the SP9 uploads by their probe header: outcome, status, CPU and wall time, and no text', () => {
@@ -128,7 +128,9 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
     // It runs until every shard finished, however long the shards take at suite_parallel, never to a fixed deadline.
     expect(run).not.toMatch(/110 \* 60/);
     expect(job['timeout-minutes']).toBeGreaterThanOrEqual(340);
-    expect(run, 'a tail that exits before the suite finished fails the job').toMatch(/::error::the (error|probe) tail ended before the suite finished/);
+    expect(run, 'a tail that exits before the suite finished fails the job').toMatch(/::error::the \$which tail ended before the suite finished/);
+    expect(run).toMatch(/kill -0 "\$pid"[^\n]*early="\$early error"/);
+    expect(run).toMatch(/kill -0 "\$probe_pid"[^\n]*early="\$early probe"/);
     const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact'));
     expect(upload.with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/tail-summary.json']);
   });
