@@ -624,3 +624,57 @@ test('j15-comments: Cmd+Shift+A on a selected code block opens a block composer 
     message: 'the retried comment is stored on the code block', timeout: PEER_TIMEOUT,
   }).toEqual([{ text: 'On the code', kind: 'block', type: 'code-block' }]);
 });
+
+test('j15-comments: a root that lands after its composer was dismissed and reopened on its words is not sent twice @p:mean-1', async ({ actors, stack }) => {
+  const { ada, id, stored, modes, held } = await heldWrites(actors, stack.baseUrl);
+  const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
+  const composerBox = composer.getByRole('textbox').first();
+  modes.POST = 'hold';
+  await select(ada, id, 'lazy dog');
+  await ada.page.keyboard.press(COMMENT_KEY);
+  await expect(composerBox).toBeFocused();
+  await ada.page.keyboard.type('Sent once');
+  await ada.page.keyboard.press(SUBMIT);
+  await expect.poll(() => held.length, { message: 'the comment POST is held' }).toBe(1);
+  await ada.page.keyboard.press('Escape');
+  await expect(composer).toBeHidden();
+  await select(ada, id, 'lazy dog');
+  await ada.page.keyboard.press(COMMENT_KEY);
+  await expect(composerBox, 'the reopened composer offers the text in flight as its draft').toHaveText('Sent once');
+  held.shift()!('pass');
+  await stored('the held comment lands').toEqual(['Original', 'Sent once']);
+  await expect(composer, 'its success closes the reopened composer, so the same text is not sent again').toBeHidden({ timeout: PEER_TIMEOUT });
+});
+
+test('j15-comments: a dismissed draft comes back on its words in its own note, not on the same words in another @p:mean-1', async ({ actors, stack }) => {
+  actors.solo('one author moving between two of her notes in one tab');
+  const ada = await actors.session(await actors.principal('ada'));
+  const ids: string[] = [];
+  for (const title of ['First', 'Second']) {
+    const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title, markdown: SEED } });
+    expect(created.status()).toBe(201);
+    ids.push((await created.json() as { doc: { id: string } }).doc.id);
+  }
+  const [first, second] = ids as [string, string];
+  await ada.goto(`/d/${first}`);
+  await ui.waitLive(ada, first);
+  await ada.observeEditor(first);
+  const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
+  const composerBox = composer.getByRole('textbox').first();
+  await select(ada, first, 'lazy dog');
+  await ada.page.keyboard.press(COMMENT_KEY);
+  await expect(composerBox).toBeFocused();
+  await ada.page.keyboard.type('Draft in the first note');
+  await ada.page.keyboard.press('Escape');
+  await expect(composer).toBeHidden();
+  await select(ada, first, 'lazy dog');
+  await ada.page.keyboard.press(COMMENT_KEY);
+  await expect(composerBox, 'the draft comes back on its words').toHaveText('Draft in the first note');
+  await ada.page.keyboard.press('Escape');
+  await expect(composer).toBeHidden();
+  await ui.openNote(ada, second);
+  await select(ada, second, 'lazy dog');
+  await ada.page.keyboard.press(COMMENT_KEY);
+  await expect(composerBox).toBeFocused();
+  await expect(composerBox, "the first note's draft is not offered in the second").toHaveText('');
+});
