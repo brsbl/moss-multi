@@ -1,4 +1,4 @@
-# Deploying staging
+# Deploying staging and the pilot
 
 `deploy-staging.yml` ships the exact bytes a green CI full lane tested to the staging Worker, then runs the staging canary there (A§21). It runs only when dispatched by hand. Until the secrets below exist, its first job fails at once and names each missing secret.
 
@@ -70,6 +70,85 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
    - **Budget, artifacts and log:** each shard fails past `suite_request_budget` Worker requests, and the canary's rules for recording, the log and the artifact hold unchanged.
 
 CI rehearses the same canary on every full lane, against a production-mode local stack: the `canary` job in `ci.yml`. A `ci.yml` dispatch with `-f staging_suite=true` rehearses the full suite the same way: each journey shard on a stack with no test hooks, per-run principals and the `staging-<engine>` projects, with traces kept because the stack is loopback. Its jobs are named `rehearsal`, so `deploy-staging` never takes such a run as a tested full lane. Add `-f latency_ms=<n>` to delay every loopback packet by n ms (tc netem), so staging-only timing failures reproduce where traces are allowed.
+
+## The pilot deployment
+
+The pilot holds the owner's real notes for the Moss pilot (T8.P1), apart from staging, because staging is shared with automated suites, canary runs and test principals. `deploy-pilot.yml` deploys the same tested bytes through the same gate and checks as `deploy-staging.yml`. It runs no canary, suite, sweep or demo, and creates no account. `scripts/deploy/canary-state.mjs`, `scripts/security/sweep.mjs` and `scripts/demo.mjs` refuse the pilot's URL.
+
+### What is different from staging
+
+- **Names.** Worker `moss-multi-pilot`, D1 `moss-multi-pilot`, R2 `moss-multi-pilot-assets` (`env.pilot` in `apps/web/wrangler.jsonc`). They are permanent: Durable Object storage is bound to the Worker name, so renaming the Worker loses every note.
+- **Sign-up.** Only the emails in the `PILOT_ALLOWED_EMAILS` secret can create an account. `env.pilot` sets `MOSS_SIGN_UP=allowlist`, and the deploy sends the list as the Worker secret `MOSS_ALLOWED_EMAILS`. Anyone else is refused 403 `SIGN_UP_NOT_ALLOWED`, and the login card tells them sign-up is invite-only. An empty or missing list admits no one. Signing in, the CLI's device login and agent keys work as usual for accounts that exist.
+- **No test hooks.** `MOSS_TEST_HOOKS` is `"0"`, and the smoke proves every hook path is the unknown-route 404.
+
+### One-time setup
+
+1. **Token.** The staging token works if its D1 and R2 permissions cover the whole account (the table in [One-time setup](#one-time-setup-owner)). Nothing else in Cloudflare is set up by hand: the first run creates `moss-multi-pilot` and `moss-multi-pilot-assets`, and every run looks the D1 id up by name.
+2. **Repository secrets** (`gh secret set <NAME> --repo brsbl/moss-multi`; the coordinator sets them, and no agent reads or prints them):
+
+   | Secret | Value |
+   |---|---|
+   | `PILOT_URL` | `https://moss-multi-pilot.<subdomain>.workers.dev` |
+   | `PILOT_BETTER_AUTH_SECRET` | a fresh `openssl rand -hex 32`, never the staging one. Changing it signs everyone out. |
+   | `PILOT_ALLOWED_EMAILS` | the emails that may sign up, separated by commas or spaces |
+
+   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are shared with staging. To add someone later, update `PILOT_ALLOWED_EMAILS` and deploy again.
+3. **Register the workflow.** GitHub runs a dispatch-only workflow only when it is on the default branch, so `deploy-pilot.yml` must be on `main` before the first dispatch, as `deploy-staging.yml` was.
+
+### Deploying
+
+1. Run the full lane on the branch to deploy and wait for it to pass: `gh workflow run ci.yml --ref m8 -f lane=full`.
+2. Dispatch the deploy with that run's id. The gate is the same as staging's: a green full lane in both engines, a push or dispatch run of this repository, its head still on its branch, under 3 days old.
+   `gh workflow run deploy-pilot.yml --ref m8 -f ci_run_id=<run id>`
+3. Watch it with `gh run watch <id> --interval 60 --exit-status`. A run then:
+   - gates the run;
+   - checks the secrets, including that `PILOT_URL` is not the staging Worker and the allowlist holds only email addresses;
+   - downloads and guards the tested bytes;
+   - lays `env.pilot` over them (`staging-config.mjs write --target pilot`);
+   - applies the D1 migrations;
+   - deploys with `BETTER_AUTH_SECRET` and `MOSS_ALLOWED_EMAILS` from a temporary secrets file.
+4. It ends with the read-only smoke (`assert-deployed.mjs --pilot`):
+   - `/` and `/api/version` serve the tested commit, `bundleHash` and `clientHash`;
+   - every test hook is a 404;
+   - `GET /api/me` with no session is 401;
+   - a sign-up for a random `@example.invalid` address with a one-character password is refused `SIGN_UP_NOT_ALLOWED`. Even an open sign-up would refuse that password, so the smoke can never create an account.
+
+CI checks the pilot config on every build: the `Pilot deploy dry run` step lays `env.pilot` over the built bytes and runs `wrangler deploy --dry-run` on the result.
+
+### Rolling back
+
+A deploy changes only the Worker code. The notes stay in place. To go back to the previous version:
+
+- **Fastest:** in the Cloudflare dashboard, open Workers & Pages → `moss-multi-pilot` → Deployments, pick the previous version, and choose Rollback. With the token, `wrangler rollback --name moss-multi-pilot` does the same, and `wrangler deployments list --name moss-multi-pilot` lists the versions.
+- **Through the pipeline:** dispatch `deploy-pilot.yml` with the previous deploy's CI run id while its `web-dist` is under 3 days old. After that, push the previous commit to a branch, run the full lane there, and deploy that run.
+
+D1 migrations are not rolled back. So far every migration only adds tables, columns or indexes, so older code runs on the newer schema. Before rolling back across a migration that changes or drops something, export the D1 database first.
+
+### Where the data lives
+
+| Data | Where |
+|---|---|
+| Accounts, sessions, agent keys, vaults, folders, the note index and sharing grants | D1 `moss-multi-pilot` |
+| Each note's body, title, frontmatter, comments, suggestions and versions | That note's DocDO, Durable Object storage under the Worker `moss-multi-pilot` |
+| Uploaded images, video and other media | R2 `moss-multi-pilot-assets` |
+
+All three are on the owner's Cloudflare account. Deleting the Worker deletes every DocDO, and with them the notes: never delete or rename `moss-multi-pilot`.
+
+### Backing up the notes
+
+The CLI writes every note the account can open as markdown, with its media, into a local folder. Run it from any machine, with `MOSS_MULTI_NO_OPEN=1` on a headless host:
+
+```sh
+moss-multi login --server "$PILOT_URL"     # or MOSS_MULTI_SERVER=$PILOT_URL MOSS_MULTI_API_KEY=mm_sk_...
+moss-multi init ~/moss-pilot-backup
+cd ~/moss-pilot-backup
+moss-multi list --json | jq -r '.[].id' | while read -r id; do
+  moss-multi pull "$id" || moss-multi pull "$id" "$id.md"   # a second note with the same title gets its id as a name
+  moss-multi comments "$id" --json > "$id.comments.json"
+done
+```
+
+Each note lands as `<title>.md`, and its media next to it. After that, `moss-multi sync ~/moss-pilot-backup` refreshes every pulled note. Run the loop again to pick up notes created since. Syncing also pushes any edit made to a backup file, so leave the backup unedited. `moss-multi history <doc>` lists a note's versions. For the account data, `wrangler d1 export moss-multi-pilot --remote --output pilot.sql` dumps the D1 database (it needs the token).
 
 ## Demo content
 
