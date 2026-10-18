@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { demoProblems, pendingBy, STEPS } from '../e2e/qa/demo.js';
+import { isPilotTarget } from './deploy/staging-config.mjs';
 import { closeSession, openSession, parseArgs, runScript } from './qa.mjs';
 
 export { STEPS };
@@ -128,6 +129,8 @@ export function demoConfig({ url } = {}) {
     fail(`--url ${url} is not a URL`);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') fail(`--url must be http(s), not ${parsed.protocol}`);
+  // The demo makes test accounts: never on the owner's pilot (T8.P1).
+  if (isPilotTarget(url)) fail('refusing to build the demo on the pilot deployment: it holds the owner\'s real notes');
   const baseUrl = parsed.origin;
   const runId = `demo-${parsed.host.replace(/[^A-Za-z0-9.-]/g, '-')}`;
   return { baseUrl, runId, loopback: ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) };

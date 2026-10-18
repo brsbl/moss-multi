@@ -2,10 +2,12 @@
 // The staging deploy config (A§21, T8.D). deploy-staging.yml deploys the exact dist the CI full lane tested, so it never
 // rebuilds with CLOUDFLARE_ENV=staging: it lays env.staging from apps/web/wrangler.jsonc over the tested
 // dist/server/wrangler.json. That is the same config a staging build writes (the keys below are everything a staging
-// build changes), while the Worker and client bytes stay the tested ones.
+// build changes), while the Worker and client bytes stay the tested ones. --target pilot does the same with env.pilot
+// for the owner's pilot deployment (T8.P1), which must keep hooks off and sign-up allowlist-only.
 //   guard <dist>                                      fails on local secret files in the dist, or an .assetsignore
 //                                                     that would let them upload; and on D1 migrations out of order
-//   write <dist> --d1-id ID --url URL [--dry-run]     rewrites <dist>/server/wrangler.json for staging
+//   write <dist> --d1-id ID --url URL [--target staging|pilot] [--dry-run]
+//                                                     rewrites <dist>/server/wrangler.json for the target
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,7 +17,31 @@ const REPO = fileURLToPath(new URL('../..', import.meta.url));
 export const WRANGLER_JSONC = join(REPO, 'apps/web/wrangler.jsonc');
 export const DRIZZLE = join(REPO, 'apps/web/drizzle');
 /** Permanent: DO storage is bound to the Worker name (A§21). */
-export const NAMES = { worker: 'moss-multi-staging', d1: 'moss-multi-staging', r2: 'moss-multi-staging-assets' };
+export const TARGETS = {
+  staging: { worker: 'moss-multi-staging', d1: 'moss-multi-staging', r2: 'moss-multi-staging-assets' },
+  pilot: { worker: 'moss-multi-pilot', d1: 'moss-multi-pilot', r2: 'moss-multi-pilot-assets' },
+};
+export const NAMES = TARGETS.staging;
+const PILOT_HOST = `${TARGETS.pilot.worker}.`;
+
+/**
+ * Whether `url` is the pilot (T8.P1): its workers.dev host, or PILOT_URL's host. No suite, canary, sweep or demo may
+ * run against it.
+ */
+export function isPilotTarget(url, env = process.env) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  if (host.startsWith(PILOT_HOST)) return true;
+  try {
+    return Boolean(env.PILOT_URL) && new URL(env.PILOT_URL).hostname === host;
+  } catch {
+    return false;
+  }
+}
 /** Every key a CLOUDFLARE_ENV=staging build writes differently from the bare build (checked against vite-plugin 1.46.0). */
 export const OVERLAY_KEYS = ['name', 'workers_dev', 'preview_urls', 'routes', 'observability', 'vars', 'durable_objects', 'migrations', 'd1_databases', 'r2_buckets'];
 const PLACEHOLDER_ID = '00000000-0000-0000-0000-000000000000';
@@ -51,42 +77,54 @@ export function parseJsonc(text) {
   return JSON.parse(out);
 }
 
-export function readStagingEnv(path = WRANGLER_JSONC) {
-  const env = parseJsonc(readFileSync(path, 'utf8')).env?.staging;
-  if (!env) throw new Error(`${path} has no env.staging`);
+export function readTargetEnv(target, path = WRANGLER_JSONC) {
+  if (!Object.hasOwn(TARGETS, target)) throw new Error(`unknown target ${JSON.stringify(target)}`);
+  const env = parseJsonc(readFileSync(path, 'utf8')).env?.[target];
+  if (!env) throw new Error(`${path} has no env.${target}`);
   return env;
 }
 
-function httpsUrl(url) {
+export const readStagingEnv = (path = WRANGLER_JSONC) => readTargetEnv('staging', path);
+
+function httpsUrl(url, target) {
   let parsed;
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`staging URL ${JSON.stringify(url)} is not a URL`);
+    throw new Error(`${target} URL ${JSON.stringify(url)} is not a URL`);
   }
-  if (parsed.protocol !== 'https:') throw new Error(`staging URL must be https, got ${parsed.protocol}`);
-  if (LOOPBACK.has(parsed.hostname)) throw new Error('staging URL must not be loopback (test hooks would be reachable)');
+  if (parsed.protocol !== 'https:') throw new Error(`${target} URL must be https, got ${parsed.protocol}`);
+  if (LOOPBACK.has(parsed.hostname)) throw new Error(`${target} URL must not be loopback (test hooks would be reachable)`);
   return parsed.origin;
 }
 
-/** The tested build's config with env.staging laid over it; throws on anything that would deploy the wrong thing. */
-export function stagingConfig(built, env, { d1Id, url, dryRun = false }) {
-  const origin = httpsUrl(url);
+/** The tested build's config with env.<target> laid over it; throws on anything that would deploy the wrong thing. */
+export function targetConfig(built, env, { target = 'staging', d1Id, url, dryRun = false }) {
+  if (!Object.hasOwn(TARGETS, target)) throw new Error(`unknown target ${JSON.stringify(target)}`);
+  const names = TARGETS[target];
+  const origin = httpsUrl(url, target);
   if (!UUID.test(d1Id ?? '') || (d1Id === PLACEHOLDER_ID && !dryRun)) throw new Error(`D1 id ${JSON.stringify(d1Id)} is not a real database id`);
-  if (env.name !== NAMES.worker) throw new Error(`the staging Worker name is permanent: ${NAMES.worker}, not ${env.name}`);
+  if (env.name !== names.worker) throw new Error(`the ${target} Worker name is permanent: ${names.worker}, not ${env.name}`);
   const d1 = env.d1_databases ?? [];
   const r2 = env.r2_buckets ?? [];
-  if (d1.length !== 1 || d1[0].database_name !== NAMES.d1) throw new Error(`the staging D1 name is permanent: ${NAMES.d1}`);
-  if (r2.length !== 1 || r2[0].bucket_name !== NAMES.r2) throw new Error(`the staging R2 name is permanent: ${NAMES.r2}`);
+  if (d1.length !== 1 || d1[0].database_name !== names.d1) throw new Error(`the ${target} D1 name is permanent: ${names.d1}`);
+  if (r2.length !== 1 || r2[0].bucket_name !== names.r2) throw new Error(`the ${target} R2 name is permanent: ${names.r2}`);
+  if (target === 'pilot') {
+    if (env.vars?.MOSS_TEST_HOOKS !== '0') throw new Error('the pilot must set MOSS_TEST_HOOKS "0": no test hooks');
+    if (env.vars?.MOSS_SIGN_UP !== 'allowlist') throw new Error('the pilot must set MOSS_SIGN_UP "allowlist"');
+    if (new URL(origin).hostname.startsWith(`${TARGETS.staging.worker}.`)) throw new Error('the pilot URL is the staging Worker');
+  }
   const config = structuredClone(built);
   for (const key of OVERLAY_KEYS) if (key in env) config[key] = structuredClone(env[key]);
-  config.targetEnvironment = 'staging';
+  config.targetEnvironment = target;
   config.vars = { ...config.vars, BETTER_AUTH_URL: origin };
   // migrations_dir stays the built one: it is relative to dist/server.
   const migrationsDir = built.d1_databases?.[0]?.migrations_dir;
   config.d1_databases = d1.map((db) => ({ ...db, database_id: d1Id, ...(migrationsDir ? { migrations_dir: migrationsDir } : {}) }));
   return config;
 }
+
+export const stagingConfig = (built, env, opts) => targetConfig(built, env, { ...opts, target: 'staging' });
 
 function walk(dir, root = dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -120,12 +158,12 @@ function guard(dist) {
   return [...forbiddenFiles(dist), ...migrationProblems()];
 }
 
-function write(dist, { 'd1-id': d1Id, url, 'dry-run': dryRun }) {
+function write(dist, { 'd1-id': d1Id, url, target = 'staging', 'dry-run': dryRun }) {
   const problems = guard(dist);
   if (problems.length > 0) throw new Error(`refusing to deploy ${dist}:\n  ${problems.join('\n  ')}`);
   const before = readProvenance(dist);
   const path = join(dist, 'server/wrangler.json');
-  const config = stagingConfig(JSON.parse(readFileSync(path, 'utf8')), readStagingEnv(), { d1Id, url, dryRun: Boolean(dryRun) });
+  const config = targetConfig(JSON.parse(readFileSync(path, 'utf8')), readTargetEnv(target), { target, d1Id, url, dryRun: Boolean(dryRun) });
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
   const after = readProvenance(dist);
   if (JSON.stringify(after) !== JSON.stringify(before)) throw new Error('provenance changed while writing the config');
@@ -141,7 +179,7 @@ function main(argv) {
     else opts[key] = true;
   }
   if (!dist || !['guard', 'write'].includes(command)) {
-    console.error('usage: node scripts/deploy/staging-config.mjs guard <dist> | write <dist> --d1-id ID --url URL [--dry-run]');
+    console.error('usage: node scripts/deploy/staging-config.mjs guard <dist> | write <dist> --d1-id ID --url URL [--target staging|pilot] [--dry-run]');
     return 2;
   }
   if (command === 'guard') {
@@ -151,7 +189,7 @@ function main(argv) {
     return problems.length === 0 ? 0 : 1;
   }
   const provenance = write(dist, opts);
-  console.log(`staging config written for ${provenance.commit} bundle ${provenance.bundleHash}`);
+  console.log(`${opts.target ?? 'staging'} config written for ${provenance.commit} bundle ${provenance.bundleHash}`);
   return 0;
 }
 

@@ -11,6 +11,10 @@ export interface AppEnv {
   BETTER_AUTH_URL?: string;
   MOSS_TEST_HOOKS?: string;
   MOSS_TEST_HOOKS_SECRET?: string;
+  /** "allowlist" on the pilot (T8.P1): only MOSS_ALLOWED_EMAILS may sign up. Unset, sign-up is open. */
+  MOSS_SIGN_UP?: string;
+  /** Emails separated by commas, semicolons or whitespace; a Worker secret. */
+  MOSS_ALLOWED_EMAILS?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
