@@ -359,6 +359,8 @@ test('j16-paste: an undone paste inside a paragraph, and an undone Enter, leave 
   await expect.poll(() => painted(ben, 'suggest-insert'), { message: 'nothing painted after the undo of Enter' }).toEqual([]);
   await expect.poll(() => painted(ben, 'suggest-delete')).toEqual([]);
 
+  // The author leaves, so the system closing his record never touches his socket (as j16-census does).
+  await ben.goto('/');
   // The owner, in Edit mode, sees none of her words struck and no insert marks.
   await openIn(ada, docId, 'edit');
   await expect(ui.body(ada, docId)).toContainText('Ada original line.');
