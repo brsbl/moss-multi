@@ -35,6 +35,12 @@ const holds = (actor: Actor, docId: string, text: string) => ui.body(actor, docI
   return editor.getEditorState().read(() => editor.getEditorState()._nodeMap.get('root')!.getTextContent().includes(wanted));
 }, text).catch(() => false);
 
+/** The body text Ada's editor holds, its paragraphs a blank line apart. */
+const rootText = (actor: Actor, docId: string) => ui.body(actor, docId).evaluate((element) => {
+  const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+  return editor.getEditorState().read(() => editor.getEditorState()._nodeMap.get('root')!.getTextContent());
+}).catch(() => null);
+
 /** What the latest paste's admission measured it adds (`moss-paste-admission`). */
 const lastAdds = (actor: Actor) => actor.page.evaluate(() => {
   const marks = performance.getEntriesByName('moss-paste-admission');
@@ -164,6 +170,30 @@ test('j01-paste-atomic: a keyboard paste made while a paste waits for its reserv
     await ui.waitAcked(ada, docId, 120_000);
     const want = await normalized(ada, stack, 'Kept. ZQX');
     await expect.poll(() => exported(ada, docId), { message: 'and reaches the server, without any of B', timeout: 60_000 }).toBe(want);
+  } finally {
+    ben.close();
+  }
+});
+
+test('j01-paste-atomic: Enter and Shift+Enter pressed while a paste waits for its reserve\'s answer land in order @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  const { ada, ben, docId } = await open(actors, stack);
+  ada.expectReconnects(1, docId);
+  try {
+    // The black hole leaves B's reserve unanswered: the keys wait for it, and are replayed once the paste gives up.
+    // WebKit's Lexical leaves Enter to the native beforeinput, which a held (cancelled) keydown never gets.
+    ada.sever!.blackhole();
+    await pastePlain(ada, docId, B);
+    await ada.page.keyboard.press('Enter');
+    await ada.page.keyboard.type('ZQX');
+    await ada.page.keyboard.press('Shift+Enter');
+    await ada.page.keyboard.type('QZ');
+    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'B is refused, visibly').toContainText('could not confirm room', { timeout: 60_000 });
+    ada.sever!.restore();
+    await expect.poll(() => rootText(ada, docId), { message: 'a new paragraph, then a line break, where Ada pressed them', timeout: 60_000 }).toBe('Kept.\n\nZQX\nQZ');
+    await ui.waitAcked(ada, docId, 120_000);
+    await expect.poll(async () => (await exported(ada, docId)).includes('Kept.\n\nZQX'), { message: 'and reaches the server, without any of B', timeout: 60_000 }).toBe(true);
+    expect(await holds(ada, docId, 'Bravo 0 '), 'nothing of B is in Ada\'s editor').toBe(false);
   } finally {
     ben.close();
   }
