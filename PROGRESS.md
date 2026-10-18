@@ -156,6 +156,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T3.B15 verified: two people editing the same formula or variable name now merge each other's changes at the right place without moving a caret inside a reference, a formula so crowded no reference marker is free resolves whole to the stored one with a notice, an IME preedit survives a peer moving its block, and an empty chart or sketch accepts its first edit.
 - 2026-10-14 — T3.B11 verified: a retried upload at the vault's quota now succeeds under its name or its -n name instead of being refused, an upload's memory stays within its declared size plus 1 MiB, a stalled upload is cut off with 408, an import into a full vault is refused before fetching, and the over-quota message says the vault's media storage is full.
 - 2026-10-14 — T4.Q verified: comments now run on m3's media-access, upload-quota and formula-merge fixes, with both sides kept and the full lane green on the m4 head.
+- 2026-10-18 — T4.B3 re-verified: a reply box that grows or shrinks no longer raises a WebKit ResizeObserver loop, comment drafts stay in their own note, and a composer dismissed and reopened on its target closes once its sent comment lands instead of sending it twice (already counted on 2026-10-14).
 
 ## T1.1s identity audit
 
