@@ -61,9 +61,10 @@ export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
  * A client's custom message (T3.B4). `reserve`: paste `p`, about `b` bytes, is about to land in several frames; the
  * DocDO answers `reserved` and holds the room for that paste (not the socket) until its writes have used it or it
  * lapses, or `reserve-refused` when it would not fit beside what the doc holds and every other reservation, closing
- * nothing. `paste`: the next binary frame writes for these pastes, so the room they reserved is its own.
+ * nothing. `paste`: the next binary frame writes for these pastes, so the room they reserved is its own. `release`:
+ * paste `p` has landed whole (or gave up before landing), so what is left of its room is free again.
  */
-export type ClientEvent = { t: 'reserve'; p: string; b: number } | { t: 'paste'; p: string[] };
+export type ClientEvent = { t: 'reserve'; p: string; b: number } | { t: 'paste'; p: string[] } | { t: 'release'; p: string };
 
 /** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
 export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);

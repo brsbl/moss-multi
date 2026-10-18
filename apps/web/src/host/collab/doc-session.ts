@@ -323,6 +323,8 @@ interface Ticket extends PasteTicket {
   gated: boolean;
   /** The ledger's mark when it landed. */
   mark: number;
+  /** Every write of it has been made. */
+  ended: boolean;
   settle(answer: 'reserved' | 'refused' | 'gone'): void;
 }
 
@@ -351,6 +353,8 @@ export class DocSession {
   readonly #ledger = new AckLedger();
   /** Pastes reserved and not yet answered, or landed and not yet ended (B209). */
   readonly #tickets = new Map<string, Ticket>();
+  /** Pastes the DocDO holds room for: released once every write of theirs is acked. */
+  readonly #held = new Map<string, Ticket>();
   /** The pastes landing now: a write made meanwhile is theirs. */
   readonly #landing = new Set<string>();
   /** A paste was refused after it landed: nothing more is written from this doc (the pane rebinds). */
@@ -576,6 +580,7 @@ export class DocSession {
   #dropTickets(): void {
     for (const ticket of [...this.#tickets.values()]) ticket.settle('gone');
     this.#tickets.clear();
+    this.#held.clear();
   }
 
   #set(patch: Partial<SessionState>): void {
@@ -617,6 +622,7 @@ export class DocSession {
       bytes: reserveBytes(bytes),
       gated: false,
       mark: 0,
+      ended: false,
       settle: (answer) => {
         if (ticket.answer !== 'pending') return;
         ticket.answer = answer;
@@ -632,7 +638,11 @@ export class DocSession {
       },
       end: () => {
         // A write the paste's last update makes as it commits, after this, is still the paste's.
-        setTimeout(() => this.#landing.delete(ticket.id), 0);
+        setTimeout(() => {
+          this.#landing.delete(ticket.id);
+          ticket.ended = true;
+          this.#release();
+        }, 0);
       },
       drop: () => ticket.settle('gone'),
     };
@@ -645,13 +655,32 @@ export class DocSession {
     if (this.provider.wsconnected) this.provider.sendMessage(JSON.stringify({ t: 'reserve', p: ticket.id, b: ticket.bytes } satisfies ClientEvent));
   }
 
+  /**
+   * Frees the room the DocDO holds for each paste whose writes have all been made and acked, so its estimate margin
+   * neither shrinks the doc nor counts against the reservations this tab may hold.
+   */
+  #release(): void {
+    if (!this.provider.wsconnected || this.#held.size === 0) return;
+    const pending = this.#ledger.pendingPastes();
+    for (const ticket of [...this.#held.values()]) {
+      if (!ticket.ended || pending.has(ticket.id)) continue;
+      this.#held.delete(ticket.id);
+      this.provider.sendMessage(JSON.stringify({ t: 'release', p: ticket.id } satisfies ClientEvent));
+    }
+  }
+
   /** The DocDO's answer to a paste's reserve. */
   #answered(id: string, reserved: boolean): void {
     const ticket = this.#tickets.get(id);
-    if (!ticket || ticket.answer !== 'pending') return;
+    if (!ticket || ticket.answer !== 'pending') {
+      // Answered after the paste gave up waiting: it will write nothing.
+      if (!ticket && reserved && !this.#held.has(id) && this.provider.wsconnected) this.provider.sendMessage(JSON.stringify({ t: 'release', p: id } satisfies ClientEvent));
+      return;
+    }
     const outbox = (this.provider.ws as DocSocket | null)?.outbox;
     if (reserved) {
       ticket.settle('reserved');
+      this.#held.set(id, ticket);
       outbox?.open(id);
       return;
     }
@@ -690,6 +719,7 @@ export class DocSession {
     this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
     // What a refused paste left in this doc never goes: the provider's own step 2 would carry it.
     if (this.#sealed) outbox?.seal();
+    this.#release();
   }
 
   #synced(): void {
@@ -902,6 +932,7 @@ export class DocSession {
       }
       const started = performance.now();
       if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
+      this.#release();
       // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
       if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
     } else if (event.t === 'reserved' || event.t === 'reserve-refused') {

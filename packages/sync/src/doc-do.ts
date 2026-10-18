@@ -8,7 +8,7 @@ import { writeSyncStep1 } from 'y-protocols/sync';
 import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, SESSION_MAX_MS, STATE_CAP_BYTES, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
@@ -261,6 +261,11 @@ const WRITE_PAUSE_MS = 2_000;
  * lost acks, to replay the paste's writes (B209).
  */
 const RESERVATION_IDLE_MS = 120_000;
+/**
+ * One a write has started is kept until its writes have used it, its client releases it, or it has idled this long:
+ * the rest of the paste may wait in a sleeping tab's ledger, and by then the session that wrote it has ended.
+ */
+const STARTED_IDLE_MS = SESSION_MAX_MS;
 /** A lapsed or used-up reservation's row is kept this long before it is forgotten. */
 const SPENT_KEEP_MS = 10 * 60_000;
 /** The most live reservations one owner holds at once; past it a reserve is refused. */
@@ -269,12 +274,16 @@ const RESERVATIONS_PER_OWNER = 8;
 const TAG_MAX = 16;
 const PASTE_ID_MAX = 64;
 
-/** A paste's reserved room (ClientEvent `reserve`), less what its writes have used, and when it was last reserved or written. */
+/**
+ * A paste's reserved room (ClientEvent `reserve`), less what its writes have used, when it was last reserved or written,
+ * and whether a write has used it.
+ */
 interface Reservation {
   owner: string;
   paste: string;
   bytes: number;
   at: number;
+  started: boolean;
 }
 
 /** Who a frame writes as, and the pastes its tag names: the room those reserved is its own. */
@@ -1463,10 +1472,10 @@ export class DocDO extends YServer<SyncEnv> {
   #reservationTable(): Map<string, Reservation> {
     if (this.#reservations) return this.#reservations;
     const sql = this.ctx.storage.sql;
-    sql.exec('CREATE TABLE IF NOT EXISTS paste_reservations (owner TEXT NOT NULL, paste TEXT NOT NULL, bytes INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (owner, paste))');
+    sql.exec('CREATE TABLE IF NOT EXISTS paste_reservations (owner TEXT NOT NULL, paste TEXT NOT NULL, bytes INTEGER NOT NULL, at INTEGER NOT NULL, started INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (owner, paste))');
     const table = new Map<string, Reservation>();
-    for (const row of sql.exec<{ owner: string; paste: string; bytes: number; at: number }>('SELECT owner, paste, bytes, at FROM paste_reservations')) {
-      table.set(reservationKey(row.owner, row.paste), { owner: row.owner, paste: row.paste, bytes: Number(row.bytes), at: Number(row.at) });
+    for (const row of sql.exec<{ owner: string; paste: string; bytes: number; at: number; started: number }>('SELECT owner, paste, bytes, at, started FROM paste_reservations')) {
+      table.set(reservationKey(row.owner, row.paste), { owner: row.owner, paste: row.paste, bytes: Number(row.bytes), at: Number(row.at), started: Number(row.started) === 1 });
     }
     this.#reservations = table;
     return table;
@@ -1476,21 +1485,22 @@ export class DocDO extends YServer<SyncEnv> {
   #saveReservation(reservation: Reservation): void {
     this.#reservationTable().set(reservationKey(reservation.owner, reservation.paste), reservation);
     this.ctx.storage.sql.exec(
-      'INSERT OR REPLACE INTO paste_reservations (owner, paste, bytes, at) VALUES (?, ?, ?, ?)',
-      reservation.owner, reservation.paste, reservation.bytes, reservation.at,
+      'INSERT OR REPLACE INTO paste_reservations (owner, paste, bytes, at, started) VALUES (?, ?, ?, ?, ?)',
+      reservation.owner, reservation.paste, reservation.bytes, reservation.at, reservation.started ? 1 : 0,
     );
   }
 
   /**
    * The room reservations hold, but for the pastes `writer`'s tag names (all of it for a server write, `writer` null).
-   * An idle reservation lapses to nothing; a spent one is forgotten once it has been kept long enough.
+   * An idle reservation lapses to nothing (a started one only after STARTED_IDLE_MS); a spent one is forgotten once it
+   * has been kept long enough.
    */
   #reserved(writer: Writer | null): number {
     const now = Date.now();
     const own = new Set(writer?.pastes.map((paste) => reservationKey(writer.owner, paste)));
     let bytes = 0;
     for (const [key, reservation] of [...this.#reservationTable()]) {
-      if (reservation.bytes > 0 && now - reservation.at > RESERVATION_IDLE_MS) {
+      if (reservation.bytes > 0 && now - reservation.at > (reservation.started ? STARTED_IDLE_MS : RESERVATION_IDLE_MS)) {
         this.#saveReservation({ ...reservation, bytes: 0, at: now });
       } else if (reservation.bytes === 0 && now - reservation.at > SPENT_KEEP_MS) {
         this.#reservationTable().delete(key);
@@ -1509,7 +1519,7 @@ export class DocDO extends YServer<SyncEnv> {
       const reservation = this.#reservationTable().get(reservationKey(writer.owner, paste));
       if (!reservation || reservation.bytes === 0) continue;
       const take = Math.min(left, reservation.bytes);
-      this.#saveReservation({ ...reservation, bytes: reservation.bytes - take, at: Date.now() });
+      this.#saveReservation({ ...reservation, bytes: reservation.bytes - take, at: Date.now(), started: true });
       left -= take;
       if (left === 0) return;
     }
@@ -1521,7 +1531,8 @@ export class DocDO extends YServer<SyncEnv> {
    * `reserved` and held for that paste until its writes have used it or it lapses, or `reserve-refused` when it would
    * not fit beside what the doc holds and every other reservation. A refusal closes nothing and touches no other paste.
    * The same paste reserved again (a resend on a fresh socket) is answered from what it still holds, its room not
-   * renewed; once lapsed, from the room there is now.
+   * renewed; once lapsed, from the room there is now. `release`: the paste has landed whole, so what is left of its
+   * room (the client's estimate margin) is free again.
    */
   override onCustomMessage(connection: Connection, message: string): void {
     let event: ClientEvent;
@@ -1536,6 +1547,11 @@ export class DocDO extends YServer<SyncEnv> {
     const isPasteId = (id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length <= PASTE_ID_MAX;
     if (event.t === 'paste') {
       if (Array.isArray(event.p) && event.p.length <= TAG_MAX && event.p.every(isPasteId)) this.#tags.set(connection, event.p);
+      return;
+    }
+    if (event.t === 'release') {
+      const held = isPasteId(event.p) ? this.#reservationTable().get(reservationKey(ownerOf(attachment), event.p)) : undefined;
+      if (held && held.bytes > 0) this.#saveReservation({ ...held, bytes: 0, at: Date.now() });
       return;
     }
     if (event.t !== 'reserve' || !isPasteId(event.p) || !Number.isSafeInteger(event.b) || event.b < 0) return;
@@ -1563,7 +1579,7 @@ export class DocDO extends YServer<SyncEnv> {
       reply('reserve-refused');
       return;
     }
-    if (b > 0) this.#saveReservation({ owner, paste: p, bytes: b, at: Date.now() });
+    if (b > 0) this.#saveReservation({ owner, paste: p, bytes: b, at: Date.now(), started: false });
     reply('reserved');
   }
 
