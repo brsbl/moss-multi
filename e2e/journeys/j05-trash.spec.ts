@@ -390,8 +390,10 @@ test('j05-trash: a restore the server refuses shows the server’s sentence, and
   // Ada's open shell follows the new note and may read its backlinks after the trash lands (the bridge then drops it).
   ada.expectHttp(404, `/api/docs/${docId}/backlinks`);
   // It opens the note before the trash, so the trash never lands mid-load: at staging round trips an earlier trash cut
-  // its content read (a 404) or its socket before it connected (T8.2).
+  // its socket before it connected (T8.2). moss's read of the note's content (the bridge's getContent, which takes a
+  // 404 as "gone") can still be on the wire when the trash lands, at 120 ms round trips in WebKit (run 39126903324).
   await ui.waitLive(ada, docId);
+  ada.expectHttp(404, `/api/docs/${docId}/content`);
   expect((await send('delete', `/api/folders/${folderId}`)).status(), 'declared setup: the folder goes to Trash').toBe(200);
 
   // Restoring would put the note at the top of Ada's Home, where Ben can't add notes: moss shows why, not "Try again".
