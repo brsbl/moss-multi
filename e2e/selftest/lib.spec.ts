@@ -231,7 +231,8 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     // A close the proxy made itself (a sever) carries no server code.
     const proxy = new Telemetry();
     proxy.routedSocket('wss://h/parties/doc-d-o/d?_pk=1').closed();
-    expect(proxy.sockets[0]).toMatchObject({ code: undefined, close: 'closed at the proxy' });
+    expect(proxy.sockets[0].close).toBe('closed at the proxy');
+    expect(proxy.sockets[0].code ?? null).toBeNull();
   });
   test('on loopback the same drop fails, and off loopback a refusal, a second drop or two sockets at once still fail', () => {
     expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map())).not.toEqual([]);
