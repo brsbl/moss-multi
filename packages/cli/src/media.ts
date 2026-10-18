@@ -5,7 +5,7 @@
 // note's reference to that name, and a local file that differs from the doc's bytes for its name is reported.
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ASSET_DIR, MEDIA_CAP_BYTES, mediaTypeOf } from '@moss-multi/protocol/media';
+import { ASSET_DIR, MEDIA_CAP_BYTES, mediaFilename, mediaTypeOf } from '@moss-multi/protocol/media';
 import type { Api } from './api.ts';
 import { CliError } from './errors.ts';
 import type { SyncResult } from './sync.ts';
@@ -18,35 +18,87 @@ export interface MediaRef {
   start: number;
   end: number;
   name: string;
+  /** The name is percent-encoded in the text. */
+  encoded: boolean;
 }
 
-const NAME_END = new Set([' ', '\t', '\n', '\r', ')', '>', '"', "'"]);
-
-/** Every `](assets/<file>)` (or `](./assets/…`, `](<assets/…`) reference to a moss media file in `text`, in order. */
+/**
+ * Every `](assets/<file>)` reference to a moss media file in `text` (also `./assets/…` and `<assets/…>`), in order,
+ * outside fenced and inline code. The destination runs to its balanced closing parenthesis on the line, as moss reads
+ * it, so a name may hold spaces and parentheses.
+ */
 export function mediaRefs(text: string): MediaRef[] {
   const refs: MediaRef[] = [];
-  let at = text.indexOf('](');
-  while (at >= 0) {
-    let i = at + 2;
-    if (text[i] === '<') i += 1;
-    if (text.startsWith('./', i)) i += 2;
-    let next = at + 2;
-    if (text.startsWith(ASSET_DIR, i)) {
-      const start = i + ASSET_DIR.length;
-      let end = start;
-      while (end < text.length && !NAME_END.has(text[end]!)) end += 1;
-      next = Math.max(next, end);
-      let name = text.slice(start, end);
-      try {
-        name = decodeURIComponent(name);
-      } catch {
-        // A stray % stays as it is.
+  const code = codeRanges(text);
+  for (let at = text.indexOf(']('); at >= 0; at = text.indexOf('](', at + 2)) {
+    if (code.some(([from, to]) => at >= from && at < to)) continue;
+    let close = -1;
+    for (let depth = 1, j = at + 2; j < text.length && text[j] !== '\n'; j += 1) {
+      if (text[j] === '\\') j += 1;
+      else if (text[j] === '(') depth += 1;
+      else if (text[j] === ')' && --depth === 0) {
+        close = j;
+        break;
       }
-      if (mediaTypeOf(name) && isAllowedName(name)) refs.push({ start, end, name });
     }
-    at = text.indexOf('](', next);
+    if (close < 0) continue;
+    let start = at + 2;
+    let end = close;
+    while (start < end && /\s/.test(text[start]!)) start += 1;
+    while (end > start && /\s/.test(text[end - 1]!)) end -= 1;
+    if (text[start] === '<') {
+      const gt = text.indexOf('>', start);
+      if (gt < 0 || gt > end) continue;
+      start += 1;
+      end = gt;
+    } else {
+      const title = /\s+(?:"[^"]*"|'[^']*')$/.exec(text.slice(start, end));
+      if (title) end -= title[0].length;
+    }
+    if (text.startsWith('./', start)) start += 2;
+    if (!text.startsWith(ASSET_DIR, start)) continue;
+    start += ASSET_DIR.length;
+    const raw = text.slice(start, end);
+    let name = raw;
+    try {
+      name = decodeURIComponent(raw);
+    } catch {
+      // A stray % stays as it is.
+    }
+    if (mediaTypeOf(name) && isAllowedName(name)) refs.push({ start, end, name, encoded: name !== raw });
   }
   return refs;
+}
+
+/** The spans of fenced code blocks and of inline code spans (within a line) in `text`. */
+function codeRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let offset = 0;
+  let fence: number | null = null;
+  for (const line of text.split('\n')) {
+    const end = offset + line.length;
+    const fenced = /^\s*(?:```|~~~)/.test(line);
+    if (fence !== null) {
+      if (fenced) {
+        ranges.push([fence, end]);
+        fence = null;
+      }
+    } else if (fenced) fence = offset;
+    else {
+      const ticks = /`+/g;
+      for (let open = ticks.exec(line); open; open = ticks.exec(line)) {
+        const closing = new RegExp(`(?<!\`)\`{${open[0].length}}(?!\`)`, 'g');
+        closing.lastIndex = open.index + open[0].length;
+        const shut = closing.exec(line);
+        if (!shut) continue;
+        ranges.push([offset + open.index, offset + shut.index + shut[0].length]);
+        ticks.lastIndex = shut.index + shut[0].length;
+      }
+    }
+    offset = end + 1;
+  }
+  if (fence !== null) ranges.push([fence, text.length]);
+  return ranges;
 }
 
 /** `text` with each reference to a renamed file pointing at its new name. */
@@ -56,7 +108,7 @@ export function rewriteRefs(text: string, renames: Map<string, string>): string 
   for (const ref of mediaRefs(text)) {
     const to = renames.get(ref.name);
     if (to === undefined) continue;
-    out += text.slice(last, ref.start) + to;
+    out += text.slice(last, ref.start) + (ref.encoded ? encodeURI(to) : to);
     last = ref.end;
   }
   return out + text.slice(last);
@@ -70,6 +122,8 @@ export interface MediaContext {
   /** Download what the doc holds and this folder lacks (pull and sync); upload what it lacks (add, push and sync). */
   download?: boolean;
   upload?: boolean;
+  /** Names that failed earlier in this pass: left alone, so a failure is tried and reported once. */
+  failedNames?: Set<string>;
 }
 
 export interface MediaStep {
@@ -101,10 +155,13 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   const seen = new Set<string>();
 
   for (const { name } of mediaRefs(text)) {
-    if (seen.has(name)) continue;
+    if (seen.has(name) || ctx.failedNames?.has(name)) continue;
     seen.add(name);
     const rel = join(dir, name);
-    const failed = (message: string) => results.push({ docId, file: rel, action: 'failed', message });
+    const failed = (message: string) => {
+      ctx.failedNames?.add(name);
+      results.push({ docId, file: rel, action: 'failed', message });
+    };
     try {
       const local = localFile(root, rel);
       const known = record[name];
@@ -119,14 +176,12 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
       if (!bytes && !ctx.download) continue;
       const remote = await client.assetHash(docId, name);
       if (bytes && hash) {
-        if (remote === hash) {
-          record[name] = state(hash);
-          continue;
-        }
-        if (remote !== null) {
+        if (remote !== null && remote !== hash) {
           failed(`${rel} is not the file the doc holds under that name, and a name on the server keeps its file; it was left as it is here and there. Save it under a new name to upload it`);
           continue;
         }
+        // A matching record on the server is no proof its bytes are stored (a failed store keeps the record), so a file
+        // not recorded here as sent is sent: the same bytes bind the same name again, and the server stores them if missing.
         if (!ctx.upload) continue;
         const type = mediaTypeOf(name)!;
         if (bytes.byteLength > MEDIA_CAP_BYTES[type.kind]) {
@@ -140,7 +195,11 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
           results.push({ docId, file: rel, action: 'uploaded' });
           continue;
         }
-        // Another file holds the name on the server: the note follows the name these bytes got, beside the file.
+        if (mediaFilename(stored) !== stored || mediaTypeOf(stored)?.kind !== type.kind) {
+          failed(`the server answered the upload of ${name} with ${JSON.stringify(stored)}, which is not a media file name, so the note still references ${name}`);
+          continue;
+        }
+        // The server folded the name, or another file holds it there: the note follows the name these bytes got.
         const copy = join(dir, stored);
         const there = localFile(root, copy);
         if (there && sha256Hex(readConfined(root, copy)) !== hash) {
@@ -151,7 +210,9 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
         const copied = localFile(root, copy)!;
         record[stored] = { hash, size: copied.size, mtimeMs: copied.mtimeMs };
         renames.set(name, stored);
-        results.push({ docId, file: rel, action: 'uploaded', message: `the server already holds another ${name} here, so it is ${stored} there and the note now references ${copy}` });
+        results.push({ docId, file: rel, action: 'uploaded', message: mediaFilename(name) === stored
+          ? `the server stores ${name} as ${stored}, so the note now references ${copy}`
+          : `the server already holds another ${name} here, so it is ${stored} there and the note now references ${copy}` });
         continue;
       }
       if (remote === null || !ctx.download) continue;

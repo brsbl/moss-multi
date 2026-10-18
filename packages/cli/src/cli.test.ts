@@ -160,7 +160,7 @@ function fakeServer() {
     if (sub === 'assets' && method === 'POST') {
       const name = mediaFilename(url.searchParams.get('filename') ?? '');
       if (!name) return reply(415, { error: 'unsupported', message: 'Only images and videos can be uploaded.' });
-      const bytes = new Uint8Array(init.body as Uint8Array);
+      const bytes = new Uint8Array(init.body as unknown as Uint8Array);
       const next = state.uploadAnswers.shift();
       if (next && next !== 'put-fails' && 'status' in next) return reply(next.status, next.body);
       if (next && next !== 'put-fails') return reply(201, { filename: next.filename });

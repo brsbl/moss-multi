@@ -348,10 +348,10 @@ export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' |
  * The note's media step (media.ts) on the file the doc tracks now. With `settle`, a note whose references moved to the
  * names the server gave its files is pushed at once.
  */
-async function syncMedia(ctx: SyncContext, docId: string, settle: boolean): Promise<SyncResult[]> {
+async function syncMedia(ctx: SyncContext, docId: string, settle: boolean, failedNames?: Set<string>): Promise<SyncResult[]> {
   const meta = readMeta(ctx.root, docId);
   if (!meta || !exists(ctx.root, meta.file)) return [];
-  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: true, download: true }, docId, meta.file);
+  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: true, download: true, failedNames }, docId, meta.file);
   if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
   return step.results;
 }
@@ -478,14 +478,17 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       const row = rows.get(tracked.docId);
       const { meta, result } = followServerName(ctx, tracked, row, trackedMetas(root));
       if (result) results.push(result);
-      // Media first, so a pushed reference finds its file; a doc no longer listed is left to reconcile to report.
-      if (row) results.push(...(await syncMedia(ctx, meta.docId, false)));
+      // Media first, so a pushed reference finds its file; a doc no longer listed is left to reconcile to report. The
+      // second step carries what the pulled text added; a file that failed in the first is not tried again.
+      const failedNames = new Set<string>();
+      if (row) results.push(...(await syncMedia(ctx, meta.docId, false, failedNames)));
       const reconciled = await reconcile(ctx, meta, row);
       results.push(reconciled);
-      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(ctx, meta.docId, true)));
+      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(ctx, meta.docId, true, failedNames)));
     } catch (error) {
       if (stopped(error)) return results;
       if (error instanceof RateLimited) throw error;
+      if (error instanceof CliError && error.status === 429) throw new RateLimited(60);
       results.push({ docId: tracked.docId, file: tracked.file, action: 'failed', message: failure(error) });
     }
   }
