@@ -126,6 +126,20 @@ export class TailSummary {
   }
 }
 
+// Red-first stubs (T8.2 SP9 telemetry); the implementation follows.
+export const SP9_PROBE_HEADER = 'x-sp9-probe';
+export class ProbeSummary {
+  /** @param {string} _chunk */
+  push(_chunk) {}
+  result() {
+    return { uploads: {} };
+  }
+}
+/** @param {unknown} _result */
+export function probeProblems(_result) {
+  return /** @type {string[]} */ ([]);
+}
+
 /**
  * Runs `command` (the tail) and summarizes its stdout until it exits or this process gets SIGTERM or SIGINT, then
  * writes the summary to `out`. Its stderr is counted, never printed.

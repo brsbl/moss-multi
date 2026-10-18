@@ -317,7 +317,7 @@ describe('deploy-staging.yml', () => {
     const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
     expect(uploads.length).toBeGreaterThanOrEqual(1);
     const allowed = {
-      tail: [['e2e/canary-artifacts/tail-summary.json']],
+      tail: [['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/tail-summary.json']],
       other: [['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']],
     };
     for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
@@ -650,6 +650,18 @@ describe('canary recording', () => {
     const summary = canarySummary(results);
     expect(summary).toEqual({ tests: [{ title: 'journeys/j00-shell.spec.ts › j00 shell › signs in', status: 'failed', duration: 1234 }] });
     expect(JSON.stringify(summary)).not.toMatch(/SECRET|trace\.zip|Cookie/);
+  });
+
+  it("keeps a leg's measure annotation as numbers only: the SP9 near-cap upload's bytes and client time", () => {
+    const passed = { status: 'passed', duration: 23_539 };
+    const annotations = [
+      { type: 'sp9-near-cap', description: JSON.stringify({ bytes: 99_614_720, uploadMs: 21_004, url: 'https://x.workers.dev/?token=SECRET' }) },
+      { type: 'note', description: 'SECRET free text' },
+    ];
+    const results = { suites: [{ title: 'j11.spec.ts', specs: [{ title: 'probe', tests: [{ status: 'expected', annotations, results: [passed] }] }] }] };
+    const summary = canarySummary(results);
+    expect(summary).toEqual({ tests: [{ title: 'j11.spec.ts › probe', status: 'passed', duration: 23_539, measures: { 'sp9-near-cap': { bytes: 99_614_720, uploadMs: 21_004 } } }] });
+    expect(JSON.stringify(summary)).not.toMatch(/SECRET|workers\.dev/);
   });
 
   it('names a leg that passed only on its retry flaky', () => {

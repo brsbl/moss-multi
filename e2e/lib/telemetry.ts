@@ -179,9 +179,10 @@ export class Telemetry {
   }
 
   /** A routed page socket, as the proxy saw it open; `closed()` records its close, once. */
-  routedSocket(url: string): { closed(): void } {
+  routedSocket(url: string): { closed(code?: number, reason?: string): void; received(message: string | Buffer): void } {
     const entry = this.socketOpened(url);
     return {
+      received() {},
       closed() {
         if (entry && entry.closedAt === null) {
           entry.closedAt = Date.now();
