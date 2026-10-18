@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (193 of 236 planned tasks verified)
+**Overall: 82% done** (194 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 19 / 19 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 20 / 20 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -214,6 +214,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T5.Q verified: suggestions now run on m4's comment-draft, media and formula fixes, and an IME preedit flushed when its editor unmounts is merged and written under the note's own client, as compositionend writes it.
 - 2026-10-15 — T6.Q verified: history now runs on m5's comment-draft, media, quota and formula fixes, and e2e setup resends a sign-up or sign-in that wrangler's proxy dropped while a large note's auto version was being written.
 - 2026-10-15 — T7.Q verified: agent sync, Bot presence and the watch daemon now run on m6's comment-draft, media, quota and formula fixes, with both sides kept and the full lane green on the m7 head.
+- 2026-10-18 — T7.B3 verified: the CLI pins the workspace root before requests and lock waits and re-checks it on every write, logout sends the session only over https or loopback, server text prints on one escaped line, email shares print the invite link and an empty `--suggest` push says nothing was suggested.
 
 ## T1.1s identity audit
 
@@ -900,3 +901,6 @@ Local browser verification remains assigned to the independent checker under the
 - T5.Q (m5 on the m4 fixes) checker P2: no single regression test covers an unmounted Suggest-mode preedit — j01 covers unmounting a preedit in Edit mode and j16 covers compositionend in Suggest mode, but nothing exercises the combined unmount flush in register-input.ts (the red on 43da2b70 was a typecheck failure, not behavioral) → add a journey that unmounts an active Suggest-mode preedit while a peer edits, proven red against a draft-client apply.
 - T6.Q (No deterministic selftests for the setup auth resend) checker P2: setupPost's resend and mintPrincipal's 'already exists' recovery in e2e/lib/principals.ts have no focused selftests; add cases that an ordinary 503 stays a failure, a non-503 carrying the proxy text stays a failure, a second failed attempt stays a failure, and recovery returns the real user id.
 - T7.Q (Two dismissed CI failures have no baseline failure on record) checker P2: of the four failures dismissed in the full-lane reruns, note-store.linear (run 38535601745) and suggest-ingest T5.2 (run 38512418550) failed the same assertions on earlier base runs, but two have no baseline on record: the WebKit j15-comments-drafts uncaught 'ResizeObserver loop' on attempt 1 (comment code and journey identical to m6 1b681ff1; head and m6 both passed 8 of 8 repeats in runs 38717509595 and 38717513000) and suggest.test.ts:791 T5.4 'one fixed frame size in every scenario' (2 sizes instead of 1).
+- T7.B3 checker P2 (pull pins its workspace root only after resolveDocId's request): in pull, resolveDocId runs before findRoot/pinRoot (packages/cli/src/program.ts:340-343), so a root swapped for a link during a title-prefix GET /api/docs is pinned as trusted and pull writes the note and state there → select and pin the root before resolveDocId, with a regression test that swaps the root during a title-prefix pull.
+- T7.B3 checker P2 (State-file reads and lock retries skip the pinned-root and link re-checks): readBase uses only noLinks, not realInside or the pin, so a base-missing retry can send an outside .moss-multi/<id>/base.md (program.ts:393-395); writeInside calls mkdirSync before its first realInside check, so a swap during add or create can leave an empty outside directory; lockWorkspace re-pins on each retry but runs noLinks once, so a .moss-multi swapped for a link while waiting can get an outside .lock (workspace.ts:436-468).
+- T7.B3 checker P2 (Device-login server fields are not field-escaped): deviceLogin builds its CliError from the server's error_description without a status (config.ts:176-192) and the top-level handler applies fieldSafe only when the error has a status (program.ts:593-595), so an LF in that text starts a new output line; user_code is printed only through ttySafe.
