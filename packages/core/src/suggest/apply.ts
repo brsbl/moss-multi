@@ -959,115 +959,76 @@ export interface Restored {
   clients: Set<number>;
 }
 
-/** Edits past this between a gap's removed and added units align only by their common start and end. */
-const ALIGN_EDITS = 64;
-
 /**
- * Index pairs [i, j] with a[i] === b[j] on a shortest edit script from `a` to `b` (Myers), or null past `maxEdits`.
- */
-function aligned(a: readonly string[], b: readonly string[], maxEdits: number): [number, number][] | null {
-  const n = a.length;
-  const m = b.length;
-  const off = maxEdits + 1;
-  const v = new Int32Array(2 * maxEdits + 3);
-  const trace: Int32Array[] = [];
-  for (let d = 0; d <= maxEdits; d += 1) {
-    trace.push(v.slice());
-    for (let k = -d; k <= d; k += 2) {
-      let x = k === -d || (k !== d && v[k - 1 + off]! < v[k + 1 + off]!) ? v[k + 1 + off]! : v[k - 1 + off]! + 1;
-      let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) {
-        x += 1;
-        y += 1;
-      }
-      v[k + off] = x;
-      if (x < n || y < m) continue;
-      const pairs: [number, number][] = [];
-      for (let back = d; back >= 0; back -= 1) {
-        const at = trace[back]!;
-        const kk = x - y;
-        const prev = back === 0 ? kk : kk === -back || (kk !== back && at[kk - 1 + off]! < at[kk + 1 + off]!) ? kk + 1 : kk - 1;
-        const px = back === 0 ? 0 : at[prev + off]!;
-        const py = back === 0 ? 0 : px - prev;
-        while (x > px && y > py) {
-          x -= 1;
-          y -= 1;
-          pairs.push([x, y]);
-        }
-        x = px;
-        y = py;
-      }
-      return pairs;
-    }
-  }
-  return null;
-}
-
-/**
- * Finds the restored copies in `doc` against `body`, the state before the records (suggestions.md §4.7). In each
- * block and inline element both hold live, between two body units `doc` keeps, the body units `doc` removed and the
- * units it added are aligned by what they read as (a character, or an item's channels without identity); an added unit
- * aligned to a removed one restores it, so it is neither an insert nor a removal. A suggester's delete of body text is
- * a delete part, never a removal in `doc`, so only a structural op's removals are restored this way.
+ * Finds the restored copies in `doc` against `body`, the state before the records (suggestions.md §4.7). Yjs redoes a
+ * deleted item as a copy of its content inserted just before it, so the copy's right origin is the original's id and
+ * its units line up with the original's from there (a copy split by typing keeps that right origin in every part). A
+ * new unit restores a body unit when the original is live in `body`, removed in `doc`, in the same parent, reads the
+ * same, and, for text, sits under the same text node (its property map, or the copy of it). Text a record rewrites
+ * (a restyle, a replaced word) sits under a new map or reads differently, so it is not taken for a copy.
  */
 export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
   const out: Restored = { copies: new Map(), originals: new Set(), clients: new Set() };
-  const inBody = (client: number, clock: number) => clock < Y.getState(body.store, client);
-  const bodyItem = (client: number, clock: number): Y.Item | null => {
-    if (!inBody(client, clock)) return null;
-    const item = Y.getItem(body.store, Y.createID(client, clock));
+  const isMap = (item: Y.Item) => item.content instanceof Y.ContentType && item.content.type instanceof Y.Map;
+  const liveIn = (store: Y.Doc['store'], id: Y.ID): Y.Item | null => {
+    if (id.clock >= Y.getState(store, id.client)) return null;
+    const item = Y.getItem(store, id);
     return item instanceof Y.Item && !item.deleted ? item : null;
   };
-  const unit = (item: Y.Item, at: number): string =>
-    item.content instanceof Y.ContentString ? `s${item.content.str[at - item.id.clock]}` : `v${canonical(contentValue('body', 'root', item.content, false))}`;
-  type Unit = { id: Y.ID; value: string };
-  let removed: Unit[] = [];
-  let added: Unit[] = [];
-  const flush = () => {
-    if (removed.length && added.length) {
-      const a = removed.map((u) => u.value);
-      const b = added.map((u) => u.value);
+  const removedIn = (id: Y.ID): Y.Item | null => {
+    if (id.clock >= Y.getState(doc.store, id.client)) return null;
+    const item = Y.getItem(doc.store, id);
+    return item instanceof Y.Item && item.deleted ? item : null;
+  };
+  /** The live property map a text item sits under, by key (a restored map by its original's). */
+  const mapOf = (item: Y.Item, copies: boolean): string | null => {
+    for (let left = item.left; left; left = left.left) {
+      if (!left.deleted && isMap(left)) return itemKey((copies ? out.copies.get(itemKey(left.id)) : undefined) ?? left.id);
+    }
+    return null;
+  };
+  const reads = (content: Y.Item['content']) => canonical(contentValue('body', 'root', content, false));
+  const pass = (strings: boolean) => {
+    for (const [client, structs] of doc.store.clients) {
+      const known = Y.getState(body.store, client);
       let start = 0;
-      while (start < a.length && start < b.length && a[start] === b[start]) start += 1;
-      let end = 0;
-      while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end += 1;
-      const pairs: [number, number][] = [];
-      for (let i = 0; i < start; i += 1) pairs.push([i, i]);
-      for (let i = 1; i <= end; i += 1) pairs.push([a.length - i, b.length - i]);
-      const middle = aligned(a.slice(start, a.length - end), b.slice(start, b.length - end), ALIGN_EDITS) ?? [];
-      for (const [i, j] of middle) pairs.push([start + i, start + j]);
-      for (const [i, j] of pairs) {
-        const copy = added[j]!.id;
-        out.copies.set(itemKey(copy), removed[i]!.id);
-        out.originals.add(itemKey(removed[i]!.id));
-        out.clients.add(copy.client);
+      let right: Y.ID | null = null;
+      for (const struct of structs) {
+        if (!(struct instanceof Y.Item)) {
+          right = null;
+          continue;
+        }
+        const origin = struct.rightOrigin;
+        if (!right || !origin || origin.client !== right.client || origin.clock !== right.clock) start = struct.id.clock;
+        right = origin;
+        if (struct.id.clock < known || struct.deleted || !origin || struct.parentSub !== null) continue;
+        if ((struct.content instanceof Y.ContentString) !== strings) continue;
+        // Read once a unit needs it: walking left is linear in the block.
+        let map: string | null | undefined;
+        let bodyMap: { of: Y.Item; key: string | null } | null = null;
+        for (let i = 0; i < struct.length; i += 1) {
+          const original = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);
+          const was = liveIn(body.store, original);
+          const gone = was && removedIn(original);
+          if (!was || !gone || gone.parent !== struct.parent) continue;
+          if (strings) {
+            const at = original.clock - was.id.clock;
+            if (!(was.content instanceof Y.ContentString) || was.content.str[at] !== (struct.content as Y.ContentString).str[i]) continue;
+            const under = bodyMap?.of === was ? bodyMap : (bodyMap = { of: was, key: mapOf(was, false) });
+            if (map === undefined) map = mapOf(struct, true);
+            if (under.key !== map) continue;
+          } else if (reads(was.content) !== reads(struct.content)) continue;
+          const copy = Y.createID(client, struct.id.clock + i);
+          out.copies.set(itemKey(copy), original);
+          out.originals.add(itemKey(original));
+          out.clients.add(client);
+        }
       }
     }
-    removed = [];
-    added = [];
   };
-  const visit = (type: Y.AbstractType<unknown>, match: boolean) => {
-    for (let item = type._start; item; item = item.right) {
-      const { client, clock } = item.id;
-      if (!inBody(client, clock)) {
-        if (match && !item.deleted) for (let i = 0; i < item.length; i += 1) added.push({ id: Y.createID(client, clock + i), value: unit(item, clock + i) });
-        continue;
-      }
-      if (!item.deleted) {
-        if (!bodyItem(client, clock)) continue;
-        if (match) flush();
-        if (item.content instanceof Y.ContentType && item.content.type instanceof Y.XmlText) visit(item.content.type as Y.AbstractType<unknown>, true);
-        continue;
-      }
-      if (!match) continue;
-      for (let i = 0; i < item.length; i += 1) {
-        const was = bodyItem(client, clock + i);
-        if (was) removed.push({ id: Y.createID(client, clock + i), value: unit(was, clock + i) });
-      }
-    }
-    if (match) flush();
-  };
-  visit(doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>, false);
+  // Property maps and other items first, so a restored text node's characters find their map's copy.
+  pass(false);
+  pass(true);
   return out;
 }
 
