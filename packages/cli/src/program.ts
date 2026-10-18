@@ -12,7 +12,7 @@ import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
 import { parseScope, SCOPE_FILE } from './scope.ts';
-import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
+import { adopt, confirmScope, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
   confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile, recordPull,
   resetRootPins, sha256Hex, writeStateFile,
@@ -65,6 +65,9 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
                                                --allow matches and those the --follow notes link to (depth hops
                                                out, re-read every pass), never what --deny matches. No --allow
                                                or --follow: nothing syncs until the file is edited
+  scope confirm [dir]                          take the links the scope's notes hold now as yours. A note only
+                                               a link from the server reaches is pulled but never sent
+                                               ("remote-link") until this is run
   sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
                                                doc; deleting a file here never deletes the doc. With a scope,
                                                only notes in it; --json counts the rest as "out-of-scope"
@@ -184,10 +187,13 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     for (const result of results) (toStderr || result.action === 'failed' ? stderr : line)(describe(result));
     if (results.some((result) => result.action === 'failed')) exitCode = EXIT.other;
   };
-  /** Refuses a path the workspace's scope does not admit, before it is read or written. */
-  const inScope = (root: string, rel: string, what: string) => {
+  /** Refuses a path the workspace's scope does not admit (for `upload`, does not send), before it is read or written. */
+  const inScope = (root: string, rel: string, what: 'upload' | 'write a doc to') => {
     const scope = workspaceScope(root, foldsCase(root));
-    if (scope && !scope.admits(rel)) throw new CliError(1, `${rel} is outside this workspace's scope (.moss-multi/${SCOPE_FILE}), so moss-multi does not ${what} it`);
+    if (!scope) return undefined;
+    if (!scope.admits(rel)) throw new CliError(1, `${rel} is outside this workspace's scope (.moss-multi/${SCOPE_FILE}), so moss-multi does not ${what} it`);
+    if (what === 'upload' && !scope.uploads(rel)) throw new CliError(1, `${rel} is reached only by a link that came from the server, so moss-multi does not upload it; run \`moss-multi scope confirm\` first`);
+    return scope;
   };
   /**
    * The workspace for `sync` and `watch`: the one holding `dir` (default the working directory). They never make
@@ -290,11 +296,11 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (workspace) {
         // In a workspace the file is tracked at once, as sync would, so a later sync makes no second doc.
         const rel = confined(workspace, path);
-        inScope(workspace, rel, 'upload');
+        const scope = inScope(workspace, rel, 'upload');
         const lock = await lockWorkspace(workspace);
         try {
           if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
-          const adopted = await adopt({ root: workspace, client, folds: foldsCase(workspace) }, rel, {
+          const adopted = await adopt({ root: workspace, client, folds: foldsCase(workspace), ...(scope ? { scope } : {}) }, rel, {
             moss, keepName: true, ...(title !== undefined ? { title, titleLine: true } : {}), ...(folderId ? { folderId } : {}),
           });
           doc = adopted.doc;
@@ -393,10 +399,10 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
       if (meta.mode === 'moss') throw new CliError(1, `${meta.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
-      inScope(root, meta.file, 'upload');
+      const scope = inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
-      reportMedia((await noteMedia({ root, client, upload: true }, meta.docId, path)).results);
+      reportMedia((await noteMedia({ root, client, upload: true, ...(scope ? { denies: scope.denies } : {}) }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
@@ -498,7 +504,23 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       ensureStateDir(pinRoot(root));
       if (readStateFile(root, SCOPE_FILE)) throw new CliError(1, `${root} already has a scope; edit .moss-multi/${SCOPE_FILE} to change it`);
       writeStateFile(root, SCOPE_FILE, Buffer.from(`${JSON.stringify({ allow: lists.allow, follow: lists.follow, depth: scope.depth, deny: lists.deny }, null, 2)}\n`));
+      // The links the notes hold now are the user's own: a link a later pull brings waits for `scope confirm`.
+      confirmScope(root, foldsCase(root));
       line(`${root} is a moss-multi workspace scoped by .moss-multi/${SCOPE_FILE}: \`moss-multi sync\` takes only the notes it allows or links to, never what it denies`);
+    },
+
+    async scope(rest) {
+      const parsed = parseArgs(rest, [], []);
+      const [action, dir] = arity(parsed, 1, 2, 'scope confirm [dir]');
+      if (action !== 'confirm') throw new CliError(1, 'usage: moss-multi scope confirm [dir]');
+      const root = workspaceAt(dir);
+      const lock = await lockWorkspace(root);
+      try {
+        const notes = confirmScope(root, foldsCase(root));
+        line(`the links in ${notes} note(s) in scope are now yours: the notes they reach sync from the next pass`);
+      } finally {
+        lock.release();
+      }
     },
 
     async sync(rest) {

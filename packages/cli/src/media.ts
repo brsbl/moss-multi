@@ -70,6 +70,8 @@ export interface MediaContext {
   /** Download what the doc holds and this folder lacks (pull and sync); upload what it lacks (add, push and sync). */
   download?: boolean;
   upload?: boolean;
+  /** A file the workspace's scope denies is neither read nor written. */
+  denies?: (rel: string) => boolean;
 }
 
 export interface MediaStep {
@@ -104,6 +106,7 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
     if (seen.has(name)) continue;
     seen.add(name);
     const rel = join(dir, name);
+    if (ctx.denies?.(rel)) continue;
     const failed = (message: string) => results.push({ docId, file: rel, action: 'failed', message });
     try {
       const local = localFile(root, rel);

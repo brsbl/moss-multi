@@ -310,8 +310,9 @@ export function readStateFile(root: string, name: string): Buffer | null {
   return readFileSync(path);
 }
 
-export function writeStateFile(root: string, name: string, bytes: Uint8Array): void {
-  writeInside(root, join(STATE_DIR, name), bytes, null);
+/** Writes a workspace-wide state file; without `replace` it must not exist yet. */
+export function writeStateFile(root: string, name: string, bytes: Uint8Array, replace = false): void {
+  writeInside(root, join(STATE_DIR, name), bytes, replace ? undefined : null);
 }
 
 /** Whether `root` holds a real state directory. */
