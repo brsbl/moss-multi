@@ -306,3 +306,66 @@ test('j18-sync media: a note\'s image and video round-trip through sync and pull
     rmSync(away, { recursive: true, force: true });
   }
 });
+
+test('j18-sync scope: a scoped workspace syncs only its entry note and the notes it links to, never a denied note, and follows link changes @p:agt-2 @p:R9', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const dir = scratch();
+  const env = await agentEnv(ada, stack, dir);
+  type Result = { action: string; docId?: string; file: string; count?: number };
+  const syncJson = async (): Promise<Result[]> => {
+    const run = await moss(['sync', '--json'], env, dir);
+    expect(run.code, `${run.stderr}\n${run.stdout}`).toBe(0);
+    return JSON.parse(run.stdout) as Result[];
+  };
+  const created = (results: Result[]) => results.filter((result) => result.action === 'created').map((result) => result.file).sort();
+  const titles = async (): Promise<string[]> => {
+    const response = await ada.context.request.get('/api/docs', { timeout: 30_000 });
+    expect(response.status()).toBe(200);
+    return ((await response.json()) as { docs: { title: string }[] }).docs.map((doc) => doc.title).sort();
+  };
+  const note = (folder: string, title: string, body: string): string => {
+    mkdirSync(join(dir, folder, title), { recursive: true });
+    writeFileSync(join(dir, folder, title, `${title}.md`), `# ${title}\n\n${body}\n`);
+    return join(folder, title, `${title}.md`);
+  };
+  try {
+    const home = note('', 'Moss Home', 'Start at [[Alpha]], then [Beta](../Beta/Beta.md). Private: [[Diary]] and [[Taxes 2026]].');
+    const alpha = note('', 'Alpha', 'The alpha note.');
+    const beta = note('', 'Beta', 'Beta leads on to [[Gamma]].');
+    note('', 'Gamma', 'Two hops out.');
+    note('Personal', 'Diary', 'Dear diary.');
+    note(join('Admin', 'Finance'), 'Taxes 2026', 'The refund.');
+    const loose = note('', 'Loose', 'Nobody links here yet.');
+    const init = await moss(['init', '--scope', '--follow', 'Moss Home', '--deny', 'Personal/**', '--deny', 'Admin/Finance/**'], env, dir);
+    expect(init.code, init.stderr).toBe(0);
+
+    const first = await syncJson();
+    expect(created(first), 'exactly Moss Home and the notes it links to').toEqual([alpha, beta, home].sort());
+    expect(first.find((result) => result.action === 'out-of-scope')?.count, 'the rest only as a count').toBe(4);
+    const names = ['Alpha', 'Beta', 'Diary', 'Gamma', 'Loose', 'Moss Home', 'Taxes 2026'];
+    expect((await titles()).filter((title) => names.includes(title)), 'nothing denied or two hops out reaches the server').toEqual(['Alpha', 'Beta', 'Moss Home']);
+    await actors.checkpoint('scoped');
+
+    const homeFile = join(dir, home);
+    writeFileSync(homeFile, readFileSync(homeFile, 'utf8').replace('Private:', 'Also [[Loose]]. Private:'));
+    const linked = await syncJson();
+    expect(created(linked), 'a newly linked note comes in on the next pass').toEqual([loose]);
+    const looseId = linked.find((result) => result.action === 'created')!.docId!;
+
+    writeFileSync(homeFile, readFileSync(homeFile, 'utf8').replace('Also [[Loose]]. ', ''));
+    await syncJson();
+    writeFileSync(join(dir, loose), '# Loose\n\nEdited after it left the scope.\n');
+    await syncJson();
+    const served = await ada.context.request.get(`/api/docs/${looseId}/content`, { timeout: 30_000 });
+    expect(served.status(), 'a note that left the scope keeps its doc').toBe(200);
+    expect(await served.text(), 'but its edits stop syncing').not.toContain('Edited after it left the scope.');
+
+    const homeId = first.find((result) => result.file === home)!.docId!;
+    const leak = await moss(['pull', homeId, join('Personal', 'Home copy.md')], env, dir);
+    expect(leak.code, 'a doc is never pulled to a denied path').toBe(1);
+    expect(existsSync(join(dir, 'Personal', 'Home copy.md'))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
