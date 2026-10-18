@@ -4,7 +4,10 @@
 // root's real path, and each name passes moss's filename rules. Every command that reads or writes a local file
 // goes through `confined`.
 import { createHash, randomBytes } from 'node:crypto';
-import { linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
+import {
+  closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  utimesSync, writeFileSync, type Stats,
+} from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CliError } from './errors.ts';
@@ -60,9 +63,36 @@ export const isAllowedName = (name: string): boolean =>
   name !== '' && name !== '.' && name !== '..' && !BAD_NAME.test(name) && Buffer.byteLength(name, 'utf8') <= 255 &&
   ![...name].some((char) => char.charCodeAt(0) <= 0x1f || isUnsafeChar(char.charCodeAt(0)));
 
+/** Each workspace root's real path and identity, recorded when the command selects it (`findRoot`, `pinRoot`). */
+const roots = new Map<string, { real: string; dev: number; ino: number }>();
+
+/** Starts a command: each root is recorded afresh at its first check. */
+export const resetRootPins = (): void => roots.clear();
+
+/** The root's real path, refusing a root moved, replaced or swapped for a link since the command first checked it. */
+function pinnedRoot(root: string): string {
+  const real = realpathSync(root);
+  const { dev, ino } = statSync(real);
+  const pinned = roots.get(root);
+  if (!pinned) roots.set(root, { real, dev, ino });
+  else if (pinned.real !== real || pinned.dev !== dev || pinned.ino !== ino) {
+    throw new CliError(1, `the workspace at ${root} was moved or replaced while moss-multi was working, so nothing more was written`);
+  }
+  return real;
+}
+
+/**
+ * Records `root`'s identity for this command, or refuses it if it no longer matches the one recorded. Call it as soon
+ * as a command selects its root, before any network request or lock wait, so a root swapped meanwhile is never trusted.
+ */
+export function pinRoot(root: string): string {
+  pinnedRoot(root);
+  return root;
+}
+
 /** The nearest existing directory holding `root/rel` must resolve inside the root's real path. */
 function realInside(root: string, rel: string): void {
-  const realRoot = realpathSync(root);
+  const realRoot = pinnedRoot(root);
   let dir = dirname(join(root, rel));
   while (!lstat(dir) && dir !== root) dir = dirname(dir);
   const inner = relative(realRoot, realpathSync(dir));
@@ -91,8 +121,21 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
   noLinks(root, rel);
   realInside(root, rel);
   const temp = join(dirname(target), `.${basename(target)}.${randomBytes(6).toString('hex')}.tmp`);
-  writeFileSync(temp, bytes, { flag: 'wx' });
+  const fd = openSync(temp, 'wx');
+  let made: Stats;
   try {
+    writeFileSync(fd, bytes);
+    made = fstatSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    // A directory swapped for a link (or the root replaced) since the checks above fails closed: check again, and that
+    // the temporary file is still the one made, where it was made, right before the rename.
+    noLinks(root, rel);
+    realInside(root, rel);
+    const placed = lstat(temp);
+    if (!placed || placed.dev !== made.dev || placed.ino !== made.ino) throw new CliError(1, `${rel}: its folder changed while moss-multi was writing, so nothing was written`);
     if (expectHash !== undefined) {
       const current = lstat(target) ? sha256Hex(readFileSync(target)) : null;
       if (current !== expectHash) throw new CliError(1, `${rel} changed while moss-multi was working, so it was not overwritten; run the command again`);
@@ -111,7 +154,7 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
 export function findRoot(start: string): string | null {
   let dir = resolve(start);
   for (;;) {
-    if (isDir(join(dir, STATE_DIR))) return dir;
+    if (isDir(join(dir, STATE_DIR))) return pinRoot(dir);
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -138,8 +181,24 @@ export function confined(root: string, file: string): string {
 /** The bytes of a regular file confined to `root`: a link, a directory or a missing file is refused. */
 export function readConfined(root: string, file: string): Buffer {
   const rel = confined(root, file);
-  if (!lstat(join(root, rel))?.isFile()) throw new CliError(1, `no such file: ${rel}`);
-  return readFileSync(join(root, rel));
+  const path = join(root, rel);
+  if (!lstat(path)?.isFile()) throw new CliError(1, `no such file: ${rel}`);
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    throw new CliError(1, `${rel} changed while moss-multi was reading it (${(error as NodeJS.ErrnoException).code ?? 'error'}); run the command again`);
+  }
+  try {
+    // Opened by name after the checks, so check again: the file read is the one confined, not one swapped in meanwhile.
+    const opened = fstatSync(fd);
+    confined(root, rel);
+    const now = lstat(path);
+    if (!opened.isFile() || !now || now.dev !== opened.dev || now.ino !== opened.ino) throw new CliError(1, `${rel} changed while moss-multi was reading it; run the command again`);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function stateRel(docId: string, name?: string): string {
@@ -380,6 +439,8 @@ export async function lockWorkspace(root: string, waitMs = 5 * 60_000, signal?: 
   const body = JSON.stringify({ pid: process.pid, host: hostname(), nonce, at: Date.now() });
   const deadline = Date.now() + waitMs;
   for (;;) {
+    // A root swapped while this waited is refused before the lock is written through it.
+    pinRoot(root);
     try {
       writeFileSync(path, body, { flag: 'wx' });
       return {

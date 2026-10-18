@@ -57,6 +57,16 @@ function fakeServer() {
     /** What GET .../comments and .../suggestions answer. */
     comments: [] as unknown[],
     suggestions: [] as unknown[],
+    /** The doc's live invites, as GET .../invites lists them; an email share adds one. */
+    invites: [] as { email: string; role: string; url: string }[],
+    /** Answers GET .../invites with this refusal. */
+    refuseInvites: null as null | { status: number; body: unknown },
+    /** Whether an email share adds its invite to the list. */
+    inviteOnShare: true,
+    /** Runs while a GET /api/docs (the doc list) is in flight, before it answers. */
+    onList: null as null | (() => void),
+    /** Answers this one route with a refusal. */
+    refuseRoute: null as null | { method: string; path: string; status: number; body: unknown },
   };
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
@@ -92,10 +102,16 @@ function fakeServer() {
     }
     if (auth !== `Bearer ${state.token}`) return reply(401, { error: 'unauthenticated' });
     if (state.refuse) return reply(state.refuse.status, state.refuse.body);
+    if (state.refuseRoute && state.refuseRoute.method === method && state.refuseRoute.path === url.pathname) {
+      return reply(state.refuseRoute.status, state.refuseRoute.body);
+    }
     if (path === '/api/me') {
       return reply(200, { principal: state.token === KEY ? { type: 'agent', id: 'agent-1', name: 'Scribe' } : { type: 'user', id: 'user-1', name: 'Ada', email: 'ada@example.invalid' } });
     }
-    if (path === '/api/docs' && method === 'GET') return reply(200, { docs });
+    if (path === '/api/docs' && method === 'GET') {
+      state.onList?.();
+      return reply(200, { docs });
+    }
     if (path === '/api/vaults') return reply(200, { vaults: [{ id: 'v', name: 'Home', role: 'owner', owned: true }] });
     if (path === '/api/docs' && method === 'POST' && state.createNew) {
       const { id, filename } = state.createNew;
@@ -145,10 +161,22 @@ function fakeServer() {
       state.pushes.push(body as Record<string, unknown>);
       const next = state.pushAnswers.shift() ?? { status: 200, body: { ok: true, mode: 'edit', applied: 1, failedHunks: [] } };
       // A failed hunk leaves the doc as it was; the fake applies nothing then, nor for a suggestion.
-      const answer = next.body as { ok?: boolean; mode?: string; failedHunks?: string[] };
-      if (next.status === 200 && answer.ok && answer.mode === 'edit' && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
+      const answer = next.body as { ok?: boolean; mode?: string; applied?: number; failedHunks?: string[] };
+      if (next.status === 200 && answer.ok && answer.mode === 'edit' && answer.applied !== 0 && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
       state.onPush?.();
       return reply(next.status, next.body, next.headers);
+    }
+    if (sub === 'members' && method === 'POST') {
+      const share = body as { email?: string; agentId?: string; role: string };
+      if (share.agentId !== undefined) return reply(201, { shared: { agentId: share.agentId, name: 'Scribe', role: share.role } });
+      // As the server does: the email is normalized, and the share is an invite with a personal link.
+      const email = (share.email ?? '').trim().toLowerCase();
+      if (state.inviteOnShare) state.invites.push({ email, role: share.role, url: `${SERVER}/invite/tok-${email.split('@')[0]}` });
+      return reply(201, { shared: { email, role: share.role } });
+    }
+    if (sub === 'invites' && method === 'GET') {
+      if (state.refuseInvites) return reply(state.refuseInvites.status, state.refuseInvites.body);
+      return reply(200, { invites: state.invites });
     }
     if (sub === 'comments' && method === 'GET') return reply(200, { comments: state.comments });
     if (sub === 'suggestions' && method === 'GET') return reply(200, { suggestions: state.suggestions });
@@ -1220,5 +1248,179 @@ describe('stopping watch stops the pass (T7.S8)', () => {
     expect(result!.code, result!.err).toBe(0);
     expect(ms, 'without waiting for the read').toBeLessThan(1_000);
     expect(server.state.pushes, 'no upload after the stop').toEqual([]);
+  });
+});
+
+describe('CLI safety (T7.B3)', () => {
+  const ID_D = '44444444-4444-4444-8444-444444444444';
+  let outside: string;
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'mm-outside-'));
+  });
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(`${dir}-moved`, { recursive: true, force: true });
+  });
+
+  it('logout to an off-loopback http:// server sends nothing, still forgets the session, and says sign-out was not attempted (B359)', async () => {
+    server.state.token = 'session-1';
+    expect((await cli(['login', '--server', SERVER], {})).code).toBe(0);
+    const before = server.seen.length;
+    const result = await cli(['logout'], { MOSS_MULTI_SERVER: 'http://off-loopback.example.invalid' });
+    expect(result.code).toBe(0);
+    expect(server.seen.length, 'no request carries the session in cleartext').toBe(before);
+    expect(readFileSync(join(configDir, 'config.json'), 'utf8')).not.toContain('session-1');
+    expect(result.out).toContain('signed out');
+    expect(result.err).toContain('remote sign-out was not attempted');
+  });
+
+  it('a pull whose workspace directory is swapped for a link while /content is in flight exits 1 and writes nothing outside (B356)', async () => {
+    mkdirSync(join(dir, 'sub'));
+    expect((await cli(['pull', ID_A, 'sub/plan.md'])).code).toBe(0);
+    mkdirSync(join(outside, 'sub'));
+    server.state.onContent = () => {
+      rmSync(join(dir, 'sub'), { recursive: true, force: true });
+      symlinkSync(join(outside, 'sub'), join(dir, 'sub'));
+    };
+    const result = await cli(['pull', ID_A, 'sub/plan.md', '--force']);
+    expect(result.code).toBe(1);
+    expect(readdirSync(join(outside, 'sub'))).toEqual([]);
+  });
+
+  it('a pull whose workspace root is swapped for a link while /content is in flight exits 1 and writes nothing outside (B356)', async () => {
+    mkdirSync(join(dir, 'sub'));
+    expect((await cli(['pull', ID_A, 'sub/plan.md'])).code).toBe(0);
+    // The outside directory looks like the workspace: a state directory and the same sub-directory.
+    mkdirSync(join(outside, '.moss-multi'));
+    mkdirSync(join(outside, 'sub'));
+    server.state.onContent = () => {
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const result = await cli(['pull', ID_A, 'sub/plan.md', '--force']);
+    expect(result.code).toBe(1);
+    expect(readdirSync(join(outside, 'sub'))).toEqual([]);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+  });
+
+  it('a sync whose workspace root is swapped for a link during the doc list exits 1 and reads, uploads and writes nothing outside (B356)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    writeFileSync(join(dir, 'beans.md'), 'Beans, inside.\n');
+    mkdirSync(join(outside, '.moss-multi'));
+    writeFileSync(join(outside, 'secret.md'), 'Outside, never uploaded.\n');
+    server.state.createNew = { id: ID_D, filename: 'secret.md' };
+    server.state.onList = () => {
+      server.state.onList = null;
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const before = server.seen.length;
+    const result = await cli(['sync']);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('moved or replaced');
+    expect(server.seen.slice(before).filter((request) => request.method !== 'GET'), 'nothing uploaded').toEqual([]);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+    expect(readdirSync(outside).sort()).toEqual(['.moss-multi', 'secret.md']);
+  });
+
+  it('a pull with no file whose workspace root is swapped for a link during the doc list exits 1 and writes nothing outside (B356)', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    mkdirSync(join(outside, '.moss-multi'));
+    server.state.onList = () => {
+      server.state.onList = null;
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const result = await cli(['pull', ID_B]);
+    expect(result.code).toBe(1);
+    expect(readdirSync(outside).sort()).toEqual(['.moss-multi']);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+  });
+
+  it('sync --json keeps a server message as sent; the human line escapes it (B358)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    writeFileSync(join(dir, 'beans.md'), 'Beans.\n');
+    server.state.refuseRoute = { method: 'POST', path: '/api/docs', status: 500, body: { message: 'boom\nagain' } };
+    const json = await cli(['sync', '--json']);
+    expect(json.code).toBe(1);
+    const results = JSON.parse(json.out) as { action: string; message?: string }[];
+    expect(results.find((result) => result.action === 'failed')?.message).toContain('boom\nagain');
+    const human = await cli(['sync']);
+    expect(human.code).toBe(1);
+    const failed = human.err.split('\n').filter((line) => line.startsWith('failed'));
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('boom\\nagain');
+  });
+
+  it('a server title or message with a line break prints as one line with a visible \\n; --json keeps the title (B358)', async () => {
+    const forged = 'x\nsigned in as forged';
+    server.docs.push({ id: ID_D, title: forged, filename: 'x.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 0 });
+    const listed = await cli(['list']);
+    expect(listed.code).toBe(0);
+    const lines = listed.out.trimEnd().split('\n');
+    expect(lines).toHaveLength(server.docs.length);
+    expect(lines).toContain(`${ID_D}  x\\nsigned in as forged`);
+    expect(lines.some((line) => line.startsWith('signed in as'))).toBe(false);
+    const json = await cli(['list', '--json']);
+    expect((JSON.parse(json.out) as { id: string; title: string }[]).find((doc) => doc.id === ID_D)?.title).toBe(forged);
+    server.state.refuse = { status: 500, body: { message: 'boom\nsigned in as forged\r\tagain' } };
+    const refused = await cli(['history', ID_A]);
+    expect(refused.code).toBe(1);
+    expect(refused.err.split('\n')).toHaveLength(1);
+    expect(refused.err).toContain('boom\\nsigned in as forged\\r\\tagain');
+  });
+
+  it('share by email prints the invite link and does not claim access was granted (B361)', async () => {
+    const result = await cli(['share', ID_A, ' Ben@Example.invalid ', '--role', 'edit']);
+    expect(result.code, result.err).toBe(0);
+    expect(result.out).toContain(`${SERVER}/invite/tok-ben`);
+    expect(result.out).toContain('once');
+    expect(result.out).not.toContain('shared with');
+    expect(server.seen.at(-1)).toMatchObject({ method: 'GET', path: `/api/docs/${ID_A}/invites` });
+  });
+
+  it('share by email whose link cannot be read reports the share as incomplete (B361)', async () => {
+    server.state.refuseInvites = { status: 403, body: { error: 'forbidden', message: 'Only the owner can see invite links.' } };
+    const refused = await cli(['share', ID_A, 'ben@example.invalid']);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain('incomplete');
+    expect(refused.out).not.toContain('shared with');
+    server.state.refuseInvites = null;
+    // An invite list without this email's entry is incomplete too.
+    server.state.inviteOnShare = false;
+    const missing = await cli(['share', ID_A, 'cy@example.invalid']);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain('incomplete');
+  });
+
+  it('share with an agent id is unchanged and reads no invite (B361)', async () => {
+    const result = await cli(['share', ID_A, 'agent-7', '--role', 'comment']);
+    expect(result.code).toBe(0);
+    expect(result.out).toBe('shared with agent-7 as commenter\n');
+    expect(server.seen.some((call) => call.path.endsWith('/invites'))).toBe(false);
+  });
+
+  it('a --suggest push answered edit with nothing applied says nothing was suggested and keeps file and base (B353)', async () => {
+    await cli(['pull', ID_A, 'plan.md']);
+    const base = readFileSync(join(dir, '.moss-multi', ID_A, 'base.md'));
+    const meta = readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json'));
+    writeFileSync(join(dir, 'plan.md'), 'suggested text');
+    server.state.pushAnswers.push({ status: 200, body: { ok: true, mode: 'edit', applied: 0, failedHunks: ['-old\n+new'] } });
+    const hunks = await cli(['push', 'plan.md', '--suggest']);
+    expect(hunks.code).toBe(2);
+    expect(`${hunks.out}${hunks.err}`).toContain('nothing was suggested');
+    expect(`${hunks.out}${hunks.err}`).not.toContain('partly applied');
+    expect(hunks.err).toContain('-old');
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('suggested text');
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'base.md')).equals(base)).toBe(true);
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json')).equals(meta)).toBe(true);
+    server.state.pushAnswers.push({ status: 200, body: { ok: true, mode: 'edit', applied: 0, failedHunks: [] } });
+    const clean = await cli(['push', 'plan.md', '--suggest']);
+    expect(clean.code).toBe(0);
+    expect(clean.out).toContain('nothing was suggested');
+    expect(clean.out).not.toContain('pushed');
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('suggested text');
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'base.md')).equals(base)).toBe(true);
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json')).equals(meta)).toBe(true);
   });
 });
