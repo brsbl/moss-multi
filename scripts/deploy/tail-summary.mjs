@@ -3,11 +3,12 @@
 // one unfiltered `wrangler tail --format json` and reduces each failure to counts under fixed names, so the public log
 // and artifact never hold a URL, header, log line or error text (docs/DEPLOY.md). An isolate that passed its memory or
 // CPU limit resets every Durable Object it hosts, so the minutes it happened are kept to set against the failures.
-// The same stream gives SP9's probe uploads (ProbeSummary). One tail only: with a second, header-filtered tail the
-// first saw only the probe's events (runs 39116654098, 39130102453).
-//   node scripts/deploy/tail-summary.mjs run OUT.json [--probe PROBE.json] -- <command...>
-//                                          (runs the tail; SIGTERM ends it and writes OUT and PROBE)
-//   node scripts/deploy/tail-summary.mjs check-probe PROBE.json   (fails without the near-cap upload's telemetry)
+// SP9's probe uploads come from a header-filtered tail that runs alone, before it (ProbeSummary): unfiltered, a tail
+// sampled the near-cap upload away (run 39145040057), and beside a filtered tail an unfiltered one saw only the
+// filtered one's events (runs 39116654098, 39130102453).
+//   node scripts/deploy/tail-summary.mjs run OUT.json -- <command...>     (runs the tail; SIGTERM ends it, writes OUT)
+//   node scripts/deploy/tail-summary.mjs probe PROBE.json -- <command...> (the same for the probe uploads)
+//   node scripts/deploy/tail-summary.mjs check-probe PROBE.json          (fails without the near-cap upload's telemetry)
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -153,8 +154,8 @@ export class TailSummary {
 }
 
 /**
- * The header j11-media's SP9 near-cap probe sends on each upload, its value the upload's label; the tail
- * job picks the probe uploads out of its one unfiltered tail by it.
+ * The header j11-media's SP9 near-cap probe sends on each upload, its value the upload's label; the sp9
+ * job's tail filters on it (`--header`).
  */
 export const SP9_PROBE_HEADER = 'x-sp9-probe';
 const PROBE_LABELS = new Set(['near-cap', 'truncated']);
@@ -235,46 +236,75 @@ export function probeProblems(result) {
 }
 
 /**
- * Runs `command` (the tail) and summarizes its stdout until it exits or this process gets SIGTERM or SIGINT, then
- * writes each summary to its file. Its stderr is counted, never printed.
+ * Runs `command` (the tail) and summarizes its stdout until this process gets SIGTERM or SIGINT, then writes each
+ * summary to its file. A tail that ends on its own (wrangler's ended about two hours into a suite, exit 0) is started
+ * again, up to `maxRestarts` times, and the restarts are counted. Its stderr is counted, never printed.
  * @param {[string, { push(chunk: string): void, result(): object }][]} outputs
  * @param {string[]} command
+ * @param {{ maxRestarts?: number, restartDelayMs?: number }} [options]
+ * @returns {Promise<void>} settles once the summaries are written
  */
-export function runTail(outputs, command) {
+export function runTail(outputs, command, { maxRestarts = 50, restartDelayMs = 2_000 } = {}) {
   let stderrLines = 0;
-  const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-  child.stdout.setEncoding('utf8').on('data', (chunk) => {
-    for (const [, summary] of outputs) summary.push(chunk);
+  let restarts = 0;
+  let stopping = false;
+  /** @type {import('node:child_process').ChildProcess} */
+  let child;
+  /** @type {() => void} */
+  let settle = () => {};
+  const done = new Promise((resolve) => {
+    settle = () => resolve(undefined);
   });
-  child.stderr.setEncoding('utf8').on('data', (chunk) => {
-    stderrLines += chunk.split('\n').length - 1;
-  });
-  let done = false;
+  let finished = false;
+  /** @param {string} exit */
   const finish = (exit) => {
-    if (done) return;
-    done = true;
-    for (const [out, summary] of outputs) writeFileSync(out, `${JSON.stringify({ ...summary.result(), tailExit: exit, tailStderrLines: stderrLines }, null, 2)}\n`);
+    if (finished) return;
+    finished = true;
+    process.off('SIGTERM', stop);
+    process.off('SIGINT', stop);
+    for (const [out, summary] of outputs) {
+      writeFileSync(out, `${JSON.stringify({ ...summary.result(), tailExit: exit, tailRestarts: restarts, tailStderrLines: stderrLines }, null, 2)}\n`);
+    }
+    settle();
   };
-  const stop = () => {
+  const start = () => {
+    if (stopping) return finish('stopped');
+    child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout?.setEncoding('utf8').on('data', (chunk) => {
+      for (const [, summary] of outputs) summary.push(chunk);
+    });
+    child.stderr?.setEncoding('utf8').on('data', (chunk) => {
+      stderrLines += chunk.split('\n').length - 1;
+    });
+    child.on('exit', (code, signal) => {
+      if (stopping) return finish('stopped');
+      if (restarts < maxRestarts) {
+        restarts += 1;
+        setTimeout(start, restartDelayMs);
+        return;
+      }
+      finish(signal ? 'stopped' : String(code));
+    });
+    child.on('error', () => finish('failed to start'));
+  };
+  function stop() {
+    stopping = true;
+    // Between a tail's end and its restart there is no child to wait for.
+    if (child.exitCode !== null || child.signalCode !== null) return finish('stopped');
     child.kill('SIGTERM');
     setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
-  };
+  }
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
-  child.on('exit', (code, signal) => finish(signal ? 'stopped' : String(code)));
-  child.on('error', () => finish('failed to start'));
+  start();
+  return done;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [mode, out, ...rest] = process.argv.slice(2);
-  const probe = rest[0] === '--probe' ? rest[1] : undefined;
-  const [dashes, ...command] = probe ? rest.slice(2) : rest;
-  if (mode === 'run' && out && dashes === '--' && command.length > 0) {
-    /** @type {[string, { push(chunk: string): void, result(): object }][]} */
-    const outputs = [[out, new TailSummary()]];
-    if (probe) outputs.push([probe, new ProbeSummary()]);
-    runTail(outputs, command);
-  } else if (mode === 'check-probe' && out && rest.length === 0) {
+  const [mode, out, dashes, ...command] = process.argv.slice(2);
+  if ((mode === 'run' || mode === 'probe') && out && dashes === '--' && command.length > 0) {
+    runTail([[out, mode === 'probe' ? new ProbeSummary() : new TailSummary()]], command);
+  } else if (mode === 'check-probe' && out && dashes === undefined) {
     let problems;
     try {
       problems = probeProblems(JSON.parse(readFileSync(out, 'utf8')));
@@ -284,7 +314,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     for (const problem of problems) console.error(`::error::SP9 telemetry: ${problem}`);
     process.exitCode = problems.length ? 1 : 0;
   } else {
-    console.error('usage: tail-summary.mjs run OUT.json [--probe PROBE.json] -- <command...> | check-probe PROBE.json');
+    console.error('usage: tail-summary.mjs run|probe OUT.json -- <command...> | check-probe PROBE.json');
     process.exitCode = 1;
   }
 }
