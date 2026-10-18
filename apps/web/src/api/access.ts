@@ -182,28 +182,47 @@ export async function actorLive(db: D1Database, actor: WriteActor): Promise<bool
 }
 
 /**
- * SQL that holds while doc `?{doc}` is live and the actor bound at `?{at}`… (writeActorArgs) can still edit it (A§8):
- * its session or key is live, and it owns the vault, holds an editor or owner grant on the doc or a folder of its
- * chain, or presents a live editor link covering the doc. A write that conditions on it loses to a revocation, a
- * demotion or a trash that commits first, whatever was resolved before the write's body arrived.
+ * SQL that holds while doc `?{doc}` is live and the actor bound at `?{at}`… (writeActorArgs) still reaches it (A§8):
+ * its session or key is live, and it owns the vault, holds a grant on the doc or a folder of its chain, or presents
+ * the live link `token` covering the doc; `edit` narrows grants to editor or owner and links to editor.
  */
-export const editsLiveDoc = (doc: Arg, at: number) => {
-  const [id, user, token] = [1, 2, 4].map((n) => `?${at + n}`);
+const liveDocReach = (doc: Arg, at: number, token: Arg, edit: boolean) => {
+  const [id, user] = [1, 2].map((n) => `?${at + n}`);
   const d = arg(doc);
+  const t = arg(token);
+  const grant = edit ? " AND role IN ('editor', 'owner')" : '';
+  const memberGrant = edit ? " AND m.role IN ('editor', 'owner')" : '';
+  const link = edit ? " AND role = 'editor'" : '';
+  const folderLink = edit ? " AND l.role = 'editor'" : '';
   return `(EXISTS (SELECT 1 FROM docs WHERE id = ${d} AND deleted_at IS NULL)
   AND ${liveCredential(at)}
   AND (EXISTS (SELECT 1 FROM docs WHERE id = ${d} AND owner_user_id = ${user})
-    OR EXISTS (SELECT 1 FROM doc_members WHERE doc_id = ${d} AND principal_id IN (${id}, ${user}) AND role IN ('editor', 'owner'))
-    OR EXISTS (SELECT 1 FROM share_links WHERE token = ${token} AND revoked_at IS NULL AND role = 'editor' AND target_type = 'doc' AND target_id = ${d})
+    OR EXISTS (SELECT 1 FROM doc_members WHERE doc_id = ${d} AND principal_id IN (${id}, ${user})${grant})
+    OR EXISTS (SELECT 1 FROM share_links WHERE token = ${t} AND revoked_at IS NULL${link} AND target_type = 'doc' AND target_id = ${d})
     OR EXISTS (WITH RECURSIVE chain(id, parent_id, depth) AS (
         SELECT f.id, f.parent_id, 1 FROM folders f JOIN docs ON docs.folder_id = f.id WHERE docs.id = ${d}
         UNION ALL SELECT f.id, f.parent_id, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
           WHERE chain.depth < ${MAX_FOLDER_DEPTH}
       ) SELECT 1 FROM chain WHERE
-        EXISTS (SELECT 1 FROM folder_members m WHERE m.folder_id = chain.id AND m.principal_id IN (${id}, ${user}) AND m.role IN ('editor', 'owner'))
-        OR EXISTS (SELECT 1 FROM share_links l WHERE l.token = ${token} AND l.revoked_at IS NULL AND l.role = 'editor'
+        EXISTS (SELECT 1 FROM folder_members m WHERE m.folder_id = chain.id AND m.principal_id IN (${id}, ${user})${memberGrant})
+        OR EXISTS (SELECT 1 FROM share_links l WHERE l.token = ${t} AND l.revoked_at IS NULL${folderLink}
           AND l.target_type = 'folder' AND l.target_id = chain.id))))`;
 };
+
+/**
+ * SQL that holds while doc `?{doc}` is live and the actor bound at `?{at}`… (writeActorArgs) can still edit it (A§8):
+ * its session or key is live, and it owns the vault, holds an editor or owner grant on the doc or a folder of its
+ * chain, or presents a live editor link covering the doc. A write that conditions on it loses to a revocation, a
+ * demotion or a trash that commits first, whatever was resolved before the write's body arrived.
+ */
+export const editsLiveDoc = (doc: Arg, at: number) => liveDocReach(doc, at, at + 4, true);
+
+/**
+ * SQL that holds while doc `?{doc}` is live and the actor bound at `?{at}`… can still read it, through ownership, any
+ * grant, or the live link bound at `?{token}` (the actor's own by default). A write that copies from the doc conditions
+ * on it, so a revocation or trash of the source that commits first leaves the copy unwritten.
+ */
+export const readsLiveDoc = (doc: Arg, at: number, token: Arg = at + 4) => liveDocReach(doc, at, token, false);
 
 /**
  * editsLiveDoc for a folder: SQL that holds while folder `?{folder}` is live and the actor bound at `?{at}`… can still

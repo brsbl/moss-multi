@@ -1,0 +1,361 @@
+// @vitest-environment jsdom
+// A bound composer's submit is kept as a retryable draft until the server takes it (comments.md §4, §12): a failed
+// create, reply or edit keeps its text and its anchor, parent or comment, a retry reuses the proposed id so it lands
+// exactly once, and a success clears only its own draft. A new submit is its own write: a second reply or a revised
+// text is sent under a new id, never folded into a draft still in flight or one whose answer was lost.
+import type { Binding } from '@lexical/yjs';
+import { createEditor } from 'lexical';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
+import { rememberRole } from '../access.ts';
+import { carrying, editNeedsSave, failedDraftText, failedReplies, mutate, onDraftFailed, submitted } from './adapter.ts';
+import { createComment, draftOf } from './api.ts';
+import type { Minted } from './mint.ts';
+import { modelFor } from './model.ts';
+import { bindCommentPaint, markShared } from './paint.ts';
+
+type Mode = 'ok' | 'network-before' | 'network-after' | `refuse:${string}`;
+
+/** The comment routes as a server that keeps each proposed id once. */
+class FakeServer {
+  readonly landed = new Map<string, Record<string, unknown>>();
+  readonly edits: { id: string; text: string }[] = [];
+  readonly calls: { method: string; path: string; body: Record<string, unknown> }[] = [];
+  mode: Mode = 'ok';
+  /** While set, each request waits for it before the server sees it. */
+  gate: Promise<void> | null = null;
+
+  fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const path = new URL(String(input), 'http://localhost').pathname;
+    const method = init?.method ?? 'GET';
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    this.calls.push({ method, path, body });
+    if (this.gate) await this.gate;
+    if (this.mode === 'network-before') throw new TypeError('Failed to fetch');
+    if (this.mode.startsWith('refuse:')) return Response.json({ error: this.mode.slice('refuse:'.length) }, { status: 429 });
+    if (method === 'POST' && path.endsWith('/comments')) {
+      const id = String(body.id);
+      if (this.landed.has(id)) return Response.json({ error: 'exists' }, { status: 409 });
+      this.landed.set(id, body);
+    } else if (method === 'PATCH') {
+      this.edits.push({ id: decodeURIComponent(path.split('/').pop() ?? ''), text: String(body.text) });
+    }
+    if (this.mode === 'network-after') throw new TypeError('Failed to fetch');
+    return Response.json({}, { status: 201 });
+  };
+}
+
+let server: FakeServer;
+beforeEach(() => {
+  server = new FakeServer();
+  vi.stubGlobal('fetch', server.fetch);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+const MINTED: Minted = { kind: 'text', start: 'c3RhcnQ=', end: 'ZW5k', quote: 'quick brown' };
+
+/** An editor a pane binds to `docId` with a painter, at `role`. */
+function boundEditor(docId: string, role = 'commenter') {
+  const doc = new Y.Doc();
+  const editor = createEditor();
+  rememberRole(docId, role);
+  markShared(editor, docId);
+  bindCommentPaint(editor, { doc, id: docId } as unknown as Binding);
+  return { doc, editor };
+}
+
+it('a root comment that fails on the network keeps its text and anchor, and its retry lands once', async () => {
+  const doc = new Y.Doc();
+  server.mode = 'network-before';
+  const id = createComment('doc-root', doc, MINTED, 'Is the fox brown?');
+  await vi.waitFor(() => expect(draftOf('doc-root', 'root')?.failed, 'the failure is recorded').toBe('network'));
+  expect(draftOf('doc-root', 'root'), 'the draft keeps the text and the minted anchor').toMatchObject({ id, text: 'Is the fox brown?', anchor: MINTED });
+  expect(modelFor(doc).record(id), 'nothing shows as posted').toBeUndefined();
+
+  // The answer is lost after the server took it: the retry must not post a second comment.
+  server.mode = 'network-after';
+  expect(createComment('doc-root', doc, MINTED, 'Is the fox brown?'), 'the retry reuses the proposed id').toBe(id);
+  await vi.waitFor(() => expect(draftOf('doc-root', 'root')?.failed).toBe('network'));
+  server.mode = 'ok';
+  expect(createComment('doc-root', doc, MINTED, 'Is the fox brown?')).toBe(id);
+  await vi.waitFor(() => expect(draftOf('doc-root', 'root'), 'the success clears the draft').toBeUndefined());
+  expect([...server.landed.keys()], 'one comment landed').toEqual([id]);
+  expect(server.calls.filter((call) => call.method === 'POST').map((call) => call.body.id), 'every attempt carried the same id').toEqual([id, id, id]);
+});
+
+it('a refused root comment keeps its draft; a new selection mints a new comment', async () => {
+  const doc = new Y.Doc();
+  server.mode = 'refuse:rate-limited';
+  const id = createComment('doc-root-2', doc, MINTED, 'Too fast');
+  await vi.waitFor(() => expect(draftOf('doc-root-2', 'root')?.failed).toBe('rate-limited'));
+  expect(draftOf('doc-root-2', 'root')).toMatchObject({ id, text: 'Too fast', anchor: MINTED });
+  server.mode = 'ok';
+  const other: Minted = { ...MINTED, start: 'b3RoZXI=' };
+  const next = createComment('doc-root-2', doc, other, 'Elsewhere');
+  expect(next, 'another anchor is another comment').not.toBe(id);
+  await vi.waitFor(() => expect(server.landed.has(next)).toBe(true));
+  await vi.waitFor(() => expect(draftOf('doc-root-2', 'root'), 'the other anchor keeps its failed draft').toMatchObject({ id, failed: 'rate-limited' }));
+  expect([...server.landed.keys()]).toEqual([next]);
+});
+
+it('a retry with revised text after a lost answer saves the revision, for a root comment and a reply', async () => {
+  const { doc, editor } = boundEditor('doc-revise');
+  server.mode = 'network-after';
+  const first = createComment('doc-revise', doc, MINTED, 'Version one');
+  await vi.waitFor(() => expect(draftOf('doc-revise', 'root')?.failed).toBe('network'));
+  server.mode = 'ok';
+  const second = createComment('doc-revise', doc, MINTED, 'Version two');
+  expect(second, 'a revised text is a new write').not.toBe(first);
+  await vi.waitFor(() => expect(draftOf('doc-revise', 'root'), 'the revision supersedes the failed draft').toBeUndefined());
+  expect(server.landed.get(second), 'the revision is stored').toMatchObject({ text: 'Version two' });
+
+  server.mode = 'network-after';
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Reply one' });
+  expect(await submitted('doc-revise', 'reply:p1')).toEqual({ ok: false, error: 'network' });
+  server.mode = 'ok';
+  // The box was given the failed reply's text, and the revision replaces it.
+  const offered = failedReplies('doc-revise', 'reply:p1').map((draft) => draft.id);
+  carrying('doc-revise', 'p1', offered, () => mutate(editor, { type: 'reply', parentId: 'p1', text: 'Reply two' }));
+  expect(await submitted('doc-revise', 'reply:p1')).toEqual({ ok: true });
+  expect([...server.landed.values()].map((body) => body.text), 'every text the server was sent is stored once')
+    .toEqual(['Version one', 'Version two', 'Reply one', 'Reply two']);
+  expect(draftOf('doc-revise', 'reply:p1')).toBeUndefined();
+});
+
+it('a second reply sent while the first is in flight is its own reply, and both land', async () => {
+  const { editor } = boundEditor('doc-two-replies');
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'Slow reply A' })).toBe(true);
+  const a = submitted('doc-two-replies', 'reply:p1');
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'Quick reply B' })).toBe(true);
+  const b = submitted('doc-two-replies', 'reply:p1');
+  expect(b, 'the second submit has its own answer').not.toBe(a);
+  open();
+  expect(await a).toEqual({ ok: true });
+  expect(await b).toEqual({ ok: true });
+  const posted = server.calls.filter((call) => call.method === 'POST').map((call) => call.body);
+  expect(posted.map((body) => body.text)).toEqual(['Slow reply A', 'Quick reply B']);
+  expect(new Set(posted.map((body) => body.id)).size, 'under two ids').toBe(2);
+  expect(draftOf('doc-two-replies', 'reply:p1')).toBeUndefined();
+});
+
+it('a root resubmit while the first is in flight: the same text posts once, a revised text posts the revision', async () => {
+  const doc = new Y.Doc();
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  const id = createComment('doc-inflight', doc, MINTED, 'Held');
+  expect(createComment('doc-inflight', doc, MINTED, 'Held'), 'a double submit is one comment').toBe(id);
+  const revised = createComment('doc-inflight', doc, MINTED, 'Held plus more');
+  expect(revised).not.toBe(id);
+  open();
+  await vi.waitFor(() => expect(draftOf('doc-inflight', 'root')).toBeUndefined());
+  expect(server.calls.filter((call) => call.method === 'POST').map((call) => call.body.text)).toEqual(['Held', 'Held plus more']);
+});
+
+it("a failed reply's and edit's text stays readable for the composer until a later submit in its slot", async () => {
+  const { editor } = boundEditor('doc-recover');
+  // Two replies in flight together, then both fail.
+  server.mode = 'network-before';
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost A' });
+  const a = submitted('doc-recover', 'reply:p1');
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost B' });
+  const b = submitted('doc-recover', 'reply:p1');
+  open();
+  await Promise.all([a, b]);
+  server.gate = null;
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Lost edit' });
+  await submitted('doc-recover', 'edit:c1');
+  expect(failedDraftText('doc-recover', 'reply:p1'), 'both failed replies come back').toBe('Lost A\n\nLost B');
+  expect(failedDraftText('doc-recover', 'reply:p2')).toBeNull();
+  expect(failedDraftText('doc-recover', 'edit:c1')).toBe('Lost edit');
+  server.mode = 'ok';
+  const offered = failedReplies('doc-recover', 'reply:p1').map((draft) => draft.id);
+  carrying('doc-recover', 'p1', offered, () => mutate(editor, { type: 'reply', parentId: 'p1', text: 'Lost A\n\nLost B' }));
+  expect(await submitted('doc-recover', 'reply:p1')).toEqual({ ok: true });
+  expect(failedDraftText('doc-recover', 'reply:p1'), 'the resubmit took both').toBeNull();
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Found edit' });
+  expect(await submitted('doc-recover', 'edit:c1')).toEqual({ ok: true });
+  expect(failedDraftText('doc-recover', 'edit:c1')).toBeNull();
+});
+
+it('a reply that fails keeps its text and parent; the bound composer gets the answer and its retry lands once', async () => {
+  const { editor } = boundEditor('doc-reply');
+  server.mode = 'refuse:rate-limited';
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'A reply' }), 'the command signature still answers sent').toBe(true);
+  const first = submitted('doc-reply', 'reply:p1');
+  expect(first, 'the composer gets the in-flight answer').not.toBeNull();
+  expect(await first).toEqual({ ok: false, error: 'rate-limited' });
+  const draft = draftOf('doc-reply', 'reply:p1');
+  expect(draft, 'the reply draft survives').toMatchObject({ text: 'A reply', parentId: 'p1', failed: 'rate-limited' });
+  expect(submitted('doc-reply', 'reply:p1'), 'nothing is in flight after the failure').toBeNull();
+
+  server.mode = 'network-after';
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'A reply' })).toBe(true);
+  expect(await submitted('doc-reply', 'reply:p1')).toEqual({ ok: false, error: 'network' });
+  server.mode = 'ok';
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'A reply' })).toBe(true);
+  expect(await submitted('doc-reply', 'reply:p1')).toEqual({ ok: true });
+  expect(draftOf('doc-reply', 'reply:p1'), 'the success clears it').toBeUndefined();
+  expect([...server.landed.keys()], 'one reply landed, under the first proposed id').toEqual([draft?.id]);
+  expect(server.landed.get(draft?.id ?? '')).toMatchObject({ parentId: 'p1', text: 'A reply' });
+});
+
+it('an edit that fails keeps its text for its comment, and the retry saves it', async () => {
+  const { editor } = boundEditor('doc-edit');
+  server.mode = 'network-before';
+  expect(mutate(editor, { type: 'edit', id: 'c1', text: 'Better words' })).toBe(true);
+  expect(await submitted('doc-edit', 'edit:c1')).toEqual({ ok: false, error: 'network' });
+  expect(draftOf('doc-edit', 'edit:c1'), 'the edit draft survives').toMatchObject({ id: 'c1', text: 'Better words', failed: 'network' });
+  server.mode = 'refuse:rate-limited';
+  expect(mutate(editor, { type: 'edit', id: 'c1', text: 'Better words' })).toBe(true);
+  expect(await submitted('doc-edit', 'edit:c1')).toEqual({ ok: false, error: 'rate-limited' });
+  expect(draftOf('doc-edit', 'edit:c1')).toMatchObject({ text: 'Better words', failed: 'rate-limited' });
+  server.mode = 'ok';
+  expect(mutate(editor, { type: 'edit', id: 'c1', text: 'Better words' })).toBe(true);
+  expect(await submitted('doc-edit', 'edit:c1')).toEqual({ ok: true });
+  expect(draftOf('doc-edit', 'edit:c1')).toBeUndefined();
+  expect(server.edits).toEqual([{ id: 'c1', text: 'Better words' }]);
+});
+
+it("overlapping saves of one comment's edit reach the server in order, so the later text is what it stores", async () => {
+  const { editor } = boundEditor('doc-edit-order');
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision A' });
+  const a = submitted('doc-edit-order', 'edit:c1');
+  server.gate = null;
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision B' });
+  const b = submitted('doc-edit-order', 'edit:c1');
+  await Promise.resolve();
+  expect(server.calls.filter((call) => call.method === 'PATCH').length, 'B waits for A to be answered').toBe(1);
+  open();
+  expect(await a).toEqual({ ok: true });
+  expect(await b).toEqual({ ok: true });
+  expect(server.edits.map((edit) => edit.text), 'the server stores A, then B').toEqual(['Revision A', 'Revision B']);
+  expect(draftOf('doc-edit-order', 'edit:c1')).toBeUndefined();
+});
+
+it("a later save that lands supersedes an earlier failed edit of the same comment", async () => {
+  const { editor } = boundEditor('doc-edit-supersede');
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  // Revision A waits, then fails on the network; anything else reaches the server.
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(init?.body).includes('Revision A')) {
+      await gate;
+      throw new TypeError('Failed to fetch');
+    }
+    return server.fetch(input, init);
+  });
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision A' });
+  const a = submitted('doc-edit-supersede', 'edit:c1');
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Revision B' });
+  const b = submitted('doc-edit-supersede', 'edit:c1');
+  open();
+  expect(await a).toEqual({ ok: false, error: 'network' });
+  expect(await b).toEqual({ ok: true });
+  expect(server.edits.map((edit) => edit.text)).toEqual(['Revision B']);
+  expect(failedDraftText('doc-edit-supersede', 'edit:c1'), 'no stale revision is offered after B landed').toBeNull();
+});
+
+it('a successful save clears only its own draft', async () => {
+  const { doc, editor } = boundEditor('doc-own');
+  server.mode = 'refuse:rate-limited';
+  createComment('doc-own', doc, MINTED, 'Root draft');
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'First reply' });
+  mutate(editor, { type: 'reply', parentId: 'p2', text: 'Second reply' });
+  mutate(editor, { type: 'edit', id: 'c9', text: 'An edit' });
+  await vi.waitFor(() => expect(draftOf('doc-own', 'edit:c9')?.failed).toBe('rate-limited'));
+  server.mode = 'ok';
+  mutate(editor, { type: 'reply', parentId: 'p2', text: 'Second reply' });
+  expect(await submitted('doc-own', 'reply:p2')).toEqual({ ok: true });
+  expect(draftOf('doc-own', 'reply:p2')).toBeUndefined();
+  expect(draftOf('doc-own', 'reply:p1'), 'the other reply keeps its draft').toMatchObject({ text: 'First reply' });
+  expect(draftOf('doc-own', 'root'), 'and the root its own').toMatchObject({ text: 'Root draft' });
+  expect(draftOf('doc-own', 'edit:c9'), 'and the edit its own').toMatchObject({ text: 'An edit' });
+});
+
+it('a viewer submits nothing and keeps no draft', () => {
+  const { editor } = boundEditor('doc-viewer', 'viewer');
+  expect(mutate(editor, { type: 'reply', parentId: 'p1', text: 'No' })).toBe(false);
+  expect(submitted('doc-viewer', 'reply:p1')).toBeNull();
+  expect(draftOf('doc-viewer', 'reply:p1')).toBeUndefined();
+  expect(server.calls).toEqual([]);
+});
+
+it('a reply that fails is announced to whoever listens on its thread then, not only to the box that sent it', async () => {
+  const { editor } = boundEditor('doc-late-fail');
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  server.mode = 'network-before';
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Slow reply' });
+  const answer = submitted('doc-late-fail', 'reply:p1')!;
+  // The thread closed and reopened meanwhile: a new box listens.
+  const heard: string[][] = [];
+  const stop = onDraftFailed('doc-late-fail', 'reply:p1', () => heard.push(failedReplies('doc-late-fail', 'reply:p1').map((draft) => draft.text)));
+  open();
+  expect(await answer).toEqual({ ok: false, error: 'network' });
+  expect(heard, 'the open box hears the failure with its text').toEqual([['Slow reply']]);
+  stop();
+  server.gate = new Promise((resolve) => { open = resolve; });
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Another' });
+  open();
+  await submitted('doc-late-fail', 'reply:p1');
+  expect(heard, 'a closed box hears nothing').toHaveLength(1);
+});
+
+it("an edit needs a save when it differs from the stored text or what this tab's saves leave, or a save of it failed", async () => {
+  const { editor } = boundEditor('doc-revert');
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'nothing to save').toBe(false);
+  let open = () => {};
+  server.gate = new Promise((resolve) => { open = resolve; });
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Changed' });
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'a revert over the save in flight is sent').toBe(true);
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Original' });
+  open();
+  expect(await submitted('doc-revert', 'edit:c1')).toEqual({ ok: true });
+  expect(server.edits.map((edit) => edit.text), 'the revert is stored last').toEqual(['Changed', 'Original']);
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'the landed revert needs nothing more').toBe(false);
+  expect(editNeedsSave('doc-revert', 'c1', 'Changed', 'Changed'), 'a stored text this tab did not save last is sent again').toBe(true);
+
+  // A failed save, resubmitted unchanged: it is sent again, and lands.
+  server.mode = 'network-before';
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Retry me' });
+  expect(await submitted('doc-revert', 'edit:c1')).toEqual({ ok: false, error: 'network' });
+  expect(editNeedsSave('doc-revert', 'c1', 'Retry me', 'Original'), 'the failed text differs from the stored one').toBe(true);
+  expect(editNeedsSave('doc-revert', 'c1', 'Original', 'Original'), 'and a failed save is pending even for the stored text').toBe(true);
+  server.mode = 'ok';
+  mutate(editor, { type: 'edit', id: 'c1', text: 'Retry me' });
+  expect(await submitted('doc-revert', 'edit:c1')).toEqual({ ok: true });
+  expect(server.edits.at(-1)).toEqual({ id: 'c1', text: 'Retry me' });
+  expect(editNeedsSave('doc-revert', 'c1', 'Retry me', 'Retry me')).toBe(false);
+});
+
+it('a reply replaces only the failed replies its box carries, so one whose text is inside another stays to be offered', async () => {
+  const { editor } = boundEditor('doc-carry');
+  server.mode = 'network-before';
+  for (const text of ['not ready', 'ready', 'Thanks']) {
+    mutate(editor, { type: 'reply', parentId: 'p1', text });
+    await submitted('doc-carry', 'reply:p1');
+  }
+  const [notReady, ready, thanks] = failedReplies('doc-carry', 'reply:p1');
+  expect([notReady?.text, ready?.text, thanks?.text]).toEqual(['not ready', 'ready', 'Thanks']);
+  server.mode = 'ok';
+  // The box was given only "not ready"; its text holds "ready" and "Thanks" as words, not as the drafts.
+  carrying('doc-carry', 'p1', [notReady!.id], () => mutate(editor, { type: 'reply', parentId: 'p1', text: 'not ready\n\nThanks again' }));
+  expect(await submitted('doc-carry', 'reply:p1')).toEqual({ ok: true });
+  expect(failedReplies('doc-carry', 'reply:p1').map((draft) => draft.text), 'the drafts it never carried stay').toEqual(['ready', 'Thanks']);
+  // A reply sent without a box that carries drafts replaces none, unless it resubmits one's exact text.
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Something else' });
+  expect(await submitted('doc-carry', 'reply:p1')).toEqual({ ok: true });
+  expect(failedReplies('doc-carry', 'reply:p1')).toHaveLength(2);
+  mutate(editor, { type: 'reply', parentId: 'p1', text: 'Thanks' });
+  expect(await submitted('doc-carry', 'reply:p1')).toEqual({ ok: true });
+  expect(failedReplies('doc-carry', 'reply:p1').map((draft) => draft.text)).toEqual(['ready']);
+  expect(server.landed.has(thanks!.id), 'the exact resubmit reused its id').toBe(true);
+});
