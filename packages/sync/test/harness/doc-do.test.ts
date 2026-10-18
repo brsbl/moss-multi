@@ -662,12 +662,15 @@ describe('admission and the write classifier', () => {
       expect(await answer(ada, 'A')).toBe('reserved');
       await send(ada, 'A', a.slice(0, 2));
       await ada.drop();
+      await ben.drop();
       // Ada's tab sleeps for hours, far past the lapse of a reservation no write has used, and the DO hibernates.
       vi.setSystemTime(Date.now() + 6 * 60 * 60_000);
       const woken = await start(wake(opened));
-      ben.opened = woken;
-      await typeTitle(ben, 'w'.repeat(w));
-      expect(ben.closed?.code, "the rest of Ada's paste keeps its room").toBe(CLOSE.writeRefused);
+      const later = await connect(woken, { id: 'ben', role: 'editor' }, ben.doc);
+      await later.hello();
+      await typeTitle(later, 'w'.repeat(w));
+      expect(later.events, "the rest of Ada's paste keeps its room").toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
+      expect(later.closed?.code).toBe(CLOSE.writeRefused);
       const back = await connect(woken, { id: 'ada', role: 'editor' }, ada.doc);
       await send(back, 'A', a.slice(2));
       await back.hello();
