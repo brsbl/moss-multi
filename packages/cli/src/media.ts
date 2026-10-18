@@ -52,8 +52,13 @@ export function mediaRefs(text: string): MediaRef[] {
       start += 1;
       end = gt;
     } else {
-      const title = /\s+(?:"[^"]*"|'[^']*')$/.exec(text.slice(start, end));
-      if (title) end -= title[0].length;
+      // A trailing "title" or 'title' after whitespace is not part of the name.
+      const quote = text[end - 1];
+      const open = quote === '"' || quote === "'" ? text.lastIndexOf(quote, end - 2) : -1;
+      if (open > start && /\s/.test(text[open - 1]!)) {
+        end = open;
+        while (end > start && /\s/.test(text[end - 1]!)) end -= 1;
+      }
     }
     if (text.startsWith('./', start)) start += 2;
     if (!text.startsWith(ASSET_DIR, start)) continue;
