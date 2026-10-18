@@ -2960,7 +2960,6 @@ function FloatingSelectionTools({
 
     if (commentableNodeKey) {
       savedNodeKeyRef.current = commentableNodeKey;
-      stashCommentBlock(editor, commentableNodeKey); // moss-multi seam: comments: a retry from this composer stays on the block
       const el = editor.getElementByKey(commentableNodeKey);
       if (el) {
         const rect = el.getBoundingClientRect();
