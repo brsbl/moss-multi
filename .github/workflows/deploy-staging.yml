@@ -306,13 +306,16 @@ jobs:
           if-no-files-found: ignore
 
   # What the Worker and its Durable Objects failed at while the suite ran (T8.2): `wrangler tail --status error`,
-  # reduced to counts under fixed names (scripts/deploy/tail-summary.mjs). The tail's own output is never printed:
-  # it holds URLs, headers and log lines. It stops once every suite shard finished, or the canary failed.
+  # reduced to counts under fixed names (scripts/deploy/tail-summary.mjs), and SP9's Worker telemetry: a second tail on
+  # the near-cap probe's header, its uploads' outcome, status, CPU and wall time. The tails' own output is never
+  # printed: it holds URLs, headers and log lines. They stop once every suite shard finished, or the canary failed; a
+  # tail that ends before that fails the job, as does missing SP9 telemetry.
   tail:
     needs: [preflight, deploy]
     if: inputs.suite == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # The 16 shards at suite_parallel 4 run in four waves of up to 80 minutes each.
+    timeout-minutes: 350
     env:
       WRANGLER: apps/web/node_modules/wrangler/bin/wrangler.js
     steps:
@@ -330,32 +333,52 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GH_TOKEN: ${{ github.token }}
+          SUITE_GREP: ${{ inputs.suite_grep }}
         run: |
           mkdir -p e2e/canary-artifacts
           out=e2e/canary-artifacts/tail-summary.json
+          probe=e2e/canary-artifacts/sp9-probe.json
           node scripts/deploy/tail-summary.mjs run "$out" -- node "$WRANGLER" tail moss-multi-staging --format json --status error &
           pid=$!
-          deadline=$((SECONDS + 110 * 60))
-          while [ "$SECONDS" -lt "$deadline" ] && kill -0 "$pid" 2> /dev/null; do
+          node scripts/deploy/tail-summary.mjs probe "$probe" -- node "$WRANGLER" tail moss-multi-staging --format json --header x-sp9-probe &
+          probe_pid=$!
+          early=''
+          canary_failed=''
+          while true; do
             sleep 60
             jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=30" --jq '.jobs[] | [.name, .status, (.conclusion // "")] | @tsv' || true)
-            if grep -qP '^canary\tcompleted\t(?!success)' <<< "$jobs"; then break; fi
+            if grep -qP '^canary\tcompleted\t(?!success)' <<< "$jobs"; then canary_failed=1; break; fi
             done_shards=$(grep -cP '^suite \(.*\tcompleted\t' <<< "$jobs" || true)
             if [ "$done_shards" -ge 16 ]; then break; fi
+            if ! kill -0 "$pid" 2> /dev/null; then early="$early error"; fi
+            if ! kill -0 "$probe_pid" 2> /dev/null; then early="$early probe"; fi
+            if [ -n "$early" ]; then break; fi
           done
-          kill -TERM "$pid" 2> /dev/null || true
+          kill -TERM "$pid" "$probe_pid" 2> /dev/null || true
           wait "$pid" || true
-          cat "$out"
+          wait "$probe_pid" || true
+          cat "$out" "$probe"
           if jq -e '(.limitMinutes | length) > 0' "$out" > /dev/null; then
             echo "::warning::an isolate passed its memory or CPU limit during the suite, resetting the Durable Objects it held: see limitMinutes in tail-summary.json"
           fi
-      - name: Upload the tail summary
+          status=0
+          for which in $early; do
+            echo "::error::the $which tail ended before the suite finished"
+            status=1
+          done
+          # A grep-filtered run checks SP9's telemetry only when it made probe uploads.
+          if [ -z "$canary_failed" ] && { [ -z "$SUITE_GREP" ] || jq -e '(.uploads | length) > 0' "$probe" > /dev/null; }; then
+            node scripts/deploy/tail-summary.mjs check-probe "$probe" || status=1
+          fi
+          exit "$status"
+      - name: Upload the tail summaries
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: staging-tail-${{ github.run_attempt }}
           path: |
             e2e/canary-artifacts/tail-summary.json
+            e2e/canary-artifacts/sp9-probe.json
           retention-days: 7
           if-no-files-found: ignore
 

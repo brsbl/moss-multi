@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // What a canary run may record and publish (A§21). Against any target but loopback, Playwright records no trace,
 // screenshot or video: a trace carries the pooled sessions' cookies, and deploy-staging.yml's artifacts are public.
-// The uploaded summary is each test's title, status and duration, never its error, URLs or attachments.
+// The uploaded summary is each test's title, status, duration and numeric measures, never its error, URLs or
+// attachments.
 //   node scripts/deploy/canary-artifacts.mjs summary <results.json> <out.json>   (Playwright's JSON reporter output)
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -39,17 +40,46 @@ export function recordingFor(baseUrl) {
 }
 
 /**
- * @typedef {{ status?: string, duration?: number, errors?: { message?: string }[] }} Attempt
- * @typedef {{ title?: string, specs?: { title: string, tests?: { status?: string, results?: Attempt[] }[] }[], suites?: Suite[] }} Suite
+ * @typedef {{ type?: string, description?: string }} Annotation
+ * @typedef {{ status?: string, duration?: number, errors?: { message?: string }[], annotations?: Annotation[] }} Attempt
+ * @typedef {{ title?: string, specs?: { title: string, tests?: { status?: string, annotations?: Annotation[], results?: Attempt[] }[] }[], suites?: Suite[] }} Suite
  */
 
+/** The measure annotations a summary keeps, each as its named numeric fields only (SP9's near-cap upload, T8.2). */
+const MEASURES = { 'sp9-near-cap': ['bytes', 'uploadMs'] };
+
 /**
- * One row per test: the suite path and test title, the last attempt's status and duration, and for a leg that passed
- * on its retry the infrastructure class its first attempt failed on (retry-gate.mjs; a label, never error text).
+ * A test's measure annotations, numbers only: any other field or annotation, and any text, is dropped.
+ * @param {Annotation[]} annotations
+ */
+function measuresOf(annotations) {
+  /** @type {Record<string, Record<string, number>>} */
+  const measures = {};
+  for (const { type, description } of annotations) {
+    const fields = Object.hasOwn(MEASURES, type ?? '') ? MEASURES[/** @type {keyof typeof MEASURES} */ (type)] : null;
+    if (!fields) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(String(description));
+    } catch {
+      continue;
+    }
+    /** @type {Record<string, number>} */
+    const kept = {};
+    for (const field of fields) if (typeof parsed?.[field] === 'number' && Number.isFinite(parsed[field])) kept[field] = parsed[field];
+    if (Object.keys(kept).length) measures[/** @type {string} */ (type)] = kept;
+  }
+  return Object.keys(measures).length ? measures : null;
+}
+
+/**
+ * One row per test: the suite path and test title, the last attempt's status and duration, for a leg that passed on
+ * its retry the infrastructure class its first attempt failed on (retry-gate.mjs; a label, never error text), and its
+ * measure annotations as numbers.
  * @param {{ suites?: Suite[] } | null} results
  */
 export function canarySummary(results) {
-  /** @type {{ title: string, status: string, duration: number, retry?: string }[]} */
+  /** @type {{ title: string, status: string, duration: number, retry?: string, measures?: Record<string, Record<string, number>> }[]} */
   const tests = [];
   /**
    * @param {Suite} suite
@@ -61,8 +91,12 @@ export function canarySummary(results) {
       for (const test of spec.tests ?? []) {
         const last = test.results?.at(-1);
         const status = test.status === 'flaky' ? 'flaky' : String(last?.status ?? 'skipped');
+        /** @type {{ title: string, status: string, duration: number, retry?: string, measures?: Record<string, Record<string, number>> }} */
         const row = { title: [...here, spec.title].join(' › '), status, duration: Number(last?.duration ?? 0) };
-        tests.push(status === 'flaky' ? { ...row, retry: retryClass(test.results?.[0]?.errors) ?? 'not infrastructure' } : row);
+        if (status === 'flaky') row.retry = retryClass(test.results?.[0]?.errors) ?? 'not infrastructure';
+        const measures = measuresOf([...(test.annotations ?? []), ...(last?.annotations ?? [])]);
+        if (measures) row.measures = measures;
+        tests.push(row);
       }
     }
     for (const child of suite.suites ?? []) walk(child, here);

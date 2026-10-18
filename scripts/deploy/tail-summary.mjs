@@ -4,8 +4,10 @@
 // and artifact never hold a URL, header, log line or error text (docs/DEPLOY.md). An isolate that passed its memory or
 // CPU limit resets every Durable Object it hosts, so the minutes it happened are kept to set against the failures.
 //   node scripts/deploy/tail-summary.mjs run OUT.json -- <command...>   (runs the tail; SIGTERM ends it and writes OUT)
+//   node scripts/deploy/tail-summary.mjs probe OUT.json -- <command...> (the same for SP9's probe uploads)
+//   node scripts/deploy/tail-summary.mjs check-probe OUT.json          (fails without the near-cap upload's telemetry)
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 /** Exception classes, by a fixed pattern on the message; the message itself is never kept. */
@@ -39,18 +41,17 @@ function routeOf(url) {
   }
 }
 
-export class TailSummary {
+/** wrangler prints each event as JSON.stringify(event, null, 4): `{` and `}` alone on their lines open and close it. */
+class EventStream {
   #buffer = '';
   #object = /** @type {string[] | null} */ (null);
-  events = 0;
-  overload = 0;
+  #onEvent;
   unparsed = 0;
-  /** @type {Record<string, number>} */
-  outcomes = {};
-  /** @type {Record<string, number>} */
-  classes = {};
-  /** @type {Record<string, number>} */
-  limitMinutes = {};
+
+  /** @param {(event: any) => void} onEvent */
+  constructor(onEvent) {
+    this.#onEvent = onEvent;
+  }
 
   /** @param {string} chunk wrangler's stdout, in any split */
   push(chunk) {
@@ -62,7 +63,6 @@ export class TailSummary {
     }
   }
 
-  // wrangler prints each event as JSON.stringify(event, null, 4): `{` and `}` alone on their lines open and close it.
   /** @param {string} line */
   #line(line) {
     if (this.#object === null) {
@@ -80,7 +80,28 @@ export class TailSummary {
       this.unparsed += 1;
       return;
     }
-    this.#event(event);
+    this.#onEvent(event);
+  }
+}
+
+export class TailSummary {
+  #stream = new EventStream((event) => this.#event(event));
+  events = 0;
+  overload = 0;
+  /** @type {Record<string, number>} */
+  outcomes = {};
+  /** @type {Record<string, number>} */
+  classes = {};
+  /** @type {Record<string, number>} */
+  limitMinutes = {};
+
+  /** @param {string} chunk wrangler's stdout, in any split */
+  push(chunk) {
+    this.#stream.push(chunk);
+  }
+
+  get unparsed() {
+    return this.#stream.unparsed;
   }
 
   /** @param {any} event */
@@ -126,18 +147,86 @@ export class TailSummary {
   }
 }
 
-// Red-first stubs (T8.2 SP9 telemetry); the implementation follows.
+/**
+ * The header j11-media's SP9 near-cap probe sends on each upload, its value the upload's label. A second tail filters
+ * on it (`--header`), so it sees every probe upload, not only the failures.
+ */
 export const SP9_PROBE_HEADER = 'x-sp9-probe';
+const PROBE_LABELS = new Set(['near-cap', 'truncated']);
+
+/** @param {unknown} value a millisecond count from the event, or null when it carries none */
+const ms = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : null);
+
+/**
+ * SP9's Worker telemetry (T8.2): for each probe upload, the invocation's outcome, response status, CPU time and wall
+ * time as the tail reports them (TraceItem `cpuTime`, `wallTime`). Cloudflare reports no per-invocation memory
+ * figure; its memory telemetry is the outcome, `exceededMemory` when the isolate passed its limit, kept as
+ * `withinMemoryLimit`. Labels outside the probe's are `other`; no URL, header value or text is kept.
+ */
 export class ProbeSummary {
-  /** @param {string} _chunk */
-  push(_chunk) {}
+  /** @type {Record<string, { outcome: string, status: number | null, cpuTimeMs: number | null, wallTimeMs: number | null, withinMemoryLimit: boolean, exceptions: Record<string, number> }[]>} */
+  uploads = {};
+  #stream = new EventStream((event) => this.#event(event));
+
+  /** @param {string} chunk */
+  push(chunk) {
+    this.#stream.push(chunk);
+  }
+
+  /** @param {any} event */
+  #event(event) {
+    if (typeof event?.outcome !== 'string') return;
+    const headers = event.event?.request?.headers;
+    if (!headers || typeof headers !== 'object') return;
+    const key = Object.keys(headers).find((name) => name.toLowerCase() === SP9_PROBE_HEADER);
+    if (key === undefined) return;
+    const value = String(headers[key]);
+    const label = PROBE_LABELS.has(value) ? value : 'other';
+    const outcome = OUTCOME.test(event.outcome) ? event.outcome : 'other';
+    /** @type {Record<string, number>} */
+    const exceptions = {};
+    let memory = outcome === 'exceededMemory';
+    for (const exception of Array.isArray(event.exceptions) ? event.exceptions : []) {
+      const found = CLASSES.find(([, pattern]) => pattern.test(String(exception?.message ?? '')));
+      const name = found ? found[0] : 'unclassed';
+      bump(exceptions, name);
+      if (name === 'memory limit') memory = true;
+    }
+    const status = event.event?.response?.status;
+    (this.uploads[label] ??= []).push({
+      outcome,
+      status: Number.isInteger(status) ? status : null,
+      cpuTimeMs: ms(event.cpuTime),
+      wallTimeMs: ms(event.wallTime),
+      withinMemoryLimit: !memory,
+      exceptions,
+    });
+  }
+
   result() {
-    return { uploads: {} };
+    return { uploads: this.uploads, unparsed: this.#stream.unparsed };
   }
 }
-/** @param {unknown} _result */
-export function probeProblems(_result) {
-  return /** @type {string[]} */ ([]);
+
+/**
+ * What is wrong with SP9's telemetry: the near-cap upload must have a tail event, `ok`, a 201, within the memory
+ * limit and timed; the truncated upload, the probe's red control, must have an event too.
+ * @param {{ uploads?: Record<string, { outcome: string, status: number | null, cpuTimeMs: number | null, wallTimeMs: number | null, withinMemoryLimit: boolean }[]> }} result
+ */
+export function probeProblems(result) {
+  const problems = [];
+  const uploads = result?.uploads ?? {};
+  const near = uploads['near-cap'] ?? [];
+  if (near.length === 0) problems.push('no tail event for the near-cap upload');
+  for (const upload of near) {
+    if (upload.outcome !== 'ok') problems.push(`the near-cap upload ended ${upload.outcome}`);
+    if (!upload.withinMemoryLimit) problems.push('the near-cap upload passed the memory limit');
+    if (upload.status !== 201) problems.push(`the near-cap upload returned ${upload.status ?? 'no status'}`);
+    if (upload.cpuTimeMs === null) problems.push('the near-cap upload has no CPU time');
+    if (upload.wallTimeMs === null) problems.push('the near-cap upload has no wall time');
+  }
+  if ((uploads.truncated ?? []).length === 0) problems.push('no tail event for the truncated upload');
+  return problems;
 }
 
 /**
@@ -145,9 +234,9 @@ export function probeProblems(_result) {
  * writes the summary to `out`. Its stderr is counted, never printed.
  * @param {string} out
  * @param {string[]} command
+ * @param {{ push(chunk: string): void, result(): object }} summary
  */
-export function runTail(out, command) {
-  const summary = new TailSummary();
+export function runTail(out, command, summary = new TailSummary()) {
   let stderrLines = 0;
   const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.setEncoding('utf8').on('data', (chunk) => summary.push(chunk));
@@ -172,10 +261,19 @@ export function runTail(out, command) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [mode, out, dashes, ...command] = process.argv.slice(2);
-  if (mode === 'run' && out && dashes === '--' && command.length > 0) {
-    runTail(out, command);
+  if ((mode === 'run' || mode === 'probe') && out && dashes === '--' && command.length > 0) {
+    runTail(out, command, mode === 'probe' ? new ProbeSummary() : new TailSummary());
+  } else if (mode === 'check-probe' && out && dashes === undefined) {
+    let problems;
+    try {
+      problems = probeProblems(JSON.parse(readFileSync(out, 'utf8')));
+    } catch {
+      problems = [`no probe summary at ${out}`];
+    }
+    for (const problem of problems) console.error(`::error::SP9 telemetry: ${problem}`);
+    process.exitCode = problems.length ? 1 : 0;
   } else {
-    console.error('usage: tail-summary.mjs run OUT.json -- <command...>');
+    console.error('usage: tail-summary.mjs run|probe OUT.json -- <command...> | check-probe OUT.json');
     process.exitCode = 1;
   }
 }
