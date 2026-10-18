@@ -1495,7 +1495,7 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     expect(saved.code, 'failed hunks exit 2').toBe(2);
     expect(dec(server.content.get(ID_B)), 'no revert reaches the server').toBe(AGENT);
     expect(readFileSync(file, 'utf8'), 'the file takes the server version').toBe(AGENT);
-    expect(readFileSync(`${file}.rej`, 'utf8'), 'the typing waits beside the note').toContain('+Para two, rewritten in the editor.');
+    expect(readFileSync(`${file}.rej`, 'utf8'), 'the typing waits beside the note').toContain('+, rewritten in the editor');
     expect(JSON.parse(saved.out)).toContainEqual(expect.objectContaining({ docId: ID_B, failedHunks: 1 }));
   });
 

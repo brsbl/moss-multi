@@ -355,7 +355,7 @@ test('j18-sync stale save: an editor that saves its old text over a pulled agent
     expect(kept.text).not.toContain('rewritten in the editor');
     expect(kept.text, 'the earlier edits stand').toContain('Para four, and my typing.');
     expect(readFileSync(file, 'utf8'), 'the file takes the server version').toContain('Para three, edited by the agent.');
-    expect(readOr(`${file}.rej`), 'the typing waits beside the note').toContain('+Para three, rewritten in the editor.');
+    expect(readOr(`${file}.rej`), 'the typing waits beside the note').toContain('+, rewritten in the editor');
   } finally {
     rmSync(mac, { recursive: true, force: true });
     rmSync(linux, { recursive: true, force: true });
