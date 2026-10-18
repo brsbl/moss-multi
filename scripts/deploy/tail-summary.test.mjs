@@ -57,6 +57,17 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
     for (const secret of ['secret', 'workers.dev', 'token', 'cookie', 'rm -rf', 'nobody']) expect(text, secret).not.toContain(secret);
   });
 
+  it('unfiltered, counts only failures: an ok 2xx-4xx is not one; an ok 5xx, an exception and a limit are', () => {
+    const summary = new TailSummary();
+    const fetch = (outcome, status) => printed({ outcome, event: { request: { url: SECRET_URL, method: 'GET' }, response: { status } }, eventTimestamp: AT, exceptions: [] });
+    summary.push(fetch('ok', 200) + fetch('ok', 304) + fetch('ok', 404) + fetch('ok', 503) + fetch('exception', 500) + printed(docCreateOom));
+    summary.push(printed({ outcome: 'ok', entrypoint: 'DocDO', event: { rpcMethod: 'pull' }, exceptions: [] }));
+    expect(summary.result()).toMatchObject({
+      events: 3,
+      outcomes: { 'worker GET /api/docs ok': 1, 'worker GET /api/docs exception': 1, 'DocDO.create exceededMemory': 1 },
+    });
+  });
+
   it('counts a tail overload notice and a line it cannot parse, and never throws on them', () => {
     const summary = new TailSummary();
     summary.push(printed({ event: { type: 'overload', message: 'Tail is currently in sampling mode' } }));
@@ -72,7 +83,10 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
     expect(job.needs).not.toContain('suite');
     const run = job.steps.map((step) => step.run ?? '').join('\n');
     expect(run).toMatch(/tail-summary\.mjs run/);
-    expect(run).toMatch(/--status error/);
+    // One unfiltered tail: a second, header-filtered tail left the error tail seeing only the probe's two uploads
+    // (runs 39116654098 and 39130102453), as though one tail's filter applied to both.
+    expect(run.match(/"\$WRANGLER" tail/g)?.length ?? 0, 'one tail').toBe(1);
+    expect(run).not.toMatch(/--status|--header|--method|--search/);
     const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact'));
     expect(upload.with.path).toMatch(/tail-summary\.json/);
   });
@@ -120,17 +134,16 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
     expect(summary.result().uploads['near-cap']).toEqual([{ outcome: 'exceededMemory', status: null, cpuTimeMs: null, wallTimeMs: null, withinMemoryLimit: false, exceptions: { 'memory limit': 1 } }]);
   });
 
-  it('tails the SP9 uploads apart from the errors, and fails the job on missing telemetry or a tail that ended early', () => {
+  it('reads the SP9 uploads from the same tail, and fails the job on missing telemetry or a tail that ended early', () => {
     const job = WORKFLOW.jobs.tail;
     const run = job.steps.map((step) => step.run ?? '').join('\n');
-    expect(run).toMatch(new RegExp(`tail-summary\\.mjs probe [^\\n]*--header ${SP9_PROBE_HEADER}`));
+    expect(run).toMatch(/tail-summary\.mjs run "\$out" --probe "\$probe" -- /);
     expect(run).toMatch(/tail-summary\.mjs check-probe/);
     // It runs until every shard finished, however long the shards take at suite_parallel, never to a fixed deadline.
     expect(run).not.toMatch(/110 \* 60/);
     expect(job['timeout-minutes']).toBeGreaterThanOrEqual(340);
-    expect(run, 'a tail that exits before the suite finished fails the job').toMatch(/::error::the \$which tail ended before the suite finished/);
-    expect(run).toMatch(/kill -0 "\$pid"[^\n]*early="\$early error"/);
-    expect(run).toMatch(/kill -0 "\$probe_pid"[^\n]*early="\$early probe"/);
+    expect(run, 'a tail that exits before the suite finished fails the job').toMatch(/::error::the tail ended before the suite finished/);
+    expect(run).toMatch(/kill -0 "\$pid"/);
     const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact'));
     expect(upload.with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/tail-summary.json']);
   });
