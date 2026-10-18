@@ -909,14 +909,14 @@ export function readsAsBody(doc: Y.Doc, body: Y.Doc): (id: Y.ID) => boolean {
   const seen = new Map<Y.Item, boolean>();
   return (id) => {
     if (id.clock >= Y.getState(doc.store, id.client)) return false;
-    let item = Y.getItem(doc.store, id) as Y.Item | Y.GC;
-    if (!(item instanceof Y.Item)) return false;
-    while (item.parent !== root) {
-      const holder = (item.parent as Y.AbstractType<unknown> | null)?._item;
+    const found: Y.Item | Y.GC = Y.getItem(doc.store, id);
+    if (!(found instanceof Y.Item)) return false;
+    let top: Y.Item = found;
+    while (top.parent !== root) {
+      const holder: Y.Item | null = (top.parent as Y.AbstractType<unknown> | null)?._item ?? null;
       if (!holder) return false;
-      item = holder;
+      top = holder;
     }
-    const top = item;
     const known = seen.get(top);
     if (known !== undefined) return known;
     let same = false;

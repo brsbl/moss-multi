@@ -3,10 +3,10 @@
 // lands in one transaction, one frame, one suggestion; or it is refused whole, visibly, with nothing struck or sent
 // and the selection kept. One undo takes it back and one redo brings it back.
 import type { Actor } from '../lib/actors.ts';
-import { INPUT_REFUSAL_ATTR, SUGGEST_MARK_ATTR, SUGGESTIONS_BUTTON_ATTR } from '../lib/contract.ts';
+import { BODY_BINDING_ATTR, INPUT_REFUSAL_ATTR, SUGGEST_MARK_ATTR, SUGGESTIONS_BUTTON_ATTR } from '../lib/contract.ts';
 import { pastePlain } from '../lib/paste.ts';
 import { FORK_CLOSED, pasteHtml, sent, storedOrRefused, suggesting } from '../lib/suggest-paste.ts';
-import { caret, content, mod, openIn, painted, settled } from '../lib/suggest.ts';
+import { BIND_TIMEOUT, caret, content, mod, openIn, painted, settled } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 test('j16-paste: a large paste over a selection, past the suggestion record cap, is refused whole: nothing struck or sent, the selection kept @p:mean-2 @p:R17', async ({ actors }) => {
@@ -359,8 +359,9 @@ test('j16-paste: an undone paste inside a paragraph, and an undone Enter, leave 
   await expect.poll(() => painted(ben, 'suggest-insert'), { message: 'nothing painted after the undo of Enter' }).toEqual([]);
   await expect.poll(() => painted(ben, 'suggest-delete')).toEqual([]);
 
-  // The author leaves, so the system closing his record never touches his socket (as j16-census does).
-  await ben.goto('/');
+  // When the system closes his records, his pane rebuilds F from the body (a closed record leaves the fork): a new
+  // session and a new body root, declared.
+  ben.expectReconnects(2, docId);
   // The owner, in Edit mode, sees none of her words struck and no insert marks.
   await openIn(ada, docId, 'edit');
   await expect(ui.body(ada, docId)).toContainText('Ada original line.');
@@ -368,5 +369,10 @@ test('j16-paste: an undone paste inside a paragraph, and an undone Enter, leave 
   await expect(ui.pane(ada, docId).locator(`[${SUGGEST_MARK_ATTR}]`), 'no insert marks').toHaveCount(0);
   // A record that changes nothing is rejected by the system once idle: no pending suggestion is left.
   await expect(ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`), 'no pending suggestion').toHaveAttribute('aria-label', 'Suggestions', { timeout: 120_000 });
+  await expect(ben.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`)).toHaveAttribute('aria-label', 'Suggestions', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(body).toContainText('Ada original line.');
+  await expect.poll(() => painted(ben, 'suggest-insert')).toEqual([]);
+  await ben.declareRemount(docId);
 });
 
