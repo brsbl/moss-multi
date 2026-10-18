@@ -165,8 +165,14 @@ export function noteLinks(text: string, from: string): LinkTarget[] {
     const angled = text[i] === '<';
     if (angled) i += 1;
     let end = i;
-    while (end < text.length && (angled ? text[end] !== '>' : !' \t\n)'.includes(text[end]!)) && text[end] !== '\n') end += 1;
+    while (end < text.length && text[end] !== (angled ? '>' : ')') && text[end] !== '\n') end += 1;
     let target = text.slice(i, end);
+    // A link title follows the path after a space; the path itself may hold spaces (`../Reading list/Reading list.md`).
+    if (!angled) {
+      const titled = [' "', " '", ' ('].map((mark) => target.indexOf(mark)).filter((index) => index >= 0);
+      if (titled.length) target = target.slice(0, Math.min(...titled));
+      target = target.trim();
+    }
     const cut = [target.indexOf('#'), target.indexOf('?')].filter((index) => index >= 0);
     if (cut.length) target = target.slice(0, Math.min(...cut));
     if (!target || target.startsWith('/') || SCHEME.test(target)) continue;

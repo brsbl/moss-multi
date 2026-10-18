@@ -107,14 +107,14 @@ function note(folder: string, title: string, body: string, id?: string): string 
 const SECRET = 'bank account 1234';
 
 /**
- * Moss Home links Alpha by its id (under an old title), Beta by a relative markdown link, and Diary and Taxes 2026,
+ * Moss Home links Alpha by its id (under an old title), Beta notes by a relative markdown link with spaces, and Diary and Taxes 2026,
  * which live under denied folders. Beta links Gamma by title. Loose is linked from nowhere.
  */
 function pilotVault(scope: Record<string, unknown> | null) {
   const files = {
-    home: note('', 'Moss Home', `Start at [[Alpha (old title)|${ALPHA_ID}]], then [Beta](../Beta/Beta.md). Private: [[Diary]] and [[Taxes 2026|${TAXES_ID}]].`),
+    home: note('', 'Moss Home', `Start at [[Alpha (old title)|${ALPHA_ID}]], then [Beta](../Beta notes/Beta notes.md). Private: [[Diary]] and [[Taxes 2026|${TAXES_ID}]].`),
     alpha: note('', 'Alpha', 'The alpha note.', ALPHA_ID),
-    beta: note('', 'Beta', 'Beta leads on to [[Gamma#Notes]].'),
+    beta: note('', 'Beta notes', 'Beta leads on to [[Gamma#Notes]].'),
     gamma: note('', 'Gamma', 'Gamma, two hops out.'),
     diary: note('Personal', 'Diary', `Dear diary, ${SECRET}.`),
     taxes: note(join('Admin', 'Finance'), 'Taxes 2026', `Refund to ${SECRET}.`, TAXES_ID),
@@ -137,7 +137,7 @@ describe('a workspace scope', () => {
     expect(run.code, run.err).toBe(0);
     expect(created(run.results)).toEqual([files.alpha, files.beta, files.home].sort());
     expect(sent()).not.toContain(SECRET);
-    expect(server.docs.map((doc) => doc.title).sort()).toEqual(['Alpha', 'Beta', 'Moss Home']);
+    expect(server.docs.map((doc) => doc.title).sort()).toEqual(['Alpha', 'Beta notes', 'Moss Home']);
     // Gamma (two hops), Loose, Diary and Taxes 2026: a count, never their names.
     const out = run.results.find((result) => result.action === 'out-of-scope');
     expect(out?.count).toBe(4);
