@@ -777,8 +777,12 @@ function replay(editor: LexicalEditor, input: HeldInput): void {
         if (root) root.dispatchEvent(event);
         else editor.dispatchCommand(KEY_DOWN_COMMAND, event);
         if (event.defaultPrevented) return;
-        const { key = '', ctrlKey, metaKey } = input.init;
-        if (key.length === 1 && !ctrlKey && !metaKey) editor.dispatchCommand(CONTROLLED_TEXT_INSERTION_COMMAND, key);
+        const { key = '', ctrlKey, metaKey, altKey, shiftKey } = input.init;
+        // WebKit's Lexical leaves Enter (iOS's, Backspace too) to the native beforeinput, which a cancelled keydown
+        // never gets.
+        if (key === 'Enter' && !ctrlKey && !metaKey && !altKey) INPUT_COMMANDS[shiftKey ? 'insertLineBreak' : 'insertParagraph'](editor);
+        else if (key === 'Backspace' && !ctrlKey && !metaKey && !altKey) INPUT_COMMANDS.deleteContentBackward(editor);
+        else if (key.length === 1 && !ctrlKey && !metaKey) editor.dispatchCommand(CONTROLLED_TEXT_INSERTION_COMMAND, key);
         else if (root && key in MOVES) move(editor, input.init);
       }
     }
