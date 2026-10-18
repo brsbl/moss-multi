@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mediaFilename, suffixedFilename } from '@moss-multi/protocol/media';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { parseDocRef } from './docref.ts';
 import { runCli, type ProgramDeps } from './program.ts';
@@ -57,6 +58,12 @@ function fakeServer() {
     /** What GET .../comments and .../suggestions answer. */
     comments: [] as unknown[],
     suggestions: [] as unknown[],
+    /** Each doc's media record, `<docId>/<name>`: the bytes' hash, and the bytes once stored (null: the store failed). */
+    media: new Map<string, { hash: string; bytes: Uint8Array | null }>(),
+    /** What the next uploads answer: a status and body, `put-fails` (the record binds, the bytes are not stored), or a name. */
+    /** Names another doc's file holds in the folder: an upload of other bytes takes the next free name. */
+    folderTaken: new Set<string>(),
+    uploadAnswers: [] as ({ status: number; body: unknown } | 'put-fails' | { filename: string })[],
   };
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
@@ -149,6 +156,29 @@ function fakeServer() {
       if (next.status === 200 && answer.ok && answer.mode === 'edit' && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
       state.onPush?.();
       return reply(next.status, next.body, next.headers);
+    }
+    if (sub === 'assets' && method === 'POST') {
+      const name = mediaFilename(url.searchParams.get('filename') ?? '');
+      if (!name) return reply(415, { error: 'unsupported', message: 'Only images and videos can be uploaded.' });
+      const bytes = new Uint8Array(init.body as Uint8Array);
+      const next = state.uploadAnswers.shift();
+      if (next && next !== 'put-fails' && 'status' in next) return reply(next.status, next.body);
+      if (next && next !== 'put-fails') return reply(201, { filename: next.filename });
+      // As the server binds: the first name free in the doc's record, or holding these bytes already.
+      const hash = sha256Hex(bytes);
+      let bound = name;
+      const taken = (at: string) => state.folderTaken.has(at) || (state.media.has(`${id}/${at}`) && state.media.get(`${id}/${at}`)!.hash !== hash);
+      for (let n = 2; taken(bound); n += 1) bound = suffixedFilename(name, n);
+      const held = state.media.get(`${id}/${bound}`);
+      state.media.set(`${id}/${bound}`, { hash, bytes: next === 'put-fails' ? (held?.bytes ?? null) : bytes });
+      return next === 'put-fails' ? reply(500, { error: 'internal' }) : reply(201, { filename: bound });
+    }
+    if (sub?.startsWith('assets/')) {
+      const held = state.media.get(`${id}/${mediaFilename(decodeURIComponent(sub.slice('assets/'.length))) ?? ''}`);
+      if (!held) return reply(404, { error: 'not-found' });
+      // As the server answers HEAD: from the record alone.
+      if (method === 'HEAD') return new Response(null, { status: 200, headers: { etag: `"${held.hash}"` } });
+      return held.bytes ? reply(200, held.bytes, { etag: `"${held.hash}"` }) : reply(404, { error: 'not-found' });
     }
     if (sub === 'comments' && method === 'GET') return reply(200, { comments: state.comments });
     if (sub === 'suggestions' && method === 'GET') return reply(200, { suggestions: state.suggestions });
@@ -1220,5 +1250,83 @@ describe('stopping watch stops the pass (T7.S8)', () => {
     expect(result!.code, result!.err).toBe(0);
     expect(ms, 'without waiting for the read').toBeLessThan(1_000);
     expect(server.state.pushes, 'no upload after the stop').toEqual([]);
+  });
+});
+
+describe('sync: note media (T7.S6 checker)', () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  const OTHER = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]);
+  const uploads = () => server.seen.filter((call) => call.method === 'POST' && call.path === `/api/docs/${ID_A}/assets`);
+  /** plan.md tracks ID_A and now references `refs`, each file beside it under assets/. */
+  const tracked = async (body: string, files: Record<string, Uint8Array>) => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    mkdirSync(join(dir, 'assets'), { recursive: true });
+    for (const [name, bytes] of Object.entries(files)) writeFileSync(join(dir, 'assets', name), bytes);
+    writeFileSync(join(dir, 'plan.md'), `# Garden plan\n\n${body}\n`);
+  };
+
+  it('uploads again a file whose upload failed after the server recorded it, rather than trusting the record', async () => {
+    await tracked('![p](assets/p.png)', { 'p.png': PNG });
+    server.state.uploadAnswers.push('put-fails');
+    const first = await cli(['sync', '--json']);
+    expect(first.code, 'the failed upload fails the sync').toBe(1);
+    expect(JSON.parse(first.out)).toContainEqual(expect.objectContaining({ file: join('assets', 'p.png'), action: 'failed' }));
+    const before = uploads().length;
+    const second = await cli(['sync', '--json']);
+    expect(second.code, second.out).toBe(0);
+    expect(uploads().length, 'the next sync uploads the file again').toBe(before + 1);
+    expect(server.state.media.get(`${ID_A}/p.png`)?.bytes, 'and the server now holds its bytes').toEqual(PNG);
+  });
+
+  it('carries a file whose name has spaces or parentheses', async () => {
+    await tracked('![a](assets/garden photo.png) and ![b](assets/garden(1).png)', { 'garden photo.png': PNG, 'garden(1).png': OTHER });
+    const result = await cli(['sync', '--json']);
+    expect(result.code, result.out).toBe(0);
+    expect(server.state.media.get(`${ID_A}/garden-photo.png`)?.bytes).toEqual(PNG);
+    expect(server.state.media.get(`${ID_A}/garden-1.png`)?.bytes).toEqual(OTHER);
+    const text = readFileSync(join(dir, 'plan.md'), 'utf8');
+    expect(text, 'the note references the names the server stores').toContain('](assets/garden-photo.png) and ![b](assets/garden-1.png)');
+  });
+
+  it('a collision moves the note\'s reference and leaves the same text inside code alone', async () => {
+    server.state.folderTaken.add('pattern.png');
+    const code = '```md\n![p](assets/pattern.png)\n```\n\nInline: `![p](assets/pattern.png)`.';
+    await tracked(`![p](assets/pattern.png)\n\n${code}`, { 'pattern.png': PNG });
+    const result = await cli(['sync', '--json']);
+    expect(result.code, result.out).toBe(0);
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe(`# Garden plan\n\n![p](assets/pattern-2.png)\n\n${code}\n`);
+  });
+
+  it('refuses an upload answer that is not a media file name, and writes nothing outside assets/', async () => {
+    await tracked('![p](assets/p.png)', { 'p.png': PNG });
+    server.state.uploadAnswers.push({ filename: '../Other/x.png' });
+    const result = await cli(['sync', '--json']);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.out)).toContainEqual(expect.objectContaining({ file: join('assets', 'p.png'), action: 'failed' }));
+    expect(existsSync(join(dir, 'Other', 'x.png'))).toBe(false);
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toContain('](assets/p.png)');
+  });
+
+  it('reports a failed upload of a tracked note once, after one attempt, per pass', async () => {
+    await tracked('![p](assets/p.png)', { 'p.png': PNG });
+    server.state.uploadAnswers.push({ status: 415, body: { error: 'unsupported', message: 'Only images and videos can be uploaded.' } });
+    server.state.uploadAnswers.push({ status: 415, body: { error: 'unsupported', message: 'Only images and videos can be uploaded.' } });
+    const result = await cli(['sync', '--json']);
+    expect(result.code).toBe(1);
+    const failed = (JSON.parse(result.out) as { file: string; action: string; message?: string }[]).filter((row) => row.action === 'failed');
+    expect(failed, 'one failed line').toEqual([expect.objectContaining({ file: join('assets', 'p.png'), message: 'Only images and videos can be uploaded.' })]);
+    expect(uploads(), 'one attempt').toHaveLength(1);
+  });
+
+  it('watch backs off when a tracked note\'s media upload is rate limited', async () => {
+    await tracked('![p](assets/p.png)', { 'p.png': PNG });
+    for (let i = 0; i < 50; i += 1) server.state.uploadAnswers.push({ status: 429, body: { error: 'rate-limited', message: 'rate limited' } });
+    const controller = new AbortController();
+    const running = cli(['watch', '--interval', '0.1'], undefined, { signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 1_200));
+    controller.abort();
+    const result = await running;
+    expect(result.code, result.err).toBe(0);
+    expect(uploads(), 'one attempt, then the retry wait').toHaveLength(1);
   });
 });

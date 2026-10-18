@@ -222,7 +222,7 @@ test('j18-sync add --title: a file whose first line is that title shows the titl
   }
 });
 
-test('j18-sync media: a note\'s image and video round-trip through sync and pull, a name collision takes the next free name, and a refused upload is reported as failed @p:agt-2 @p:R9 @p:note-8', async ({ actors, stack }) => {
+test('j18-sync media: a note\'s image and video round-trip through sync and pull, a name collision takes the next free name, an upload past the cap or refused by the server is reported as failed @p:agt-2 @p:R9 @p:note-8', async ({ actors, stack }) => {
   actors.solo(SOLO);
   const ada = await actors.session(await actors.principal('ada'));
   const dir = scratch();
@@ -301,6 +301,19 @@ test('j18-sync media: a note\'s image and video round-trip through sync and pull
     const bigDoc = big.results.find((result) => result.action === 'created')?.docId;
     expect(bigDoc, 'the note itself is created').toBeTruthy();
     expect((await asset(ada, bigDoc!, 'huge.png')).status, 'nothing reached the server').toBe(404);
+
+    // A file the server refuses: bytes that are not the PNG their name declares come back as failed, in the server's words, once.
+    mkdirSync(join(dir, 'Fake', 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'Fake', 'assets', 'fake.png'), 'not a picture\n');
+    writeFileSync(join(dir, 'Fake', 'Fake.md'), '# Fake\n\n![fake](assets/fake.png)\n');
+    const fake = await syncJson(dir);
+    expect(fake.run.code, `a refused upload fails the sync: ${fake.run.stdout}`).toBe(1);
+    const refused = fake.results.filter((result) => result.file === join('Fake', 'assets', 'fake.png'));
+    expect(refused.map((result) => result.action), `reported as failed once: ${fake.run.stdout}`).toEqual(['failed']);
+    expect(refused[0]?.message ?? '').toMatch(/Only images/);
+    const again = await syncJson(dir);
+    expect(again.results.filter((result) => result.file === join('Fake', 'assets', 'fake.png')).map((result) => result.action), 'and once on the next sync of the tracked note')
+      .toEqual(['failed']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(away, { recursive: true, force: true });
