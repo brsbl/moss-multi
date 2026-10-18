@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deployedProblems, hookProblems } from './assert-deployed.mjs';
 import { canarySummary, recordingFor } from './canary-artifacts.mjs';
 import { canaryState } from './canary-state.mjs';
+import * as growth from './growth.mjs';
 import { growthProblems, GROWTH_CAP, PER_FULL_RUN, readGrowth } from './growth.mjs';
 import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
@@ -797,6 +798,39 @@ describe('staging growth (A§21) @p:R15', () => {
     expect(growthProblems({ docs: 0, users: GROWTH_CAP.users, d1Bytes: GROWTH_CAP.d1Bytes })).toHaveLength(2);
   });
 
+  it("counts the Worker's Durable Objects with stored data, which the prune never resets, and caps them too", async () => {
+    const zero = { docs: 0, users: 0, d1Bytes: 0, docObjects: 0, principalObjects: 0 };
+    expect(growthProblems(zero)).toEqual([]);
+    const docs = growthProblems({ ...zero, docObjects: GROWTH_CAP.docObjects - PER_FULL_RUN.docObjects + 1 });
+    expect(docs).toHaveLength(1);
+    expect(docs[0]).toMatch(/docObjects/);
+    expect(growthProblems({ ...zero, principalObjects: GROWTH_CAP.principalObjects })).toHaveLength(1);
+    // Cloudflare's object list for each namespace of the staging Worker, paged by cursor.
+    const calls = [];
+    const fetcher = async (url) => {
+      calls.push(String(url));
+      const { pathname, searchParams } = new URL(url);
+      if (pathname.endsWith('/namespaces')) {
+        return Response.json({ success: true, result: [
+          { id: 'n1', script: 'moss-multi-staging', class: 'DocDO' }, { id: 'n2', script: 'moss-multi-staging', class: 'PrincipalDO' },
+          { id: 'n3', script: 'moss-collab-staging', class: 'DocDO' },
+        ] });
+      }
+      if (pathname.includes('/n1/')) {
+        return Response.json(searchParams.get('cursor') === 'p2'
+          ? { success: true, result: [{ id: 'c', hasStoredData: true }], result_info: { cursor: '' } }
+          : { success: true, result: [{ id: 'a', hasStoredData: true }, { id: 'b', hasStoredData: false }], result_info: { cursor: 'p2' } });
+      }
+      if (pathname.includes('/n2/')) return Response.json({ success: true, result: [{ id: 'd', hasStoredData: true }], result_info: {} });
+      throw new Error(`unexpected ${pathname}`);
+    };
+    expect(typeof growth.countObjects).toBe('function');
+    await expect(growth.countObjects({ accountId: 'acc', token: 't', fetch: fetcher })).resolves.toEqual({ docObjects: 2, principalObjects: 1 });
+    expect(calls.some((url) => url.includes('/n3/'))).toBe(false);
+    const refused = async () => Response.json({ success: false, errors: [{ code: 10000 }] }, { status: 403 });
+    await expect(growth.countObjects({ accountId: 'acc', token: 't', fetch: refused })).rejects.toThrow(/403/);
+  });
+
   it('checks the cap before a full-suite deploy, and never for the canary', () => {
     const steps = WORKFLOW.jobs.deploy.steps;
     const check = steps.findIndex((step) => /growth\.mjs/.test(step.run ?? ''));
@@ -806,6 +840,8 @@ describe('staging growth (A§21) @p:R15', () => {
     // The count reads docs and user, which a first deploy's fresh D1 has only once the migrations ran.
     expect(check, 'after the D1 migrations').toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
     expect(steps[check].run).toMatch(/d1 execute moss-multi-staging --remote --json/);
+    expect(steps[check].run).toMatch(/growth\.mjs objects "\$RUNNER_TEMP\/objects\.json"/);
+    expect(steps[check].run).toMatch(/growth\.mjs check "\$RUNNER_TEMP\/growth\.json" "\$RUNNER_TEMP\/objects\.json"/);
   });
 });
 
@@ -921,11 +957,11 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
     expect(prunePlan(counted(0, 0), selected([]))).toMatchObject({ ids: [], sql: '' });
   });
 
-  it('refuses any row that is not a per-run principal, and an id that is not a plain id', () => {
+  it('refuses a row outside the selection, and an id that is not a plain id', () => {
     for (const email of [
       'canary-ada@example.invalid', 'demo-ada@example.invalid', 'mm-x-ada-1@example.com', 'owner@gmail.com',
-      // An `mm-` account without a staging run's provenance: a demo or diagnostic account, never pruned.
-      'mm-x-ada-1@example.invalid', 'mm-demo-ada@example.invalid', 'mm-stagingx-1-ada-1@example.invalid', 'mm-s1-1-z9-1@example.invalid',
+      // An `mm-` account without a staging run's provenance: a demo or diagnostic account, never selected.
+      'mm-x-ada-1@example.invalid', 'mm-demo-ada@example.invalid',
     ]) {
       expect(() => prunePlan(counted(1, 0), selected([row(1, email)])), email).toThrow(/refusing/);
     }
@@ -933,6 +969,16 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
     // The canary job's own minted principals (RUN_ID staging-<run id>) and a suite shard's are per-run.
     const plan = prunePlan(counted(2, 0), selected([row(1, 'mm-staging-38656278214-w0-ada-1@example.invalid'), row(2)]));
     expect(plan.ids).toEqual(['u1', 'u2']);
+  });
+
+  it('skips, never deletes, a selected row that is not a per-run principal, so one stray sign-up never blocks a deploy', () => {
+    // Sign-up is open on staging: an `mm-s` address the selection's GLOBs may take that is not a run's provenance.
+    const strays = ['mm-staging-1-a.b@example.invalid', 'mm-staging-1-x@y@example.invalid', 'mm-s1-1-c1-1x@example.invalid',
+      'mm-stagingx-1-ada-1@example.invalid', 'mm-s1-1-z9-1@example.invalid'];
+    const plan = prunePlan(counted(4, 0), selected([...strays.map((email, n) => row(n + 10, email)), row(1)]));
+    expect(plan.ids).toEqual(['u1']);
+    expect(plan.summary).toMatch(/skips 5/);
+    expect(plan.sql).not.toMatch(/'u1[0-4]'/);
   });
 
   it('prunes after the migrations and before the growth check of a full-suite deploy, its plan before any delete', () => {
