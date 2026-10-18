@@ -306,3 +306,58 @@ test('j18-sync media: a note\'s image and video round-trip through sync and pull
     rmSync(away, { recursive: true, force: true });
   }
 });
+
+test('j18-sync stale save: an editor that saves its old text over a pulled agent edit never reverts it; a clash is set aside, not pushed @p:agt-2 @p:R9', async ({ actors, stack }) => {
+  // Moss's overwrite bug (T7.P2): a note open with unsaved typing is saved from the editor's text after the daemon
+  // wrote a pulled edit into its file. The agent edits from a second workspace, as on the Linux replica.
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const docId = await importNote(ada, stack, 'Field notes', 'Para one.\n\nPara two.\n\nPara three.\n\nPara four.');
+  const mac = scratch();
+  const linux = scratch();
+  const env = await agentEnv(ada, stack, mac);
+  const agentEdit = async (from: string, to: string) => {
+    const pulled = await moss(['pull', docId, 'note.md', '--force'], env, linux);
+    expect(pulled.code, pulled.stderr).toBe(0);
+    writeFileSync(join(linux, 'note.md'), readFileSync(join(linux, 'note.md'), 'utf8').replace(from, to));
+    const pushed = await moss(['push', 'note.md'], env, linux);
+    expect(pushed.code, pushed.stderr).toBe(0);
+  };
+  try {
+    expect((await moss(['init'], env, mac)).code).toBe(0);
+    const pulled = await moss(['pull', docId, 'note.md'], env, mac);
+    expect(pulled.code, pulled.stderr).toBe(0);
+    const file = join(mac, 'note.md');
+    const editor = readFileSync(file, 'utf8');
+
+    await agentEdit('Para two.', 'Para two, edited by the agent.');
+    const pull = await moss(['sync'], env, mac);
+    expect(pull.code, pull.stderr).toBe(0);
+    expect(readFileSync(file, 'utf8'), 'the daemon writes the agent edit into the file').toContain('Para two, edited by the agent.');
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await moss(['sync'], env, mac);
+    expect(saved.code, `${saved.stdout}${saved.stderr}`).toBe(0);
+    const after = await served(ada, docId);
+    expect(after.text, 'the server keeps the agent edit').toContain('Para two, edited by the agent.');
+    expect(after.text, 'and gains the typing').toContain('Para four, and my typing.');
+    expect(readFileSync(file, 'utf8'), 'the file holds both').toContain('Para two, edited by the agent.');
+    expect(readFileSync(file, 'utf8')).toContain('Para four, and my typing.');
+
+    const held = readFileSync(file, 'utf8');
+    await agentEdit('Para three.', 'Para three, edited by the agent.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    writeFileSync(file, held.replace('Para three.', 'Para three, rewritten in the editor.'));
+    const clash = await moss(['sync', '--json'], env, mac);
+    expect(clash.code, `a clash exits 2: ${clash.stdout}${clash.stderr}`).toBe(2);
+    const kept = await served(ada, docId);
+    expect(kept.text, 'no revert reaches the server').toContain('Para three, edited by the agent.');
+    expect(kept.text).not.toContain('rewritten in the editor');
+    expect(kept.text, 'the earlier edits stand').toContain('Para four, and my typing.');
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toContain('Para three, edited by the agent.');
+    expect(readOr(`${file}.rej`), 'the typing waits beside the note').toContain('+Para three, rewritten in the editor.');
+  } finally {
+    rmSync(mac, { recursive: true, force: true });
+    rmSync(linux, { recursive: true, force: true });
+  }
+});

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { computeMergedTarget } from '@moss-multi/core/merge';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { parseDocRef } from './docref.ts';
 import { runCli, type ProgramDeps } from './program.ts';
@@ -67,7 +68,11 @@ function fakeServer() {
     onList: null as null | (() => void),
     /** Answers this one route with a refusal. */
     refuseRoute: null as null | { method: string; path: string; status: number; body: unknown },
+    /** Pushes three-way merge as the server does (core/merge), against a base it has served or been sent. */
+    merge: false,
   };
+  /** Every text the fake has served or been sent, by hash, as the server's base cache would hold them. */
+  const bases = new Map<string, string>();
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -145,6 +150,7 @@ function fakeServer() {
           }, { once: true });
         });
       }
+      bases.set(sha256Hex(content.get(id)!), new TextDecoder().decode(content.get(id)!));
       return reply(200, content.get(id)!, { 'content-type': 'text/markdown; charset=utf-8' });
     }
     if (!sub && method === 'DELETE') return reply(200, { doc: { id, trashedAt: 1 }, action: 'trashed', restorable: true, retentionDays: 30 });
@@ -156,6 +162,18 @@ function fakeServer() {
       const row = docs.find((doc) => doc.id === id);
       if (row) row.title = (body as { title: string }).title;
       return reply(200, { doc: { id, title: (body as { title: string }).title }, role: 'owner' });
+    }
+    if (sub === 'push' && state.merge && !state.pushAnswers.length) {
+      const push = body as { newText: string; baseHash: string; baseText?: string; force?: boolean };
+      state.pushes.push(push as unknown as Record<string, unknown>);
+      if (push.baseText !== undefined) bases.set(sha256Hex(push.baseText), push.baseText);
+      const base = bases.get(push.baseHash);
+      if (base === undefined) return reply(409, { ok: false, reason: 'base-missing' });
+      const merged = computeMergedTarget(new TextDecoder().decode(content.get(id)!), base, push.newText, { refuseDegenerate: !push.force });
+      if (merged.degenerate) return reply(409, { ok: false, reason: 'degenerate', deletedRatio: merged.deletedRatio });
+      content.set(id, new TextEncoder().encode(merged.target));
+      state.onPush?.();
+      return reply(200, { ok: true, mode: 'edit', applied: merged.applied, failedHunks: merged.failedHunks });
     }
     if (sub === 'push') {
       state.pushes.push(body as Record<string, unknown>);
@@ -1422,5 +1440,98 @@ describe('CLI safety (T7.B3)', () => {
     expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('suggested text');
     expect(readFileSync(join(dir, '.moss-multi', ID_A, 'base.md')).equals(base)).toBe(true);
     expect(readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json')).equals(meta)).toBe(true);
+  });
+});
+
+describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
+  // Moss's overwrite bug: a note open with unsaved typing is saved from the editor's full text after its file changed
+  // on disk, so the save holds the text from before the daemon's pull plus the typing.
+  const enc = (text: string) => new TextEncoder().encode(text);
+  const dec = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes);
+  const B0 = '# Notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+  const AGENT = B0.replace('Para two.', 'Para two, edited by the agent.');
+  const NEW = '66666666-6666-4666-8666-666666666666';
+
+  beforeEach(() => {
+    server.state.merge = true;
+    server.content.set(ID_B, enc(B0));
+  });
+
+  it('the report\'s sequence: an agent edit pulled under an editor holding the old text, then a save with typing elsewhere, keeps both edits', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    const pulled = await cli(['sync', '--json']);
+    expect(pulled.code, pulled.err).toBe(0);
+    expect(readFileSync(file, 'utf8'), 'the daemon writes the agent edit into the file').toBe(AGENT);
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const both = AGENT.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'the server keeps the agent edit and gains the typing').toBe(both);
+    expect(readFileSync(file, 'utf8'), 'and the file holds both').toBe(both);
+    expect(server.state.pushes.at(-1)?.baseHash, 'the push merges against the text the editor held').toBe(sha256Hex(B0));
+
+    // The editor still lacks the agent edit and saves again over the merged file: the typing lands, nothing reverts.
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing. More.'));
+    const again = await cli(['sync', '--json']);
+    expect(again.code, again.err).toBe(0);
+    const more = both.replace('and my typing.', 'and my typing. More.');
+    expect(dec(server.content.get(ID_B))).toBe(more);
+    expect(readFileSync(file, 'utf8')).toBe(more);
+  });
+
+  it('a stale save that rewrites the paragraph the agent edited keeps the server version and sets the typing aside', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+
+    writeFileSync(file, editor.replace('Para two.', 'Para two, rewritten in the editor.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, 'failed hunks exit 2').toBe(2);
+    expect(dec(server.content.get(ID_B)), 'no revert reaches the server').toBe(AGENT);
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toBe(AGENT);
+    expect(readFileSync(`${file}.rej`, 'utf8'), 'the typing waits beside the note').toContain('+Para two, rewritten in the editor.');
+    expect(JSON.parse(saved.out)).toContainEqual(expect.objectContaining({ docId: ID_B, failedHunks: 1 }));
+  });
+
+  it('an ordinary edit made after the pull syncs as before, against the pulled base', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+
+    writeFileSync(file, readFileSync(file, 'utf8').replace('Para four.', 'Para four, typed after reading.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const both = AGENT.replace('Para four.', 'Para four, typed after reading.');
+    expect(dec(server.content.get(ID_B))).toBe(both);
+    expect(readFileSync(file, 'utf8')).toBe(both);
+    expect(server.state.pushes.map((push) => push.baseHash), 'the push merges against the pulled text, as before').toEqual([sha256Hex(AGENT)]);
+  });
+
+  it('a moss note: a stale save in moss form keeps the agent edit, the typing, the title line and markers', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara %%m:c1:start%%two%%m:c1:end%%.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    expect(body).toBe('Para one.\n\nPara two.\n\nPara three.\n\nPara four.\n');
+    server.content.set(NEW, enc(body.replace('Para one.', 'Para one, edited by the agent.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('Para one, edited by the agent.');
+
+    writeFileSync(file, NOTE.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(NEW))).toBe('Para one, edited by the agent.\n\nPara two.\n\nPara three.\n\nPara four, and my typing.\n');
+    expect(readFileSync(file, 'utf8')).toBe(NOTE.replace('Para one.', 'Para one, edited by the agent.').replace('Para four.', 'Para four, and my typing.'));
   });
 });
