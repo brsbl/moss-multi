@@ -679,3 +679,47 @@ test('j11-media: SP9 near-cap probe: a 95 MiB video stores whole, its hash and a
   test.info().annotations.push({ type: 'sp9-near-cap', description: JSON.stringify({ bytes: cap, uploadMs: probe.ms }) });
   expect(probe.failures, 'the near-cap upload stores and reads back exactly').toEqual([]);
 });
+
+// T3.B17: moss's missing-image fallback offered Remove (and Retry) to anyone, a focusable control a reader could not use.
+const MISSING_MEDIA = 'Before the images.\n\n![gone](assets/gone-image.png)\n\n![desk](/Users/someone/Pictures/desk.png)\n\nAfter the images.';
+const GONE_ASSET = /\/assets\/gone-image\.png/;
+
+test('j11-media: a missing image and a desktop-only one offer a reader no Remove or Retry; an editor removes them @p:note-8', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const origin = new URL(ada.page.url()).origin;
+  const made = await ada.context.request.post(`${origin}/api/docs`, { headers: { origin }, data: { title: 'Missing media', markdown: MISSING_MEDIA } });
+  expect(made.status(), 'declared setup: a note with a missing and a desktop-only image').toBe(201);
+  const docId = ((await made.json()) as { doc: { id: string } }).doc.id;
+  const missing = (actor: Actor) => ui.body(actor, docId).locator('[data-block-decorator-key]').filter({ hasText: 'could not be found' });
+  const desktop = (actor: Actor) => ui.body(actor, docId).locator('[data-block-decorator-key]').filter({ hasText: 'available on the web' });
+  ada.expectHttp(404, GONE_ASSET);
+  await ada.goto(`/d/${docId}`);
+  await ui.waitLive(ada, docId);
+
+  const ben = await actors.session(await actors.principal('ben'));
+  await grantDoc(ada, docId, ben.principal!, 'viewer');
+  ben.expectHttp(404, GONE_ASSET);
+  await ben.goto(`/d/${docId}`);
+  await ui.waitOpen(ben, docId, 'readonly');
+  await actors.requireDistinct(2);
+  for (const fallback of [missing(ben), desktop(ben)]) {
+    await expect(fallback, 'ben: the fallback says why the image is missing').toBeVisible({ timeout: BIND_TIMEOUT });
+    await expect(fallback.getByRole('button'), 'ben: a reader is offered no Remove or Retry').toHaveCount(0);
+  }
+
+  // The editor's fallbacks keep Remove (and Retry for a file that may come back), and Remove deletes the block.
+  await expect(missing(ada).getByRole('button', { name: 'Retry', exact: true }), 'ada: Retry for the missing upload').toBeVisible();
+  await expect(desktop(ada).getByRole('button', { name: 'Remove', exact: true }), 'ada: Remove for the desktop file').toBeVisible();
+  await desktop(ada).getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect(desktop(ada), 'ada: the desktop-only image is gone').toHaveCount(0);
+  await missing(ada).getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect(missing(ada), 'ada: the missing image is gone').toHaveCount(0);
+  for (const actor of [ada, ben]) {
+    await expect(missing(actor).or(desktop(actor)), `${actor.label}: both blocks are removed`).toHaveCount(0, { timeout: PEER_TIMEOUT });
+    await expect(ui.body(actor, docId)).toContainText('Before the images.');
+    await expect(ui.body(actor, docId)).toContainText('After the images.');
+  }
+  await ui.waitAcked(ada, docId, PEER_TIMEOUT);
+  await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), { message: 'the export drops both images' })
+    .not.toMatch(/gone-image|desk\.png/);
+});
