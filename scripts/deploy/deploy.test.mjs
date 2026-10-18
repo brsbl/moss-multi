@@ -317,12 +317,13 @@ describe('deploy-staging.yml', () => {
     const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
     expect(uploads.length).toBeGreaterThanOrEqual(1);
     const allowed = {
-      tail: [['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/tail-summary.json']],
+      tail: [['e2e/canary-artifacts/tail-summary.json']],
+      sp9: [['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/summary.json']],
       other: [['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']],
     };
     for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
       for (const upload of job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact'))) {
-        expect(allowed[name === 'tail' ? 'tail' : 'other'], name).toContainEqual(upload.with.path.trim().split('\n').map((line) => line.trim()).sort());
+        expect(allowed[name === 'tail' || name === 'sp9' ? name : 'other'], name).toContainEqual(upload.with.path.trim().split('\n').map((line) => line.trim()).sort());
       }
     }
   });

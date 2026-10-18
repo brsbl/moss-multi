@@ -82,7 +82,7 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
     expect(job.needs).toEqual(expect.arrayContaining(['deploy']));
     expect(job.needs).not.toContain('suite');
     const run = job.steps.map((step) => step.run ?? '').join('\n');
-    expect(run).toMatch(/tail-summary\.mjs run/);
+    expect(run).toMatch(/tail-summary\.mjs run "\$out" -- /);
     // One unfiltered tail: a second, header-filtered tail left the error tail seeing only the probe's two uploads
     // (runs 39116654098 and 39130102453), as though one tail's filter applied to both.
     expect(run.match(/"\$WRANGLER" tail/g)?.length ?? 0, 'one tail').toBe(1);
@@ -134,18 +134,43 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
     expect(summary.result().uploads['near-cap']).toEqual([{ outcome: 'exceededMemory', status: null, cpuTimeMs: null, wallTimeMs: null, withinMemoryLimit: false, exceptions: { 'memory limit': 1 } }]);
   });
 
-  it('reads the SP9 uploads from the same tail, and fails the job on missing telemetry or a tail that ended early', () => {
+  it('the tail job runs one unfiltered tail until every shard finished, and fails when it ends first', () => {
     const job = WORKFLOW.jobs.tail;
     const run = job.steps.map((step) => step.run ?? '').join('\n');
-    expect(run).toMatch(/tail-summary\.mjs run "\$out" --probe "\$probe" -- /);
-    expect(run).toMatch(/tail-summary\.mjs check-probe/);
     // It runs until every shard finished, however long the shards take at suite_parallel, never to a fixed deadline.
     expect(run).not.toMatch(/110 \* 60/);
     expect(job['timeout-minutes']).toBeGreaterThanOrEqual(340);
     expect(run, 'a tail that exits before the suite finished fails the job').toMatch(/::error::the tail ended before the suite finished/);
     expect(run).toMatch(/kill -0 "\$pid"/);
     const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact'));
-    expect(upload.with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/tail-summary.json']);
+    expect(upload.with.path.trim()).toBe('e2e/canary-artifacts/tail-summary.json');
+  });
+
+  it("SP9's telemetry comes from a header-filtered tail in its own job, which no other tail overlaps", () => {
+    // Unfiltered, the tail sampled the near-cap upload away (run 39145040057); beside a filtered tail, an unfiltered
+    // one saw only the filtered one's events (runs 39116654098, 39130102453). So the probe runs alone, first.
+    const { sp9, tail, suite } = WORKFLOW.jobs;
+    expect(sp9, 'an sp9 job').toBeDefined();
+    expect(sp9.if).toMatch(/inputs\.suite == 'full'/);
+    expect(sp9.needs).toEqual(expect.arrayContaining(['deploy', 'canary']));
+    expect(tail.needs, 'the error tail starts after it').toContain('sp9');
+    expect(suite.needs, 'the suite starts after it').toContain('sp9');
+    const steps = sp9.steps;
+    const run = steps.map((step) => step.run ?? '').join('\n');
+    expect(run).toMatch(new RegExp(`tail-summary\\.mjs probe "\\$probe" -- node "\\$WRANGLER" tail moss-multi-staging --format json --header ${SP9_PROBE_HEADER}`));
+    expect(run).toMatch(/--project=staging-chromium[^\n]*--grep "SP9 near-cap probe"/);
+    expect(run).toMatch(/tail-summary\.mjs check-probe "\$probe"/);
+    // The Cloudflare token reaches only the step that starts the tail, never the journeys.
+    for (const step of steps) {
+      const env = JSON.stringify(step.env ?? {});
+      if (/CLOUDFLARE_API_TOKEN/.test(env)) expect(step.run, step.name).toMatch(/tail-summary\.mjs probe/);
+    }
+    expect(JSON.stringify(sp9.env ?? {})).not.toMatch(/CLOUDFLARE/);
+    // The suite does not upload the 95 MiB file a second time.
+    const suiteRun = suite.steps.map((step) => step.run ?? '').join('\n');
+    expect(suiteRun).toMatch(/--grep-invert "SP9 near-cap probe"/);
+    const upload = steps.find((step) => step.uses?.startsWith('actions/upload-artifact'));
+    expect(upload.with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/summary.json']);
   });
 
   it('the near-cap probe labels its uploads with the header the tail filters on', () => {
