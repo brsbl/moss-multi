@@ -12,6 +12,7 @@ import { CliError, EXIT } from './errors.ts';
 import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
+import { evaluateScope, readScope, type ScopeView } from './scope.ts';
 import {
   confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
   renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
@@ -19,7 +20,7 @@ import {
 
 export type SyncAction =
   | 'up-to-date' | 'pulled' | 'pushed' | 'merged' | 'suggested' | 'repulled' | 'created' | 'renamed' | 'remote-gone'
-  | 'skipped-degenerate' | 'failed' | 'uploaded' | 'downloaded';
+  | 'skipped-degenerate' | 'failed' | 'uploaded' | 'downloaded' | 'out-of-scope';
 
 export interface SyncResult {
   file: string;
@@ -31,6 +32,8 @@ export interface SyncResult {
   /** The text of each failed hunk: the file keeps it, and so does the output. */
   hunks?: string[];
   message?: string;
+  /** For `out-of-scope`: how many files the workspace's scope left alone (never their names). */
+  count?: number;
 }
 
 export interface SyncContext {
@@ -40,6 +43,8 @@ export interface SyncContext {
   force: boolean;
   /** Stops the pass (`watch` on Ctrl+C): no write starts after it, and every write already confirmed is recorded. */
   signal?: AbortSignal;
+  /** The workspace's scope this pass: a path it does not admit is never read, adopted or written. */
+  scope?: ScopeView;
 }
 
 /** The pass was stopped before a write; what it recorded so far stands. */
@@ -146,7 +151,8 @@ function followServerName(ctx: SyncContext, meta: DocMeta, row: DocRow | undefin
   }
   if (meta.filename === row.filename) return { meta };
   const to = join(dirname(meta.file), localName(row.filename, row.title));
-  if (to === meta.file) {
+  // A name outside the scope is never taken: the file keeps its name.
+  if (to === meta.file || (ctx.scope && !ctx.scope.admits(to))) {
     const next = { ...meta, filename: row.filename };
     writeMeta(ctx.root, next);
     return { meta: next };
@@ -431,6 +437,15 @@ function followLocalRenames(root: string, metas: DocMeta[], untracked: string[],
   return { held, heldFiles };
 }
 
+/**
+ * The workspace's scope evaluated over its files now, or null when it has none (every note is in scope). A scope file
+ * that cannot be read is an error, so nothing syncs past it.
+ */
+export function workspaceScope(root: string, folds: boolean, files = markdownFiles(root)): ScopeView | null {
+  const scope = readScope(root);
+  return scope ? evaluateScope(root, scope, files, trackedMetas(root), folds) : null;
+}
+
 /** One sync pass over the workspace at `ctx.root`, which must already hold a state directory. */
 export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
   const { root } = ctx;
@@ -455,6 +470,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   const { root, client, folds } = ctx;
   /** Stopped: the rest of the pass is dropped, and what it recorded so far stands. */
   const stopped = (error?: unknown) => error instanceof Stopped || Boolean(ctx.signal?.aborted);
+  // A scope file that cannot be read stops the pass before any request.
+  readScope(root);
   let listed: DocRow[];
   try {
     listed = await client.listDocs();
@@ -468,13 +485,18 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
 
-  const files = markdownFiles(root);
+  const all = markdownFiles(root);
+  // With a scope, a file outside it is never read, adopted or written, and a tracked one outside it stops syncing.
+  const scope = workspaceScope(root, folds, all) ?? undefined;
+  ctx = scope ? { ...ctx, scope } : ctx;
+  const admitted = (rel: string) => !scope || scope.admits(rel);
+  const files = all.filter(admitted);
   const untracked = files.filter((rel) => !metas.some((meta) => sameFile(meta.file, rel, folds)));
-  const { held, heldFiles } = followLocalRenames(root, metas, untracked, results);
+  const { held, heldFiles } = followLocalRenames(root, metas.filter((meta) => admitted(meta.file)), untracked, results);
   metas = trackedMetas(root);
 
   for (const tracked of metas) {
-    if (held.has(tracked.docId)) continue;
+    if (held.has(tracked.docId) || !admitted(tracked.file)) continue;
     if (stopped()) return results;
     touch();
     try {
@@ -505,6 +527,7 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       results.push({ file: rel, action: 'failed', message: failure(error) });
     }
   }
+  if (scope && scope.outOfScope > 0) results.push({ file: '', action: 'out-of-scope', count: scope.outOfScope });
   return results;
 }
 
@@ -518,6 +541,7 @@ export function syncExitCode(results: SyncResult[]): number {
 
 /** One line per result that did something. */
 export function describe(result: SyncResult): string {
+  if (result.action === 'out-of-scope') return `${result.count ?? 0} .md file(s) outside the workspace's scope (.moss-multi/scope.json) were left alone`;
   const name = result.from ? `${result.from} → ${result.file}` : result.file;
   const hunks = (result.hunks ?? []).map((hunk) => `\nfailed hunk:\n${hunk}`).join('');
   // The message may quote the server (a title, a refusal): it stays on its line.
@@ -583,7 +607,7 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
       try {
         for (const result of await syncOnce({ ...ctx, signal })) {
           if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) err(describe(result));
-          else if (result.action !== 'up-to-date') out(describe(result));
+          else if (result.action !== 'up-to-date' && result.action !== 'out-of-scope') out(describe(result));
         }
       } catch (error) {
         if (error instanceof RateLimited) limitedMs = error.retryAfterSec * 1000;

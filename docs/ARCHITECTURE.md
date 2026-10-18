@@ -642,6 +642,7 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 - An adopted file is tracked right after create, against the created revision's export (`content` in the `POST /api/docs` answer), so a later server edit reaches it through the normal three-way pass and a retry never makes a second doc.
 - Server filename changes rename local files.
 - Deletes never propagate. [R9]
+- **Scope.** A workspace may hold `.moss-multi/scope.json` (`init --scope` writes it): `allow` (note folders or path globs), `follow` (entry notes whose links, moss wiki links by title or note id and relative markdown links, bring the notes they reach into scope, `depth` hops out, default 1, re-read every pass) and `deny` (paths or globs never synced, winning over both, compared without case). A moss note is its folder, so a pattern matching the folder or one above it matches the note. Sync, pull, push and add then touch only in-scope notes: an out-of-scope file is never read for upload, adopted or written, `--json` counts such files as one `out-of-scope` record, a tracked note that leaves scope stops syncing and keeps its doc, and a server rename onto an out-of-scope name is not followed. A scope file sync cannot read exactly (bad JSON, an unknown key) stops the pass before any request. Without the file every `.md` is in scope.
 
 **Daemon.** `moss-multi watch [dir]` runs the same loop on debounced filesystem events and a 60 s idle tick. It respects `retry-after`, uses REST only, and holds no sockets. [R9; S-gd §7.5]
 

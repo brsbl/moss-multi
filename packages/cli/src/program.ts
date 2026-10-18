@@ -11,8 +11,12 @@ import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
-import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop } from './sync.ts';
-import { confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, recordPull, resetRootPins, sha256Hex } from './workspace.ts';
+import { parseScope, SCOPE_FILE } from './scope.ts';
+import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
+import {
+  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile, recordPull,
+  resetRootPins, sha256Hex, writeStateFile,
+} from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -56,8 +60,14 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   pull <doc> [file] [--force]                  write the doc to a file and track it here
   push <file> [--suggest] [--force]            merge your edits to a pulled file into the doc
   init [dir]                                   make a folder a workspace, so sync and watch may use it
+  init [dir] --scope [--allow <glob>]... [--follow <note>]... [--deny <glob>]... [--depth <n>]
+                                               also write .moss-multi/scope.json: sync then takes only the notes
+                                               --allow matches and those the --follow notes link to (depth hops
+                                               out, re-read every pass), never what --deny matches. No --allow
+                                               or --follow: nothing syncs until the file is edited
   sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
-                                               doc; deleting a file here never deletes the doc
+                                               doc; deleting a file here never deletes the doc. With a scope,
+                                               only notes in it; --json counts the rest as "out-of-scope"
   watch [dir] [--interval <s>]                 sync on every change and every 60 s, until Ctrl+C
   history <doc> [--json]                       the doc's versions
   comments <doc> [--json]                      the doc's comment threads
@@ -174,6 +184,11 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     for (const result of results) (toStderr || result.action === 'failed' ? stderr : line)(describe(result));
     if (results.some((result) => result.action === 'failed')) exitCode = EXIT.other;
   };
+  /** Refuses a path the workspace's scope does not admit, before it is read or written. */
+  const inScope = (root: string, rel: string, what: string) => {
+    const scope = workspaceScope(root, foldsCase(root));
+    if (scope && !scope.admits(rel)) throw new CliError(1, `${rel} is outside this workspace's scope (.moss-multi/${SCOPE_FILE}), so moss-multi does not ${what} it`);
+  };
   /**
    * The workspace for `sync` and `watch`: the one holding `dir` (default the working directory). They never make
    * one: a folder becomes a workspace through `init` or `pull`, so a stray `sync` cannot upload a code repository.
@@ -275,6 +290,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (workspace) {
         // In a workspace the file is tracked at once, as sync would, so a later sync makes no second doc.
         const rel = confined(workspace, path);
+        inScope(workspace, rel, 'upload');
         const lock = await lockWorkspace(workspace);
         try {
           if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
@@ -350,6 +366,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const row = (await client.listDocs()).find((doc) => doc.id === id);
         rel = confined(root, resolve(cwd(), row ? localName(row.filename, row.title) : `${id}.md`));
       }
+      inScope(root, rel, 'write a doc to');
       const target = join(root, rel);
       // What the file must still hold when it is replaced: --force replaces anything, otherwise only the base or nothing.
       let expectHash: string | null | undefined;
@@ -376,6 +393,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
       if (meta.mode === 'moss') throw new CliError(1, `${meta.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
+      inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
       reportMedia((await noteMedia({ root, client, upload: true }, meta.docId, path)).results);
@@ -442,12 +460,45 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     },
 
     async init(rest) {
-      const parsed = parseArgs(rest, [], []);
-      const [dir] = arity(parsed, 0, 1, 'init [dir]');
+      // --allow, --follow and --deny repeat, so they are gathered before the rest is parsed.
+      const lists: Record<'allow' | 'follow' | 'deny', string[]> = { allow: [], follow: [], deny: [] };
+      let depth: string | undefined;
+      const others: string[] = [];
+      for (let i = 0; i < rest.length; i += 1) {
+        const arg = rest[i]!;
+        if (arg === '--') {
+          others.push(...rest.slice(i));
+          break;
+        }
+        const eq = arg.indexOf('=');
+        const name = arg.startsWith('--') ? arg.slice(2, eq < 0 ? undefined : eq) : '';
+        if (name !== 'allow' && name !== 'follow' && name !== 'deny' && name !== 'depth') {
+          others.push(arg);
+          continue;
+        }
+        const given = eq >= 0 ? arg.slice(eq + 1) : rest[++i];
+        if (given === undefined) throw new CliError(1, `--${name} needs a value`);
+        if (name === 'depth') depth = given;
+        else lists[name].push(given);
+      }
+      const parsed = parseArgs(others, ['scope'], []);
+      const usage = 'init [dir] [--scope [--allow <glob>]... [--follow <note>]... [--deny <glob>]... [--depth <n>]]';
+      const [dir] = arity(parsed, 0, 1, usage);
+      const scoped = parsed.flags.has('scope');
+      if (!scoped && (depth !== undefined || Object.values(lists).some((list) => list.length > 0))) throw new CliError(1, `--allow, --follow, --deny and --depth go with --scope: moss-multi ${usage}`);
       const root = resolve(cwd(), dir ?? '.');
       if (!existsSync(root)) throw new CliError(1, `no such directory: ${dir ?? root}`);
-      ensureStateDir(root);
-      line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
+      if (!scoped) {
+        ensureStateDir(root);
+        line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
+        return;
+      }
+      // Checked as sync reads it, so a scope init writes is one sync accepts.
+      const scope = parseScope(JSON.stringify({ ...lists, depth: depth === undefined ? 1 : Number(depth) }));
+      ensureStateDir(pinRoot(root));
+      if (readStateFile(root, SCOPE_FILE)) throw new CliError(1, `${root} already has a scope; edit .moss-multi/${SCOPE_FILE} to change it`);
+      writeStateFile(root, SCOPE_FILE, Buffer.from(`${JSON.stringify({ allow: lists.allow, follow: lists.follow, depth: scope.depth, deny: lists.deny }, null, 2)}\n`));
+      line(`${root} is a moss-multi workspace scoped by .moss-multi/${SCOPE_FILE}: \`moss-multi sync\` takes only the notes it allows or links to, never what it denies`);
     },
 
     async sync(rest) {
@@ -461,7 +512,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
           if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) stderr(describe(result));
           else if (result.action !== 'up-to-date') line(describe(result));
         }
-        if (results.every((result) => result.action === 'up-to-date')) line('everything is up to date');
+        if (results.every((result) => result.action === 'up-to-date' || result.action === 'out-of-scope')) line('everything is up to date');
       }
       exitCode = syncExitCode(results);
     },

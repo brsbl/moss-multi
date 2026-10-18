@@ -301,6 +301,19 @@ export function renameInside(root: string, from: string, to: string, folds: bool
   return true;
 }
 
+/** A workspace-wide file in the state directory (`scope.json`), or null when there is none; a link is refused. */
+export function readStateFile(root: string, name: string): Buffer | null {
+  const path = noLinks(root, join(STATE_DIR, name));
+  const stats = lstat(path);
+  if (!stats) return null;
+  if (!stats.isFile()) throw new CliError(1, `${join(STATE_DIR, name)} is not a regular file`);
+  return readFileSync(path);
+}
+
+export function writeStateFile(root: string, name: string, bytes: Uint8Array): void {
+  writeInside(root, join(STATE_DIR, name), bytes, null);
+}
+
 /** Whether `root` holds a real state directory. */
 export const isWorkspace = (root: string): boolean => isDir(join(root, STATE_DIR));
 
