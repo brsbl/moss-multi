@@ -1,9 +1,11 @@
 // T8.2: what the Worker and its Durable Objects did while the staging suite ran, from `wrangler tail`, reduced to
 // counts and fixed class names so the public log and artifact never hold a URL, header, log line or error text.
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
-import { probeProblems, ProbeSummary, SP9_PROBE_HEADER, TailSummary } from './tail-summary.mjs';
+import { probeProblems, ProbeSummary, runTail, SP9_PROBE_HEADER, TailSummary } from './tail-summary.mjs';
 
 const WORKFLOW = yaml.load(readFileSync(new URL('../../.github/workflows/deploy-staging.yml', import.meta.url), 'utf8'));
 const AT = Date.UTC(2026, 9, 14, 23, 54, 29);
@@ -66,6 +68,19 @@ describe('the staging tail summary (T8.2) @p:R15', () => {
       events: 3,
       outcomes: { 'worker GET /api/docs ok': 1, 'worker GET /api/docs exception': 1, 'DocDO.create exceededMemory': 1 },
     });
+  });
+
+  it('restarts a tail that ends on its own, keeps summing, and counts the restarts', async () => {
+    // wrangler's tail ended about two hours into run 39145040057's five-hour suite, with exit 0.
+    const dir = mkdtempSync(join(tmpdir(), 'tail-'));
+    try {
+      const out = join(dir, 'tail-summary.json');
+      const script = `process.stdout.write(${JSON.stringify(printed(docCreateOom))})`;
+      await runTail([[out, new TailSummary()]], [process.execPath, '-e', script], { maxRestarts: 2, restartDelayMs: 0 });
+      expect(JSON.parse(readFileSync(out, 'utf8'))).toMatchObject({ events: 3, tailRestarts: 2, tailExit: '0' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('counts a tail overload notice and a line it cannot parse, and never throws on them', () => {
