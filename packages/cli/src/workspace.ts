@@ -30,7 +30,15 @@ export interface DocMeta {
   mode?: 'moss';
   /** For a moss note, the title its title line held when it was last synced. */
   title?: string;
+  /**
+   * The text the file held, in the base's form, before sync last wrote over it (`prior.md`): an editor may still hold
+   * it and save it back (T7.P2).
+   */
+  prior?: { hash: string; at: number };
 }
+
+/** How long a prior text counts: an editor that saves later than this is taken to have reloaded the file. */
+export const PRIOR_MS = 10 * 60_000;
 
 /** What else a synced doc records beside its base. */
 export interface SyncedState {
@@ -38,6 +46,8 @@ export interface SyncedState {
   localHash?: string;
   mode?: 'moss';
   title?: string;
+  /** What the file held before this write, in the base's form; the prior text kept for the same file otherwise. */
+  prior?: Uint8Array;
 }
 
 export const sha256Hex = (bytes: Uint8Array | string): string => createHash('sha256').update(bytes).digest('hex');
@@ -221,6 +231,17 @@ export function readBase(root: string, docId: string): Uint8Array {
   return readFileSync(noLinks(root, stateRel(docId, 'base.md')));
 }
 
+/** The doc's prior text (DocMeta.prior) while it still counts, or null. */
+export function readPrior(root: string, meta: DocMeta, now = Date.now()): Uint8Array | null {
+  if (!meta.prior || now - meta.prior.at > PRIOR_MS) return null;
+  try {
+    const bytes = readFileSync(noLinks(root, stateRel(meta.docId, 'prior.md')));
+    return sha256Hex(bytes) === meta.prior.hash ? bytes : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether the volume under `root` folds case, as APFS and NTFS do by default: there, `NOTE.md` is `note.md`, so
  * tracked paths compare case-insensitively. Probed on the real state directory.
@@ -315,10 +336,10 @@ export function ensureStateDir(root: string): void {
  * Writes the pulled bytes to `file` and records them as the base. `expectHash` is what the file must still hold
  * when it is replaced (null: still absent; undefined: --force replaces whatever is there).
  */
-export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, filename?: string): DocMeta {
+export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, state: Pick<SyncedState, 'prior'> = {}): DocMeta {
   const rel = confined(root, file);
   writeInside(root, rel, bytes, expectHash);
-  return recordBase(root, docId, rel, bytes, folds, filename !== undefined ? { filename } : {});
+  return recordBase(root, docId, rel, bytes, folds, state);
 }
 
 /**
@@ -343,10 +364,15 @@ export function recordBase(root: string, docId: string, rel: string, bytes: Uint
   const known = state.filename ?? previous?.filename;
   const mode = state.mode ?? previous?.mode;
   const title = state.title ?? previous?.title;
+  let prior = previous?.file === rel ? previous.prior : undefined;
+  if (state.prior !== undefined) {
+    writeInside(root, stateRel(docId, 'prior.md'), state.prior);
+    prior = { hash: sha256Hex(state.prior), at: Date.now() };
+  }
   const meta: DocMeta = {
     docId, file: rel, baseHash, pulledAt: Date.now(), ...(known !== undefined ? { filename: known } : {}),
     ...(state.localHash !== undefined && state.localHash !== baseHash ? { localHash: state.localHash } : {}),
-    ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}),
+    ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}), ...(prior ? { prior } : {}),
   };
   writeMeta(root, meta);
   for (const name of readdirSync(join(root, STATE_DIR))) {

@@ -6,6 +6,7 @@
 // (media.ts). `watch` runs the same pass on debounced filesystem events and an idle tick, over REST only.
 import { watch as watchFs, type Dirent, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative } from 'node:path';
+import { editsOf, mergeBudget, withoutFinalEol } from '@moss-multi/core/merge';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
@@ -13,7 +14,7 @@ import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import {
-  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
+  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPrior, recordBase, recordPull, recordSynced,
   renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
@@ -62,13 +63,33 @@ export const toLf = (text: string): string => text.replace(/\r\n?/g, '\n');
 const decoder = new TextDecoder('utf-8', { fatal: false });
 export const decode = (bytes: Uint8Array): string => decoder.decode(bytes);
 
-/** A push that resends the base when the server's base cache has lost it. */
-export async function pushWithBase(client: Api, root: string, meta: DocMeta, request: PushRequest, signal?: AbortSignal): Promise<PushResponse> {
+/** A push that resends its base (the recorded one unless `base` is given) when the server's base cache has lost it. */
+export async function pushWithBase(client: Api, root: string, meta: DocMeta, request: PushRequest, signal?: AbortSignal, base?: Uint8Array): Promise<PushResponse> {
   beforeWrite(signal);
   const response = await client.push(meta.docId, request);
   if (response.ok || response.reason !== 'base-missing') return response;
-  return client.push(meta.docId, { ...request, baseText: decode(readBase(root, meta.docId)) });
+  return client.push(meta.docId, { ...request, baseText: decode(base ?? readBase(root, meta.docId)) });
 }
+
+/** The characters core/merge's structural diff deletes and inserts to turn `from` into `to`. */
+const distance = (from: string, to: string): number =>
+  editsOf(withoutFinalEol(from), withoutFinalEol(to), mergeBudget(), false).reduce((sum, edit) => sum + (edit.end - edit.start) + edit.text.length, 0);
+
+/**
+ * The base a changed file's push merges against. Normally the recorded base; but a file saved by an editor that still
+ * held the text from before sync last wrote over it (moss rewrites an open note from its editor, T7.P2) descends from
+ * that prior text, not from the base: the pulled edits are missing and the prior text plus the typing explains it.
+ * Pushed against the base, that save would revert the pulled edits; against the prior text only the typing lands.
+ */
+function pushBase(root: string, meta: DocMeta, local: string): { hash: string; bytes?: Uint8Array; stale: boolean } {
+  const prior = readPrior(root, meta);
+  if (!prior || meta.prior!.hash === meta.baseHash) return { hash: meta.baseHash, stale: false };
+  const priorText = toLf(decode(prior));
+  if (distance(priorText, local) >= distance(decode(readBase(root, meta.docId)), local)) return { hash: meta.baseHash, stale: false };
+  return { hash: meta.prior!.hash, bytes: prior, stale: true };
+}
+
+const STALE = 'saved over a pulled edit by an editor holding the older text: merged against that text, so the pulled edit stays';
 
 const isMarkdown = (name: string) => extname(name).toLowerCase() === '.md';
 /** Directories that are someone else's: installed packages, and another repository or workspace nested inside. */
@@ -209,33 +230,36 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
   const localChanged = localHash !== syncedHash(meta);
   if (!localChanged && remoteHash === meta.baseHash) return { ...id, action: 'up-to-date' };
   if (!localChanged) {
-    recordPull(root, meta.docId, meta.file, remote, localHash, folds);
+    recordPull(root, meta.docId, meta.file, remote, localHash, folds, { prior: local });
     return { ...id, action: 'pulled' };
   }
   if (localHash === remoteHash) {
     recordBase(root, meta.docId, meta.file, remote, folds);
     return { ...id, action: 'up-to-date' };
   }
+  const newText = toLf(decode(local));
+  const base = pushBase(root, meta, newText);
   const response = await pushWithBase(client, root, meta, {
-    newText: toLf(decode(local)),
-    baseHash: meta.baseHash,
+    newText,
+    baseHash: base.hash,
     ...(ctx.force ? { force: true } : {}),
-  }, ctx.signal);
+  }, ctx.signal, base.bytes);
   if (!response.ok) return refused(meta, response);
   if (response.mode === 'suggest') return { ...id, action: 'suggested', message: `landed as suggestion ${response.suggestionId}; the file keeps your text` };
   const merged = await client.content(meta.docId, true);
-  const action: SyncAction = remoteHash === meta.baseHash ? 'pushed' : 'merged';
+  const action: SyncAction = remoteHash === meta.baseHash && !base.stale ? 'pushed' : 'merged';
   // As glyphdown does, the file and base converge on the doc so web edits keep arriving; rejected text is kept first.
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
   try {
-    recordPull(root, meta.docId, meta.file, merged, localHash, folds);
+    // The file's text is kept as the prior text: an editor that saved it may save it again over the merged file.
+    recordPull(root, meta.docId, meta.file, merged, localHash, folds, { prior: local });
   } catch (error) {
     if (!(error instanceof CliError)) throw error;
     // Edited again during the push: the file and its base stay, so the next pass three-way merges the newer text.
     return { ...id, action, ...(response.failedHunks.length ? { failedHunks: response.failedHunks.length, hunks: response.failedHunks } : {}), message: 'edited during the push, so the file was left as it is; the newer edits go on the next pass' };
   }
   if (rej) return rejected(id, response.failedHunks, rej);
-  return { ...id, action };
+  return { ...id, action, ...(base.stale ? { message: STALE } : {}) };
 }
 
 /**
@@ -266,10 +290,10 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
     message = `renamed the doc to "${title}"`;
   }
   const done = (action: SyncAction, extra: Partial<SyncResult> = {}): SyncResult => ({ ...id, action, ...(message ? { message } : {}), ...extra });
-  /** The file becomes the doc's `text` in moss form, with the file's markers carried onto it. */
+  /** The file becomes the doc's `text` in moss form, with the file's markers carried onto it; its body is kept as the prior text. */
   const write = (text: Uint8Array) => {
     const rendered = renderMoss(decode(text), title, remapMarkers(note.markers, note.clean, decode(text)));
-    recordSynced(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title });
+    recordSynced(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title, prior: Buffer.from(note.clean) });
   };
   if (!localChanged || sha256Hex(note.clean) === meta.baseHash) {
     // Nothing to push: the body here is the base.
@@ -280,15 +304,17 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
     write(remote);
     return done('pulled');
   }
+  const base = pushBase(root, meta, note.clean);
   const response = await pushWithBase(client, root, meta, {
     newText: note.clean,
-    baseHash: meta.baseHash,
+    baseHash: base.hash,
     ...(ctx.force ? { force: true } : {}),
-  }, ctx.signal);
+  }, ctx.signal, base.bytes);
   if (!response.ok) return refused(meta, response);
   if (response.mode === 'suggest') return done('suggested', { message: `landed as suggestion ${response.suggestionId}; the file keeps your text` });
   const merged = await client.content(meta.docId, true);
-  const action: SyncAction = remoteHash === meta.baseHash ? 'pushed' : 'merged';
+  const action: SyncAction = remoteHash === meta.baseHash && !base.stale ? 'pushed' : 'merged';
+  if (base.stale) message = message ? `${message}; ${STALE}` : STALE;
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
   try {
     write(merged);
