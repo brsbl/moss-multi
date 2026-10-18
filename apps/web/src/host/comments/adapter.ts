@@ -6,46 +6,65 @@
 import { can } from '@moss-multi/protocol/roles';
 import { $getSelection, $isRangeSelection, type LexicalEditor } from 'lexical';
 import { useSyncExternalStore } from 'react';
-import { knownRole, useDocRole } from '../access.ts';
+import { knownRole, useDocRole, useKnownRole } from '../access.ts';
 import { terminalOf, useTerminal } from '../collab/terminal.ts';
-import { createComment, deleteComment, editComment, reactTo, replyTo, resolveThread } from './api.ts';
+import {
+  carrying, createComment, deleteComment, draftOf, editComment, editNeedsSave, failedDrafts, onDraftFailed, reactTo, replyTo, resolveThread,
+  type Completion, type DraftSlot,
+} from './api.ts';
 import { $mintNode, mintCurrent, type Minted } from './mint.ts';
-import { commentsAtPoint, isShared, noteBound, painterOf, setActive, setHover, subscribeAnyPaint, subscribePaint } from './paint.ts';
+import {
+  commentsAtPoint, isShared, noteBound, painterOf, setActive, setHover, sharedDocOf, subscribeAnyPaint, subscribePaint, trackCommentHover,
+} from './paint.ts';
 import { myPrincipalId } from './people.ts';
 
-export { commentsAtPoint, isShared as bound, setActive, setHover, subscribePaint };
+export { commentsAtPoint, isShared as bound, setActive, setHover, subscribePaint, trackCommentHover };
+export { carrying, editNeedsSave, onDraftFailed };
+export type { Completion, DraftSlot };
 
 /** Whether an editor in this tab is bound to `noteId`, as React state (a binding's start and end both repaint). */
 export function useNoteBound(noteId: string): boolean {
   return useSyncExternalStore(subscribeAnyPaint, () => noteBound(noteId));
 }
 
-/** The selection minted when the composer opened, per editor, so peers' edits meanwhile cannot move it. */
-const stashed = new WeakMap<LexicalEditor, Minted>();
+/**
+ * What the composer opened on, per editor: the selection minted at open (null when that minted nothing), or a block.
+ * Every open replaces it, and a submit leaves it, so a resubmit from the same composer (a retry or a revision) comments
+ * on the same words or the same block, and peers' edits meanwhile cannot move it.
+ */
+type Target = { text: Minted | null } | { block: string };
+const stashed = new WeakMap<LexicalEditor, Target>();
 
 /** The composer is opening on the current selection: mint it now (comments.md §4 "mints at open"). */
 export function stashCommentSelection(editor: LexicalEditor): void {
   const painter = painterOf(editor);
-  const minted = painter ? mintCurrent(editor, painter.binding) : null;
-  if (minted) stashed.set(editor, minted);
-  else stashed.delete(editor);
+  stashed.set(editor, { text: painter ? mintCurrent(editor, painter.binding) : null });
+}
+
+/** The composer is opening on the block `nodeKey` (a block header's Add comment). */
+export function stashCommentBlock(editor: LexicalEditor, nodeKey: string): void {
+  stashed.set(editor, { block: nodeKey });
 }
 
 /**
- * CREATE_COMMENT_COMMAND (CommentPlugin's seam), inside the command's update: a block comment on `nodeKey`, or a
- * text comment on the selection minted at open (else the current one). True when the comment was sent; null for an
- * editor with no binding (moss's own path then runs).
+ * CREATE_COMMENT_COMMAND (CommentPlugin's seam), inside the command's update: a block comment on `nodeKey` or the block
+ * the composer opened on, else a text comment on the selection minted at open (else the current one). True when the
+ * comment was sent; null for an editor with no binding (moss's own path then runs). The server's answer reaches the
+ * composer through `submitted(noteId, 'root')`.
  */
 export function createFromCommand(editor: LexicalEditor, payload: { text: string; nodeKey?: string }): boolean | null {
   if (!isShared(editor)) return null;
   const painter = painterOf(editor);
   if (!painter) return false;
   if (!payload.text.trim() || !canComment(painter.docId)) return false;
-  const minted = payload.nodeKey ? $mintNode(painter.binding, payload.nodeKey) : (stashed.get(editor) ?? mintCurrent(editor, painter.binding));
-  stashed.delete(editor);
+  const target = stashed.get(editor);
+  const nodeKey = payload.nodeKey ?? (target && 'block' in target ? target.block : undefined);
+  const minted = nodeKey
+    ? $mintNode(painter.binding, nodeKey)
+    : ((target && 'text' in target ? target.text : null) ?? mintCurrent(editor, painter.binding));
   if (!minted) return false;
   createComment(painter.docId, painter.binding.doc, minted, payload.text);
-  if (!payload.nodeKey && editor.isEditable()) editor.update($collapseToFocus);
+  if (!nodeKey && editor.isEditable()) editor.update($collapseToFocus);
   return true;
 }
 
@@ -129,6 +148,19 @@ export function useCanComment(noteId: string): boolean {
   return role !== null && can(role, 'comment') && terminal === null;
 }
 
+/**
+ * Whether a block header offers Add comment. On a bound note it is canComment, so a commenter comments on blocks in a
+ * read-only body; an unbound editor (the file-backed bundle, the viewer) keeps moss's gate, `editable`. It reads the
+ * role the pane already holds and never asks the server, so a role this tab forgot (an unknown one) stays forgotten.
+ */
+export function useBlockCanComment(editor: LexicalEditor, editable: boolean): boolean {
+  const docId = useSyncExternalStore(subscribeAnyPaint, () => sharedDocOf(editor), () => null);
+  const role = useKnownRole(docId);
+  const terminal = useTerminal(docId);
+  if (docId === null) return editable;
+  return role !== null && can(role, 'comment') && terminal === null;
+}
+
 /** Whether this tab's principal wrote `comment` (moss's NoteComment as projected, which carries `author`). */
 export function isMine(comment: unknown): boolean {
   const me = myPrincipalId();
@@ -169,4 +201,29 @@ export function mutate(editor: LexicalEditor, op: CommentMutation): boolean {
 /** Adds or removes this tab's reaction on a comment of `noteId`. */
 export function react(noteId: string, commentId: string, emoji: string, on: boolean): void {
   if (canComment(noteId)) void reactTo(noteId, commentId, emoji, on);
+}
+
+/**
+ * The server's answer to the submit a bound composer just made in `slot` (CREATE_COMMENT_COMMAND or `mutate`), or
+ * null when none is in flight. The composer keeps its text until the answer is a success, so a refused or lost write
+ * leaves the draft in place and a resubmit of the same text retries it under the same id.
+ */
+export function submitted(noteId: string, slot: DraftSlot): Promise<Completion> | null {
+  const draft = draftOf(noteId, slot);
+  return draft && draft.failed === undefined ? draft.done : null;
+}
+
+/**
+ * The text of `slot`'s failed submits, for a composer to offer again (a reply box that opens, an edit that starts): a
+ * thread's failed replies together, a comment's latest failed edit. Null when none failed.
+ */
+export function failedDraftText(noteId: string, slot: DraftSlot): string | null {
+  const failed = failedDrafts(noteId, slot);
+  if (!failed.length) return null;
+  return slot.startsWith('edit:') ? failed.at(-1)!.text : failed.map((draft) => draft.text).join('\n\n');
+}
+
+/** `slot`'s failed submits, oldest first, by proposed id, for a reply box to take back each one once. */
+export function failedReplies(noteId: string, slot: DraftSlot): { id: string; text: string }[] {
+  return failedDrafts(noteId, slot).map(({ id, text }) => ({ id, text }));
 }

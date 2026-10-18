@@ -9,10 +9,13 @@
 // frame, and it seeks and plays through 206 responses. Alt text edited from the image's context menu reaches the peer
 // and the export. A paste over a selection keeps the selected text while its upload is held, both peers' typing
 // survives, and the media replaces exactly that text; a refused upload leaves the text and a peer's edit in place.
+// A private image one account loaded is never shown from the browser's cache to the next account signed in to the
+// same browser.
 //
 // Grants and links are declared setup through the members and links APIs; sharing is not this journey's promise.
 // Files reach the editor as browsers deliver them: a DataTransfer on drop and paste, and the file chooser for
 // "From computer".
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, BODY_BINDING_ATTR, EDITOR_PANE_ATTR, NAMES, SIDEBAR_ROW_ATTR } from '../lib/contract.ts';
@@ -591,4 +594,89 @@ test('j11-media: a paste over a selection is replaced when its held upload lands
   await expect.poll(async () => (await ada.context.request.get(`/api/docs/${docId}/content`)).text(), {
     message: 'the export keeps the selected text and the peer edit', timeout: PEER_TIMEOUT,
   }).toContain(`![${PNG.name}](assets/${PNG.name})\n\noads!456`);
+});
+
+test('j11-media: a private image one account loaded never reaches the next account signed in to the same browser from its cache @p:note-8', async ({ actors }) => {
+  const [adaPerson, benPerson] = [await actors.principal('ada'), await actors.principal('ben')];
+  const shared = await actors.anonymous('/login', { label: 'shared-browser' });
+  const signInAs = async (person: Principal) => {
+    await ui.waitForLoginCard(shared);
+    await ui.signInThroughCard(shared, person);
+    await expect(shared.page, `${person.label} signs in`).toHaveURL((url) => url.pathname === '/', { timeout: BOOT_TIMEOUT });
+    await expect(shared.page.locator('html')).toHaveAttribute(APP_STATE_ATTR, 'ready', { timeout: BOOT_TIMEOUT });
+    await expect(shared.page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible({ timeout: BOOT_TIMEOUT });
+  };
+  await signInAs(adaPerson);
+  const { vault } = (await (await shared.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  const docId = await noteHolding(shared, vault.id, PNG, bytes(PNG.name));
+  const url = `/api/docs/${docId}/assets/${PNG.name}`;
+  // The page's own fetch, through the browser's HTTP cache, as an <img> loads it.
+  const read = () => shared.page.evaluate(async (path) => {
+    const response = await fetch(path);
+    return { status: response.status, length: (await response.arrayBuffer()).byteLength };
+  }, url);
+  const size = bytes(PNG.name).byteLength;
+  expect(await read(), "Ada's browser loads her image").toEqual({ status: 200, length: size });
+  expect(await read(), 'and reads it again').toEqual({ status: 200, length: size });
+  // The same account still revalidates to 304 and reads a range.
+  const etag = (await shared.context.request.get(url)).headers().etag ?? '';
+  expect((await shared.context.request.get(url, { headers: { 'if-none-match': etag } })).status(), 'her revalidation is a 304').toBe(304);
+  const part = await shared.context.request.get(url, { headers: { range: 'bytes=0-7' } });
+  expect(part.status(), 'her range read is a 206').toBe(206);
+  expect((await part.body()).byteLength).toBe(8);
+
+  await ui.signOutThroughSettings(shared);
+  await signInAs(benPerson);
+  shared.expectHttp(404, url);
+  const benRead = await read();
+  expect(benRead.status, "Ben's read of the same URL in the same browser is the server's 404").toBe(404);
+  expect(benRead.length, "no byte of Ada's image reaches him").not.toBe(size);
+});
+
+/** SP9's near-cap probe: what one upload of `sent` stored, read back against `expected`, the file meant to be stored. */
+async function nearCapProbe(actor: Actor, docId: string, name: string, sent: Buffer, expected: Buffer): Promise<{ ok: boolean; failures: string[]; ms: number }> {
+  const failures: string[] = [];
+  const started = Date.now();
+  const stored = await actor.context.request.post(`/api/docs/${docId}/assets?filename=${name}`, {
+    headers: { origin: origin(actor), 'content-type': 'video/webm' }, data: sent, timeout: 120_000,
+  });
+  const ms = Date.now() - started;
+  if (stored.status() !== 201) return { ok: false, failures: [`upload ${stored.status()}`], ms };
+  const { filename, asset } = (await stored.json()) as { filename: string; asset: { size: number } };
+  if (asset.size !== expected.byteLength) failures.push(`stored ${asset.size} bytes, not ${expected.byteLength}`);
+  const url = `/api/docs/${docId}/assets/${filename}`;
+  const whole = await actor.context.request.get(url, { timeout: 120_000 });
+  const digest = (data: Buffer) => createHash('sha256').update(data).digest('hex');
+  if (whole.status() !== 200 || digest(await whole.body()) !== digest(expected)) failures.push('the read back differs in its hash');
+  const tail = 1024;
+  const last = expected.byteLength - 1;
+  const part = await actor.context.request.get(url, { headers: { range: `bytes=${last - tail + 1}-${last}` } });
+  if (part.status() !== 206) failures.push(`range read ${part.status()}`);
+  if (part.headers()['content-range'] !== `bytes ${last - tail + 1}-${last}/${expected.byteLength}`) failures.push(`content-range ${part.headers()['content-range']}`);
+  if (!(await part.body()).equals(expected.subarray(last - tail + 1))) failures.push('range bytes differ');
+  return { ok: failures.length === 0, failures, ms };
+}
+
+test('j11-media: SP9 near-cap probe: a 95 MiB video stores whole, its hash and a 206 tail read exact; a truncated upload fails the probe @p:note-8 @staging', async ({ actors, browserName }) => {
+  actors.solo('a storage probe: one uploader, no collaboration');
+  test.skip(browserName !== 'chromium', 'an API probe: the engine plays no part');
+  test.setTimeout(240_000);
+  const ada = await openShell(actors, 'ada');
+  const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  const made = await ada.context.request.post('/api/docs', {
+    headers: { origin: origin(ada), 'content-type': 'application/json' }, data: { folderId: vault.id, title: 'Near cap' },
+  });
+  expect(made.status()).toBe(201);
+  const docId = ((await made.json()) as { doc: { id: string } }).doc.id;
+  // A real WebM, padded to the video cap (MEDIA_CAP_BYTES.video) with a pattern no two MiB share.
+  const cap = 95 * 1024 * 1024;
+  const video = Buffer.alloc(cap);
+  for (let i = 0; i < cap; i += 4) video.writeUInt32LE(i, i);
+  bytes(WEBM.name).copy(video);
+  // The red control: the same file cut short must fail the probe.
+  const truncated = await nearCapProbe(ada, docId, 'truncated.webm', video.subarray(0, cap - 1024 * 1024), video);
+  expect(truncated.ok, 'a truncated upload fails the probe').toBe(false);
+  const probe = await nearCapProbe(ada, docId, 'near-cap.webm', video, video);
+  test.info().annotations.push({ type: 'sp9-near-cap', description: JSON.stringify({ bytes: cap, uploadMs: probe.ms }) });
+  expect(probe.failures, 'the near-cap upload stores and reads back exactly').toEqual([]);
 });
