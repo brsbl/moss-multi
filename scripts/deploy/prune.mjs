@@ -3,8 +3,10 @@
 // suites signed up or seeded, older than PRUNE_AGE_MS, at most PRUNE_CAP a run, so a full suite stays under the growth
 // cap (growth.mjs). It selects by a staging run's provenance in the email, never a bare `mm-` prefix: a staging run's
 // token (`mm-staging-<run id>-...`, deploy-staging's RUN_ID) or a seed token (`mm-s<run id>-<attempt>-<slots>-<k>`).
-// Never the canary pool (`canary-*`), the demo accounts (`demo-*`) or any other account, nor their docs. It counts first (the dry run, printed), then deletes their grants, share links, invites and user rows; a
-// user row's docs, folders, sessions, accounts and agents cascade. A DocDO's own storage is not reclaimed.
+// Never the canary pool (`canary-*`), the demo accounts (`demo-*`) or any other account, nor their docs; a selected
+// row without a run's provenance is skipped. It counts first (the dry run, printed), then deletes their grants, share
+// links, invites and user rows; a user row's docs, folders, sessions, accounts and agents cascade. A DocDO's own
+// storage is not reclaimed; growth.mjs counts the Durable Objects themselves.
 //   node scripts/deploy/prune.mjs count-sql | select-sql      (the SQL for wrangler d1 execute --json)
 //   node scripts/deploy/prune.mjs plan COUNT.json SELECT.json OUT.sql
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -17,7 +19,7 @@ export const PRUNE_AGE_MS = 2 * 60 * 60 * 1000;
 const BATCH = 100;
 /** A staging run's principal: e2e/lib/principals.ts newPrincipal under a staging RUN_ID, or scripts/deploy/seed.mjs seedEmail. */
 const PER_RUN = /^mm-(staging-\d{1,20}(-[a-z0-9]{1,24}){1,10}|s\d{1,20}-\d{1,4}-[cw][1-8]-\d{1,4})@example\.invalid$/;
-/** The same selection in SQLite: GLOB is case-sensitive and `_` is literal in it. PER_RUN checks every row it selects. */
+/** The selection in SQLite: GLOB is case-sensitive and `_` is literal in it. It is looser than PER_RUN, which picks the rows to delete. */
 const PER_RUN_SQL = "(email GLOB 'mm-staging-[0-9]*-*@example.invalid' OR email GLOB 'mm-s[0-9]*-[0-9]*-[cw][1-8]-[0-9]*@example.invalid')";
 /** better-auth's ids: letters, digits, `-` and `_`. */
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -44,8 +46,8 @@ const rowsOf = (text) => {
 };
 
 /**
- * The dry run's summary and the delete SQL for at most PRUNE_CAP of the selected principals; refuses any row that is
- * not a per-run principal.
+ * The dry run's summary and the delete SQL for at most PRUNE_CAP of the selected per-run principals; skips a selected
+ * row without a run's provenance and refuses one the selection should never return.
  * @param {string} countText
  * @param {string} selectText
  */
@@ -55,11 +57,16 @@ export function prunePlan(countText, selectText) {
   if (!Number.isInteger(users) || !Number.isInteger(docs)) throw new Error('no counts in the prune count output');
   const rows = /** @type {{ id: unknown, email: unknown }[]} */ (rowsOf(selectText));
   for (const row of rows) {
-    if (typeof row.email !== 'string' || !PER_RUN.test(row.email) || typeof row.id !== 'string' || !ID.test(row.id)) {
-      throw new Error('refusing to prune: a selected row is not a per-run @example.invalid principal with a plain id');
+    // Both GLOBs take only `mm-s...@example.invalid`; anything else means the selection itself is wrong.
+    const selectable = typeof row.email === 'string' && row.email.startsWith('mm-s') && row.email.endsWith('@example.invalid');
+    if (!selectable || typeof row.id !== 'string' || !ID.test(row.id)) {
+      throw new Error('refusing to prune: a selected row is not an mm-s @example.invalid principal with a plain id');
     }
   }
-  const ids = rows.slice(0, PRUNE_CAP).map((row) => /** @type {string} */ (row.id));
+  // The GLOBs are looser than PER_RUN, and sign-up is open: an address they take without a run's provenance is kept.
+  const perRun = rows.filter((row) => PER_RUN.test(/** @type {string} */ (row.email)));
+  const skipped = rows.length - perRun.length;
+  const ids = perRun.slice(0, PRUNE_CAP).map((row) => /** @type {string} */ (row.id));
   const statements = [];
   for (let at = 0; at < ids.length; at += BATCH) {
     const list = ids.slice(at, at + BATCH).map((id) => `'${id}'`).join(', ');
@@ -74,8 +81,9 @@ export function prunePlan(countText, selectText) {
       `DELETE FROM access_epochs WHERE owner_user_id IN (${list});`,
     );
   }
-  const summary = `staging holds ${users} per-run principals older than ${PRUNE_AGE_MS / 3_600_000} h owning ${docs} docs; ` +
-    `this run deletes ${ids.length} (cap ${PRUNE_CAP})${users > ids.length ? `, ${users - ids.length} remain for later runs` : ''}`;
+  const summary = `staging holds ${users} selected principals older than ${PRUNE_AGE_MS / 3_600_000} h owning ${docs} docs; ` +
+    `this run deletes ${ids.length} (cap ${PRUNE_CAP}) and skips ${skipped} without a run's provenance` +
+    `${users > ids.length + skipped ? `, ${users - ids.length - skipped} remain for later runs` : ''}`;
   return { summary, ids, sql: statements.length > 0 ? `${statements.join('\n')}\n` : '' };
 }
 

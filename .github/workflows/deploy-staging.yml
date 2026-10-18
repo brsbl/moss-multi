@@ -194,7 +194,8 @@ jobs:
           d1 --json --command "$(node scripts/deploy/prune.mjs select-sql)" > "$dir/select.json"
           node scripts/deploy/prune.mjs plan "$dir/count.json" "$dir/select.json" "$dir/delete.sql"
           if [ -s "$dir/delete.sql" ]; then d1 --yes --file "$dir/delete.sql" > /dev/null; echo "pruned"; fi
-      # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
+      # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it. The
+      # prune shrinks only D1, so the Worker's DocDOs and PrincipalDOs are counted from Cloudflare's list; only counts print.
       - name: Staging has room for a full suite
         if: inputs.suite == 'full'
         env:
@@ -203,7 +204,8 @@ jobs:
         run: |
           node "$WRANGLER" d1 execute moss-multi-staging --remote --json --config apps/web/dist/server/wrangler.json \
             --command "SELECT (SELECT count(*) FROM docs) AS docs, (SELECT count(*) FROM user) AS users" > "$RUNNER_TEMP/growth.json"
-          node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json"
+          node scripts/deploy/growth.mjs objects "$RUNNER_TEMP/objects.json"
+          node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json" "$RUNNER_TEMP/objects.json"
       # Staging allows 30 sign-ups a day per address (auth.ts), far fewer than the suite's fresh accounts: this run's
       # are written into D1 as a sign-up would, one password per run derived from the pool secret, only its hash in
       # the SQL, which stays on the runner (scripts/deploy/seed.mjs). The prune takes them on a later run.

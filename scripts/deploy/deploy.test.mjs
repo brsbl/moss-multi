@@ -944,7 +944,7 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
   it("counts first, deletes at most the cap, and deletes each principal's grants, links, invites and user row (its docs cascade)", () => {
     const many = Array.from({ length: PRUNE_CAP + 1 }, (_, n) => row(n));
     const plan = prunePlan(counted(PRUNE_CAP + 500, 900), selected(many));
-    expect(plan.summary).toMatch(new RegExp(`${PRUNE_CAP + 500} per-run principals.*900 docs.*deletes ${PRUNE_CAP}`));
+    expect(plan.summary).toMatch(new RegExp(`${PRUNE_CAP + 500} selected principals.*900 docs.*deletes ${PRUNE_CAP}`));
     expect(plan.ids).toHaveLength(PRUNE_CAP);
     const sql = plan.sql;
     expect(sql).toMatch(/DELETE FROM doc_members WHERE principal_id IN/);
