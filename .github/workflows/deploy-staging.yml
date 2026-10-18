@@ -30,7 +30,7 @@ on:
       suite_parallel:
         description: 'How many of the 16 full-suite shards run against staging at once (fewer is less load on the shared Worker and D1)'
         type: number
-        default: 16
+        default: 4
       suite_grep:
         description: 'Only the full-suite legs matching this Playwright --grep (to re-check a staging-only failure); empty is every leg'
         type: string

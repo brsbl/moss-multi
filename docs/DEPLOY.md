@@ -35,7 +35,7 @@ Nothing else is configured by hand. The first run creates the D1 database and R2
    `gh workflow run ci.yml --ref m8 -f lane=full`
 2. Dispatch the deploy with that run's id. The run must be green, a push or dispatch run of this repository (never a pull request or a fork), its head still on its branch, and less than 3 days old, because `web-dist` artifacts expire after 3 days:
    `gh workflow run deploy-staging.yml --ref m8 -f ci_run_id=<run id>`
-   The optional inputs are `request_budget` (default 2000 Worker requests for the canary), `idle_seconds` (default 20, at least 15), `suite` (`canary`, the default, or `full`) and `suite_request_budget` (default 5000 Worker requests for each full-suite shard) and `suite_parallel` (default 16: how many shards run against staging at once).
+   The optional inputs are `request_budget` (default 2000 Worker requests for the canary), `idle_seconds` (default 20, at least 15), `suite` (`canary`, the default, or `full`) and `suite_request_budget` (default 5000 Worker requests for each full-suite shard) and `suite_parallel` (default 4: how many shards run against staging at once). At 16, the two engines' large-import shards ran together, and Durable Objects sharing an isolate passed its memory limit on concurrent 2 MB imports (`DocDO.create exceededMemory` in run 38672095820's tail summary), resetting every Durable Object it held; at 4, the engines run one after the other.
    To run the full suite on staging, add `-f suite=full`.
 3. Watch it with `gh run watch <id> --interval 60 --exit-status`. The first deploy waits for the new `workers.dev` certificate, which took about 8 minutes before.
 
