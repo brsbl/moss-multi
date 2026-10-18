@@ -579,6 +579,26 @@ test("j15-comments: each failed reply comes back to the box on its own, even whe
   await expect(replyBox, 'no failed reply is left to offer').toHaveText('');
 });
 
+// The reply box animated its height from inside its ResizeObserver callback, which resizes the thread popover around
+// it; WebKit reports that as a ResizeObserver loop error (a page error, so the invariants fail). Failed replies coming
+// back grew the box that way; so does quick typing.
+test('j15-comments: the reply box grows and shrinks line by line without a ResizeObserver loop @p:mean-1', async ({ actors, stack }) => {
+  const { ada } = await heldWrites(actors, stack.baseUrl);
+  const replyBox = thread(ada).locator('[data-comment-reply-composer] [contenteditable="true"]');
+  await gutter(ada).first().click();
+  await expect(replyBox).toBeFocused();
+  for (let round = 0; round < 12; round += 1) {
+    await ada.page.keyboard.type('A reply that wraps onto a second line in the box');
+    for (let line = 0; line < 4; line += 1) {
+      await ada.page.keyboard.press('Shift+Enter');
+      await ada.page.keyboard.type('more');
+    }
+    await ada.page.keyboard.press('ControlOrMeta+a');
+    await ada.page.keyboard.press('Backspace');
+    await expect(replyBox).toHaveText('');
+  }
+});
+
 test('j15-comments: a reply that fails after its thread was closed and reopened comes back to the reply box @p:mean-1', async ({ actors, stack }) => {
   const { ada, stored, modes, held } = await heldWrites(actors, stack.baseUrl);
   const replyBox = thread(ada).locator('[data-comment-reply-composer] [contenteditable="true"]');
