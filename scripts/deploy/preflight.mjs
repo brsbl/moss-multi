@@ -12,7 +12,7 @@ const TARGETS = {
   pilot: { required: REQUIRED_PILOT, url: 'PILOT_URL', long: ['PILOT_BETTER_AUTH_SECRET'] },
 };
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '0.0.0.0']);
-const EMAIL = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+const EMAIL = /^[^\s@,;]+@[^\s@,;.]+(?:\.[^\s@,;.]+)+$/;
 
 const parseUrl = (value) => {
   try {
