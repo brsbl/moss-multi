@@ -918,6 +918,9 @@ export class DocSession {
     } catch {
       return;
     }
+    // A server event is a frame heard: y-partyserver stamps only binary ones, and a socket hearing just acks while a
+    // large replay converges is alive, not silent.
+    this.provider.wsLastMessageReceived = Date.now();
     if (event.t === 'usage') {
       this.payloadBytes = event.pb;
       this.#ledger.usageReported();
