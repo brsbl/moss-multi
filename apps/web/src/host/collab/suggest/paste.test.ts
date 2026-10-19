@@ -1414,6 +1414,70 @@ it.each([
   }
 });
 
+/** Each live character of the paragraph whose text starts with `prefix`, with the Yjs id it has. */
+function charsOf(doc: Y.Doc, prefix: string): [string, string][] {
+  for (const { insert } of doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]) {
+    if (!(insert instanceof Y.XmlText)) continue;
+    const chars: [string, string][] = [];
+    for (let item = insert._start; item; item = item.right) {
+      if (item.deleted || !(item.content instanceof Y.ContentString)) continue;
+      for (let i = 0; i < item.length; i += 1) chars.push([item.content.str[i]!, `${item.id.client}:${item.id.clock + i}`]);
+    }
+    if (chars.map(([c]) => c).join('').startsWith(prefix)) return chars;
+  }
+  return [];
+}
+
+it.each([
+  // Beside the restored rest: before it and after it.
+  ['beside', 6, 'Intro ?line stays.!'],
+  // Inside it, between two of its restored characters.
+  ['inside', 13, 'Intro line st?ays.!'],
+] as const)('T5.S14: typing %s the rest an undone, redone and undone Enter restored, then accepted, lands what the card showed on the original items, the comment anchored', { timeout: 120_000 }, (_name, at, expected) => {
+  const pane = suggesting();
+  try {
+    const settle = () => {
+      vi.runAllTimers();
+      pane.pump();
+    };
+    const original = charsOf(pane.live, 'Intro line stays.');
+    const projection = project(pane.live);
+    const comment = positionAt(projection, projection.text.indexOf('line stays'), 0)!;
+    pane.select('Intro line', 6, 6);
+    pane.enter();
+    settle();
+    for (const step of [pane.undo, pane.redo, pane.undo]) {
+      step();
+      settle();
+    }
+    pane.stopCapturing();
+    pane.select('Intro line', 17, 17);
+    pane.type('!');
+    settle();
+    pane.stopCapturing();
+    pane.select('Intro line', at, at);
+    pane.type('?');
+    settle();
+    expect(pane.text()).toContain(expected);
+    expect(pane.fork.closed, 'nothing refused').toBe(false);
+    const rows: string[] = [];
+    for (const record of openRecords(pane.live)) {
+      const preview = previewRecord(pane.live, record.meta.id);
+      if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
+      rows.push(...describePreview(preview).map((row) => `${row.kind} ${row.text}`));
+      expect(acceptRecord(pane.live, record.meta.id, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+    }
+    expect(rows.sort(), 'the card shows only the typed characters').toEqual(['insert !', 'insert ?']);
+    const landed = charsOf(pane.live, 'Intro');
+    expect(landed.map(([c]) => c).join(''), 'accept lands what the card showed').toBe(expected);
+    expect(landed.filter(([c]) => c !== '?' && c !== '!'), 'the restored rest lands as its original items, authors unchanged').toEqual(original);
+    const anchor = Y.getItem(pane.live.store, comment.item!);
+    expect(anchor instanceof Y.Item && !anchor.deleted, 'the comment on the rest stays anchored').toBe(true);
+  } finally {
+    pane.dispose();
+  }
+});
+
 it.each([
   // After " More", in the paragraph with the real change, under the record's lease.
   ['in the record', null],

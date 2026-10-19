@@ -1,5 +1,5 @@
 // restoredCopies (suggestions.md §4.7): a copy of a copy resolves to the body unit it restores, in time linear in the
-// doc, whatever order writers chose their client ids in.
+// doc, whatever order writers chose their client ids in, and without recursion however writers shaped the chain.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { itemKey, restoredCopies } from './apply.ts';
@@ -51,6 +51,37 @@ describe('T5.S14 restoredCopies is linear @p:mean-2 @p:R17', () => {
     expect([...restored.copies], 'the live copy restores the body original').toEqual([[itemKey(last), original]]);
     expect([...restored.originals]).toEqual([itemKey(original)]);
     expect([...restored.clients]).toEqual([last.client]);
+    expect(steps.count, `steps for ${structs} structs`).toBeLessThan(structs * 12);
+  });
+
+  it('a restores chain alternating text and map units 50,000 deep returns without throwing, in steps linear in the structs', () => {
+    const DEPTH = 50_000;
+    const doc = new Y.Doc({ gc: false });
+    doc.clientID = 1;
+    const root = doc.get('root', Y.XmlText);
+    const paragraph = new Y.XmlText();
+    root.insertEmbed(0, paragraph);
+    const properties = new Y.Map<string>();
+    paragraph.insertEmbed(0, properties);
+    properties.set('__type', 'text');
+    paragraph.insert(1, 'x');
+    const body = new Y.Doc({ gc: false });
+    Y.applyUpdate(body, Y.encodeStateAsUpdate(doc));
+    // Each unit restores the one before it (inserted just before it, which is then removed), text and map in turn, so
+    // the text links' property map is the live map at the chain's head.
+    doc.clientID = 2;
+    for (let k = 1; k <= DEPTH; k += 1) {
+      if (k % 2) paragraph.insert(1, 'x');
+      else paragraph.insertEmbed(1, new Y.Map());
+      paragraph.delete(2, 1);
+    }
+    const structs = [...doc.store.clients.values()].reduce((sum, list) => sum + list.length, 0);
+    const steps = { count: 0 };
+    let restored: ReturnType<typeof restoredCopies> | null = null;
+    expect(() => {
+      restored = restoredCopies(doc, body, steps);
+    }).not.toThrow();
+    expect([...restored!.copies], 'a map restores no text').toEqual([]);
     expect(steps.count, `steps for ${structs} structs`).toBeLessThan(structs * 12);
   });
 });
