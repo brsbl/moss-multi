@@ -1169,7 +1169,7 @@ describe('one sync at a time per workspace (T7.S7)', () => {
   const FIRST = '77777777-7777-4777-8777-777777777777';
   const SECOND = '88888888-8888-4888-8888-888888888888';
   const creates = () => server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs');
-  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.'));
+  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.') && name !== 'served-names.json');
   const untrackedNote = () => {
     mkdirSync(join(dir, 'Pea trellis'));
     writeFileSync(join(dir, 'Pea trellis', 'Pea trellis.md'), '# Pea trellis\n\nTwine, not wire.\n');
@@ -1204,7 +1204,7 @@ describe('one sync at a time per workspace (T7.S7)', () => {
 
 describe('stopping watch stops the pass (T7.S8)', () => {
   const creates = () => server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs');
-  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.'));
+  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.') && name !== 'served-names.json');
   const meta = (id: string) => JSON.parse(readFileSync(join(dir, '.moss-multi', id, 'meta.json'), 'utf8')) as { file: string; baseHash: string };
   /** Resolves with the run and how long after `stop` it took, or with null past `limitMs`. */
   const stoppedWithin = async (running: Promise<Awaited<ReturnType<typeof cli>>>, stop: number, limitMs: number) => {
