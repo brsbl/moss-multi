@@ -240,13 +240,14 @@ describe('a workspace scope', () => {
     expect((await syncJson()).code).toBe(0);
     const home = join(dir, files.home);
     writeFileSync(home, readFileSync(home, 'utf8').replace('Private:', 'Also [[Loose]]. Private:'));
+    // Before it syncs, a link typed here is not marked.
+    const listed = await cli(['scope', 'confirm']);
+    expect(listed.out).toContain(posix(files.loose));
+    expect(listed.out, 'a link typed here is not marked').not.toContain('linked by a synced edit');
     const linked = await syncJson();
     expect(linked.code, linked.err).toBe(0);
     expect(created(linked.results)).toEqual([]);
     expect(followOnly(linked.results)).toEqual([files.loose]);
-    const listed = await cli(['scope', 'confirm']);
-    expect(listed.out).toContain(posix(files.loose));
-    expect(listed.out, 'a link typed here is not marked').not.toContain('linked by a synced edit');
     await confirmYes([files.loose]);
     expect(created((await syncJson()).results)).toEqual([files.loose]);
   });

@@ -391,7 +391,7 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
     const meta = trackedBy.get(key(from));
     if (!meta) return false;
     try {
-      const base = readBase(root, meta.docId).toString('utf8');
+      const base = Buffer.from(readBase(root, meta.docId)).toString('utf8');
       return noteLinks(linkSource(base, false), from).some((link) => resolve(link).some((found) => key(found) === key(file)));
     } catch {
       return true;
