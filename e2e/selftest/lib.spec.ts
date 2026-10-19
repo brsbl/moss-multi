@@ -23,7 +23,7 @@ import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
 import { unreachableControls } from '../lib/reach.js';
 import { makeSeverable } from '../lib/sever.ts';
 import type { Stack } from '../lib/stack.ts';
-import type { SocketEntry } from '../lib/telemetry.ts';
+import { Telemetry, type SocketEntry } from '../lib/telemetry.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
 import { expect, test } from './fixtures.ts';
@@ -219,6 +219,20 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map(), OFF)).not.toEqual([]);
     expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map([['d', 1]]), OFF)).not.toEqual([]);
     expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map([['d', 1]]), OFF, new Map([['d', 1]]))).toEqual([]);
+  });
+  test("a severable actor's routed socket keeps the server's close code, so its undeclared 1013 fails too", () => {
+    const telemetry = new Telemetry();
+    telemetry.routedSocket('wss://h/parties/doc-d-o/d?_pk=1').closed(1013, 'try again');
+    // The proxy marks a routed socket synced when its server leg relays sync step 2, as CDP does for a page socket.
+    telemetry.routedSocket('wss://h/parties/doc-d-o/d?_pk=2').received(Buffer.from([0, 1, 0]));
+    expect(telemetry.sockets[0]).toMatchObject({ code: 1013, close: '1013 try again' });
+    expect(telemetry.sockets[1].synced).toBe(true);
+    expect(socketProblems(telemetry.sockets, new Map([['d', 1]]), OFF)).toEqual(['d: 1 try-again closes (1013), 0 declared']);
+    // A close the proxy made itself (a sever) carries no server code.
+    const proxy = new Telemetry();
+    proxy.routedSocket('wss://h/parties/doc-d-o/d?_pk=1').closed();
+    expect(proxy.sockets[0].close).toBe('closed at the proxy');
+    expect(proxy.sockets[0].code ?? null).toBeNull();
   });
   test('on loopback the same drop fails, and off loopback a refusal, a second drop or two sockets at once still fail', () => {
     expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map())).not.toEqual([]);

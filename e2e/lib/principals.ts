@@ -60,25 +60,27 @@ export function newPrincipal(runToken: string, label: string, n: number): Princi
 /** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
 export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
   const { email, name, password } = newPrincipal(runToken, label, n);
-  const resend = { lost: false };
-  const response = await pastAuthLimit('sign-up', () => fetch(`${baseUrl}/api/auth/sign-up/email`, {
+  const post = () => fetch(`${baseUrl}/api/auth/sign-up/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email, password, name }),
     signal: AbortSignal.timeout(15_000),
-  }), () => { resend.lost = true; });
+  });
+  const { response, lost } = await pastAuthLimit('sign-up', post);
   const text = await response.text();
   // A sign-up lost after the Worker stored it is answered "already exists" on the resend: sign in for its id.
-  if (resend.lost && !response.ok && /already exists/i.test(text)) {
-    const signedIn = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, { label, name, email, password, id: null }));
-    const signedText = await signedIn.text();
-    if (!signedIn.ok) throw new Error(`sign-in for ${email}: ${signedIn.status} ${signedText.slice(0, 200)}`);
-    return { label, name, email, password, id: (JSON.parse(signedText) as { user?: { id?: string } }).user?.id ?? null };
+  if (lost && !response.ok && /already exists/i.test(text)) {
+    const signedIn = (await pastAuthLimit('sign-in', () => postSignIn(baseUrl, { label, name, email, password, id: null }))).response;
+    const signedInText = await signedIn.text();
+    if (!signedIn.ok) throw new Error(`sign-in for ${email}: ${signedIn.status} ${signedInText.slice(0, 200)}`);
+    return { label, name, email, password, id: (JSON.parse(signedInText) as { user?: { id?: string } }).user?.id ?? null };
   }
   if (!response.ok) throw new Error(`sign-up for ${email}: ${response.status} ${text.slice(0, 200)}`);
   const id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
   return { label, name, email, password, id };
 }
+
+const LOST_FORWARD = 'Your worker restarted mid-request';
 
 /** A seeded principal's sign-in session, handed to its first browser context (session tokens are single-issue). */
 const seededSessions = new Map<string, SessionCookie[]>();
@@ -95,7 +97,7 @@ export async function seededPrincipal(baseUrl: string, seed: NonNullable<CanaryS
   const { name } = newPrincipal(runToken, label, n);
   const principal: Principal = { label, name, email: seedEmail(seed.token, seed.slots, slot), password, id: null };
   assertTestEmail(principal.email);
-  const response = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
+  const { response } = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
   const text = await response.clone().text();
   if (!response.ok) throw new Error(`sign-in for seeded ${principal.email}: ${response.status} ${text.slice(0, 200)}`);
   principal.id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
@@ -120,7 +122,7 @@ export async function seededPrincipal(baseUrl: string, seed: NonNullable<CanaryS
  * paces itself under the limit (auth-pace.ts); a 429 that still comes (another job sharing the address) waits out the
  * window, at most six times.
  */
-async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>, onResend?: () => void): Promise<Response> {
+async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Promise<{ response: Response; lost: boolean }> {
   await authHeadroom(kind, RESERVE);
   let response = await post();
   for (let attempt = 0; attempt < 6 && response.status === 429; attempt += 1) {
@@ -129,15 +131,17 @@ async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>, onRe
     await new Promise((done) => setTimeout(done, waitMs));
     response = await post();
   }
-  // The local dev server can restart its worker while a POST is in flight and answer 503 "Your worker restarted
-  // mid-request. Please try sending the request again." (wrangler); the request is sent again, at most three times.
-  for (let attempt = 0; attempt < 3 && response.status === 503 && /\bworker restarted mid-request\b/.test(await response.clone().text()); attempt += 1) {
+  // wrangler dev's proxy answers a POST whose forward was lost on a closing keep-alive connection with this 503 (see
+  // patches/wrangler@4.113.0.patch); the request is sent again, at most three times. `lost` says a resend happened,
+  // so the first may have been applied.
+  let lost = false;
+  for (let attempt = 0; attempt < 3 && response.status === 503 && (await response.clone().text()).startsWith(LOST_FORWARD); attempt += 1) {
+    lost = true;
     await new Promise((done) => setTimeout(done, 1_000));
-    onResend?.();
     response = await post();
   }
   if (response.status !== 429) recordAuth(kind);
-  return response;
+  return { response, lost };
 }
 
 export function parseSetCookie(header: string, url: string): SessionCookie {
@@ -191,7 +195,7 @@ export async function signIn(baseUrl: string, principal: Principal): Promise<Ses
     seededSessions.delete(`${baseUrl} ${principal.email}`);
     return seeded;
   }
-  const response = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
+  const { response } = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
   if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
   const cookies = sessionCookies(response, baseUrl, principal.email);
   if (principal.pooled) pooledSessions.set(`${baseUrl} ${principal.email}`, cookies);

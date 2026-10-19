@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deployedProblems, hookProblems } from './assert-deployed.mjs';
 import { canarySummary, recordingFor } from './canary-artifacts.mjs';
 import { canaryState } from './canary-state.mjs';
+import * as growth from './growth.mjs';
 import { growthProblems, GROWTH_CAP, PER_FULL_RUN, readGrowth } from './growth.mjs';
 import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
@@ -321,11 +322,12 @@ describe('deploy-staging.yml', () => {
     expect(uploads.length).toBeGreaterThanOrEqual(1);
     const allowed = {
       tail: [['e2e/canary-artifacts/tail-summary.json']],
+      sp9: [['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/summary.json']],
       other: [['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']],
     };
     for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
       for (const upload of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/upload-artifact'))) {
-        expect(allowed[name === 'tail' ? 'tail' : 'other'], name).toContainEqual(upload.with.path.trim().split('\n').map((line) => line.trim()).sort());
+        expect(allowed[name === 'tail' || name === 'sp9' ? name : 'other'], name).toContainEqual(upload.with.path.trim().split('\n').map((line) => line.trim()).sort());
       }
     }
   });
@@ -334,7 +336,7 @@ describe('deploy-staging.yml', () => {
     const input = WORKFLOW.on.workflow_dispatch.inputs.suite;
     expect(input).toMatchObject({ type: 'choice', default: 'canary' });
     expect(input.options).toEqual(['canary', 'full']);
-    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => (j.steps ?? []).some((step) => /--project="?staging-/.test(step.run ?? ''))) ?? [];
+    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => (j.steps ?? []).some((step) => /--project=staging-"\$BROWSER"/.test(step.run ?? ''))) ?? [];
     expect(name, 'a job runs the staging projects').toBeTruthy();
     expect(job.if).toMatch(/inputs\.suite == 'full'/);
     expect(needsOf(name)).toEqual(expect.arrayContaining(['preflight', 'deploy', 'canary']));
@@ -343,8 +345,9 @@ describe('deploy-staging.yml', () => {
     const run = job.steps.find((step) => /playwright test/.test(step.run ?? '')).run;
     expect(run).toMatch(/--project=staging-"?\$\{?BROWSER/);
     expect(run).not.toMatch(/--reporter|PLAYWRIGHT_/);
-    // The only narrowing is the suite_grep input, empty by default, for re-checking a staging-only failure.
-    expect(run.match(/--grep\b.*/g)).toEqual(['--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi']);
+    // The only narrowing is the suite_grep input, empty by default, for re-checking a staging-only failure, and the SP9
+    // probe, which the sp9 job ran (tail-summary.test.mjs).
+    expect(run.match(/--grep\b.*/g)).toEqual(['--grep-invert "SP9 near-cap probe")', '--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi']);
     expect(WORKFLOW.on.workflow_dispatch.inputs.suite_grep).toMatchObject({ type: 'string', default: '' });
     expect(job.steps.find((step) => /playwright test/.test(step.run ?? '')).env.GREP).toBe('${{ inputs.suite_grep }}');
     // Per-run principals the deploy seeded, and this run's own budget. Only the step deriving the run's password holds
@@ -432,24 +435,29 @@ const PILOT_SECRETS = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'PILOT_U
 const triggers = (workflow) => workflow.on ?? workflow[true];
 const PILOT_GROUP = "${{ inputs.target == 'pilot' && 'deploy-staging-pilot' || 'deploy-staging' }}";
 
-// The `inputs.<name> == '<value>'` terms of a condition, joined by &&. Only the conditions the deploy workflows use;
-// anything else fails the test.
+// The terms of a condition, joined by &&: always(), `inputs.<name> == '<value>'` and `needs.<job>.result == 'success'`.
+// Only the conditions the deploy workflows use; anything else fails the test.
 function terms(condition) {
   if (condition === undefined) return [];
   const raw = String(condition).trim();
   const text = raw.startsWith('${{') && raw.endsWith('}}') ? raw.slice(3, -2).trim() : raw;
-  if (text === 'always()') return [];
   return text.split('&&').map((term) => {
-    const match = /^inputs\.(target|suite) == '(\w+)'$/.exec(term.trim());
-    if (!match) throw new Error(`unknown condition: ${condition}`);
-    return { input: match[1], value: match[2] };
+    const trimmed = term.trim();
+    if (trimmed === 'always()') return { text: trimmed, always: true };
+    const input = /^inputs\.(target|suite) == '(\w+)'$/.exec(trimmed);
+    if (input) return { text: trimmed, input: input[1], value: input[2] };
+    const need = /^needs\.(\w+)\.result == 'success'$/.exec(trimmed);
+    if (need) return { text: trimmed, need: need[1] };
+    throw new Error(`unknown condition: ${condition}`);
   });
 }
 
-// Whether a job or step runs for the dispatch inputs.
-const runsFor = (condition, inputs) => terms(condition).every(({ input, value }) => inputs[input] === value);
+// Whether a job or step runs for the dispatch inputs, given the jobs that ran.
+const runsFor = (condition, inputs, ran = {}) =>
+  terms(condition).every((term) => term.always || (term.need ? Boolean(ran[term.need]) : inputs[term.input] === term.value));
 
-// The jobs that run for the dispatch inputs, each with only its running steps: a job whose needs did not all run is skipped.
+// The jobs that run for the dispatch inputs, each with only its running steps: a job whose needs did not all run is
+// skipped, unless its condition holds always().
 function runningFor(workflow, target, suite = 'canary') {
   const inputs = { target, suite };
   const ran = {};
@@ -458,8 +466,8 @@ function runningFor(workflow, target, suite = 'canary') {
     const at = pending.findIndex(([, job]) => [job.needs ?? []].flat().every((need) => need in ran || !(need in workflow.jobs)));
     expect(at, 'the job graph has no cycle').toBeGreaterThanOrEqual(0);
     const [[name, job]] = pending.splice(at, 1);
-    const needsRan = [job.needs ?? []].flat().every((need) => ran[need]);
-    ran[name] = needsRan && runsFor(job.if, inputs) ? { ...job, steps: job.steps?.filter((step) => runsFor(step.if, inputs)) } : null;
+    const needsRan = terms(job.if).some((term) => term.always) || [job.needs ?? []].flat().every((need) => ran[need]);
+    ran[name] = needsRan && runsFor(job.if, inputs, ran) ? { ...job, steps: job.steps?.filter((step) => runsFor(step.if, inputs, ran)) } : null;
   }
   return Object.fromEntries(Object.entries(ran).filter(([, job]) => job));
 }
@@ -471,7 +479,7 @@ function stagingView(workflow) {
     if (condition === undefined) return rest;
     const kept = terms(condition).filter(({ input }) => input !== 'target');
     if (kept.length === terms(condition).length) return { ...rest, if: condition };
-    return kept.length ? { ...rest, if: kept.map(({ input, value }) => `inputs.${input} == '${value}'`).join(' && ') } : rest;
+    return kept.length ? { ...rest, if: kept.map(({ text }) => text).join(' && ') } : rest;
   };
   const on = structuredClone(triggers(workflow));
   delete on.workflow_dispatch.inputs.target;
@@ -496,10 +504,10 @@ describe('deploy-staging.yml target', () => {
     const running = runningFor(WORKFLOW, 'staging');
     expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary']);
     expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
-    expect(Object.keys(runningFor(WORKFLOW, 'staging', 'full'))).toEqual(['preflight', 'deploy', 'canary', 'tail', 'suite']);
-    // deploy-staging.yml at t/T8.F 4de48218 (T8.2's canary and full suite) through stagingView: the same jobs, steps,
-    // triggers, env and concurrency. A deliberate change to the staging jobs updates this hash.
-    expect(sha256(stagingView(WORKFLOW))).toBe('eb2a0a8b5003459356a5404c6c1c2a10ef66c03df023d25d41b630a926961009');
+    expect(Object.keys(runningFor(WORKFLOW, 'staging', 'full'))).toEqual(['preflight', 'deploy', 'canary', 'sp9', 'tail', 'suite']);
+    // deploy-staging.yml at t/T8.2 a6de39be (T8.2's canary, SP9 probe and full suite) through stagingView: the same jobs,
+    // steps, triggers, env and concurrency. A deliberate change to the staging jobs updates this hash.
+    expect(sha256(stagingView(WORKFLOW))).toBe('51e99934ea5d3232993df31992ead0142b62c617991e23d8193adcd5ecf34463');
   });
 
   it('target=pilot runs only the gate, then deploy-pilot.yml: no staging deploy, canary or upload', () => {
@@ -510,7 +518,7 @@ describe('deploy-staging.yml target', () => {
     expect(running.preflight.steps.map((step) => step.id ?? step.uses)).toEqual(['actions/checkout@v6', 'gate']);
     expect(running.preflight.steps.at(-1).run).toMatch(/run-gate\.mjs/);
     for (const name of ['deploy', 'canary']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toBe("inputs.target == 'staging'");
-    for (const name of ['tail', 'suite']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toBe("inputs.target == 'staging' && inputs.suite == 'full'");
+    for (const name of ['sp9', 'tail', 'suite']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toMatch(/inputs\.target == 'staging' && inputs\.suite == 'full'/);
   });
 
   it('queues the pilot apart from staging, and apart from the group deploy-pilot.yml holds', () => {
@@ -765,6 +773,18 @@ describe('canary recording', () => {
     expect(JSON.stringify(summary)).not.toMatch(/SECRET|trace\.zip|Cookie/);
   });
 
+  it("keeps a leg's measure annotation as numbers only: the SP9 near-cap upload's bytes and client time", () => {
+    const passed = { status: 'passed', duration: 23_539 };
+    const annotations = [
+      { type: 'sp9-near-cap', description: JSON.stringify({ bytes: 99_614_720, uploadMs: 21_004, url: 'https://x.workers.dev/?token=SECRET' }) },
+      { type: 'note', description: 'SECRET free text' },
+    ];
+    const results = { suites: [{ title: 'j11.spec.ts', specs: [{ title: 'probe', tests: [{ status: 'expected', annotations, results: [passed] }] }] }] };
+    const summary = canarySummary(results);
+    expect(summary).toEqual({ tests: [{ title: 'j11.spec.ts › probe', status: 'passed', duration: 23_539, measures: { 'sp9-near-cap': { bytes: 99_614_720, uploadMs: 21_004 } } }] });
+    expect(JSON.stringify(summary)).not.toMatch(/SECRET|workers\.dev/);
+  });
+
   it('names a leg that passed only on its retry flaky', () => {
     const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [{ status: 'failed', duration: 5 }, { status: 'passed', duration: 7 }] }] }] }] };
     expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7, retry: 'not infrastructure' }] });
@@ -896,6 +916,39 @@ describe('staging growth (A§21) @p:R15', () => {
     expect(growthProblems({ docs: 0, users: GROWTH_CAP.users, d1Bytes: GROWTH_CAP.d1Bytes })).toHaveLength(2);
   });
 
+  it("counts the Worker's Durable Objects with stored data, which the prune never resets, and caps them too", async () => {
+    const zero = { docs: 0, users: 0, d1Bytes: 0, docObjects: 0, principalObjects: 0 };
+    expect(growthProblems(zero)).toEqual([]);
+    const docs = growthProblems({ ...zero, docObjects: GROWTH_CAP.docObjects - PER_FULL_RUN.docObjects + 1 });
+    expect(docs).toHaveLength(1);
+    expect(docs[0]).toMatch(/docObjects/);
+    expect(growthProblems({ ...zero, principalObjects: GROWTH_CAP.principalObjects })).toHaveLength(1);
+    // Cloudflare's object list for each namespace of the staging Worker, paged by cursor.
+    const calls = [];
+    const fetcher = async (url) => {
+      calls.push(String(url));
+      const { pathname, searchParams } = new URL(url);
+      if (pathname.endsWith('/namespaces')) {
+        return Response.json({ success: true, result: [
+          { id: 'n1', script: 'moss-multi-staging', class: 'DocDO' }, { id: 'n2', script: 'moss-multi-staging', class: 'PrincipalDO' },
+          { id: 'n3', script: 'moss-collab-staging', class: 'DocDO' },
+        ] });
+      }
+      if (pathname.includes('/n1/')) {
+        return Response.json(searchParams.get('cursor') === 'p2'
+          ? { success: true, result: [{ id: 'c', hasStoredData: true }], result_info: { cursor: '' } }
+          : { success: true, result: [{ id: 'a', hasStoredData: true }, { id: 'b', hasStoredData: false }], result_info: { cursor: 'p2' } });
+      }
+      if (pathname.includes('/n2/')) return Response.json({ success: true, result: [{ id: 'd', hasStoredData: true }], result_info: {} });
+      throw new Error(`unexpected ${pathname}`);
+    };
+    expect(typeof growth.countObjects).toBe('function');
+    await expect(growth.countObjects({ accountId: 'acc', token: 't', fetch: fetcher })).resolves.toEqual({ docObjects: 2, principalObjects: 1 });
+    expect(calls.some((url) => url.includes('/n3/'))).toBe(false);
+    const refused = async () => Response.json({ success: false, errors: [{ code: 10000 }] }, { status: 403 });
+    await expect(growth.countObjects({ accountId: 'acc', token: 't', fetch: refused })).rejects.toThrow(/403/);
+  });
+
   it('checks the cap before a full-suite deploy, and never for the canary', () => {
     const steps = WORKFLOW.jobs.deploy.steps;
     const check = steps.findIndex((step) => /growth\.mjs/.test(step.run ?? ''));
@@ -905,6 +958,8 @@ describe('staging growth (A§21) @p:R15', () => {
     // The count reads docs and user, which a first deploy's fresh D1 has only once the migrations ran.
     expect(check, 'after the D1 migrations').toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
     expect(steps[check].run).toMatch(/d1 execute moss-multi-staging --remote --json/);
+    expect(steps[check].run).toMatch(/growth\.mjs objects "\$RUNNER_TEMP\/objects\.json"/);
+    expect(steps[check].run).toMatch(/growth\.mjs check "\$RUNNER_TEMP\/growth\.json" "\$RUNNER_TEMP\/objects\.json"/);
   });
 });
 
@@ -1007,7 +1062,7 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
   it("counts first, deletes at most the cap, and deletes each principal's grants, links, invites and user row (its docs cascade)", () => {
     const many = Array.from({ length: PRUNE_CAP + 1 }, (_, n) => row(n));
     const plan = prunePlan(counted(PRUNE_CAP + 500, 900), selected(many));
-    expect(plan.summary).toMatch(new RegExp(`${PRUNE_CAP + 500} per-run principals.*900 docs.*deletes ${PRUNE_CAP}`));
+    expect(plan.summary).toMatch(new RegExp(`${PRUNE_CAP + 500} selected principals.*900 docs.*deletes ${PRUNE_CAP}`));
     expect(plan.ids).toHaveLength(PRUNE_CAP);
     const sql = plan.sql;
     expect(sql).toMatch(/DELETE FROM doc_members WHERE principal_id IN/);
@@ -1020,11 +1075,11 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
     expect(prunePlan(counted(0, 0), selected([]))).toMatchObject({ ids: [], sql: '' });
   });
 
-  it('refuses any row that is not a per-run principal, and an id that is not a plain id', () => {
+  it('refuses a row outside the selection, and an id that is not a plain id', () => {
     for (const email of [
       'canary-ada@example.invalid', 'demo-ada@example.invalid', 'mm-x-ada-1@example.com', 'owner@gmail.com',
-      // An `mm-` account without a staging run's provenance: a demo or diagnostic account, never pruned.
-      'mm-x-ada-1@example.invalid', 'mm-demo-ada@example.invalid', 'mm-stagingx-1-ada-1@example.invalid', 'mm-s1-1-z9-1@example.invalid',
+      // An `mm-` account without a staging run's provenance: a demo or diagnostic account, never selected.
+      'mm-x-ada-1@example.invalid', 'mm-demo-ada@example.invalid',
     ]) {
       expect(() => prunePlan(counted(1, 0), selected([row(1, email)])), email).toThrow(/refusing/);
     }
@@ -1032,6 +1087,16 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
     // The canary job's own minted principals (RUN_ID staging-<run id>) and a suite shard's are per-run.
     const plan = prunePlan(counted(2, 0), selected([row(1, 'mm-staging-38656278214-w0-ada-1@example.invalid'), row(2)]));
     expect(plan.ids).toEqual(['u1', 'u2']);
+  });
+
+  it('skips, never deletes, a selected row that is not a per-run principal, so one stray sign-up never blocks a deploy', () => {
+    // Sign-up is open on staging: an `mm-s` address the selection's GLOBs may take that is not a run's provenance.
+    const strays = ['mm-staging-1-a.b@example.invalid', 'mm-staging-1-x@y@example.invalid', 'mm-s1-1-c1-1x@example.invalid',
+      'mm-stagingx-1-ada-1@example.invalid', 'mm-s1-1-z9-1@example.invalid'];
+    const plan = prunePlan(counted(4, 0), selected([...strays.map((email, n) => row(n + 10, email)), row(1)]));
+    expect(plan.ids).toEqual(['u1']);
+    expect(plan.summary).toMatch(/skips 5/);
+    expect(plan.sql).not.toMatch(/'u1[0-4]'/);
   });
 
   it('prunes after the migrations and before the growth check of a full-suite deploy, its plan before any delete', () => {

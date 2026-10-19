@@ -32,7 +32,7 @@ on:
       suite_parallel:
         description: 'How many of the 16 full-suite shards run against staging at once (fewer is less load on the shared Worker and D1)'
         type: number
-        default: 16
+        default: 4
       suite_grep:
         description: 'Only the full-suite legs matching this Playwright --grep (to re-check a staging-only failure); empty is every leg'
         type: string
@@ -204,7 +204,8 @@ jobs:
           d1 --json --command "$(node scripts/deploy/prune.mjs select-sql)" > "$dir/select.json"
           node scripts/deploy/prune.mjs plan "$dir/count.json" "$dir/select.json" "$dir/delete.sql"
           if [ -s "$dir/delete.sql" ]; then d1 --yes --file "$dir/delete.sql" > /dev/null; echo "pruned"; fi
-      # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it.
+      # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it. The
+      # prune shrinks only D1, so the Worker's DocDOs and PrincipalDOs are counted from Cloudflare's list; only counts print.
       - name: Staging has room for a full suite
         if: inputs.suite == 'full'
         env:
@@ -213,7 +214,8 @@ jobs:
         run: |
           node "$WRANGLER" d1 execute moss-multi-staging --remote --json --config apps/web/dist/server/wrangler.json \
             --command "SELECT (SELECT count(*) FROM docs) AS docs, (SELECT count(*) FROM user) AS users" > "$RUNNER_TEMP/growth.json"
-          node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json"
+          node scripts/deploy/growth.mjs objects "$RUNNER_TEMP/objects.json"
+          node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json" "$RUNNER_TEMP/objects.json"
       # Staging allows 30 sign-ups a day per address (auth.ts), far fewer than the suite's fresh accounts: this run's
       # are written into D1 as a sign-up would, one password per run derived from the pool secret, only its hash in
       # the SQL, which stays on the runner (scripts/deploy/seed.mjs). The prune takes them on a later run.
@@ -316,14 +318,115 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # What the Worker and its Durable Objects failed at while the suite ran (T8.2): `wrangler tail --status error`,
-  # reduced to counts under fixed names (scripts/deploy/tail-summary.mjs). The tail's own output is never printed:
-  # it holds URLs, headers and log lines. It stops once every suite shard finished, or the canary failed.
-  tail:
-    needs: [preflight, deploy]
+  # SP9's Worker telemetry (T8.2): j11-media's near-cap probe alone, against the deployed bytes, under a tail filtered on
+  # the header its uploads carry, recording each upload's outcome, status, CPU and wall time (scripts/deploy/
+  # tail-summary.mjs). It runs before the suite and the error tail, because Cloudflare's tails interfere: unfiltered, a
+  # tail sampled the near-cap upload away (run 39145040057), and beside a filtered tail an unfiltered one saw only the
+  # filtered one's events (runs 39116654098, 39130102453). The Cloudflare token reaches only the step that starts the
+  # tail. It signs in to slot c6's last principals, which shard c6 does not reach.
+  sp9:
+    name: SP9 near-cap probe
+    needs: [preflight, deploy, canary]
     if: inputs.target == 'staging' && inputs.suite == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      options: --ipc=host --init
+    env:
+      WRANGLER: apps/web/node_modules/wrangler/bin/wrangler.js
+      RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}-sp9
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Probe state
+        env:
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+          COMMIT: ${{ needs.deploy.outputs.commit }}
+          BUNDLE: ${{ needs.deploy.outputs.bundleHash }}
+          CLIENT: ${{ needs.deploy.outputs.clientHash }}
+          BUDGET: ${{ inputs.suite_request_budget }}
+          IDLE: ${{ inputs.idle_seconds }}
+          SEED_TOKEN: ${{ needs.deploy.outputs.seedToken }}
+        run: |
+          node scripts/deploy/canary-state.mjs --out "$RUNNER_TEMP/canary/state.json" --base-url "$STAGING_URL" \
+            --commit "$COMMIT" --bundle "$BUNDLE" --client "$CLIENT" --budget "$BUDGET" --idle-ms "$((IDLE * 1000))" \
+            --run-id "$RUN_ID" --principals seeded --seed-token "$SEED_TOKEN" --seed-slots c6
+          echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
+          # Claim c6's first 280 principals here, so the probe signs in to the last ones.
+          mkdir -p "$RUNNER_TEMP/canary/seed-claims"
+          for k in $(seq 0 279); do : > "$RUNNER_TEMP/canary/seed-claims/$k"; done
+      - name: Suite password
+        env:
+          CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
+          SEED_TOKEN: ${{ needs.deploy.outputs.seedToken }}
+        run: |
+          if [ "$SEED_TOKEN" != "s${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]; then
+            echo "::error::the seeded principals are attempt ${SEED_TOKEN##*-}'s; re-run all jobs, not only the failed ones"; exit 1
+          fi
+          password=$(node scripts/deploy/seed.mjs password --token "$SEED_TOKEN")
+          echo "::add-mask::$password"
+          echo "MOSS_SUITE_PASSWORD=$password" >> "$GITHUB_ENV"
+      - name: The probe leg under its tail
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BROWSER: chromium
+          SHARD: '6'
+          E2E_GLOBAL_TIMEOUT_MIN: '15'
+          MOSS_MULTI_NO_OPEN: '1'
+        run: |
+          mkdir -p e2e/canary-artifacts
+          probe=e2e/canary-artifacts/sp9-probe.json
+          node scripts/deploy/tail-summary.mjs probe "$probe" -- node "$WRANGLER" tail moss-multi-staging --format json --header x-sp9-probe &
+          pid=$!
+          # Only the tail holds the Cloudflare token; the journeys never see it.
+          unset CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
+          # wrangler prints nothing until it connects; give the session time to open before the first upload.
+          sleep 20
+          status=0
+          (cd e2e && pnpm exec playwright test --project=staging-chromium --grep "SP9 near-cap probe") || status=$?
+          # The tail delivers an event after its request ends; give the last upload's a moment to arrive.
+          sleep 15
+          kill -TERM "$pid" 2> /dev/null || true
+          wait "$pid" || true
+          cat "$probe"
+          node scripts/deploy/tail-summary.mjs check-probe "$probe" || status=1
+          exit "$status"
+      - name: A credential-free summary
+        if: always()
+        run: node scripts/deploy/canary-artifacts.mjs summary e2e/test-results/results.json e2e/canary-artifacts/summary.json
+      - name: Upload the probe telemetry
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: staging-sp9-${{ github.run_attempt }}
+          path: |
+            e2e/canary-artifacts/sp9-probe.json
+            e2e/canary-artifacts/summary.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # What the Worker and its Durable Objects failed at while the suite ran (T8.2): one unfiltered `wrangler tail`, its
+  # failures reduced to counts under fixed names (scripts/deploy/tail-summary.mjs), restarted when it ends on its own.
+  # The tail's own output is never printed: it holds URLs, headers and log lines. It starts after the sp9 job's tail
+  # ended and stops once every suite shard finished, or the canary failed; a tail that ends before that fails the job.
+  tail:
+    needs: [preflight, deploy, sp9]
+    if: always() && inputs.target == 'staging' && inputs.suite == 'full' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    # The 16 shards at suite_parallel 4 run in four waves of up to 80 minutes each.
+    timeout-minutes: 350
     env:
       WRANGLER: apps/web/node_modules/wrangler/bin/wrangler.js
     steps:
@@ -344,21 +447,29 @@ jobs:
         run: |
           mkdir -p e2e/canary-artifacts
           out=e2e/canary-artifacts/tail-summary.json
-          node scripts/deploy/tail-summary.mjs run "$out" -- node "$WRANGLER" tail moss-multi-staging --format json --status error &
+          node scripts/deploy/tail-summary.mjs run "$out" -- node "$WRANGLER" tail moss-multi-staging --format json &
           pid=$!
-          deadline=$((SECONDS + 110 * 60))
-          while [ "$SECONDS" -lt "$deadline" ] && kill -0 "$pid" 2> /dev/null; do
+          early=''
+          while true; do
             sleep 60
             jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=30" --jq '.jobs[] | [.name, .status, (.conclusion // "")] | @tsv' || true)
             if grep -qP '^canary\tcompleted\t(?!success)' <<< "$jobs"; then break; fi
             done_shards=$(grep -cP '^suite \(.*\tcompleted\t' <<< "$jobs" || true)
             if [ "$done_shards" -ge 16 ]; then break; fi
+            if ! kill -0 "$pid" 2> /dev/null; then early=1; break; fi
           done
           kill -TERM "$pid" 2> /dev/null || true
           wait "$pid" || true
           cat "$out"
           if jq -e '(.limitMinutes | length) > 0' "$out" > /dev/null; then
             echo "::warning::an isolate passed its memory or CPU limit during the suite, resetting the Durable Objects it held: see limitMinutes in tail-summary.json"
+          fi
+          if jq -e '.overload > 0' "$out" > /dev/null; then
+            echo "::warning::the tail sampled under load: the summary may miss events (overload in tail-summary.json)"
+          fi
+          if [ -n "$early" ]; then
+            echo "::error::the tail ended before the suite finished"
+            exit 1
           fi
       - name: Upload the tail summary
         if: always()
@@ -376,8 +487,8 @@ jobs:
   # request budget; the wake is j04's owner-route leg. The canary's log and artifact policy holds.
   suite:
     name: suite (${{ matrix.browser }}, ${{ matrix.shard }}/8)
-    needs: [preflight, deploy, canary]
-    if: inputs.target == 'staging' && inputs.suite == 'full'
+    needs: [preflight, deploy, canary, sp9]
+    if: always() && inputs.target == 'staging' && inputs.suite == 'full' && needs.canary.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 80
     container:
@@ -445,7 +556,8 @@ jobs:
           MOSS_MULTI_NO_OPEN: '1'
           GREP: ${{ inputs.suite_grep }}
         run: |
-          args=(--project=staging-"$BROWSER" --shard="$SHARD/8")
+          # The sp9 job ran the near-cap probe already; the 95 MiB upload is not repeated.
+          args=(--project=staging-"$BROWSER" --shard="$SHARD/8" --grep-invert "SP9 near-cap probe")
           if [ -n "$GREP" ]; then args+=(--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi
           pnpm exec playwright test "${args[@]}"
       - name: A credential-free summary

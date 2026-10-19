@@ -179,12 +179,21 @@ export class Telemetry {
   }
 
   /** A routed page socket, as the proxy saw it open; `closed()` records its close, once. */
-  routedSocket(url: string): { closed(): void } {
+  routedSocket(url: string): { closed(code?: number, reason?: string): void; received(message: string | Buffer): void } {
     const entry = this.socketOpened(url);
     return {
-      closed() {
+      // Sync step 2 relayed from the server leg, as the page-socket census reads it from CDP.
+      received(message) {
+        if (entry && typeof message !== 'string' && message[0] === 0 && message[1] === 1) entry.synced = true;
+      },
+      // `code`: the server leg's close, so invariant 3 judges a routed 1006 or 1013 as it does a page socket's.
+      closed(code, reason = '') {
         if (entry && entry.closedAt === null) {
           entry.closedAt = Date.now();
+          if (typeof code === 'number') {
+            entry.close ??= `${code} ${reason}`.trim();
+            entry.code = code;
+          }
           entry.close ??= 'closed at the proxy';
         }
       },

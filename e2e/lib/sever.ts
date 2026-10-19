@@ -8,14 +8,14 @@ interface Conn {
   page: WebSocketRoute;
   server: WebSocketRoute | null;
   closed: boolean;
-  census: { closed(): void } | null;
+  census: ReturnType<SocketCensus> | null;
   lost: boolean;
   /** Frames the page sent while its doc was held, in order, not yet delivered. */
   held: (string | Buffer)[] | null;
 }
 
 /** Reports each page socket the proxy sees, so telemetry counts the page's sockets rather than the proxy's legs. */
-export type SocketCensus = (url: string) => { closed(): void };
+export type SocketCensus = (url: string) => { closed(code?: number, reason?: string): void; received?(message: string | Buffer): void };
 
 export interface Sever {
   /**
@@ -79,7 +79,10 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
       if (ctl.mode !== 'up') ctl.dropped.in++;
       else if (ctl.losingAcks && isAck(message)) ctl.acksLost += 1;
       else if (ctl.payloads && isPayload(message)) ctl.payloads.push([conn, message as Buffer]);
-      else conn.page.send(message);
+      else {
+        conn.page.send(message);
+        conn.census?.received?.(message);
+      }
     });
     server.onClose((code, reason) => {
       if (ctl.mode === 'blackhole' && ctl.swallowCloses) {
@@ -88,7 +91,7 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
       }
       conn.closed = true;
       conn.held = null;
-      conn.census?.closed();
+      conn.census?.closed(code, reason);
       conn.page.close({ code, reason });
     });
   };
