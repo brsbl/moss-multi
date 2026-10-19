@@ -33,6 +33,7 @@ const CASES: Case[] = [
   { fixture: 'stuck-unbound', invariant: 7, act: (page) => page.locator('html[data-unbound]').waitFor({ state: 'attached' }) },
   { fixture: 'rebind-loses-text', invariant: 7, act: (page) => page.locator('html[data-unbound]').waitFor({ state: 'attached' }) },
   { fixture: 'editable-unbound', invariant: 9 },
+  { fixture: 'read-only-separator', invariant: 9 },
 ];
 
 /** The same user path on every fixture: observe the editor, then type into the body (the title may be unbound). */
@@ -65,6 +66,14 @@ test('invariant 7 waits for a rebinding field and then reads its text', async ({
   const actor = await actors.anonymous(`${server.url}/rebind-keeps-text.html`, { label: 'rebind' });
   await exercise(actor);
   await actor.page.locator('html[data-unbound]').waitFor({ state: 'attached' });
+  expect(await actors.findings()).toEqual([]);
+});
+
+test('a read-only body\'s tab, focused in its tablist, is not a finding (T3.B17)', async ({ actors, server }) => {
+  const actor = await actors.anonymous(`${server.url}/read-only-tab.html`, { label: 'read-only-tab' });
+  await exercise(actor);
+  await actor.page.locator('[data-body-binding="readonly"] [role="tab"][tabindex="0"]').focus();
+  expect(await actor.page.evaluate(() => document.activeElement?.getAttribute('role'))).toBe('tab');
   expect(await actors.findings()).toEqual([]);
 });
 

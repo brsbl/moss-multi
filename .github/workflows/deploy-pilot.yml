@@ -1,0 +1,190 @@
+# Deploys the exact bytes a green CI full lane tested to the pilot, the owner's real notes apart from staging (T8.P1),
+# then runs a read-only smoke that creates no account. The same gate and checks as deploy-staging.yml; no canary, suite,
+# sweep or test principal ever runs here. Manual dispatch, or deploy-staging.yml with target=pilot, which is registered on
+# main (T8.P2). Setup, rollback and backups: docs/DEPLOY.md.
+name: Deploy pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: 'The ci.yml run whose web-dist to deploy: a green full lane on a branch head (dispatch lane=full), within its 3-day artifact retention'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      ci_run_id:
+        description: 'The ci.yml run whose web-dist to deploy: a green full lane on a branch head (dispatch lane=full), within its 3-day artifact retention'
+        required: true
+        type: string
+    # Not required here, so a missing one reaches preflight.mjs, which names it.
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
+      PILOT_URL:
+        required: false
+      PILOT_BETTER_AUTH_SECRET:
+        required: false
+      PILOT_ALLOWED_EMAILS:
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+# One deploy at a time, never cancelled half way.
+concurrency:
+  group: deploy-pilot
+  cancel-in-progress: false
+
+env:
+  CI: 'true'
+  NO_COLOR: '1'
+  WRANGLER_SEND_METRICS: 'false'
+
+jobs:
+  # The gate runs this workflow's own scripts (the dispatched commit) before anything from the CI run's commit is
+  # checked out or a secret is in reach, and only it emits the sha the later jobs check out (scripts/deploy/run-gate.mjs).
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      sha: ${{ steps.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/deploy
+      - name: The CI run may deploy
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.ci_run_id }}
+        run: |
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then echo "::error::ci_run_id must be a run id (digits only)"; exit 1; fi
+          dir="$RUNNER_TEMP/gate"
+          mkdir -p "$dir"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$dir/run.json"
+          branch=$(node scripts/deploy/run-gate.mjs branch "$dir/run.json")
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" > "$dir/ref.json" 2> /dev/null || echo null > "$dir/ref.json"
+          head=$(jq -r .head_sha "$dir/run.json")
+          tip=$(jq -r '.object.sha? // ""' "$dir/ref.json")
+          echo null > "$dir/compare.json"
+          if [[ "$tip" =~ ^[0-9a-f]{40}$ ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/compare/$head...$tip" > "$dir/compare.json" 2> /dev/null || echo null > "$dir/compare.json"
+          fi
+          node scripts/deploy/run-gate.mjs sha "$dir/run.json" "$dir/ref.json" "$dir/compare.json" >> "$GITHUB_OUTPUT"
+      - name: Every secret is configured
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PILOT_URL: ${{ secrets.PILOT_URL }}
+          PILOT_BETTER_AUTH_SECRET: ${{ secrets.PILOT_BETTER_AUTH_SECRET }}
+          PILOT_ALLOWED_EMAILS: ${{ secrets.PILOT_ALLOWED_EMAILS }}
+        run: node scripts/deploy/preflight.mjs pilot
+
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Secrets reach only the steps that use them, never the dependency install.
+    env:
+      RUN_ID: ${{ inputs.ci_run_id }}
+      WRANGLER: apps/web/node_modules/wrangler/bin/wrangler.js
+    steps:
+      - name: Read the CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
+      # The gated commit: its migrations match the bytes, and its scripts judge them.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - name: The run passed the full lane in both engines
+        run: node scripts/deploy/tested-run.mjs "$RUNNER_TEMP/run.json" "$RUNNER_TEMP/jobs.ndjson"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The bytes e2e ran on, by artifact: never a rebuild.
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/artifact
+      - name: Unpack the tested bytes
+        id: provenance
+        run: |
+          tar -xzf "$RUNNER_TEMP/artifact/web-dist.tgz" -C apps/web
+          node scripts/provenance.mjs read apps/web/dist >> "$GITHUB_OUTPUT"
+      - name: The bytes are the run's head commit
+        env:
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+          SHA: ${{ needs.preflight.outputs.sha }}
+        run: |
+          if [ "$COMMIT" != "$SHA" ]; then echo "::error::web-dist was built from $COMMIT, the run's head is $SHA"; exit 1; fi
+      - name: Upload guard
+        run: node scripts/deploy/staging-config.mjs guard apps/web/dist
+      # A§21: who the token deploys as, before anything is created.
+      - name: wrangler whoami
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node "$WRANGLER" whoami
+      - name: The pilot D1 and R2 exist
+        id: d1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          lookup() { node "$WRANGLER" d1 list --json | jq -r '.[] | select(.name == "moss-multi-pilot") | .uuid'; }
+          id=$(lookup)
+          if [ -z "$id" ]; then
+            node "$WRANGLER" d1 create moss-multi-pilot
+            id=$(lookup)
+          fi
+          if [ -z "$id" ]; then echo "::error::no D1 database moss-multi-pilot"; exit 1; fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          if ! node "$WRANGLER" r2 bucket info moss-multi-pilot-assets > /dev/null 2>&1; then
+            node "$WRANGLER" r2 bucket create moss-multi-pilot-assets
+          fi
+      - name: The pilot config over the tested bytes
+        env:
+          D1_ID: ${{ steps.d1.outputs.id }}
+          PILOT_URL: ${{ secrets.PILOT_URL }}
+        run: node scripts/deploy/staging-config.mjs write apps/web/dist --target pilot --d1-id "$D1_ID" --url "$PILOT_URL"
+      # Before the deploy, so the new bytes never meet an old schema. wrangler applies them in file-name order and the
+      # upload guard checked that order against the drizzle journal.
+      - name: D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node "$WRANGLER" d1 migrations apply moss-multi-pilot --remote --config apps/web/dist/server/wrangler.json
+      - name: Deploy the tested bytes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PILOT_BETTER_AUTH_SECRET: ${{ secrets.PILOT_BETTER_AUTH_SECRET }}
+          PILOT_ALLOWED_EMAILS: ${{ secrets.PILOT_ALLOWED_EMAILS }}
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+        run: |
+          umask 077
+          secrets="$RUNNER_TEMP/pilot-secrets.json"
+          trap 'rm -f "$secrets"' EXIT
+          node -e 'const e = process.env; process.stdout.write(JSON.stringify({ BETTER_AUTH_SECRET: e.PILOT_BETTER_AUTH_SECRET, MOSS_ALLOWED_EMAILS: e.PILOT_ALLOWED_EMAILS }))' > "$secrets"
+          node "$WRANGLER" deploy --config apps/web/dist/server/wrangler.json --secrets-file "$secrets" --message "ci run $RUN_ID, commit $COMMIT"
+      # Read-only, and it can create no account: /, /api/version and the hook 404s, then /api/me signed out is 401 and a
+      # stranger's sign-up (an @example.invalid address, a one-character password) is refused SIGN_UP_NOT_ALLOWED.
+      - name: The pilot serves the tested bytes, no test hook and allowlist-only sign-up
+        env:
+          PILOT_URL: ${{ secrets.PILOT_URL }}
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+          BUNDLE: ${{ steps.provenance.outputs.bundleHash }}
+          CLIENT: ${{ steps.provenance.outputs.clientHash }}
+        run: node scripts/deploy/assert-deployed.mjs --base-url "$PILOT_URL" --expect-commit "$COMMIT" --expect-bundle "$BUNDLE" --expect-client "$CLIENT" --wait 600 --pilot

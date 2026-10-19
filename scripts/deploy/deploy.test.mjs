@@ -1,6 +1,7 @@
 // T8.D: the staging deploy pipeline's pure parts and its assertion script, against a fake Worker on loopback. The
 // build job runs the same assertion against the real production-mode smoke stack (ci.yml).
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -298,7 +299,9 @@ describe('deploy-staging.yml', () => {
     expect(WORKFLOW.jobs[gateJob].outputs.sha).toBe('${{ steps.gate.outputs.sha }}');
     for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
       if (name === gateJob) continue;
-      for (const step of job.steps) {
+      // A called workflow holds what it is passed.
+      if (job.uses && (holdsSecret(job.secrets) || job.secrets === 'inherit')) expect(upstream(name), `${name} is passed secrets`).toContain(gateJob);
+      for (const step of job.steps ?? []) {
         if (risky(job, step)) expect(upstream(name), `${name}: ${step.name ?? step.uses}`).toContain(gateJob);
         if (step.uses?.startsWith('actions/checkout') && step.with?.ref !== undefined) {
           expect(step.with.ref, `${name} checks out the gated sha`).toBe(`\${{ needs.${gateJob}.outputs.sha }}`);
@@ -314,14 +317,14 @@ describe('deploy-staging.yml', () => {
   });
 
   it('uploads only the credential-free canary files', () => {
-    const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
+    const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/upload-artifact')));
     expect(uploads.length).toBeGreaterThanOrEqual(1);
     const allowed = {
       tail: [['e2e/canary-artifacts/tail-summary.json']],
       other: [['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']],
     };
     for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
-      for (const upload of job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact'))) {
+      for (const upload of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/upload-artifact'))) {
         expect(allowed[name === 'tail' ? 'tail' : 'other'], name).toContainEqual(upload.with.path.trim().split('\n').map((line) => line.trim()).sort());
       }
     }
@@ -331,7 +334,7 @@ describe('deploy-staging.yml', () => {
     const input = WORKFLOW.on.workflow_dispatch.inputs.suite;
     expect(input).toMatchObject({ type: 'choice', default: 'canary' });
     expect(input.options).toEqual(['canary', 'full']);
-    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => j.steps.some((step) => /--project="?staging-/.test(step.run ?? ''))) ?? [];
+    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => (j.steps ?? []).some((step) => /--project="?staging-/.test(step.run ?? ''))) ?? [];
     expect(name, 'a job runs the staging projects').toBeTruthy();
     expect(job.if).toMatch(/inputs\.suite == 'full'/);
     expect(needsOf(name)).toEqual(expect.arrayContaining(['preflight', 'deploy', 'canary']));
@@ -420,6 +423,116 @@ describe('the staging suite @p:R15', () => {
       vi.unstubAllEnvs();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// T8.P2: deploy-staging.yml is the workflow registered on main, so the pilot deploys through it with target=pilot.
+const PILOT_WORKFLOW = yaml.load(readFileSync(fileURLToPath(new URL('../../.github/workflows/deploy-pilot.yml', import.meta.url)), 'utf8'));
+const PILOT_SECRETS = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'PILOT_URL', 'PILOT_BETTER_AUTH_SECRET', 'PILOT_ALLOWED_EMAILS'];
+const triggers = (workflow) => workflow.on ?? workflow[true];
+const PILOT_GROUP = "${{ inputs.target == 'pilot' && 'deploy-staging-pilot' || 'deploy-staging' }}";
+
+// The `inputs.<name> == '<value>'` terms of a condition, joined by &&. Only the conditions the deploy workflows use;
+// anything else fails the test.
+function terms(condition) {
+  if (condition === undefined) return [];
+  const raw = String(condition).trim();
+  const text = raw.startsWith('${{') && raw.endsWith('}}') ? raw.slice(3, -2).trim() : raw;
+  if (text === 'always()') return [];
+  return text.split('&&').map((term) => {
+    const match = /^inputs\.(target|suite) == '(\w+)'$/.exec(term.trim());
+    if (!match) throw new Error(`unknown condition: ${condition}`);
+    return { input: match[1], value: match[2] };
+  });
+}
+
+// Whether a job or step runs for the dispatch inputs.
+const runsFor = (condition, inputs) => terms(condition).every(({ input, value }) => inputs[input] === value);
+
+// The jobs that run for the dispatch inputs, each with only its running steps: a job whose needs did not all run is skipped.
+function runningFor(workflow, target, suite = 'canary') {
+  const inputs = { target, suite };
+  const ran = {};
+  const pending = Object.entries(workflow.jobs);
+  while (pending.length) {
+    const at = pending.findIndex(([, job]) => [job.needs ?? []].flat().every((need) => need in ran || !(need in workflow.jobs)));
+    expect(at, 'the job graph has no cycle').toBeGreaterThanOrEqual(0);
+    const [[name, job]] = pending.splice(at, 1);
+    const needsRan = [job.needs ?? []].flat().every((need) => ran[need]);
+    ran[name] = needsRan && runsFor(job.if, inputs) ? { ...job, steps: job.steps?.filter((step) => runsFor(step.if, inputs)) } : null;
+  }
+  return Object.fromEntries(Object.entries(ran).filter(([, job]) => job));
+}
+
+// The workflow as target=staging sees it: no target input, no pilot job, no target term in any condition.
+function stagingView(workflow) {
+  const forStaging = (condition) => terms(condition).every(({ input, value }) => input !== 'target' || value === 'staging');
+  const strip = ({ if: condition, ...rest }) => {
+    if (condition === undefined) return rest;
+    const kept = terms(condition).filter(({ input }) => input !== 'target');
+    if (kept.length === terms(condition).length) return { ...rest, if: condition };
+    return kept.length ? { ...rest, if: kept.map(({ input, value }) => `inputs.${input} == '${value}'`).join(' && ') } : rest;
+  };
+  const on = structuredClone(triggers(workflow));
+  delete on.workflow_dispatch.inputs.target;
+  const jobs = {};
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (!forStaging(job.if)) continue;
+    jobs[name] = strip({ ...job, ...(job.steps ? { steps: job.steps.map(strip) } : {}) });
+  }
+  const { name, permissions, env } = workflow;
+  const concurrency = { ...workflow.concurrency, group: workflow.concurrency.group === PILOT_GROUP ? 'deploy-staging' : workflow.concurrency.group };
+  return { name, on, permissions, concurrency, env, jobs };
+}
+
+describe('deploy-staging.yml target', () => {
+  const sha256 = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+  it('takes a target input, staging or pilot, staging by default', () => {
+    expect(triggers(WORKFLOW).workflow_dispatch.inputs.target).toMatchObject({ type: 'choice', options: ['staging', 'pilot'], default: 'staging' });
+  });
+
+  it('target=staging runs the staging workflow the pilot leaves unchanged', () => {
+    const running = runningFor(WORKFLOW, 'staging');
+    expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary']);
+    expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
+    expect(Object.keys(runningFor(WORKFLOW, 'staging', 'full'))).toEqual(['preflight', 'deploy', 'canary', 'tail', 'suite']);
+    // deploy-staging.yml at t/T8.F 4de48218 (T8.2's canary and full suite) through stagingView: the same jobs, steps,
+    // triggers, env and concurrency. A deliberate change to the staging jobs updates this hash.
+    expect(sha256(stagingView(WORKFLOW))).toBe('eb2a0a8b5003459356a5404c6c1c2a10ef66c03df023d25d41b630a926961009');
+  });
+
+  it('target=pilot runs only the gate, then deploy-pilot.yml: no staging deploy, canary or upload', () => {
+    const running = runningFor(WORKFLOW, 'pilot');
+    expect(Object.keys(running)).toEqual(['preflight', 'pilot']);
+    expect(Object.keys(runningFor(WORKFLOW, 'pilot', 'full'))).toEqual(['preflight', 'pilot']);
+    expect(running.pilot).toMatchObject({ needs: 'preflight', uses: './.github/workflows/deploy-pilot.yml', with: { ci_run_id: '${{ inputs.ci_run_id }}' } });
+    expect(running.preflight.steps.map((step) => step.id ?? step.uses)).toEqual(['actions/checkout@v6', 'gate']);
+    expect(running.preflight.steps.at(-1).run).toMatch(/run-gate\.mjs/);
+    for (const name of ['deploy', 'canary']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toBe("inputs.target == 'staging'");
+    for (const name of ['tail', 'suite']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toBe("inputs.target == 'staging' && inputs.suite == 'full'");
+  });
+
+  it('queues the pilot apart from staging, and apart from the group deploy-pilot.yml holds', () => {
+    expect(WORKFLOW.concurrency).toEqual({ group: PILOT_GROUP, 'cancel-in-progress': false });
+    expect(PILOT_WORKFLOW.concurrency.group).not.toBe('deploy-staging-pilot');
+  });
+
+  it('scopes secrets per target: staging never sees a pilot secret, the pilot only its own and the Cloudflare ones', () => {
+    const staging = JSON.stringify(runningFor(WORKFLOW, 'staging', 'full'));
+    expect(staging).not.toMatch(/PILOT_/);
+    const pilot = runningFor(WORKFLOW, 'pilot');
+    expect(JSON.stringify(pilot.preflight), 'the gate holds no secret').not.toMatch(/secrets\./);
+    expect(pilot.pilot.secrets).not.toBe('inherit');
+    expect(pilot.pilot.secrets).toEqual(Object.fromEntries(PILOT_SECRETS.map((name) => [name, `\${{ secrets.${name} }}`])));
+    expect(JSON.stringify(pilot)).not.toMatch(/STAGING_|CANARY_|moss-multi-staging/);
+  });
+
+  it('deploy-pilot.yml is callable with the same inputs it is dispatched with, and declares only the pilot secrets', () => {
+    const on = triggers(PILOT_WORKFLOW);
+    expect(Object.keys(on.workflow_call.inputs)).toEqual(Object.keys(on.workflow_dispatch.inputs));
+    expect(on.workflow_call.inputs.ci_run_id).toMatchObject({ required: true, type: 'string' });
+    expect(Object.keys(on.workflow_call.secrets)).toEqual(PILOT_SECRETS);
   });
 });
 

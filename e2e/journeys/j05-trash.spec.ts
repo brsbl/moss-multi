@@ -404,3 +404,37 @@ test('j05-trash: a restore the server refuses shows the server’s sentence, and
   await expect(trashRow(ben, docId), 'the note stays in Trash').toBeVisible();
   await expect(ben.page.getByText(/folder is in Trash, so it would return/), 'moss’s notice dismisses itself').toBeHidden({ timeout: 10_000 });
 });
+
+test('j05-trash: on a narrow window, a refused restore’s notice stands clear of the open note’s Trash notice @p:note-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner restores her own trashed note');
+  await ada.page.setViewportSize({ width: 720, height: 800 });
+  const origin = new URL(ada.page.url()).origin;
+  const made = await ada.context.request.post(`${origin}/api/docs`, { headers: { origin }, data: { title: TITLE, markdown: BODY } });
+  expect(made.status(), 'declared setup: a note').toBe(201);
+  const docId = ((await made.json()) as { doc: { id: string } }).doc.id;
+  expect((await ada.context.request.delete(`${origin}/api/docs/${docId}`, { headers: { origin } })).status(), 'declared setup: it goes to Trash').toBe(200);
+
+  await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
+  await trashRow(ada, docId).click();
+  const notice = ada.page.locator(`[${NAMES.retentionNotice}]`);
+  await expect(notice, 'the open trashed note says it is in Trash').toHaveText(TRASH_COPY.trashedNote, { timeout: BIND_TIMEOUT });
+
+  // The live-note cap refuses the restore (answered here: filling the cap takes thousands of notes).
+  const CAP = 'You have 10,000 notes, the limit. Move some to Trash to restore this one.';
+  await ada.page.route(`**/api/docs/${docId}/restore`, (route) =>
+    route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'note-cap', message: CAP }) }));
+  ada.expectHttp(409, `/api/docs/${docId}/restore`);
+  await trashRow(ada, docId).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  const toast = ada.page.getByText(CAP, { exact: true });
+  await expect(toast, 'the refusal shows the server’s sentence').toBeVisible();
+  await expect(notice, 'and the Trash notice stays').toBeVisible();
+  // The refusal's whole card (the sentence's parent) against the Trash notice's card.
+  const [a, b] = [await toast.locator('xpath=..').boundingBox(), await notice.boundingBox()];
+  expect(a && b, 'both are laid out').toBeTruthy();
+  const apart = a!.y + a!.height <= b!.y || b!.y + b!.height <= a!.y || a!.x + a!.width <= b!.x || b!.x + b!.width <= a!.x;
+  expect(apart, `the notices do not overlap: refusal ${JSON.stringify(a)}, Trash ${JSON.stringify(b)}`).toBe(true);
+  await expect(trashRow(ada, docId), 'the note stays in Trash').toBeVisible();
+  await expect(toast, 'moss’s notice dismisses itself').toBeHidden({ timeout: 10_000 });
+});

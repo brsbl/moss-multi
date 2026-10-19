@@ -69,13 +69,16 @@ export function markerLeak({ names }) {
 }
 
 /**
- * Invariant 9: nothing under a binding that is not live is focusable, editable or focused, except a block's Add
- * comment control in a `readonly` body (a commenter comments on blocks).
+ * Invariant 9: nothing under a binding that is not live is focusable, editable or focused, except a read-only tab
+ * group's tabs and a block's Add comment control in a `readonly` body (a commenter comments on blocks).
  * @param {{ names: Names }} arg
  * @returns {string[]}
  */
 export function editableUnbound({ names }) {
   const focusable = 'a[href], button, input, select, textarea, iframe, summary, [tabindex]';
+  // A tab of a read-only tab group, a direct child of its tablist, stays reachable and may hold focus, because
+  // switching tabs is navigation and writes nothing. Its resize handles and everything else in the bar still count.
+  const navigation = '[role="tablist"] > div[role="tab"]';
   const found = [];
   for (const attr of [names.titleBinding, names.bodyBinding]) {
     for (const field of document.querySelectorAll(`[${attr}]`)) {
@@ -85,11 +88,15 @@ export function editableUnbound({ names }) {
       for (const el of [field, ...field.querySelectorAll('*')]) {
         const html = /** @type {HTMLElement} */ (el);
         if (html.isContentEditable) found.push(`${where}: <${el.tagName.toLowerCase()}> is editable`);
-        else if (el.matches(focusable) && !el.matches(':disabled') && !(state === 'readonly' && el.closest(`[${names.commentEntry}]`))) {
+        else if (
+          el.matches(focusable) && !el.matches(':disabled') && !el.matches(navigation)
+          && !(state === 'readonly' && el.closest(`[${names.commentEntry}]`))
+        ) {
           found.push(`${where}: <${el.tagName.toLowerCase()}> is focusable`);
         }
       }
-      if (document.activeElement && field.contains(document.activeElement)) found.push(`${where}: holds focus`);
+      const active = document.activeElement;
+      if (active && field.contains(active) && !active.matches(navigation)) found.push(`${where}: holds focus`);
     }
   }
   return found;

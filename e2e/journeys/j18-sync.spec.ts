@@ -10,7 +10,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Actor } from '../lib/actors.ts';
 import type { Stack } from '../lib/stack.ts';
@@ -305,5 +305,333 @@ test('j18-sync media: a note\'s image and video round-trip through sync and pull
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(away, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync stale save: an editor that saves its old text over a pulled agent edit never reverts it; a clash is set aside, not pushed @p:agt-2 @p:R9', async ({ actors, stack }) => {
+  // Moss's overwrite bug (T7.P2): a note open with unsaved typing is saved from the editor's text after the daemon
+  // wrote a pulled edit into its file. The agent edits from a second workspace, as on the Linux replica.
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const docId = await importNote(ada, stack, 'Field notes', 'Para one.\n\nPara two.\n\nPara three.\n\nPara four.');
+  const mac = scratch();
+  const linux = scratch();
+  const env = await agentEnv(ada, stack, mac);
+  const agentEdit = async (from: string, to: string) => {
+    const pulled = await moss(['pull', docId, 'note.md', '--force'], env, linux);
+    expect(pulled.code, pulled.stderr).toBe(0);
+    writeFileSync(join(linux, 'note.md'), readFileSync(join(linux, 'note.md'), 'utf8').replace(from, to));
+    const pushed = await moss(['push', 'note.md'], env, linux);
+    expect(pushed.code, pushed.stderr).toBe(0);
+  };
+  try {
+    expect((await moss(['init'], env, mac)).code).toBe(0);
+    const pulled = await moss(['pull', docId, 'note.md'], env, mac);
+    expect(pulled.code, pulled.stderr).toBe(0);
+    const file = join(mac, 'note.md');
+    const editor = readFileSync(file, 'utf8');
+
+    await agentEdit('Para two.', 'Para two, edited by the agent.');
+    const pull = await moss(['sync'], env, mac);
+    expect(pull.code, pull.stderr).toBe(0);
+    expect(readFileSync(file, 'utf8'), 'the daemon writes the agent edit into the file').toContain('Para two, edited by the agent.');
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await moss(['sync'], env, mac);
+    expect(saved.code, `${saved.stdout}${saved.stderr}`).toBe(0);
+    const after = await served(ada, docId);
+    expect(after.text, 'the server keeps the agent edit').toContain('Para two, edited by the agent.');
+    expect(after.text, 'and gains the typing').toContain('Para four, and my typing.');
+    expect(readFileSync(file, 'utf8'), 'the file holds both').toContain('Para two, edited by the agent.');
+    expect(readFileSync(file, 'utf8')).toContain('Para four, and my typing.');
+
+    const held = readFileSync(file, 'utf8');
+    await agentEdit('Para three.', 'Para three, edited by the agent.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    writeFileSync(file, held.replace('Para three.', 'Para three, rewritten in the editor.'));
+    const clash = await moss(['sync', '--json'], env, mac);
+    expect(clash.code, `a clash exits 2: ${clash.stdout}${clash.stderr}`).toBe(2);
+    const kept = await served(ada, docId);
+    expect(kept.text, 'no revert reaches the server').toContain('Para three, edited by the agent.');
+    expect(kept.text).not.toContain('rewritten in the editor');
+    expect(kept.text, 'the earlier edits stand').toContain('Para four, and my typing.');
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toContain('Para three, edited by the agent.');
+    expect(readOr(`${file}.rej`), 'the typing waits beside the note').toContain('+, rewritten in the editor');
+
+    // Reviewing in a reloaded editor, the user removes a paragraph the agent just added: the removal lands.
+    const unwanted = '\n\nAn agent paragraph the user does not want.';
+    await agentEdit('Para one.', `Para one.${unwanted}`);
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain(unwanted);
+    writeFileSync(file, readFileSync(file, 'utf8').replace(unwanted, ''));
+    const removed = await moss(['sync'], env, mac);
+    expect(removed.code, `${removed.stdout}${removed.stderr}`).toBe(0);
+    expect((await served(ada, docId)).text, 'the server loses the agent paragraph').not.toContain('does not want');
+    expect(readFileSync(file, 'utf8'), 'and so does the file').not.toContain('does not want');
+
+    // Two agent edits pulled while the editor still holds the text from before both: its save reverts neither.
+    const before = readFileSync(file, 'utf8');
+    await agentEdit('Para one.', 'Para one. First agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    await agentEdit('Para three, edited by the agent.', 'Para three, edited by the agent. Second agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    writeFileSync(file, before.replace('Para four, and my typing.', 'Para four, and my typing. More typing.'));
+    const twice = await moss(['sync'], env, mac);
+    expect(twice.code, `${twice.stdout}${twice.stderr}`).toBe(0);
+    const last = (await served(ada, docId)).text;
+    for (const kept of ['First agent edit.', 'Second agent edit.', 'More typing.']) expect(last, `the server keeps "${kept}"`).toContain(kept);
+  } finally {
+    rmSync(mac, { recursive: true, force: true });
+    rmSync(linux, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync stale save, moss note: two pulled agent edits survive a stale save, and removing a pulled paragraph lands at once @p:agt-2 @p:R9 @p:note-3', async ({ actors, stack }) => {
+  // The pilot path (T7.P2): a moss bundle note on the Mac, an agent editing it from a second workspace.
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const mac = scratch();
+  const linux = scratch();
+  const env = await agentEnv(ada, stack, mac);
+  try {
+    const bundle = join(mac, 'Field notes');
+    mkdirSync(bundle);
+    const file = join(bundle, 'Field notes.md');
+    writeFileSync(file, '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n');
+    expect((await moss(['init'], env, mac)).code).toBe(0);
+    const synced = await moss(['sync', '--json'], env, mac);
+    expect(synced.code, synced.stderr).toBe(0);
+    const docId = (JSON.parse(synced.stdout) as { action: string; docId?: string }[]).find((result) => result.action === 'created')!.docId!;
+    const agentEdit = async (from: string, to: string) => {
+      const pulled = await moss(['pull', docId, 'note.md', '--force'], env, linux);
+      expect(pulled.code, pulled.stderr).toBe(0);
+      writeFileSync(join(linux, 'note.md'), readFileSync(join(linux, 'note.md'), 'utf8').replace(from, to));
+      const pushed = await moss(['push', 'note.md'], env, linux);
+      expect(pushed.code, pushed.stderr).toBe(0);
+    };
+    const editor = readFileSync(file, 'utf8');
+
+    await agentEdit('Para one.', 'Para one. First agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    await agentEdit('Para three.', 'Para three. Second agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('Second agent edit.');
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await moss(['sync'], env, mac);
+    expect(saved.code, `${saved.stdout}${saved.stderr}`).toBe(0);
+    const after = (await served(ada, docId)).text;
+    for (const kept of ['First agent edit.', 'Second agent edit.', 'Para four, and my typing.']) expect(after, `the server keeps "${kept}"`).toContain(kept);
+    expect(readFileSync(file, 'utf8'), 'the file stays in moss form with every edit').toMatch(/^# Field notes\n[\s\S]*First agent edit\.[\s\S]*Second agent edit\.[\s\S]*and my typing\./);
+
+    // A small wanted edit and a long unwanted paragraph arrive together; the user deletes only the paragraph.
+    const long = '\n\nA long agent paragraph that the user reads and decides she does not want in her note at all.';
+    await agentEdit('Para two.', `Para two!${long}`);
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain(long);
+    writeFileSync(file, readFileSync(file, 'utf8').replace(long, ''));
+    const removed = await moss(['sync'], env, mac);
+    expect(removed.code, `${removed.stdout}${removed.stderr}`).toBe(0);
+    const final = (await served(ada, docId)).text;
+    expect(final, 'the paragraph leaves the server').not.toContain('does not want');
+    expect(final, 'the wanted edit stays').toContain('Para two!');
+    expect(readFileSync(file, 'utf8')).not.toContain('does not want');
+    expect(existsSync(`${file}.rej`), 'no false clash').toBe(false);
+  } finally {
+    rmSync(mac, { recursive: true, force: true });
+    rmSync(linux, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync stale save, text no longer kept: nothing is pushed, the save waits beside the note, and saving it again reverts nothing @p:agt-2 @p:R9 @p:note-3', async ({ actors, stack }) => {
+  // T7.P2 fail-closed: with the editor's text evicted from the prior texts, sync cannot know its ancestor.
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const mac = scratch();
+  const linux = scratch();
+  const env = await agentEnv(ada, stack, mac);
+  // A budget of about one prior text: the text from before the first agent edit is evicted.
+  const macEnv = { ...env, MOSS_MULTI_PRIOR_BYTES: '120' };
+  try {
+    const bundle = join(mac, 'Field notes');
+    mkdirSync(bundle);
+    const file = join(bundle, 'Field notes.md');
+    writeFileSync(file, '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n');
+    expect((await moss(['init'], macEnv, mac)).code).toBe(0);
+    const synced = await moss(['sync', '--json'], macEnv, mac);
+    expect(synced.code, synced.stderr).toBe(0);
+    const docId = (JSON.parse(synced.stdout) as { action: string; docId?: string }[]).find((result) => result.action === 'created')!.docId!;
+    const agentEdit = async (from: string, to: string) => {
+      const pulled = await moss(['pull', docId, 'note.md', '--force'], env, linux);
+      expect(pulled.code, pulled.stderr).toBe(0);
+      writeFileSync(join(linux, 'note.md'), readFileSync(join(linux, 'note.md'), 'utf8').replace(from, to));
+      const pushed = await moss(['push', 'note.md'], env, linux);
+      expect(pushed.code, pushed.stderr).toBe(0);
+    };
+    const editor = readFileSync(file, 'utf8');
+    const edits = ['First agent edit.', 'Second agent edit.', 'Third agent edit.'];
+    for (const [i, para] of ['Para one.', 'Para two.', 'Para three.'].entries()) {
+      await agentEdit(para, `${para} ${edits[i]}`);
+      expect((await moss(['sync'], macEnv, mac)).code).toBe(0);
+    }
+    expect(readFileSync(file, 'utf8')).toContain('Third agent edit.');
+
+    const typed = editor.replace('Para four.', 'Para four, and my typing.');
+    writeFileSync(file, typed);
+    const saved = await moss(['sync'], macEnv, mac);
+    expect(saved.code, `nothing pushed exits 2: ${saved.stdout}${saved.stderr}`).toBe(2);
+    expect(`${saved.stdout}${saved.stderr}`, 'the message says so').toContain('nothing was pushed');
+    const kept = (await served(ada, docId)).text;
+    for (const edit of edits) expect(kept, `the server keeps "${edit}"`).toContain(edit);
+    expect(kept, 'the save is not pushed').not.toContain('and my typing');
+    expect(readFileSync(file, 'utf8'), 'the file takes the doc text').toContain('Third agent edit.');
+    expect(readOr(`${file}.rej`), 'the save waits beside the note').toContain('Para four, and my typing.');
+
+    // The editor saves the same text again: it is still the same stale save, so nothing reverts.
+    writeFileSync(file, typed);
+    const again = await moss(['sync'], macEnv, mac);
+    expect(again.code, `${again.stdout}${again.stderr}`).toBe(2);
+    const still = (await served(ada, docId)).text;
+    for (const edit of edits) expect(still, `the server still keeps "${edit}"`).toContain(edit);
+    expect(still).not.toContain('and my typing');
+  } finally {
+    rmSync(mac, { recursive: true, force: true });
+    rmSync(linux, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync stale save, clash saved again: a clashing save saved again, or typed on, is refused and never reverts the agent edit @p:agt-2 @p:R9 @p:note-3', async ({ actors, stack }) => {
+  // T7.P2: a clash's text never reached the doc, so an editor saving it again is no deliberate revert.
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const mac = scratch();
+  const linux = scratch();
+  const env = await agentEnv(ada, stack, mac);
+  try {
+    const bundle = join(mac, 'Field notes');
+    mkdirSync(bundle);
+    const file = join(bundle, 'Field notes.md');
+    writeFileSync(file, '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n');
+    expect((await moss(['init'], env, mac)).code).toBe(0);
+    const synced = await moss(['sync', '--json'], env, mac);
+    expect(synced.code, synced.stderr).toBe(0);
+    const docId = (JSON.parse(synced.stdout) as { action: string; docId?: string }[]).find((result) => result.action === 'created')!.docId!;
+    const editor = readFileSync(file, 'utf8');
+    const pulled = await moss(['pull', docId, 'note.md'], env, linux);
+    expect(pulled.code, pulled.stderr).toBe(0);
+    writeFileSync(join(linux, 'note.md'), readFileSync(join(linux, 'note.md'), 'utf8').replace('Para two.', 'Para two, edited by the agent.'));
+    const pushed = await moss(['push', 'note.md'], env, linux);
+    expect(pushed.code, pushed.stderr).toBe(0);
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('Para two, edited by the agent.');
+
+    const clash = editor.replace('Para two.', 'Para two, rewritten in the editor.');
+    const saves = [['the clash', clash], ['the clash saved again', clash], ['typing on the clash', clash.replace('Para four.', 'Para four, and my typing.')]] as const;
+    for (const [label, text] of saves) {
+      writeFileSync(file, text);
+      const run = await moss(['sync'], env, mac);
+      expect(run.code, `${label} exits 2: ${run.stdout}${run.stderr}`).toBe(2);
+      const doc = (await served(ada, docId)).text;
+      expect(doc, `${label}: the server keeps the agent edit`).toContain('Para two, edited by the agent.');
+      expect(doc, `${label}: no revert reaches the server`).not.toContain('rewritten in the editor');
+      expect(doc).not.toContain('and my typing');
+      expect(readFileSync(file, 'utf8'), `${label}: the file takes the doc text`).toContain('Para two, edited by the agent.');
+    }
+    expect(readOr(`${file}.rej`), 'the saves wait beside the note').toContain('Para four, and my typing.');
+  } finally {
+    rmSync(mac, { recursive: true, force: true });
+    rmSync(linux, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync scope: a scoped workspace uploads only allowed notes, pulls the notes its follow links reach, never a denied note, and scope confirm adds what follow reaches @p:agt-2 @p:R9', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const dir = scratch();
+  const env = await agentEnv(ada, stack, dir);
+  type Result = { action: string; docId?: string; file: string; count?: number };
+  const syncJson = async (): Promise<Result[]> => {
+    const run = await moss(['sync', '--json'], env, dir);
+    expect(run.code, `${run.stderr}\n${run.stdout}`).toBe(0);
+    return JSON.parse(run.stdout) as Result[];
+  };
+  const confirm = async (...files: string[]) => {
+    const run = await moss(['scope', 'confirm', '--yes', ...files.map((file) => file.split(sep).join('/'))], env, dir);
+    expect(run.code, run.stderr).toBe(0);
+    return run.stdout;
+  };
+  const created = (results: Result[]) => results.filter((result) => result.action === 'created').map((result) => result.file).sort();
+  const followOnly = (results: Result[]) => results.filter((result) => result.action === 'follow-only').map((result) => result.file).sort();
+  const titles = async (): Promise<string[]> => {
+    const response = await ada.context.request.get('/api/docs', { timeout: 30_000 });
+    expect(response.status()).toBe(200);
+    return ((await response.json()) as { docs: { title: string }[] }).docs.map((doc) => doc.title).sort();
+  };
+  const note = (folder: string, title: string, body: string): string => {
+    mkdirSync(join(dir, folder, title), { recursive: true });
+    writeFileSync(join(dir, folder, title, `${title}.md`), `# ${title}\n\n${body}\n`);
+    return join(folder, title, `${title}.md`);
+  };
+  const names = ['Alpha', 'Beta notes', 'Diary', 'Fresh', 'Gamma', 'Loose', 'Moss Home', 'Taxes 2026'];
+  try {
+    const home = note('', 'Moss Home', 'Start at [[Alpha]], then [Beta](../Beta notes/Beta notes.md). Private: [[Diary]] and [[Taxes 2026]].');
+    const alpha = note('', 'Alpha', 'The alpha note.');
+    const beta = note('', 'Beta notes', 'Beta leads on to [[Gamma]].');
+    note('', 'Gamma', 'Two hops out.');
+    note('Personal', 'Diary', 'Dear diary.');
+    note(join('Admin', 'Finance'), 'Taxes 2026', 'The refund.');
+    const loose = note('', 'Loose', 'Nobody links here yet.');
+    const init = await moss(['init', '--scope', '--follow', 'Moss Home', '--deny', 'Personal/**', '--deny', 'Admin/Finance/**'], env, dir);
+    expect(init.code, init.stderr).toBe(0);
+
+    const unconfirmed = await syncJson();
+    expect(created(unconfirmed), 'follow alone uploads nothing').toEqual([]);
+    expect(followOnly(unconfirmed), 'it reports the notes follow reaches').toEqual([alpha, beta, home].sort());
+    expect(unconfirmed.find((result) => result.action === 'out-of-scope')?.count, 'the rest only as a count').toBe(4);
+
+    const listed = await confirm(home, alpha, beta);
+    expect(listed).not.toMatch(/Diary|Taxes|Gamma|Loose/);
+    const first = await syncJson();
+    expect(created(first), 'exactly Moss Home and the notes it links to').toEqual([alpha, beta, home].sort());
+    expect((await titles()).filter((title) => names.includes(title)), 'nothing denied or two hops out reaches the server').toEqual(['Alpha', 'Beta notes', 'Moss Home']);
+    await actors.checkpoint('scoped');
+
+    const homeFile = join(dir, home);
+    writeFileSync(homeFile, readFileSync(homeFile, 'utf8').replace('Private:', 'Also [[Loose]]. Private:'));
+    expect(followOnly(await syncJson()), 'a newly linked note is reported').toContain(loose);
+    await confirm(loose);
+    const linked = await syncJson();
+    expect(created(linked), 'and comes in once confirmed').toEqual([loose]);
+
+    // A replica adds a link to Fresh, a note only this machine holds: it is pulled here and never uploaded.
+    const fresh = note('', 'Fresh', 'Only on this machine.');
+    const homeId = first.find((result) => result.file === home && result.action === 'created')!.docId!;
+    const replica = scratch();
+    try {
+      const fetched = await moss(['pull', homeId, 'home.md'], env, replica);
+      expect(fetched.code, fetched.stderr).toBe(0);
+      writeFileSync(join(replica, 'home.md'), `${readFileSync(join(replica, 'home.md'), 'utf8').trimEnd()} And [[Fresh]].\n`);
+      const pushed = await moss(['push', 'home.md'], env, replica);
+      expect(pushed.code, pushed.stderr).toBe(0);
+    } finally {
+      rmSync(replica, { recursive: true, force: true });
+    }
+    await syncJson();
+    expect(readFileSync(homeFile, 'utf8'), 'the replica\'s link is pulled').toContain('[[Fresh]]');
+    const held = await syncJson();
+    expect(created(held), 'a remote link uploads nothing').toEqual([]);
+    expect(followOnly(held), 'and is reported').toEqual([fresh]);
+    expect(await titles(), 'Fresh stays off the server').not.toContain('Fresh');
+    const offered = await moss(['scope', 'confirm'], env, dir);
+    expect(offered.stdout, 'scope confirm lists it, marked as linked by a synced edit').toMatch(/Fresh.*linked by a synced edit/);
+    await confirm(fresh);
+    expect(created(await syncJson()), 'after `scope confirm` it syncs').toEqual([fresh]);
+
+    const shopping = await importNote(ada, stack, 'Shopping', 'Milk.');
+    const leak = await moss(['pull', shopping, join('Personal', 'Shopping.md')], env, dir);
+    expect(leak.code, 'a doc is never pulled to a denied path').toBe(1);
+    expect(leak.stderr).toContain('scope');
+    expect(existsSync(join(dir, 'Personal', 'Shopping.md'))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

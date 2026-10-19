@@ -70,6 +70,10 @@ export interface MediaContext {
   /** Download what the doc holds and this folder lacks (pull and sync); upload what it lacks (add, push and sync). */
   download?: boolean;
   upload?: boolean;
+  /** A file the workspace's scope denies is neither read nor written. */
+  denies?: (rel: string) => boolean;
+  /** With a scope, whether the local media file `name` may be read and sent; a file it refuses is only ever downloaded when missing. */
+  sends?: (name: string) => boolean;
 }
 
 export interface MediaStep {
@@ -104,9 +108,12 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
     if (seen.has(name)) continue;
     seen.add(name);
     const rel = join(dir, name);
+    if (ctx.denies?.(rel)) continue;
     const failed = (message: string) => results.push({ docId, file: rel, action: 'failed', message });
     try {
       const local = localFile(root, rel);
+      // A file the scope does not send is never read; only a missing one may come down.
+      if (local && ctx.sends && !ctx.sends(name)) continue;
       const known = record[name];
       if (local && known && known.size === local.size && known.mtimeMs === local.mtimeMs) continue;
       const bytes = local ? readConfined(root, rel) : null;
@@ -142,6 +149,10 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
         }
         // Another file holds the name on the server: the note follows the name these bytes got, beside the file.
         const copy = join(dir, stored);
+        if (ctx.denies?.(copy)) {
+          failed(`uploaded as ${stored}, but the scope denies ${copy}, so the note still references ${name}`);
+          continue;
+        }
         const there = localFile(root, copy);
         if (there && sha256Hex(readConfined(root, copy)) !== hash) {
           failed(`uploaded as ${stored}, but ${copy} here holds another file, so the note still references ${name}`);

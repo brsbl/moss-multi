@@ -1,6 +1,7 @@
 // A doc reference (A§17, H-19): a doc id, a URL whose path holds /d/<id>, or a unique prefix of a title.
 import type { Api, DocRow } from './api.ts';
 import { CliError } from './errors.ts';
+import { fieldSafe } from './output.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -34,7 +35,7 @@ export function matchTitle(rows: DocRow[], prefix: string): DocRow {
   const matches = exact.length > 1 ? exact : rows.filter((row) => titleOf(row).toLocaleLowerCase().startsWith(wanted));
   if (matches.length === 1) return matches[0];
   if (matches.length === 0) throw new CliError(1, `no doc you can open has a title starting with "${prefix}"`);
-  const listed = matches.slice(0, 10).map((row) => `  ${row.id}  ${titleOf(row)}`).join('\n');
+  const listed = matches.slice(0, 10).map((row) => `  ${fieldSafe(row.id)}  ${fieldSafe(titleOf(row))}`).join('\n');
   throw new CliError(1, `"${prefix}" matches ${matches.length} docs; use more of the title or an id:\n${listed}`);
 }
 

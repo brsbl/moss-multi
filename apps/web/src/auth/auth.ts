@@ -7,6 +7,7 @@ import { ensureDefaultVault } from '../api/vaults.ts';
 import { createDb } from '../db/client.ts';
 import { authSchema } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
+import { signUpAllowed } from './allowlist.ts';
 import { configProblem, configuredSocialProviders, isLoopbackUrl, minPasswordLength } from './config.ts';
 
 export const CLI_CLIENT_ID = 'moss-multi-cli';
@@ -25,7 +26,7 @@ const HOOK_STACK_LIMIT = { window: 60, max: 10_000 };
 
 export type AuthEnv = Pick<
   AppEnv,
-  | 'DB' | 'BETTER_AUTH_SECRET' | 'BETTER_AUTH_URL' | 'MOSS_TEST_HOOKS'
+  | 'DB' | 'BETTER_AUTH_SECRET' | 'BETTER_AUTH_URL' | 'MOSS_TEST_HOOKS' | 'MOSS_SIGN_UP' | 'MOSS_ALLOWED_EMAILS'
   | 'GITHUB_CLIENT_ID' | 'GITHUB_CLIENT_SECRET' | 'GOOGLE_CLIENT_ID' | 'GOOGLE_CLIENT_SECRET'
 >;
 
@@ -66,6 +67,9 @@ export function createAuth(env: AuthEnv) {
     databaseHooks: {
       user: {
         create: {
+          // The pilot's allowlist (T8.P1) for every path that creates a user, OAuth included; route.ts refuses
+          // email sign-up with a clear message first.
+          before: async (user) => (signUpAllowed(env, user.email) ? undefined : false),
           // The account already exists here; a failure is logged and healed by the next ensureDefaultVault caller.
           after: async (created) => {
             try {
