@@ -200,11 +200,16 @@ async function measureNote(markdown, port, flags, { trace = false } = {}) {
     result.stateBytes = JSON.parse(await call(server.origin, `/state-bytes?doc=${doc}`)).stateBytes;
     if (trace) {
       // A plain Y.Doc of the note's state, held beside it: what the note's Yjs structures alone take.
+      const rest = async () => {
+        const end = await collect();
+        const figures = phaseFigures(gcEvents(server.logs.value.slice(mark, end)));
+        mark = end;
+        return figures.restMb;
+      };
       await call(server.origin, `/hold-copy?on=1&doc=${doc}`);
-      const held = phaseFigures(gcEvents(server.logs.value.slice(mark, (mark = await collect())))).restMb;
+      const held = await rest();
       await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
-      const released = phaseFigures(gcEvents(server.logs.value.slice(mark, (mark = await collect())))).restMb;
-      result.copyMb = held - released;
+      result.copyMb = held - (await rest());
     }
   } catch (error) {
     const fatal = /Fatal[^\n]*|out of memory[^\n]*/i.exec(server.logs.value)?.[0];
