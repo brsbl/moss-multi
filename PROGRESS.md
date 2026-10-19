@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 48% done** (121 of 250 planned tasks verified)
+**Overall: 49% done** (122 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 69 / 69 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 70 / 70 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -141,6 +141,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T3.B17 verified: + Note, Cmd/Ctrl+N and folder drag-and-drop now follow the role on the folder involved rather than the vault root, a refused move is undone and shows the server's reason once, a reader no longer sees Remove on a missing image or reaches hidden gap and resize controls, read-only tabs still switch by keyboard, and a refused restore's notice no longer covers the Trash banner.
 - 2026-10-19 — T3.B4 verified: a paste near the note's size cap is admitted against the server's latest count plus this tab's own unacked writes, a silent or stalled sync connection now reconnects and replays instead of hanging, and a peer joining an empty copy receives a multi-author note in dependency order.
 - 2026-10-19 — T3.B30 verified: an upload's memory now follows the bytes it has actually sent rather than its declared size, and a video is stored in one streamed put, so a disconnect cannot leave a multipart upload outside the vault's quota.
+- 2026-10-19 — T3.B28 verified: a note shaped with thousands of interleaved writers no longer makes the server do quadratic work to answer a reader's sync, and a huge answer can no longer overflow the stack, so any reader still gets the note in bounded time.
 
 ## T1.1s identity audit
 
@@ -557,3 +558,4 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B4 (Sync session liveness, paste admission and answer ordering) checker P2: a reconnect usage figure marks unsent payload writes as counted — `AckLedger.usageReported` (apps/web/src/host/collab/acks.ts:70-80) marks every pending payload write as counted, but the DocDO sends 'usage' on connect (doc-do.ts:483-489) before the replayed writes land, so the paste check can briefly undercount payload growth made while disconnected; the DocDO still enforces the cap.
 - T3.B4 (Sync session liveness, paste admission and answer ordering) checker P2: splitAnswer spreads unbounded lists into push() — packages/sync/src/update-pieces.ts:168 `ready.push(...woken.filter(...))` and :173 `ordered.push(...run.slice(...))` can pass the engine's argument limit on a crafted answer with a large client-id fan-out; owned by T3.B28.
 - T3.B30 (An upload's memory follows the bytes it has sent) checker P2: the unit test for a disconnect never starts a real streamed R2 put — the recorded-bucket helper in apps/web/src/api/assets.test.ts:868-876 cancels the readable and throws before target.put (:878), so the null head assertion (:917) comes from the helper rather than an interrupted native put and would still pass if putParts stopped aborting its writer; no production defect (no-multipart and quota-retry assertions remain valid).
+- T3.B28 (splitAnswer is linear and stack-safe) checker P2: the 'at the cap' fixture is about 2 MB of encoded state, not the DocDO state cap — the harness and unit tests seed interleavedChains(2000, 120000) (~2 MB), while STATE_CAP_BYTES is ~26 MiB (2 MiB markdown cap x STATE_RATIO x 1.25); a fixture sized to stateCapBytes would make the boundary explicit (coverage gap only; the algorithm is linear).
