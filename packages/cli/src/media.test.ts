@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runCli } from './program.ts';
+import { type ProgramDeps, runCli } from './program.ts';
 
 const SERVER = 'http://127.0.0.1:9999';
 const KEY = `mm_sk_${'a'.repeat(64)}`;
@@ -19,6 +19,8 @@ function fakeServer() {
   const content = new Map<string, string>();
   const assets = new Map<string, Uint8Array>();
   let next = 1;
+  /** Runs after a create, before its answer: an edit landing between the create and the CLI's first read. */
+  const hooks: { afterCreate?: (id: string) => void } = {};
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers });
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -35,7 +37,9 @@ function fakeServer() {
       const filename = `${(title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
       content.set(id, input.markdown ?? '');
       docs.push({ id, title, filename, folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 1 });
-      return reply(201, { doc: { id, title, filename, folderId: 'f' }, role: 'owner', content: input.markdown ?? '' });
+      const created = reply(201, { doc: { id, title, filename, folderId: 'f' }, role: 'owner', content: input.markdown ?? '' });
+      hooks.afterCreate?.(id);
+      return created;
     }
     const match = /^\/api\/docs\/([^/]+)(?:\/(.+))?$/.exec(path);
     if (!match || !content.has(match[1]!)) return reply(404, { error: 'not-found' });
@@ -62,7 +66,7 @@ function fakeServer() {
     }
     return reply(404, { error: 'not-found' });
   }) as typeof fetch;
-  return { fetchImpl, docs, content, assets };
+  return { fetchImpl, docs, content, assets, hooks };
 }
 
 let dir: string;
@@ -74,7 +78,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-async function cli(args: string[]) {
+async function cli(args: string[], extra: Partial<ProgramDeps> = {}) {
   const out: string[] = [];
   const errors: string[] = [];
   const code = await runCli(args, {
@@ -86,13 +90,14 @@ async function cli(args: string[]) {
     sleep: async () => undefined,
     foldsCase: () => false,
     confirm: async () => false,
+    ...extra,
   });
   return { code, out: out.join(''), err: errors.join('\n') };
 }
 
 type Result = { action: string; file: string; docId?: string; message?: string };
-async function syncJson(): Promise<{ code: number; results: Result[]; err: string }> {
-  const run = await cli(['sync', '--json']);
+async function syncJson(extra: Partial<ProgramDeps> = {}): Promise<{ code: number; results: Result[]; err: string }> {
+  const run = await cli(['sync', '--json'], extra);
   return { code: run.code, err: run.err, results: run.out.trim() ? JSON.parse(run.out) as Result[] : [] };
 }
 
@@ -193,5 +198,94 @@ describe('note media provenance and ownership', () => {
     expect(renamed.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: diary, file: join('assets', 'mood.png') }));
     expect(held(diary)).toEqual(['mood.png']);
     expect(held(plan)).toEqual(['plan.png']);
+  });
+});
+
+describe('note media provenance: what the server controls never counts as this user\'s (T7.S9 recheck)', () => {
+  it('a collaborator\'s title for a moss note never uploads the file it names, across sync and watch passes', async () => {
+    write(join('Trip', 'Trip.md'), '# Trip\n\nThe trip.\n');
+    write(join('Trip', 'assets', 'private.png'), png('private'));
+    write(join('Trip', 'assets', 'other.png'), png('other'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const trip = createdId(first.results, join('Trip', 'Trip.md'))!;
+    expect(trip).toBeTruthy();
+
+    // Ben renames the doc: one title names a file, another breaks onto a line of its own.
+    const row = server.docs.find((doc) => doc.id === trip)!;
+    for (const title of ['Trip ![x](assets/private.png)', 'Trip\n\n![y](assets/other.png)']) {
+      row.title = title;
+      for (let i = 0; i < 3; i += 1) await syncJson();
+      const controller = new AbortController();
+      const watching = cli(['watch', '--interval', '0.05'], { signal: controller.signal });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      controller.abort();
+      expect((await watching).code).toBe(0);
+      await syncJson();
+      expect(held(trip), `after the title ${JSON.stringify(title)}`).toEqual([]);
+    }
+
+    // A reference Ada types into the body is hers, and her own file goes up.
+    write(join('Trip', 'assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'Trip', 'Trip.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: trip, file: join('Trip', 'assets', 'mine.png') }));
+    expect(held(trip)).toEqual(['mine.png']);
+  });
+
+  it('adoption counts only the references in the file as the user chose it, not an edit between the create and the first read', async () => {
+    write('plan.md', 'The plan.\n');
+    write(join('assets', 'stray.png'), png('stray'));
+    expect((await cli(['init'])).code).toBe(0);
+    server.hooks.afterCreate = (id) => server.content.set(id, `${server.content.get(id)!.trimEnd()}\n\n![s](assets/stray.png)\n`);
+    const first = await syncJson();
+    server.hooks.afterCreate = undefined;
+    const plan = createdId(first.results, 'plan.md')!;
+    expect(plan).toBeTruthy();
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toContain('assets/stray.png');
+    await syncJson();
+    expect(held(plan), 'the edit made between create and read is not the adopter\'s').toEqual([]);
+  });
+
+  it('a stale editor save of a reference the server added and removed again does not upload its file', async () => {
+    write('plan.md', 'The plan.\n');
+    write(join('assets', 'stray.png'), png('stray'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const plan = createdId(first.results, 'plan.md')!;
+    const clean = server.content.get(plan)!;
+
+    // Ben adds a reference and removes it again; Ada pulls both.
+    const withRef = `${clean.trimEnd()}\n\n![s](assets/stray.png)\n`;
+    server.content.set(plan, withRef);
+    await syncJson();
+    server.content.set(plan, clean);
+    await syncJson();
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).not.toContain('stray.png');
+
+    // Ada's editor still held the text with the reference, and saves it with an unrelated edit.
+    write('plan.md', `${withRef}\nA line of my own.\n`);
+    await syncJson();
+    await syncJson();
+    expect(held(plan), 'the stale save is not a reference Ada added').toEqual([]);
+  });
+
+  it('on a volume that folds case, another note\'s file is its own under any spelling', async () => {
+    const folds = { foldsCase: () => true };
+    write('diary.md', 'Dear diary ![s](assets/secret.png)\n');
+    write(join('assets', 'secret.png'), png('secret'));
+    write('plan.md', 'The plan.\n');
+    expect((await cli(['init'], folds)).code).toBe(0);
+    const first = await syncJson(folds);
+    const plan = createdId(first.results, 'plan.md')!;
+    const diary = createdId(first.results, 'diary.md')!;
+    expect(held(diary)).toEqual(['secret.png']);
+
+    // Here the volume folds case, so assets/SECRET.png is the diary's file.
+    write(join('assets', 'SECRET.png'), png('secret'));
+    appendFileSync(join(dir, 'plan.md'), '\n![s](assets/SECRET.png)\n');
+    const synced = await syncJson(folds);
+    expect(held(plan), JSON.stringify(synced.results)).toEqual([]);
+    expect(failedFor(synced.results, plan, join('assets', 'SECRET.png')), JSON.stringify(synced.results)).toBe(true);
   });
 });
