@@ -58,6 +58,8 @@ export interface DocClient {
   custom(event: object): void;
   /** Resolves once the socket is open and synced again (the provider reconnects on its own). */
   online(timeoutMs?: number): Promise<void>;
+  /** Appends one paragraph per text, through the binding, in one update. */
+  paragraphs(texts: string[]): void;
   /** Idempotent. */
   close(): void;
 }
@@ -135,6 +137,13 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
       }),
     custom: (event) => provider.sendMessage(JSON.stringify(event)),
     online: (timeoutMs = 30_000) => until('an open, synced socket', () => provider.wsconnected && provider.synced, timeoutMs),
+    paragraphs: (texts) => {
+      flush();
+      editor.update(() => {
+        const root = $getRoot();
+        for (const text of texts) root.append($createParagraphNode().append($createTextNode(text)));
+      }, { discrete: true });
+    },
     close: () => {
       if (closed) return;
       closed = true;

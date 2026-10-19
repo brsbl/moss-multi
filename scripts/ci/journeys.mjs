@@ -44,6 +44,8 @@ export const GROUPS = {
   pasteheld: ['j01-paste-held'],
   // A paste's reservation beside another writer's: a refused later reserve, a reconnect and a wake partway.
   pasteatomic: ['j01-paste-atomic'],
+  // A paste cut short near the cap by another writer (a known limitation): the notice, convergence and undo.
+  pastetail: ['j01-paste-tail'],
   // A peer's edits while a large paste is checked, its redo after a peer's new block, and a check list's order.
   pasterace: ['j01-paste-race', 'j01-paste-check'],
   // Titles and properties.
