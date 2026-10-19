@@ -223,6 +223,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
 - 2026-10-18 — T6.Q second pass verified: history now runs on m5's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m6 head (already counted on 2026-10-15).
 - 2026-10-19 — T7.P2 verified: when Moss re-saves a note it held open while sync pulled an edit into it, sync keeps the pulled edit and lands only the new typing, sending anything it cannot place to `<file>.rej` instead of pushing a revert.
+- 2026-10-19 — T7.Q second pass verified: agent sync, Bot presence and the watch daemon now run on m6's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), and a large note opened in a fresh session no longer gains an empty paragraph ahead of its first line, because the first sync's answer pieces are held and applied with its step 2 (already counted on 2026-10-15).
 
 ## T1.1s identity audit
 
@@ -265,6 +266,10 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T7.P1 checker P2 (Outer scope evaluation can still read a tracked note owned by a nested scoped vault): workspaceScope in sync.ts receives all trackedMetas before pass() drops nested notes, so an outer follow can read its links and scope confirm can print its path; nothing is uploaded or written.
 - T7.P1 checker P2 (scope confirm re-reads and re-parses a source note's base once per followed target): syncedLink runs per (target, source) pair, so a hub note linking many unconfirmed notes costs quadratic work.
 - T7.P1 checker P2 (Conflict .rej sidecars ignore deny rules): setAside writes <file>.rej without consulting the scope; local only, never uploaded.
+
+### From T7.Q second pass's checker (f779816, 2026-10-19)
+
+- T7.Q second pass checker P2 (Held first-sync pieces from interrupted connections are never discarded): doc-session.ts pushes every pre-sync type-2 frame into #firstSync and clears it only on step 2, so each connection dropped mid-answer leaves its prefix held and the next attempt adds another copy; correct (Yjs updates are idempotent) but memory grows per interrupted attempt; clear the buffer on disconnect.
 
 ### From T7.P2's checker (2f710e5, 2026-10-19)
 
