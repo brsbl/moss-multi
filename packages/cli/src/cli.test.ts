@@ -1499,6 +1499,68 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     expect(JSON.parse(saved.out)).toContainEqual(expect.objectContaining({ docId: ID_B, failedHunks: 1 }));
   });
 
+  it('a clashing stale save saved again, or typed on, is refused again: the agent edit is never reverted (checker P1, attempt 3)', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+    const clash = editor.replace('Para two.', 'Para two, rewritten in the editor.');
+    writeFileSync(file, clash);
+    expect((await cli(['sync'])).code, 'the clash exits 2').toBe(2);
+    const pushes = server.state.pushes.length;
+
+    // The editor still holds the clashing text and saves it again: it never reached the doc, so it is no revert.
+    writeFileSync(file, clash);
+    const again = await cli(['sync', '--json']);
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B)), 'the agent edit stays on the server').toBe(AGENT);
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toBe(AGENT);
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Para two, rewritten in the editor.');
+    const result = (JSON.parse(again.out) as { docId?: string; message?: string }[]).find((row) => row.docId === ID_B);
+    expect(result?.message, 'an honest message').toMatch(/nothing was pushed/);
+    expect(result?.message).not.toMatch(/stays/);
+
+    // More typing on top of the clashing text: still no revert.
+    writeFileSync(file, clash.replace('Para four.', 'Para four, and my typing.'));
+    const more = await cli(['sync']);
+    expect(more.code, `${more.out}${more.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B))).toBe(AGENT);
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Para four, and my typing.');
+  });
+
+  it('a moss note: a clashing stale save saved again, or typed on, is refused again and the agent edit stays', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const agent = 'Para one.\n\nPara two, edited by the agent.\n\nPara three.\n\nPara four.\n';
+    server.content.set(NEW, enc(agent));
+    expect((await cli(['sync'])).code).toBe(0);
+    const clash = NOTE.replace('Para two.', 'Para two, rewritten in the editor.');
+    writeFileSync(file, clash);
+    expect((await cli(['sync'])).code, 'the clash exits 2').toBe(2);
+    const pushes = server.state.pushes.length;
+
+    writeFileSync(file, clash);
+    const again = await cli(['sync']);
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(agent);
+    expect(readFileSync(file, 'utf8')).toBe(`# Field notes\n\n${agent}`);
+
+    writeFileSync(file, clash.replace('Para four.', 'Para four, and my typing.'));
+    const more = await cli(['sync']);
+    expect(more.code, `${more.out}${more.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(agent);
+  });
+
   it('an ordinary edit made after the pull syncs as before, against the pulled base', async () => {
     expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
     const file = join(dir, 'notes.md');
