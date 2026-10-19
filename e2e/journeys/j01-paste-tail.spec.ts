@@ -64,7 +64,7 @@ test('j01-paste-tail: a paste cut short near the cap by another writer keeps wha
     // The note 6 MB under the cap before Ada opens it: A still fits beside it.
     await fillTo(ben, STATE_CAP_BYTES - 6_000_000, 'Filler');
     await ada.goto(`/d/${docId}`);
-    await ui.waitLive(ada, docId);
+    await ui.waitBodyLive(ada, docId, 180_000);
     await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
     await ada.page.keyboard.press('End');
 
@@ -85,7 +85,7 @@ test('j01-paste-tail: a paste cut short near the cap by another writer keeps wha
     await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the cut is announced').toContainText('size limit', { timeout: 240_000 });
 
     // Ada's pane binds the server's copy: she and Ben hold the same note, with the part of A that landed.
-    await ui.waitLive(ada, docId);
+    await ui.waitBodyLive(ada, docId, 180_000);
     await expect.poll(async () => JSON.stringify(await fingerprint(ada, docId)) === JSON.stringify(print(ben.text())), {
       message: 'Ada and Ben converge', timeout: 240_000,
     }).toBe(true);
