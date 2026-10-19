@@ -162,6 +162,26 @@ export function findRoot(start: string): string | null {
 }
 
 /**
+ * The folder between `root` and `rel` (relative to it) that is a workspace with its own scope file, or null. That scope
+ * governs the file, so nothing run from outside it reads, uploads or writes it. A nested workspace with no scope file
+ * stays reachable, as before scopes.
+ */
+export function scopedNest(root: string, rel: string): string | null {
+  let dir = root;
+  for (const part of rel.split(sep).slice(0, -1)) {
+    dir = join(dir, part);
+    if (lstat(join(dir, STATE_DIR, 'scope.json'))) return dir;
+  }
+  return null;
+}
+
+/** Refuses `rel` when it is inside a nested scoped workspace (scopedNest). */
+export function notInNested(root: string, rel: string): void {
+  const dir = scopedNest(root, rel);
+  if (dir) throw new CliError(1, `${rel} is inside another moss-multi workspace with its own scope (${dir}); run the command from there so its scope applies`);
+}
+
+/**
  * `file` relative to `root`, refusing anything outside it, reached through a symbolic link, inside the state
  * directory, or named against moss's filename rules.
  */
@@ -299,6 +319,20 @@ export function renameInside(root: string, from: string, to: string, folds: bool
   if (!lstat(source)?.isFile()) return false;
   renameSync(source, target);
   return true;
+}
+
+/** A workspace-wide file in the state directory (`scope.json`), or null when there is none; a link is refused. */
+export function readStateFile(root: string, name: string): Buffer | null {
+  const path = noLinks(root, join(STATE_DIR, name));
+  const stats = lstat(path);
+  if (!stats) return null;
+  if (!stats.isFile()) throw new CliError(1, `${join(STATE_DIR, name)} is not a regular file`);
+  return readFileSync(path);
+}
+
+/** Writes a workspace-wide state file; without `replace` it must not exist yet. */
+export function writeStateFile(root: string, name: string, bytes: Uint8Array, replace = false): void {
+  writeInside(root, join(STATE_DIR, name), bytes, replace ? undefined : null);
 }
 
 /** Whether `root` holds a real state directory. */

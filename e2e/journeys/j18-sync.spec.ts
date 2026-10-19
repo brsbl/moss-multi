@@ -10,7 +10,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Actor } from '../lib/actors.ts';
 import type { Stack } from '../lib/stack.ts';
@@ -304,5 +304,98 @@ test('j18-sync media: a note\'s image and video round-trip through sync and pull
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(away, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync scope: a scoped workspace uploads only allowed notes, pulls the notes its follow links reach, never a denied note, and scope confirm adds what follow reaches @p:agt-2 @p:R9', async ({ actors, stack }) => {
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const dir = scratch();
+  const env = await agentEnv(ada, stack, dir);
+  type Result = { action: string; docId?: string; file: string; count?: number };
+  const syncJson = async (): Promise<Result[]> => {
+    const run = await moss(['sync', '--json'], env, dir);
+    expect(run.code, `${run.stderr}\n${run.stdout}`).toBe(0);
+    return JSON.parse(run.stdout) as Result[];
+  };
+  const confirm = async (...files: string[]) => {
+    const run = await moss(['scope', 'confirm', '--yes', ...files.map((file) => file.split(sep).join('/'))], env, dir);
+    expect(run.code, run.stderr).toBe(0);
+    return run.stdout;
+  };
+  const created = (results: Result[]) => results.filter((result) => result.action === 'created').map((result) => result.file).sort();
+  const followOnly = (results: Result[]) => results.filter((result) => result.action === 'follow-only').map((result) => result.file).sort();
+  const titles = async (): Promise<string[]> => {
+    const response = await ada.context.request.get('/api/docs', { timeout: 30_000 });
+    expect(response.status()).toBe(200);
+    return ((await response.json()) as { docs: { title: string }[] }).docs.map((doc) => doc.title).sort();
+  };
+  const note = (folder: string, title: string, body: string): string => {
+    mkdirSync(join(dir, folder, title), { recursive: true });
+    writeFileSync(join(dir, folder, title, `${title}.md`), `# ${title}\n\n${body}\n`);
+    return join(folder, title, `${title}.md`);
+  };
+  const names = ['Alpha', 'Beta notes', 'Diary', 'Fresh', 'Gamma', 'Loose', 'Moss Home', 'Taxes 2026'];
+  try {
+    const home = note('', 'Moss Home', 'Start at [[Alpha]], then [Beta](../Beta notes/Beta notes.md). Private: [[Diary]] and [[Taxes 2026]].');
+    const alpha = note('', 'Alpha', 'The alpha note.');
+    const beta = note('', 'Beta notes', 'Beta leads on to [[Gamma]].');
+    note('', 'Gamma', 'Two hops out.');
+    note('Personal', 'Diary', 'Dear diary.');
+    note(join('Admin', 'Finance'), 'Taxes 2026', 'The refund.');
+    const loose = note('', 'Loose', 'Nobody links here yet.');
+    const init = await moss(['init', '--scope', '--follow', 'Moss Home', '--deny', 'Personal/**', '--deny', 'Admin/Finance/**'], env, dir);
+    expect(init.code, init.stderr).toBe(0);
+
+    const unconfirmed = await syncJson();
+    expect(created(unconfirmed), 'follow alone uploads nothing').toEqual([]);
+    expect(followOnly(unconfirmed), 'it reports the notes follow reaches').toEqual([alpha, beta, home].sort());
+    expect(unconfirmed.find((result) => result.action === 'out-of-scope')?.count, 'the rest only as a count').toBe(4);
+
+    const listed = await confirm(home, alpha, beta);
+    expect(listed).not.toMatch(/Diary|Taxes|Gamma|Loose/);
+    const first = await syncJson();
+    expect(created(first), 'exactly Moss Home and the notes it links to').toEqual([alpha, beta, home].sort());
+    expect((await titles()).filter((title) => names.includes(title)), 'nothing denied or two hops out reaches the server').toEqual(['Alpha', 'Beta notes', 'Moss Home']);
+    await actors.checkpoint('scoped');
+
+    const homeFile = join(dir, home);
+    writeFileSync(homeFile, readFileSync(homeFile, 'utf8').replace('Private:', 'Also [[Loose]]. Private:'));
+    expect(followOnly(await syncJson()), 'a newly linked note is reported').toContain(loose);
+    await confirm(loose);
+    const linked = await syncJson();
+    expect(created(linked), 'and comes in once confirmed').toEqual([loose]);
+
+    // A replica adds a link to Fresh, a note only this machine holds: it is pulled here and never uploaded.
+    const fresh = note('', 'Fresh', 'Only on this machine.');
+    const homeId = first.find((result) => result.file === home && result.action === 'created')!.docId!;
+    const replica = scratch();
+    try {
+      const fetched = await moss(['pull', homeId, 'home.md'], env, replica);
+      expect(fetched.code, fetched.stderr).toBe(0);
+      writeFileSync(join(replica, 'home.md'), `${readFileSync(join(replica, 'home.md'), 'utf8').trimEnd()} And [[Fresh]].\n`);
+      const pushed = await moss(['push', 'home.md'], env, replica);
+      expect(pushed.code, pushed.stderr).toBe(0);
+    } finally {
+      rmSync(replica, { recursive: true, force: true });
+    }
+    await syncJson();
+    expect(readFileSync(homeFile, 'utf8'), 'the replica\'s link is pulled').toContain('[[Fresh]]');
+    const held = await syncJson();
+    expect(created(held), 'a remote link uploads nothing').toEqual([]);
+    expect(followOnly(held), 'and is reported').toEqual([fresh]);
+    expect(await titles(), 'Fresh stays off the server').not.toContain('Fresh');
+    const offered = await moss(['scope', 'confirm'], env, dir);
+    expect(offered.stdout, 'scope confirm lists it, marked as linked by a synced edit').toMatch(/Fresh.*linked by a synced edit/);
+    await confirm(fresh);
+    expect(created(await syncJson()), 'after `scope confirm` it syncs').toEqual([fresh]);
+
+    const shopping = await importNote(ada, stack, 'Shopping', 'Milk.');
+    const leak = await moss(['pull', shopping, join('Personal', 'Shopping.md')], env, dir);
+    expect(leak.code, 'a doc is never pulled to a denied path').toBe(1);
+    expect(leak.stderr).toContain('scope');
+    expect(existsSync(join(dir, 'Personal', 'Shopping.md'))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
