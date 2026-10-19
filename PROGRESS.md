@@ -201,6 +201,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T3.B17 verified: + Note, Cmd/Ctrl+N and folder drag-and-drop now follow the role on the folder involved rather than the vault root, a refused move is undone and shows the server's reason once, a reader no longer sees Remove on a missing image or reaches hidden gap and resize controls, read-only tabs still switch by keyboard, and a refused restore's notice no longer covers the Trash banner.
 - 2026-10-18 — T4.Q second pass verified: comments now run on m3's later fixes (upload reader deadline, the j09 pass-through route, read-only controls and folder permissions), with a reader's tabs and Add comment control both exempt in invariant 9 and the full lane green on the m4 head (already counted on 2026-10-14).
 - 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
+- 2026-10-18 — T6.Q second pass verified: history now runs on m5's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m6 head (already counted on 2026-10-15).
 
 ## T1.1s identity audit
 
