@@ -1,5 +1,7 @@
 # Deploys the exact bytes a green CI full lane tested to staging, then runs the staging canary (A§21, T8.D). Manual
 # dispatch only. Setup and use: docs/DEPLOY.md. Without the repository secrets it lists, the first job fails at once.
+# target=pilot runs only the gate, then deploy-pilot.yml with the pilot and Cloudflare secrets (T8.P2): this file is the
+# one registered on main, and GitHub runs the dispatched ref's copy of it.
 name: Deploy staging
 
 on:
@@ -17,14 +19,20 @@ on:
         description: 'Idle before the canary proves a wake (15 or more; SP14)'
         type: number
         default: 20
+      target:
+        description: 'staging, or pilot for the owner''s notes (deploy-pilot.yml; the request budget and idle are unused)'
+        type: choice
+        options: [staging, pilot]
+        default: staging
 
 permissions:
   contents: read
   actions: read
 
-# One deploy at a time, never cancelled half way.
+# One deploy at a time, never cancelled half way. The pilot queues apart from staging's long runs, and apart from
+# deploy-pilot.yml's own group, which a caller sharing would deadlock.
 concurrency:
-  group: deploy-staging
+  group: ${{ inputs.target == 'pilot' && 'deploy-staging-pilot' || 'deploy-staging' }}
   cancel-in-progress: false
 
 env:
@@ -64,6 +72,7 @@ jobs:
           fi
           node scripts/deploy/run-gate.mjs sha "$dir/run.json" "$dir/ref.json" "$dir/compare.json" >> "$GITHUB_OUTPUT"
       - name: Every secret is configured
+        if: inputs.target == 'staging'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -74,6 +83,7 @@ jobs:
 
   deploy:
     needs: preflight
+    if: inputs.target == 'staging'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -182,6 +192,7 @@ jobs:
   # run's request budget, and a wake after natural idle proven through the owner-only instance route.
   canary:
     needs: [preflight, deploy]
+    if: inputs.target == 'staging'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
@@ -239,3 +250,18 @@ jobs:
             e2e/canary-artifacts/summary.json
           retention-days: 7
           if-no-files-found: ignore
+
+  # The pilot, after the same gate: its own gate, secret check, deploy and read-only smoke. It is passed only the pilot
+  # secrets and the shared Cloudflare ones, and never the staging or canary ones.
+  pilot:
+    needs: preflight
+    if: inputs.target == 'pilot'
+    uses: ./.github/workflows/deploy-pilot.yml
+    with:
+      ci_run_id: ${{ inputs.ci_run_id }}
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PILOT_URL: ${{ secrets.PILOT_URL }}
+      PILOT_BETTER_AUTH_SECRET: ${{ secrets.PILOT_BETTER_AUTH_SECRET }}
+      PILOT_ALLOWED_EMAILS: ${{ secrets.PILOT_ALLOWED_EMAILS }}

@@ -1,6 +1,7 @@
 // T8.D: the staging deploy pipeline's pure parts and its assertion script, against a fake Worker on loopback. The
 // build job runs the same assertion against the real production-mode smoke stack (ci.yml).
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -285,7 +286,9 @@ describe('deploy-staging.yml', () => {
     expect(WORKFLOW.jobs[gateJob].outputs.sha).toBe('${{ steps.gate.outputs.sha }}');
     for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
       if (name === gateJob) continue;
-      for (const step of job.steps) {
+      // A called workflow holds what it is passed.
+      if (job.uses && (holdsSecret(job.secrets) || job.secrets === 'inherit')) expect(upstream(name), `${name} is passed secrets`).toContain(gateJob);
+      for (const step of job.steps ?? []) {
         if (risky(job, step)) expect(upstream(name), `${name}: ${step.name ?? step.uses}`).toContain(gateJob);
         if (step.uses?.startsWith('actions/checkout') && step.with?.ref !== undefined) {
           expect(step.with.ref, `${name} checks out the gated sha`).toBe(`\${{ needs.${gateJob}.outputs.sha }}`);
@@ -301,9 +304,103 @@ describe('deploy-staging.yml', () => {
   });
 
   it('uploads only the credential-free canary files', () => {
-    const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact')));
+    const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/upload-artifact')));
     expect(uploads).toHaveLength(1);
     expect(uploads[0].with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+  });
+});
+
+// T8.P2: deploy-staging.yml is the workflow registered on main, so the pilot deploys through it with target=pilot.
+const PILOT_WORKFLOW = yaml.load(readFileSync(fileURLToPath(new URL('../../.github/workflows/deploy-pilot.yml', import.meta.url)), 'utf8'));
+const PILOT_SECRETS = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'PILOT_URL', 'PILOT_BETTER_AUTH_SECRET', 'PILOT_ALLOWED_EMAILS'];
+const triggers = (workflow) => workflow.on ?? workflow[true];
+const PILOT_GROUP = "${{ inputs.target == 'pilot' && 'deploy-staging-pilot' || 'deploy-staging' }}";
+
+// Whether a job or step runs for a target. Only the conditions the deploy workflows use; anything else fails the test.
+function runsFor(condition, target) {
+  if (condition === undefined) return true;
+  const raw = String(condition).trim();
+  const text = raw.startsWith('${{') && raw.endsWith('}}') ? raw.slice(3, -2).trim() : raw;
+  if (text === 'always()') return true;
+  const match = /^inputs\.target == '(\w+)'$/.exec(text);
+  if (!match) throw new Error(`unknown condition: ${condition}`);
+  return match[1] === target;
+}
+
+// The jobs that run for a target, each with only its running steps: a job whose needs did not all run is skipped.
+function runningFor(workflow, target) {
+  const ran = {};
+  const pending = Object.entries(workflow.jobs);
+  while (pending.length) {
+    const at = pending.findIndex(([, job]) => [job.needs ?? []].flat().every((need) => need in ran || !(need in workflow.jobs)));
+    expect(at, 'the job graph has no cycle').toBeGreaterThanOrEqual(0);
+    const [[name, job]] = pending.splice(at, 1);
+    const needsRan = [job.needs ?? []].flat().every((need) => ran[need]);
+    ran[name] = needsRan && runsFor(job.if, target) ? { ...job, steps: job.steps?.filter((step) => runsFor(step.if, target)) } : null;
+  }
+  return Object.fromEntries(Object.entries(ran).filter(([, job]) => job));
+}
+
+// The workflow as target=staging sees it: no target input, no pilot job, no staging-only condition.
+function stagingView(workflow) {
+  const strip = ({ if: condition, ...rest }) => (condition === undefined || runsFor(condition, 'pilot') !== runsFor(condition, 'staging') ? rest : { ...rest, if: condition });
+  const on = structuredClone(triggers(workflow));
+  delete on.workflow_dispatch.inputs.target;
+  const jobs = {};
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (!runsFor(job.if, 'staging')) continue;
+    jobs[name] = strip({ ...job, ...(job.steps ? { steps: job.steps.map(strip) } : {}) });
+  }
+  const { name, permissions, env } = workflow;
+  const concurrency = { ...workflow.concurrency, group: workflow.concurrency.group === PILOT_GROUP ? 'deploy-staging' : workflow.concurrency.group };
+  return { name, on, permissions, concurrency, env, jobs };
+}
+
+describe('deploy-staging.yml target', () => {
+  const sha256 = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+  it('takes a target input, staging or pilot, staging by default', () => {
+    expect(triggers(WORKFLOW).workflow_dispatch.inputs.target).toMatchObject({ type: 'choice', options: ['staging', 'pilot'], default: 'staging' });
+  });
+
+  it('target=staging runs exactly the workflow registered on main', () => {
+    const running = runningFor(WORKFLOW, 'staging');
+    expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary']);
+    expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
+    // deploy-staging.yml at main a3bb1b31 through stagingView: byte-identical jobs, steps, triggers, env and concurrency.
+    // A deliberate change to the staging jobs updates this hash.
+    expect(sha256(stagingView(WORKFLOW))).toBe('ebb9449a5ac7380ba7f741dc661350d1c5437611a50f00fe0d22397f889e8f72');
+  });
+
+  it('target=pilot runs only the gate, then deploy-pilot.yml: no staging deploy, canary or upload', () => {
+    const running = runningFor(WORKFLOW, 'pilot');
+    expect(Object.keys(running)).toEqual(['preflight', 'pilot']);
+    expect(running.pilot).toMatchObject({ needs: 'preflight', uses: './.github/workflows/deploy-pilot.yml', with: { ci_run_id: '${{ inputs.ci_run_id }}' } });
+    expect(running.preflight.steps.map((step) => step.id ?? step.uses)).toEqual(['actions/checkout@v6', 'gate']);
+    expect(running.preflight.steps.at(-1).run).toMatch(/run-gate\.mjs/);
+    for (const name of ['deploy', 'canary']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toBe("inputs.target == 'staging'");
+  });
+
+  it('queues the pilot apart from staging, and apart from the group deploy-pilot.yml holds', () => {
+    expect(WORKFLOW.concurrency).toEqual({ group: PILOT_GROUP, 'cancel-in-progress': false });
+    expect(PILOT_WORKFLOW.concurrency.group).not.toBe('deploy-staging-pilot');
+  });
+
+  it('scopes secrets per target: staging never sees a pilot secret, the pilot only its own and the Cloudflare ones', () => {
+    const staging = JSON.stringify(runningFor(WORKFLOW, 'staging'));
+    expect(staging).not.toMatch(/PILOT_/);
+    const pilot = runningFor(WORKFLOW, 'pilot');
+    expect(JSON.stringify(pilot.preflight), 'the gate holds no secret').not.toMatch(/secrets\./);
+    expect(pilot.pilot.secrets).not.toBe('inherit');
+    expect(pilot.pilot.secrets).toEqual(Object.fromEntries(PILOT_SECRETS.map((name) => [name, `\${{ secrets.${name} }}`])));
+    expect(JSON.stringify(pilot)).not.toMatch(/STAGING_|CANARY_|moss-multi-staging/);
+  });
+
+  it('deploy-pilot.yml is callable with the same inputs it is dispatched with, and declares only the pilot secrets', () => {
+    const on = triggers(PILOT_WORKFLOW);
+    expect(Object.keys(on.workflow_call.inputs)).toEqual(Object.keys(on.workflow_dispatch.inputs));
+    expect(on.workflow_call.inputs.ci_run_id).toMatchObject({ required: true, type: 'string' });
+    expect(Object.keys(on.workflow_call.secrets)).toEqual(PILOT_SECRETS);
   });
 });
 

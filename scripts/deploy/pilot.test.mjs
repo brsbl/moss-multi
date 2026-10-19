@@ -124,8 +124,8 @@ describe('deploy-pilot.yml', () => {
     holdsSecret(job.env) || holdsSecret(step.env) || holdsSecret(step.with) || holdsSecret(step.run) ||
     (step.uses?.startsWith('actions/checkout') && step.with?.ref !== undefined) || step.uses?.startsWith('pnpm/') || /\bpnpm\b/.test(step.run ?? '');
 
-  it('runs only by manual dispatch, one deploy at a time', () => {
-    expect(Object.keys(PILOT.on ?? PILOT[true])).toEqual(['workflow_dispatch']);
+  it('runs only by manual dispatch or from deploy-staging.yml (T8.P2), one deploy at a time', () => {
+    expect(Object.keys(PILOT.on ?? PILOT[true])).toEqual(['workflow_dispatch', 'workflow_call']);
     expect(PILOT.concurrency).toEqual({ group: 'deploy-pilot', 'cancel-in-progress': false });
   });
 

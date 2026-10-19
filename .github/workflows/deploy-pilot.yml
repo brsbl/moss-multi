@@ -1,6 +1,7 @@
 # Deploys the exact bytes a green CI full lane tested to the pilot, the owner's real notes apart from staging (T8.P1),
 # then runs a read-only smoke that creates no account. The same gate and checks as deploy-staging.yml; no canary, suite,
-# sweep or test principal ever runs here. Manual dispatch only. Setup, rollback and backups: docs/DEPLOY.md.
+# sweep or test principal ever runs here. Manual dispatch, or deploy-staging.yml with target=pilot, which is registered on
+# main (T8.P2). Setup, rollback and backups: docs/DEPLOY.md.
 name: Deploy pilot
 
 on:
@@ -10,6 +11,24 @@ on:
         description: 'The ci.yml run whose web-dist to deploy: a green full lane on a branch head (dispatch lane=full), within its 3-day artifact retention'
         required: true
         type: string
+  workflow_call:
+    inputs:
+      ci_run_id:
+        description: 'The ci.yml run whose web-dist to deploy: a green full lane on a branch head (dispatch lane=full), within its 3-day artifact retention'
+        required: true
+        type: string
+    # Not required here, so a missing one reaches preflight.mjs, which names it.
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
+      PILOT_URL:
+        required: false
+      PILOT_BETTER_AUTH_SECRET:
+        required: false
+      PILOT_ALLOWED_EMAILS:
+        required: false
 
 permissions:
   contents: read
