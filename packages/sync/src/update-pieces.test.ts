@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { splitUpdate } from './update-pieces.ts';
+import * as encoding from 'lib0/encoding';
+import { splitAnswer, splitUpdate } from './update-pieces.ts';
 
 /** A note shaped as @lexical/yjs V1 writes one: top-level blocks embedded in the root, each with its `__type`. */
 function addBlocks(doc: Y.Doc, count: number, at = doc.get('root', Y.XmlText).length): void {
@@ -159,4 +160,44 @@ it('leaves an update within the limit whole, and never cuts inside a block', () 
     });
   });
   expect(splitUpdate(big, 8 * 1024)).toHaveLength(1);
+});
+
+it('splits an answer whose structs depend on each other in a cycle, rather than looping (T3.B4, B212)', () => {
+  // A crafted frame can leave a cycle in the DocDO's pending structs, which every answer then carries: A:0 after B:0,
+  // and B:0 after A:0.
+  const a = new Y.Doc();
+  a.clientID = 1;
+  a.getText('t').insert(0, 'a'.repeat(40));
+  const b = new Y.Doc();
+  b.clientID = 2;
+  b.getText('t').insert(0, 'b'.repeat(40));
+  const { structs } = Y.decodeUpdate(Y.mergeUpdates([Y.encodeStateAsUpdate(a), Y.encodeStateAsUpdate(b)]));
+  const [first, second] = structs as Y.Item[];
+  first.origin = Y.createID(second.id.client, 0);
+  second.origin = Y.createID(first.id.client, 0);
+  const encoder = new Y.UpdateEncoderV1();
+  encoding.writeVarUint(encoder.restEncoder, 2);
+  for (const item of [first, second]) {
+    encoding.writeVarUint(encoder.restEncoder, 1);
+    encoder.writeClient(item.id.client);
+    encoding.writeVarUint(encoder.restEncoder, 0);
+    item.write(encoder, 0);
+  }
+  encoding.writeVarUint(encoder.restEncoder, 0);
+  const update = encoder.toUint8Array();
+  // The loop is synchronous, so a test timeout cannot end it: the waiting clients' Map writes are counted instead.
+  const set = Map.prototype.set;
+  let writes = 0;
+  Map.prototype.set = function (this: Map<unknown, unknown>, key: unknown, value: unknown) {
+    if ((writes += 1) > 100_000) throw new Error('splitAnswer did not terminate');
+    return set.call(this, key, value);
+  };
+  let pieces: Uint8Array[];
+  try {
+    pieces = splitAnswer(update, 16);
+  } finally {
+    Map.prototype.set = set;
+  }
+  const ids = pieces.flatMap((piece) => Y.decodeUpdate(piece).structs.map((struct) => `${struct.id.client}:${struct.id.clock}`));
+  expect(ids.sort()).toEqual(['1:0', '2:0']);
 });

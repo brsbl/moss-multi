@@ -16,6 +16,8 @@ interface Write {
   update: Uint8Array;
   /** The clocks it reaches. */
   ends: Map<number, number>;
+  /** A payload write the DocDO's last usage figure may already include (made before it, still unacked). */
+  counted?: boolean;
 }
 
 interface Pending {
@@ -59,6 +61,23 @@ export class AckLedger {
   pendingUpdate(id: string = NOTE): Uint8Array | null {
     const writes = this.#pending.get(id)?.writes;
     return writes?.length ? Y.mergeUpdates(writes.map((write) => write.update)) : null;
+  }
+
+  /**
+   * The bytes of the payload writes no ack has covered yet, made since the DocDO's last usage figure: growth that
+   * figure does not include. One made before it may have persisted with its ack lost, and is in it (B207).
+   */
+  pendingPayloadBytes(): number {
+    let bytes = 0;
+    for (const [id, pending] of this.#pending) {
+      if (id !== NOTE) for (const write of pending.writes) if (!write.counted) bytes += write.update.byteLength;
+    }
+    return bytes;
+  }
+
+  /** The DocDO reported its usage: every payload write pending now is counted in it. */
+  usageReported(): void {
+    for (const [id, pending] of this.#pending) if (id !== NOTE) for (const write of pending.writes) write.counted = true;
   }
 
   /** The payloads with unacked writes. */
