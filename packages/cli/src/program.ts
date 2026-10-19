@@ -2,17 +2,23 @@
 // 3 degenerate. Output that is content (`cat`) is written as raw bytes; everything else is one line per record.
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { TRASH_COPY, TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { createApi, type Api } from './api.ts';
 import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConfig, writeConfig } from './config.ts';
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
-import { jsonSafe, redact, ttySafe } from './output.ts';
+import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
-import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop } from './sync.ts';
-import { confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, probeFoldsCase, readBase, readConfined, readMeta, recordPull, sha256Hex } from './workspace.ts';
+import { exactPattern, parseScope, readScope, SCOPE_FILE, scopePath } from './scope.ts';
+import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
+import {
+  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
+  recordPull, resetRootPins, sha256Hex, writeStateFile,
+} from './workspace.ts';
 
 export interface ProgramDeps {
   env?: Record<string, string | undefined>;
@@ -27,6 +33,8 @@ export interface ProgramDeps {
   foldsCase?: (root: string) => boolean;
   /** Stops `watch`; SIGINT and SIGTERM when absent. */
   signal?: AbortSignal;
+  /** Asks a yes-or-no question (`scope confirm`); a terminal prompt when absent, and no without a terminal. */
+  confirm?: (question: string) => Promise<boolean>;
 }
 
 export const AGENT_KEY_PREFIX = 'mm_sk_';
@@ -56,8 +64,18 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   pull <doc> [file] [--force]                  write the doc to a file and track it here
   push <file> [--suggest] [--force]            merge your edits to a pulled file into the doc
   init [dir]                                   make a folder a workspace, so sync and watch may use it
+  init [dir] --scope [--allow <glob>]... [--follow <note>]... [--deny <glob>]... [--depth <n>]
+                                               also write .moss-multi/scope.json: sync then takes only the notes
+                                               --allow matches, and pulls those the --follow notes link to (depth
+                                               hops out, re-read every pass), never what --deny matches
+  scope confirm [--yes <path>...]              list the notes --follow reaches that --allow does not cover (a
+                                               link that came in a sync is marked) and, on a yes at the prompt,
+                                               add them to allow; without a terminal, --yes adds exactly the
+                                               paths named. Only allow uploads: a note only follow reaches is
+                                               pulled but never sent ("follow-only")
   sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
-                                               doc; deleting a file here never deletes the doc
+                                               doc; deleting a file here never deletes the doc. With a scope,
+                                               only notes in it; --json counts the rest as "out-of-scope"
   watch [dir] [--interval <s>]                 sync on every change and every 60 s, until Ctrl+C
   history <doc> [--json]                       the doc's versions
   comments <doc> [--json]                      the doc's comment threads
@@ -122,11 +140,29 @@ const readable = (text: string) => text.replace(/\u2063@person:([^\u2062\u2063\u
 const toLf = (text: string) => text.replace(/\r\n?/g, '\n');
 const decoder = new TextDecoder('utf-8', { fatal: false });
 
+/** Why `url` may not carry a credential, or null when it may: https, or plain http only to this machine. */
+function transportRefusal(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `not a server URL: ${url}`;
+  }
+  // Credentials travel in plaintext over http, so it is allowed only to this machine.
+  if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK.test(parsed.hostname))) return null;
+  return `not a server URL: ${url}; use https:// (plain http:// is allowed only for localhost)`;
+}
+
+/** A server-supplied field inside a one-line record. */
+const f = fieldSafe;
+
 export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<number> {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? (() => process.cwd());
   const fetchImpl = deps.fetchImpl ?? fetch;
   const foldsCase = deps.foldsCase ?? probeFoldsCase;
+  // A workspace root's identity is recorded once per command, so one moved or swapped mid-command fails closed.
+  resetRootPins();
   const stdout = deps.stdout ?? ((chunk) => process.stdout.write(chunk));
   const rawStderr = deps.stderr ?? ((line) => process.stderr.write(`${line}\n`));
   // Everything but `cat` and the usage text goes through these: credentials redacted, control characters escaped.
@@ -136,19 +172,22 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   const line = (text: string) => stdout(`${ttySafe(redact(text, secrets))}\n`);
   const stderr = (text: string) => rawStderr(ttySafe(redact(text, secrets)));
   const json = (data: unknown) => stdout(`${jsonSafe(redact(JSON.stringify(data, null, 2), secrets))}\n`);
+  const ask = deps.confirm ?? (async (question: string) => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+    const prompt = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      return /^y(es)?$/i.test((await prompt.question(question)).trim());
+    } finally {
+      prompt.close();
+    }
+  });
 
   const server = (override?: string): string => {
     const url = override ? normalizeServer(override) : resolveConfig(env).serverUrl;
     if (!url) throw new CliError(1, 'no server: set MOSS_MULTI_SERVER or run `moss-multi login --server <url>`');
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new CliError(1, `not a server URL: ${url}`);
-    }
-    // Credentials travel in plaintext over http, so it is allowed only to this machine.
-    if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK.test(parsed.hostname))) return url;
-    throw new CliError(1, `not a server URL: ${url}; use https:// (plain http:// is allowed only for localhost)`);
+    const refused = transportRefusal(url);
+    if (refused) throw new CliError(1, refused);
+    return url;
   };
   const api = (signal?: AbortSignal): Api => {
     const config = resolveConfig(env);
@@ -161,6 +200,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   const reportMedia = (results: SyncResult[], toStderr = false) => {
     for (const result of results) (toStderr || result.action === 'failed' ? stderr : line)(describe(result));
     if (results.some((result) => result.action === 'failed')) exitCode = EXIT.other;
+  };
+  /** Refuses a path the workspace's scope does not admit (for `upload`, does not send), before it is read or written. */
+  const inScope = (root: string, rel: string, what: 'upload' | 'write a doc to') => {
+    const scope = workspaceScope(root, foldsCase(root));
+    if (!scope) return undefined;
+    if (!scope.admits(rel)) throw new CliError(1, `${rel} is outside this workspace's scope (.moss-multi/${SCOPE_FILE}), so moss-multi does not ${what} it`);
+    if (what === 'upload' && !scope.uploads(rel)) throw new CliError(1, `${rel} is not in this workspace's scope allow list, so moss-multi does not upload it; \`moss-multi scope confirm\` adds the notes follow reaches`);
+    return scope;
   };
   /**
    * The workspace for `sync` and `watch`: the one holding `dir` (default the working directory). They never make
@@ -185,22 +232,25 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         if (!key.startsWith(AGENT_KEY_PREFIX)) throw new CliError(1, `an agent key starts with ${AGENT_KEY_PREFIX}; mint one in Settings → Agents`);
         const me = await createApi({ serverUrl, token: key, fetchImpl }).me();
         writeConfig(env, { serverUrl, apiKey: key });
-        line(`signed in as agent ${me.name}; key saved to ${configPath(env)}`);
+        line(`signed in as agent ${f(me.name)}; key saved to ${configPath(env)}`);
         return;
       }
       const token = await deviceLogin(serverUrl, { fetchImpl, out: line, ...(deps.sleep ? { sleep: deps.sleep } : {}), ...(deps.openUrl ? { openUrl: deps.openUrl } : {}) });
       secrets.add(token);
       const me = await createApi({ serverUrl, token, fetchImpl }).me();
       writeConfig(env, { serverUrl, sessionToken: token });
-      line(`signed in as ${me.email ?? me.name}; session saved to ${configPath(env)}`);
+      line(`signed in as ${f(me.email ?? me.name)}; session saved to ${configPath(env)}`);
     },
 
     async logout(rest) {
       arity(parseArgs(rest, [], []), 0, 0, 'logout');
       const { hadCredentials, sessionToken } = clearCredentials(env);
       const serverUrl = resolveConfig(env).serverUrl;
-      if (sessionToken && serverUrl) {
-        // The stored session is forgotten either way; say so if the server did not end it.
+      // The session goes out as a bearer, so only over https or to this machine; it is forgotten here either way.
+      const refused = sessionToken && serverUrl ? transportRefusal(serverUrl) : null;
+      if (refused) stderr(`remote sign-out was not attempted (${refused}); the session ends when it expires`);
+      else if (sessionToken && serverUrl) {
+        // Say so if the server did not end it.
         const ended = await createApi({ serverUrl, token: sessionToken, fetchImpl }).signOut().catch(() => false);
         if (!ended) stderr(`the server at ${serverUrl} did not confirm the sign-out; the session ends when it expires`);
       }
@@ -211,7 +261,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     async whoami(rest) {
       arity(parseArgs(rest, [], []), 0, 0, 'whoami');
       const me = await api().me();
-      line(me.type === 'agent' ? `agent ${me.name} (${me.id})` : `${me.email ?? me.name} (${me.id})`);
+      line(me.type === 'agent' ? `agent ${f(me.name)} (${f(me.id)})` : `${f(me.email ?? me.name)} (${f(me.id)})`);
     },
 
     async list(rest) {
@@ -219,7 +269,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       arity(parsed, 0, 0, 'list [--json]');
       const docs = await api().listDocs();
       if (parsed.flags.has('json')) return json(docs);
-      for (const doc of docs) line(`${doc.id}  ${doc.title.trim() || 'Untitled'}`);
+      for (const doc of docs) line(`${f(doc.id)}  ${f(doc.title.trim()) || 'Untitled'}`);
     },
 
     async vaults(rest) {
@@ -227,7 +277,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       arity(parsed, 0, 0, 'vaults [--json]');
       const vaults = await api().listVaults();
       if (parsed.flags.has('json')) return json(vaults);
-      for (const vault of vaults) line(`${vault.id}  ${vault.name}${vault.owned ? '' : ` (${vault.role})`}`);
+      for (const vault of vaults) line(`${f(vault.id)}  ${f(vault.name)}${vault.owned ? '' : ` (${f(vault.role)})`}`);
     },
 
     async cat(rest) {
@@ -251,7 +301,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [file] = arity(parsed, 1, 1, 'add <file.md> [--title <t>] [--folder <id>] [--moss] [--json]');
       const path = resolve(cwd(), file);
       const workspace = findRoot(cwd());
-      const root = workspace ?? cwd();
+      const root = workspace ?? pinRoot(cwd());
+      notInNested(root, confined(root, path));
       const moss = parsed.flags.has('moss');
       const title = value(parsed, 'title');
       const folderId = value(parsed, 'folder');
@@ -260,10 +311,11 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (workspace) {
         // In a workspace the file is tracked at once, as sync would, so a later sync makes no second doc.
         const rel = confined(workspace, path);
+        const scope = inScope(workspace, rel, 'upload');
         const lock = await lockWorkspace(workspace);
         try {
           if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
-          const adopted = await adopt({ root: workspace, client, folds: foldsCase(workspace) }, rel, {
+          const adopted = await adopt({ root: workspace, client, folds: foldsCase(workspace), ...(scope ? { scope } : {}) }, rel, {
             moss, keepName: true, ...(title !== undefined ? { title, titleLine: true } : {}), ...(folderId ? { folderId } : {}),
           });
           doc = adopted.doc;
@@ -307,7 +359,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const [ref, title] = arity(parseArgs(rest, [], []), 2, 2, 'mv <doc> <new title>');
       const client = api();
       const doc = await client.rename(await resolveDocId(client, ref), title);
-      line(`renamed to "${doc.title}"`);
+      line(`renamed to "${f(doc.title)}"`);
     },
 
     async rm(rest) {
@@ -324,8 +376,10 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const parsed = parseArgs(rest, ['force'], []);
       const [ref, fileArg] = arity(parsed, 1, 2, 'pull <doc> [file] [--force]');
       const client = api();
+      const root = findRoot(cwd()) ?? pinRoot(cwd());
+      // A scope file that cannot be read stops the pull before any request.
+      readScope(root);
       const id = await resolveDocId(client, ref);
-      const root = findRoot(cwd()) ?? cwd();
       const tracked = readMeta(root, id);
       if (tracked?.mode === 'moss') throw new CliError(1, `${tracked.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
       let rel: string;
@@ -335,6 +389,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const row = (await client.listDocs()).find((doc) => doc.id === id);
         rel = confined(root, resolve(cwd(), row ? localName(row.filename, row.title) : `${id}.md`));
       }
+      notInNested(root, rel);
+      const scope = inScope(root, rel, 'write a doc to');
       const target = join(root, rel);
       // What the file must still hold when it is replaced: --force replaces anything, otherwise only the base or nothing.
       let expectHash: string | null | undefined;
@@ -349,7 +405,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const bytes = await client.content(id);
       recordPull(root, id, rel, bytes, expectHash, foldsCase(root));
       line(`pulled ${rel} (${bytes.byteLength} bytes)`);
-      reportMedia((await noteMedia({ root, client, download: true }, id, rel)).results);
+      reportMedia((await noteMedia({ root, client, download: true, ...(scope ? { denies: scope.denies } : {}) }, id, rel)).results);
     },
 
     async push(rest) {
@@ -361,9 +417,12 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
       if (meta.mode === 'moss') throw new CliError(1, `${meta.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
+      notInNested(root, meta.file);
+      const scope = inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
-      reportMedia((await noteMedia({ root, client, upload: true }, meta.docId, path)).results);
+      const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
+      reportMedia((await noteMedia({ root, client, upload: true, ...scoped }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
@@ -385,20 +444,29 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         }
         if (response.reason === 'rate-limited') throw new CliError(1, `push refused: rate limited${response.retryAfterSec ? `; try again in ${response.retryAfterSec} s` : ''}`);
         if (response.reason === 'too-large') throw new CliError(1, 'push refused: too large; a note holds at most 2 MB of markdown');
-        if (response.reason === 'push-unverified' || response.reason === 'suggest-refused') throw new CliError(1, `push refused: ${response.message}`);
+        if (response.reason === 'push-unverified' || response.reason === 'suggest-refused') throw new CliError(1, `push refused: ${f(response.message)}`);
         if (response.reason === 'forbidden') {
           throw new CliError(1, parsed.flags.has('suggest')
             ? 'push refused: you can\'t suggest changes to this doc (it needs suggest access or more)'
             : 'push refused: you can\'t edit this doc (it needs edit access); with suggest access, push with --suggest');
         }
-        throw new CliError(1, `push refused: ${response.reason}`);
+        throw new CliError(1, `push refused: ${f(String(response.reason))}`);
       }
       if (response.mode === 'suggest') {
         // The doc is unchanged until someone accepts, so the file and its base stay as they are.
-        line(`suggested ${meta.file} (suggestion ${response.suggestionId})`);
+        line(`suggested ${meta.file} (suggestion ${f(response.suggestionId)})`);
         const left = response.failedHunks ?? [];
         for (const hunk of left) stderr(`failed hunk:\n${hunk}`);
         if (left.length > 0) throw new CliError(EXIT.failedHunks, `${left.length} hunk(s) could not be placed and are not in the suggestion`);
+        return;
+      }
+      if (parsed.flags.has('suggest') && response.applied === 0) {
+        // The server made no suggestion (nothing to suggest, or no hunk placed): the file and its base stay as they are.
+        for (const hunk of response.failedHunks) stderr(`failed hunk:\n${hunk}`);
+        if (response.failedHunks.length > 0) {
+          throw new CliError(EXIT.failedHunks, `nothing was suggested: ${response.failedHunks.length} hunk(s) could not be placed; pull again and re-apply them`);
+        }
+        line(`${meta.file}: nothing was suggested; the push changes nothing in the doc`);
         return;
       }
       if (response.failedHunks.length > 0) {
@@ -418,12 +486,98 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     },
 
     async init(rest) {
-      const parsed = parseArgs(rest, [], []);
-      const [dir] = arity(parsed, 0, 1, 'init [dir]');
+      // --allow, --follow and --deny repeat, so they are gathered before the rest is parsed.
+      const lists: Record<'allow' | 'follow' | 'deny', string[]> = { allow: [], follow: [], deny: [] };
+      let depth: string | undefined;
+      const others: string[] = [];
+      for (let i = 0; i < rest.length; i += 1) {
+        const arg = rest[i]!;
+        if (arg === '--') {
+          others.push(...rest.slice(i));
+          break;
+        }
+        const eq = arg.indexOf('=');
+        const name = arg.startsWith('--') ? arg.slice(2, eq < 0 ? undefined : eq) : '';
+        if (name !== 'allow' && name !== 'follow' && name !== 'deny' && name !== 'depth') {
+          others.push(arg);
+          continue;
+        }
+        const given = eq >= 0 ? arg.slice(eq + 1) : rest[++i];
+        if (given === undefined) throw new CliError(1, `--${name} needs a value`);
+        if (name === 'depth') depth = given;
+        else lists[name].push(given);
+      }
+      const parsed = parseArgs(others, ['scope'], []);
+      const usage = 'init [dir] [--scope [--allow <glob>]... [--follow <note>]... [--deny <glob>]... [--depth <n>]]';
+      const [dir] = arity(parsed, 0, 1, usage);
+      const scoped = parsed.flags.has('scope');
+      if (!scoped && (depth !== undefined || Object.values(lists).some((list) => list.length > 0))) throw new CliError(1, `--allow, --follow, --deny and --depth go with --scope: moss-multi ${usage}`);
       const root = resolve(cwd(), dir ?? '.');
       if (!existsSync(root)) throw new CliError(1, `no such directory: ${dir ?? root}`);
-      ensureStateDir(root);
-      line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
+      if (!scoped) {
+        ensureStateDir(root);
+        line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
+        return;
+      }
+      // Checked as sync reads it, so a scope init writes is one sync accepts.
+      const scope = parseScope(JSON.stringify({ ...lists, depth: depth === undefined ? 1 : Number(depth) }));
+      ensureStateDir(pinRoot(root));
+      if (readStateFile(root, SCOPE_FILE)) throw new CliError(1, `${root} already has a scope; edit .moss-multi/${SCOPE_FILE} to change it`);
+      writeStateFile(root, SCOPE_FILE, Buffer.from(`${JSON.stringify({ allow: lists.allow, follow: lists.follow, depth: scope.depth, deny: lists.deny }, null, 2)}\n`));
+      line(`${root} is a moss-multi workspace scoped by .moss-multi/${SCOPE_FILE}: \`moss-multi sync\` uploads only the notes it allows, pulls those --follow reaches, and never touches what it denies`);
+      if (lists.follow.length) line('`moss-multi scope confirm` lists the notes --follow reaches and adds them to allow, so they upload too');
+    },
+
+    async scope(rest) {
+      const parsed = parseArgs(rest, ['yes'], []);
+      const usage = 'usage: moss-multi scope confirm [--yes <path>...]';
+      const [action, ...named] = parsed.positionals;
+      if (action !== 'confirm') throw new CliError(1, usage);
+      const yes = parsed.flags.has('yes');
+      const root = workspaceAt();
+      const lock = await lockWorkspace(root);
+      try {
+        // Read from the local files now: what follow reaches that allow does not cover.
+        const view = workspaceScope(root, foldsCase(root));
+        if (!view) throw new CliError(1, `${root} has no scope: \`moss-multi init --scope\` makes one`);
+        const offered = view.followed.map((note) => ({ ...note, path: scopePath(note.file) }));
+        if (offered.length === 0) {
+          line('follow reaches no note that allow does not already cover');
+          if (named.length) throw new CliError(1, `${named.join(', ')}: not a note follow reaches outside allow, so nothing was added`);
+          return;
+        }
+        line(`follow reaches ${offered.length} note(s) that allow does not cover:`);
+        for (const note of offered) {
+          const via = note.from.length ? `linked from ${note.from.map(scopePath).join(', ')}` : 'named in follow';
+          line(`  ${note.path}  "${note.title}"  ${via}${note.synced ? '  (linked by a synced edit: the link may have come from the server)' : ''}`);
+        }
+        if (yes && named.length === 0) throw new CliError(1, `--yes adds only the paths it names, so nothing was added: moss-multi scope confirm --yes <path>...`);
+        const byPath = new Map(offered.map((note) => [note.path.normalize('NFC'), note.path]));
+        const picked: string[] = [];
+        for (const path of named) {
+          const found = byPath.get(scopePath(path).normalize('NFC'));
+          if (!found) throw new CliError(1, `${path} is not a note follow reaches outside allow, so nothing was added`);
+          picked.push(found);
+        }
+        const chosen = picked.length ? [...new Set(picked)] : offered.map((note) => note.path);
+        for (const path of chosen.filter((path) => !exactPattern(path))) stderr(`${path}: its path holds * or ?, which allow reads as a pattern, so it is not added`);
+        const add = chosen.filter(exactPattern);
+        if (add.length === 0) throw new CliError(1, 'nothing was added');
+        const agreed = yes || (await ask(`add ${add.length} note(s) to allow in .moss-multi/${SCOPE_FILE}, so they upload? [y/N] `));
+        if (!agreed) {
+          line('nothing was added (without a terminal: moss-multi scope confirm --yes <path>...)');
+          return;
+        }
+        const raw = JSON.parse(readStateFile(root, SCOPE_FILE)!.toString('utf8')) as Record<string, unknown>;
+        const allow = Array.isArray(raw.allow) ? (raw.allow as string[]) : [];
+        // Checked as sync reads it before it replaces the file.
+        const next = `${JSON.stringify({ ...raw, allow: [...allow, ...add] }, null, 2)}\n`;
+        parseScope(next);
+        writeStateFile(root, SCOPE_FILE, Buffer.from(next), true);
+        line(`added ${add.join(', ')} to allow: ${add.length === 1 ? 'it uploads' : 'they upload'} from the next sync`);
+      } finally {
+        lock.release();
+      }
     },
 
     async sync(rest) {
@@ -437,7 +591,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
           if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) stderr(describe(result));
           else if (result.action !== 'up-to-date') line(describe(result));
         }
-        if (results.every((result) => result.action === 'up-to-date')) line('everything is up to date');
+        if (results.every((result) => result.action === 'up-to-date' || result.action === 'out-of-scope')) line('everything is up to date');
       }
       exitCode = syncExitCode(results);
     },
@@ -476,14 +630,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const client = api();
       const versions = await client.versions(await resolveDocId(client, ref));
       if (parsed.flags.has('json')) return json(versions);
-      for (const version of versions) line(`${version.id}  ${new Date(version.createdAt).toISOString()}  ${version.kind}${version.name ? `  ${version.name}` : ''}`);
+      for (const version of versions) line(`${f(version.id)}  ${new Date(version.createdAt).toISOString()}  ${f(version.kind)}${version.name ? `  ${f(version.name)}` : ''}`);
     },
 
     async snapshot(rest) {
       const [ref, name] = arity(parseArgs(rest, [], []), 2, 2, 'snapshot <doc> <name>');
       const client = api();
       const version = await client.snapshot(await resolveDocId(client, ref), name);
-      line(version.id);
+      line(f(version.id));
     },
 
     async comments(rest) {
@@ -495,9 +649,9 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (comments.length === 0) return line('no comments');
       for (const comment of comments) {
         const state = [comment.resolved ? 'resolved' : '', comment.status === 'orphaned' ? 'detached' : ''].filter(Boolean).join(', ');
-        const head = `${comment.parentId ? '  ↳ ' : ''}${comment.id}  ${comment.author.name}${comment.author.type === 'agent' ? ' (agent)' : ''}`;
-        line(`${head}: ${readable(comment.text)}${state ? `  (${state})` : ''}`);
-        if (!comment.parentId && comment.quote) line(`    on "${comment.quote}"`);
+        const head = `${comment.parentId ? '  ↳ ' : ''}${f(comment.id)}  ${f(comment.author.name)}${comment.author.type === 'agent' ? ' (agent)' : ''}`;
+        line(`${head}: ${f(readable(comment.text))}${state ? `  (${state})` : ''}`);
+        if (!comment.parentId && comment.quote) line(`    on "${f(comment.quote)}"`);
       }
     },
 
@@ -509,7 +663,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (parsed.flags.has('json')) return json(suggestions);
       if (suggestions.length === 0) return line('no open suggestions');
       for (const suggestion of suggestions) {
-        line(`${suggestion.id}  ${suggestion.author.name}  ${suggestion.status}  ${new Date(suggestion.createdAt).toISOString()}${suggestion.outdated ? '  (outdated)' : ''}`);
+        line(`${f(suggestion.id)}  ${f(suggestion.author.name)}  ${f(suggestion.status)}  ${new Date(suggestion.createdAt).toISOString()}${suggestion.outdated ? '  (outdated)' : ''}`);
       }
     },
 
@@ -525,7 +679,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const comment = await client.comment(await resolveDocId(client, ref), {
         id, text, ...(quote !== undefined ? { anchor: { quote } } : { parentId: reply }),
       });
-      line(comment.id);
+      line(f(comment.id));
     },
 
     async share(rest) {
@@ -535,8 +689,23 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (!role) throw new CliError(1, 'the role is view, comment, suggest or edit');
       const client = api();
       const id = await resolveDocId(client, ref);
-      await client.share(id, who.includes('@') ? { email: who, role } : { agentId: who, role });
-      line(`shared with ${who} as ${role}`);
+      if (!who.includes('@')) {
+        await client.share(id, { agentId: who, role });
+        line(`shared with ${f(who)} as ${role}`);
+        return;
+      }
+      // An email share is an invite: access starts only once its personal link is redeemed, so print that link.
+      const answer = await client.share(id, { email: who, role });
+      const email = typeof answer.shared?.email === 'string' ? answer.shared.email : who.trim().toLowerCase();
+      let url: string | undefined;
+      let why = 'the server listed no invite for that email';
+      try {
+        url = (await client.invites(id)).find((invite) => invite.email.toLowerCase() === email)?.url;
+      } catch (error) {
+        why = error instanceof Error ? error.message : String(error);
+      }
+      if (!url) throw new CliError(1, `share incomplete: ${f(email)} is invited as ${role}, but its invite link could not be read (${f(why)}); copy it from the doc's Share dialog`);
+      line(`invited ${f(email)} as ${role}; send them ${f(url)}; access starts once they open it signed in with that email`);
     },
   };
 
@@ -552,7 +721,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     return exitCode;
   } catch (error) {
     if (error instanceof CliError) {
-      stderr(`moss-multi: ${error.message}`);
+      // A refusal (it has an HTTP status) may quote the server: it stays on the header's line.
+      stderr(`moss-multi: ${error.status === undefined ? error.message : fieldSafe(error.message)}`);
       return error.exitCode;
     }
     stderr(`moss-multi: ${error instanceof Error ? error.message : String(error)}`);

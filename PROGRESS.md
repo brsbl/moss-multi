@@ -1,17 +1,17 @@
 # moss-multi progress
 
-**Overall: 86% done** (208 of 241 planned tasks verified)
+**Overall: 88% done** (212 of 241 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 66 / 66 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 67 / 67 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 19 / 19 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 22 / 22 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 15 / 15 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -225,6 +225,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T5.Q verified: suggestions now run on m4's comment-draft, media and formula fixes, and an IME preedit flushed when its editor unmounts is merged and written under the note's own client, as compositionend writes it.
 - 2026-10-15 — T6.Q verified: history now runs on m5's comment-draft, media, quota and formula fixes, and e2e setup resends a sign-up or sign-in that wrangler's proxy dropped while a large note's auto version was being written.
 - 2026-10-15 — T7.Q verified: agent sync, Bot presence and the watch daemon now run on m6's comment-draft, media, quota and formula fixes, with both sides kept and the full lane green on the m7 head.
+- 2026-10-18 — T7.B3 verified: the CLI pins the workspace root before requests and lock waits and re-checks it on every write, logout sends the session only over https or loopback, server text prints on one escaped line, email shares print the invite link and an empty `--suggest` push says nothing was suggested.
+- 2026-10-18 — T7.P1 verified: a `.moss-multi/scope.json` (allow, follow with depth, deny always winning) now limits sync, pull, push and add to in-scope notes, so an agent on a host only uploads allowlisted notes, notes reached by links stay download only until `scope confirm` adds them, and a folder without a scope file syncs as before.
+- 2026-10-18 — T4.B3 re-verified: a reply box that grows or shrinks no longer raises a WebKit ResizeObserver loop, comment drafts stay in their own note, and a composer dismissed and reopened on its target closes once its sent comment lands instead of sending it twice (already counted on 2026-10-14).
+- 2026-10-18 — T3.B11 re-verified: a large upload's chunks are now freed as they are copied, because the upload deadline cancels the reader instead of racing every read, so a big body is not held in memory twice.
+- 2026-10-18 — T3.B17 verified: + Note, Cmd/Ctrl+N and folder drag-and-drop now follow the role on the folder involved rather than the vault root, a refused move is undone and shows the server's reason once, a reader no longer sees Remove on a missing image or reaches hidden gap and resize controls, read-only tabs still switch by keyboard, and a refused restore's notice no longer covers the Trash banner.
+- 2026-10-18 — T4.Q second pass verified: comments now run on m3's later fixes (upload reader deadline, the j09 pass-through route, read-only controls and folder permissions), with a reader's tabs and Add comment control both exempt in invariant 9 and the full lane green on the m4 head (already counted on 2026-10-14).
+- 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
+- 2026-10-18 — T6.Q second pass verified: history now runs on m5's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m6 head (already counted on 2026-10-15).
+- 2026-10-19 — T7.P2 verified: when Moss re-saves a note it held open while sync pulled an edit into it, sync keeps the pulled edit and lands only the new typing, sending anything it cannot place to `<file>.rej` instead of pushing a revert.
+- 2026-10-19 — T7.Q second pass verified: agent sync, Bot presence and the watch daemon now run on m6's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), and a large note opened in a fresh session no longer gains an empty paragraph ahead of its first line, because the first sync's answer pieces are held and applied with its step 2 (already counted on 2026-10-15).
 
 ## T1.1s identity audit
 
@@ -343,6 +353,26 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T8.0 checker P2 (Reload on an outdated pane discards unacked edits without asking; Codex P1, downgraded): if MIN_CLIENT_PROTOCOL rises while a pane holds unacked offline edits, the session ends `outdated` and Reload calls reloadDocument() → allowUnload(), so the beforeunload guard never fires; unreachable while CLIENT_PROTOCOL = MIN_CLIENT_PROTOCOL = 1.
 - T8.0 checker P2 (a REST 426 before any doc session exists gives no reload prompt): reportOutdated() only ends existing sessions, so an access GET refused 426 maps to 'unavailable' in access.ts and retries; handle with the first real protocol bump.
 - T8.0 checker P2 (bundles from before T8.0 retry on 4426 instead of stopping): their closeAction treats unknown codes as 'retry', so they reconnect with backoff and the connection-lost banner rather than the Reload prompt, never writing; no pre-T8.0 bundle has shipped.
+
+### From T7.P1's checker (172529d, 2026-10-18)
+
+- T7.P1 checker P2 (Media under an assets folder that is itself a scoped nested workspace bypasses the nested boundary; Codex P1, downgraded): noteMedia in packages/cli/src/media.ts does not call scopedNest on asset paths; only reachable when a nested workspace's root is exactly a note's assets/ folder; add a scopedNest check per asset.
+- T7.P1 checker P2 (An exact allow entry also covers an NFC/NFD twin name on a volume that keeps them apart; Codex P1, downgraded): covers() in packages/cli/src/scope.ts compares names in NFC while workspace sameFile keeps NFC and NFD distinct, so on Linux allow ['café.md'] also uploads an NFD twin; match on the filesystem's own name identity.
+- T7.P1 checker P2 (withoutSpans backtick pre-pass can still go superlinear): for each unmatched backtick run scope.ts rescans every later run, so backtick runs of increasing length cost Theta(k^3).
+- T7.P1 checker P2 (Outer scope evaluation can still read a tracked note owned by a nested scoped vault): workspaceScope in sync.ts receives all trackedMetas before pass() drops nested notes, so an outer follow can read its links and scope confirm can print its path; nothing is uploaded or written.
+- T7.P1 checker P2 (scope confirm re-reads and re-parses a source note's base once per followed target): syncedLink runs per (target, source) pair, so a hub note linking many unconfirmed notes costs quadratic work.
+- T7.P1 checker P2 (Conflict .rej sidecars ignore deny rules): setAside writes <file>.rej without consulting the scope; local only, never uploaded.
+
+### From T7.Q second pass's checker (f779816, 2026-10-19)
+
+- T7.Q second pass checker P2 (Held first-sync pieces from interrupted connections are never discarded): doc-session.ts pushes every pre-sync type-2 frame into #firstSync and clears it only on step 2, so each connection dropped mid-answer leaves its prefix held and the next attempt adds another copy; correct (Yjs updates are idempotent) but memory grows per interrupted attempt; clear the buffer on disconnect.
+
+### From T7.P2's checker (2f710e5, 2026-10-19)
+
+- T7.P2 checker P2 (Plain-file adoption overwrites the file without keeping its prior text; Codex P1, downgraded): createFrom's plain path calls recordPull with no {prior: bytes}, so a peer edit between POST /api/docs and adoption's content GET followed by a stale save within the minute is pushed as a revert; plain path only, sub-second window on a doc whose id nobody else knows yet.
+- T7.P2 checker P2 (The explicit `push` command overwrites the file with merged text and keeps no prior): after a clean push program.ts writes the merged doc without a prior, so a stale Moss re-save can be pushed by the next sync as a revert of the pulled lines.
+- T7.P2 checker P2 (MTIME_SLACK_MS lets a save up to 2 s before the write count as stale): readPriors accepts savedAt >= prior.at - 2000 on every filesystem, so a precisely timestamped save made just before the pull can be treated as stale.
+- T7.P2 checker P2 (The prior record is written after the note is replaced): recordPull and recordSynced overwrite the file before recordBase writes prior-<hex>.md and meta.json, so a crash in between leaves no prior and a later stale save is treated as fresh.
 
 ### From T7.S6's checker (210bbd2, 2026-10-14)
 
@@ -996,3 +1026,11 @@ Local browser verification remains assigned to the independent checker under the
 - T5.Q (m5 on the m4 fixes) checker P2: no single regression test covers an unmounted Suggest-mode preedit — j01 covers unmounting a preedit in Edit mode and j16 covers compositionend in Suggest mode, but nothing exercises the combined unmount flush in register-input.ts (the red on 43da2b70 was a typecheck failure, not behavioral) → add a journey that unmounts an active Suggest-mode preedit while a peer edits, proven red against a draft-client apply.
 - T6.Q (No deterministic selftests for the setup auth resend) checker P2: setupPost's resend and mintPrincipal's 'already exists' recovery in e2e/lib/principals.ts have no focused selftests; add cases that an ordinary 503 stays a failure, a non-503 carrying the proxy text stays a failure, a second failed attempt stays a failure, and recovery returns the real user id.
 - T7.Q (Two dismissed CI failures have no baseline failure on record) checker P2: of the four failures dismissed in the full-lane reruns, note-store.linear (run 38535601745) and suggest-ingest T5.2 (run 38512418550) failed the same assertions on earlier base runs, but two have no baseline on record: the WebKit j15-comments-drafts uncaught 'ResizeObserver loop' on attempt 1 (comment code and journey identical to m6 1b681ff1; head and m6 both passed 8 of 8 repeats in runs 38717509595 and 38717513000) and suggest.test.ts:791 T5.4 'one fixed frame size in every scenario' (2 sizes instead of 1).
+- T7.B3 checker P2 (pull pins its workspace root only after resolveDocId's request): in pull, resolveDocId runs before findRoot/pinRoot (packages/cli/src/program.ts:340-343), so a root swapped for a link during a title-prefix GET /api/docs is pinned as trusted and pull writes the note and state there → select and pin the root before resolveDocId, with a regression test that swaps the root during a title-prefix pull.
+- T7.B3 checker P2 (State-file reads and lock retries skip the pinned-root and link re-checks): readBase uses only noLinks, not realInside or the pin, so a base-missing retry can send an outside .moss-multi/<id>/base.md (program.ts:393-395); writeInside calls mkdirSync before its first realInside check, so a swap during add or create can leave an empty outside directory; lockWorkspace re-pins on each retry but runs noLinks once, so a .moss-multi swapped for a link while waiting can get an outside .lock (workspace.ts:436-468).
+- T7.B3 checker P2 (Device-login server fields are not field-escaped): deviceLogin builds its CliError from the server's error_description without a status (config.ts:176-192) and the top-level handler applies fieldSafe only when the error has a status (program.ts:593-595), so an LF in that text starts a new output line; user_code is printed only through ttySafe.
+- T3.B11 (Asset quota, streaming reads and near-cap probe) re-check P2: SP9 probe records no Worker memory telemetry — j11-media's near-cap probe checks bytes, SHA-256, exact size and the 206 tail read but not Worker memory or 128 MB isolate headroom on deployed staging (same gap as above, already a required test under T8.2).
+- T3.B17 (Read-only controls and folder permission UI) checker P2: invariant 9's tab-navigation exemption also applies outside read-only bodies — the detector exempts any [role=tablist] > div[role=tab] under any non-live title or body binding without checking data-body-binding=readonly, so a focusable tab in an unbound or terminal body or a closed title passes; limit the exemption to a read-only body binding and add negative selftest fixtures for unbound and terminal bodies (test gate only; no product defect).
+- T4.Q second pass (m4 on the later m3 fixes) checker P2, owned by m3 (from T3.B17): invariant 9's tab exemption in e2e/lib/detectors.js editableUnbound is not limited to readonly body bindings, so a focused tab in an unbound or terminal body goes unreported (same item as the T3.B17 line above; not introduced by the merge).
+- T5.Q second pass (m5 on the later m4 fixes) checker P2: j01-paste-check stall flake is closer to the bound than reported — attempts 1 and 2 of run 39200483704 failed e2e (chromium, pasterace) at e2e/lib/paste.ts:294, attempt 1 at 5395 ms against a 5112 ms bound, and t/T7.P2 failed it at 5029 ms (run 39181829307), so the timing sensitivity spans branches → T3.B27's calibrated stall bounds reaching m5 is the stated fix (same item as the T5.S7 and T5.P lines).
+- T5.Q second pass (m5 on the later m4 fixes) checker P2, owned by m3 (from T3.B17): invariant 9's tab exemption (e2e/lib/detectors.js:91-100) covers every non-live binding, not only readonly bodies (same item as the T3.B17 line above; not introduced by the merge).

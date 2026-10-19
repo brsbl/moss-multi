@@ -1,10 +1,11 @@
 // The CLI against a fake server (T7.1): raw `cat`, doc references, `url`, `rm` copy and JSON, exit codes, key and
 // device sign-in, pull and push state, and the comments and suggestions read commands (T7.3). @p:agt-1
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { computeMergedTarget } from '@moss-multi/core/merge';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { parseDocRef } from './docref.ts';
 import { runCli, type ProgramDeps } from './program.ts';
@@ -57,7 +58,21 @@ function fakeServer() {
     /** What GET .../comments and .../suggestions answer. */
     comments: [] as unknown[],
     suggestions: [] as unknown[],
+    /** The doc's live invites, as GET .../invites lists them; an email share adds one. */
+    invites: [] as { email: string; role: string; url: string }[],
+    /** Answers GET .../invites with this refusal. */
+    refuseInvites: null as null | { status: number; body: unknown },
+    /** Whether an email share adds its invite to the list. */
+    inviteOnShare: true,
+    /** Runs while a GET /api/docs (the doc list) is in flight, before it answers. */
+    onList: null as null | (() => void),
+    /** Answers this one route with a refusal. */
+    refuseRoute: null as null | { method: string; path: string; status: number; body: unknown },
+    /** Pushes three-way merge as the server does (core/merge), against a base it has served or been sent. */
+    merge: false,
   };
+  /** Every text the fake has served or been sent, by hash, as the server's base cache would hold them. */
+  const bases = new Map<string, string>();
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body), { status, headers });
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -92,10 +107,16 @@ function fakeServer() {
     }
     if (auth !== `Bearer ${state.token}`) return reply(401, { error: 'unauthenticated' });
     if (state.refuse) return reply(state.refuse.status, state.refuse.body);
+    if (state.refuseRoute && state.refuseRoute.method === method && state.refuseRoute.path === url.pathname) {
+      return reply(state.refuseRoute.status, state.refuseRoute.body);
+    }
     if (path === '/api/me') {
       return reply(200, { principal: state.token === KEY ? { type: 'agent', id: 'agent-1', name: 'Scribe' } : { type: 'user', id: 'user-1', name: 'Ada', email: 'ada@example.invalid' } });
     }
-    if (path === '/api/docs' && method === 'GET') return reply(200, { docs });
+    if (path === '/api/docs' && method === 'GET') {
+      state.onList?.();
+      return reply(200, { docs });
+    }
     if (path === '/api/vaults') return reply(200, { vaults: [{ id: 'v', name: 'Home', role: 'owner', owned: true }] });
     if (path === '/api/docs' && method === 'POST' && state.createNew) {
       const { id, filename } = state.createNew;
@@ -129,6 +150,7 @@ function fakeServer() {
           }, { once: true });
         });
       }
+      bases.set(sha256Hex(content.get(id)!), new TextDecoder().decode(content.get(id)!));
       return reply(200, content.get(id)!, { 'content-type': 'text/markdown; charset=utf-8' });
     }
     if (!sub && method === 'DELETE') return reply(200, { doc: { id, trashedAt: 1 }, action: 'trashed', restorable: true, retentionDays: 30 });
@@ -141,14 +163,38 @@ function fakeServer() {
       if (row) row.title = (body as { title: string }).title;
       return reply(200, { doc: { id, title: (body as { title: string }).title }, role: 'owner' });
     }
+    if (sub === 'push' && state.merge && !state.pushAnswers.length) {
+      const push = body as { newText: string; baseHash: string; baseText?: string; force?: boolean };
+      state.pushes.push(push as unknown as Record<string, unknown>);
+      if (push.baseText !== undefined) bases.set(sha256Hex(push.baseText), push.baseText);
+      const base = bases.get(push.baseHash);
+      if (base === undefined) return reply(409, { ok: false, reason: 'base-missing' });
+      const merged = computeMergedTarget(new TextDecoder().decode(content.get(id)!), base, push.newText, { refuseDegenerate: !push.force });
+      if (merged.degenerate) return reply(409, { ok: false, reason: 'degenerate', deletedRatio: merged.deletedRatio });
+      content.set(id, new TextEncoder().encode(merged.target));
+      state.onPush?.();
+      return reply(200, { ok: true, mode: 'edit', applied: merged.applied, failedHunks: merged.failedHunks });
+    }
     if (sub === 'push') {
       state.pushes.push(body as Record<string, unknown>);
       const next = state.pushAnswers.shift() ?? { status: 200, body: { ok: true, mode: 'edit', applied: 1, failedHunks: [] } };
       // A failed hunk leaves the doc as it was; the fake applies nothing then, nor for a suggestion.
-      const answer = next.body as { ok?: boolean; mode?: string; failedHunks?: string[] };
-      if (next.status === 200 && answer.ok && answer.mode === 'edit' && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
+      const answer = next.body as { ok?: boolean; mode?: string; applied?: number; failedHunks?: string[] };
+      if (next.status === 200 && answer.ok && answer.mode === 'edit' && answer.applied !== 0 && !answer.failedHunks?.length) content.set(id, new TextEncoder().encode((body as { newText: string }).newText));
       state.onPush?.();
       return reply(next.status, next.body, next.headers);
+    }
+    if (sub === 'members' && method === 'POST') {
+      const share = body as { email?: string; agentId?: string; role: string };
+      if (share.agentId !== undefined) return reply(201, { shared: { agentId: share.agentId, name: 'Scribe', role: share.role } });
+      // As the server does: the email is normalized, and the share is an invite with a personal link.
+      const email = (share.email ?? '').trim().toLowerCase();
+      if (state.inviteOnShare) state.invites.push({ email, role: share.role, url: `${SERVER}/invite/tok-${email.split('@')[0]}` });
+      return reply(201, { shared: { email, role: share.role } });
+    }
+    if (sub === 'invites' && method === 'GET') {
+      if (state.refuseInvites) return reply(state.refuseInvites.status, state.refuseInvites.body);
+      return reply(200, { invites: state.invites });
     }
     if (sub === 'comments' && method === 'GET') return reply(200, { comments: state.comments });
     if (sub === 'suggestions' && method === 'GET') return reply(200, { suggestions: state.suggestions });
@@ -1220,5 +1266,716 @@ describe('stopping watch stops the pass (T7.S8)', () => {
     expect(result!.code, result!.err).toBe(0);
     expect(ms, 'without waiting for the read').toBeLessThan(1_000);
     expect(server.state.pushes, 'no upload after the stop').toEqual([]);
+  });
+});
+
+describe('CLI safety (T7.B3)', () => {
+  const ID_D = '44444444-4444-4444-8444-444444444444';
+  let outside: string;
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'mm-outside-'));
+  });
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(`${dir}-moved`, { recursive: true, force: true });
+  });
+
+  it('logout to an off-loopback http:// server sends nothing, still forgets the session, and says sign-out was not attempted (B359)', async () => {
+    server.state.token = 'session-1';
+    expect((await cli(['login', '--server', SERVER], {})).code).toBe(0);
+    const before = server.seen.length;
+    const result = await cli(['logout'], { MOSS_MULTI_SERVER: 'http://off-loopback.example.invalid' });
+    expect(result.code).toBe(0);
+    expect(server.seen.length, 'no request carries the session in cleartext').toBe(before);
+    expect(readFileSync(join(configDir, 'config.json'), 'utf8')).not.toContain('session-1');
+    expect(result.out).toContain('signed out');
+    expect(result.err).toContain('remote sign-out was not attempted');
+  });
+
+  it('a pull whose workspace directory is swapped for a link while /content is in flight exits 1 and writes nothing outside (B356)', async () => {
+    mkdirSync(join(dir, 'sub'));
+    expect((await cli(['pull', ID_A, 'sub/plan.md'])).code).toBe(0);
+    mkdirSync(join(outside, 'sub'));
+    server.state.onContent = () => {
+      rmSync(join(dir, 'sub'), { recursive: true, force: true });
+      symlinkSync(join(outside, 'sub'), join(dir, 'sub'));
+    };
+    const result = await cli(['pull', ID_A, 'sub/plan.md', '--force']);
+    expect(result.code).toBe(1);
+    expect(readdirSync(join(outside, 'sub'))).toEqual([]);
+  });
+
+  it('a pull whose workspace root is swapped for a link while /content is in flight exits 1 and writes nothing outside (B356)', async () => {
+    mkdirSync(join(dir, 'sub'));
+    expect((await cli(['pull', ID_A, 'sub/plan.md'])).code).toBe(0);
+    // The outside directory looks like the workspace: a state directory and the same sub-directory.
+    mkdirSync(join(outside, '.moss-multi'));
+    mkdirSync(join(outside, 'sub'));
+    server.state.onContent = () => {
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const result = await cli(['pull', ID_A, 'sub/plan.md', '--force']);
+    expect(result.code).toBe(1);
+    expect(readdirSync(join(outside, 'sub'))).toEqual([]);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+  });
+
+  it('a sync whose workspace root is swapped for a link during the doc list exits 1 and reads, uploads and writes nothing outside (B356)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    writeFileSync(join(dir, 'beans.md'), 'Beans, inside.\n');
+    mkdirSync(join(outside, '.moss-multi'));
+    writeFileSync(join(outside, 'secret.md'), 'Outside, never uploaded.\n');
+    server.state.createNew = { id: ID_D, filename: 'secret.md' };
+    server.state.onList = () => {
+      server.state.onList = null;
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const before = server.seen.length;
+    const result = await cli(['sync']);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('moved or replaced');
+    expect(server.seen.slice(before).filter((request) => request.method !== 'GET'), 'nothing uploaded').toEqual([]);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+    expect(readdirSync(outside).sort()).toEqual(['.moss-multi', 'secret.md']);
+  });
+
+  it('a pull with no file whose workspace root is swapped for a link during the doc list exits 1 and writes nothing outside (B356)', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    mkdirSync(join(outside, '.moss-multi'));
+    server.state.onList = () => {
+      server.state.onList = null;
+      renameSync(dir, `${dir}-moved`);
+      symlinkSync(outside, dir);
+    };
+    const result = await cli(['pull', ID_B]);
+    expect(result.code).toBe(1);
+    expect(readdirSync(outside).sort()).toEqual(['.moss-multi']);
+    expect(readdirSync(join(outside, '.moss-multi'))).toEqual([]);
+  });
+
+  it('sync --json keeps a server message as sent; the human line escapes it (B358)', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    writeFileSync(join(dir, 'beans.md'), 'Beans.\n');
+    server.state.refuseRoute = { method: 'POST', path: '/api/docs', status: 500, body: { message: 'boom\nagain' } };
+    const json = await cli(['sync', '--json']);
+    expect(json.code).toBe(1);
+    const results = JSON.parse(json.out) as { action: string; message?: string }[];
+    expect(results.find((result) => result.action === 'failed')?.message).toContain('boom\nagain');
+    const human = await cli(['sync']);
+    expect(human.code).toBe(1);
+    const failed = human.err.split('\n').filter((line) => line.startsWith('failed'));
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('boom\\nagain');
+  });
+
+  it('a server title or message with a line break prints as one line with a visible \\n; --json keeps the title (B358)', async () => {
+    const forged = 'x\nsigned in as forged';
+    server.docs.push({ id: ID_D, title: forged, filename: 'x.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 0 });
+    const listed = await cli(['list']);
+    expect(listed.code).toBe(0);
+    const lines = listed.out.trimEnd().split('\n');
+    expect(lines).toHaveLength(server.docs.length);
+    expect(lines).toContain(`${ID_D}  x\\nsigned in as forged`);
+    expect(lines.some((line) => line.startsWith('signed in as'))).toBe(false);
+    const json = await cli(['list', '--json']);
+    expect((JSON.parse(json.out) as { id: string; title: string }[]).find((doc) => doc.id === ID_D)?.title).toBe(forged);
+    server.state.refuse = { status: 500, body: { message: 'boom\nsigned in as forged\r\tagain' } };
+    const refused = await cli(['history', ID_A]);
+    expect(refused.code).toBe(1);
+    expect(refused.err.split('\n')).toHaveLength(1);
+    expect(refused.err).toContain('boom\\nsigned in as forged\\r\\tagain');
+  });
+
+  it('share by email prints the invite link and does not claim access was granted (B361)', async () => {
+    const result = await cli(['share', ID_A, ' Ben@Example.invalid ', '--role', 'edit']);
+    expect(result.code, result.err).toBe(0);
+    expect(result.out).toContain(`${SERVER}/invite/tok-ben`);
+    expect(result.out).toContain('once');
+    expect(result.out).not.toContain('shared with');
+    expect(server.seen.at(-1)).toMatchObject({ method: 'GET', path: `/api/docs/${ID_A}/invites` });
+  });
+
+  it('share by email whose link cannot be read reports the share as incomplete (B361)', async () => {
+    server.state.refuseInvites = { status: 403, body: { error: 'forbidden', message: 'Only the owner can see invite links.' } };
+    const refused = await cli(['share', ID_A, 'ben@example.invalid']);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain('incomplete');
+    expect(refused.out).not.toContain('shared with');
+    server.state.refuseInvites = null;
+    // An invite list without this email's entry is incomplete too.
+    server.state.inviteOnShare = false;
+    const missing = await cli(['share', ID_A, 'cy@example.invalid']);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain('incomplete');
+  });
+
+  it('share with an agent id is unchanged and reads no invite (B361)', async () => {
+    const result = await cli(['share', ID_A, 'agent-7', '--role', 'comment']);
+    expect(result.code).toBe(0);
+    expect(result.out).toBe('shared with agent-7 as commenter\n');
+    expect(server.seen.some((call) => call.path.endsWith('/invites'))).toBe(false);
+  });
+
+  it('a --suggest push answered edit with nothing applied says nothing was suggested and keeps file and base (B353)', async () => {
+    await cli(['pull', ID_A, 'plan.md']);
+    const base = readFileSync(join(dir, '.moss-multi', ID_A, 'base.md'));
+    const meta = readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json'));
+    writeFileSync(join(dir, 'plan.md'), 'suggested text');
+    server.state.pushAnswers.push({ status: 200, body: { ok: true, mode: 'edit', applied: 0, failedHunks: ['-old\n+new'] } });
+    const hunks = await cli(['push', 'plan.md', '--suggest']);
+    expect(hunks.code).toBe(2);
+    expect(`${hunks.out}${hunks.err}`).toContain('nothing was suggested');
+    expect(`${hunks.out}${hunks.err}`).not.toContain('partly applied');
+    expect(hunks.err).toContain('-old');
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('suggested text');
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'base.md')).equals(base)).toBe(true);
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json')).equals(meta)).toBe(true);
+    server.state.pushAnswers.push({ status: 200, body: { ok: true, mode: 'edit', applied: 0, failedHunks: [] } });
+    const clean = await cli(['push', 'plan.md', '--suggest']);
+    expect(clean.code).toBe(0);
+    expect(clean.out).toContain('nothing was suggested');
+    expect(clean.out).not.toContain('pushed');
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('suggested text');
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'base.md')).equals(base)).toBe(true);
+    expect(readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json')).equals(meta)).toBe(true);
+  });
+});
+
+describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
+  // Moss's overwrite bug: a note open with unsaved typing is saved from the editor's full text after its file changed
+  // on disk, so the save holds the text from before the daemon's pull plus the typing.
+  const enc = (text: string) => new TextEncoder().encode(text);
+  const dec = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes);
+  const B0 = '# Notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+  const AGENT = B0.replace('Para two.', 'Para two, edited by the agent.');
+  const NEW = '66666666-6666-4666-8666-666666666666';
+
+  beforeEach(() => {
+    server.state.merge = true;
+    server.content.set(ID_B, enc(B0));
+  });
+
+  it('the report\'s sequence: an agent edit pulled under an editor holding the old text, then a save with typing elsewhere, keeps both edits', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    const pulled = await cli(['sync', '--json']);
+    expect(pulled.code, pulled.err).toBe(0);
+    expect(readFileSync(file, 'utf8'), 'the daemon writes the agent edit into the file').toBe(AGENT);
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const both = AGENT.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'the server keeps the agent edit and gains the typing').toBe(both);
+    expect(readFileSync(file, 'utf8'), 'and the file holds both').toBe(both);
+    expect(server.state.pushes.at(-1)?.baseHash, 'the push merges against the text the editor held').toBe(sha256Hex(B0));
+
+    // The editor still lacks the agent edit and saves again over the merged file: the typing lands, nothing reverts.
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing. More.'));
+    const again = await cli(['sync', '--json']);
+    expect(again.code, again.err).toBe(0);
+    const more = both.replace('and my typing.', 'and my typing. More.');
+    expect(dec(server.content.get(ID_B))).toBe(more);
+    expect(readFileSync(file, 'utf8')).toBe(more);
+  });
+
+  it('a stale save that rewrites the paragraph the agent edited keeps the server version and sets the typing aside', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+
+    writeFileSync(file, editor.replace('Para two.', 'Para two, rewritten in the editor.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, 'failed hunks exit 2').toBe(2);
+    expect(dec(server.content.get(ID_B)), 'no revert reaches the server').toBe(AGENT);
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toBe(AGENT);
+    expect(readFileSync(`${file}.rej`, 'utf8'), 'the typing waits beside the note').toContain('+, rewritten in the editor');
+    expect(JSON.parse(saved.out)).toContainEqual(expect.objectContaining({ docId: ID_B, failedHunks: 1 }));
+  });
+
+  it('a clashing stale save saved again, or typed on, is refused again: the agent edit is never reverted (checker P1, attempt 3)', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+    const clash = editor.replace('Para two.', 'Para two, rewritten in the editor.');
+    writeFileSync(file, clash);
+    expect((await cli(['sync'])).code, 'the clash exits 2').toBe(2);
+    const pushes = server.state.pushes.length;
+
+    // The editor still holds the clashing text and saves it again: it never reached the doc, so it is no revert.
+    writeFileSync(file, clash);
+    const again = await cli(['sync', '--json']);
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B)), 'the agent edit stays on the server').toBe(AGENT);
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toBe(AGENT);
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Para two, rewritten in the editor.');
+    const result = (JSON.parse(again.out) as { docId?: string; message?: string }[]).find((row) => row.docId === ID_B);
+    expect(result?.message, 'an honest message').toMatch(/nothing was pushed/);
+    expect(result?.message).not.toMatch(/stays/);
+
+    // More typing on top of the clashing text: still no revert.
+    writeFileSync(file, clash.replace('Para four.', 'Para four, and my typing.'));
+    const more = await cli(['sync']);
+    expect(more.code, `${more.out}${more.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B))).toBe(AGENT);
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Para four, and my typing.');
+  });
+
+  it('a moss note: a clashing stale save saved again, or typed on, is refused again and the agent edit stays', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const agent = 'Para one.\n\nPara two, edited by the agent.\n\nPara three.\n\nPara four.\n';
+    server.content.set(NEW, enc(agent));
+    expect((await cli(['sync'])).code).toBe(0);
+    const clash = NOTE.replace('Para two.', 'Para two, rewritten in the editor.');
+    writeFileSync(file, clash);
+    expect((await cli(['sync'])).code, 'the clash exits 2').toBe(2);
+    const pushes = server.state.pushes.length;
+
+    writeFileSync(file, clash);
+    const again = await cli(['sync']);
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(agent);
+    expect(readFileSync(file, 'utf8')).toBe(`# Field notes\n\n${agent}`);
+
+    writeFileSync(file, clash.replace('Para four.', 'Para four, and my typing.'));
+    const more = await cli(['sync']);
+    expect(more.code, `${more.out}${more.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(agent);
+  });
+
+  it('an ordinary edit made after the pull syncs as before, against the pulled base', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+
+    writeFileSync(file, readFileSync(file, 'utf8').replace('Para four.', 'Para four, typed after reading.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const both = AGENT.replace('Para four.', 'Para four, typed after reading.');
+    expect(dec(server.content.get(ID_B))).toBe(both);
+    expect(readFileSync(file, 'utf8')).toBe(both);
+    expect(server.state.pushes.map((push) => push.baseHash), 'the push merges against the pulled text, as before').toEqual([sha256Hex(AGENT)]);
+  });
+
+  it('a moss note: a stale save in moss form keeps the agent edit, the typing, the title line and markers', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara %%m:c1:start%%two%%m:c1:end%%.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    expect(body).toBe('Para one.\n\nPara two.\n\nPara three.\n\nPara four.\n');
+    server.content.set(NEW, enc(body.replace('Para one.', 'Para one, edited by the agent.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('Para one, edited by the agent.');
+
+    writeFileSync(file, NOTE.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(NEW))).toBe('Para one, edited by the agent.\n\nPara two.\n\nPara three.\n\nPara four, and my typing.\n');
+    expect(readFileSync(file, 'utf8')).toBe(NOTE.replace('Para one.', 'Para one, edited by the agent.').replace('Para four.', 'Para four, and my typing.'));
+  });
+
+  // An agent's added paragraph the user reviews in moss (a reloaded editor) and removes (checker P1, attempt 1).
+  const UNWANTED = 'An agent paragraph the user does not want.\n\n';
+  const ADDED = B0.replace('Para three.', `${UNWANTED}Para three.`);
+  const pullAgentParagraph = async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    server.content.set(ID_B, enc(ADDED));
+    expect((await cli(['sync'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    expect(readFileSync(file, 'utf8')).toBe(ADDED);
+    return file;
+  };
+
+  it('deleting a just-pulled agent paragraph lands: a save holding exactly the prior text is a deliberate revert', async () => {
+    const file = await pullAgentParagraph();
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, ''));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(ID_B)), 'the server loses the agent paragraph').toBe(B0);
+    expect(readFileSync(file, 'utf8'), 'and so does the file').toBe(B0);
+    expect(JSON.parse(saved.out)).toContainEqual(expect.objectContaining({ docId: ID_B, action: 'pushed' }));
+    expect(JSON.stringify(JSON.parse(saved.out)), 'nothing says the pulled edit stays').not.toContain('pulled edit stays');
+  });
+
+  it('a deletion merged as a stale save says how to remove the edit, and deleting it again then lands', async () => {
+    const file = await pullAgentParagraph();
+    // Deleting and typing in one save looks exactly like a stale editor save: the pulled paragraph stays, visibly.
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, '').replace('Para four.', 'Para four, and my typing.'));
+    const first = await cli(['sync']);
+    expect(first.code, first.err).toBe(0);
+    expect(first.out, 'the output names the kept edit and how to remove it').toMatch(/pulled edit stays.*delete it again/);
+    const kept = ADDED.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B))).toBe(kept);
+    expect(readFileSync(file, 'utf8')).toBe(kept);
+
+    writeFileSync(file, kept.replace(UNWANTED, ''));
+    const again = await cli(['sync', '--json']);
+    expect(again.code, again.err).toBe(0);
+    const removed = B0.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'the second deletion is not locked out').toBe(removed);
+    expect(readFileSync(file, 'utf8')).toBe(removed);
+  });
+
+  it('a save made after an editor would have saved its old text is an ordinary edit, even when it removes the pulled edit', async () => {
+    const file = await pullAgentParagraph();
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, '').replace('Para four.', 'Para four, and my typing.'));
+    // Saved two minutes after the pull: moss saves a dirty editor within 15 s, so this editor had reloaded.
+    const later = new Date(Date.now() + 120_000);
+    utimesSync(file, later, later);
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const removed = B0.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B))).toBe(removed);
+    expect(readFileSync(file, 'utf8')).toBe(removed);
+    expect(server.state.pushes.at(-1)?.baseHash, 'pushed against the pulled base').toBe(sha256Hex(ADDED));
+  });
+
+  it('a moss note: a title-only web rename after a pulled agent edit keeps stale-save protection', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    server.content.set(NEW, enc(body.replace('Para one.', 'Para one, edited by the agent.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    server.docs.find((doc) => doc.id === NEW)!.title = 'Field notes renamed';
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('# Field notes renamed\n');
+
+    // The editor's body still predates the agent edit; moss takes an unchanged title line from disk when it saves.
+    writeFileSync(file, NOTE.replace('# Field notes', '# Field notes renamed').replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(NEW)), 'the agent edit survives the stale save').toBe('Para one, edited by the agent.\n\nPara two.\n\nPara three.\n\nPara four, and my typing.\n');
+  });
+
+  it('two pulls inside the window, then a stale save of the text from before both: neither agent edit is reverted', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(B0.replace('Para one.', 'Para one. First agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    const both = B0.replace('Para one.', 'Para one. First agent edit.').replace('Para three.', 'Para three. Second agent edit.');
+    server.content.set(ID_B, enc(both));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe(both);
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const all = both.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'both agent edits stay and the typing lands').toBe(all);
+    expect(readFileSync(file, 'utf8')).toBe(all);
+  });
+
+  it('two pulls, the editor reloaded after the first: its save is merged against what it held, so the second edit stays', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    server.content.set(ID_B, enc(B0.replace('Para one.', 'Para one. First agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    const reloaded = readFileSync(file, 'utf8');
+    const both = reloaded.replace('Para three.', 'Para three. Second agent edit.');
+    server.content.set(ID_B, enc(both));
+    expect((await cli(['sync'])).code).toBe(0);
+
+    writeFileSync(file, reloaded.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(ID_B))).toBe(both.replace('Para four.', 'Para four, and my typing.'));
+  });
+
+  it('a moss note: two pulls inside the window, then a stale save: neither agent edit is reverted', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    server.content.set(NEW, enc(body.replace('Para one.', 'Para one. First agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    server.content.set(NEW, enc(dec(server.content.get(NEW)).replace('Para three.', 'Para three. Second agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('Second agent edit.');
+
+    writeFileSync(file, NOTE.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(NEW))).toBe('Para one. First agent edit.\n\nPara two.\n\nPara three. Second agent edit.\n\nPara four, and my typing.\n');
+  });
+
+  // A pull holding a small wanted edit and a long unwanted paragraph; the user keeps the first and deletes the second.
+  const LONG = 'A long agent paragraph she does not want.\n\n';
+  it('removing only the long pulled paragraph lands on the first save: a save holding a pulled edit is not stale', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    server.content.set(ID_B, enc(B0.replace('Para two.', 'Para two!').replace('Para three.', `${LONG}Para three.`)));
+    expect((await cli(['sync'])).code).toBe(0);
+    writeFileSync(file, readFileSync(file, 'utf8').replace(LONG, ''));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(0);
+    expect(dec(server.content.get(ID_B))).toBe(B0.replace('Para two.', 'Para two!'));
+    expect(readFileSync(file, 'utf8')).toBe(B0.replace('Para two.', 'Para two!'));
+    expect(existsSync(`${file}.rej`), 'no false clash').toBe(false);
+  });
+
+  it('a moss note: removing only the long pulled paragraph lands on the first save, with no false clash', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    server.content.set(NEW, enc(body.replace('Para two.', 'Para two!').replace('Para two!', `Para two!\n\n${LONG.trimEnd()}`)));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain(LONG.trimEnd());
+
+    writeFileSync(file, readFileSync(file, 'utf8').replace(`\n\n${LONG.trimEnd()}`, ''));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(0);
+    expect(dec(server.content.get(NEW))).toBe('Para one.\n\nPara two!\n\nPara three.\n\nPara four.\n');
+    expect(readFileSync(file, 'utf8')).toBe(NOTE.replace('Para two.', 'Para two!'));
+    expect(existsSync(`${file}.rej`), 'no false clash').toBe(false);
+  });
+
+  it('a save whose mtime predates sync\'s write is an ordinary edit, not a stale save', async () => {
+    const file = await pullAgentParagraph();
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, '').replace('Para four.', 'Para four, and my typing.'));
+    // A restored copy keeps an old mtime: it is no save from an editor holding the text sync overwrote.
+    const earlier = new Date(Date.now() - 300_000);
+    utimesSync(file, earlier, earlier);
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(ID_B))).toBe(B0.replace('Para four.', 'Para four, and my typing.'));
+    expect(server.state.pushes.at(-1)?.baseHash, 'pushed against the pulled base').toBe(sha256Hex(ADDED));
+  });
+
+  // Nine agent pushes, one per paragraph, each pulled within the same minute, under an editor holding S0 (checker P1).
+  const TEN = `# Notes\n\n${Array.from({ length: 10 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n')}\n`;
+  const agentEdits = (upTo: number) => {
+    let text = TEN;
+    for (let i = 1; i <= upTo; i++) text = text.replace(`Paragraph ${i}.`, `Paragraph ${i}, agent edit ${i}.`);
+    return text;
+  };
+  const ninePulls = async (doc: string, file: string, body: (text: string) => string = (text) => text) => {
+    for (let i = 1; i <= 9; i++) {
+      server.content.set(doc, enc(body(agentEdits(i))));
+      const pulled = await cli(['sync']);
+      expect(pulled.code, pulled.err).toBe(0);
+    }
+    expect(readFileSync(file, 'utf8')).toContain('agent edit 9.');
+  };
+  const withPriorBudget = async <T>(bytes: number, run: () => Promise<T>): Promise<T> => {
+    process.env.MOSS_MULTI_PRIOR_BYTES = String(bytes);
+    try {
+      return await run();
+    } finally {
+      delete process.env.MOSS_MULTI_PRIOR_BYTES;
+    }
+  };
+
+  it('nine pulls within a minute, then a save from the text before all of them: no agent edit is reverted', async () => {
+    server.content.set(ID_B, enc(TEN));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    await ninePulls(ID_B, file);
+
+    writeFileSync(file, editor.replace('Paragraph 10.', 'Paragraph 10, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(0);
+    const all = agentEdits(9).replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'all nine agent edits stay and the typing lands').toBe(all);
+    expect(readFileSync(file, 'utf8')).toBe(all);
+    expect(server.state.pushes.at(-1)?.baseHash, 'merged against the text the editor held').toBe(sha256Hex(TEN));
+  });
+
+  it('when the text the editor held is no longer kept, nothing is pushed: the server keeps every edit and the save goes to a conflict copy', async () => {
+    server.content.set(ID_B, enc(TEN));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    // A retention budget of about three texts: the oldest prior texts are evicted inside the window.
+    await withPriorBudget(TEN.length * 3 + 200, () => ninePulls(ID_B, file));
+    const pushes = server.state.pushes.length;
+
+    const typed = editor.replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    writeFileSync(file, typed);
+    const saved = await withPriorBudget(TEN.length * 3 + 200, () => cli(['sync', '--json']));
+    expect(saved.code, 'a conflict exits non-zero').toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B)), 'no revert reaches the server').toBe(agentEdits(9));
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toBe(agentEdits(9));
+    expect(readFileSync(`${file}.rej`, 'utf8'), 'the whole save waits beside the note').toContain(typed.trimEnd());
+    const result = (JSON.parse(saved.out) as { docId?: string; message?: string }[]).find((row) => row.docId === ID_B);
+    expect(result?.message, 'an honest message').toMatch(/nothing was pushed/);
+    expect(result?.message).not.toMatch(/stays/);
+  });
+
+  it('a moss note: when the text the editor held is no longer kept, nothing is pushed and the save goes to a conflict copy', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = TEN.replace('# Notes', '# Field notes');
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = (text: string) => text.replace('# Notes\n\n', '');
+    await withPriorBudget(TEN.length * 3 + 200, () => ninePulls(NEW, file, body));
+    const pushes = server.state.pushes.length;
+
+    writeFileSync(file, NOTE.replace('Paragraph 10.', 'Paragraph 10, and my typing.'));
+    const saved = await withPriorBudget(TEN.length * 3 + 200, () => cli(['sync', '--json']));
+    expect(saved.code, 'a conflict exits non-zero').toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(body(agentEdits(9)));
+    expect(readFileSync(file, 'utf8')).toBe(agentEdits(9).replace('# Notes', '# Field notes'));
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Paragraph 10, and my typing.');
+  });
+
+  it('a refused save saved again is refused again: the second save reverts no agent edit (checker P1, attempt 2)', async () => {
+    server.content.set(ID_B, enc(TEN));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    const budget = TEN.length * 3 + 200;
+    await withPriorBudget(budget, () => ninePulls(ID_B, file));
+    const pushes = server.state.pushes.length;
+    const typed = editor.replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    writeFileSync(file, typed);
+    expect((await withPriorBudget(budget, () => cli(['sync']))).code, 'the first save is refused').toBe(2);
+
+    // The editor, or an agent, writes the same text again: it is the same stale save, not a revert.
+    writeFileSync(file, typed);
+    const again = await withPriorBudget(budget, () => cli(['sync', '--json']));
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B)), 'every agent edit stays on the server').toBe(agentEdits(9));
+    expect(readFileSync(file, 'utf8')).toBe(agentEdits(9));
+    expect(JSON.stringify(JSON.parse(again.out))).toMatch(/nothing was pushed/);
+
+    // And with more typing on top of the refused text: still no revert.
+    writeFileSync(file, typed.replace('Paragraph 10, and my typing.', 'Paragraph 10, and my typing. More.'));
+    const more = await withPriorBudget(budget, () => cli(['sync']));
+    expect(more.code, `${more.out}${more.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B))).toBe(agentEdits(9));
+  });
+
+  it('a moss note: a refused save saved again is refused again, and the server keeps every agent edit', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = TEN.replace('# Notes', '# Field notes');
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = (text: string) => text.replace('# Notes\n\n', '');
+    const budget = TEN.length * 3 + 200;
+    await withPriorBudget(budget, () => ninePulls(NEW, file, body));
+    const pushes = server.state.pushes.length;
+    const typed = NOTE.replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    writeFileSync(file, typed);
+    expect((await withPriorBudget(budget, () => cli(['sync']))).code, 'the first save is refused').toBe(2);
+
+    writeFileSync(file, typed);
+    const again = await withPriorBudget(budget, () => cli(['sync']));
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(body(agentEdits(9)));
+    expect(readFileSync(file, 'utf8')).toBe(agentEdits(9).replace('# Notes', '# Field notes'));
+  });
+
+  it('prior records naming another path delete and read nothing outside the doc\'s state directory (checker P1, attempt 2)', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const outside = mkdtempSync(join(tmpdir(), 'mm-v-'));
+    try {
+      const victims = [join(outside, 'v.md'), join(dir, '.moss-multi', 'victim.md'), join(dir, '.moss-multi', ID_B, 'x.md')];
+      for (const victim of victims) writeFileSync(victim, 'not a prior text\n');
+      const metaPath = join(dir, '.moss-multi', ID_B, 'meta.json');
+      const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
+      const at = Date.now() - 1_000;
+      meta.priors = [`x/../../../../${basename(outside)}/v`, 'x/../../victim', '../../x', join(outside, 'v')].map((hash) => ({ hash, at }));
+      writeFileSync(metaPath, JSON.stringify(meta));
+
+      // A pull records a prior text over a budget of one byte: eviction runs, and every prior file goes.
+      server.content.set(ID_B, enc(AGENT));
+      const pulled = await withPriorBudget(1, () => cli(['sync']));
+      expect(pulled.code, `${pulled.out}${pulled.err}`).toBe(0);
+      for (const victim of victims) expect(existsSync(victim), `${victim} is untouched`).toBe(true);
+      const kept = JSON.parse(readFileSync(metaPath, 'utf8')) as { priors?: { hash: string }[] };
+      expect(kept.priors?.every((prior) => /^[0-9a-f]{64}$/.test(prior.hash)), 'no foreign record is carried on').toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('when two kept texts explain a save equally, nothing is pushed and the save goes to a conflict copy', async () => {
+    const S0 = B0.replace('Para three.', 'Para three, version aaaa.');
+    server.content.set(ID_B, enc(S0));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const S1 = S0.replace('version aaaa', 'version bbbb');
+    server.content.set(ID_B, enc(S1));
+    expect((await cli(['sync'])).code).toBe(0);
+    const S2 = S1.replace('Para one.', 'Para one, edited by the agent.');
+    server.content.set(ID_B, enc(S2));
+    expect((await cli(['sync'])).code).toBe(0);
+    const pushes = server.state.pushes.length;
+
+    // As near S0 as S1: either could be the text the editor held.
+    writeFileSync(file, S0.replace('version aaaa', 'version cccc').replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B))).toBe(S2);
+    expect(readFileSync(file, 'utf8')).toBe(S2);
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Para four, and my typing.');
+  });
+
+  it('the stale-save message says the pulled edit stays only when the doc still holds it after the push', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+    // The doc loses the agent edit as the push lands (another writer reverts it on the server).
+    server.state.onPush = () => server.content.set(ID_B, enc(dec(server.content.get(ID_B)).replace('Para two, edited by the agent.', 'Para two.')));
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, 'not a clean sync').not.toBe(0);
+    const result = (JSON.parse(saved.out) as { docId?: string; message?: string }[]).find((row) => row.docId === ID_B);
+    expect(result?.message, 'no claim the server contradicts').not.toMatch(/stays/);
+    expect(result?.message).toMatch(/no longer holds/);
   });
 });

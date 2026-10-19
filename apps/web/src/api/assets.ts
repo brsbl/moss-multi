@@ -89,19 +89,25 @@ const uploadDeadlineMs = (size: number): number =>
 async function readDeclared(request: Request, length: number): Promise<Uint8Array<ArrayBuffer> | 'too-long' | 'too-short' | 'timeout'> {
   const reader = request.body?.getReader();
   if (!reader) return length === 0 ? new Uint8Array(0) : 'too-short';
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), uploadDeadlineMs(length));
-  });
+  // The deadline cancels the reader, which settles the pending read. Racing each read against one long-lived deadline
+  // promise would instead keep every chunk reachable from that promise's reactions until the body ended (2x its size).
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    reader.cancel().catch(() => undefined);
+  }, uploadDeadlineMs(length));
   let bytes = new Uint8Array(0);
   let offset = 0;
   try {
     for (;;) {
-      const read = await Promise.race([reader.read(), expired]);
-      if (read === 'timeout') {
-        reader.cancel().catch(() => undefined);
-        return 'timeout';
+      let read: ReadableStreamReadResult<Uint8Array>;
+      try {
+        read = await reader.read();
+      } catch (error) {
+        if (expired) return 'timeout';
+        throw error;
       }
+      if (expired) return 'timeout';
       if (read.done) break;
       const { value } = read;
       if (offset + value.byteLength > length) {
