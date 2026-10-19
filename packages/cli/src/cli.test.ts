@@ -1612,4 +1612,108 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     expect(saved.code, saved.err).toBe(0);
     expect(dec(server.content.get(NEW)), 'the agent edit survives the stale save').toBe('Para one, edited by the agent.\n\nPara two.\n\nPara three.\n\nPara four, and my typing.\n');
   });
+
+  it('two pulls inside the window, then a stale save of the text from before both: neither agent edit is reverted', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(B0.replace('Para one.', 'Para one. First agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    const both = B0.replace('Para one.', 'Para one. First agent edit.').replace('Para three.', 'Para three. Second agent edit.');
+    server.content.set(ID_B, enc(both));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe(both);
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    const all = both.replace('Para four.', 'Para four, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'both agent edits stay and the typing lands').toBe(all);
+    expect(readFileSync(file, 'utf8')).toBe(all);
+  });
+
+  it('two pulls, the editor reloaded after the first: its save is merged against what it held, so the second edit stays', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    server.content.set(ID_B, enc(B0.replace('Para one.', 'Para one. First agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    const reloaded = readFileSync(file, 'utf8');
+    const both = reloaded.replace('Para three.', 'Para three. Second agent edit.');
+    server.content.set(ID_B, enc(both));
+    expect((await cli(['sync'])).code).toBe(0);
+
+    writeFileSync(file, reloaded.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(ID_B))).toBe(both.replace('Para four.', 'Para four, and my typing.'));
+  });
+
+  it('a moss note: two pulls inside the window, then a stale save: neither agent edit is reverted', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    server.content.set(NEW, enc(body.replace('Para one.', 'Para one. First agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    server.content.set(NEW, enc(dec(server.content.get(NEW)).replace('Para three.', 'Para three. Second agent edit.')));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('Second agent edit.');
+
+    writeFileSync(file, NOTE.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(NEW))).toBe('Para one. First agent edit.\n\nPara two.\n\nPara three. Second agent edit.\n\nPara four, and my typing.\n');
+  });
+
+  // A pull holding a small wanted edit and a long unwanted paragraph; the user keeps the first and deletes the second.
+  const LONG = 'A long agent paragraph that the user reads and decides she does not want in her note at all.\n\n';
+  it('removing only the long pulled paragraph lands on the first save: a save holding a pulled edit is not stale', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    server.content.set(ID_B, enc(B0.replace('Para two.', 'Para two!').replace('Para three.', `${LONG}Para three.`)));
+    expect((await cli(['sync'])).code).toBe(0);
+    writeFileSync(file, readFileSync(file, 'utf8').replace(LONG, ''));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(0);
+    expect(dec(server.content.get(ID_B))).toBe(B0.replace('Para two.', 'Para two!'));
+    expect(readFileSync(file, 'utf8')).toBe(B0.replace('Para two.', 'Para two!'));
+    expect(existsSync(`${file}.rej`), 'no false clash').toBe(false);
+  });
+
+  it('a moss note: removing only the long pulled paragraph lands on the first save, with no false clash', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n';
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = dec(server.content.get(NEW));
+    server.content.set(NEW, enc(body.replace('Para two.', 'Para two!').replace('Para two!', `Para two!\n\n${LONG.trimEnd()}`)));
+    expect((await cli(['sync'])).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain(LONG.trimEnd());
+
+    writeFileSync(file, readFileSync(file, 'utf8').replace(`\n\n${LONG.trimEnd()}`, ''));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(0);
+    expect(dec(server.content.get(NEW))).toBe('Para one.\n\nPara two!\n\nPara three.\n\nPara four.\n');
+    expect(readFileSync(file, 'utf8')).toBe(NOTE.replace('Para two.', 'Para two!'));
+    expect(existsSync(`${file}.rej`), 'no false clash').toBe(false);
+  });
+
+  it('a save whose mtime predates sync\'s write is an ordinary edit, not a stale save', async () => {
+    const file = await pullAgentParagraph();
+    writeFileSync(file, readFileSync(file, 'utf8').replace(UNWANTED, '').replace('Para four.', 'Para four, and my typing.'));
+    // A restored copy keeps an old mtime: it is no save from an editor holding the text sync overwrote.
+    const earlier = new Date(Date.now() - 300_000);
+    utimesSync(file, earlier, earlier);
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, saved.err).toBe(0);
+    expect(dec(server.content.get(ID_B))).toBe(B0.replace('Para four.', 'Para four, and my typing.'));
+    expect(server.state.pushes.at(-1)?.baseHash, 'pushed against the pulled base').toBe(sha256Hex(ADDED));
+  });
 });

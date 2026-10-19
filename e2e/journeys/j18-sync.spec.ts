@@ -367,6 +367,74 @@ test('j18-sync stale save: an editor that saves its old text over a pulled agent
     expect(removed.code, `${removed.stdout}${removed.stderr}`).toBe(0);
     expect((await served(ada, docId)).text, 'the server loses the agent paragraph').not.toContain('does not want');
     expect(readFileSync(file, 'utf8'), 'and so does the file').not.toContain('does not want');
+
+    // Two agent edits pulled while the editor still holds the text from before both: its save reverts neither.
+    const before = readFileSync(file, 'utf8');
+    await agentEdit('Para one.', 'Para one. First agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    await agentEdit('Para three, edited by the agent.', 'Para three, edited by the agent. Second agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    writeFileSync(file, before.replace('Para four, and my typing.', 'Para four, and my typing. More typing.'));
+    const twice = await moss(['sync'], env, mac);
+    expect(twice.code, `${twice.stdout}${twice.stderr}`).toBe(0);
+    const last = (await served(ada, docId)).text;
+    for (const kept of ['First agent edit.', 'Second agent edit.', 'More typing.']) expect(last, `the server keeps "${kept}"`).toContain(kept);
+  } finally {
+    rmSync(mac, { recursive: true, force: true });
+    rmSync(linux, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync stale save, moss note: two pulled agent edits survive a stale save, and removing a pulled paragraph lands at once @p:agt-2 @p:R9 @p:note-3', async ({ actors, stack }) => {
+  // The pilot path (T7.P2): a moss bundle note on the Mac, an agent editing it from a second workspace.
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const mac = scratch();
+  const linux = scratch();
+  const env = await agentEnv(ada, stack, mac);
+  try {
+    const bundle = join(mac, 'Field notes');
+    mkdirSync(bundle);
+    const file = join(bundle, 'Field notes.md');
+    writeFileSync(file, '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n');
+    expect((await moss(['init'], env, mac)).code).toBe(0);
+    const synced = await moss(['sync', '--json'], env, mac);
+    expect(synced.code, synced.stderr).toBe(0);
+    const docId = (JSON.parse(synced.stdout) as { action: string; docId?: string }[]).find((result) => result.action === 'created')!.docId!;
+    const agentEdit = async (from: string, to: string) => {
+      const pulled = await moss(['pull', docId, 'note.md', '--force'], env, linux);
+      expect(pulled.code, pulled.stderr).toBe(0);
+      writeFileSync(join(linux, 'note.md'), readFileSync(join(linux, 'note.md'), 'utf8').replace(from, to));
+      const pushed = await moss(['push', 'note.md'], env, linux);
+      expect(pushed.code, pushed.stderr).toBe(0);
+    };
+    const editor = readFileSync(file, 'utf8');
+
+    await agentEdit('Para one.', 'Para one. First agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    await agentEdit('Para three.', 'Para three. Second agent edit.');
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('Second agent edit.');
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await moss(['sync'], env, mac);
+    expect(saved.code, `${saved.stdout}${saved.stderr}`).toBe(0);
+    const after = (await served(ada, docId)).text;
+    for (const kept of ['First agent edit.', 'Second agent edit.', 'Para four, and my typing.']) expect(after, `the server keeps "${kept}"`).toContain(kept);
+    expect(readFileSync(file, 'utf8'), 'the file stays in moss form with every edit').toMatch(/^# Field notes\n[\s\S]*First agent edit\.[\s\S]*Second agent edit\.[\s\S]*and my typing\./);
+
+    // A small wanted edit and a long unwanted paragraph arrive together; the user deletes only the paragraph.
+    const long = '\n\nA long agent paragraph that the user reads and decides she does not want in her note at all.';
+    await agentEdit('Para two.', `Para two!${long}`);
+    expect((await moss(['sync'], env, mac)).code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain(long);
+    writeFileSync(file, readFileSync(file, 'utf8').replace(long, ''));
+    const removed = await moss(['sync'], env, mac);
+    expect(removed.code, `${removed.stdout}${removed.stderr}`).toBe(0);
+    const final = (await served(ada, docId)).text;
+    expect(final, 'the paragraph leaves the server').not.toContain('does not want');
+    expect(final, 'the wanted edit stays').toContain('Para two!');
+    expect(readFileSync(file, 'utf8')).not.toContain('does not want');
+    expect(existsSync(`${file}.rej`), 'no false clash').toBe(false);
   } finally {
     rmSync(mac, { recursive: true, force: true });
     rmSync(linux, { recursive: true, force: true });
