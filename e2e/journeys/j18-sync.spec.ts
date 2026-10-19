@@ -307,7 +307,7 @@ test('j18-sync media: a note\'s image and video round-trip through sync and pull
   }
 });
 
-test('j18-sync scope: a scoped workspace syncs only its entry note and the notes it links to, never a denied note, and follows link changes @p:agt-2 @p:R9', async ({ actors, stack }) => {
+test('j18-sync scope: a scoped workspace uploads only allowed notes, pulls the notes its follow links reach, never a denied note, and scope confirm adds what follow reaches @p:agt-2 @p:R9', async ({ actors, stack }) => {
   actors.solo(SOLO);
   const ada = await actors.session(await actors.principal('ada'));
   const dir = scratch();
@@ -318,7 +318,13 @@ test('j18-sync scope: a scoped workspace syncs only its entry note and the notes
     expect(run.code, `${run.stderr}\n${run.stdout}`).toBe(0);
     return JSON.parse(run.stdout) as Result[];
   };
+  const confirm = async () => {
+    const run = await moss(['scope', 'confirm', '--yes'], env, dir);
+    expect(run.code, run.stderr).toBe(0);
+    return run.stdout;
+  };
   const created = (results: Result[]) => results.filter((result) => result.action === 'created').map((result) => result.file).sort();
+  const followOnly = (results: Result[]) => results.filter((result) => result.action === 'follow-only').map((result) => result.file).sort();
   const titles = async (): Promise<string[]> => {
     const response = await ada.context.request.get('/api/docs', { timeout: 30_000 });
     expect(response.status()).toBe(200);
@@ -329,6 +335,7 @@ test('j18-sync scope: a scoped workspace syncs only its entry note and the notes
     writeFileSync(join(dir, folder, title, `${title}.md`), `# ${title}\n\n${body}\n`);
     return join(folder, title, `${title}.md`);
   };
+  const names = ['Alpha', 'Beta notes', 'Diary', 'Fresh', 'Gamma', 'Loose', 'Moss Home', 'Taxes 2026'];
   try {
     const home = note('', 'Moss Home', 'Start at [[Alpha]], then [Beta](../Beta notes/Beta notes.md). Private: [[Diary]] and [[Taxes 2026]].');
     const alpha = note('', 'Alpha', 'The alpha note.');
@@ -340,29 +347,26 @@ test('j18-sync scope: a scoped workspace syncs only its entry note and the notes
     const init = await moss(['init', '--scope', '--follow', 'Moss Home', '--deny', 'Personal/**', '--deny', 'Admin/Finance/**'], env, dir);
     expect(init.code, init.stderr).toBe(0);
 
+    const unconfirmed = await syncJson();
+    expect(created(unconfirmed), 'follow alone uploads nothing').toEqual([]);
+    expect(followOnly(unconfirmed), 'it reports the notes follow reaches').toEqual([alpha, beta, home].sort());
+    expect(unconfirmed.find((result) => result.action === 'out-of-scope')?.count, 'the rest only as a count').toBe(4);
+
+    const listed = await confirm();
+    expect(listed).not.toMatch(/Diary|Taxes|Gamma|Loose/);
     const first = await syncJson();
     expect(created(first), 'exactly Moss Home and the notes it links to').toEqual([alpha, beta, home].sort());
-    expect(first.find((result) => result.action === 'out-of-scope')?.count, 'the rest only as a count').toBe(4);
-    const names = ['Alpha', 'Beta notes', 'Diary', 'Gamma', 'Loose', 'Moss Home', 'Taxes 2026'];
     expect((await titles()).filter((title) => names.includes(title)), 'nothing denied or two hops out reaches the server').toEqual(['Alpha', 'Beta notes', 'Moss Home']);
     await actors.checkpoint('scoped');
 
     const homeFile = join(dir, home);
     writeFileSync(homeFile, readFileSync(homeFile, 'utf8').replace('Private:', 'Also [[Loose]]. Private:'));
+    expect(followOnly(await syncJson()), 'a newly linked note is reported').toContain(loose);
+    await confirm();
     const linked = await syncJson();
-    expect(created(linked), 'a newly linked note comes in on the next pass').toEqual([loose]);
-    const looseId = linked.find((result) => result.action === 'created')!.docId!;
+    expect(created(linked), 'and comes in once confirmed').toEqual([loose]);
 
-    writeFileSync(homeFile, readFileSync(homeFile, 'utf8').replace('Also [[Loose]]. ', ''));
-    await syncJson();
-    writeFileSync(join(dir, loose), '# Loose\n\nEdited after it left the scope.\n');
-    await syncJson();
-    const served = await ada.context.request.get(`/api/docs/${looseId}/content`, { timeout: 30_000 });
-    expect(served.status(), 'a note that left the scope keeps its doc').toBe(200);
-    expect(await served.text(), 'but its edits stop syncing').not.toContain('Edited after it left the scope.');
-
-    // A replica adds a link to Fresh, a note only this machine holds: the link arrived in a pull, so Fresh stays here
-    // until `scope confirm`.
+    // A replica adds a link to Fresh, a note only this machine holds: it is pulled here and never uploaded.
     const fresh = note('', 'Fresh', 'Only on this machine.');
     const homeId = first.find((result) => result.file === home && result.action === 'created')!.docId!;
     const replica = scratch();
@@ -379,10 +383,9 @@ test('j18-sync scope: a scoped workspace syncs only its entry note and the notes
     expect(readFileSync(homeFile, 'utf8'), 'the replica\'s link is pulled').toContain('[[Fresh]]');
     const held = await syncJson();
     expect(created(held), 'a remote link uploads nothing').toEqual([]);
-    expect(held.find((result) => result.action === 'remote-link')?.file, 'and is reported').toBe(fresh);
+    expect(followOnly(held), 'and is reported').toEqual([fresh]);
     expect(await titles(), 'Fresh stays off the server').not.toContain('Fresh');
-    const confirmed = await moss(['scope', 'confirm'], env, dir);
-    expect(confirmed.code, confirmed.stderr).toBe(0);
+    expect(await confirm(), 'scope confirm lists it').toContain('Fresh');
     expect(created(await syncJson()), 'after `scope confirm` it syncs').toEqual([fresh]);
 
     const shopping = await importNote(ada, stack, 'Shopping', 'Milk.');
