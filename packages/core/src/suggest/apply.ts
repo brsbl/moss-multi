@@ -1123,11 +1123,11 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
   // Property maps and other items first, so a restored text node's characters find their map's copy. A copy of a copy
   // whose first copy a client iterated later holds is found on another round, while rounds still find copies.
   for (let round = 0; round <= doc.store.clients.size; round += 1) {
-    added = 0;
-    deferred = false;
     pass(false);
     pass(true);
     if (!deferred || added === 0) break;
+    added = 0;
+    deferred = false;
   }
   return out;
 }
