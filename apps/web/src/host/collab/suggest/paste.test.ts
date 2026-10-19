@@ -23,9 +23,10 @@ import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src
 import { REGISTER_LOCAL_ORIGIN } from '../../../../../../packages/sync/src/registers.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { closeRecord, openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
-import { EMPTY_IDLE_MS, nodeRegistry, previewRecord, reviewPreview } from '../../../../../../packages/sync/src/suggest/review.ts';
-import { EDITOR, seededBody, select, spansOfText, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
+import { acceptRecord, EMPTY_IDLE_MS, nodeRegistry, previewRecord, reviewPreview } from '../../../../../../packages/sync/src/suggest/review.ts';
+import { EDITOR, forgeRecord, opOn, seededBody, select, spansOfText, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { describePreview } from '../../../../../../packages/core/src/suggest/describe.ts';
+import { positionAt, project } from '../../../../../../packages/core/src/tree-anchor.ts';
 import { refusalMessage } from '../../refusal.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
@@ -1300,9 +1301,12 @@ it.each([
 });
 
 it.each([
-  ['a paste over another author\'s word, splitting its paragraph', 'paste'],
-  ['Enter mid-paragraph', 'enter'],
-] as const)('%s, undone, then typing in the restored rest suggests only what was typed: the rest is painted for neither side and the card shows only the typed characters', { timeout: 120_000 }, (_name, act) => {
+  ['a paste over another author\'s word, splitting its paragraph', 'paste', false],
+  ['Enter mid-paragraph', 'enter', false],
+  // T5.S14: the second undo restores the rest as copies of the first undo's copies.
+  ['a paste over another author\'s word, splitting its paragraph, undone, redone and', 'paste', true],
+  ['Enter mid-paragraph, undone, redone and', 'enter', true],
+] as const)('%s, undone, then typing in the restored rest suggests only what was typed: the rest is painted for neither side and the card shows only the typed characters', { timeout: 120_000 }, (_name, act, again) => {
   const pane = suggesting();
   try {
     const settle = () => {
@@ -1319,6 +1323,12 @@ it.each([
     settle();
     pane.undo();
     settle();
+    if (again) {
+      pane.redo();
+      settle();
+      pane.undo();
+      settle();
+    }
     expect(pane.text()).toContain('Intro line stays.');
     pane.stopCapturing();
     // One character at the line's end, and one inside the restored rest.
@@ -1358,6 +1368,79 @@ it.each([
     expect(rows.map((row) => row.text).sort(), 'the card adds only the typed characters').toEqual(['!', '?']);
   } finally {
     pane.dispose();
+  }
+});
+
+it.each([
+  ['a paste over another author\'s word, splitting its paragraph', 'paste'],
+  ['Enter mid-paragraph', 'enter'],
+] as const)('T5.S14: %s, undone, redone and undone again, then accepted: nothing is re-authored and no comment detaches', { timeout: 120_000 }, (_name, act) => {
+  const pane = suggesting();
+  try {
+    const settle = () => {
+      vi.runAllTimers();
+      pane.pump();
+    };
+    const ids = JSON.stringify(spansOfText(pane.live, 'Intro line stays.'));
+    // A comment on "line stays", as comments mint its start (tree-anchor positionAt).
+    const projection = project(pane.live);
+    const comment = positionAt(projection, projection.text.indexOf('line stays'), 0)!;
+    if (act === 'paste') {
+      pane.select('Intro line', 6, 10);
+      pane.paste(['Pasted one', 'Pasted two']);
+    } else {
+      pane.select('Intro line', 6, 6);
+      pane.enter();
+    }
+    settle();
+    for (const step of [pane.undo, pane.redo, pane.undo]) {
+      step();
+      settle();
+    }
+    expect(pane.fork.closed, 'nothing refused').toBe(false);
+    const [record] = openRecords(pane.live);
+    const preview = previewRecord(pane.live, record!.meta.id);
+    if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
+    expect(preview.hunks, 'nothing is shown').toEqual([]);
+    expect(acceptRecord(pane.live, record!.meta.id, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+    expect(JSON.stringify(spansOfText(pane.live, 'Intro line stays.')), 'the paragraph keeps its original items and authors').toBe(ids);
+    const anchor = Y.getItem(pane.live.store, comment.item!);
+    expect(anchor instanceof Y.Item && !anchor.deleted, 'the comment stays anchored').toBe(true);
+  } finally {
+    pane.dispose();
+  }
+});
+
+it('T5.S14: a record with a real change and an identity-only block paints only the real change, for either side', () => {
+  const live = seededBody('Intro line stays.\n\nClosing line stays too.\n');
+  const paragraph = (doc: Y.Doc, prefix: string) => {
+    const blocks = (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[]).map((op) => op.insert);
+    return blocks.find((x) => x instanceof Y.XmlText && (x.toDelta() as { insert: unknown }[]).some(({ insert }) => typeof insert === 'string' && insert.startsWith(prefix))) as Y.XmlText;
+  };
+  forgeRecord(live, 'g', [opOn(live, 'body', (copy) => {
+    const intro = paragraph(copy, 'Intro');
+    const at = (intro.toDelta() as { insert: unknown }[]).findIndex(({ insert }) => typeof insert === 'string');
+    intro.delete(at, 'Intro line stays.'.length);
+    intro.insert(at, 'Intro line stays.');
+    const closing = paragraph(copy, 'Closing');
+    closing.insert(closing.length, ' More.');
+  })]);
+  const built = new Composite(live).build();
+  try {
+    expect(built.valid).toEqual(['g']);
+    const pending = pendingInserts(built.doc, new Set(built.clients.keys()), live);
+    let painted = '';
+    for (const [, structs] of built.doc.store.clients) {
+      for (const struct of structs) {
+        if (!(struct instanceof Y.Item) || struct.deleted || !(struct.content instanceof Y.ContentString)) continue;
+        for (let i = 0; i < struct.length; i += 1) if (pending(Y.createID(struct.id.client, struct.id.clock + i))) painted += struct.content.str[i];
+      }
+    }
+    expect(painted, 'only the real change is painted as inserted').toBe(' More.');
+    const struck = [...struckByRecord(live, new Set(built.valid), built).values()].flat().reduce((sum, span) => sum + span.len, 0);
+    expect(struck, 'nothing is painted struck').toBe(0);
+  } finally {
+    destroyView(built);
   }
 });
 
