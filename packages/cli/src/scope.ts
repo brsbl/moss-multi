@@ -4,15 +4,19 @@
 // never synced and win over both. A moss note is a folder (`<Title>/<Title>.md`), so a pattern matching the note's
 // folder, or any folder above it, matches the note. Without the file every note is in scope.
 //
-// Remote text never widens what is uploaded: a link counts for uploading only when it was written here, that is it is
-// in the note's file and was not in the text last pulled, or `init --scope` / `scope confirm` recorded it
-// (`.moss-multi/scope-links.json`). A note reached only through a link that came in a pull may be pulled, never sent.
+// Remote text never widens what is uploaded. Before server text is written into a note's file, the links and media
+// references it brings that the file did not hold are recorded as remote for that doc (`.moss-multi/<docId>/remote.json`),
+// so a crash after the write cannot pass them off as written here. A link or media reference counts for uploading
+// only when it is in the note's body and not recorded as remote; `init --scope` and `scope confirm` clear the
+// records. Links are read from the body in the server's form on both sides: a moss note's title line and any
+// frontmatter never hold one. A note reached only through a remote link may be pulled, never sent.
 import { basename, dirname, extname, join, normalize, sep } from 'node:path';
 import { CliError } from './errors.ts';
-import { readBase, readConfined, readStateFile } from './workspace.ts';
+import { mediaRefs } from './media.ts';
+import { frontmatterOf, hasMarkers, parseMoss } from './moss-format.ts';
+import { type DocMeta, readBase, readConfined, readRemoteKeys, readStateFile, writeRemoteKeys } from './workspace.ts';
 
 export const SCOPE_FILE = 'scope.json';
-export const LINKS_FILE = 'scope-links.json';
 const MAX_DEPTH = 10;
 
 export interface Scope {
@@ -60,21 +64,6 @@ export function parseScope(text: string): Scope {
 export function readScope(root: string): Scope | null {
   const bytes = readStateFile(root, SCOPE_FILE);
   return bytes ? parseScope(bytes.toString('utf8')) : null;
-}
-
-/** The links written here, per note: anything unreadable is no link, so it can only narrow what is uploaded. */
-export type Confirmed = Record<string, string[]>;
-
-export function readConfirmed(root: string): Confirmed {
-  try {
-    const parsed = JSON.parse(readStateFile(root, LINKS_FILE)?.toString('utf8') ?? '{}') as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const out: Confirmed = {};
-    for (const [note, links] of Object.entries(parsed)) if (Array.isArray(links)) out[note] = links.filter((link): link is string => typeof link === 'string');
-    return out;
-  } catch {
-    return {};
-  }
 }
 
 /** One glob segment against one path segment: `*` any run of characters, `?` one. */
@@ -258,6 +247,77 @@ export function noteLinks(source: string, from: string): LinkTarget[] {
   return out;
 }
 
+/** A link's identity for provenance, the same however its path is cased. */
+const linkKey = (target: LinkTarget): string =>
+  target.path !== undefined ? `path:${fold(segments(target.path).join('/'))}` : `wiki:${target.id?.toLowerCase() ?? ''}:${titleKey(target.title ?? '')}`;
+const assetKey = (name: string) => `asset:${fold(name)}`;
+const lf = (text: string) => text.replace(/\r\n?/g, '\n');
+const utf8 = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
+
+/** A note's body in the server's form: a moss file without its title line and markers, any other file as it is. */
+const bodyOf = (text: string, moss: boolean): string => (moss ? parseMoss(lf(text)).clean : lf(text));
+/** A body past its frontmatter, where links and media references are read. */
+const pastFrontmatter = (body: string) => body.slice(frontmatterOf(body).length);
+
+/** Every link and media reference in a body (server form), as provenance keys. */
+function keysOf(body: string, from: string): Set<string> {
+  const rest = pastFrontmatter(body);
+  const keys = new Set(noteLinks(rest, from).map(linkKey));
+  for (const ref of mediaRefs(rest)) keys.add(assetKey(ref.name));
+  return keys;
+}
+
+/** Whether a note is kept in moss form: a tracked note by its mode, any other by moss's layout or markers. */
+const isMoss = (meta: DocMeta | undefined, rel: string, text: string) => (meta ? meta.mode === 'moss' : noteUnit(rel) !== rel || hasMarkers(text));
+
+/** The doc's remote keys: its record, or failing that all its base holds; null when neither can be read. */
+function remoteOf(root: string, docId: string, from: string): Set<string> | null {
+  const recorded = readRemoteKeys(root, docId);
+  if (recorded) return recorded;
+  try {
+    return keysOf(lf(utf8(readBase(root, docId))), from);
+  } catch {
+    return null;
+  }
+}
+
+/** The links and media references written here in note `file` holding `text`: an untracked note was never pulled. */
+export function writtenHere(root: string, meta: DocMeta | undefined, file: string, text: string): Set<string> {
+  const now = keysOf(bodyOf(text, isMoss(meta, file, text)), file);
+  if (!meta) return now;
+  const remote = remoteOf(root, meta.docId, file);
+  return remote ? new Set([...now].filter((key) => !remote.has(key))) : new Set();
+}
+
+/** Which media files tracked note `meta` (holding `text`) may read and send: those whose reference was written here. */
+export function sendsMedia(root: string, meta: DocMeta, text: string): (name: string) => boolean {
+  const mine = writtenHere(root, meta, meta.file, text);
+  return (name) => mine.has(assetKey(name));
+}
+
+/**
+ * Records, before server text is written into note `rel` of doc `docId`, which of its links and media references came
+ * from the server: those the file does not hold (a missing file stands on its base) and those already recorded.
+ */
+export function recordIncoming(root: string, docId: string, rel: string, server: Uint8Array, moss: boolean): void {
+  const incoming = keysOf(lf(utf8(server)), rel);
+  const old = remoteOf(root, docId, rel);
+  let held: Set<string>;
+  try {
+    held = keysOf(bodyOf(readConfined(root, rel).toString('utf8'), moss), rel);
+  } catch {
+    try {
+      held = keysOf(lf(utf8(readBase(root, docId))), rel);
+    } catch {
+      held = new Set();
+    }
+  }
+  writeRemoteKeys(root, docId, [...incoming].filter((key) => !held.has(key) || old === null || old.has(key)));
+}
+
+/** Takes every link and media reference doc `docId`'s file holds now as written here (adoption, `scope confirm`). */
+export const clearRemote = (root: string, docId: string): void => writeRemoteKeys(root, docId, []);
+
 /** Which workspace files are in scope this pass. */
 export interface ScopeView {
   /** Whether a note at `rel` (there or not yet) may be synced: pulled, and sent unless `uploads` says otherwise. */
@@ -273,19 +333,16 @@ export interface ScopeView {
 export interface ScopeInput {
   /** The scanned `.md` files. */
   files: string[];
-  /** The tracked files (a tracked file deleted here still resolves, so it comes back). */
-  tracked: { file: string; docId: string; title?: string }[];
+  /** The tracked docs (a tracked file deleted here still resolves, so it comes back). */
+  tracked: DocMeta[];
   folds: boolean;
-  /** The links recorded as written here; null records every link the notes reached hold now (`scope confirm`). */
-  confirmed: Confirmed | null;
 }
 
 /**
  * Evaluates `scope` over the workspace. Only entry notes and the notes they reach are read, for their links; a denied
- * note is never read, and an out-of-scope moss note only for its `meta.json` id and title. Returns the view and the
- * links recorded as written here after this read (`changed` when they differ from `input.confirmed`).
+ * note is never read, and an out-of-scope moss note only for its `meta.json` id and title.
  */
-export function evaluateScope(root: string, scope: Scope, input: ScopeInput): { view: ScopeView; confirmed: Confirmed; changed: boolean } {
+export function evaluateScope(root: string, scope: Scope, input: ScopeInput): ScopeView {
   const { files, tracked, folds } = input;
   const key = (rel: string) => (folds ? fold(rel) : rel.normalize('NFC'));
   // Deny compares without case always: a denied folder must not slip through spelt otherwise.
@@ -304,6 +361,7 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): { 
     if (!map.has(k)) map.set(k, new Set());
     map.get(k)!.add(file);
   };
+  const trackedBy = new Map(tracked.map((meta) => [key(meta.file), meta]));
   const candidates = [...files, ...tracked.map((meta) => meta.file)];
   for (const file of candidates) {
     if (denied(file) || notes.has(key(file))) continue;
@@ -333,6 +391,11 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): { 
     const plain = title.replace(/\.md$/i, '');
     const found = new Set([...(byTitle.get(titleKey(title)) ?? byTitle.get(titleKey(plain)) ?? [])]);
     if (!local) for (const file of byServerTitle.get(titleKey(title)) ?? byServerTitle.get(titleKey(plain)) ?? []) found.add(file);
+    // Moss opens one note for a title: of several, the one already synced, else none.
+    if (found.size > 1) {
+      const synced = [...found].filter((file) => trackedBy.has(key(file)));
+      return synced.length === 1 ? synced : [];
+    }
     if (found.size) return [...found];
     return title.includes('/') ? resolvePath(normalize(plain)) : [];
   };
@@ -344,40 +407,17 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): { 
     if (target.path !== undefined) return resolvePath(target.path);
     return target.title ? resolveTitle(target.title, local) : [];
   };
-  const linkKey = (target: LinkTarget): string =>
-    target.path !== undefined ? `path:${key(segments(target.path).join('/'))}` : `wiki:${target.id?.toLowerCase() ?? ''}:${titleKey(target.title ?? '')}`;
 
-  // Each note's links as its file holds them, and which of them were written here.
-  const before = input.confirmed;
-  const confirmed = new Map(Object.entries(before ?? {}));
+  // Each note's links as its body holds them, and which of them were written here.
   const read = new Map<string, { links: { target: LinkTarget; key: string }[]; local: Set<string> } | null>();
-  const tracking = new Map(tracked.map((meta) => [key(meta.file), meta.docId]));
   const linksOf = (file: string) => {
     if (read.has(key(file))) return read.get(key(file)) ?? null;
     let found: { links: { target: LinkTarget; key: string }[]; local: Set<string> } | null = null;
     try {
-      const links = noteLinks(readConfined(root, file).toString('utf8'), file).map((target) => ({ target, key: linkKey(target) }));
-      const now = new Set(links.map((link) => link.key));
-      let local: Set<string>;
-      if (!before) local = now;
-      else {
-        // Written here: in the file and not in the text last pulled (an untracked file was never pulled).
-        const docId = tracking.get(key(file));
-        let pulled = new Set<string>();
-        if (docId) {
-          try {
-            pulled = new Set(noteLinks(Buffer.from(readBase(root, docId)).toString('utf8'), file).map(linkKey));
-          } catch {
-            // No base: every link counts as pulled, the narrow side.
-            pulled = now;
-          }
-        }
-        local = new Set([...(before[key(file)] ?? [])].filter((link) => now.has(link)));
-        for (const link of now) if (!pulled.has(link)) local.add(link);
-      }
-      if (local.size) confirmed.set(key(file), [...local].sort());
-      else confirmed.delete(key(file));
-      found = { links, local };
+      const text = readConfined(root, file).toString('utf8');
+      const meta = trackedBy.get(key(file));
+      const links = noteLinks(pastFrontmatter(bodyOf(text, isMoss(meta, file, text))), file).map((target) => ({ target, key: linkKey(target) }));
+      found = { links, local: writtenHere(root, meta, file, text) };
     } catch {
       // Unreadable: no links.
     }
@@ -424,17 +464,10 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): { 
   };
   const anyLink = reach(false);
   const localLink = reach(true);
-
-  const after = Object.fromEntries([...confirmed].sort(([a], [b]) => a.localeCompare(b)));
-  const changed = JSON.stringify(after) !== JSON.stringify(before ?? {});
   return {
-    view: {
-      admits: (rel) => !denied(rel) && (anyLink.has(key(rel)) || allowed(rel)),
-      uploads: (rel) => !denied(rel) && (localLink.has(key(rel)) || allowed(rel)),
-      denies: denied,
-      outOfScope: files.filter((file) => denied(file) || !anyLink.has(key(file))).length,
-    },
-    confirmed: after,
-    changed,
+    admits: (rel) => !denied(rel) && (anyLink.has(key(rel)) || allowed(rel)),
+    uploads: (rel) => !denied(rel) && (localLink.has(key(rel)) || allowed(rel)),
+    denies: denied,
+    outOfScope: files.filter((file) => denied(file) || !anyLink.has(key(file))).length,
   };
 }

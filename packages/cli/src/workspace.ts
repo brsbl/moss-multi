@@ -283,6 +283,28 @@ export function writeMediaRecord(root: string, docId: string, record: Record<str
   writeInside(root, stateRel(docId, 'media.json'), Buffer.from(`${JSON.stringify(record, null, 2)}\n`));
 }
 
+/**
+ * The link and media keys that came into a doc's file from the server and were not written here
+ * (`.moss-multi/<docId>/remote.json`), or null when none was recorded or it is unreadable.
+ */
+export function readRemoteKeys(root: string, docId: string): Set<string> | null {
+  const path = noLinks(root, stateRel(docId, 'remote.json'));
+  if (!lstat(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { remote?: unknown };
+    if (!Array.isArray(parsed.remote)) return null;
+    return new Set(parsed.remote.filter((key): key is string => typeof key === 'string'));
+  } catch {
+    return null;
+  }
+}
+
+export function writeRemoteKeys(root: string, docId: string, keys: Iterable<string>): void {
+  // Checked before writeInside makes the doc's folder: a root swapped since the command chose it gets nothing.
+  pinnedRoot(root);
+  writeInside(root, stateRel(docId, 'remote.json'), Buffer.from(`${JSON.stringify({ remote: [...new Set(keys)].sort() }, null, 2)}\n`));
+}
+
 /** Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. */
 export function writeMeta(root: string, meta: DocMeta): void {
   writeInside(root, stateRel(meta.docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));

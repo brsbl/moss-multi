@@ -11,10 +11,10 @@ import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
-import { parseScope, SCOPE_FILE } from './scope.ts';
-import { adopt, confirmScope, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
+import { parseScope, SCOPE_FILE, sendsMedia } from './scope.ts';
+import { adopt, confirmScope, describe, pullInto, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
-  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile, recordPull,
+  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
   resetRootPins, sha256Hex, writeStateFile,
 } from './workspace.ts';
 
@@ -372,7 +372,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const row = (await client.listDocs()).find((doc) => doc.id === id);
         rel = confined(root, resolve(cwd(), row ? localName(row.filename, row.title) : `${id}.md`));
       }
-      inScope(root, rel, 'write a doc to');
+      const scope = inScope(root, rel, 'write a doc to');
       const target = join(root, rel);
       // What the file must still hold when it is replaced: --force replaces anything, otherwise only the base or nothing.
       let expectHash: string | null | undefined;
@@ -385,9 +385,9 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         expectHash = owner.baseHash;
       } else expectHash = null;
       const bytes = await client.content(id);
-      recordPull(root, id, rel, bytes, expectHash, foldsCase(root));
+      pullInto(root, id, rel, bytes, expectHash, foldsCase(root));
       line(`pulled ${rel} (${bytes.byteLength} bytes)`);
-      reportMedia((await noteMedia({ root, client, download: true }, id, rel)).results);
+      reportMedia((await noteMedia({ root, client, download: true, ...(scope ? { denies: scope.denies } : {}) }, id, rel)).results);
     },
 
     async push(rest) {
@@ -402,7 +402,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const scope = inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
-      reportMedia((await noteMedia({ root, client, upload: true, ...(scope ? { denies: scope.denies } : {}) }, meta.docId, path)).results);
+      const scoped = scope ? { denies: scope.denies, sends: sendsMedia(root, meta, readConfined(root, path).toString('utf8')) } : {};
+      reportMedia((await noteMedia({ root, client, upload: true, ...scoped }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
@@ -457,7 +458,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const merged = await client.content(meta.docId);
       try {
         // The file named, which on a volume that folds case may spell the tracked path differently.
-        recordPull(root, meta.docId, confined(root, path), merged, sha256Hex(local), foldsCase(root));
+        pullInto(root, meta.docId, confined(root, path), merged, sha256Hex(local), foldsCase(root));
       } catch (error) {
         if (!(error instanceof CliError)) throw error;
         throw new CliError(1, `pushed ${meta.file} (${response.applied} change(s) applied), but it was edited during the push, so it was left as it is; push again to send the newer edits`);

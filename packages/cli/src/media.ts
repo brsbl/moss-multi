@@ -72,6 +72,8 @@ export interface MediaContext {
   upload?: boolean;
   /** A file the workspace's scope denies is neither read nor written. */
   denies?: (rel: string) => boolean;
+  /** With a scope, whether the note's reference to `name` was written here; a file one that came from the server names is never read. */
+  sends?: (name: string) => boolean;
 }
 
 export interface MediaStep {
@@ -110,6 +112,8 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
     const failed = (message: string) => results.push({ docId, file: rel, action: 'failed', message });
     try {
       const local = localFile(root, rel);
+      // Only a missing file may come down for a reference the server sent.
+      if (local && ctx.sends && !ctx.sends(name)) continue;
       const known = record[name];
       if (local && known && known.size === local.size && known.mtimeMs === local.mtimeMs) continue;
       const bytes = local ? readConfined(root, rel) : null;
