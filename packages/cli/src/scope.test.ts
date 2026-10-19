@@ -153,9 +153,9 @@ const followOnly = (results: Result[]) => results.filter((result) => result.acti
 /** Every byte the CLI sent the server, so a private note's text can be shown never to have left. */
 const sent = () => JSON.stringify(server.calls.map((call) => call.body ?? null));
 
-/** `scope confirm --yes`, which must succeed. */
-async function confirmYes(options: Options = {}) {
-  const run = await cli(['scope', 'confirm', '--yes'], options);
+/** `scope confirm --yes <path>...` for the notes `files`, which must succeed. */
+async function confirmYes(files: string[], options: Options = {}) {
+  const run = await cli(['scope', 'confirm', '--yes', ...files.map(posix)], options);
   expect(run.code, run.err).toBe(0);
   return run;
 }
@@ -182,7 +182,7 @@ describe('a workspace scope', () => {
     // Not confirmed (no terminal, no --yes): nothing is written.
     expect(allowList()).toEqual([]);
 
-    const confirmed = await confirmYes();
+    const confirmed = await confirmYes([files.home, files.alpha, files.beta]);
     expect(confirmed.out).not.toMatch(/Diary|Taxes|Gamma|Loose/);
     expect(allowList()).toEqual([files.alpha, files.beta, files.home].map(posix).sort());
     const run = await syncJson();
@@ -192,6 +192,24 @@ describe('a workspace scope', () => {
     expect(server.docs.map((doc) => doc.title).sort()).toEqual(['Alpha', 'Beta notes', 'Moss Home']);
     const again = await syncJson();
     expect(again.results.filter((result) => !['up-to-date', 'out-of-scope'].includes(result.action))).toEqual([]);
+  });
+
+  it('--yes alone is refused and adds nothing; --yes with paths adds exactly those; a path follow does not reach is refused', async () => {
+    const files = pilotVault(PILOT);
+    const bare = await cli(['scope', 'confirm', '--yes']);
+    expect(bare.code).toBe(1);
+    expect(bare.err).toMatch(/--yes/);
+    expect(allowList()).toEqual([]);
+    const outside = await cli(['scope', 'confirm', '--yes', posix(files.loose)]);
+    expect(outside.code).toBe(1);
+    expect(allowList()).toEqual([]);
+    const denied = await cli(['scope', 'confirm', '--yes', posix(files.diary)]);
+    expect(denied.code).toBe(1);
+    expect(allowList()).toEqual([]);
+    await confirmYes([files.alpha]);
+    expect(allowList()).toEqual([posix(files.alpha)]);
+    const run = await syncJson();
+    expect(created(run.results)).toEqual([files.alpha]);
   });
 
   it('an interactive yes confirms too; a no writes nothing', async () => {
@@ -208,7 +226,7 @@ describe('a workspace scope', () => {
 
   it('scope confirm at depth 2 adds the note two hops out, and still never a denied one', async () => {
     const files = pilotVault({ ...PILOT, depth: 2 });
-    await confirmYes();
+    await confirmYes([files.home, files.alpha, files.beta, files.gamma]);
     expect(allowList()).toEqual([files.alpha, files.beta, files.gamma, files.home].map(posix).sort());
     const run = await syncJson();
     expect(run.code, run.err).toBe(0);
@@ -218,7 +236,7 @@ describe('a workspace scope', () => {
 
   it('a link added here is reported, not uploaded, until scope confirm adds its note', async () => {
     const files = pilotVault(PILOT);
-    await confirmYes();
+    await confirmYes([files.home, files.alpha, files.beta]);
     expect((await syncJson()).code).toBe(0);
     const home = join(dir, files.home);
     writeFileSync(home, readFileSync(home, 'utf8').replace('Private:', 'Also [[Loose]]. Private:'));
@@ -226,7 +244,10 @@ describe('a workspace scope', () => {
     expect(linked.code, linked.err).toBe(0);
     expect(created(linked.results)).toEqual([]);
     expect(followOnly(linked.results)).toEqual([files.loose]);
-    await confirmYes();
+    const listed = await cli(['scope', 'confirm']);
+    expect(listed.out).toContain(posix(files.loose));
+    expect(listed.out, 'a link typed here is not marked').not.toContain('linked by a synced edit');
+    await confirmYes([files.loose]);
     expect(created((await syncJson()).results)).toEqual([files.loose]);
   });
 
@@ -328,7 +349,7 @@ describe('a workspace scope', () => {
     writeFileSync(join(dir, 'Index.md'), 'See [the reading list](Reading%20List.md).\n');
     writeFileSync(join(dir, 'Reading List.md'), 'Books.\n');
     writeScope({ allow: ['Notes/Daily Plan.md'], follow: ['Index.md'] });
-    await confirmYes();
+    await confirmYes(['Index.md', 'Reading List.md']);
     expect(allowList()).toEqual(['Index.md', 'Notes/Daily Plan.md', 'Reading List.md']);
     const first = await syncJson();
     expect(first.code, first.err).toBe(0);
@@ -345,7 +366,7 @@ describe('a workspace scope', () => {
 
   it('a link that arrives in a pull never uploads a local note; scope confirm lists it and adds it on yes', async () => {
     const files = pilotVault(PILOT);
-    await confirmYes();
+    await confirmYes([files.home, files.alpha, files.beta]);
     const first = await syncJson();
     expect(first.code, first.err).toBe(0);
     const homeId = first.results.find((result) => result.file === files.home && result.action === 'created')!.docId!;
@@ -360,8 +381,11 @@ describe('a workspace scope', () => {
     expect(followOnly(next.results)).toEqual([files.loose]);
 
     const listed = await cli(['scope', 'confirm']);
-    expect(listed.out).toContain(posix(files.loose));
-    await confirmYes();
+    const entry = listed.out.split('\n').find((text) => text.includes(posix(files.loose)));
+    expect(entry, 'listed with its title, the note linking to it, and marked').toMatch(/Loose/);
+    expect(entry).toContain(posix(files.home));
+    expect(entry).toContain('linked by a synced edit');
+    await confirmYes([files.loose]);
     expect(allowList()).toContain(posix(files.loose));
     expect(created((await syncJson()).results)).toEqual([files.loose]);
   });
@@ -400,7 +424,7 @@ describe('a workspace scope', () => {
     writeFileSync(join(dir, 'Public.md'), 'Public.\n');
     writeFileSync(join(dir, 'public.md'), `Private, ${SECRET}.\n`);
     writeScope({ follow: ['Index.md'] });
-    await confirmYes();
+    await confirmYes(['Index.md', 'Public.md']);
     expect(allowList()).toEqual(['Index.md', 'Public.md']);
     const first = await syncJson();
     expect(created(first.results)).toEqual(['Index.md', 'Public.md']);
@@ -449,7 +473,8 @@ describe('a workspace scope', () => {
     writeFileSync(join(dir, 'Notes', 'Secret.md'), `Private, ${SECRET}.\n`);
     writeScope({ allow: ['notes/plan.md', 'Notes/*'], deny: ['notes/secret.md'] });
     const folded = await syncJson({ folds: true });
-    expect(created(folded.results)).toEqual([join('Notes', 'Plan.md')]);
+    // Adopted, it may take the doc's lowercased filename: on a volume that folds case that is the same file.
+    expect(created(folded.results).map((file) => file.toLowerCase())).toEqual([join('notes', 'plan.md')]);
     expect(sent()).not.toContain(SECRET);
   });
 
@@ -460,7 +485,7 @@ describe('a workspace scope', () => {
     mkdirSync(join(dir, 'Moss Home', 'assets'), { recursive: true });
     writeFileSync(join(dir, 'Moss Home', 'assets', 'private.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
     writeScope({ follow: ['Moss Home'], deny: ['Moss Home/assets/**'] });
-    await confirmYes();
+    await confirmYes([home]);
     expect(allowList()).toEqual([posix(home)]);
     const run = await syncJson();
     expect(run.code, run.err).toBe(0);

@@ -10,7 +10,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Actor } from '../lib/actors.ts';
 import type { Stack } from '../lib/stack.ts';
@@ -318,8 +318,8 @@ test('j18-sync scope: a scoped workspace uploads only allowed notes, pulls the n
     expect(run.code, `${run.stderr}\n${run.stdout}`).toBe(0);
     return JSON.parse(run.stdout) as Result[];
   };
-  const confirm = async () => {
-    const run = await moss(['scope', 'confirm', '--yes'], env, dir);
+  const confirm = async (...files: string[]) => {
+    const run = await moss(['scope', 'confirm', '--yes', ...files.map((file) => file.split(sep).join('/'))], env, dir);
     expect(run.code, run.stderr).toBe(0);
     return run.stdout;
   };
@@ -352,7 +352,7 @@ test('j18-sync scope: a scoped workspace uploads only allowed notes, pulls the n
     expect(followOnly(unconfirmed), 'it reports the notes follow reaches').toEqual([alpha, beta, home].sort());
     expect(unconfirmed.find((result) => result.action === 'out-of-scope')?.count, 'the rest only as a count').toBe(4);
 
-    const listed = await confirm();
+    const listed = await confirm(home, alpha, beta);
     expect(listed).not.toMatch(/Diary|Taxes|Gamma|Loose/);
     const first = await syncJson();
     expect(created(first), 'exactly Moss Home and the notes it links to').toEqual([alpha, beta, home].sort());
@@ -362,7 +362,7 @@ test('j18-sync scope: a scoped workspace uploads only allowed notes, pulls the n
     const homeFile = join(dir, home);
     writeFileSync(homeFile, readFileSync(homeFile, 'utf8').replace('Private:', 'Also [[Loose]]. Private:'));
     expect(followOnly(await syncJson()), 'a newly linked note is reported').toContain(loose);
-    await confirm();
+    await confirm(loose);
     const linked = await syncJson();
     expect(created(linked), 'and comes in once confirmed').toEqual([loose]);
 
@@ -385,7 +385,9 @@ test('j18-sync scope: a scoped workspace uploads only allowed notes, pulls the n
     expect(created(held), 'a remote link uploads nothing').toEqual([]);
     expect(followOnly(held), 'and is reported').toEqual([fresh]);
     expect(await titles(), 'Fresh stays off the server').not.toContain('Fresh');
-    expect(await confirm(), 'scope confirm lists it').toContain('Fresh');
+    const offered = await moss(['scope', 'confirm'], env, dir);
+    expect(offered.stdout, 'scope confirm lists it, marked as linked by a synced edit').toMatch(/Fresh.*linked by a synced edit/);
+    await confirm(fresh);
     expect(created(await syncJson()), 'after `scope confirm` it syncs').toEqual([fresh]);
 
     const shopping = await importNote(ada, stack, 'Shopping', 'Milk.');
