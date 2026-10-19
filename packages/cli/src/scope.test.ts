@@ -730,4 +730,30 @@ describe('follow brings server notes down', () => {
     expect(pulled(run.results)).toEqual([]);
     for (const absent of ['Diary', 'Twice', 'Unlinked', join('Personal', 'Notes')]) expect(existsSync(join(dir, absent)), absent).toBe(false);
   });
+
+  it('never pulls a server note in place of a denied note a link names by its moss id under an old title', async () => {
+    const files = pilotVault(PILOT);
+    const home = join(dir, files.home);
+    writeFileSync(home, readFileSync(home, 'utf8').replace('Private:', `Also [[Refunds|${TAXES_ID}]]. Private:`));
+    await confirmYes([files.home, files.alpha, files.beta]);
+    const refundsId = serverDoc('Refunds', 'A web note named like the old title of the private one.\n');
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    expect(pulled(run.results)).toEqual([]);
+    expect(server.calls.filter((call) => call.path.startsWith(`/api/docs/${refundsId}`))).toEqual([]);
+    expect(existsSync(join(dir, 'Refunds'))).toBe(false);
+  });
+
+  it('a follow entry naming a .md file is pulled to exactly that path, and never when deny names it', async () => {
+    const secretId = serverDoc('Secret', 'Private.\n');
+    serverDoc('Plan', 'The plan.\n');
+    writeScope({ allow: ['**'], follow: ['Personal/Secret.md', 'Work/Plan.md'], deny: ['Personal/Secret.md'] });
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    expect(pulled(run.results)).toEqual([join('Work', 'Plan.md')]);
+    expect(readFileSync(join(dir, 'Work', 'Plan.md'), 'utf8')).toBe('The plan.\n');
+    expect(server.calls.filter((call) => call.path.startsWith(`/api/docs/${secretId}`))).toEqual([]);
+    expect(existsSync(join(dir, 'Personal'))).toBe(false);
+    expect(sends()).toEqual([]);
+  });
 });
