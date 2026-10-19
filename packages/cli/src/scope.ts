@@ -1,20 +1,14 @@
-// A workspace scope (`.moss-multi/scope.json`): which notes sync may adopt, pull and push. `allow` lists note folders
-// or path globs; `follow` lists entry notes whose links (moss wiki links by title or id, and relative markdown links)
-// bring the notes they reach into scope, `depth` hops out, re-read every pass; `deny` lists paths or globs that are
-// never synced and win over both. A moss note is a folder (`<Title>/<Title>.md`), so a pattern matching the note's
-// folder, or any folder above it, matches the note. Without the file every note is in scope.
-//
-// Remote text never widens what is uploaded. Before server text is written into a note's file, the links and media
-// references it brings that the file did not hold are recorded as remote for that doc (`.moss-multi/<docId>/remote.json`),
-// so a crash after the write cannot pass them off as written here. A link or media reference counts for uploading
-// only when it is in the note's body and not recorded as remote; `init --scope` and `scope confirm` clear the
-// records. Links are read from the body in the server's form on both sides: a moss note's title line and any
-// frontmatter never hold one. A note reached only through a remote link may be pulled, never sent.
+// A workspace scope (`.moss-multi/scope.json`): which notes sync may upload and pull. Only `allow` (note folders, files
+// or path globs) authorizes an upload: adopting a note or pushing its edits. `follow` lists entry notes whose links
+// (moss wiki links by title or id, and relative markdown links) reach other notes, `depth` hops out, re-read every
+// pass; those notes are download only, since a link may have come from the server, until `moss-multi scope confirm`
+// writes them into `allow` as exact paths. `deny` lists paths or globs that are never synced and win over both. A
+// moss note is a folder (`<Title>/<Title>.md`), so a pattern matching the note's folder, or any folder above it,
+// matches the note. Without the file every note is in scope.
 import { basename, dirname, extname, join, normalize, sep } from 'node:path';
 import { CliError } from './errors.ts';
-import { mediaRefs } from './media.ts';
 import { frontmatterOf, hasMarkers, parseMoss } from './moss-format.ts';
-import { type DocMeta, readBase, readConfined, readRemoteKeys, readStateFile, writeRemoteKeys } from './workspace.ts';
+import { type DocMeta, readConfined, readStateFile } from './workspace.ts';
 
 export const SCOPE_FILE = 'scope.json';
 const MAX_DEPTH = 10;
@@ -247,85 +241,32 @@ export function noteLinks(source: string, from: string): LinkTarget[] {
   return out;
 }
 
-/** A link's identity for provenance, the same however its path is cased. */
-const linkKey = (target: LinkTarget): string =>
-  target.path !== undefined ? `path:${fold(segments(target.path).join('/'))}` : `wiki:${target.id?.toLowerCase() ?? ''}:${titleKey(target.title ?? '')}`;
-const assetKey = (name: string) => `asset:${fold(name)}`;
 const lf = (text: string) => text.replace(/\r\n?/g, '\n');
-const utf8 = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
 
-/** A note's body in the server's form: a moss file without its title line and markers, any other file as it is. */
-const bodyOf = (text: string, moss: boolean): string => (moss ? parseMoss(lf(text)).clean : lf(text));
-/** A body past its frontmatter, where links and media references are read. */
-const pastFrontmatter = (body: string) => body.slice(frontmatterOf(body).length);
-
-/** Every link and media reference in a body (server form), as provenance keys. */
-function keysOf(body: string, from: string): Set<string> {
-  const rest = pastFrontmatter(body);
-  const keys = new Set(noteLinks(rest, from).map(linkKey));
-  for (const ref of mediaRefs(rest)) keys.add(assetKey(ref.name));
-  return keys;
+/** Where a note's links are read: a moss file without its title line and markers, past any frontmatter. */
+function linkSource(text: string, moss: boolean): string {
+  const body = moss ? parseMoss(lf(text)).clean : lf(text);
+  return body.slice(frontmatterOf(body).length);
 }
 
 /** Whether a note is kept in moss form: a tracked note by its mode, any other by moss's layout or markers. */
 const isMoss = (meta: DocMeta | undefined, rel: string, text: string) => (meta ? meta.mode === 'moss' : noteUnit(rel) !== rel || hasMarkers(text));
 
-/** The doc's remote keys: its record, or failing that all its base holds; null when neither can be read. */
-function remoteOf(root: string, docId: string, from: string): Set<string> | null {
-  const recorded = readRemoteKeys(root, docId);
-  if (recorded) return recorded;
-  try {
-    return keysOf(lf(utf8(readBase(root, docId))), from);
-  } catch {
-    return null;
-  }
-}
-
-/** The links and media references written here in note `file` holding `text`: an untracked note was never pulled. */
-export function writtenHere(root: string, meta: DocMeta | undefined, file: string, text: string): Set<string> {
-  const now = keysOf(bodyOf(text, isMoss(meta, file, text)), file);
-  if (!meta) return now;
-  const remote = remoteOf(root, meta.docId, file);
-  return remote ? new Set([...now].filter((key) => !remote.has(key))) : new Set();
-}
-
-/** Which media files tracked note `meta` (holding `text`) may read and send: those whose reference was written here. */
-export function sendsMedia(root: string, meta: DocMeta, text: string): (name: string) => boolean {
-  const mine = writtenHere(root, meta, meta.file, text);
-  return (name) => mine.has(assetKey(name));
-}
-
-/**
- * Records, before server text is written into note `rel` of doc `docId`, which of its links and media references came
- * from the server: those the file does not hold (a missing file stands on its base) and those already recorded.
- */
-export function recordIncoming(root: string, docId: string, rel: string, server: Uint8Array, moss: boolean): void {
-  const incoming = keysOf(lf(utf8(server)), rel);
-  const old = remoteOf(root, docId, rel);
-  let held: Set<string>;
-  try {
-    held = keysOf(bodyOf(readConfined(root, rel).toString('utf8'), moss), rel);
-  } catch {
-    try {
-      held = keysOf(lf(utf8(readBase(root, docId))), rel);
-    } catch {
-      held = new Set();
-    }
-  }
-  writeRemoteKeys(root, docId, [...incoming].filter((key) => !held.has(key) || old === null || old.has(key)));
-}
-
-/** Takes every link and media reference doc `docId`'s file holds now as written here (adoption, `scope confirm`). */
-export const clearRemote = (root: string, docId: string): void => writeRemoteKeys(root, docId, []);
+/** A path or glob holding glob syntax, which `scope confirm` cannot write as an exact allow entry. */
+const GLOB = /[*?]/;
 
 /** Which workspace files are in scope this pass. */
 export interface ScopeView {
-  /** Whether a note at `rel` (there or not yet) may be synced: pulled, and sent unless `uploads` says otherwise. */
+  /** Whether a note at `rel` (there or not yet) may be pulled: allowed, or reached through `follow`. */
   admits(rel: string): boolean;
-  /** Whether a note at `rel` may be sent: in scope through `allow`, `follow` or links written here. */
+  /** Whether a note at `rel` may be sent (adopted or pushed): only an `allow` entry authorizes that. */
   uploads(rel: string): boolean;
+  /** Whether the media file `asset` of note `file` may be read and sent: the note uploads, and the file is its own or allowed. */
+  sendsAsset(file: string, asset: string): boolean;
   /** Whether `rel` (a note, or a file inside its folder) is denied. */
   denies(rel: string): boolean;
+  /** The local note files `follow` reaches that `allow` does not cover (download only until `scope confirm`). */
+  followed: string[];
   /** How many of the scanned files are out of scope. */
   outOfScope: number;
 }
@@ -340,134 +281,119 @@ export interface ScopeInput {
 
 /**
  * Evaluates `scope` over the workspace. Only entry notes and the notes they reach are read, for their links; a denied
- * note is never read, and an out-of-scope moss note only for its `meta.json` id and title.
+ * note is never read, and an out-of-scope moss note only for its `meta.json` id and title. Paths compare as the
+ * volume resolves them: NFC, and without case only where it folds case.
  */
 export function evaluateScope(root: string, scope: Scope, input: ScopeInput): ScopeView {
   const { files, tracked, folds } = input;
   const key = (rel: string) => (folds ? fold(rel) : rel.normalize('NFC'));
-  // Deny compares without case always: a denied folder must not slip through spelt otherwise.
-  const denied = (rel: string) => scope.deny.some((pattern) => covers(pattern, rel, true));
+  const denied = (rel: string) => scope.deny.some((pattern) => covers(pattern, rel, folds));
   const allowed = (rel: string) => scope.allow.some((pattern) => covers(pattern, rel, folds));
 
-  const notes = new Map<string, { file: string; unit: string }>();
   const byPath = new Map<string, string>();
   const byTitle = new Map<string, Set<string>>();
-  // Titles the server gave tracked docs: remote text, so they resolve links for pulling only.
-  const byServerTitle = new Map<string, Set<string>>();
   const byId = new Map<string, string>();
-  const addTitle = (map: Map<string, Set<string>>, title: string, file: string) => {
+  const addTitle = (title: string, file: string) => {
     const k = titleKey(title);
     if (!k) return;
-    if (!map.has(k)) map.set(k, new Set());
-    map.get(k)!.add(file);
+    if (!byTitle.has(k)) byTitle.set(k, new Set());
+    byTitle.get(k)!.add(file);
   };
   const trackedBy = new Map(tracked.map((meta) => [key(meta.file), meta]));
   const candidates = [...files, ...tracked.map((meta) => meta.file)];
+  const known = new Set<string>();
   for (const file of candidates) {
-    if (denied(file) || notes.has(key(file))) continue;
+    if (denied(file) || known.has(key(file))) continue;
+    known.add(key(file));
     const unit = noteUnit(file);
-    notes.set(key(file), { file, unit });
     byPath.set(key(file), file);
     byPath.set(key(unit), file);
     if (unit === file) byPath.set(key(file.slice(0, -extname(file).length)), file);
-    addTitle(byTitle, basename(unit, unit === file ? extname(file) : ''), file);
+    addTitle(basename(unit, unit === file ? extname(file) : ''), file);
     if (unit !== file) {
       try {
         const meta = JSON.parse(readConfined(root, join(unit, 'meta.json')).toString('utf8')) as { id?: unknown; title?: unknown };
         if (typeof meta.id === 'string' && NOTE_ID.test(meta.id)) byId.set(meta.id.toLowerCase(), file);
-        if (typeof meta.title === 'string') addTitle(byTitle, meta.title, file);
+        if (typeof meta.title === 'string') addTitle(meta.title, file);
       } catch {
         // No meta.json, or not one moss wrote.
       }
     }
   }
-  for (const meta of tracked) if (meta.title && notes.has(key(meta.file))) addTitle(byServerTitle, meta.title, meta.file);
 
   const resolvePath = (path: string): string[] => {
     const found = byPath.get(key(path)) ?? byPath.get(key(path.replace(/\.md$/i, '')));
     return found ? [found] : [];
   };
-  const resolveTitle = (title: string, local: boolean): string[] => {
+  const resolveTitle = (title: string): string[] => {
     const plain = title.replace(/\.md$/i, '');
-    const found = new Set([...(byTitle.get(titleKey(title)) ?? byTitle.get(titleKey(plain)) ?? [])]);
-    if (!local) for (const file of byServerTitle.get(titleKey(title)) ?? byServerTitle.get(titleKey(plain)) ?? []) found.add(file);
+    const found = [...(byTitle.get(titleKey(title)) ?? byTitle.get(titleKey(plain)) ?? [])];
     // Moss opens one note for a title: of several, the one already synced, else none.
-    if (found.size > 1) {
-      const synced = [...found].filter((file) => trackedBy.has(key(file)));
+    if (found.length > 1) {
+      const synced = found.filter((file) => trackedBy.has(key(file)));
       return synced.length === 1 ? synced : [];
     }
-    if (found.size) return [...found];
+    if (found.length) return found;
     return title.includes('/') ? resolvePath(normalize(plain)) : [];
   };
-  const resolve = (target: LinkTarget, local: boolean): string[] => {
+  const resolve = (target: LinkTarget): string[] => {
     if (target.id) {
       const found = byId.get(target.id.toLowerCase());
       if (found) return [found];
     }
     if (target.path !== undefined) return resolvePath(target.path);
-    return target.title ? resolveTitle(target.title, local) : [];
+    return target.title ? resolveTitle(target.title) : [];
   };
-
-  // Each note's links as its body holds them, and which of them were written here.
-  const read = new Map<string, { links: { target: LinkTarget; key: string }[]; local: Set<string> } | null>();
-  const linksOf = (file: string) => {
-    if (read.has(key(file))) return read.get(key(file)) ?? null;
-    let found: { links: { target: LinkTarget; key: string }[]; local: Set<string> } | null = null;
+  const linksOf = (file: string): LinkTarget[] => {
     try {
       const text = readConfined(root, file).toString('utf8');
-      const meta = trackedBy.get(key(file));
-      const links = noteLinks(pastFrontmatter(bodyOf(text, isMoss(meta, file, text))), file).map((target) => ({ target, key: linkKey(target) }));
-      found = { links, local: writtenHere(root, meta, file, text) };
+      return noteLinks(linkSource(text, isMoss(trackedBy.get(key(file)), file, text)), file);
     } catch {
-      // Unreadable: no links.
+      return [];
     }
-    read.set(key(file), found);
-    return found;
   };
 
-  /** The notes in scope, following every link or only links written here. */
-  const reach = (localOnly: boolean): Set<string> => {
-    const inScope = new Set<string>();
-    for (const file of candidates) if (!denied(file) && allowed(file)) inScope.add(key(file));
-    // An entry is a note's folder or file; failing that, a note's title.
-    let frontier: string[] = [];
-    const seen = new Set<string>();
-    for (const entry of scope.follow) {
-      const found = resolvePath(segments(entry).join(sep));
-      for (const file of found.length ? found : resolveTitle(entry, true)) {
-        inScope.add(key(file));
-        if (!seen.has(key(file))) {
-          seen.add(key(file));
-          frontier.push(file);
-        }
-      }
-    }
-    for (let hop = 0; hop < scope.depth && frontier.length > 0; hop += 1) {
-      const next: string[] = [];
-      for (const file of frontier) {
-        const note = linksOf(file);
-        if (!note) continue;
-        for (const link of note.links) {
-          if (localOnly && !note.local.has(link.key)) continue;
-          for (const linked of resolve(link.target, localOnly)) {
-            inScope.add(key(linked));
-            if (!seen.has(key(linked))) {
-              seen.add(key(linked));
-              next.push(linked);
-            }
-          }
-        }
-      }
-      frontier = next;
-    }
-    return inScope;
+  // Follow: the entries (a note's folder or file, failing that its title) and the notes their links reach, depth hops out.
+  const reached = new Map<string, string>();
+  let frontier: string[] = [];
+  const visit = (file: string, next: string[]) => {
+    if (reached.has(key(file))) return;
+    reached.set(key(file), file);
+    next.push(file);
   };
-  const anyLink = reach(false);
-  const localLink = reach(true);
+  for (const entry of scope.follow) {
+    const found = resolvePath(segments(entry).join(sep));
+    for (const file of found.length ? found : resolveTitle(entry)) visit(file, frontier);
+  }
+  for (let hop = 0; hop < scope.depth && frontier.length > 0; hop += 1) {
+    const next: string[] = [];
+    for (const file of frontier) for (const link of linksOf(file)) for (const linked of resolve(link)) visit(linked, next);
+    frontier = next;
+  }
+
+  const uploads = (rel: string) => !denied(rel) && allowed(rel);
+  const admits = (rel: string) => uploads(rel) || (!denied(rel) && reached.has(key(rel)));
+  const onDisk = new Set(files.map(key));
   return {
-    admits: (rel) => !denied(rel) && (anyLink.has(key(rel)) || allowed(rel)),
-    uploads: (rel) => !denied(rel) && (localLink.has(key(rel)) || allowed(rel)),
+    admits,
+    uploads,
+    // A moss note's own folder holds its media; a folder plain notes share needs the file itself allowed.
+    sendsAsset: (file, asset) => {
+      if (!uploads(file) || denied(asset)) return false;
+      const unit = noteUnit(file);
+      return allowed(asset) || (unit !== file && key(asset).startsWith(`${key(unit)}${sep}`));
+    },
     denies: denied,
-    outOfScope: files.filter((file) => denied(file) || !anyLink.has(key(file))).length,
+    followed: [...reached.values()].filter((file) => onDisk.has(key(file)) && !uploads(file) && !denied(file)).sort(),
+    outOfScope: files.filter((file) => !admits(file)).length,
   };
+}
+
+/**
+ * `scope confirm`: the notes follow reaches now, read from the local files, that `allow` does not cover, as the exact
+ * `/`-separated paths it would add, and those it cannot add because their path holds glob syntax.
+ */
+export function confirmable(view: ScopeView): { add: string[]; skipped: string[] } {
+  const paths = view.followed.map((file) => segments(file).join('/'));
+  return { add: paths.filter((path) => !GLOB.test(path)), skipped: paths.filter((path) => GLOB.test(path)) };
 }

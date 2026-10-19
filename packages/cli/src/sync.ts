@@ -6,21 +6,22 @@
 // (media.ts). `watch` runs the same pass on debounced filesystem events and an idle tick, over REST only.
 import { watch as watchFs, type Dirent, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative } from 'node:path';
+import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
 import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
-import { clearRemote, evaluateScope, readScope, recordIncoming, type ScopeView, sendsMedia } from './scope.ts';
+import { evaluateScope, readScope, type ScopeView } from './scope.ts';
 import {
   confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
-  renameInside, sameFile, sha256Hex, type SyncedState, trackedMetas, writeConfined, writeMeta,
+  renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
 export type SyncAction =
   | 'up-to-date' | 'pulled' | 'pushed' | 'merged' | 'suggested' | 'repulled' | 'created' | 'renamed' | 'remote-gone'
-  | 'skipped-degenerate' | 'failed' | 'uploaded' | 'downloaded' | 'out-of-scope' | 'remote-link';
+  | 'skipped-degenerate' | 'failed' | 'uploaded' | 'downloaded' | 'out-of-scope' | 'follow-only';
 
 export interface SyncResult {
   file: string;
@@ -45,7 +46,7 @@ export interface SyncContext {
   signal?: AbortSignal;
   /** The workspace's scope this pass: a path it does not admit is never read, adopted or written. */
   scope?: ScopeView;
-  /** The note is reached only through a link that came in a pull: it is pulled, and nothing of it is sent. */
+  /** The note is in scope only through `follow`: it is pulled, and nothing of it is sent. */
   downloadOnly?: boolean;
 }
 
@@ -68,18 +69,6 @@ export class RateLimited extends CliError {
 export const toLf = (text: string): string => text.replace(/\r\n?/g, '\n');
 const decoder = new TextDecoder('utf-8', { fatal: false });
 export const decode = (bytes: Uint8Array): string => decoder.decode(bytes);
-
-/** recordPull, with the links the server's text brings recorded first, so no crash makes them look written here. */
-export function pullInto(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false): DocMeta {
-  recordIncoming(root, docId, file, bytes, false);
-  return recordPull(root, docId, file, bytes, expectHash, folds);
-}
-
-/** recordSynced for a moss note, the same way. */
-function syncInto(root: string, docId: string, file: string, local: Uint8Array, base: Uint8Array, expectHash: string | null, folds: boolean, state: SyncedState): DocMeta {
-  recordIncoming(root, docId, file, base, true);
-  return recordSynced(root, docId, file, local, base, expectHash, folds, state);
-}
 
 /** A push that resends the base when the server's base cache has lost it. */
 export async function pushWithBase(client: Api, root: string, meta: DocMeta, request: PushRequest, signal?: AbortSignal): Promise<PushResponse> {
@@ -203,9 +192,9 @@ function rejected(id: { docId: string; file: string }, hunks: string[], rej: str
   return { ...id, action: 'merged', failedHunks: hunks.length, hunks, message: `${hunks.length} hunk(s) did not apply: the file now holds the doc's text, and your rejected lines are in ${rej}` };
 }
 
-const CONFIRM = 'reached by a link that came from the server, so nothing of it is sent; run `moss-multi scope confirm` to sync it';
-/** A note only a pulled link reaches, with edits here: they wait. */
-const heldBack = (id: { docId?: string; file: string }): SyncResult => ({ ...id, action: 'remote-link', message: CONFIRM });
+const CONFIRM = 'reached only through a followed link, so it is pulled but nothing of it is sent; `moss-multi scope confirm` adds it to allow';
+/** A note only `follow` reaches, untracked or with edits here: they wait. */
+const heldBack = (id: { docId?: string; file: string }): SyncResult => ({ ...id, action: 'follow-only', message: CONFIRM });
 
 /** glyphdown's reconcileTracked: one GET, then pull, push, merge or nothing. */
 async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefined): Promise<SyncResult> {
@@ -224,8 +213,8 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
     // Deletes never propagate: the doc stays and the file comes back.
     if (meta.mode === 'moss') {
       const title = row?.title.trim() || meta.title || '';
-      syncInto(root, meta.docId, meta.file, Buffer.from(renderMoss(decode(remote), title, [])), remote, null, folds, { title });
-    } else pullInto(root, meta.docId, meta.file, remote, null, folds);
+      recordSynced(root, meta.docId, meta.file, Buffer.from(renderMoss(decode(remote), title, [])), remote, null, folds, { title });
+    } else recordPull(root, meta.docId, meta.file, remote, null, folds);
     return { ...id, action: 'repulled', message: 'deleted here, so pulled again; delete the doc on the web to remove it' };
   }
   const local = readConfined(root, meta.file);
@@ -235,7 +224,7 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
   if (localChanged && ctx.downloadOnly) return heldBack(id);
   if (!localChanged && remoteHash === meta.baseHash) return { ...id, action: 'up-to-date' };
   if (!localChanged) {
-    pullInto(root, meta.docId, meta.file, remote, localHash, folds);
+    recordPull(root, meta.docId, meta.file, remote, localHash, folds);
     return { ...id, action: 'pulled' };
   }
   if (localHash === remoteHash) {
@@ -254,7 +243,7 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
   // As glyphdown does, the file and base converge on the doc so web edits keep arriving; rejected text is kept first.
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
   try {
-    pullInto(root, meta.docId, meta.file, merged, localHash, folds);
+    recordPull(root, meta.docId, meta.file, merged, localHash, folds);
   } catch (error) {
     if (!(error instanceof CliError)) throw error;
     // Edited again during the push: the file and its base stay, so the next pass three-way merges the newer text.
@@ -296,7 +285,7 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   /** The file becomes the doc's `text` in moss form, with the file's markers carried onto it. */
   const write = (text: Uint8Array) => {
     const rendered = renderMoss(decode(text), title, remapMarkers(note.markers, note.clean, decode(text)));
-    syncInto(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title });
+    recordSynced(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title });
   };
   if (!localChanged || sha256Hex(note.clean) === meta.baseHash) {
     // Nothing to push: the body here is the base.
@@ -379,8 +368,8 @@ export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' |
 async function syncMedia(ctx: SyncContext, docId: string, settle: boolean): Promise<SyncResult[]> {
   const meta = readMeta(ctx.root, docId);
   if (!meta || !exists(ctx.root, meta.file)) return [];
-  // With a scope, only media whose reference was written here is read for upload.
-  const scoped = ctx.scope ? { denies: ctx.scope.denies, sends: sendsMedia(ctx.root, meta, decode(readConfined(ctx.root, meta.file))) } : {};
+  const scope = ctx.scope;
+  const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
   const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: !ctx.downloadOnly, download: true, ...scoped }, docId, meta.file);
   if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
   return step.results;
@@ -401,8 +390,6 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
     // file through the next pass's three-way reconcile, and nothing failing below can make a second doc. With no
     // title yet, the title is left unrecorded so the next pass finishes the rename below.
     const base = created.content !== undefined ? Buffer.from(created.content) : await client.content(doc.id, true);
-    // The file was written here, so every link and media reference it holds is its own.
-    clearRemote(root, doc.id);
     const meta = recordBase(root, doc.id, rel, base, folds, { mode: 'moss', ...(doc.title.trim() ? { title: doc.title } : {}), localHash: sha256Hex(bytes) });
     // A moss note with no title line takes its file's stem; stopped, the next pass finishes the rename.
     if (!doc.title.trim() && !ctx.signal?.aborted) {
@@ -422,11 +409,10 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
   // A blocked move records no server name it matches, so a later pass tries the move again.
   const filename = keepName ? {} : { filename: moved || to === rel ? doc.filename : '' };
   // Tracked at once, so nothing failing below can turn this file into a second doc.
-  clearRemote(root, doc.id);
   recordBase(root, doc.id, file, bytes, folds, filename);
   const merged = await client.content(doc.id, true);
   try {
-    pullInto(root, doc.id, file, merged, sha256Hex(bytes), folds);
+    recordPull(root, doc.id, file, merged, sha256Hex(bytes), folds);
   } catch (error) {
     // Edited during the create: the file and the base it was created from stay, and the next pass merges the edit.
     if (!(error instanceof CliError)) throw error;
@@ -474,17 +460,6 @@ export function workspaceScope(root: string, folds: boolean, files = markdownFil
   const scope = readScope(root);
   if (!scope) return null;
   return evaluateScope(root, scope, { files, tracked: trackedMetas(root), folds });
-}
-
-/** Takes every link and media reference the scope's tracked notes hold now as written here (`init --scope`, `scope confirm`); how many notes. */
-export function confirmScope(root: string, folds: boolean): number {
-  const scope = readScope(root);
-  if (!scope) throw new CliError(1, `${root} has no scope: \`moss-multi init --scope\` makes one`);
-  const tracked = trackedMetas(root);
-  const view = evaluateScope(root, scope, { files: markdownFiles(root), tracked, folds });
-  const confirmed = tracked.filter((meta) => view.admits(meta.file));
-  for (const meta of confirmed) clearRemote(root, meta.docId);
-  return confirmed.length;
 }
 
 /** One sync pass over the workspace at `ctx.root`, which must already hold a state directory. */
@@ -655,7 +630,7 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
         const held = new Set<string>();
         for (const result of await syncOnce({ ...ctx, signal })) {
           if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) err(describe(result));
-          else if (result.action === 'remote-link') {
+          else if (result.action === 'follow-only') {
             // Said once, not every pass, until it changes.
             held.add(result.file);
             if (!heldBefore.has(result.file)) out(describe(result));
