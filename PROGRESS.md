@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (194 of 236 planned tasks verified)
+**Overall: 81% done** (195 of 241 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 20 / 20 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 21 / 21 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -215,6 +215,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-15 — T6.Q verified: history now runs on m5's comment-draft, media, quota and formula fixes, and e2e setup resends a sign-up or sign-in that wrangler's proxy dropped while a large note's auto version was being written.
 - 2026-10-15 — T7.Q verified: agent sync, Bot presence and the watch daemon now run on m6's comment-draft, media, quota and formula fixes, with both sides kept and the full lane green on the m7 head.
 - 2026-10-18 — T7.B3 verified: the CLI pins the workspace root before requests and lock waits and re-checks it on every write, logout sends the session only over https or loopback, server text prints on one escaped line, email shares print the invite link and an empty `--suggest` push says nothing was suggested.
+- 2026-10-18 — T7.P1 verified: a `.moss-multi/scope.json` (allow, follow with depth, deny always winning) now limits sync, pull, push and add to in-scope notes, so an agent on a host only uploads allowlisted notes, notes reached by links stay download only until `scope confirm` adds them, and a folder without a scope file syncs as before.
 
 ## T1.1s identity audit
 
@@ -248,6 +249,15 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.P1's checker (172529d, 2026-10-18)
+
+- T7.P1 checker P2 (Media under an assets folder that is itself a scoped nested workspace bypasses the nested boundary; Codex P1, downgraded): noteMedia in packages/cli/src/media.ts does not call scopedNest on asset paths; only reachable when a nested workspace's root is exactly a note's assets/ folder; add a scopedNest check per asset.
+- T7.P1 checker P2 (An exact allow entry also covers an NFC/NFD twin name on a volume that keeps them apart; Codex P1, downgraded): covers() in packages/cli/src/scope.ts compares names in NFC while workspace sameFile keeps NFC and NFD distinct, so on Linux allow ['café.md'] also uploads an NFD twin; match on the filesystem's own name identity.
+- T7.P1 checker P2 (withoutSpans backtick pre-pass can still go superlinear): for each unmatched backtick run scope.ts rescans every later run, so backtick runs of increasing length cost Theta(k^3).
+- T7.P1 checker P2 (Outer scope evaluation can still read a tracked note owned by a nested scoped vault): workspaceScope in sync.ts receives all trackedMetas before pass() drops nested notes, so an outer follow can read its links and scope confirm can print its path; nothing is uploaded or written.
+- T7.P1 checker P2 (scope confirm re-reads and re-parses a source note's base once per followed target): syncedLink runs per (target, source) pair, so a hub note linking many unconfirmed notes costs quadratic work.
+- T7.P1 checker P2 (Conflict .rej sidecars ignore deny rules): setAside writes <file>.rej without consulting the scope; local only, never uploaded.
 
 ### From T7.S6's checker (210bbd2, 2026-10-14)
 
