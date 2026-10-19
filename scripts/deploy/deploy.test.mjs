@@ -967,7 +967,10 @@ describe('the staging retry gate (T8.2)', () => {
   const failed = (message) => [{ message, stack: '' }];
 
   it('names only an explicitly matched infrastructure failure, on its first line', () => {
-    expect(retryClass(failed('InfraBlocked: sign-in: a Cloudflare error page'))).toBe('infra-blocked');
+    expect(retryClass(failed('InfraBlocked: sign-in: a Cloudflare error page'))).toBe('cloudflare error page');
+    expect(retryClass(failed('InfraBlocked: POST /api/docs: D1 7429 (overloaded)'))).toBe('d1 overloaded');
+    expect(retryClass(failed('InfraBlocked: GET /api/docs: the stack is unreachable'))).toBe('stack unreachable');
+    expect(retryClass(failed(`InfraBlocked: /api/version unreachable at ${URL_STAGING}: fetch failed (ECONNRESET)\nlog tail`))).toBe('stack unreachable');
     expect(retryClass(failed(`page.goto: net::ERR_CONNECTION_RESET at ${URL_STAGING}/d/x`))).toBe('connection reset');
     expect(retryClass(failed('apiRequestContext.post: socket hang up'))).toBe('connection reset');
     expect(retryClass(failed('page.reload: net::ERR_NETWORK_CHANGED'))).toBe('network changed');
@@ -978,6 +981,28 @@ describe('the staging retry gate (T8.2)', () => {
     expect(retryClass(failed('Error: expect(received).toBe(expected)\nCall log:\n  - socket hang up net::ERR_CONNECTION_RESET'))).toBeNull();
     expect(retryClass([])).toBeNull();
     expect(retryClass(undefined)).toBeNull();
+  });
+
+  it('never retries a Worker exception, a wrong build or a malformed /api/version, though each is an InfraBlocked', async () => {
+    // Cloudflare 1101 and 1102 are the Worker's own JavaScript throwing or passing its limits: a product failure.
+    expect(retryClass(failed('InfraBlocked: POST /api/docs: Worker 1101'))).toBeNull();
+    expect(retryClass(failed('InfraBlocked: POST /api/docs: Worker 1102'))).toBeNull();
+    // assertProvenance (e2e/lib/stack.ts) runs in the stack fixture, before the actors fixture's gate.
+    const wrongBuild = failed('InfraBlocked: /api/version commit is 0123abc, the stack was started on 4567def');
+    expect(retryClass(wrongBuild)).toBeNull();
+    expect(retryClass(failed('InfraBlocked: /api/version answered malformed JSON: Unexpected token < in JSON'))).toBeNull();
+    expect(retryClass(failed(`InfraBlocked: /api/version unreachable at ${URL_STAGING}: The operation was aborted due to timeout`))).toBeNull();
+    expect(retryClass(failed('InfraBlocked: the suite password MOSS_SUITE_PASSWORD is not set'))).toBeNull();
+    const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
+    try {
+      // A provenance mismatch on the first attempt fails the run even if the retry would pass.
+      expect(recordVerdict(outputDir, 'wrong-build', 0, wrongBuild)).toBeNull();
+      await expect(gateRetry({ testId: 'wrong-build', retry: 1, project: { outputDir } }, 50)).rejects.toThrow(/retry refused/);
+      expect(recordVerdict(outputDir, 'worker-1101', 0, failed('InfraBlocked: GET /api/docs/x/content: Worker 1101'))).toBeNull();
+      await expect(gateRetry({ testId: 'worker-1101', retry: 1, project: { outputDir } }, 50)).rejects.toThrow(/retry refused/);
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
   });
 
   it('refuses a retry when any of the attempt\'s errors is not infrastructure, whichever came first', async () => {

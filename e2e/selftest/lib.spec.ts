@@ -317,6 +317,12 @@ test.describe('infrastructure classification', () => {
     expect(classifyInfra('<!DOCTYPE html><!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--> cloudflare')).not.toBeNull();
     expect(classifyInfra('D1_ERROR: Too many requests queued (7429)')).not.toBeNull();
     expect(classifyInfra('error code: 1101')).not.toBeNull();
+    // A Cloudflare page for the Worker's own exception or limit is named as such, never as an edge error page.
+    const page = (code: string, title: string) =>
+      `<!DOCTYPE html><!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--><title>${title} | Cloudflare</title><span class="cf-error-code">${code}</span>`;
+    expect(classifyInfra(page('1101', 'Worker threw exception'))).toBe('Worker 1101');
+    expect(classifyInfra(page('1102', 'Worker exceeded resource limits'))).toBe('Worker 1102');
+    expect(classifyInfra(page('502', 'Bad gateway'))).toBe('a Cloudflare error page');
     expect(classifyInfra('fetch failed: connect ECONNREFUSED 127.0.0.1:8850')).not.toBeNull();
   });
   test('product answers are not', () => {
