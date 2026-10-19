@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 67% done** (157 of 236 planned tasks verified)
+**Overall: 63% done** (158 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 67 / 67 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 23 / 23 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -183,6 +183,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T3.B17 verified: + Note, Cmd/Ctrl+N and folder drag-and-drop now follow the role on the folder involved rather than the vault root, a refused move is undone and shows the server's reason once, a reader no longer sees Remove on a missing image or reaches hidden gap and resize controls, read-only tabs still switch by keyboard, and a refused restore's notice no longer covers the Trash banner.
 - 2026-10-18 — T4.Q second pass verified: comments now run on m3's later fixes (upload reader deadline, the j09 pass-through route, read-only controls and folder permissions), with a reader's tabs and Add comment control both exempt in invariant 9 and the full lane green on the m4 head (already counted on 2026-10-14).
 - 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
+- 2026-10-19 — T5.S10 verified: in Suggest mode a paste is Lexical's own paste, admitted whole or refused whole against every suggest limit by what it actually writes, pastes over table cells are refused, undo and redo are admitted the same way, and an undone paste or Enter no longer shows its restored rest as a suggestion.
 
 ## T1.1s identity audit
 
@@ -720,3 +721,4 @@ Local browser verification remains assigned to the independent checker under the
 - T4.Q second pass (m4 on the later m3 fixes) checker P2, owned by m3 (from T3.B17): invariant 9's tab exemption in e2e/lib/detectors.js editableUnbound is not limited to readonly body bindings, so a focused tab in an unbound or terminal body goes unreported (same item as the T3.B17 line above; not introduced by the merge).
 - T5.Q second pass (m5 on the later m4 fixes) checker P2: j01-paste-check stall flake is closer to the bound than reported — attempts 1 and 2 of run 39200483704 failed e2e (chromium, pasterace) at e2e/lib/paste.ts:294, attempt 1 at 5395 ms against a 5112 ms bound, and t/T7.P2 failed it at 5029 ms (run 39181829307), so the timing sensitivity spans branches → T3.B27's calibrated stall bounds reaching m5 is the stated fix (same item as the T5.S7 and T5.P lines).
 - T5.Q second pass (m5 on the later m4 fixes) checker P2, owned by m3 (from T3.B17): invariant 9's tab exemption (e2e/lib/detectors.js:91-100) covers every non-live binding, not only readonly bodies (same item as the T3.B17 line above; not introduced by the merge).
+- T5.S10 (Suggest-mode paste is Lexical's own) checker P2: typing after an undo, redo and second undo of an Enter brings the restored rest back as a suggestion → T5.S14 red-first line.
