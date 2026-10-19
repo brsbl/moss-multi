@@ -79,6 +79,8 @@ export class Outbox {
   /** No ack has covered anything for stallMs: up to the budget may be unacked. */
   #stalled = false;
   #stall: ReturnType<typeof setTimeout> | undefined;
+  /** When the queue last stopped at the budget, stalled, with writes still waiting; undefined while it is not. */
+  #blockedSince: number | undefined;
   readonly #pieceBytes: number;
   readonly #windowBytes: number;
   readonly #budgetBytes: number;
@@ -98,6 +100,11 @@ export class Outbox {
    */
   get busy(): boolean {
     return this.#queue.length > 0 || (this.#sent.length > 0 && !this.#stalled);
+  }
+
+  /** How long writes have waited behind the budget with no ack freeing any (0 when they are not): acks are lost. */
+  blockedFor(now: number): number {
+    return this.#blockedSince === undefined ? 0 : now - this.#blockedSince;
   }
 
   send(frame: Frame): void {
@@ -143,6 +150,7 @@ export class Outbox {
     this.#queue.length = 0;
     this.#sent.length = 0;
     this.#sentBytes = 0;
+    this.#blockedSince = undefined;
   }
 
   #covered(ends: Map<number, number>): boolean {
@@ -165,6 +173,8 @@ export class Outbox {
       this.#sentBytes += bytes;
       this.raw(next.frame);
     }
+    if (!this.#stalled || this.#queue.length === 0) this.#blockedSince = undefined;
+    else this.#blockedSince ??= Date.now();
     if (this.#sent.length > 0 && this.#stall === undefined) {
       this.#stall = setTimeout(() => {
         this.#stall = undefined;
