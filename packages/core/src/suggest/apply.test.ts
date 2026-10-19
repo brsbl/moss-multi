@@ -13,7 +13,8 @@ const CHAIN = 2_000;
  * reverse order, so the store iterates the chain's clients last link first.
  */
 function chain(): { doc: Y.Doc; body: Y.Doc; original: Y.ID; last: Y.ID } {
-  const doc = new Y.Doc();
+  // As the fork and the mirrors keep them: a removed copy keeps its content.
+  const doc = new Y.Doc({ gc: false });
   doc.clientID = 1;
   const root = doc.get('root', Y.XmlText);
   const paragraph = new Y.XmlText();
@@ -28,7 +29,7 @@ function chain(): { doc: Y.Doc; body: Y.Doc; original: Y.ID; last: Y.ID } {
     doc.clientID = BASE + k;
     scratch.insert(scratch.length, '.');
   }
-  const body = new Y.Doc();
+  const body = new Y.Doc({ gc: false });
   Y.applyUpdate(body, Y.encodeStateAsUpdate(doc));
   let last = original;
   for (let k = 1; k <= CHAIN; k += 1) {
