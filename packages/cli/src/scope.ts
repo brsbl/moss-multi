@@ -329,8 +329,8 @@ export interface ScopeInput {
 }
 
 /**
- * Evaluates `scope` over the workspace. Only entry notes and the notes they reach are read, for their links; a denied
- * note is never read, and an out-of-scope moss note only for its `meta.json` id and title. Paths compare as the
+ * Evaluates `scope` over the workspace. Only entry notes and the notes they reach are read, for their links; any other
+ * moss note, denied or out of scope, only for its `meta.json` id and title. Paths compare as the
  * volume resolves them: NFC, and without case only where it folds case.
  */
 export function evaluateScope(root: string, scope: Scope, input: ScopeInput): ScopeView {
@@ -351,30 +351,46 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
   const trackedBy = new Map(tracked.map((meta) => [key(meta.file), meta]));
   const candidates = [...files, ...tracked.map((meta) => meta.file)];
   const known = new Set<string>();
-  // The titles denied notes go by, from their names only: a link to one never pulls a server doc in its place.
+  // The titles and moss ids denied notes go by (a denied note's text is never read, only its meta.json): a link to
+  // one, under any of its titles, never pulls a server doc in its place.
   const deniedTitles = new Set<string>();
-  for (const file of candidates) {
-    if (denied(file)) {
-      const unit = noteUnit(file);
-      deniedTitles.add(titleKey(basename(unit, unit === file ? extname(file) : '')));
+  const deniedIds = new Set<string>();
+  /** A moss note's `meta.json` id and title, or nothing when it has none moss wrote. */
+  const mossMeta = (unit: string): { id?: string; title?: string } => {
+    try {
+      const meta = JSON.parse(readConfined(root, join(unit, 'meta.json')).toString('utf8')) as { id?: unknown; title?: unknown };
+      return {
+        ...(typeof meta.id === 'string' && NOTE_ID.test(meta.id) ? { id: meta.id.toLowerCase() } : {}),
+        ...(typeof meta.title === 'string' ? { title: meta.title } : {}),
+      };
+    } catch {
+      return {};
     }
-    if (denied(file) || known.has(key(file))) continue;
-    known.add(key(file));
+  };
+  for (const file of candidates) {
     const unit = noteUnit(file);
+    if (denied(file)) {
+      deniedTitles.add(titleKey(basename(unit, unit === file ? extname(file) : '')));
+      if (unit !== file) {
+        const meta = mossMeta(unit);
+        if (meta.id) deniedIds.add(meta.id);
+        if (meta.title !== undefined) deniedTitles.add(titleKey(meta.title));
+      }
+      continue;
+    }
+    if (known.has(key(file))) continue;
+    known.add(key(file));
     byPath.set(key(file), file);
     byPath.set(key(unit), file);
     if (unit === file) byPath.set(key(file.slice(0, -extname(file).length)), file);
     addTitle(basename(unit, unit === file ? extname(file) : ''), file);
     if (unit !== file) {
-      try {
-        const meta = JSON.parse(readConfined(root, join(unit, 'meta.json')).toString('utf8')) as { id?: unknown; title?: unknown };
-        if (typeof meta.id === 'string' && NOTE_ID.test(meta.id)) byId.set(meta.id.toLowerCase(), file);
-        if (typeof meta.title === 'string') addTitle(meta.title, file);
-      } catch {
-        // No meta.json, or not one moss wrote.
-      }
+      const meta = mossMeta(unit);
+      if (meta.id) byId.set(meta.id, file);
+      if (meta.title !== undefined) addTitle(meta.title, file);
     }
   }
+  deniedTitles.delete('');
 
   const resolvePath = (path: string): string[] => {
     const found = byPath.get(key(path)) ?? byPath.get(key(path.replace(/\.md$/i, '')));
@@ -438,9 +454,12 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
     const found = resolvePath(path);
     const files = found.length ? found : resolveTitle(entry);
     for (const file of files) visit(file, frontier);
-    if (!files.length && !GLOB.test(entry)) {
-      const title = basename(path, extname(path) === '.md' ? '.md' : '');
-      miss(title, beside(dirname(noteUnit(path.endsWith('.md') ? path : join(path, `${basename(path)}.md`))), title));
+    if (!files.length && !GLOB.test(entry) && !denied(path)) {
+      // An entry naming a `.md` file is pulled to exactly that path; a title or folder, to a moss note folder there.
+      if (path.endsWith('.md')) {
+        const unit = noteUnit(path);
+        miss(basename(unit, unit === path ? '.md' : ''), path);
+      } else miss(basename(path), beside(dirname(path), basename(path)));
     }
   }
   for (let hop = 0; hop < scope.depth && frontier.length > 0; hop += 1) {
@@ -449,7 +468,8 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
       for (const link of linksOf(file)) {
         const found = resolve(link);
         for (const linked of found) visit(linked, next, file);
-        if (found.length) continue;
+        // A link naming a denied note by its moss id reaches nothing, whatever title it carries.
+        if (found.length || (link.id !== undefined && deniedIds.has(link.id.toLowerCase()))) continue;
         if (link.path !== undefined) {
           if (link.path.endsWith('.md')) {
             const unit = noteUnit(link.path);
