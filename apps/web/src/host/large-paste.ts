@@ -5,8 +5,6 @@
 // bytes it adds and its largest indivisible piece; past the note's cap or the frame cap it is refused, visibly. Then
 // it lands in batches of units, the main thread free between them, all one undo step. Any input in the meantime (a
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
-// T3.B4 (B209): nothing of it lands before the DocDO has answered its reserve; input meanwhile waits for that answer
-// and is replayed, in order, once the paste has landed or been refused, so a refusal never takes the typing with it.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
 import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
@@ -16,15 +14,13 @@ import { seedOf } from '@moss-multi/sync/registers';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
-  $createRangeSelectionFromDom, $isDecoratorNode, $isElementNode, $isNodeSelection, $isRangeSelection, $isTextNode,
-  $parseSerializedNode, $setSelection, COMMAND_PRIORITY_CRITICAL, CONTROLLED_TEXT_INSERTION_COMMAND, createEditor,
-  DELETE_CHARACTER_COMMAND, DELETE_WORD_COMMAND, INSERT_LINE_BREAK_COMMAND, INSERT_PARAGRAPH_COMMAND, KEY_DOWN_COMMAND,
-  PASTE_COMMAND, REDO_COMMAND, UNDO_COMMAND, type BaseSelection, type ElementNode,
+  $isDecoratorNode, $isElementNode, $isNodeSelection, $isRangeSelection, $isTextNode, $parseSerializedNode, $setSelection,
+  COMMAND_PRIORITY_CRITICAL, createEditor, REDO_COMMAND, UNDO_COMMAND, type BaseSelection, type ElementNode,
   type Klass, type LexicalEditor, type LexicalNode, type NodeKey, type PointType, type SerializedElementNode, type SerializedLexicalNode,
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
-import { countedPayloadBytes, PASTE_LIMIT_BYTES, reservePaste, WRITE_REFUSED } from './collab/doc-session.ts';
+import { countedPayloadBytes, PASTE_LIMIT_BYTES, WRITE_REFUSED } from './collab/doc-session.ts';
 import { markLanding } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
@@ -628,212 +624,17 @@ const INPUT_EVENTS = ['keydown', 'pointerdown', 'mousedown', 'paste', 'drop', 'c
 
 const jobs = new WeakMap<LexicalEditor, PasteJob>();
 
-/** How long input waits for a paste's reserve to be answered before the paste gives up (the note may be offline). */
-const HOLD_MS = 4_000;
-/** Said when a paste gave up waiting for its reserve's answer. */
-export const PASTE_UNANSWERED = 'Your paste was not added: the note could not confirm room for it in time.';
-/** Said for a cut or a drop while a paste waits for its reserve's answer. */
-const PASTE_WAITING = 'Your paste is still being added. Try that again in a moment.';
-
-/** Input that waits while a paste's reserve is unanswered, replayed in order once the paste has landed or been refused. */
-type HeldInput =
-  | { kind: 'key'; init: KeyboardEventInit }
-  | { kind: 'input'; inputType: string; data: string | null }
-  | { kind: 'paste'; data: DataTransfer }
-  | { kind: 'request'; request: PasteRequest }
-  | { kind: 'command'; redo: boolean };
-
-const heldInput = new WeakMap<LexicalEditor, HeldInput[]>();
-const draining = new WeakSet<LexicalEditor>();
-/** A held input is being replayed: the jobs' input listeners let its events through. */
-let replaying = false;
-const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Fn', 'AltGraph']);
-/** The `beforeinput` types replayed as commands; text insertions replay their data, and the rest go on as they come. */
-const INPUT_COMMANDS: Record<string, (editor: LexicalEditor) => boolean> = {
-  insertParagraph: (editor) => editor.dispatchCommand(INSERT_PARAGRAPH_COMMAND, undefined),
-  insertLineBreak: (editor) => editor.dispatchCommand(INSERT_LINE_BREAK_COMMAND, false),
-  deleteContentBackward: (editor) => editor.dispatchCommand(DELETE_CHARACTER_COMMAND, true),
-  deleteContentForward: (editor) => editor.dispatchCommand(DELETE_CHARACTER_COMMAND, false),
-  deleteWordBackward: (editor) => editor.dispatchCommand(DELETE_WORD_COMMAND, true),
-  deleteWordForward: (editor) => editor.dispatchCommand(DELETE_WORD_COMMAND, false),
-  historyUndo: (editor) => editor.dispatchCommand(UNDO_COMMAND, undefined),
-  historyRedo: (editor) => editor.dispatchCommand(REDO_COMMAND, undefined),
-};
-/** The keys whose caret move a replayed keydown makes itself: the browser moves the caret only for a trusted one. */
-const MOVES: Record<string, ['forward' | 'backward', string]> = {
-  ArrowLeft: ['backward', 'character'], ArrowRight: ['forward', 'character'], ArrowUp: ['backward', 'line'],
-  ArrowDown: ['forward', 'line'], Home: ['backward', 'lineboundary'], End: ['forward', 'lineboundary'],
-};
-
-/** The editable an event is aimed at is `root` itself (a field nested in a block is its own editor). */
-function aimedAt(root: HTMLElement, target: EventTarget | null): boolean {
-  if (!(target instanceof Node) || !root.contains(target)) return false;
-  const element = target instanceof Element ? target : target.parentElement;
-  return element?.closest('[contenteditable], input, textarea, select') === root;
-}
-
-function copyData(source: DataTransfer | null): DataTransfer {
-  const copy = new DataTransfer();
-  if (!source) return copy;
-  // WebKit lists no types on a trusted paste's clipboardData, yet getData answers.
-  const types = source.types.length > 0 ? source.types : ['application/x-lexical-editor', 'text/html', 'text/uri-list', 'text/plain'];
-  for (const type of types) {
-    const data = type === 'Files' ? '' : source.getData(type);
-    if (data) copy.setData(type, data);
-  }
-  for (const file of source.files) copy.items.add(file);
-  return copy;
-}
-
-/** A copy, cut or paste key: Cmd/Ctrl+C, X or V (Shift too), Ctrl/Shift+Insert, Shift+Delete. */
-function clipboardKey({ key, ctrlKey, metaKey, shiftKey, altKey }: KeyboardEvent): boolean {
-  if (altKey) return false;
-  if ((ctrlKey || metaKey) && ['c', 'x', 'v'].includes(key.toLowerCase())) return true;
-  return (key === 'Insert' && (ctrlKey || shiftKey)) || (key === 'Delete' && shiftKey && !ctrlKey && !metaKey);
-}
-
-function holdInput(editor: LexicalEditor, input: HeldInput): void {
-  let queue = heldInput.get(editor);
-  if (!queue) heldInput.set(editor, (queue = []));
-  queue.push(input);
-}
-
-/**
- * An event aimed at `editor` while its paste waits for the reserve's answer: keys, text input and pastes wait, to be
- * replayed; a click in the note does nothing (the caret stays where the paste goes); a cut or a drop is refused, visibly.
- * A copy, cut or paste key goes on uncancelled, so its clipboard event follows.
- * A composition cannot be held back, and goes on where the caret is.
- */
-function holdEvent(editor: LexicalEditor, event: Event): void {
-  const root = editor.getRootElement();
-  if (!root) return;
-  const click = event.type === 'pointerdown' || event.type === 'mousedown';
-  if (click ? !(event.target instanceof Node && root.contains(event.target)) : !aimedAt(root, event.target)) return;
-  let input: HeldInput | null = null;
-  if (event.type === 'keydown') {
-    const { key, code, ctrlKey, metaKey, shiftKey, altKey, isComposing } = event as KeyboardEvent;
-    if (isComposing || MODIFIER_KEYS.has(key)) return;
-    if (clipboardKey(event as KeyboardEvent)) {
-      // The browser's copy, cut or paste follows only an uncancelled keydown; that event is held or refused below.
-      event.stopImmediatePropagation();
-      return;
-    }
-    input ={ kind: 'key', init: { key, code, ctrlKey, metaKey, shiftKey, altKey, bubbles: true, cancelable: true } };
-  } else if (event.type === 'beforeinput') {
-    const { inputType, data } = event as InputEvent;
-    if (!event.cancelable || !(inputType in INPUT_COMMANDS || (inputType.startsWith('insert') && data))) return;
-    input = { kind: 'input', inputType, data };
-  } else if (event.type === 'paste') {
-    input = { kind: 'paste', data: copyData((event as ClipboardEvent).clipboardData) };
-  } else if (event.type === 'cut' || event.type === 'drop') {
-    refuseInput(PASTE_WAITING);
-  } else if (!click) {
-    return;
-  }
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  if (input) holdInput(editor, input);
-}
-
-/** Moves the caret as the key would have, and has Lexical read it. */
-function move(editor: LexicalEditor, init: KeyboardEventInit): void {
-  const [direction, unit] = MOVES[init.key!];
-  const granularity = init.altKey && unit === 'character' ? 'word'
-    : init.metaKey || init.ctrlKey ? (unit === 'character' ? 'lineboundary' : 'documentboundary')
-      : unit;
-  // The keys replayed before it are in the DOM first.
-  if (!editor._updating) editor.read(noop);
-  window.getSelection()?.modify(init.shiftKey ? 'extend' : 'move', direction, granularity);
-  editor.update(() => {
-    const range = $createRangeSelectionFromDom(window.getSelection(), editor);
-    if (range) $setSelection(range);
-  }, { discrete: true });
-}
-
-function replay(editor: LexicalEditor, input: HeldInput): void {
-  const root = editor.getRootElement();
-  replaying = true;
-  try {
-    switch (input.kind) {
-      case 'command':
-        editor.dispatchCommand(input.redo ? REDO_COMMAND : UNDO_COMMAND, undefined);
-        return;
-      case 'request':
-        pasteLarge(editor, input.request);
-        return;
-      case 'paste': {
-        const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: input.data });
-        if (root) root.dispatchEvent(event);
-        else editor.dispatchCommand(PASTE_COMMAND, event);
-        return;
-      }
-      case 'input':
-        if (input.inputType in INPUT_COMMANDS) INPUT_COMMANDS[input.inputType](editor);
-        else if (input.data) editor.dispatchCommand(CONTROLLED_TEXT_INSERTION_COMMAND, input.data);
-        return;
-      case 'key': {
-        // Lexical's keydown path (Enter, Backspace, undo, the host's shortcuts); the text a key types is inserted here.
-        const event = new KeyboardEvent('keydown', input.init);
-        if (root) root.dispatchEvent(event);
-        else editor.dispatchCommand(KEY_DOWN_COMMAND, event);
-        if (event.defaultPrevented) return;
-        const { key = '', ctrlKey, metaKey, altKey, shiftKey } = input.init;
-        // WebKit's Lexical leaves Enter (iOS's, Backspace too) to the native beforeinput, which a cancelled keydown
-        // never gets.
-        if (key === 'Enter' && !ctrlKey && !metaKey && !altKey) INPUT_COMMANDS[shiftKey ? 'insertLineBreak' : 'insertParagraph'](editor);
-        else if (key === 'Backspace' && !ctrlKey && !metaKey && !altKey) INPUT_COMMANDS.deleteContentBackward(editor);
-        else if (key.length === 1 && !ctrlKey && !metaKey) editor.dispatchCommand(CONTROLLED_TEXT_INSERTION_COMMAND, key);
-        else if (root && key in MOVES) move(editor, input.init);
-      }
-    }
-  } finally {
-    replaying = false;
-  }
-}
-
-/** Replays the input held for `editor`, in order; a paste among it that waits for its own answer holds the rest. */
-function drain(editor: LexicalEditor): void {
-  const queue = heldInput.get(editor);
-  if (!queue || draining.has(editor)) return;
-  draining.add(editor);
-  try {
-    while (queue.length > 0) {
-      const job = jobs.get(editor);
-      if (job) {
-        job.flush();
-        if (job.holding) return;
-      }
-      replay(editor, queue.shift()!);
-    }
-    heldInput.delete(editor);
-  } finally {
-    draining.delete(editor);
-  }
-}
-
-/**
- * A step of a paste job: void to go on in the next task, or a promise to go on once it settles (the paste's reserve
- * waiting for its answer). Landing the rest at once goes on without waiting.
- */
-type Step = void | Promise<void>;
-
-/**
- * A paste, or a paste's redo, landing in batches; any input lands the rest first. Input while its reserve is unanswered
- * waits for the answer (`holding`), at most HOLD_MS, unless the pane is closing: the paste then lands at once.
- */
+/** A paste, or a paste's redo, landing in batches; any input lands the rest first. */
 class PasteJob {
-  readonly #steps: Generator<Step, void>;
+  readonly #steps: Generator<void, void>;
   readonly #stops: (() => void)[] = [];
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flushing = false;
   #ended = false;
-  #holding = false;
-  #heldOut = false;
-  #release: (() => void) | undefined;
   /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
   readonly #dir = new DirLift();
 
-  constructor(readonly editor: LexicalEditor, steps: (job: PasteJob) => Generator<Step, void>) {
+  constructor(readonly editor: LexicalEditor, steps: (job: PasteJob) => Generator<void, void>) {
     this.#steps = steps(this);
   }
 
@@ -842,104 +643,53 @@ class PasteJob {
     return this.#flushing;
   }
 
-  /** Input waits for the paste's reserve to be answered. */
-  get holding(): boolean {
-    return this.#holding;
-  }
-
-  /** The editor is mounted, so input can wait for the answer; a pane closing lands the paste at once. */
-  get canHold(): boolean {
-    return this.editor.getRootElement() !== null;
-  }
-
-  /** Input waited HOLD_MS and the answer has not come: the paste gives up. */
-  get heldOut(): boolean {
-    return this.#heldOut;
-  }
-
   start(): void {
     markUnacked(this, true);
     markLanding(this.editor, true);
     for (const type of INPUT_EVENTS) {
-      window.addEventListener(type, this.#onInput, true);
-      this.#stops.push(() => window.removeEventListener(type, this.#onInput, true));
+      window.addEventListener(type, this.flush, true);
+      this.#stops.push(() => window.removeEventListener(type, this.flush, true));
     }
     // An undo or redo while the paste lands: keys and clicks land the rest first, outside any update. A command
     // dispatched otherwise runs inside an update, which the rest would join, and the undo's own (historic) changes
-    // would then keep that update from reaching the doc: the rest lands and this undo or redo does nothing. While the
-    // paste waits for its answer, the command waits with the rest of the input.
-    const landFirst = (redo: boolean) => () => {
+    // would then keep that update from reaching the doc: the rest lands and this undo or redo does nothing.
+    const landFirst = () => {
       const landing = !this.#ended;
-      if (!this.#holding) this.flush();
-      if (!this.#holding) return landing;
-      holdInput(this.editor, { kind: 'command', redo });
-      return true;
+      this.flush();
+      return landing;
     };
     this.#stops.push(
       // The pane closing (or the note switching) unmounts the editor: the rest lands while its binding still syncs.
       this.editor.registerRootListener((root) => {
-        if (root) return;
-        if (this.#holding) this.#release?.();
-        else this.flush();
+        if (!root) this.flush();
       }),
-      this.editor.registerCommand(UNDO_COMMAND, landFirst(false), COMMAND_PRIORITY_CRITICAL),
-      this.editor.registerCommand(REDO_COMMAND, landFirst(true), COMMAND_PRIORITY_CRITICAL),
+      this.editor.registerCommand(UNDO_COMMAND, landFirst, COMMAND_PRIORITY_CRITICAL),
+      this.editor.registerCommand(REDO_COMMAND, landFirst, COMMAND_PRIORITY_CRITICAL),
     );
     this.#timer = setTimeout(this.#tick, 0);
   }
 
-  readonly #onInput = (event: Event): void => {
-    if (replaying) return;
-    if (!this.#holding) this.flush();
-    if (this.#holding) holdEvent(this.editor, event);
-  };
-
-  /** Lands whatever is left now, in this task; with the reserve unanswered, input waits for the answer instead. */
+  /** Lands whatever is left now, in this task. */
   readonly flush = (): void => {
-    if (this.#ended || this.#flushing || this.#holding) return;
+    if (this.#ended || this.#flushing) return;
     this.#flushing = true;
     clearTimeout(this.#timer);
-    let answer: Promise<void> | undefined;
     try {
-      for (let step = this.#steps.next(); !step.done; step = this.#steps.next()) {
-        if (step.value instanceof Promise) {
-          answer = step.value;
-          break;
-        }
+      while (!this.#steps.next().done) {
+        // each step's work is done; no yielding
       }
     } finally {
-      this.#flushing = false;
-      if (answer) this.#hold(answer);
-      else this.#end();
+      this.#end();
     }
   };
 
-  /** Input waits until the answer comes, HOLD_MS at most, or the pane closes; then the rest lands at once. */
-  #hold(answer: Promise<void>): void {
-    this.#holding = true;
-    const release = () => {
-      if (this.#release !== release) return;
-      this.#holding = false;
-      this.#release = undefined;
-      clearTimeout(timer);
-      this.flush();
-    };
-    const timer = setTimeout(() => {
-      this.#heldOut = true;
-      release();
-    }, HOLD_MS);
-    this.#release = release;
-    void answer.then(release);
-  }
-
   readonly #tick = (): void => {
     this.#timer = undefined;
-    let step: IteratorResult<Step, void> = { done: true, value: undefined };
+    let done = true;
     try {
-      step = this.#steps.next();
+      done = !!this.#steps.next().done;
     } finally {
-      if (step.done) this.#end();
-      else if (step.value instanceof Promise) void step.value.then(() => { if (!this.#ended && !this.#flushing && !this.#holding) this.#timer = setTimeout(this.#tick, 0); });
+      if (done) this.#end();
       else this.#timer = setTimeout(this.#tick, 0);
     }
   };
@@ -964,7 +714,6 @@ class PasteJob {
       }
     }
     markUnacked(this, false);
-    drain(this.editor);
   }
 
   /** Lifts `dir` from the top-level elements holding the paste's lists and tables (dir-lift.ts). */
@@ -1041,12 +790,8 @@ function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined):
   return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
 }
 
-/**
- * Lands `request`: its scratch replay, its reserve at the DocDO, then its batches or its refusal. Nothing lands before
- * the DocDO has answered the reserve; input meanwhile waits for the answer (PasteJob.holding). Only a pane closing
- * lands it at once, its frames waiting for the answer in the outbox (PasteTicket.land).
- */
-function* landPaste(job: PasteJob, request: PasteRequest): Generator<Step, void> {
+/** Lands `request`: its scratch replay, then its batches or its refusal. */
+function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void> {
   const { editor } = job;
   const { plan } = request;
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
@@ -1057,36 +802,9 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<Step, void>
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
   }
-  // The DocDO holds room for all of it before its first frame, so a concurrent writer cannot leave it half landed; a
-  // refusal leaves the note and every other paste as they are.
-  const ticket = reservePaste(noteDoc(editor), bytes);
-  while (ticket?.answer === 'pending') {
-    if (job.flushing && !job.canHold) break;
-    if (job.heldOut) {
-      ticket.drop();
-      refuseInput(PASTE_UNANSWERED);
-      return;
-    }
-    yield ticket.settled;
-  }
-  if (ticket && (ticket.answer === 'refused' || ticket.answer === 'gone')) {
-    if (ticket.answer === 'refused') refuseInput(WRITE_REFUSED['doc-cap']);
-    return;
-  }
-  ticket?.land();
-  try {
-    yield* placeBatches(job, request, max);
-  } finally {
-    ticket?.end();
-  }
-}
-
-/** The paste itself: the first batch at the caret, then the rest, all one undo step. */
-function* placeBatches(job: PasteJob, request: PasteRequest, max: number): Generator<Step, void> {
-  const { editor } = job;
-  const { plan } = request;
   yield;
 
+  // 2. The paste itself: the first batch at the caret, then the rest, all one undo step.
   const undo = collabUndo(editor);
   undo?.stopCapturing();
   const placer = new Placer(plan, true);
@@ -1140,7 +858,7 @@ const redoing = new WeakSet<LexicalEditor>();
 const REDO_SLICE_BYTES = 8 * 1024 * 1024;
 
 /** The redo of a paste that landed in batches, a slice at a time, the main thread free between slices. */
-function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<Step, void> {
+function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<void, void> {
   const { editor } = job;
   const pacing = new Pacer('moss-paste-redo', max);
   const layout = () => void editor.getRootElement()?.offsetHeight;
@@ -1173,8 +891,6 @@ function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<
  * paste was, wherever peers' edits have moved that.
  */
 function $redoInSlices(editor: LexicalEditor): boolean {
-  // A paste still waiting for its answer: the redo waits too (PasteJob's own REDO_COMMAND handler holds it).
-  if (jobs.get(editor)?.holding) return false;
   // A paste or a redo still landing lands first.
   jobs.get(editor)?.flush();
   const undo = collabUndo(editor);
@@ -1192,11 +908,6 @@ function $redoInSlices(editor: LexicalEditor): boolean {
 /** Lands `request` in batches, after its scratch replay fits; a paste still landing in `editor` lands first. */
 export function pasteLarge(editor: LexicalEditor, request: PasteRequest): void {
   jobs.get(editor)?.flush();
-  // A paste still waiting for its answer: this one goes after it.
-  if (jobs.get(editor)?.holding) {
-    holdInput(editor, { kind: 'request', request });
-    return;
-  }
   if (!redoing.has(editor)) {
     redoing.add(editor);
     editor.registerCommand(REDO_COMMAND, () => $redoInSlices(editor), COMMAND_PRIORITY_CRITICAL);

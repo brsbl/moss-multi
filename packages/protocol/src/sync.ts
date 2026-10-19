@@ -57,15 +57,6 @@ export const CUSTOM_PREFIX = '__YPS:';
 
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
 
-/**
- * A client's custom message (T3.B4). `reserve`: paste `p`, about `b` bytes, is about to land in several frames; the
- * DocDO answers `reserved` and holds the room for that paste (not the socket) until its writes have used it or it
- * lapses, or `reserve-refused` when it would not fit beside what the doc holds and every other reservation, closing
- * nothing. `paste`: the next binary frame writes for these pastes, so the room they reserved is its own. `release`:
- * paste `p` has landed whole (or gave up before landing), so what is left of its room is free again.
- */
-export type ClientEvent = { t: 'reserve'; p: string; b: number } | { t: 'paste'; p: string[] } | { t: 'release'; p: string };
-
 /** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
 export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);
 
@@ -97,9 +88,6 @@ export type ServerEvent =
    * without `pb` means none.
    */
   | { t: 'usage'; pb: number }
-  /** The answer to a `reserve` (ClientEvent): the room for paste `p` is held, or it is refused whole (T3.B4). */
-  | { t: 'reserved'; p: string }
-  | { t: 'reserve-refused'; p: string }
   | { t: 'doc-deleted' };
 
 /** The same coverage for one payload doc (A§10.10), keyed by its block id in the ack's `p`. */

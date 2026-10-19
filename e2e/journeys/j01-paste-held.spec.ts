@@ -75,7 +75,7 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
   // is demanded: one that ignored the server's count would admit it.
   await expectRefusedPaste(refused, stack, lines.join('\n\n'), {
     admission: ({ adds, heldLocal, heldServer, limit: cap, fit }) => {
-      expect(fit, 'the tab\'s own admission refuses it, before any reserve').toBe(false);
+      expect(fit, 'the tab\'s own admission refuses it').toBe(false);
       const margin = Math.min(250_000, pb / 8);
       expect(heldLocal + adds, `beside what Ada holds, the paste fits (adds ${adds}, held ${heldLocal}, limit ${cap})`).toBeLessThan(cap - margin);
       expect(heldServer + adds, `beside what the server counts, it does not (adds ${adds}, held ${heldServer}, limit ${cap})`).toBeGreaterThan(cap + margin);

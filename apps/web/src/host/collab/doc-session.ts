@@ -7,7 +7,7 @@
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ClientEvent, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -64,13 +64,11 @@ class DocSocket extends WebSocket {
   declare closeListeners?: ((event: CloseEvent) => void)[];
   /** Sends large updates in acked pieces (T3.S6); a session's sockets each have their own. */
   declare outbox?: Outbox;
-  /** The ledger replays: its writes go past a sealed outbox (B209). */
-  declare forcing?: boolean;
 
   /** Nothing goes out on a socket that is closing: a reply to a late server frame would be lost and logs an error. */
   override send(...args: Parameters<WebSocket['send']>): void {
     if (this.readyState !== WebSocket.OPEN) return;
-    if (this.outbox) this.outbox.send(args[0] as Frame, this.forcing === true);
+    if (this.outbox) this.outbox.send(args[0] as Frame);
     else super.send(...args);
   }
 
@@ -290,44 +288,6 @@ export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.count
 /** What a paste may bring the note to: the cap less 3% for what its estimate leaves out (T3.S6). */
 export const PASTE_LIMIT_BYTES = Math.floor(STATE_CAP_BYTES * 0.97);
 
-/** A reserve holds 3% more than the paste measured, for what the estimate leaves out (as PASTE_LIMIT_BYTES). */
-const reserveBytes = (bytes: number): number => Math.ceil((bytes * 103) / 100);
-/** The most pastes one tag names (the DocDO reads no more). */
-const TAG_MAX = 16;
-
-/**
- * A large paste's reservation at the DocDO (B209). `answer` is pending until the DocDO answers; `gone` when the session
- * ended first, or the paste gave up waiting (`drop()`). `land()` marks the writes made from now on as the paste's (their
- * frames are tagged with it), and, while the answer is still pending (the pane closing lands the paste at once), holds
- * them back until it comes: a refusal then drops them. `end()` once the paste has landed.
- */
-export interface PasteTicket {
-  readonly id: string;
-  readonly answer: 'pending' | 'reserved' | 'refused' | 'gone';
-  readonly settled: Promise<void>;
-  land(): void;
-  end(): void;
-  drop(): void;
-}
-
-/** Asks the DocDO to hold room for a paste of `bytes` about to land in `doc`; null when no session holds the doc. */
-export function reservePaste(doc: Y.Doc | undefined, bytes: number): PasteTicket | null {
-  const session = doc && byDoc.get(doc);
-  return session ? session.reservePaste(bytes) : null;
-}
-
-interface Ticket extends PasteTicket {
-  answer: PasteTicket['answer'];
-  bytes: number;
-  /** Landed before its answer: its writes wait behind a gate. */
-  gated: boolean;
-  /** The ledger's mark when it landed. */
-  mark: number;
-  /** Every write of it has been made. */
-  ended: boolean;
-  settle(answer: 'reserved' | 'refused' | 'gone'): void;
-}
-
 export class DocSession {
   readonly doc = new Y.Doc();
   /** The DocDO's last word on the payload bytes it counts against the cap (countedPayloadBytes). */
@@ -351,14 +311,6 @@ export class DocSession {
   #ended = false;
   #reopening = false;
   readonly #ledger = new AckLedger();
-  /** Pastes reserved and not yet answered, or landed and not yet ended (B209). */
-  readonly #tickets = new Map<string, Ticket>();
-  /** Pastes the DocDO holds room for: released once every write of theirs is acked. */
-  readonly #held = new Map<string, Ticket>();
-  /** The pastes landing now: a write made meanwhile is theirs. */
-  readonly #landing = new Set<string>();
-  /** A paste was refused after it landed: nothing more is written from this doc (the pane rebinds). */
-  #sealed = false;
   #link: Link;
   #socketOpen = false;
   #lastResync = 0;
@@ -496,7 +448,6 @@ export class DocSession {
   end(reason: TerminalReason): void {
     if (this.#disposed) return;
     this.#ended = true;
-    this.#dropTickets();
     this.#pagePresence = null;
     this.provider.shouldConnect = false;
     setTerminal(this.docId, reason);
@@ -544,7 +495,6 @@ export class DocSession {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#dropTickets();
     this.#pagePresence = null;
     this.stopPresence?.();
     this.#lingering = false;
@@ -576,13 +526,6 @@ export class DocSession {
     this.payloads.destroy();
   }
 
-  /** A paste still waiting for its answer can no longer land. */
-  #dropTickets(): void {
-    for (const ticket of [...this.#tickets.values()]) ticket.settle('gone');
-    this.#tickets.clear();
-    this.#held.clear();
-  }
-
   #set(patch: Partial<SessionState>): void {
     this.#state = { ...this.#state, ...patch };
     markUnacked(this, this.#state.unacked);
@@ -604,110 +547,8 @@ export class DocSession {
     if (connection !== this.#state.connection) this.#set({ connection });
   }
 
-  /** The pastes a frame sent now may carry: those landing, and those with writes no ack has covered. */
-  readonly #tags = (): readonly string[] => {
-    const pastes = this.#ledger.pendingPastes();
-    for (const paste of this.#landing) pastes.add(paste);
-    return [...pastes].slice(-TAG_MAX);
-  };
-
-  reservePaste(bytes: number): PasteTicket | null {
-    if (this.#ended || this.#disposed || this.#sealed) return null;
-    let resolve = () => {};
-    const settled = new Promise<void>((done) => { resolve = done; });
-    const ticket: Ticket = {
-      id: crypto.randomUUID(),
-      answer: 'pending',
-      settled,
-      bytes: reserveBytes(bytes),
-      gated: false,
-      mark: 0,
-      ended: false,
-      settle: (answer) => {
-        if (ticket.answer !== 'pending') return;
-        ticket.answer = answer;
-        this.#tickets.delete(ticket.id);
-        resolve();
-      },
-      land: () => {
-        ticket.mark = this.#ledger.mark();
-        this.#landing.add(ticket.id);
-        if (ticket.answer !== 'pending') return;
-        ticket.gated = true;
-        (this.provider.ws as DocSocket | null)?.outbox?.gate(ticket.id);
-      },
-      end: () => {
-        // A write the paste's last update makes as it commits, after this, is still the paste's.
-        setTimeout(() => {
-          this.#landing.delete(ticket.id);
-          ticket.ended = true;
-          this.#release();
-        }, 0);
-      },
-      drop: () => ticket.settle('gone'),
-    };
-    this.#tickets.set(ticket.id, ticket);
-    this.#sendReserve(ticket);
-    return ticket;
-  }
-
-  #sendReserve(ticket: Ticket): void {
-    if (this.provider.wsconnected) this.provider.sendMessage(JSON.stringify({ t: 'reserve', p: ticket.id, b: ticket.bytes } satisfies ClientEvent));
-  }
-
-  /**
-   * Frees the room the DocDO holds for each paste whose writes have all been made and acked, so its estimate margin
-   * neither shrinks the doc nor counts against the reservations this tab may hold.
-   */
-  #release(): void {
-    if (!this.provider.wsconnected || this.#held.size === 0) return;
-    const pending = this.#ledger.pendingPastes();
-    for (const ticket of [...this.#held.values()]) {
-      if (!ticket.ended || pending.has(ticket.id)) continue;
-      this.#held.delete(ticket.id);
-      this.provider.sendMessage(JSON.stringify({ t: 'release', p: ticket.id } satisfies ClientEvent));
-    }
-  }
-
-  /** The DocDO's answer to a paste's reserve. */
-  #answered(id: string, reserved: boolean): void {
-    const ticket = this.#tickets.get(id);
-    if (!ticket || ticket.answer !== 'pending') {
-      // Answered after the paste gave up waiting: it will write nothing.
-      if (!ticket && reserved && !this.#held.has(id) && this.provider.wsconnected) this.provider.sendMessage(JSON.stringify({ t: 'release', p: id } satisfies ClientEvent));
-      return;
-    }
-    const outbox = (this.provider.ws as DocSocket | null)?.outbox;
-    if (reserved) {
-      ticket.settle('reserved');
-      this.#held.set(id, ticket);
-      outbox?.open(id);
-      return;
-    }
-    if (ticket.gated) {
-      // Refused after it landed here as its pane closed: nothing of it, or of what followed it, is sent. Writes made
-      // before it still go, and go again now: a reconnect's replay of them was queued behind its gate and cut with it.
-      this.#sealed = true;
-      outbox?.cut(id);
-      this.#ledger.dropFrom(ticket.mark);
-      const ws = this.provider.ws as DocSocket | null;
-      if (ws?.readyState === WebSocket.OPEN) this.#replay(ws);
-      refuseInput(WRITE_REFUSED['doc-cap']);
-      this.#set({ resync: true, unacked: this.#ledger.unacked });
-    }
-    ticket.settle('refused');
-  }
-
   #opened(): void {
     this.#socketOpen = true;
-    const outbox = (this.provider.ws as DocSocket | null)?.outbox;
-    outbox?.tagWith(this.#tags);
-    // A reserve not answered on the last socket is sent again; a paste that landed meanwhile still waits for it.
-    for (const ticket of this.#tickets.values()) {
-      if (ticket.answer !== 'pending') continue;
-      this.#sendReserve(ticket);
-      if (ticket.gated) outbox?.gate(ticket.id);
-    }
     // The provider sends a step 1 on open; each held payload sends its own, and its unacked writes.
     this.#lastResync = Date.now();
     this.#resyncOwed = true;
@@ -717,9 +558,6 @@ export class DocSession {
     const pending = this.#ledger.pendingUpdate();
     if (pending && !this.#ended) this.provider.ws?.send(encodeSyncFrame(2, pending));
     this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
-    // What a refused paste left in this doc never goes: the provider's own step 2 would carry it.
-    if (this.#sealed) outbox?.seal();
-    this.#release();
   }
 
   #synced(): void {
@@ -751,7 +589,6 @@ export class DocSession {
         return;
       case 'refused':
         this.#ended = true;
-        this.#dropTickets();
         this.provider.shouldConnect = false;
         refuseInput(this.#refusedMessage);
         this.#set({ resync: true });
@@ -791,7 +628,6 @@ export class DocSession {
         if (!answer.canWrite) {
           refuseInput(VIEW_ONLY);
           this.#ended = true;
-          this.#dropTickets();
           this.#set({ canWrite: false, resync: true });
           if (this.#lingering) this.dispose();
           return;
@@ -859,24 +695,12 @@ export class DocSession {
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       // Writes still queued in the outbox are on their way; resending them would only queue them twice.
       if ((ws as DocSocket).outbox?.busy) return;
-      this.#replay(ws as DocSocket);
+      const pending = this.#ledger.pendingUpdate();
+      if (pending && !this.#ended) ws.send(encodeSyncFrame(2, pending));
+      // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
+      this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
     } catch {
       // closing; the close path takes over
-    }
-  }
-
-  /**
-   * The ledger's unacked writes again, the note's first, and each held payload's (A§10.10). Once a refused paste sealed
-   * the outbox, the ledger holds only writes made before it, and they go past the seal.
-   */
-  #replay(ws: DocSocket): void {
-    ws.forcing = this.#sealed;
-    try {
-      const pending = this.#ended ? null : this.#ledger.pendingUpdate();
-      if (pending) ws.send(encodeSyncFrame(2, pending));
-      this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
-    } finally {
-      ws.forcing = false;
     }
   }
 
@@ -906,8 +730,7 @@ export class DocSession {
   };
 
   #wrote(update: Uint8Array, payload?: string): void {
-    if (this.#sealed) return;
-    this.#ledger.wrote(update, payload, [...this.#landing]);
+    this.#ledger.wrote(update, payload);
     if (!this.#state.unacked && this.#ledger.unacked) this.#set({ unacked: true });
   }
 
@@ -935,11 +758,8 @@ export class DocSession {
       }
       const started = performance.now();
       if (this.#state.unacked && this.#ledger.acked(event)) this.#set({ unacked: false });
-      this.#release();
       // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
       if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
-    } else if (event.t === 'reserved' || event.t === 'reserve-refused') {
-      this.#answered(event.p, event.t === 'reserved');
     } else if (event.t === 'write-refused') {
       this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
       refuseInput(this.#refusedMessage);
