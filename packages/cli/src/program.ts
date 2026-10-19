@@ -361,7 +361,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         // A moss note with no title line takes its file's stem.
         if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
         // Its media follow; a file stored under another name moves the doc's reference too.
-        const media = await noteMedia({ root, client, upload: true }, doc.id, path);
+        const media = await noteMedia({ root, client, upload: true, introduced: 'all' }, doc.id, path);
         if (media.renames.size > 0) {
           const base = created.content ?? decoder.decode(await client.content(doc.id, true));
           const pushed = await client.push(doc.id, { newText: rewriteRefs(base, media.renames), baseHash: sha256Hex(base), baseText: base });
@@ -445,7 +445,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const scope = inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
-      const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
+      const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
       reportMedia((await noteMedia({ root, client, upload: true, ...scoped }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {

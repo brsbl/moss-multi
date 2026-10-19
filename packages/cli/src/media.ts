@@ -3,14 +3,16 @@
 // uploaded under a name the doc does not hold yet, downloaded when it is missing here, and neither side is ever
 // overwritten: a name the server stores under another name (another note's file holds it in the folder) moves the
 // note's reference to that name, and a local file that differs from the doc's bytes for its name is reported.
-import { lstatSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+// Uploads fail closed (T7.S9): a file goes up only for a reference this machine's user added (in the file, not in the
+// doc's last synced base, or the note being adopted) to a file no other note in the folder holds or references.
+import { type Dirent, lstatSync, readdirSync } from 'node:fs';
+import { basename, dirname, extname, join } from 'node:path';
 import { ASSET_DIR, MEDIA_CAP_BYTES, mediaTypeOf } from '@moss-multi/protocol/media';
 import type { Api } from './api.ts';
 import { CliError } from './errors.ts';
 import type { SyncResult } from './sync.ts';
 import {
-  confined, isAllowedName, isWorkspace, type MediaState, readConfined, readMediaRecord, sha256Hex, writeConfined, writeMediaRecord,
+  confined, isAllowedName, isWorkspace, type MediaState, readBase, readConfined, readMediaRecord, sha256Hex, trackedMetas, writeConfined, writeMediaRecord,
 } from './workspace.ts';
 
 export interface MediaRef {
@@ -74,12 +76,74 @@ export interface MediaContext {
   denies?: (rel: string) => boolean;
   /** With a scope, whether the local media file `name` may be read and sent; a file it refuses is only ever downloaded when missing. */
   sends?: (name: string) => boolean;
+  /** With a scope, whether another note may be read to see which media it references; one that may not counts as referencing all. */
+  reads?: (rel: string) => boolean;
+  /**
+   * The references this machine's user added, the only ones that may upload: `all` for a note being adopted; by default
+   * those in the file but not in the doc's last synced base (none when there is no base).
+   */
+  introduced?: Set<string> | 'all';
 }
 
 export interface MediaStep {
   results: SyncResult[];
   /** Files the server stored under another name; the note file now references the new names. */
   renames: Map<string, string>;
+  /** The references that could upload, so a step after a pull does not count the pulled ones as this user's. */
+  introduced: Set<string>;
+}
+
+/** The media names `text` references. */
+const refNames = (text: string) => new Set(mediaRefs(text).map((ref) => ref.name));
+
+/** The references in `text` the doc's last synced base lacks; none without a readable base. */
+function localRefs(root: string, docId: string, text: string): Set<string> {
+  let base: Set<string>;
+  try {
+    base = refNames(Buffer.from(readBase(root, docId)).toString('utf8'));
+  } catch {
+    return new Set();
+  }
+  return new Set([...refNames(text)].filter((name) => !base.has(name)));
+}
+
+/**
+ * Who else may own `name` in the assets/ beside the note `file`: another tracked doc in that folder whose media record
+ * holds it, or another note there that references it. A note that cannot be read counts as referencing it.
+ */
+function ownerElsewhere(ctx: MediaContext, docId: string, file: string, name: string, notes: Map<string, Set<string> | null>): string | null {
+  const { root } = ctx;
+  const folder = dirname(file);
+  if (isWorkspace(root)) {
+    for (const meta of trackedMetas(root)) {
+      if (meta.docId === docId || dirname(meta.file).toLowerCase() !== folder.toLowerCase()) continue;
+      if (Object.hasOwn(readMediaRecord(root, meta.docId), name)) return meta.file;
+    }
+  }
+  if (notes.size === 0) {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(join(root, folder), { withFileTypes: true });
+    } catch {
+      entries = [];
+    }
+    notes.set(file, new Set());
+    for (const entry of entries) {
+      const rel = join(folder, entry.name);
+      if (entry.name === basename(file) || extname(entry.name).toLowerCase() !== '.md') continue;
+      if (!entry.isFile() || ctx.denies?.(rel) || (ctx.reads && !ctx.reads(rel))) {
+        notes.set(rel, null);
+        continue;
+      }
+      try {
+        notes.set(rel, refNames(readConfined(root, rel).toString('utf8')));
+      } catch {
+        notes.set(rel, null);
+      }
+    }
+  }
+  for (const [rel, names] of notes) if (rel !== file && (names === null || names.has(name))) return rel;
+  return null;
 }
 
 const capMessage = (kind: 'image' | 'video') =>
@@ -101,8 +165,11 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   const tracked = isWorkspace(root);
   const record = tracked ? readMediaRecord(root, docId) : {};
   const before = JSON.stringify(record);
-  const dir = join(dirname(confined(root, file)), ASSET_DIR);
+  const note = confined(root, file);
+  const dir = join(dirname(note), ASSET_DIR);
   const seen = new Set<string>();
+  const introduced = ctx.introduced === 'all' ? refNames(text) : ctx.introduced ? new Set(ctx.introduced) : (tracked ? localRefs(root, docId, text) : new Set<string>());
+  const notes = new Map<string, Set<string> | null>();
 
   for (const { name } of mediaRefs(text)) {
     if (seen.has(name)) continue;
@@ -135,6 +202,15 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
           continue;
         }
         if (!ctx.upload) continue;
+        if (!introduced.has(name)) {
+          failed(`${rel} was not uploaded: the reference to it came from the server or was synced before, so it is only downloaded. Save the file under a new name and reference that to upload it`);
+          continue;
+        }
+        const owner = ownerElsewhere(ctx, docId, note, name, notes);
+        if (owner !== null) {
+          failed(`${rel} was not uploaded: ${owner} also uses it, and a file in a shared assets folder goes up only for the one note that uses it. Give this note its own copy under a new name`);
+          continue;
+        }
         const type = mediaTypeOf(name)!;
         if (bytes.byteLength > MEDIA_CAP_BYTES[type.kind]) {
           failed(capMessage(type.kind));
@@ -162,6 +238,7 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
         const copied = localFile(root, copy)!;
         record[stored] = { hash, size: copied.size, mtimeMs: copied.mtimeMs };
         renames.set(name, stored);
+        introduced.add(stored);
         results.push({ docId, file: rel, action: 'uploaded', message: `the server already holds another ${name} here, so it is ${stored} there and the note now references ${copy}` });
         continue;
       }
@@ -194,7 +271,7 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
       renames.clear();
     }
   }
-  return { results, renames };
+  return { results, renames, introduced };
 }
 
 /** The size and mtime of a regular file at `rel`, or null when there is none; a link or a path outside is refused. */

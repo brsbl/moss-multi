@@ -475,21 +475,22 @@ export interface AdoptOptions {
  */
 export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
   const adopted = await createFrom(ctx, rel, options);
-  return { ...adopted, media: await syncMedia({ ...ctx, force: false }, adopted.doc.id, true) };
+  // Every reference in a note being adopted is its own user's.
+  return { ...adopted, media: (await syncMedia({ ...ctx, force: false }, adopted.doc.id, true, 'all')).results };
 }
 
 /**
  * The note's media step (media.ts) on the file the doc tracks now. With `settle`, a note whose references moved to the
  * names the server gave its files is pushed at once.
  */
-async function syncMedia(ctx: SyncContext, docId: string, settle: boolean): Promise<SyncResult[]> {
+async function syncMedia(ctx: SyncContext, docId: string, settle: boolean, introduced?: Set<string> | 'all'): Promise<{ results: SyncResult[]; introduced?: Set<string> }> {
   const meta = readMeta(ctx.root, docId);
-  if (!meta || !exists(ctx.root, meta.file)) return [];
+  if (!meta || !exists(ctx.root, meta.file)) return { results: [] };
   const scope = ctx.scope;
-  const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
-  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: !ctx.downloadOnly, download: true, ...scoped }, docId, meta.file);
+  const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
+  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: !ctx.downloadOnly, download: true, ...scoped, ...(introduced ? { introduced } : {}) }, docId, meta.file);
   if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
-  return step.results;
+  return step;
 }
 
 async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc }> {
@@ -640,10 +641,12 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       const { meta, result } = followServerName(noteCtx, tracked, row, trackedMetas(root));
       if (result) results.push(result);
       // Media first, so a pushed reference finds its file; a doc no longer listed is left to reconcile to report.
-      if (row) results.push(...(await syncMedia(noteCtx, meta.docId, false)));
+      // The references this user added are read before the pull, so the step after it never uploads one the pull brought.
+      const before = row ? await syncMedia(noteCtx, meta.docId, false) : undefined;
+      if (before) results.push(...before.results);
       const reconciled = await reconcile(noteCtx, meta, row);
       results.push(reconciled);
-      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(noteCtx, meta.docId, true)));
+      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(noteCtx, meta.docId, true, before?.introduced ?? new Set())).results);
     } catch (error) {
       if (stopped(error)) return results;
       if (error instanceof RateLimited) throw error;
@@ -719,7 +722,7 @@ async function fetchReached(ctx: SyncContext, rows: DocRow[], results: SyncResul
       const why = `${want.from ? `linked from ${want.from}` : 'named in follow'}${sends ? '' : '; download only until `moss-multi scope confirm` adds it'}`;
       results.push({ docId: row.id, file: want.path, action: 'pulled', message: why });
       const view = workspaceScope(root, folds) ?? scope;
-      results.push(...(await syncMedia({ ...ctx, scope: view, downloadOnly: !sends }, row.id, false)));
+      results.push(...(await syncMedia({ ...ctx, scope: view, downloadOnly: !sends }, row.id, false)).results);
     }
     if (pulled === 0) return;
   }
