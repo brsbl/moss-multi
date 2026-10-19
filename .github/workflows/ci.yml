@@ -193,6 +193,17 @@ jobs:
           MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       - id: provenance
         run: node scripts/provenance.mjs read apps/web/dist >> "$GITHUB_OUTPUT"
+      # The CLI the replicas install (T7.P3, docs/SYNC.md): one bundled file, its checksums and the service wrappers,
+      # checked alone in an empty folder, where --version must name this commit.
+      - name: Pack the CLI
+        run: node scripts/ci/cli-pack.mjs packages/cli/release
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-multi-cli
+          path: packages/cli/release
+          retention-days: 30
       # The built Worker boots under wrangler dev, /api/version is this commit, and / links CSS served 200 text/css.
       - name: Smoke
         run: node scripts/stack.mjs start --run-id "$SMOKE_RUN" --prebuilt apps/web/dist --expect-commit "$(git rev-parse HEAD)" --json

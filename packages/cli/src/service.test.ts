@@ -21,6 +21,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 /** The wrapper with a stub in place of the CLI: the stub prints what it was started with. */
 function start(mode: number | null) {
   const envFile = join(dir, 'watch.env');
+  rmSync(envFile, { force: true });
   if (mode !== null) {
     writeFileSync(envFile, `MOSS_MULTI_SERVER=https://notes.example.invalid\nMOSS_MULTI_API_KEY=${KEY}\n`);
     chmodSync(envFile, mode);

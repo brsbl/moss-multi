@@ -44,6 +44,10 @@ const ROLES: Record<string, string> = {
   edit: 'editor', editor: 'editor',
 };
 
+/** Stamped by build.mjs into the bundle: the package version and the commit it was built from. */
+declare const MOSS_MULTI_BUILD: { version: string; commit: string; node: string } | undefined;
+export const BUILD = typeof MOSS_MULTI_BUILD === 'undefined' ? { version: '0.0.0', commit: 'unbundled', node: '' } : MOSS_MULTI_BUILD;
+
 export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a terminal.
 
   login [--key <mm_sk_...>] [--server <url>]   sign in (device flow in the browser, or an agent key)
@@ -75,7 +79,8 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
                                                pulled but never sent ("follow-only")
   sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
                                                doc; deleting a file here never deletes the doc. With a scope,
-                                               only notes in it; --json counts the rest as "out-of-scope"
+                                               only notes in it, and a note follow reaches that only the server
+                                               holds is pulled; --json counts the rest as "out-of-scope"
   watch [dir] [--interval <s>]                 sync on every change and every 60 s, until Ctrl+C
   history <doc> [--json]                       the doc's versions
   comments <doc> [--json]                      the doc's comment threads
@@ -83,6 +88,7 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   snapshot <doc> <name>                        save a named version
   comment <doc> <text> (--quote <text> | --reply <comment id>)
   share <doc> <email | agent id> [--role view|comment|suggest|edit]
+  --version                                    the version and the commit it was built from
 
 <doc> is a doc id, its URL, or the start of its title. Credentials: MOSS_MULTI_API_KEY, MOSS_MULTI_SERVER, or the
 config file that \`login\` writes. Exit codes: 0 done, 1 error, 2 a push left failed hunks, 3 a push was refused as degenerate.
@@ -714,6 +720,11 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     if (!command || command === 'help' || command === '--help' || command === '-h') {
       stdout(USAGE);
       return command ? EXIT.ok : EXIT.other;
+    }
+    if (command === '--version' || command === 'version') {
+      arity(parseArgs(rest, [], []), 0, 0, '--version');
+      line(`moss-multi ${BUILD.version} (commit ${BUILD.commit})`);
+      return EXIT.ok;
     }
     const run = Object.hasOwn(commands, command) ? commands[command] : undefined;
     if (!run) throw new CliError(1, `unknown command "${command}"; run \`moss-multi help\``);

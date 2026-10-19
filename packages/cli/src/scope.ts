@@ -8,7 +8,7 @@
 import { basename, dirname, extname, join, normalize, sep } from 'node:path';
 import { CliError } from './errors.ts';
 import { frontmatterOf, hasMarkers, parseMoss } from './moss-format.ts';
-import { type DocMeta, readBase, readConfined, readStateFile } from './workspace.ts';
+import { type DocMeta, isAllowedName, readBase, readConfined, readStateFile } from './workspace.ts';
 
 export const SCOPE_FILE = 'scope.json';
 const MAX_DEPTH = 10;
@@ -119,7 +119,7 @@ export function noteUnit(rel: string): string {
 }
 
 /** A title as moss names its folder, compared without case: no `< > : " / \ | ? *` or controls, spaces collapsed. */
-function titleKey(title: string): string {
+export function titleKey(title: string): string {
   let out = '';
   for (const char of title.normalize('NFC')) {
     if ('<>:"/\\|?*'.includes(char) || char.charCodeAt(0) <= 0x1f) continue;
@@ -264,6 +264,9 @@ function linkSource(text: string, moss: boolean): string {
 /** Whether a note is kept in moss form: a tracked note by its mode, any other by moss's layout or markers. */
 const isMoss = (meta: DocMeta | undefined, rel: string, text: string) => (meta ? meta.mode === 'moss' : noteUnit(rel) !== rel || hasMarkers(text));
 
+/** A path whose every segment moss allows as a name. */
+const isAllowedNoteName = (path: string): boolean => path !== '' && segments(path).every((part) => isAllowedName(part));
+
 /** A path or glob holding glob syntax, which `scope confirm` cannot write as an exact allow entry. */
 const GLOB = /[*?]/;
 
@@ -279,6 +282,8 @@ export interface ScopeView {
   denies(rel: string): boolean;
   /** The local notes `follow` reaches that `allow` does not cover (download only until `scope confirm`). */
   followed: Followed[];
+  /** The notes `follow` reaches that no local note holds: sync pulls each from the server when one doc answers to it. */
+  missing: Missing[];
   /** How many of the scanned files are out of scope. */
   outOfScope: number;
 }
@@ -291,6 +296,28 @@ export interface Followed {
   from: string[];
   /** A link reaching it is also in its note's base, the text last synced: it may have come from the server. */
   synced: boolean;
+}
+
+/**
+ * A note `follow` reaches by title or path that no note here holds, nor a denied one answers to (T7.P3). `path` is
+ * where it goes: the path a markdown link names, else a moss note folder beside the note linking to it (the workspace
+ * root for a `follow` entry, or the entry's own folder).
+ */
+export interface Missing {
+  title: string;
+  path: string;
+  /** The note whose link reaches it; none for a `follow` entry. */
+  from?: string;
+}
+
+/** A moss note folder's name for a title: moss's filename rules, spaces collapsed; empty when nothing is left. */
+export function noteFolderName(title: string): string {
+  let out = '';
+  for (const char of title.normalize('NFC')) {
+    if ('<>:"/\\|?*'.includes(char) || char.charCodeAt(0) <= 0x1f) continue;
+    out += char;
+  }
+  return out.split(/\s/).filter(Boolean).join(' ');
 }
 
 export interface ScopeInput {
@@ -324,7 +351,13 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
   const trackedBy = new Map(tracked.map((meta) => [key(meta.file), meta]));
   const candidates = [...files, ...tracked.map((meta) => meta.file)];
   const known = new Set<string>();
+  // The titles denied notes go by, from their names only: a link to one never pulls a server doc in its place.
+  const deniedTitles = new Set<string>();
   for (const file of candidates) {
+    if (denied(file)) {
+      const unit = noteUnit(file);
+      deniedTitles.add(titleKey(basename(unit, unit === file ? extname(file) : '')));
+    }
     if (denied(file) || known.has(key(file))) continue;
     known.add(key(file));
     const unit = noteUnit(file);
@@ -388,13 +421,43 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
     reached.set(key(file), file);
     next.push(file);
   };
+  // What no note here holds: by title (none answers to it, not even an ambiguous pair) or by a path no note is at.
+  const missing = new Map<string, Missing>();
+  const titleHeld = (title: string) => [title, title.replace(/\.md$/i, '')].some((name) => byTitle.has(titleKey(name)) || deniedTitles.has(titleKey(name)));
+  const miss = (title: string, path: string, from?: string) => {
+    if (!title || !isAllowedNoteName(path) || denied(path) || titleHeld(title) || missing.has(key(path))) return;
+    missing.set(key(path), { title, path, ...(from !== undefined ? { from } : {}) });
+  };
+  /** A moss note folder for `title` inside `folder`. */
+  const beside = (folder: string, title: string) => {
+    const name = noteFolderName(title);
+    return name ? join(folder === '.' ? '' : folder, name, `${name}.md`) : '';
+  };
   for (const entry of scope.follow) {
-    const found = resolvePath(segments(entry).join(sep));
-    for (const file of found.length ? found : resolveTitle(entry)) visit(file, frontier);
+    const path = segments(entry).join(sep);
+    const found = resolvePath(path);
+    const files = found.length ? found : resolveTitle(entry);
+    for (const file of files) visit(file, frontier);
+    if (!files.length && !GLOB.test(entry)) {
+      const title = basename(path, extname(path) === '.md' ? '.md' : '');
+      miss(title, beside(dirname(noteUnit(path.endsWith('.md') ? path : join(path, `${basename(path)}.md`))), title));
+    }
   }
   for (let hop = 0; hop < scope.depth && frontier.length > 0; hop += 1) {
     const next: string[] = [];
-    for (const file of frontier) for (const link of linksOf(file)) for (const linked of resolve(link)) visit(linked, next, file);
+    for (const file of frontier) {
+      for (const link of linksOf(file)) {
+        const found = resolve(link);
+        for (const linked of found) visit(linked, next, file);
+        if (found.length) continue;
+        if (link.path !== undefined) {
+          if (link.path.endsWith('.md')) {
+            const unit = noteUnit(link.path);
+            miss(basename(unit, unit === link.path ? '.md' : ''), link.path, file);
+          }
+        } else if (link.title && !link.title.includes('/')) miss(link.title, beside(dirname(noteUnit(file)), link.title), file);
+      }
+    }
     frontier = next;
   }
 
@@ -431,6 +494,7 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
       });
     },
     outOfScope: files.filter((file) => !admits(file)).length,
+    missing: [...missing.values()],
   };
 }
 
