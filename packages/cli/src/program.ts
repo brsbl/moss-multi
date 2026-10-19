@@ -13,7 +13,7 @@ import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
-import { confirmable, parseScope, SCOPE_FILE } from './scope.ts';
+import { exactPattern, parseScope, SCOPE_FILE, scopePath } from './scope.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
   confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
@@ -68,9 +68,11 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
                                                also write .moss-multi/scope.json: sync then takes only the notes
                                                --allow matches, and pulls those the --follow notes link to (depth
                                                hops out, re-read every pass), never what --deny matches
-  scope confirm [dir] [--yes]                  list the notes --follow reaches that --allow does not cover and,
-                                               on yes, add them to allow. Only allow uploads: a note only follow
-                                               reaches is pulled but never sent ("follow-only")
+  scope confirm [--yes <path>...]              list the notes --follow reaches that --allow does not cover (a
+                                               link that came in a sync is marked) and, on a yes at the prompt,
+                                               add them to allow; without a terminal, --yes adds exactly the
+                                               paths named. Only allow uploads: a note only follow reaches is
+                                               pulled but never sent ("follow-only")
   sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
                                                doc; deleting a file here never deletes the doc. With a scope,
                                                only notes in it; --json counts the rest as "out-of-scope"
@@ -523,25 +525,42 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
 
     async scope(rest) {
       const parsed = parseArgs(rest, ['yes'], []);
-      const [action, dir] = arity(parsed, 1, 2, 'scope confirm [dir] [--yes]');
-      if (action !== 'confirm') throw new CliError(1, 'usage: moss-multi scope confirm [dir] [--yes]');
-      const root = workspaceAt(dir);
+      const usage = 'usage: moss-multi scope confirm [--yes <path>...]';
+      const [action, ...named] = parsed.positionals;
+      if (action !== 'confirm') throw new CliError(1, usage);
+      const yes = parsed.flags.has('yes');
+      const root = workspaceAt();
       const lock = await lockWorkspace(root);
       try {
         // Read from the local files now: what follow reaches that allow does not cover.
         const view = workspaceScope(root, foldsCase(root));
         if (!view) throw new CliError(1, `${root} has no scope: \`moss-multi init --scope\` makes one`);
-        const { add, skipped } = confirmable(view);
-        for (const path of skipped) stderr(`${path}: its path holds * or ?, which allow reads as a pattern, so it is not added`);
-        if (add.length === 0) {
+        const offered = view.followed.map((note) => ({ ...note, path: scopePath(note.file) }));
+        if (offered.length === 0) {
           line('follow reaches no note that allow does not already cover');
+          if (named.length) throw new CliError(1, `${named.join(', ')}: not a note follow reaches outside allow, so nothing was added`);
           return;
         }
-        line(`follow reaches ${add.length} note(s) that allow does not cover:`);
-        for (const path of add) line(`  ${path}`);
-        const yes = parsed.flags.has('yes') || (await ask(`add ${add.length === 1 ? 'it' : 'them'} to allow in .moss-multi/${SCOPE_FILE}, so ${add.length === 1 ? 'it uploads' : 'they upload'}? [y/N] `));
-        if (!yes) {
-          line('nothing was added (run `moss-multi scope confirm --yes` to add them)');
+        line(`follow reaches ${offered.length} note(s) that allow does not cover:`);
+        for (const note of offered) {
+          const via = note.from.length ? `linked from ${note.from.map(scopePath).join(', ')}` : 'named in follow';
+          line(`  ${note.path}  "${note.title}"  ${via}${note.synced ? '  (linked by a synced edit: the link may have come from the server)' : ''}`);
+        }
+        if (yes && named.length === 0) throw new CliError(1, `--yes adds only the paths it names, so nothing was added: moss-multi scope confirm --yes <path>...`);
+        const byPath = new Map(offered.map((note) => [note.path.normalize('NFC'), note.path]));
+        const picked: string[] = [];
+        for (const path of named) {
+          const found = byPath.get(scopePath(path).normalize('NFC'));
+          if (!found) throw new CliError(1, `${path} is not a note follow reaches outside allow, so nothing was added`);
+          picked.push(found);
+        }
+        const chosen = picked.length ? [...new Set(picked)] : offered.map((note) => note.path);
+        for (const path of chosen.filter((path) => !exactPattern(path))) stderr(`${path}: its path holds * or ?, which allow reads as a pattern, so it is not added`);
+        const add = chosen.filter(exactPattern);
+        if (add.length === 0) throw new CliError(1, 'nothing was added');
+        const agreed = yes || (await ask(`add ${add.length} note(s) to allow in .moss-multi/${SCOPE_FILE}, so they upload? [y/N] `));
+        if (!agreed) {
+          line('nothing was added (without a terminal: moss-multi scope confirm --yes <path>...)');
           return;
         }
         const raw = JSON.parse(readStateFile(root, SCOPE_FILE)!.toString('utf8')) as Record<string, unknown>;
@@ -550,7 +569,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const next = `${JSON.stringify({ ...raw, allow: [...allow, ...add] }, null, 2)}\n`;
         parseScope(next);
         writeStateFile(root, SCOPE_FILE, Buffer.from(next), true);
-        line(`added ${add.length} note(s) to allow: they upload from the next sync`);
+        line(`added ${add.join(', ')} to allow: ${add.length === 1 ? 'it uploads' : 'they upload'} from the next sync`);
       } finally {
         lock.release();
       }

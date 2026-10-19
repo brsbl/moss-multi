@@ -8,7 +8,7 @@
 import { basename, dirname, extname, join, normalize, sep } from 'node:path';
 import { CliError } from './errors.ts';
 import { frontmatterOf, hasMarkers, parseMoss } from './moss-format.ts';
-import { type DocMeta, readConfined, readStateFile } from './workspace.ts';
+import { type DocMeta, readBase, readConfined, readStateFile } from './workspace.ts';
 
 export const SCOPE_FILE = 'scope.json';
 const MAX_DEPTH = 10;
@@ -265,10 +265,20 @@ export interface ScopeView {
   sendsAsset(file: string, asset: string): boolean;
   /** Whether `rel` (a note, or a file inside its folder) is denied. */
   denies(rel: string): boolean;
-  /** The local note files `follow` reaches that `allow` does not cover (download only until `scope confirm`). */
-  followed: string[];
+  /** The local notes `follow` reaches that `allow` does not cover (download only until `scope confirm`). */
+  followed: Followed[];
   /** How many of the scanned files are out of scope. */
   outOfScope: number;
+}
+
+/** A note `follow` reaches that `allow` does not cover. */
+export interface Followed {
+  file: string;
+  title: string;
+  /** The notes whose links reach it (none for a `follow` entry itself). */
+  from: string[];
+  /** A link reaching it is also in its note's base, the text last synced: it may have come from the server. */
+  synced: boolean;
 }
 
 export interface ScopeInput {
@@ -355,8 +365,13 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
 
   // Follow: the entries (a note's folder or file, failing that its title) and the notes their links reach, depth hops out.
   const reached = new Map<string, string>();
+  const reachedFrom = new Map<string, Set<string>>();
   let frontier: string[] = [];
-  const visit = (file: string, next: string[]) => {
+  const visit = (file: string, next: string[], from?: string) => {
+    if (from !== undefined) {
+      if (!reachedFrom.has(key(file))) reachedFrom.set(key(file), new Set());
+      reachedFrom.get(key(file))!.add(from);
+    }
     if (reached.has(key(file))) return;
     reached.set(key(file), file);
     next.push(file);
@@ -367,9 +382,21 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
   }
   for (let hop = 0; hop < scope.depth && frontier.length > 0; hop += 1) {
     const next: string[] = [];
-    for (const file of frontier) for (const link of linksOf(file)) for (const linked of resolve(link)) visit(linked, next);
+    for (const file of frontier) for (const link of linksOf(file)) for (const linked of resolve(link)) visit(linked, next, file);
     frontier = next;
   }
+
+  /** Whether tracked note `from`'s base links to `file`; an unreadable base counts as yes. */
+  const syncedLink = (from: string, file: string): boolean => {
+    const meta = trackedBy.get(key(from));
+    if (!meta) return false;
+    try {
+      const base = readBase(root, meta.docId).toString('utf8');
+      return noteLinks(linkSource(base, false), from).some((link) => resolve(link).some((found) => key(found) === key(file)));
+    } catch {
+      return true;
+    }
+  };
 
   const uploads = (rel: string) => !denied(rel) && allowed(rel);
   const admits = (rel: string) => uploads(rel) || (!denied(rel) && reached.has(key(rel)));
@@ -384,16 +411,19 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
       return allowed(asset) || (unit !== file && key(asset).startsWith(`${key(unit)}${sep}`));
     },
     denies: denied,
-    followed: [...reached.values()].filter((file) => onDisk.has(key(file)) && !uploads(file) && !denied(file)).sort(),
+    get followed() {
+      return [...reached.values()].filter((file) => onDisk.has(key(file)) && !uploads(file) && !denied(file)).sort().map((file) => {
+        const from = [...(reachedFrom.get(key(file)) ?? [])].sort();
+        const unit = noteUnit(file);
+        return { file, title: basename(unit, unit === file ? extname(file) : ''), from, synced: from.some((note) => syncedLink(note, file)) };
+      });
+    },
     outOfScope: files.filter((file) => !admits(file)).length,
   };
 }
 
-/**
- * `scope confirm`: the notes follow reaches now, read from the local files, that `allow` does not cover, as the exact
- * `/`-separated paths it would add, and those it cannot add because their path holds glob syntax.
- */
-export function confirmable(view: ScopeView): { add: string[]; skipped: string[] } {
-  const paths = view.followed.map((file) => segments(file).join('/'));
-  return { add: paths.filter((path) => !GLOB.test(path)), skipped: paths.filter((path) => GLOB.test(path)) };
-}
+/** A workspace path as `scope.json` and `scope confirm` spell it: `/`-separated. */
+export const scopePath = (rel: string): string => segments(rel).join('/');
+
+/** Whether `scope confirm` can write `path` as an exact allow entry: glob syntax in it would match other paths. */
+export const exactPattern = (path: string): boolean => !GLOB.test(path);
