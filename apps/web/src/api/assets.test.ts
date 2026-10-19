@@ -58,6 +58,36 @@ const PrincipalDO = {
   }),
 };
 
+/** Node lacks workerd's FixedLengthStream, through which a video of several segments is put: a pass-through checking its length. */
+class NodeFixedLengthStream extends TransformStream<ArrayBuffer | ArrayBufferView, Uint8Array> {
+  constructor(expected: number) {
+    let seen = 0;
+    super({
+      transform(chunk, controller) {
+        seen += chunk.byteLength;
+        if (seen > expected) throw new Error('longer than its length');
+        controller.enqueue(ArrayBuffer.isView(chunk) ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength) : new Uint8Array(chunk));
+      },
+      flush() {
+        if (seen !== expected) throw new Error('shorter than its length');
+      },
+    });
+  }
+}
+(globalThis as { FixedLengthStream?: unknown }).FixedLengthStream ??= NodeFixedLengthStream;
+
+/** `bucket` with a streamed put read whole first: Miniflare's Node proxy cannot pass a stream of known length to workerd. */
+const streamedPuts = (bucket: R2Bucket): R2Bucket => new Proxy(bucket, {
+  get(target, key) {
+    if (key === 'put') {
+      return async (name: string, value: unknown, options?: R2PutOptions) =>
+        target.put(name, value instanceof ReadableStream ? new Uint8Array(await new Response(value).arrayBuffer()) : value as never, options);
+    }
+    const value = Reflect.get(target, key) as unknown;
+    return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+  },
+});
+
 let d1: TestD1;
 let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
@@ -66,7 +96,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, ASSETS: d1.assets, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
+  env = { DB: d1.db, ASSETS: streamedPuts(d1.assets), BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'assets-ada');
   ben = await signedUpUser(env, 'assets-ben', 'Ben');
   cy = await signedUpUser(env, 'assets-cy', 'Cy');
@@ -812,6 +842,86 @@ describe('upload storage bounds (T3.1s)', () => {
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/shot-2.png`, ory.cookie)), 'the retry filled the blob').toEqual(body);
     expect(await usage(), 'the retry added no asset').toEqual(before);
   });
+
+  /** A webm of `size` bytes, its bytes a pattern no two MiB share. */
+  const webmOf = (size: number) => {
+    const bytes = new Uint8Array(size);
+    for (let i = 0; i < size; i += 1) bytes[i] = (i * 7 + (i >> 20)) % 251;
+    bytes.set([0x1a, 0x45, 0xdf, 0xa3]);
+    return bytes;
+  };
+  /** `bucket` with every multipart upload begun and every put counted, the first `failures` puts cut off mid-body. */
+  const recorded = (bucket: R2Bucket, failures = 0) => {
+    const seen = { multipart: 0, puts: 0, failures };
+    const ASSETS = new Proxy(bucket, {
+      get(target, key) {
+        if (key === 'createMultipartUpload') {
+          return (...args: Parameters<R2Bucket['createMultipartUpload']>) => {
+            seen.multipart += 1;
+            return target.createMultipartUpload(...args);
+          };
+        }
+        if (key === 'put') {
+          return async (...args: Parameters<R2Bucket['put']>) => {
+            seen.puts += 1;
+            const [, value] = args;
+            if (seen.failures > 0) {
+              seen.failures -= 1;
+              // The client goes away after the first bytes reach R2: the put is cancelled with the rest unsent.
+              if (value instanceof ReadableStream) {
+                const reader = (value as ReadableStream<Uint8Array>).getReader();
+                await reader.read();
+                await reader.cancel().catch(() => undefined);
+              }
+              throw new Error('client disconnected');
+            }
+            return target.put(...args);
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    return { ASSETS, seen };
+  };
+
+  it('stores a video of several segments in one put, never an R2 multipart upload a disconnect could strand (T3.B30)', async () => {
+    const una = await signedUpUser(env, 'assets-b30-una', 'Una');
+    const docId = await insertDoc(d1.db, una);
+    const body = webmOf(12 * 1024 * 1024 + 4321);
+    const { ASSETS, seen } = recorded(env.ASSETS);
+    const stored = await uploaded(await handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=long.webm`, {
+      method: 'POST', headers: { origin: BASE, cookie: una.cookie, 'content-type': 'video/webm', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, ASSETS }));
+    expect(stored.asset.size).toBe(body.byteLength);
+    expect(seen, 'one put of the whole video, no multipart upload').toEqual({ multipart: 0, puts: 1, failures: 0 });
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/long.webm`, una.cookie))).toEqual(body);
+  }, 60_000);
+
+  it('leaves nothing stored when a video put is cut off mid-body, and a same-file retry at the quota stores it once (T3.B30)', async () => {
+    const uli = await signedUpUser(env, 'assets-b30-uli', 'Uli');
+    const docId = await insertDoc(d1.db, uli);
+    const body = webmOf(11 * 1024 * 1024 + 99);
+    const hash = await hashOf(body);
+    // Room for exactly this file.
+    await fill(uli, uli.homeId, VAULT_MEDIA_QUOTA_BYTES - body.byteLength).run();
+    const { ASSETS, seen } = recorded(env.ASSETS, 1);
+    const send = () => handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=cut.webm`, {
+      method: 'POST', headers: { origin: BASE, cookie: uli.cookie, 'content-type': 'video/webm', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, ASSETS });
+    const failed = await send().catch(() => null);
+    expect(failed?.status ?? 500, 'the put is cut off after the rows commit').not.toBe(201);
+    expect(seen, 'one cut-off put, no multipart upload left pending').toEqual({ multipart: 0, puts: 1, failures: 0 });
+    expect(await d1.assets.head(`asset-blobs/sha256/${hash}`), 'no partial object').toBeNull();
+    const totals = () => d1.db.prepare('SELECT COUNT(*) AS n, SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(uli.homeId).first<{ n: number; used: number }>();
+    const before = await totals();
+    expect(before?.used).toBe(VAULT_MEDIA_QUOTA_BYTES);
+    const retried = await uploaded(await send());
+    expect(retried.filename).toBe('cut.webm');
+    expect(seen, 'the retry is one more put').toEqual({ multipart: 0, puts: 2, failures: 0 });
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/cut.webm`, uli.cookie)), 'the retry stored it whole').toEqual(body);
+    expect(await totals(), 'the retry added no asset or bytes to the quota').toEqual(before);
+  }, 60_000);
 
   it('refuses an import from a URL into a vault exactly at its quota before fetching anything (B236)', async () => {
     const pia = await signedUpUser(env, 'assets-fromurl-pia', 'Pia');
