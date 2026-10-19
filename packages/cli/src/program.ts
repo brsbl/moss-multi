@@ -16,7 +16,7 @@ import { noteMedia, rewriteRefs } from './media.ts';
 import { exactPattern, parseScope, SCOPE_FILE, scopePath } from './scope.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
-  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
+  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
   recordPull, resetRootPins, sha256Hex, writeStateFile,
 } from './workspace.ts';
 
@@ -302,6 +302,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const path = resolve(cwd(), file);
       const workspace = findRoot(cwd());
       const root = workspace ?? pinRoot(cwd());
+      notInNested(root, confined(root, path));
       const moss = parsed.flags.has('moss');
       const title = value(parsed, 'title');
       const folderId = value(parsed, 'folder');
@@ -386,6 +387,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const row = (await client.listDocs()).find((doc) => doc.id === id);
         rel = confined(root, resolve(cwd(), row ? localName(row.filename, row.title) : `${id}.md`));
       }
+      notInNested(root, rel);
       const scope = inScope(root, rel, 'write a doc to');
       const target = join(root, rel);
       // What the file must still hold when it is replaced: --force replaces anything, otherwise only the base or nothing.
@@ -413,6 +415,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const meta = root ? metaForFile(root, path, foldsCase(root)) : null;
       if (!root || !meta) throw new CliError(1, `${fileArg} is not tracked here: \`moss-multi pull <doc> ${fileArg}\` first`);
       if (meta.mode === 'moss') throw new CliError(1, `${meta.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
+      notInNested(root, meta.file);
       const scope = inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.

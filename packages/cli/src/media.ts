@@ -149,6 +149,10 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
         }
         // Another file holds the name on the server: the note follows the name these bytes got, beside the file.
         const copy = join(dir, stored);
+        if (ctx.denies?.(copy)) {
+          failed(`uploaded as ${stored}, but the scope denies ${copy}, so the note still references ${name}`);
+          continue;
+        }
         const there = localFile(root, copy);
         if (there && sha256Hex(readConfined(root, copy)) !== hash) {
           failed(`uploaded as ${stored}, but ${copy} here holds another file, so the note still references ${name}`);

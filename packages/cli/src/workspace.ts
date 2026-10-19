@@ -162,6 +162,18 @@ export function findRoot(start: string): string | null {
 }
 
 /**
+ * Refuses `rel` (relative to `root`) when a folder between them holds its own `.moss-multi`: that workspace's scope
+ * governs the file, so a command run from outside it must not read, upload or write it.
+ */
+export function notInNested(root: string, rel: string): void {
+  let dir = root;
+  for (const part of rel.split(sep).slice(0, -1)) {
+    dir = join(dir, part);
+    if (lstat(join(dir, STATE_DIR))) throw new CliError(1, `${rel} is inside another moss-multi workspace (${dir}); run the command from there so its scope applies`);
+  }
+}
+
+/**
  * `file` relative to `root`, refusing anything outside it, reached through a symbolic link, inside the state
  * directory, or named against moss's filename rules.
  */

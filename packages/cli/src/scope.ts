@@ -204,21 +204,32 @@ function withoutSpans(text: string): string {
 export function noteLinks(source: string, from: string): LinkTarget[] {
   const text = withoutCode(source);
   const out: LinkTarget[] = [];
+  // The next `]]` and line break at or after the scan point, each found once and reused, so the scan stays linear.
+  let close = -1;
+  let eol = -1;
   for (let at = text.indexOf('[['); at >= 0; at = text.indexOf('[[', at + 2)) {
-    const end = text.indexOf(']]', at + 2);
-    if (end < 0) break;
-    const inner = text.slice(at + 2, end);
-    if (inner.includes('\n')) continue;
-    const target = wikiTarget(inner);
+    if (close < at + 2) close = text.indexOf(']]', at + 2);
+    if (close < 0) break;
+    if (eol < at + 2) eol = text.indexOf('\n', at + 2);
+    if (eol < 0) eol = text.length;
+    if (eol < close) continue;
+    const target = wikiTarget(text.slice(at + 2, close));
     if (target) out.push(target);
-    at = end;
+    at = close;
   }
+  // Where the last scan for each closing mark stopped (at it, a line break or the end): a scan starting before that
+  // stops there too, so the scan stays linear.
+  const stopped: Record<string, number> = { '>': -1, ')': -1 };
   for (let at = text.indexOf(']('); at >= 0; at = text.indexOf('](', at + 2)) {
     let i = at + 2;
     const angled = text[i] === '<';
     if (angled) i += 1;
-    let end = i;
-    while (end < text.length && text[end] !== (angled ? '>' : ')') && text[end] !== '\n') end += 1;
+    const mark = angled ? '>' : ')';
+    let end = i <= stopped[mark]! ? stopped[mark]! : i;
+    while (end < text.length && text[end] !== mark && text[end] !== '\n') end += 1;
+    stopped[mark] = end;
+    // An unclosed link is not a link.
+    if (text[end] !== mark) continue;
     let target = text.slice(i, end);
     // A link title follows the path after a space; the path itself may hold spaces (`../Reading list/Reading list.md`).
     if (!angled) {
