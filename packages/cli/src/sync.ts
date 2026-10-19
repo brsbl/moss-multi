@@ -11,13 +11,13 @@ import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
-import { noteBody, noteMedia, refNames } from './media.ts';
+import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import { evaluateScope, noteUnit, readScope, type ScopeView, titleKey } from './scope.ts';
 import {
-  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase, recordPull, recordSynced,
-  renameInside, sameFile, scopedNest, sha256Hex, trackedMetas, writeConfined, writeMeta,
+  confined, type DocMeta, ensureTaintStore, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase,
+  recordPull, recordSynced, renameInside, sameFile, scopedNest, sha256Hex, taintNote, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
 export type SyncAction =
@@ -266,7 +266,10 @@ function setAside(root: string, file: string, hunks: string[]): string {
     // None yet.
   }
   const stamp = `--- not applied to the doc, ${new Date().toISOString()}\n`;
-  writeConfined(root, rej, Buffer.from(`${before}${stamp}${hunks.map((hunk) => `${hunk.replace(/(?<!\n)\n*$/, '')}\n`).join('')}`));
+  const text = `${before}${stamp}${hunks.map((hunk) => `${hunk.replace(/(?<!\n)\n*$/, '')}\n`).join('')}`;
+  // A conflict file sits beside the note and holds text from the server's answer: what it names is recorded first.
+  taintNote(root, rej, [text]);
+  writeConfined(root, rej, Buffer.from(text));
   return rej;
 }
 
@@ -474,35 +477,38 @@ export interface AdoptOptions {
  * title line names the doc, its comments.json comes too, and the file is left in moss form.
  */
 export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
-  const { refs, ...adopted } = await createFrom(ctx, rel, options);
-  // The references in the file as it was read for the create are its user's; one an edit brought in after it is not.
-  return { ...adopted, media: (await syncMedia({ ...ctx, force: false }, adopted.doc.id, true, refs)).results };
+  const { settle, ...adopted } = await createFrom(ctx, rel, options);
+  // Its media go up from the file as its user left it, before any text from the server is written into it.
+  const media = await syncMedia({ ...ctx, force: false }, adopted.doc.id, true);
+  await settle?.();
+  return { ...adopted, media };
 }
 
 /**
  * The note's media step (media.ts) on the file the doc tracks now. With `settle`, a note whose references moved to the
  * names the server gave its files is pushed at once.
  */
-async function syncMedia(ctx: SyncContext, docId: string, settle: boolean, introduced?: Set<string>): Promise<{ results: SyncResult[]; introduced?: Set<string> }> {
+async function syncMedia(ctx: SyncContext, docId: string, settle: boolean): Promise<SyncResult[]> {
   const meta = readMeta(ctx.root, docId);
-  if (!meta || !exists(ctx.root, meta.file)) return { results: [] };
+  if (!meta || !exists(ctx.root, meta.file)) return [];
   const scope = ctx.scope;
   const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
-  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, folds: ctx.folds, upload: !ctx.downloadOnly, download: true, ...scoped, ...(introduced ? { introduced } : {}) }, docId, meta.file);
+  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, folds: ctx.folds, upload: !ctx.downloadOnly, download: true, ...scoped }, docId, meta.file);
   if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
-  return step;
+  return step.results;
 }
 
-async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc; refs: Set<string> }> {
+/**
+ * Creates the doc from an untracked file and tracks the file at once. `settle`, for a plain file, then writes the doc's
+ * text as the server holds it into the file: run it after the media step, so nothing the server wrote is uploaded.
+ */
+async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc; settle?: () => Promise<void> }> {
   const { root, client, folds } = ctx;
   const bytes = readConfined(root, rel);
   const text = toLf(decode(bytes));
   const stem = basename(rel, extname(rel));
   const folder = options.folderId ? { folderId: options.folderId } : {};
-  const moss = options.moss ?? isMossNote(rel, text);
-  // A moss note's title line names the doc, so a reference on it is never its user's upload.
-  const refs = refNames(noteBody(text, moss));
-  if (moss) {
+  if (options.moss ?? isMossNote(rel, text)) {
     const comments = ctx.scope?.denies(join(dirname(rel), 'comments.json')) ? undefined : readSidecar(root, rel);
     beforeWrite(ctx.signal);
     const created = await client.create({ ...(options.title !== undefined ? { title: options.title } : {}), markdown: text, titleLine: true, ...(comments ? { comments } : {}), ...folder });
@@ -517,7 +523,7 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
       doc = { ...doc, ...(await client.rename(doc.id, stem)) };
       writeMeta(root, { ...meta, title: doc.title });
     }
-    return { result: { docId: doc.id, file: rel, action: 'created' }, doc, refs };
+    return { result: { docId: doc.id, file: rel, action: 'created' }, doc };
   }
   beforeWrite(ctx.signal);
   const { doc } = await client.create({ title: options.title ?? stem, markdown: text, ...(options.titleLine ? { titleLine: true } : {}), ...folder });
@@ -531,14 +537,18 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
   const filename = keepName ? {} : { filename: moved || to === rel ? doc.filename : '' };
   // Tracked at once, so nothing failing below can turn this file into a second doc.
   recordBase(root, doc.id, file, bytes, folds, filename);
-  const merged = await client.content(doc.id, true);
-  try {
-    recordPull(root, doc.id, file, merged, sha256Hex(bytes), folds);
-  } catch (error) {
-    // Edited during the create: the file and the base it was created from stay, and the next pass merges the edit.
-    if (!(error instanceof CliError)) throw error;
-  }
-  return { result: { docId: doc.id, file, ...(file !== rel ? { from: rel } : {}), action: 'created' }, doc, refs };
+  const settle = async () => {
+    // Already settled by the media step's push: nothing more to write.
+    if (readMeta(root, doc.id)?.baseHash !== sha256Hex(bytes)) return;
+    const merged = await client.content(doc.id, true);
+    try {
+      recordPull(root, doc.id, file, merged, sha256Hex(bytes), folds);
+    } catch (error) {
+      // Edited during the create: the file and the base it was created from stay, and the next pass merges the edit.
+      if (!(error instanceof CliError)) throw error;
+    }
+  };
+  return { result: { docId: doc.id, file, ...(file !== rel ? { from: rel } : {}), action: 'created' }, doc, settle };
 }
 
 /**
@@ -558,6 +568,17 @@ function followLocalRenames(root: string, metas: DocMeta[], untracked: string[],
     if (candidates.length === 0) continue;
     const rivals = missing.filter((other) => syncedHash(other) === want);
     if (candidates.length === 1 && rivals.length === 1) {
+      // Moved to another folder: what the server showed for the doc is the server's there too.
+      if (dirname(candidates[0]!) !== dirname(meta.file)) {
+        let base: Uint8Array | undefined;
+        try {
+          base = readBase(root, meta.docId);
+        } catch {
+          // No base left: the note's text itself stands for it.
+          base = readFileSync(join(root, confined(root, candidates[0]!)));
+        }
+        taintNote(root, candidates[0]!, [base, meta.title]);
+      }
       writeMeta(root, { ...meta, file: candidates[0]! });
       untracked.splice(untracked.indexOf(candidates[0]!), 1);
       results.push({ docId: meta.docId, file: candidates[0]!, from: meta.file, action: 'renamed' });
@@ -618,6 +639,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   }
   // The root as pinned when the command chose it: one swapped during the request is refused before it is scanned.
   pinRoot(root);
+  // The folder taint store exists before anything is tracked this pass (rebuilt closed if it was lost).
+  ensureTaintStore(root);
   const rows = new Map(listed.map((row) => [row.id, row]));
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
@@ -644,16 +667,14 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       const { meta, result } = followServerName(noteCtx, tracked, row, trackedMetas(root));
       if (result) results.push(result);
       // Media first, so a pushed reference finds its file; a doc no longer listed is left to reconcile to report.
-      // The references this user added are read before the pull, so the step after it never uploads one the pull brought.
-      const before = row ? await syncMedia(noteCtx, meta.docId, false) : undefined;
-      if (before) results.push(...before.results);
+      const before = row ? await syncMedia(noteCtx, meta.docId, false) : [];
+      results.push(...before);
       const reconciled = await reconcile(noteCtx, meta, row);
       results.push(reconciled);
       if (reconciled.action !== 'remote-gone') {
-        const after = await syncMedia(noteCtx, meta.docId, true, before?.introduced ?? new Set());
         // A refusal the step before the pull already reported is not repeated.
-        const said = (result: SyncResult) => before?.results.some((first) => first.file === result.file && first.action === result.action && first.message === result.message);
-        results.push(...after.results.filter((result) => !said(result)));
+        const said = (result: SyncResult) => before.some((first) => first.file === result.file && first.action === result.action && first.message === result.message);
+        results.push(...(await syncMedia(noteCtx, meta.docId, true)).filter((result) => !said(result)));
       }
     } catch (error) {
       if (stopped(error)) return results;
@@ -730,7 +751,7 @@ async function fetchReached(ctx: SyncContext, rows: DocRow[], results: SyncResul
       const why = `${want.from ? `linked from ${want.from}` : 'named in follow'}${sends ? '' : '; download only until `moss-multi scope confirm` adds it'}`;
       results.push({ docId: row.id, file: want.path, action: 'pulled', message: why });
       const view = workspaceScope(root, folds) ?? scope;
-      results.push(...(await syncMedia({ ...ctx, scope: view, downloadOnly: !sends }, row.id, false)).results);
+      results.push(...(await syncMedia({ ...ctx, scope: view, downloadOnly: !sends }, row.id, false)));
     }
     if (pulled === 0) return;
   }

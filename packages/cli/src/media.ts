@@ -3,18 +3,17 @@
 // uploaded under a name the doc does not hold yet, downloaded when it is missing here, and neither side is ever
 // overwritten: a name the server stores under another name (another note's file holds it in the folder) moves the
 // note's reference to that name, and a local file that differs from the doc's bytes for its name is reported.
-// Uploads fail closed (T7.S9): a file goes up only for a reference this machine's user added (in the note's body, under a
-// name no text from the server for the doc ever referenced, or in the file as it was adopted) to a file no other note
-// in the folder holds or references.
+// Uploads fail closed (T7.S9): a file goes up only from the note's own assets/, under a name no text the server ever
+// showed in that folder could name (the workspace's folder taint store), when no other note in the folder holds or
+// references it.
 import { type Dirent, lstatSync, readdirSync } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
 import { ASSET_DIR, MEDIA_CAP_BYTES, mediaTypeOf } from '@moss-multi/protocol/media';
 import type { Api } from './api.ts';
 import { CliError } from './errors.ts';
-import { parseMoss } from './moss-format.ts';
 import type { SyncResult } from './sync.ts';
 import {
-  confined, isWorkspace, type MediaState, mediaRefs, readConfined, readMediaRecord, readMeta, refNames, servedNames, sha256Hex, trackedMetas, writeConfined,
+  confined, isWorkspace, type MediaState, mediaRefs, readConfined, readMediaRecord, refNames, sha256Hex, taintCheck, taintNames, trackedMetas, writeConfined,
   writeMediaRecord,
 } from './workspace.ts';
 
@@ -49,39 +48,16 @@ export interface MediaContext {
   reads?: (rel: string) => boolean;
   /** The volume folds case, so names that differ only in case are one file. */
   folds?: boolean;
-  /**
-   * The references this machine's user added, the only ones that may upload: for a note being adopted, those in the file
-   * body as it was read for the create; by default those in the note's body under a name no text from the server for
-   * the doc ever referenced (none when that is unknown).
-   */
-  introduced?: Set<string>;
 }
 
 export interface MediaStep {
   results: SyncResult[];
   /** Files the server stored under another name; the note file now references the new names. */
   renames: Map<string, string>;
-  /** The references that could upload (by `nameKey`), so a step after a pull does not count the pulled ones as this user's. */
-  introduced: Set<string>;
 }
 
 /** A media name or folder as the volume compares it: one Unicode form, and one case where the volume folds case. */
 const nameKey = (folds: boolean | undefined) => (name: string) => (folds ? name.normalize('NFC').toLowerCase() : name.normalize('NFC'));
-
-/** The body of a moss note, without its frontmatter, title line or markers; the whole text of any other note. */
-export const noteBody = (text: string, moss: boolean): string => (moss ? parseMoss(text.replace(/\r\n?/g, '\n')).clean : text);
-
-/**
- * The references in the note's `text` that this machine's user added: those its body holds under a name no text from
- * the server for the doc ever referenced (DocMeta.served). None when that is unknown.
- */
-function localRefs(root: string, docId: string, text: string, key: (name: string) => string): Set<string> {
-  const meta = readMeta(root, docId);
-  const served = meta ? servedNames(root, meta) : null;
-  if (!meta || served === null) return new Set();
-  const known = new Set([...served].map(key));
-  return new Set([...refNames(noteBody(text, meta.mode === 'moss'))].map(key).filter((name) => !known.has(name)));
-}
 
 /**
  * Why a file in the assets/ beside the note `file` may be another note's, by name: another tracked doc in that folder
@@ -145,8 +121,8 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   const note = confined(root, file);
   const dir = join(dirname(note), ASSET_DIR);
   const seen = new Set<string>();
-  const key = nameKey(ctx.folds);
-  const introduced = ctx.introduced ? new Set([...ctx.introduced].map(key)) : tracked ? localRefs(root, docId, text, key) : new Set<string>();
+  // Outside a workspace nothing was ever written from the server, so only ownership decides.
+  let served: ((rel: string, name: string) => boolean) | undefined;
   let owners: ((name: string) => string | null) | undefined;
 
   for (const { name } of mediaRefs(text)) {
@@ -180,8 +156,9 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
           continue;
         }
         if (!ctx.upload) continue;
-        if (!introduced.has(key(name))) {
-          failed(`${rel} was not uploaded: the reference to it came from the server or was synced before, so it is only downloaded. Save the file under a new name and reference that to upload it`);
+        served ??= tracked ? taintCheck(root) : () => false;
+        if (served(note, name)) {
+          failed(`${rel} was not uploaded: text from the server named it in this folder, so it is only ever downloaded. Save the file under a new name and reference that to upload it`);
           continue;
         }
         owners ??= folderOwners(ctx, docId, note);
@@ -217,7 +194,6 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
         const copied = localFile(root, copy)!;
         record[stored] = { hash, size: copied.size, mtimeMs: copied.mtimeMs };
         renames.set(name, stored);
-        introduced.add(key(stored));
         results.push({ docId, file: rel, action: 'uploaded', message: `the server already holds another ${name} here, so it is ${stored} there and the note now references ${copy}` });
         continue;
       }
@@ -242,6 +218,8 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   if (tracked && JSON.stringify(record) !== before) writeMediaRecord(root, docId, record);
   if (renames.size > 0) {
     try {
+      // The names the server gave are the server's: recorded before the note references them.
+      if (tracked) taintNames(root, note, renames.values());
       writeConfined(root, file, Buffer.from(rewriteRefs(text, renames)), sha256Hex(original));
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
@@ -250,7 +228,7 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
       renames.clear();
     }
   }
-  return { results, renames, introduced };
+  return { results, renames };
 }
 
 /** The size and mtime of a regular file at `rel`, or null when there is none; a link or a path outside is refused. */

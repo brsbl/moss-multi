@@ -151,3 +151,10 @@ retrying; launchd retries every 10 seconds until you fix it.
 - A `<note>.md.rej` file beside a note holds typing that sync could not place. The note holds the server's text. Copy
   back what you want and delete the `.rej` file.
 - Every server change is a version in the note's History, so nothing sync wrote is lost.
+- An image or video uploads only from its note's own `assets/` folder, and only if no text from the server ever named it
+  in that folder. Before sync writes a note, a title or a `.rej` file from the server, it records in
+  `.moss-multi/served-names.json` every media name that text could refer to. A name recorded there is only ever
+  downloaded from that folder, so a collaborator cannot make your replica upload a file you keep. The limit: once the
+  server has shown a name in a folder, a file of that name never uploads from it again. To change an image, save it
+  under a new name. If `served-names.json` is lost or damaged, sync rebuilds it from every note, base and file present,
+  so the images already in those folders upload only under new names after that.

@@ -5,12 +5,12 @@
 // goes through `confined`.
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  closeSync, constants, type Dirent, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   utimesSync, writeFileSync, type Stats,
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { ASSET_DIR, mediaTypeOf } from '@moss-multi/protocol/media';
+import { ASSET_DIR, MEDIA_TYPES, mediaTypeOf } from '@moss-multi/protocol/media';
 import { CliError } from './errors.ts';
 import { isUnsafeChar } from './output.ts';
 
@@ -31,11 +31,6 @@ export interface DocMeta {
   mode?: 'moss';
   /** For a moss note, the title its title line held when it was last synced. */
   title?: string;
-  /**
-   * Every media name a text from the server for this doc ever referenced (its bases, titles and what sync wrote into
-   * the file): such a name is the server's, only ever downloaded (T7.S9). Absent in a workspace from before it.
-   */
-  served?: string[];
   /**
    * The texts the file held, in the base's form, each time sync wrote over it within the last PRIOR_MS
    * (`prior-<hash>.md`), oldest first: an editor may still hold one and save it back (T7.P2).
@@ -192,7 +187,7 @@ function noLinks(root: string, rel: string): string {
  * Writes `bytes` to `rel` through a temporary file and a rename. With `expectHash` the file must still hash to it
  * (null: still be absent) just before the replace, so an edit saved while a request was in flight is not lost.
  */
-function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: string | null): void {
+function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: string | null, durable = false): void {
   const target = noLinks(root, rel);
   mkdirSync(dirname(target), { recursive: true });
   noLinks(root, rel);
@@ -202,6 +197,7 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
   let made: Stats;
   try {
     writeFileSync(fd, bytes);
+    if (durable) fsyncSync(fd);
     made = fstatSync(fd);
   } finally {
     closeSync(fd);
@@ -221,6 +217,20 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
   } catch (error) {
     rmSync(temp, { force: true });
     throw error;
+  }
+  if (durable) syncDir(dirname(target));
+}
+
+/** Flushes a directory's entries (a rename into it), where the platform allows it. */
+function syncDir(dir: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(dir, 'r');
+    fsyncSync(fd);
+  } catch {
+    // Not every platform opens or flushes a directory.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -318,8 +328,6 @@ export function readMeta(root: string, docId: string): DocMeta | null {
       })
       .map((prior): Prior => ({ hash: prior.hash, at: prior.at, ...(prior.refused === true ? { refused: true } : {}) }));
     delete meta.priors;
-    // An unreadable record of served names is no record: every name in the base counts as served then (servedNames).
-    if (!Array.isArray(meta.served) || !meta.served.every((name) => typeof name === 'string')) delete meta.served;
     return priors.length ? { ...meta, priors } : meta;
   } catch {
     return null;
@@ -358,50 +366,6 @@ export function readPriors(root: string, meta: DocMeta, savedAt: number): { prio
   }
   return { priors, missing };
 }
-
-/** Every prior text the doc still records, whatever its time; null when one of them is no longer kept. */
-export function recordedPriors(root: string, meta: DocMeta): Uint8Array[] | null {
-  const texts: Uint8Array[] = [];
-  for (const prior of meta.priors ?? []) {
-    if (!HASH.test(prior.hash)) continue;
-    try {
-      const bytes = readFileSync(noLinks(root, stateRel(meta.docId, priorName(prior.hash))));
-      if (sha256Hex(bytes) !== prior.hash) return null;
-      texts.push(bytes);
-    } catch {
-      return null;
-    }
-  }
-  return texts;
-}
-
-const decodeUtf8 = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
-
-/**
- * The media names the server ever showed for the doc (DocMeta.served). A workspace from before the record counts its
- * base, title and prior texts; null when one of those can no longer be read.
- */
-export function servedNames(root: string, meta: DocMeta): Set<string> | null {
-  if (meta.served) return new Set(meta.served);
-  let base: Uint8Array;
-  try {
-    base = readBase(root, meta.docId);
-  } catch {
-    return null;
-  }
-  const priors = recordedPriors(root, meta);
-  if (priors === null) return null;
-  return new Set([base, ...priors].flatMap((text) => [...refNames(decodeUtf8(text))]).concat([...refNames(meta.title ?? '')]));
-}
-
-/** Adds the names `texts` reference to the doc's served names, before sync writes any of them into its file. */
-function serve(root: string, docId: string, texts: (Uint8Array | string | undefined)[]): void {
-  const meta = readMeta(root, docId);
-  if (meta) writeMeta(root, { ...meta, served: [...namesIn(texts)] });
-}
-
-const namesIn = (texts: (Uint8Array | string | undefined)[]): Set<string> =>
-  new Set(texts.flatMap((text) => (text === undefined ? [] : [...refNames(typeof text === 'string' ? text : decodeUtf8(text))])));
 
 /**
  * Evicts the oldest prior texts across the workspace until they fit its budget. Their records stay until their window
@@ -520,17 +484,298 @@ export function writeMediaRecord(root: string, docId: string, record: Record<str
 }
 
 /**
- * Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. Served names only grow: those
- * recorded already, and those in the title, are kept whatever `meta` holds.
+ * The folder taint store (T7.S9), `.moss-multi/served-names.json`: for each note folder's assets/, every media name a
+ * text the CLI wrote into that folder from the server could name. It only grows, it is flushed to disk before the text
+ * is written, and a name in it never uploads from that folder. Folders and names are kept in one Unicode form and one
+ * case on every volume, so a lookup never misses a spelling the volume would match.
  */
+export const TAINT_FILE = 'served-names.json';
+const ASSETS = ASSET_DIR.replace(/\/$/, '');
+type Taint = Map<string, Set<string>>;
+
+const fold = (text: string): string => text.normalize('NFC').toLowerCase();
+/** The store's key for the assets/ folder of the notes in `folder`. */
+const folderKey = (folder: string): string => fold(join(folder, ASSETS));
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", sol: '/', bsol: '\\', period: '.', lpar: '(', rpar: ')', lsqb: '[', rsqb: ']', lbrack: '[',
+  rbrack: ']', colon: ':', excl: '!', num: '#', percnt: '%', equals: '=', nbsp: ' ', hyphen: '-', dash: '-', lowbar: '_', grave: '`', tilde: '~',
+  plus: '+', comma: ',', semi: ';', quest: '?', ast: '*', verbar: '|', vert: '|', commat: '@', dollar: '$', hat: '^', lcub: '{', rcub: '}',
+};
+const decodeEntities = (text: string): string =>
+  text.replace(/&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});?/g, (whole, body: string) => {
+    if (body.startsWith('#')) {
+      const code = /^#[xX]/.test(body) ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
+  });
+const decodePercent = (text: string): string =>
+  text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => Buffer.from(run.replace(/%/g, ''), 'hex').toString('utf8'));
+const unescapeMarkdown = (text: string): string => text.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+
+/** `text` and every form a reader could decode it to: entities, percent escapes, backslash escapes, compatibility forms. */
+function decodedForms(text: string): string[] {
+  const seen = new Set([text]);
+  let frontier = [text];
+  for (let round = 0; round < 3 && frontier.length > 0; round += 1) {
+    const next: string[] = [];
+    for (const form of frontier) {
+      for (const decode of [decodeEntities, decodePercent, unescapeMarkdown]) {
+        const decoded = decode(form);
+        if (!seen.has(decoded)) {
+          seen.add(decoded);
+          next.push(decoded);
+        }
+      }
+    }
+    frontier = next;
+  }
+  for (const form of [...seen]) seen.add(form.normalize('NFKC'));
+  return [...seen];
+}
+
+const MEDIA_END = new RegExp(`\\.(?:${Object.keys(MEDIA_TYPES).join('|')})(?![\\p{L}\\p{N}\\p{M}_])`, 'giu');
+/** Characters no file name holds: a run of name characters stops at one. */
+const NOT_NAME = /[<>:"/\\|?*\p{Cc}]/u;
+/** Characters that may sit inside a name: a name can start only after something else. */
+const IN_WORD = /[\p{L}\p{N}\p{M}_.~-]/u;
+
+/**
+ * Every token in `text` that could name a media file, liberally and without the markdown parser: each run of name
+ * characters (at most 255) ending in a media extension, from each place a name could start in it.
+ */
+function mediaTokens(text: string, add: (name: string) => void): void {
+  for (const match of text.matchAll(MEDIA_END)) {
+    const dot = match.index ?? 0;
+    const end = dot + match[0].length;
+    let start = dot;
+    while (start > 0 && end - start < 255 && !NOT_NAME.test(text[start - 1]!)) start -= 1;
+    for (let at = start; at <= dot; at += 1) {
+      if (at !== start && IN_WORD.test(text[at - 1]!)) continue;
+      const name = text.slice(at, end);
+      if (isAllowedName(name)) add(fold(name));
+      const trimmed = name.trim();
+      if (trimmed !== name && isAllowedName(trimmed)) add(fold(trimmed));
+    }
+  }
+}
+
+/** The names of the entries in the assets/ beside the notes in `folder`; none when it cannot be listed safely. */
+function assetEntries(root: string, folder: string): string[] {
+  try {
+    const dir = noLinks(root, join(folder, ASSETS));
+    return lstat(dir)?.isDirectory() ? readdirSync(dir) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The names `texts` could name in the assets/ beside the notes in `folder`: its files they mention, and every media token. */
+function namesIn(root: string, folder: string, texts: (Uint8Array | string | undefined)[]): Set<string> {
+  const names = new Set<string>();
+  const present = assetEntries(root, folder).map(fold);
+  for (const text of texts) {
+    if (text === undefined) continue;
+    for (const form of decodedForms(typeof text === 'string' ? text : Buffer.from(text).toString('utf8'))) {
+      mediaTokens(form, (name) => names.add(name));
+      const folded = fold(form);
+      for (const name of present) if (folded.includes(name)) names.add(name);
+    }
+  }
+  return names;
+}
+
+const isTaint = (value: unknown): value is { folders: Record<string, string[]> } => {
+  const folders = (value as { folders?: unknown } | null)?.folders;
+  return typeof folders === 'object' && folders !== null && !Array.isArray(folders) &&
+    Object.values(folders).every((names) => Array.isArray(names) && names.every((name) => typeof name === 'string'));
+};
+
+/** Whether the state directory holds any doc's record, readable or not. */
+const tracksAny = (root: string): boolean => {
+  try {
+    return readdirSync(noLinks(root, STATE_DIR)).some((name) => DOC_ID.test(name));
+  } catch (error) {
+    // No state directory yet: nothing was ever tracked here. Anything else counts as tracked.
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+};
+
+/**
+ * The store as it stands, and the bytes it was read from (null: there is none). One that is missing while the
+ * workspace tracks a doc, or that cannot be read or parsed, is rebuilt closed (rebuildTaint); it is never taken as empty.
+ */
+function loadTaint(root: string): { taint: Taint; raw: Buffer | null; fresh: boolean } {
+  let raw: Buffer | null;
+  try {
+    raw = readStateFile(root, TAINT_FILE);
+  } catch {
+    return { taint: rebuildTaint(root), raw: null, fresh: true };
+  }
+  if (raw === null) return { taint: tracksAny(root) ? rebuildTaint(root) : new Map(), raw: null, fresh: true };
+  try {
+    const parsed = JSON.parse(raw.toString('utf8')) as unknown;
+    if (!isTaint(parsed)) throw new Error('malformed');
+    return { taint: new Map(Object.entries(parsed.folders).map(([key, names]): [string, Set<string>] => [key, new Set(names)])), raw, fresh: false };
+  } catch {
+    return { taint: rebuildTaint(root), raw, fresh: true };
+  }
+}
+
+const serializeTaint = (taint: Taint): Buffer =>
+  Buffer.from(`${JSON.stringify({ version: 1, folders: Object.fromEntries([...taint].sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, names]) => [key, [...names].sort()])) })}\n`);
+
+/** Adds `add` to the store and flushes it, retrying when another process wrote it meanwhile; a failure throws. */
+function addTaint(root: string, add: Taint): void {
+  for (let attempt = 0; ; attempt += 1) {
+    const { taint, raw, fresh } = loadTaint(root);
+    let grew = fresh;
+    for (const [key, names] of add) {
+      const held = taint.get(key) ?? new Set<string>();
+      taint.set(key, held);
+      for (const name of names) {
+        if (held.has(name)) continue;
+        held.add(name);
+        grew = true;
+      }
+    }
+    if (!grew) return;
+    try {
+      writeInside(root, join(STATE_DIR, TAINT_FILE), serializeTaint(taint), raw ? sha256Hex(raw) : null, true);
+      return;
+    } catch (error) {
+      if (attempt >= 5 || !(error instanceof CliError)) throw error;
+    }
+  }
+}
+
+/**
+ * Records, before a text from the server is written into the note `rel` (or beside it), every media name the texts
+ * could name in that note's assets/. Throws when it cannot be recorded, so the text is not written.
+ */
+export function taintNote(root: string, rel: string, texts: (Uint8Array | string | undefined)[]): void {
+  const folder = dirname(rel);
+  addTaint(root, new Map([[folderKey(folder), namesIn(root, folder, texts)]]));
+}
+
+/** Records `names` themselves (names the server gave files) as the server's in the assets/ beside the note `rel`. */
+export function taintNames(root: string, rel: string, names: Iterable<string>): void {
+  addTaint(root, new Map([[folderKey(dirname(rel)), new Set([...names].map(fold))]]));
+}
+
+/** Makes sure the store exists before a pass tracks anything: an empty one for a workspace that tracks no doc yet. */
+export function ensureTaintStore(root: string): void {
+  const { taint, raw, fresh } = loadTaint(root);
+  if (!fresh) return;
+  try {
+    writeInside(root, join(STATE_DIR, TAINT_FILE), serializeTaint(taint), raw ? sha256Hex(raw) : null, true);
+  } catch {
+    // Read again (and rebuilt) by every check, and a write it blocks fails closed.
+  }
+}
+
+/** Whether the media `name` beside the note `rel` is one the server ever showed in that folder, read once per call. */
+export function taintCheck(root: string): (rel: string, name: string) => boolean {
+  const { taint } = loadTaint(root);
+  return (rel, name) => taint.get(folderKey(dirname(rel)))?.has(fold(name)) ?? false;
+}
+
+/**
+ * The store rebuilt closed: for every tracked doc's folder and every folder holding notes or an assets/ folder, every
+ * name in those assets/ folders, and every name the note files, conflict files, bases, prior texts, titles and media
+ * records there could name. A doc whose record cannot be read counts for every folder.
+ */
+function rebuildTaint(root: string): Taint {
+  const texts: { folder: string | null; text: Uint8Array | string }[] = [];
+  const folders = new Set<string>();
+  const taint: Taint = new Map();
+  const add = (folder: string, names: Iterable<string>) => {
+    const key = folderKey(folder);
+    const held = taint.get(key) ?? new Set<string>();
+    taint.set(key, held);
+    for (const name of names) held.add(fold(name));
+  };
+  let ids: string[] = [];
+  try {
+    ids = readdirSync(noLinks(root, STATE_DIR)).filter((name) => DOC_ID.test(name));
+  } catch {
+    // No state to read.
+  }
+  const loose: string[] = [];
+  for (const id of ids) {
+    let meta: DocMeta | null = null;
+    let own: (Uint8Array | string)[] = [];
+    try {
+      meta = readMeta(root, id);
+      const dir = noLinks(root, stateRel(id));
+      own = readdirSync(dir).filter((name) => name === 'base.md' || /^prior(-[0-9a-f]+)?\.md$/.test(name)).map((name) => readFileSync(noLinks(root, stateRel(id, name))));
+    } catch {
+      // What cannot be read is not there to scan.
+    }
+    if (meta?.title) own.push(meta.title);
+    let media: string[] = [];
+    try {
+      media = Object.keys(readMediaRecord(root, id));
+    } catch {
+      // No record to read.
+    }
+    if (meta) {
+      const folder = dirname(meta.file);
+      folders.add(folder);
+      add(folder, media);
+      for (const text of own) texts.push({ folder, text });
+    } else {
+      loose.push(...media);
+      for (const text of own) texts.push({ folder: null, text });
+    }
+  }
+  const walk = (dir: string) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(join(root, dir), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((entry) => entry.name === ASSETS || /\.md$/i.test(entry.name))) folders.add(dir);
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const rel = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || ['.git', STATE_DIR].some((marker) => lstat(join(root, rel, marker)))) continue;
+        walk(rel);
+      } else if (entry.isFile() && /\.(md|rej)$/i.test(entry.name)) {
+        try {
+          texts.push({ folder: dir, text: readFileSync(join(root, rel)) });
+        } catch {
+          // Gone or unreadable: nothing to scan.
+        }
+      }
+    }
+  };
+  walk('.');
+  for (const folder of folders) add(folder, [...assetEntries(root, folder), ...loose]);
+  for (const { folder, text } of texts) {
+    for (const target of folder === null ? folders : [folder]) add(target, namesIn(root, target, [text]));
+  }
+  return taint;
+}
+
+/** Writes a text from the server into the note `rel`, recording what it could name first; a file that already holds it is left alone. */
+function writeServed(root: string, rel: string, bytes: Uint8Array, expectHash: string | null | undefined, extra: (string | undefined)[]): void {
+  try {
+    const path = join(root, rel);
+    if (lstat(path)?.isFile() && readFileSync(path).equals(bytes)) return;
+  } catch {
+    // Written below, or refused there.
+  }
+  taintNote(root, rel, [bytes, ...extra]);
+  writeInside(root, rel, bytes, expectHash);
+}
+
+/** Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. */
 export function writeMeta(root: string, meta: DocMeta): void {
-  const recorded = readMeta(root, meta.docId);
-  const kept = recorded ? servedNames(root, recorded) : new Set<string>();
-  const served = kept === null && !meta.served ? undefined : [...new Set([...(kept ?? []), ...(meta.served ?? []), ...refNames(meta.title ?? '')])].sort();
-  const next: DocMeta = { ...meta };
-  delete next.served;
-  if (served) next.served = served;
-  writeInside(root, stateRel(meta.docId, 'meta.json'), Buffer.from(`${JSON.stringify(next, null, 2)}\n`));
+  writeInside(root, stateRel(meta.docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));
 }
 
 /**
@@ -576,8 +821,7 @@ export function ensureStateDir(root: string): void {
  */
 export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, state: Pick<SyncedState, 'prior' | 'refused'> = {}): DocMeta {
   const rel = confined(root, file);
-  serve(root, docId, [bytes]);
-  writeInside(root, rel, bytes, expectHash);
+  writeServed(root, rel, bytes, expectHash, []);
   return recordBase(root, docId, rel, bytes, folds, state);
 }
 
@@ -587,8 +831,7 @@ export function recordPull(root: string, docId: string, file: string, bytes: Uin
  */
 export function recordSynced(root: string, docId: string, file: string, local: Uint8Array, base: Uint8Array, expectHash: string | null, folds: boolean, state: SyncedState): DocMeta {
   const rel = confined(root, file);
-  serve(root, docId, [local, base, state.title]);
-  writeInside(root, rel, local, expectHash);
+  writeServed(root, rel, local, expectHash, [state.title]);
   return recordBase(root, docId, rel, base, folds, { ...state, localHash: sha256Hex(local) });
 }
 
@@ -598,10 +841,8 @@ export function recordSynced(root: string, docId: string, file: string, local: U
  * one owner.
  */
 export function recordBase(root: string, docId: string, rel: string, bytes: Uint8Array, folds = false, state: SyncedState = {}): DocMeta {
-  const previous = readMeta(root, docId);
-  // Read before the base is replaced: a workspace from before the record counts the names its old base held.
-  const served = previous ? servedNames(root, previous) : new Set<string>();
   writeInside(root, stateRel(docId, 'base.md'), bytes);
+  const previous = readMeta(root, docId);
   const baseHash = sha256Hex(bytes);
   const known = state.filename ?? previous?.filename;
   const mode = state.mode ?? previous?.mode;
@@ -624,7 +865,6 @@ export function recordBase(root: string, docId: string, rel: string, bytes: Uint
     docId, file: rel, baseHash, pulledAt: Date.now(), ...(known !== undefined ? { filename: known } : {}),
     ...(state.localHash !== undefined && state.localHash !== baseHash ? { localHash: state.localHash } : {}),
     ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}), ...(priors.length ? { priors } : {}),
-    served: [...new Set([...(served ?? []), ...namesIn([bytes, title])])],
   };
   writeMeta(root, meta);
   if (state.prior !== undefined) trimPriors(root);
