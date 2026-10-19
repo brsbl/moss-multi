@@ -335,6 +335,17 @@ describe('sign-in', () => {
     expect((await cli(['login', '--key', 'not-a-key', '--server', SERVER], {})).code).toBe(1);
   });
 
+  it('login --key - reads the key from stdin, so it never sits on a command line', async () => {
+    const result = await cli(['login', '--key', '-', '--server', SERVER], {}, { stdin: async () => `${KEY}\n` });
+    expect(result.code, result.err).toBe(0);
+    expect(result.out).toContain('agent Scribe');
+    expect(result.out + result.err).not.toContain(KEY);
+    expect(JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf8'))).toEqual({ serverUrl: SERVER, apiKey: KEY });
+    const empty = await cli(['login', '--key', '-', '--server', SERVER], {}, { stdin: async () => '\n' });
+    expect(empty.code).toBe(1);
+    expect(empty.err).toMatch(/stdin/);
+  });
+
   it('device login polls through pending and slow_down, then stores the session', async () => {
     server.state.token = 'session-1';
     server.state.deviceAnswers.push({ status: 400, body: { error: 'authorization_pending' } }, { status: 400, body: { error: 'slow_down' } });

@@ -2,7 +2,7 @@
 // the notes `follow` reaches through links (download only), and never touches a denied path, even one an entry links
 // to. `scope confirm` writes the notes follow reaches into `allow`. Without the file, every .md syncs as before. @p:agt-2
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ const SERVER = 'http://127.0.0.1:9999';
 const KEY = `mm_sk_${'a'.repeat(64)}`;
 const ALPHA_ID = '0a1b2c3d-1111-4111-8111-aaaaaaaaaaaa';
 const TAXES_ID = '0a1b2c3d-2222-4222-8222-bbbbbbbbbbbb';
+const UNKNOWN_ID = '0a1b2c3d-9999-4999-8999-cccccccccccc';
 
 interface Row { id: string; title: string; filename: string; folderId: string; vaultId: string; role: string; updatedAt: number }
 interface Call { method: string; path: string; body: unknown }
@@ -742,6 +743,46 @@ describe('follow brings server notes down', () => {
     expect(pulled(run.results)).toEqual([]);
     expect(server.calls.filter((call) => call.path.startsWith(`/api/docs/${refundsId}`))).toEqual([]);
     expect(existsSync(join(dir, 'Refunds'))).toBe(false);
+  });
+
+  it('a link carrying a moss id resolves by that id alone: a denied or unknown id never reaches a note of its title, here or on the server', async () => {
+    const files = pilotVault({ ...PILOT, depth: 2 });
+    const home = join(dir, files.home);
+    writeFileSync(home, readFileSync(home, 'utf8').replace('Private:', `Also [[Refunds|${TAXES_ID}]] and [[Loose|${UNKNOWN_ID}]]. Private:`));
+    const refunds = note('', 'Refunds', 'Refunds lead on to [[Leak]].');
+    const leakId = serverDoc('Leak', 'Pulled through a denied id.\n');
+    const listed = await cli(['scope', 'confirm']);
+    expect(listed.code, listed.err).toBe(0);
+    expect(listed.out).not.toMatch(/Refunds|Loose/);
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    expect(followOnly(run.results)).not.toContain(refunds);
+    expect(followOnly(run.results)).not.toContain(files.loose);
+    expect(pulled(run.results)).toEqual([]);
+    expect(server.calls.filter((call) => call.path.startsWith(`/api/docs/${leakId}`))).toEqual([]);
+    expect(existsSync(join(dir, 'Leak'))).toBe(false);
+  });
+
+  it('a replica without the denied notes never pulls a server note by a denied title, a title deny names, or an id it does not hold', async () => {
+    pilotVault(PILOT);
+    // The Mac prints the replica's scope: its deny list, plus the titles its followed notes link to that a denied note holds.
+    const exported = await cli(['scope', 'replica']);
+    expect(exported.code, exported.err).toBe(0);
+    const replica = JSON.parse(exported.out) as Record<string, unknown>;
+    expect(replica).toEqual({ allow: ['**'], follow: ['Moss Home'], depth: 1, deny: ['Personal/**', 'Admin/Finance/**', '**/Diary'] });
+    expect(exported.out).not.toContain('Taxes');
+
+    // L: an empty folder with that scope, and a deny entry naming one more private note.
+    for (const entry of readdirSync(dir)) if (entry !== '.moss-multi') rmSync(join(dir, entry), { recursive: true, force: true });
+    writeScope({ ...replica, deny: [...(replica.deny as string[]), 'Admin/Finance/Ledger'] });
+    serverDoc('Moss Home', `Start at [[Alpha]]. Private: [[Diary]], [[Refunds|${TAXES_ID}]] and [[Ledger]].\n`);
+    serverDoc('Alpha', 'Alpha.\n');
+    const others = [serverDoc('Diary', 'A web note named like the private one.\n'), serverDoc('Refunds', 'Named like an id link.\n'), serverDoc('Ledger', 'Named in deny.\n')];
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    expect(pulled(run.results)).toEqual(['Alpha', 'Moss Home'].map(mossNote).sort());
+    for (const id of others) expect(server.calls.filter((call) => call.path.startsWith(`/api/docs/${id}`))).toEqual([]);
+    for (const absent of ['Diary', 'Refunds', 'Ledger']) expect(existsSync(join(dir, absent)), absent).toBe(false);
   });
 
   it('a follow entry naming a .md file is pulled to exactly that path, and never when deny names it', async () => {

@@ -62,6 +62,19 @@ describe('the watch service', () => {
     expect(unit).toMatch(/^StandardError=append:%h\/\.local\/state\/moss-multi\/watch\.log$/m);
   });
 
+  it('docs/SYNC.md never puts an agent key on a command line: the env file is made private before the key goes in, and login reads it from stdin', () => {
+    const doc = readFileSync(fileURLToPath(new URL('../../../docs/SYNC.md', import.meta.url)), 'utf8');
+    const blocks = [...doc.matchAll(/^ *```[^\n]*\n([\s\S]*?)^ *```/gm)].map((match) => match[1]!);
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const line of blocks.join('\n').split('\n')) {
+      expect(line, 'no key, real or placeholder, in an example').not.toMatch(/mm_sk_/);
+      expect(line, 'login --key reads the key from stdin').not.toMatch(/--key(?:=|\s+)(?!-(?:\s|$))\S/);
+      expect(line, 'no shell assignment of the key').not.toMatch(/(?:^|[\s;&|])(?:export\s+)?MOSS_MULTI_API_KEY=/);
+    }
+    expect(doc).toMatch(/install -m 600 \/dev\/null ~\/\.config\/moss-multi\/watch\.env/);
+    expect(doc).toMatch(/moss-multi login --server \S+ --key -/);
+  });
+
   it('the launchd agent starts at login, restarts after a failure, logs to a file and never opens a browser', () => {
     const plist = readFileSync(join(SERVICE, 'app.moss-multi.watch.plist'), 'utf8').replace(/\s+/g, ' ');
     expect(plist).toContain('<key>RunAtLoad</key> <true/>');

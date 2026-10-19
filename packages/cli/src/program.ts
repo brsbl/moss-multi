@@ -35,6 +35,8 @@ export interface ProgramDeps {
   signal?: AbortSignal;
   /** Asks a yes-or-no question (`scope confirm`); a terminal prompt when absent, and no without a terminal. */
   confirm?: (question: string) => Promise<boolean>;
+  /** Reads all of stdin (`login --key -`); process.stdin when absent. */
+  stdin?: () => Promise<string>;
 }
 
 export const AGENT_KEY_PREFIX = 'mm_sk_';
