@@ -487,7 +487,10 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
       for (const link of linksOf(file)) {
         const found = resolve(link);
         for (const linked of found) visit(linked, next, file);
-        if (link.id === undefined && link.title && !link.title.includes('/') && titleDenied(link.title)) deniedLinks.set(titleKey(link.title), link.title);
+        // The title a wiki or relative markdown link names, when a denied note goes by it, for `scope replica`.
+        const unit = link.path !== undefined ? noteUnit(link.path) : '';
+        const named = link.id !== undefined ? '' : link.path !== undefined ? basename(unit, unit === link.path ? extname(unit) : '') : link.title && !link.title.includes('/') ? link.title : '';
+        if (named && titleDenied(named)) deniedLinks.set(titleKey(named), named);
         // An id link is never pulled by its title.
         if (found.length || link.id !== undefined) continue;
         if (link.path !== undefined) {
