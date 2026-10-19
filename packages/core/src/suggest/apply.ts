@@ -1046,6 +1046,10 @@ export interface Restored {
  * same, and, for text, sits under the same text node (its property map, or the copy of it). Text a record rewrites
  * (a restyle, a replaced word) sits under a new map or reads differently, so it is not taken for a copy. An undo, a
  * redo and a second undo restore a copy of the first copy, which restores the same body unit.
+ *
+ * Linear in the doc whatever client ids writers chose: each new unit's link (the unit it restores) is read from its
+ * struct, a chain of copies is followed once with every link memoized, and each item's property map is found once.
+ * `steps`, if given, counts that work.
  */
 export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number }): Restored {
   const tick = () => {
@@ -1053,87 +1057,139 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number 
   };
   const out: Restored = { copies: new Map(), originals: new Set(), clients: new Set() };
   const isMap = (item: Y.Item) => item.content instanceof Y.ContentType && item.content.type instanceof Y.Map;
-  const liveIn = (store: Y.Doc['store'], id: Y.ID): Y.Item | null => {
+  const itemIn = (store: Y.Doc['store'], id: Y.ID): Y.Item | null => {
     if (id.clock >= Y.getState(store, id.client)) return null;
     const item = Y.getItem(store, id);
-    return item instanceof Y.Item && !item.deleted ? item : null;
+    return item instanceof Y.Item ? item : null;
+  };
+  const liveIn = (store: Y.Doc['store'], id: Y.ID): Y.Item | null => {
+    const item = itemIn(store, id);
+    return item && !item.deleted ? item : null;
   };
   const removedIn = (id: Y.ID): Y.Item | null => {
-    if (id.clock >= Y.getState(doc.store, id.client)) return null;
-    const item = Y.getItem(doc.store, id);
-    return item instanceof Y.Item && item.deleted ? item : null;
+    const item = itemIn(doc.store, id);
+    return item?.deleted ? item : null;
   };
-  /** The live property map a text item sits under, by key (a restored map by its original's). */
-  const mapOf = (item: Y.Item, copies: boolean): string | null => {
+  /** The nearest live property map left of an item, each item's found once (`known`). */
+  const mapLeftOf = (known: Map<Y.Item, Y.Item | null>) => (item: Y.Item): Y.Item | null => {
+    const walked = [item];
+    let found: Y.Item | null = null;
     for (let left = item.left; left; left = left.left) {
       tick();
-      if (!left.deleted && isMap(left)) return itemKey((copies ? out.copies.get(itemKey(left.id)) : undefined) ?? left.id);
-    }
-    return null;
-  };
-  const reads = (content: Y.Item['content']) => canonical(contentValue('body', 'root', content, false));
-  /** Every copy found, removed ones too, to the body unit it restores. */
-  const links = new Map<string, Y.ID>();
-  let added = 0;
-  /** A unit restores a new unit not yet known as a copy: a copy of a copy whose first copy a later client holds. */
-  let deferred = false;
-  const pass = (strings: boolean) => {
-    for (const [client, structs] of doc.store.clients) {
-      const known = Y.getState(body.store, client);
-      let start = 0;
-      let right: Y.ID | null = null;
-      for (const struct of structs) {
-        tick();
-        if (!(struct instanceof Y.Item)) {
-          right = null;
-          continue;
-        }
-        const origin = struct.rightOrigin;
-        if (!right || !origin || origin.client !== right.client || origin.clock !== right.clock) start = struct.id.clock;
-        right = origin;
-        if (struct.id.clock < known || !origin || struct.parentSub !== null) continue;
-        if ((struct.content instanceof Y.ContentString) !== strings) continue;
-        // Read once a unit needs it: walking left is linear in the block.
-        let map: string | null | undefined;
-        let bodyMap = null as { of: Y.Item; key: string | null } | null;
-        for (let i = 0; i < struct.length; i += 1) {
-          tick();
-          const copy = Y.createID(client, struct.id.clock + i);
-          if (out.copies.has(itemKey(copy)) || links.has(itemKey(copy))) continue;
-          const restores = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);
-          const gone = removedIn(restores);
-          if (!gone || gone.parent !== struct.parent) continue;
-          // An undo after a redo restores the copy an earlier undo made: the copy of a copy restores that copy's original.
-          const original = liveIn(body.store, restores) ? restores : links.get(itemKey(restores));
-          if (!original && restores.clock >= Y.getState(body.store, restores.client)) deferred = true;
-          const was = original && liveIn(body.store, original);
-          if (!original || !was || !removedIn(original)) continue;
-          if (strings) {
-            const at = original.clock - was.id.clock;
-            if (!(was.content instanceof Y.ContentString) || was.content.str[at] !== (struct.content as Y.ContentString).str[i]) continue;
-            const under = bodyMap?.of === was ? bodyMap : (bodyMap = { of: was, key: mapOf(was, false) });
-            if (map === undefined) map = mapOf(struct, true);
-            if (under.key !== map) continue;
-          } else if (reads(was.content) !== reads(struct.content)) continue;
-          links.set(itemKey(copy), original);
-          added += 1;
-          // A removed copy (a redo took it back) is only a link to its original for a later copy of it.
-          if (struct.deleted) continue;
-          out.copies.set(itemKey(copy), original);
-          out.originals.add(itemKey(original));
-          out.clients.add(client);
-        }
+      if (!left.deleted && isMap(left)) {
+        found = left;
+        break;
       }
+      const seen = known.get(left);
+      if (seen !== undefined) {
+        found = seen;
+        break;
+      }
+      walked.push(left);
     }
+    for (const each of walked) known.set(each, found);
+    return found;
   };
-  // Property maps and other items first, so a restored text node's characters find their map's copy. A copy of a copy
-  // whose first copy a client iterated later holds is found on another round, while rounds still find copies.
-  for (let round = 0; round <= doc.store.clients.size; round += 1) {
-    pass(false);
-    pass(true);
-    if (!deferred || added === 0) break;
-    added = 0;
-    deferred = false;
+  const docMap = mapLeftOf(new Map());
+  const bodyMap = mapLeftOf(new Map());
+  const reads = (content: Y.Item['content']) => canonical(contentValue('body', 'root', content, false));
+  /**
+   * Each new struct that may hold copies, to the clock its run starts at: a copy split by typing keeps its right
+   * origin in every part, and its units line up with the original's from the run's start.
+   */
+  const runs = new Map<Y.Item, number>();
+  for (const [client, structs] of doc.store.clients) {
+    const known = Y.getState(body.store, client);
+    let start = 0;
+    let right: Y.ID | null = null;
+    for (const struct of structs) {
+      tick();
+      if (!(struct instanceof Y.Item)) {
+        right = null;
+        continue;
+      }
+      const origin = struct.rightOrigin;
+      if (!right || !origin || origin.client !== right.client || origin.clock !== right.clock) start = struct.id.clock;
+      right = origin;
+      if (struct.id.clock < known || !origin || struct.parentSub !== null) continue;
+      runs.set(struct, start);
+    }
+  }
+  /** The unit new unit `id` would restore, and its struct, or null when it is no candidate. */
+  const linkOf = (id: Y.ID): { struct: Y.Item; at: number; restores: Y.ID } | null => {
+    const struct = itemIn(doc.store, id);
+    const start = struct && runs.get(struct);
+    if (!struct || start === undefined) return null;
+    const origin = struct.rightOrigin!;
+    const at = id.clock - struct.id.clock;
+    return { struct, at, restores: Y.createID(origin.client, origin.clock + struct.id.clock - start + at) };
+  };
+  /** Whether the copy linked as `link` restores body unit `original` (null: none). */
+  const check = (link: { struct: Y.Item; at: number; restores: Y.ID }, original: Y.ID | null): Y.ID | null => {
+    if (!original) return null;
+    const { struct, at, restores } = link;
+    const gone = removedIn(restores);
+    if (!gone || gone.parent !== struct.parent) return null;
+    const was = liveIn(body.store, original);
+    if (!was || !removedIn(original)) return null;
+    if (struct.content instanceof Y.ContentString) {
+      const offset = original.clock - was.id.clock;
+      if (!(was.content instanceof Y.ContentString) || was.content.str[offset] !== struct.content.str[at]) return null;
+      const under = bodyMap(was);
+      const map = docMap(struct);
+      const mapKey = map && itemKey(resolve(map.id) ?? map.id);
+      if ((under && itemKey(under.id)) !== mapKey) return null;
+    } else if (reads(was.content) !== reads(struct.content)) return null;
+    return original;
+  };
+  /** Every new unit resolved so far, removed copies too, to the body unit it restores (null: none). */
+  const resolved = new Map<string, Y.ID | null>();
+  /**
+   * The body unit new unit `id` restores. An undo after a redo restores the copy an earlier undo made: a copy of a copy
+   * restores that copy's original, so the chain is followed to a unit live in `body`, then checked back link by link.
+   */
+  function resolve(id: Y.ID): Y.ID | null {
+    const path: { key: string; link: { struct: Y.Item; at: number; restores: Y.ID } }[] = [];
+    const onPath = new Set<string>();
+    let original: Y.ID | null = null;
+    for (let at = id; ;) {
+      tick();
+      const key = itemKey(at);
+      const known = resolved.get(key);
+      if (known !== undefined) {
+        original = known;
+        break;
+      }
+      const link = onPath.has(key) ? null : linkOf(at);
+      if (!link) break;
+      path.push({ key, link });
+      onPath.add(key);
+      // The last link restores a body unit itself.
+      if (liveIn(body.store, link.restores)) {
+        original = link.restores;
+        break;
+      }
+      at = link.restores;
+    }
+    for (let i = path.length - 1; i >= 0; i -= 1) {
+      tick();
+      original = check(path[i].link, original);
+      resolved.set(path[i].key, original);
+    }
+    return original;
+  }
+  for (const [struct] of runs) {
+    // A removed copy (a redo took it back) is only a link to its original for a later copy of it.
+    if (struct.deleted) continue;
+    for (let i = 0; i < struct.length; i += 1) {
+      tick();
+      const copy = Y.createID(struct.id.client, struct.id.clock + i);
+      const original = resolve(copy);
+      if (!original) continue;
+      out.copies.set(itemKey(copy), original);
+      out.originals.add(itemKey(original));
+      out.clients.add(struct.id.client);
+    }
   }
   return out;
 }

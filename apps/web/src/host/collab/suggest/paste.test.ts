@@ -22,7 +22,7 @@ import { Composite, destroyView, GROUP_IDLE_MS, SuggestFork } from '../../../../
 import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src/payload-docs.ts';
 import { REGISTER_LOCAL_ORIGIN } from '../../../../../../packages/sync/src/registers.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
-import { closeRecord, openRecords, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
+import { closeRecord, openRecords, readMeta, readRecord } from '../../../../../../packages/sync/src/suggest/records.ts';
 import { acceptRecord, EMPTY_IDLE_MS, nodeRegistry, previewRecord, reviewPreview } from '../../../../../../packages/sync/src/suggest/review.ts';
 import { EDITOR, forgeRecord, opOn, seededBody, select, spansOfText, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { describePreview } from '../../../../../../packages/core/src/suggest/describe.ts';
@@ -1415,11 +1415,11 @@ it.each([
 });
 
 it.each([
-  // After " More", in the paragraph with the real change.
-  ['elsewhere goes on in a continuation, and the fork rebuilds once it is stored', null, false],
-  // Inside the restored rest, after one of its copies.
-  ['beside a kept copy is refused with its block offered back', 13, true],
-] as const)('T5.S14: typing still unacknowledged when accept keeps an undone Enter %s', { timeout: 120_000 }, (_name, at, refused) => {
+  // After " More", in the paragraph with the real change, under the record's lease.
+  ['in the record', null],
+  // Inside the restored rest, after one of its kept copies.
+  ['beside a kept copy', 13],
+] as const)('T5.S14: typing %s still unacknowledged when accept keeps an undone Enter is refused loudly with its block offered back, never dropped by the rebuild', { timeout: 120_000 }, (_name, at) => {
   const pane = suggesting();
   try {
     const settle = () => {
@@ -1447,18 +1447,10 @@ it.each([
     const events: string[] = [];
     pane.fork.on((event) => events.push(event.type));
     expect(acceptRecord(pane.live, record!.meta.id, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
-    if (refused) {
-      expect(pane.fork.closed, 'its copy is not where the body keeps the text').toBe(true);
-      expect(pane.unsaved.join('\n')).toContain('!');
-      return;
-    }
-    expect(pane.fork.closed, 'input stays open').toBe(false);
-    expect(events, 'nothing rebuilds under the frame in flight').not.toContain('rebuild');
-    pane.pump();
-    expect(pane.unsaved, 'nothing is offered back').toEqual([]);
-    expect(events, 'the fork rebuilds once nothing is owed').toContain('rebuild');
-    const [continuation] = openRecords(pane.live);
-    expect(continuation?.meta.continues, 'the typing continues the accepted record').toBe(record!.meta.id);
+    expect(readMeta(pane.live, record!.meta.id)?.kept, 'accept kept the undone paragraph').toBe(true);
+    expect(events, 'F does not rebuild under the frame in flight').not.toContain('rebuild');
+    expect(pane.fork.closed, 'input closes').toBe(true);
+    expect(pane.unsaved.join('\n'), 'the unacknowledged typing is offered back').toContain('!');
   } finally {
     pane.dispose();
   }

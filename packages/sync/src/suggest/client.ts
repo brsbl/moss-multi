@@ -1193,8 +1193,14 @@ export class SuggestFork {
       if (meta.status === 'accepted') {
         // Accepted text is body text now; the next edit writes a fresh group.
         if (this.#leases[0]?.record === record) this.#rotate();
-        // Unless accept kept what the record changed only in item identity (T5.S14): B holds the originals F removed.
         if (!meta.kept) continue;
+        // Accept kept what the record changed only in item identity (T5.S14): B holds the originals where F held the
+        // record's copies, and applying B removed the copies from F. F rebuilds, which would drop any frame still owed
+        // (to this record or another), so an owed frame is refused loudly with its block offered back (I6).
+        const edits = [...this.#inflight, ...this.#waiting].some(({ request }) => request.t !== 'suggest-lease');
+        if (edits) this.#halt('record-closed');
+        else if (!this.#closed) this.#emit({ type: 'rebuild' });
+        continue;
       }
       const owes = [...this.#inflight, ...this.#waiting].some(({ request }) =>
         (request.t === 'suggest-ops' || request.t === 'suggest-delete') && request.record === record);
