@@ -80,14 +80,15 @@ The pilot holds the owner's real notes for the Moss pilot (T8.P1), apart from st
    | `PILOT_ALLOWED_EMAILS` | the emails that may sign up, separated by commas or spaces |
 
    `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are shared with staging. To add someone later, update `PILOT_ALLOWED_EMAILS` and deploy again.
-3. **Register the workflow.** GitHub runs a dispatch-only workflow only when it is on the default branch, so `deploy-pilot.yml` must be on `main` before the first dispatch, as `deploy-staging.yml` was.
+3. **No workflow to register.** GitHub dispatches a workflow only when its file is on the default branch, and then runs the dispatched ref's copy. `deploy-staging.yml` is on `main`, so its `target=pilot` input reaches the pilot from `m8` without a merge to `main`.
 
 ### Deploying
 
 1. Run the full lane on the branch to deploy and wait for it to pass: `gh workflow run ci.yml --ref m8 -f lane=full`.
 2. Dispatch the deploy with that run's id. The gate is the same as staging's: a green full lane in both engines, a push or dispatch run of this repository, its head still on its branch, under 3 days old.
-   `gh workflow run deploy-pilot.yml --ref m8 -f ci_run_id=<run id>`
-3. Watch it with `gh run watch <id> --interval 60 --exit-status`. A run then:
+   `gh workflow run deploy-staging.yml --ref m8 -f ci_run_id=<run id> -f target=pilot`
+   With `target=pilot`, `deploy-staging.yml` runs only its gate, then calls `deploy-pilot.yml`, passing it only the three `PILOT_*` secrets and the two Cloudflare ones. Its staging deploy and canary are skipped, and no staging or canary secret is in reach. Once `deploy-pilot.yml` is on `main`, `gh workflow run deploy-pilot.yml --ref m8 -f ci_run_id=<run id>` does the same.
+3. Watch it with `gh run watch <id> --interval 60 --exit-status`. The run is named "Deploy staging" either way; its `pilot` job does the work. It:
    - gates the run;
    - checks the secrets, including that `PILOT_URL` is not the staging Worker and the allowlist holds only email addresses;
    - downloads and guards the tested bytes;
@@ -107,7 +108,7 @@ CI checks the pilot config on every build: the `Pilot deploy dry run` step lays 
 A deploy changes only the Worker code. The notes stay in place. To go back to the previous version:
 
 - **Fastest:** in the Cloudflare dashboard, open Workers & Pages → `moss-multi-pilot` → Deployments, pick the previous version, and choose Rollback. With the token, `wrangler rollback --name moss-multi-pilot` does the same, and `wrangler deployments list --name moss-multi-pilot` lists the versions.
-- **Through the pipeline:** dispatch `deploy-pilot.yml` with the previous deploy's CI run id while its `web-dist` is under 3 days old. After that, push the previous commit to a branch, run the full lane there, and deploy that run.
+- **Through the pipeline:** dispatch the deploy with `target=pilot` and the previous deploy's CI run id while its `web-dist` is under 3 days old. After that, push the previous commit to a branch, run the full lane there, and deploy that run.
 
 D1 migrations are not rolled back. So far every migration only adds tables, columns or indexes, so older code runs on the newer schema. Before rolling back across a migration that changes or drops something, export the D1 database first.
 

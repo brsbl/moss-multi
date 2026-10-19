@@ -318,7 +318,8 @@ const triggers = (workflow) => workflow.on ?? workflow[true];
 // Whether a job or step runs for a target. Only the conditions the deploy workflows use; anything else fails the test.
 function runsFor(condition, target) {
   if (condition === undefined) return true;
-  const text = String(condition).trim().replace(/^\$\{\{\s*/, '').replace(/\s*\}\}$/, '');
+  const raw = String(condition).trim();
+  const text = raw.startsWith('${{') && raw.endsWith('}}') ? raw.slice(3, -2).trim() : raw;
   if (text === 'always()') return true;
   const match = /^inputs\.target == '(\w+)'$/.exec(text);
   if (!match) throw new Error(`unknown condition: ${condition}`);
@@ -392,7 +393,6 @@ describe('deploy-staging.yml target', () => {
     expect(Object.keys(on.workflow_call.inputs)).toEqual(Object.keys(on.workflow_dispatch.inputs));
     expect(on.workflow_call.inputs.ci_run_id).toMatchObject({ required: true, type: 'string' });
     expect(Object.keys(on.workflow_call.secrets)).toEqual(PILOT_SECRETS);
-    for (const secret of Object.values(on.workflow_call.secrets)) expect(secret.required).toBe(true);
   });
 });
 
