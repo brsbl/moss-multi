@@ -10,8 +10,14 @@ const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, 'g');
 
 /** @type {[string, RegExp][]} The infrastructure classes a staging retry may follow, each matched on the first line of an error. */
 export const INFRA_CLASSES = [
-  // A fixture's own classification (e2e/lib/infra.ts): a Cloudflare error page, D1 7429, Worker 1101, an unreachable stack.
-  ['infra-blocked', /\bInfraBlocked: /],
+  // Only these of a fixture's InfraBlocked reasons (e2e/lib/infra.ts, e2e/lib/stack.ts): a Worker 1101 or 1102 is the
+  // Worker's own failure, and a wrong build, a malformed /api/version or a missing secret is no transient fault.
+  ['cloudflare error page', /\bInfraBlocked: [^\n]*: a Cloudflare error page$/],
+  ['d1 overloaded', /\bInfraBlocked: [^\n]*: D1 7429 \(overloaded\)$/],
+  [
+    'stack unreachable',
+    /\bInfraBlocked: [^\n]*: the stack is unreachable$|\bInfraBlocked: \/api\/version unreachable at \S+: [^\n]*\((?:ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|ENOTFOUND|EAI_AGAIN|UND_ERR_SOCKET)\)$/,
+  ],
   ['connection reset', /\bnet::ERR_CONNECTION_(?:RESET|CLOSED|REFUSED|ABORTED)\b|\bECONNRESET\b|\bECONNREFUSED\b|\bsocket hang up\b/],
   ['network changed', /\bnet::ERR_(?:NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED)\b|\bEAI_AGAIN\b/],
 ];

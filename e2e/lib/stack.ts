@@ -68,15 +68,22 @@ export class Stack {
 
   /** `/api/version` must report the bytes the stack was started on. */
   async assertProvenance(): Promise<Provenance> {
-    let version: Provenance;
+    let text: string;
     try {
       const response = await fetch(`${this.baseUrl}/api/version`, { signal: AbortSignal.timeout(10_000) });
-      const text = await response.text();
-      assertNotInfra(text, '/api/version');
+      text = await response.text();
+    } catch (error) {
+      // The network's code (ECONNRESET, ...) is what lets the staging retry gate name it; a timeout carries none.
+      const code = (error as { cause?: { code?: unknown } }).cause?.code;
+      const named = typeof code === 'string' ? ` (${code})` : '';
+      throw new InfraBlocked(`/api/version unreachable at ${this.baseUrl}: ${(error as Error).message}${named}\n${this.logTail()}`);
+    }
+    assertNotInfra(text, '/api/version');
+    let version: Provenance;
+    try {
       version = JSON.parse(text) as Provenance;
     } catch (error) {
-      if (error instanceof InfraBlocked) throw error;
-      throw new InfraBlocked(`/api/version unreachable at ${this.baseUrl}: ${(error as Error).message}\n${this.logTail()}`);
+      throw new InfraBlocked(`/api/version answered malformed JSON: ${(error as Error).message}`);
     }
     for (const key of ['commit', 'bundleHash', 'clientHash'] as const) {
       if (version[key] !== this.state.expected[key]) {
