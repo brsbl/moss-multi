@@ -8,7 +8,7 @@ import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
-  applyRecord, BODY_DOC, blockKeyOf, canonical, hydrate, itemKey, landing, previewHash, projectDoc, projectionDiff, recordDigest, restoredCopies, ROOT_KINDS, unchangedReads,
+  applyRecord, BODY_DOC, blockKeyOf, canonical, hydrate, itemKey, landing, previewHash, projectDoc, projectionDiff, recordDigest, relocated, restoredCopies, ROOT_KINDS, unchangedReads,
   yValue, type GateReason, type Hunk, type IdSpan, type Inserted, type PayloadMirrors, type Projection, type Restored,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
@@ -214,6 +214,8 @@ type Applied =
     ok: true; mirror: Y.Doc; payloads: Payloads; hydrated: Uint8Array; touched: Map<string, Uint8Array>; hunks: Hunk[];
     /** What the record removed, per doc, and what reads as it did (`unchangedReads`), for `landing`. */
     removed: Map<string, IdSpan[]>; unchanged: Set<string>;
+    /** The copies the preview reads as the body units they restore, which accept keeps as those units. */
+    restored: Restored;
   }
   | { ok: false; reason: GateReason | 'missing' };
 
@@ -234,9 +236,10 @@ function apply(live: Y.Doc, id: string): Applied {
   // Every payload the record writes is projected after it, named or not, so accept never lands a payload change the
   // preview did not show (I3). Before the record, G4 leaves only named payloads (already projected) and new ones.
   // Text an undo restored as copies (the rest of a split it took back) reads as the body text it restores.
-  const after = project(mirror, payloads, result.payloads.keys(), restoredCopies(mirror, live));
+  const restored = restoredCopies(mirror, live);
+  const after = project(mirror, payloads, result.payloads.keys(), restored);
   const hunks = projectionDiff(before, after);
-  return { ok: true, mirror, payloads, hydrated: result.hydrated, touched: result.payloads, hunks, removed: result.removed, unchanged: unchangedReads(before, after) };
+  return { ok: true, mirror, payloads, hydrated: result.hydrated, touched: result.payloads, hunks, removed: result.removed, unchanged: unchangedReads(before, after), restored };
 }
 
 export function previewRecord(live: Y.Doc, id: string): Preview {
@@ -274,7 +277,7 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
     if (applied.reason !== 'missing') badge(live, id, applied.reason);
     return applied.reason === 'missing' ? { ok: false, status: 404, reason: 'missing' } : { ok: false, status: 409, reason: applied.reason };
   }
-  const { mirror, payloads, hydrated, touched, hunks, removed, unchanged } = applied;
+  const { mirror, payloads, hydrated, touched, hunks, removed, unchanged, restored } = applied;
   try {
     if (previewHash(hunks) !== input.previewHash) return { ok: false, status: 409, reason: 'changed' };
     // G8 as A§10 and the DocDO count: the note plus every stored payload, withheld ones included, each payload the
@@ -292,9 +295,11 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
       kept ||= landed.kept;
       source.write(payload, landed.update);
     }
-    const body = landing(mirror, hydrated, removed.get(BODY_DOC) ?? [], (item) => unchanged.has(`block:${blockKeyOf(mirror, item)}`));
+    // A restored copy, read as its original, lands as that original, and what the record wrote among the copies lands
+    // where the preview showed it (relocated).
+    const body = landing(mirror, hydrated, removed.get(BODY_DOC) ?? [], (item) => unchanged.has(`block:${blockKeyOf(mirror, item)}`), restored);
     kept ||= body.kept;
-    Y.applyUpdate(live, body.update, SUGGEST_ACCEPT);
+    Y.applyUpdate(live, relocated(live, body.update, mirror, restored), SUGGEST_ACCEPT);
     closeRecord(live, id, { status: 'accepted', resolvedBy: reviewer.id, resolvedAt: options.now ?? Date.now(), ...(kept ? { kept: true as const } : {}) });
     return { ok: true };
   } finally {

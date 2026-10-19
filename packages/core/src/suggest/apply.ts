@@ -564,30 +564,50 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
  * keeps anything: every struct the record wrote and every item it removed (`removed`), except where `kept` holds (a
  * block or payload that reads as it did, so the preview shows no hunk for it; suggestions.md §4.7). There the items it
  * removed stay and the ones it added land removed, so the originals, the comments anchored on them and their authors
- * stay: accept applies nothing the preview hides (I3). A map key it overwrote stays overwritten (Yjs removes the old
- * value as the new one lands), with the same value, as the preview read it.
+ * stay: accept applies nothing the preview hides (I3). So too for each copy in `restored`, which the preview reads as
+ * its original: the original stays and the copy lands removed. A map key it overwrote stays overwritten (Yjs removes
+ * the old value as the new one lands), with the same value, as the preview read it.
  */
-export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], kept: (item: Y.Item) => boolean): { update: Uint8Array; kept: boolean } {
+export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], kept: (item: Y.Item) => boolean, restored?: Restored): { update: Uint8Array; kept: boolean } {
   const before = Y.decodeStateVector(sv);
   const state = (client: number) => before.get(client) ?? 0;
   const current = (item: Y.Item) => item.parentSub === null || (item.parent as Y.AbstractType<unknown>)._map.get(item.parentSub) === item;
+  // Restored copies (restoredCopies) read as their originals, so those stay with all they hold and the copies land
+  // removed, unit by unit, in a block the record otherwise changes too.
+  const inOriginal = (item: Y.Item) => {
+    for (let holder = (item.parent as Y.AbstractType<unknown>)._item; holder; holder = (holder.parent as Y.AbstractType<unknown>)._item) {
+      if (restored?.originals.has(itemKey(holder.id))) return true;
+    }
+    return false;
+  };
+  const units = (struct: Y.Item, lo: number, hi: number, has: (key: string) => boolean, into: IdSpan[]) => {
+    for (let clock = lo; clock < hi; clock += 1) {
+      if (!has(`${struct.id.client}:${clock}`)) continue;
+      const last = into.at(-1);
+      if (last && last.client === struct.id.client && last.clock + last.len === clock) last.len += 1;
+      else into.push({ client: struct.id.client, clock, len: 1 });
+    }
+  };
   const stays: IdSpan[] = [];
   for (const span of new SpanIndex(removed).ranges()) {
     const [client, from, to] = span;
     const end = Math.min(to, state(client));
     for (const struct of structsIn(doc.store, client, from, end)) {
-      if (!(struct instanceof Y.Item) || !current(struct) || !kept(struct)) continue;
+      if (!(struct instanceof Y.Item) || !current(struct)) continue;
       const lo = Math.max(from, struct.id.clock);
-      stays.push({ client, clock: lo, len: Math.min(end, struct.id.clock + struct.length) - lo });
+      const hi = Math.min(end, struct.id.clock + struct.length);
+      if (kept(struct) || (restored?.originals.size && inOriginal(struct))) stays.push({ client, clock: lo, len: hi - lo });
+      else if (restored?.originals.size) units(struct, lo, hi, (key) => restored!.originals.has(key), stays);
     }
   }
   const buried: IdSpan[] = [];
   for (const client of doc.store.clients.keys()) {
     const from = state(client);
     for (const struct of structsIn(doc.store, client, from, Y.getState(doc.store, client))) {
-      if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null || !kept(struct)) continue;
+      if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null) continue;
       const lo = Math.max(from, struct.id.clock);
-      buried.push({ client, clock: lo, len: struct.id.clock + struct.length - lo });
+      if (kept(struct)) buried.push({ client, clock: lo, len: struct.id.clock + struct.length - lo });
+      else if (restored?.clients.has(client)) units(struct, lo, struct.id.clock + struct.length, (key) => restored!.copies.has(key), buried);
     }
   }
   if (!stays.length && !buried.length) return { update: Y.encodeStateAsUpdate(doc, sv), kept: false };
@@ -1047,16 +1067,21 @@ export interface Restored {
  * (a restyle, a replaced word) sits under a new map or reads differently, so it is not taken for a copy. An undo, a
  * redo and a second undo restore a copy of the first copy, which restores the same body unit.
  *
- * Linear in the doc whatever client ids writers chose: each new unit's link (the unit it restores) is read from its
- * struct, a chain of copies is followed once with every link memoized, and each item's property map is found once.
- * `steps`, if given, counts that work.
+ * A copy counts only where accept can keep its original in its place (orderPlan), so what reads as the body is what
+ * lands as the body.
+ *
+ * Linear in the doc whatever client ids writers chose, and without recursion: each new unit's link (the unit it
+ * restores) is read from its struct, a chain of copies is followed once with every link memoized, each item's property
+ * map is found once, and each parent holding copies is read once. `steps`, if given, counts that work.
  */
 export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number }): Restored {
   const tick = () => {
     if (steps) steps.count += 1;
   };
   const out: Restored = { copies: new Map(), originals: new Set(), clients: new Set() };
+  const root = doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>;
   const isMap = (item: Y.Item) => item.content instanceof Y.ContentType && item.content.type instanceof Y.Map;
+  const isText = (item: Y.Item) => item.content instanceof Y.ContentString;
   const itemIn = (store: Y.Doc['store'], id: Y.ID): Y.Item | null => {
     if (id.clock >= Y.getState(store, id.client)) return null;
     const item = Y.getItem(store, id);
@@ -1095,7 +1120,8 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number 
   const reads = (content: Y.Item['content']) => canonical(contentValue('body', 'root', content, false));
   /**
    * Each new struct that may hold copies, to the clock its run starts at: a copy split by typing keeps its right
-   * origin in every part, and its units line up with the original's from the run's start.
+   * origin in every part, and its units line up with the original's from the run's start. A top-level block is shown
+   * by its own id (projectDoc), so a block's copy never reads as its original.
    */
   const runs = new Map<Y.Item, number>();
   for (const [client, structs] of doc.store.clients) {
@@ -1111,12 +1137,13 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number 
       const origin = struct.rightOrigin;
       if (!right || !origin || origin.client !== right.client || origin.clock !== right.clock) start = struct.id.clock;
       right = origin;
-      if (struct.id.clock < known || !origin || struct.parentSub !== null) continue;
+      if (struct.id.clock < known || !origin || struct.parentSub !== null || struct.parent === root) continue;
       runs.set(struct, start);
     }
   }
+  type Link = { struct: Y.Item; at: number; restores: Y.ID };
   /** The unit new unit `id` would restore, and its struct, or null when it is no candidate. */
-  const linkOf = (id: Y.ID): { struct: Y.Item; at: number; restores: Y.ID } | null => {
+  const linkOf = (id: Y.ID): Link | null => {
     const struct = itemIn(doc.store, id);
     const start = struct ? runs.get(struct) : undefined;
     if (!struct || start === undefined) return null;
@@ -1124,33 +1151,35 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number 
     const at = id.clock - struct.id.clock;
     return { struct, at, restores: Y.createID(origin.client, origin.clock + struct.id.clock - start + at) };
   };
-  /** Whether the copy linked as `link` restores body unit `original` (null: none). */
-  const check = (link: { struct: Y.Item; at: number; restores: Y.ID }, original: Y.ID | null): Y.ID | null => {
+  /** Every new unit resolved so far, removed copies too, to the body unit it restores (null: none, or in progress). */
+  const resolved = new Map<string, Y.ID | null>();
+  /** Whether the copy linked as `link` restores body unit `original` (null: none). It resolves nothing itself. */
+  const check = (link: Link, original: Y.ID | null): Y.ID | null => {
     if (!original) return null;
     const { struct, at, restores } = link;
     const gone = removedIn(restores);
     if (!gone || gone.parent !== struct.parent) return null;
     const was = liveIn(body.store, original);
     if (!was || !removedIn(original)) return null;
-    if (struct.content instanceof Y.ContentString) {
+    if (isText(struct)) {
       const offset = original.clock - was.id.clock;
-      if (!(was.content instanceof Y.ContentString) || was.content.str[offset] !== struct.content.str[at]) return null;
+      if (!(was.content instanceof Y.ContentString) || was.content.str[offset] !== (struct.content as Y.ContentString).str[at]) return null;
       const under = bodyMap(was);
       const map = docMap(struct);
-      const mapKey = map && itemKey(resolve(map.id) ?? map.id);
+      // Property maps are resolved in the first pass; one that restores nothing counts as itself.
+      const mapKey = map && itemKey(resolved.get(itemKey(map.id)) ?? map.id);
       if ((under && itemKey(under.id)) !== mapKey) return null;
     } else if (reads(was.content) !== reads(struct.content)) return null;
     return original;
   };
-  /** Every new unit resolved so far, removed copies too, to the body unit it restores (null: none). */
-  const resolved = new Map<string, Y.ID | null>();
   /**
    * The body unit new unit `id` restores. An undo after a redo restores the copy an earlier undo made: a copy of a copy
    * restores that copy's original, so the chain is followed to a unit live in `body`, then checked back link by link.
+   * A chain restores nothing where it changes kind (text or not), so it is followed only through units of kind `text`.
+   * Each key is memoized as in progress (null) when it joins the path, so a cycle or a re-entry ends at once.
    */
-  function resolve(id: Y.ID): Y.ID | null {
-    const path: { key: string; link: { struct: Y.Item; at: number; restores: Y.ID } }[] = [];
-    const onPath = new Set<string>();
+  const resolve = (id: Y.ID, text: boolean): Y.ID | null => {
+    const path: { key: string; link: Link }[] = [];
     let original: Y.ID | null = null;
     for (let at = id; ;) {
       tick();
@@ -1160,10 +1189,10 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number 
         original = known;
         break;
       }
-      const link = onPath.has(key) ? null : linkOf(at);
-      if (!link) break;
+      const link = linkOf(at);
+      if (!link || isText(link.struct) !== text) break;
       path.push({ key, link });
-      onPath.add(key);
+      resolved.set(key, null);
       // The last link restores a body unit itself.
       if (liveIn(body.store, link.restores)) {
         original = link.restores;
@@ -1177,21 +1206,191 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number 
       resolved.set(path[i].key, original);
     }
     return original;
+  };
+  // Every live copy, by parent: other items (property maps) first, so text reads their result from the memo.
+  const byParent = new Map<Y.AbstractType<unknown>, Map<string, Y.ID>>();
+  for (const text of [false, true]) {
+    for (const [struct] of runs) {
+      // A removed copy (a redo took it back) is only a link to its original for a later copy of it.
+      if (struct.deleted || isText(struct) !== text) continue;
+      for (let i = 0; i < struct.length; i += 1) {
+        tick();
+        const copy = Y.createID(struct.id.client, struct.id.clock + i);
+        const original = resolve(copy, text);
+        if (!original) continue;
+        const parent = struct.parent as Y.AbstractType<unknown>;
+        const here = byParent.get(parent) ?? new Map<string, Y.ID>();
+        byParent.set(parent, here);
+        here.set(itemKey(copy), original);
+      }
+    }
   }
-  for (const [struct] of runs) {
-    // A removed copy (a redo took it back) is only a link to its original for a later copy of it.
-    if (struct.deleted) continue;
-    for (let i = 0; i < struct.length; i += 1) {
-      tick();
-      const copy = Y.createID(struct.id.client, struct.id.clock + i);
-      const original = resolve(copy);
-      if (!original) continue;
-      out.copies.set(itemKey(copy), original);
+  // A copy reads as its original only where accept can land the original in its place (orderPlan); elsewhere it is
+  // new text like any other, shown, painted and applied as such.
+  const isNew = (id: Y.ID) => id.clock >= Y.getState(body.store, id.client);
+  for (const [parent, copies] of byParent) {
+    if (!orderPlan(parent, copies, isNew, tick).ok) continue;
+    for (const [copy, original] of copies) {
+      out.copies.set(copy, original);
       out.originals.add(itemKey(original));
-      out.clients.add(struct.id.client);
+      out.clients.add(Number(copy.slice(0, copy.indexOf(':'))));
     }
   }
   return out;
+}
+
+/** One unit of a parent's sequence: an item and the offset in it, keyed as the preview names it. */
+interface Unit {
+  key: string;
+  item: Y.Item;
+  at: number;
+  /** New (the record wrote it) and no copy: accept may write it afresh in its place. */
+  moves: boolean;
+}
+
+/**
+ * How accept lands `parent` of a doc whose live `copies` (copy key to the body unit it restores) read as their
+ * originals: the originals stay where they are and the copies land removed, so each run of new units (`isNew`) a
+ * record wrote between copies sits elsewhere than the preview shows it. Each such run is in `moves`, with the unit it
+ * follows in the preview (`after`, null at the start), to be written afresh there (`relocated`). `ok` is false where
+ * that cannot reproduce the preview: an original named twice, units that are not new out of order, a run that is not
+ * plain characters and property maps, or a sequence holding items that take no index.
+ */
+export function orderPlan(
+  parent: Y.AbstractType<unknown>, copies: ReadonlyMap<string, Y.ID>, isNew: (id: Y.ID) => boolean, tick: () => void = () => {},
+): { ok: boolean; moves: { after: string | null; units: Unit[] }[] } {
+  const refused = { ok: false, moves: [] };
+  const originals = new Set<string>();
+  for (const original of copies.values()) originals.add(itemKey(original));
+  /** As the preview reads the sequence: each copy named as its original. */
+  const shown: Unit[] = [];
+  /** As accept lands it before any run is written afresh: copies removed, originals kept. */
+  const landed: Unit[] = [];
+  const named = new Set<string>();
+  let countable = true;
+  for (let item = parent._start; item; item = item.right) {
+    for (let at = 0; at < item.length; at += 1) {
+      tick();
+      const id = Y.createID(item.id.client, item.id.clock + at);
+      const key = itemKey(id);
+      if (item.deleted) {
+        if (originals.has(key)) landed.push({ key, item, at, moves: false });
+        continue;
+      }
+      if (!item.countable) countable = false;
+      const was = copies.get(key);
+      if (was) {
+        const name = itemKey(was);
+        if (named.has(name)) return refused;
+        named.add(name);
+        shown.push({ key: name, item, at, moves: false });
+        continue;
+      }
+      const unit = { key, item, at, moves: isNew(id) };
+      shown.push(unit);
+      landed.push(unit);
+    }
+  }
+  const fixed = (list: Unit[]) => list.filter((unit) => !unit.moves).map((unit) => unit.key).join(',');
+  if (fixed(shown) !== fixed(landed)) return refused;
+  /** Each fixed unit's key ('' for the start) to the run of new units right after it. */
+  const runsOf = (list: Unit[]) => {
+    const out = new Map<string, Unit[]>();
+    let after = '';
+    for (const unit of list) {
+      if (!unit.moves) after = unit.key;
+      else (out.get(after) ?? out.set(after, []).get(after)!).push(unit);
+    }
+    return out;
+  };
+  const have = runsOf(landed);
+  const moves: { after: string | null; units: Unit[] }[] = [];
+  for (const [after, units] of runsOf(shown)) {
+    const there = have.get(after) ?? [];
+    if (there.length === units.length && there.every((unit, i) => unit.key === units[i]!.key)) continue;
+    if (!countable || !units.every(({ item }) => item.content instanceof Y.ContentString || plainMap(item))) return refused;
+    moves.push({ after: after || null, units });
+  }
+  return { ok: true, moves };
+}
+
+/** A property map of plain values, which a fresh map reproduces. */
+const plainMap = (item: Y.Item): boolean =>
+  item.content instanceof Y.ContentType && item.content.type instanceof Y.Map && item.content.type._start === null &&
+  [...item.content.type._map.values()].every((entry) => entry.deleted || entry.content instanceof Y.ContentAny);
+
+/**
+ * `update`, what accept lands on `live` from `mirror` (`landing`), with each run of new units a record wrote between
+ * restored copies put where the preview showed it (orderPlan): landed, the copies are removed and the originals kept,
+ * so such a run would sit before the originals instead of among them. It is removed and written afresh in its place.
+ */
+export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restored: Restored): Uint8Array {
+  const byParent = new Map<Y.AbstractType<unknown>, Map<string, Y.ID>>();
+  for (const [copy, original] of restored.copies) {
+    const [client, clock] = copy.split(':').map(Number) as [number, number];
+    const item = Y.getItem(mirror.store, Y.createID(client, clock));
+    if (!(item instanceof Y.Item)) continue;
+    const parent = item.parent as Y.AbstractType<unknown>;
+    (byParent.get(parent) ?? byParent.set(parent, new Map()).get(parent)!).set(copy, original);
+  }
+  const isNew = (id: Y.ID) => id.clock >= Y.getState(live.store, id.client);
+  const plans: { parent: Y.ID; moves: { after: string | null; units: Unit[] }[] }[] = [];
+  for (const [parent, copies] of byParent) {
+    const plan = orderPlan(parent, copies, isNew);
+    if (parent._item && plan.ok && plan.moves.length) plans.push({ parent: parent._item.id, moves: plan.moves });
+  }
+  if (!plans.length) return update;
+  const scratch = hydrate(live);
+  try {
+    const sv = Y.encodeStateVector(scratch);
+    Y.applyUpdate(scratch, update);
+    scratch.transact(() => {
+      for (const { parent, moves } of plans) {
+        const holder = Y.getItem(scratch.store, parent);
+        if (!(holder instanceof Y.Item) || !(holder.content instanceof Y.ContentType) || !(holder.content.type instanceof Y.XmlText)) continue;
+        const type = holder.content.type;
+        /** Each live unit's key to the index just past it. */
+        const past = () => {
+          const out = new Map<string, number>();
+          let index = 0;
+          for (let item = type._start; item; item = item.right) {
+            if (item.deleted) continue;
+            for (let at = 0; at < item.length; at += 1) out.set(`${item.id.client}:${item.id.clock + at}`, (index += 1));
+          }
+          return out;
+        };
+        const moving = new Set(moves.flatMap(({ units }) => units.map((unit) => unit.key)));
+        const gone = [...past()].filter(([key]) => moving.has(key)).map(([, end]) => end - 1).sort((a, b) => b - a);
+        for (const index of gone) type.delete(index, 1);
+        const index = past();
+        const placed = moves.map(({ after, units }) => ({ at: after === null ? 0 : index.get(after) ?? 0, units }));
+        // The last place first, so writing a run moves no place still to be written.
+        for (const { at, units } of placed.sort((a, b) => b.at - a.at)) {
+          // Characters in one string, so a surrogate pair is written whole.
+          let next = at;
+          let chars = '';
+          const flush = () => {
+            if (chars) type.insert(next, chars);
+            next += chars.length;
+            chars = '';
+          };
+          for (const { item, at: offset } of units) {
+            if (item.content instanceof Y.ContentString) {
+              chars += item.content.str[offset]!;
+              continue;
+            }
+            flush();
+            type.insertEmbed(next, new Y.Map(Object.entries((item.content as Y.ContentType).type.toJSON() as Record<string, unknown>)));
+            next += 1;
+          }
+          flush();
+        }
+      }
+    });
+    return Y.encodeStateAsUpdate(scratch, sv);
+  } finally {
+    scratch.destroy();
+  }
 }
 
 /**
