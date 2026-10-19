@@ -1118,7 +1118,7 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number 
   /** The unit new unit `id` would restore, and its struct, or null when it is no candidate. */
   const linkOf = (id: Y.ID): { struct: Y.Item; at: number; restores: Y.ID } | null => {
     const struct = itemIn(doc.store, id);
-    const start = struct && runs.get(struct);
+    const start = struct ? runs.get(struct) : undefined;
     if (!struct || start === undefined) return null;
     const origin = struct.rightOrigin!;
     const at = id.clock - struct.id.clock;
