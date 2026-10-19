@@ -440,3 +440,60 @@ test('j18-sync stale save, moss note: two pulled agent edits survive a stale sav
     rmSync(linux, { recursive: true, force: true });
   }
 });
+
+test('j18-sync stale save, text no longer kept: nothing is pushed, the save waits beside the note, and saving it again reverts nothing @p:agt-2 @p:R9 @p:note-3', async ({ actors, stack }) => {
+  // T7.P2 fail-closed: with the editor's text evicted from the prior texts, sync cannot know its ancestor.
+  actors.solo(SOLO);
+  const ada = await actors.session(await actors.principal('ada'));
+  const mac = scratch();
+  const linux = scratch();
+  const env = await agentEnv(ada, stack, mac);
+  // A budget of about one prior text: the text from before the first agent edit is evicted.
+  const macEnv = { ...env, MOSS_MULTI_PRIOR_BYTES: '120' };
+  try {
+    const bundle = join(mac, 'Field notes');
+    mkdirSync(bundle);
+    const file = join(bundle, 'Field notes.md');
+    writeFileSync(file, '# Field notes\n\nPara one.\n\nPara two.\n\nPara three.\n\nPara four.\n');
+    expect((await moss(['init'], macEnv, mac)).code).toBe(0);
+    const synced = await moss(['sync', '--json'], macEnv, mac);
+    expect(synced.code, synced.stderr).toBe(0);
+    const docId = (JSON.parse(synced.stdout) as { action: string; docId?: string }[]).find((result) => result.action === 'created')!.docId!;
+    const agentEdit = async (from: string, to: string) => {
+      const pulled = await moss(['pull', docId, 'note.md', '--force'], env, linux);
+      expect(pulled.code, pulled.stderr).toBe(0);
+      writeFileSync(join(linux, 'note.md'), readFileSync(join(linux, 'note.md'), 'utf8').replace(from, to));
+      const pushed = await moss(['push', 'note.md'], env, linux);
+      expect(pushed.code, pushed.stderr).toBe(0);
+    };
+    const editor = readFileSync(file, 'utf8');
+    const edits = ['First agent edit.', 'Second agent edit.', 'Third agent edit.'];
+    for (const [i, para] of ['Para one.', 'Para two.', 'Para three.'].entries()) {
+      await agentEdit(para, `${para} ${edits[i]}`);
+      expect((await moss(['sync'], macEnv, mac)).code).toBe(0);
+    }
+    expect(readFileSync(file, 'utf8')).toContain('Third agent edit.');
+
+    const typed = editor.replace('Para four.', 'Para four, and my typing.');
+    writeFileSync(file, typed);
+    const saved = await moss(['sync'], macEnv, mac);
+    expect(saved.code, `nothing pushed exits 2: ${saved.stdout}${saved.stderr}`).toBe(2);
+    expect(`${saved.stdout}${saved.stderr}`, 'the message says so').toContain('nothing was pushed');
+    const kept = (await served(ada, docId)).text;
+    for (const edit of edits) expect(kept, `the server keeps "${edit}"`).toContain(edit);
+    expect(kept, 'the save is not pushed').not.toContain('and my typing');
+    expect(readFileSync(file, 'utf8'), 'the file takes the doc text').toContain('Third agent edit.');
+    expect(readOr(`${file}.rej`), 'the save waits beside the note').toContain('Para four, and my typing.');
+
+    // The editor saves the same text again: it is still the same stale save, so nothing reverts.
+    writeFileSync(file, typed);
+    const again = await moss(['sync'], macEnv, mac);
+    expect(again.code, `${again.stdout}${again.stderr}`).toBe(2);
+    const still = (await served(ada, docId)).text;
+    for (const edit of edits) expect(still, `the server still keeps "${edit}"`).toContain(edit);
+    expect(still).not.toContain('and my typing');
+  } finally {
+    rmSync(mac, { recursive: true, force: true });
+    rmSync(linux, { recursive: true, force: true });
+  }
+});

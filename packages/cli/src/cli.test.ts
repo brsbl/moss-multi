@@ -1800,6 +1800,83 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Paragraph 10, and my typing.');
   });
 
+  it('a refused save saved again is refused again: the second save reverts no agent edit (checker P1, attempt 2)', async () => {
+    server.content.set(ID_B, enc(TEN));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    const budget = TEN.length * 3 + 200;
+    await withPriorBudget(budget, () => ninePulls(ID_B, file));
+    const pushes = server.state.pushes.length;
+    const typed = editor.replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    writeFileSync(file, typed);
+    expect((await withPriorBudget(budget, () => cli(['sync']))).code, 'the first save is refused').toBe(2);
+
+    // The editor, or an agent, writes the same text again: it is the same stale save, not a revert.
+    writeFileSync(file, typed);
+    const again = await withPriorBudget(budget, () => cli(['sync', '--json']));
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B)), 'every agent edit stays on the server').toBe(agentEdits(9));
+    expect(readFileSync(file, 'utf8')).toBe(agentEdits(9));
+    expect(JSON.stringify(JSON.parse(again.out))).toMatch(/nothing was pushed/);
+
+    // And with more typing on top of the refused text: still no revert.
+    writeFileSync(file, typed.replace('Paragraph 10, and my typing.', 'Paragraph 10, and my typing. More.'));
+    const more = await withPriorBudget(budget, () => cli(['sync']));
+    expect(more.code, `${more.out}${more.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B))).toBe(agentEdits(9));
+  });
+
+  it('a moss note: a refused save saved again is refused again, and the server keeps every agent edit', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = TEN.replace('# Notes', '# Field notes');
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = (text: string) => text.replace('# Notes\n\n', '');
+    const budget = TEN.length * 3 + 200;
+    await withPriorBudget(budget, () => ninePulls(NEW, file, body));
+    const pushes = server.state.pushes.length;
+    const typed = NOTE.replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    writeFileSync(file, typed);
+    expect((await withPriorBudget(budget, () => cli(['sync']))).code, 'the first save is refused').toBe(2);
+
+    writeFileSync(file, typed);
+    const again = await withPriorBudget(budget, () => cli(['sync']));
+    expect(again.code, `${again.out}${again.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(body(agentEdits(9)));
+    expect(readFileSync(file, 'utf8')).toBe(agentEdits(9).replace('# Notes', '# Field notes'));
+  });
+
+  it('prior records naming another path delete and read nothing outside the doc\'s state directory (checker P1, attempt 2)', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const outside = mkdtempSync(join(tmpdir(), 'mm-v-'));
+    try {
+      const victims = [join(outside, 'v.md'), join(dir, '.moss-multi', 'victim.md'), join(dir, '.moss-multi', ID_B, 'x.md')];
+      for (const victim of victims) writeFileSync(victim, 'not a prior text\n');
+      const metaPath = join(dir, '.moss-multi', ID_B, 'meta.json');
+      const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
+      const at = Date.now() - 1_000;
+      meta.priors = [`x/../../../../${basename(outside)}/v`, 'x/../../victim', '../../x', join(outside, 'v')].map((hash) => ({ hash, at }));
+      writeFileSync(metaPath, JSON.stringify(meta));
+
+      // A pull records a prior text over a budget of one byte: eviction runs, and every prior file goes.
+      server.content.set(ID_B, enc(AGENT));
+      const pulled = await withPriorBudget(1, () => cli(['sync']));
+      expect(pulled.code, `${pulled.out}${pulled.err}`).toBe(0);
+      for (const victim of victims) expect(existsSync(victim), `${victim} is untouched`).toBe(true);
+      const kept = JSON.parse(readFileSync(metaPath, 'utf8')) as { priors?: { hash: string }[] };
+      expect(kept.priors?.every((prior) => /^[0-9a-f]{64}$/.test(prior.hash)), 'no foreign record is carried on').toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('when two kept texts explain a save equally, nothing is pushed and the save goes to a conflict copy', async () => {
     const S0 = B0.replace('Para three.', 'Para three, version aaaa.');
     server.content.set(ID_B, enc(S0));
