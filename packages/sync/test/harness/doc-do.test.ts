@@ -556,6 +556,7 @@ describe('admission and the write classifier', () => {
     await typeTitle(ben, 'w'.repeat(w));
     expect(ben.closed).toBeNull();
     for (const frame of frames.slice(2)) if (ada.socket.readyState === 1) await ada.deliver(frame);
+    await ada.pump();
     expect(ada.events).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
     expect(ada.closed?.code).toBe(CLOSE.writeRefused);
     const held = opened.dobj.document.getText('title').toString();
