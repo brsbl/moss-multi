@@ -9,6 +9,7 @@ import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
 import { DocDO } from '../../src/doc-do.ts';
 import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
 import { serverWrite } from '../../src/server-doc.ts';
+import { interleavedChains } from './answer-shapes.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, step1, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
@@ -824,6 +825,28 @@ describe('answers', () => {
     expect(Y.encodeStateVector(peer)).toEqual(Y.encodeStateVector(opened.dobj.document));
     expect(blockTypes(peer)).toEqual(blockTypes(opened.dobj.document));
     expect(peer.get('root', Y.XmlText).toString()).toBe(opened.dobj.document.get('root', Y.XmlText).toString());
+  });
+
+  it('answers a step 1 at the 2 MB cap over 2,000 interleaved authors, in dependency order (T3.B28)', async () => {
+    const opened = await start(openDoc());
+    // A stored state shaped against the ordering: every author waits on one chain that advances a struct at a time.
+    Y.applyUpdate(opened.dobj.document, interleavedChains(2_000, 120_000));
+    const reader = await connect(opened, { role: 'viewer' });
+    const from = reader.socket.sent.length;
+    await reader.deliver(step1(new Y.Doc()));
+    const answer = reader.socket.sent.slice(from).filter((frame): frame is Uint8Array => typeof frame !== 'string' && frame[0] === 0 && frame[1] !== 0);
+    expect(answer.length, 'the answer is several frames').toBeGreaterThan(4);
+    expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
+    const peer = new Y.Doc();
+    for (const [index, frame] of answer.entries()) {
+      const decoder = decoding.createDecoder(frame);
+      decoding.readVarUint(decoder);
+      decoding.readVarUint(decoder);
+      Y.applyUpdate(peer, decoding.readVarUint8Array(decoder));
+      expect(peer.store.pendingStructs, `piece ${index} of ${answer.length} needs nothing a later piece carries`).toBeNull();
+    }
+    expect(Y.encodeStateVector(peer)).toEqual(Y.encodeStateVector(opened.dobj.document));
+    expect(reader.closed).toBeNull();
   });
 
   describe('the answer budget (T3.S14)', () => {
