@@ -23,6 +23,11 @@ function escapeUnsafe(text: string, escape: (code: number) => string): string {
 export const ttySafe = (text: string): string =>
   escapeUnsafe(text, (code) => (code <= 0xff ? `\\x${hex(code, 2)}` : `\\u${hex(code, 4)}`));
 
+const BREAKS: Record<string, string> = { '\t': '\\t', '\n': '\\n', '\r': '\\r' };
+
+/** A server-supplied field (a title, a name, a server message) for a one-line record: tab, LF and CR shown escaped too. */
+export const fieldSafe = (text: string): string => ttySafe(text.replace(/[\t\n\r]/g, (char) => BREAKS[char]!));
+
 /** JSON text whose unsafe characters are `\uXXXX` escapes; it parses to the same value. */
 export const jsonSafe = (json: string): string => escapeUnsafe(json, (code) => `\\u${hex(code, 4)}`);
 

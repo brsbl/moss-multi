@@ -769,7 +769,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
           return (await response.json()) as { doc: ApiDoc; role?: string };
         });
         rememberRole(created.doc.id, created.role);
-        const note = toNoteMetadata(created.doc);
+        // The answer names the folder by id: the note is in the folder asked for (or the Home the server picked), so
+        // moss's active folder stays there and "+ Note" stays offered (T3.B17).
+        const note = toNoteMetadata({ ...created.doc, folderPath: created.doc.folderPath ?? (target ? folderPath : ROOT_FOLDER) });
         known.set(note.id, note);
         listing = null;
         return { ...record(note), content: '' };

@@ -22,7 +22,7 @@ export interface MossNote {
 }
 
 /** The frontmatter block at the start of `text` (`---` to `---`), or ''. */
-function frontmatterOf(text: string): string {
+export function frontmatterOf(text: string): string {
   const match = /^---\r?\n(?:[\s\S]*?\r?\n)?---[^\S\r\n]*(?:\r?\n|$)/.exec(text);
   return match ? match[0] : '';
 }
