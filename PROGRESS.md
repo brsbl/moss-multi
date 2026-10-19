@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 86% done** (207 of 240 planned tasks verified)
+**Overall: 86% done** (208 of 241 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 19 / 19 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 14 / 14 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 15 / 15 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -257,10 +257,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T8.R verified: shipping work now sits on the final M7, and a doc create or agent push body is read only after the caller's auth, access and rate token, so an unauthorized or rate-limited sender is refused before any upload is read.
 - 2026-10-15 — T8.Q verified: the shipping work now sits on the current M7, so staging carries M3–M7's media, comment-draft, quota and formula fixes, and the full CI lane is green on the restacked m8.
 - 2026-10-18 — T8.P1 verified: a separate pilot deployment now exists apart from staging, with its own Worker, D1, R2 and auth secret, sign-up limited to the allowlisted emails, and a gated deploy workflow that migrates D1 first and runs a read-only smoke.
+- 2026-10-18 — T8.P2 verified: the pilot now deploys from the workflow registered on main, `deploy-staging.yml -f target=pilot`, which runs only its gate and then calls `deploy-pilot.yml` with just the pilot and Cloudflare secrets; staging deploys run unchanged.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.P2's checker (e2a5f14, 2026-10-18)
+
+- T8.P2 checker P2 (The red run also failed lint, and the concurrency assertion has no red proof): red run 39186231370 also failed lint on the first condition-parser regex, later replaced, and the concurrency-group assertion was added after it, so it has no red proof; the final head is green.
+- T8.P2 checker P2 (A successful pilot deploy through the called workflow has not been seen live): dispatch 39189116793 stopped at the run-id gate, so secret passing to the called workflow, the actions:read artifact download and the concurrency groups (deploy-staging-pilot, deploy-pilot) rest on source and GitHub docs → coordinator: watch the first real pilot deploy as the live proof.
 
 ### From T8.P1's checker (8a98abd, 2026-10-18)
 
