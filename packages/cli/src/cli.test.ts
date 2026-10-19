@@ -1979,3 +1979,14 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     expect(result?.message).toMatch(/no longer holds/);
   });
 });
+
+describe('--version (T7.P3)', () => {
+  it('prints the version and the commit it was built from, and needs no server or key', async () => {
+    for (const args of [['--version'], ['version']]) {
+      const result = await cli(args, {});
+      expect(result.code, result.err).toBe(0);
+      expect(result.out).toMatch(/^moss-multi \d+\.\d+\.\d+ \(commit (?:[0-9a-f]{40}|unbundled)\)\n$/);
+      expect(server.seen).toEqual([]);
+    }
+  });
+});

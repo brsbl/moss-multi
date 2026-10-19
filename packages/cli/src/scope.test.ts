@@ -652,3 +652,82 @@ describe('a workspace scope', () => {
     expect(run.results.some((result) => result.action === 'out-of-scope')).toBe(false);
   });
 });
+
+// T7.P3: a replica holds only what its scope's follow reaches on the server, so a note an agent makes on one replica
+// and links from a followed note comes down on the other, download only there unless allow covers it.
+describe('follow brings server notes down', () => {
+  /** A doc only the server holds, as another replica made it. */
+  const serverDoc = (title: string, body: string): string => {
+    const id = `e0000000-0000-4000-8000-${String(server.docs.length + 1).padStart(12, '0')}`;
+    server.docs.push({ id, title, filename: `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`, folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 1 });
+    server.content.set(id, body);
+    return id;
+  };
+  const pulled = (results: Result[]) => results.filter((result) => result.action === 'pulled').map((result) => result.file).sort();
+  const sends = () => server.calls.filter((call) => call.method !== 'GET' && call.method !== 'HEAD');
+  const mossNote = (title: string) => join(title, `${title}.md`);
+
+  it('an empty replica pulls exactly the notes follow reaches, in moss form, and sends nothing until a note is edited', async () => {
+    serverDoc('Moss Home', 'Start at [[Alpha]], then [Beta](../Beta notes/Beta notes.md). Private: [[Diary]].\n');
+    const alphaId = serverDoc('Alpha', 'The alpha note. On to [[Gamma]].\n');
+    serverDoc('Beta notes', 'Beta.\n');
+    serverDoc('Gamma', 'Two hops out.\n');
+    serverDoc('Shopping', 'Milk.\n');
+    writeScope({ allow: ['**'], follow: ['Moss Home'], deny: ['Personal/**'] });
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    expect(pulled(run.results)).toEqual(['Alpha', 'Beta notes', 'Moss Home'].map(mossNote).sort());
+    expect(readFileSync(join(dir, mossNote('Alpha')), 'utf8')).toBe('# Alpha\n\nThe alpha note. On to [[Gamma]].\n');
+    for (const absent of ['Gamma', 'Shopping', 'Diary']) expect(existsSync(join(dir, absent)), `${absent} stays on the server`).toBe(false);
+    expect(sends()).toEqual([]);
+    const again = await syncJson();
+    expect(again.results.filter((result) => !['up-to-date', 'out-of-scope'].includes(result.action))).toEqual([]);
+
+    // allow covers it here, so an edit goes up.
+    writeFileSync(join(dir, mossNote('Alpha')), '# Alpha\n\nThe alpha note, edited on the replica. On to [[Gamma]].\n');
+    const edited = await syncJson();
+    expect(edited.code, edited.err).toBe(0);
+    expect(server.content.get(alphaId)).toBe('The alpha note, edited on the replica. On to [[Gamma]].\n');
+  });
+
+  it('a link that arrives in a pull brings its server note down, download only: an edit to it here is never sent', async () => {
+    const files = pilotVault(PILOT);
+    await confirmYes([files.home, files.alpha, files.beta]);
+    expect((await syncJson()).code).toBe(0);
+    const homeId = server.docs.find((doc) => doc.title === 'Moss Home')!.id;
+    const gardenId = serverDoc('Garden plan', 'Made on the replica.\n');
+    server.content.set(homeId, `${server.content.get(homeId)!.trimEnd()} And [[Garden plan]].\n`);
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    const garden = mossNote('Garden plan');
+    expect(run.results).toContainEqual(expect.objectContaining({ action: 'pulled', file: garden, docId: gardenId }));
+    expect(readFileSync(join(dir, garden), 'utf8')).toBe('# Garden plan\n\nMade on the replica.\n');
+
+    server.content.set(gardenId, 'Made on the replica, then edited there.\n');
+    expect((await syncJson()).code).toBe(0);
+    expect(readFileSync(join(dir, garden), 'utf8'), 'its server edits keep coming down').toBe('# Garden plan\n\nMade on the replica, then edited there.\n');
+    writeFileSync(join(dir, garden), '# Garden plan\n\nEdited on the Mac.\n');
+    server.calls.length = 0;
+    const held = await syncJson();
+    expect(followOnly(held.results)).toContain(garden);
+    expect(sends()).toEqual([]);
+    expect(server.content.get(gardenId)).toBe('Made on the replica, then edited there.\n');
+  });
+
+  it('never pulls a server note a denied note answers to, one two server notes share, one at a denied path, or one follow does not reach', async () => {
+    const files = pilotVault(PILOT);
+    const home = join(dir, files.home);
+    writeFileSync(home, readFileSync(home, 'utf8').replace('Private:', 'Also [[Twice]] and [notes](../Personal/Notes/Notes.md). Private:'));
+    await confirmYes([files.home, files.alpha, files.beta]);
+    serverDoc('Diary', 'A web note named like the private one.\n');
+    serverDoc('Twice', 'One.\n');
+    serverDoc('Twice', 'Two.\n');
+    serverDoc('Notes', 'Under a denied folder.\n');
+    serverDoc('Unlinked', 'Nobody links here.\n');
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    expect(created(run.results)).toEqual([files.alpha, files.beta, files.home].sort());
+    expect(pulled(run.results)).toEqual([]);
+    for (const absent of ['Diary', 'Twice', 'Unlinked', join('Personal', 'Notes')]) expect(existsSync(join(dir, absent)), absent).toBe(false);
+  });
+});
