@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCli } from './program.ts';
+import { noteLinks } from './scope.ts';
 
 const SERVER = 'http://127.0.0.1:9999';
 const KEY = `mm_sk_${'a'.repeat(64)}`;
@@ -22,6 +23,7 @@ function fakeServer() {
   const docs: Row[] = [];
   const content = new Map<string, string>();
   const assets = new Map<string, Uint8Array>();
+  const uploadAs = new Map<string, string>();
   let next = 1;
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers });
@@ -63,8 +65,10 @@ function fakeServer() {
     }
     if (sub === 'assets' && method === 'POST') {
       const name = url.searchParams.get('filename')!;
-      assets.set(`${id}/${name}`, new Uint8Array(init.body as Uint8Array));
-      return reply(201, { filename: name });
+      // A name another upload took meanwhile: the server keeps these bytes under another one.
+      const stored = uploadAs.get(name) ?? name;
+      assets.set(`${id}/${stored}`, new Uint8Array(init.body as Uint8Array));
+      return reply(201, { filename: stored });
     }
     if (sub?.startsWith('assets/')) {
       const stored = assets.get(`${id}/${decodeURIComponent(sub.slice('assets/'.length))}`);
@@ -73,7 +77,7 @@ function fakeServer() {
     }
     return reply(404, { error: 'not-found' });
   }) as typeof fetch;
-  return { fetchImpl, calls, docs, content, assets };
+  return { fetchImpl, calls, docs, content, assets, uploadAs };
 }
 
 let dir: string;
@@ -85,14 +89,14 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-interface Options { folds?: boolean; confirm?: (question: string) => Promise<boolean> }
+interface Options { cwd?: string; folds?: boolean; confirm?: (question: string) => Promise<boolean> }
 
 async function cli(args: string[], options: Options = {}) {
   const out: string[] = [];
   const errors: string[] = [];
   const code = await runCli(args, {
     env: { MOSS_MULTI_SERVER: SERVER, MOSS_MULTI_API_KEY: KEY, MOSS_MULTI_CONFIG_DIR: join(dir, '.config'), MOSS_MULTI_NO_OPEN: '1' },
-    cwd: () => dir,
+    cwd: () => options.cwd ?? dir,
     fetchImpl: server.fetchImpl,
     stdout: (chunk) => out.push(Buffer.from(chunk).toString('utf8')),
     stderr: (line) => errors.push(line),
@@ -528,6 +532,56 @@ describe('a workspace scope', () => {
     expect(pulled.code, pulled.err).toBe(0);
     expect(existsSync(join(dir, 'Notes', 'plan.md'))).toBe(true);
     expect(existsSync(join(dir, 'Notes', 'assets', 'pic.png'))).toBe(false);
+  });
+
+  it('add, pull and push from outside a scoped workspace never reach into it: a denied note is not uploaded or written', async () => {
+    // The vault sits below an unscoped folder the command runs from (an agent working from $HOME).
+    const vault = join(dir, 'vault');
+    const at = (rel: string) => join(vault, rel);
+    mkdirSync(join(vault, 'Personal', 'Diary'), { recursive: true });
+    writeFileSync(at(join('Personal', 'Diary', 'Diary.md')), `# Diary\n\nDear diary, ${SECRET}.\n`);
+    mkdirSync(join(vault, '.moss-multi'), { recursive: true });
+    writeFileSync(join(vault, '.moss-multi', 'scope.json'), JSON.stringify(PILOT));
+    const id = 'd0000000-0000-4000-8000-00000000beef';
+    server.docs.push({ id, title: 'Leak', filename: 'leak.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 1 });
+    server.content.set(id, 'Server text.\n');
+
+    const added = await cli(['add', join('vault', 'Personal', 'Diary', 'Diary.md')]);
+    expect(added.code).toBe(1);
+    expect(added.err).toMatch(/workspace/);
+    const pulled = await cli(['pull', id, join('vault', 'Personal', 'leak.md')]);
+    expect(pulled.code).toBe(1);
+    expect(existsSync(at(join('Personal', 'leak.md')))).toBe(false);
+
+    // The same from a workspace of its own around the vault: the vault's scope still holds.
+    mkdirSync(join(dir, '.moss-multi'), { recursive: true });
+    const nestedAdd = await cli(['add', join('vault', 'Personal', 'Diary', 'Diary.md')]);
+    expect(nestedAdd.code).toBe(1);
+    expect(nestedAdd.err).toMatch(/workspace/);
+    const nestedPull = await cli(['pull', id, join('vault', 'Personal', 'leak.md')]);
+    expect(nestedPull.code).toBe(1);
+    expect(existsSync(at(join('Personal', 'leak.md')))).toBe(false);
+
+    expect(sent()).not.toContain(SECRET);
+    expect(server.docs.map((doc) => doc.id)).toEqual([id]);
+  });
+
+  it('a media file the server stores under another name is not written to a denied path', async () => {
+    const home = note('', 'Moss Home', 'Home ![p](assets/pic.png).');
+    mkdirSync(join(dir, 'Moss Home', 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'Moss Home', 'assets', 'pic.png'), Buffer.from('89504e470d0a1a0a04', 'hex'));
+    writeScope({ allow: [posix(home)], deny: ['Moss Home/assets/pic-2.png'] });
+    server.uploadAs.set('pic.png', 'pic-2.png');
+    await syncJson();
+    expect(existsSync(join(dir, 'Moss Home', 'assets', 'pic-2.png'))).toBe(false);
+    expect(readFileSync(join(dir, home), 'utf8')).not.toContain('pic-2.png');
+  });
+
+  it('a long line of unclosed links is scanned in linear time', () => {
+    const started = Date.now();
+    expect(noteLinks('x](y '.repeat(30_000), 'a.md')).toEqual([]);
+    expect(noteLinks(`${'[[a\n'.repeat(50_000)}]]`, 'a.md')).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it('without a scope file, every note is synced as before', async () => {
