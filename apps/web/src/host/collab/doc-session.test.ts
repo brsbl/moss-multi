@@ -509,22 +509,28 @@ it('a first sync answered in pieces lands as one change, so the editor writes no
   const pieces = splitUpdate(Y.encodeStateAsUpdate(server), 4_096).map((piece) => piece.update);
   expect(pieces.length, 'the answer comes in pieces').toBeGreaterThan(2);
 
+  // The lowest client, so a paragraph it wrote would sort ahead of the import's; the awareness keeps its own id.
+  const clientID = session.doc.clientID;
   session.doc.clientID = 1;
-  const editor = bind(session.doc);
-  const local: unknown[] = [];
-  session.doc.on('update', (_update: Uint8Array, origin: unknown) => {
-    if (origin !== session.provider) local.push(origin);
-  });
-  const socket = latest(); socket.open();
-  for (const [index, piece] of pieces.entries()) {
-    socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece).slice().buffer }));
-    // Each frame is its own task in the browser: Lexical commits what it reconciled before the next one is read.
-    await vi.advanceTimersByTimeAsync(0);
-    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  try {
+    const editor = bind(session.doc);
+    const local: unknown[] = [];
+    session.doc.on('update', (_update: Uint8Array, origin: unknown) => {
+      if (origin !== session.provider) local.push(origin);
+    });
+    const socket = latest(); socket.open();
+    for (const [index, piece] of pieces.entries()) {
+      socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece).slice().buffer }));
+      // Each frame is its own task in the browser: Lexical commits what it reconciled before the next one is read.
+      await vi.advanceTimersByTimeAsync(0);
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    }
+    expect(session.state.synced).toBe(true);
+    expect(local, 'opening the note writes nothing to it').toEqual([]);
+    const blocks = editor.getEditorState().read(() => $getRoot().getChildren().map((node) => node.getTextContent()));
+    expect(blocks[0], 'the note opens on its first line').toBe('The first line.');
+    expect(blocks).toHaveLength(201);
+  } finally {
+    session.doc.clientID = clientID;
   }
-  expect(session.state.synced).toBe(true);
-  expect(local, 'opening the note writes nothing to it').toEqual([]);
-  const blocks = editor.getEditorState().read(() => $getRoot().getChildren().map((node) => node.getTextContent()));
-  expect(blocks[0], 'the note opens on its first line').toBe('The first line.');
-  expect(blocks).toHaveLength(201);
 });
