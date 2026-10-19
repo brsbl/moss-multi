@@ -284,6 +284,10 @@ export interface ScopeView {
   followed: Followed[];
   /** The notes `follow` reaches that no local note holds: sync pulls each from the server when one doc answers to it. */
   missing: Missing[];
+  /** Whether a note of this title is denied: a denied note here goes by it, or a deny entry's last name matches it. */
+  deniesTitle(title: string): boolean;
+  /** The titles the notes `follow` reaches link to that a denied note goes by (`scope replica` denies them by title). */
+  deniedLinks: string[];
   /** How many of the scanned files are out of scope. */
   outOfScope: number;
 }
@@ -351,10 +355,9 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
   const trackedBy = new Map(tracked.map((meta) => [key(meta.file), meta]));
   const candidates = [...files, ...tracked.map((meta) => meta.file)];
   const known = new Set<string>();
-  // The titles and moss ids denied notes go by (a denied note's text is never read, only its meta.json): a link to
-  // one, under any of its titles, never pulls a server doc in its place.
+  // The titles denied notes go by (a denied note's text is never read, only its meta.json): a link to one, under any
+  // of them, reaches nothing. Their moss ids are left out of byId, so an id link to one reaches nothing either.
   const deniedTitles = new Set<string>();
-  const deniedIds = new Set<string>();
   /** A moss note's `meta.json` id and title, or nothing when it has none moss wrote. */
   const mossMeta = (unit: string): { id?: string; title?: string } => {
     try {
@@ -373,7 +376,6 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
       deniedTitles.add(titleKey(basename(unit, unit === file ? extname(file) : '')));
       if (unit !== file) {
         const meta = mossMeta(unit);
-        if (meta.id) deniedIds.add(meta.id);
         if (meta.title !== undefined) deniedTitles.add(titleKey(meta.title));
       }
       continue;
@@ -391,12 +393,24 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
     }
   }
   deniedTitles.delete('');
+  // A deny entry naming a note (its last name not only wildcards, like `Admin/Finance/Ledger` or `**/Diary`) denies
+  // that title too, so a replica that does not hold the note never pulls a server doc of its title in its place.
+  const titlePatterns = scope.deny.flatMap((pattern) => {
+    const last = segments(pattern).at(-1)!.replace(/\.md$/i, '');
+    return /[^*?]/.test(last) ? [last.normalize('NFC').split(/\s/).filter(Boolean).join(' ').toLowerCase()] : [];
+  });
+  const titleDenied = (title: string): boolean => [title, title.replace(/\.md$/i, '')].some((name) => {
+    const k = titleKey(name);
+    return k !== '' && (deniedTitles.has(k) || titlePatterns.some((pattern) => segmentMatches(pattern, k)));
+  });
 
   const resolvePath = (path: string): string[] => {
     const found = byPath.get(key(path)) ?? byPath.get(key(path.replace(/\.md$/i, '')));
     return found ? [found] : [];
   };
   const resolveTitle = (title: string): string[] => {
+    // Deny first: a title a denied note goes by reaches nothing, not even another note of that title.
+    if (titleDenied(title)) return [];
     const plain = title.replace(/\.md$/i, '');
     const found = [...(byTitle.get(titleKey(title)) ?? byTitle.get(titleKey(plain)) ?? [])];
     // Moss opens one note for a title: of several, the one already synced, else none.
@@ -408,11 +422,15 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
     return title.includes('/') ? resolvePath(normalize(plain)) : [];
   };
   const resolve = (target: LinkTarget): string[] => {
+    // A moss id names one note: a denied, unknown or missing one leaves the link reaching nothing, never its title.
     if (target.id) {
       const found = byId.get(target.id.toLowerCase());
-      if (found) return [found];
+      return found ? [found] : [];
     }
-    if (target.path !== undefined) return resolvePath(target.path);
+    if (target.path !== undefined) {
+      const unit = noteUnit(target.path);
+      return titleDenied(basename(unit, unit === target.path ? extname(unit) : '')) ? [] : resolvePath(target.path);
+    }
     return target.title ? resolveTitle(target.title) : [];
   };
   const linksOf = (file: string): LinkTarget[] => {
@@ -439,7 +457,8 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
   };
   // What no note here holds: by title (none answers to it, not even an ambiguous pair) or by a path no note is at.
   const missing = new Map<string, Missing>();
-  const titleHeld = (title: string) => [title, title.replace(/\.md$/i, '')].some((name) => byTitle.has(titleKey(name)) || deniedTitles.has(titleKey(name)));
+  const titleHeld = (title: string) => titleDenied(title) || [title, title.replace(/\.md$/i, '')].some((name) => byTitle.has(titleKey(name)));
+  const deniedLinks = new Map<string, string>();
   const miss = (title: string, path: string, from?: string) => {
     if (!title || !isAllowedNoteName(path) || denied(path) || titleHeld(title) || missing.has(key(path))) return;
     missing.set(key(path), { title, path, ...(from !== undefined ? { from } : {}) });
@@ -468,8 +487,9 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
       for (const link of linksOf(file)) {
         const found = resolve(link);
         for (const linked of found) visit(linked, next, file);
-        // A link naming a denied note by its moss id reaches nothing, whatever title it carries.
-        if (found.length || (link.id !== undefined && deniedIds.has(link.id.toLowerCase()))) continue;
+        if (link.id === undefined && link.title && !link.title.includes('/') && titleDenied(link.title)) deniedLinks.set(titleKey(link.title), link.title);
+        // An id link is never pulled by its title.
+        if (found.length || link.id !== undefined) continue;
         if (link.path !== undefined) {
           if (link.path.endsWith('.md')) {
             const unit = noteUnit(link.path);
@@ -515,6 +535,8 @@ export function evaluateScope(root: string, scope: Scope, input: ScopeInput): Sc
     },
     outOfScope: files.filter((file) => !admits(file)).length,
     missing: [...missing.values()],
+    deniesTitle: titleDenied,
+    deniedLinks: [...deniedLinks.values()],
   };
 }
 

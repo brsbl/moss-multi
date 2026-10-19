@@ -107,6 +107,8 @@ test('j18-replica: with the Mac offline, an agent on the Linux replica reads and
     note('', 'Loose', 'Nobody links here.');
     const shopping = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Shopping', markdown: 'Milk.' } });
     expect(shopping.status(), 'declared setup: a web note nobody links to').toBe(201);
+    const webDiary = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Diary', markdown: 'A web note named like the private one.' } });
+    expect(webDiary.status(), 'declared setup: a web note named like a denied one').toBe(201);
 
     // M: the scope, then its daemon syncs the three allowed notes up.
     const init = await moss(['init', '--scope', '--follow', 'Moss Home', '--deny', 'Personal/**', '--deny', 'Admin/Finance/**'], macEnv, mac);
@@ -115,7 +117,7 @@ test('j18-replica: with the Mac offline, an agent on the Linux replica reads and
     expect(confirmed.code, confirmed.stderr).toBe(0);
     const macDaemon = await daemon(mac, macEnv);
     daemons.push(macDaemon);
-    await expect.poll(titles, { message: 'M syncs up the allowed notes', timeout: SYNC_TIMEOUT }).toEqual(['Alpha', 'Beta notes', 'Moss Home', 'Shopping']);
+    await expect.poll(titles, { message: 'M syncs up the allowed notes', timeout: SYNC_TIMEOUT }).toEqual(['Alpha', 'Beta notes', 'Diary', 'Moss Home', 'Shopping']);
     // Moss has Alpha open: its editor holds this text until it saves.
     const editor = readFileSync(join(mac, alpha), 'utf8');
 
@@ -125,8 +127,13 @@ test('j18-replica: with the Mac offline, an agent on the Linux replica reads and
     writeFileSync(join(mac, beta), readFileSync(join(mac, beta), 'utf8').replace('Beta body.', 'Beta body. Typed while offline.'));
 
     // L: an empty folder that follows Moss Home pulls exactly the in-scope notes.
-    const linuxInit = await moss(['init', '--scope', '--allow', '**', '--follow', 'Moss Home', '--deny', 'Personal/**', '--deny', 'Admin/Finance/**'], linuxEnv, linux);
+    // Its scope comes from the Mac: the Mac's deny list, plus the denied titles Moss Home links to.
+    const replica = await moss(['scope', 'replica'], macEnv, mac);
+    expect(replica.code, replica.stderr).toBe(0);
+    expect(JSON.parse(replica.stdout)).toEqual({ allow: ['**'], follow: ['Moss Home'], depth: 1, deny: ['Personal/**', 'Admin/Finance/**', '**/Diary', '**/Taxes 2026'] });
+    const linuxInit = await moss(['init'], linuxEnv, linux);
     expect(linuxInit.code, linuxInit.stderr).toBe(0);
+    writeFileSync(join(linux, '.moss-multi', 'scope.json'), replica.stdout, { mode: 0o600 });
     const linuxDaemon = await daemon(linux, linuxEnv);
     daemons.push(linuxDaemon);
     await expect.poll(() => notes(linux), { message: `L pulls every in-scope note: ${linuxDaemon.output()}`, timeout: SYNC_TIMEOUT }).toEqual([alpha, beta, home].sort());
@@ -163,7 +170,8 @@ test('j18-replica: with the Mac offline, an agent on the Linux replica reads and
     expect(back.output(), 'the linked note is download only on the Mac until she confirms it').toMatch(/pulled Garden plan\/Garden plan\.md: .*download only/);
 
     // Nothing out of scope reached the server or L.
-    expect(await titles(), 'only the scoped notes and the agent\'s note are on the server').toEqual(['Alpha', 'Beta notes', 'Garden plan', 'Moss Home', 'Shopping']);
+    expect(await titles(), 'only the scoped notes and the agent\'s note are on the server').toEqual(['Alpha', 'Beta notes', 'Diary', 'Garden plan', 'Moss Home', 'Shopping']);
+    expect(existsSync(join(mac, 'Diary')), 'the web Diary never comes down in place of the private one').toBe(false);
     for (const title of ['Alpha', 'Beta notes', 'Garden plan', 'Moss Home']) expect(await docText(title)).not.toContain(SECRET);
     expect(notes(linux), 'L holds only the scoped notes and the agent\'s note').toEqual([alpha, beta, 'Garden plan/Garden plan.md', home].sort());
 

@@ -69,7 +69,7 @@ describe('the watch service', () => {
     for (const line of blocks.join('\n').split('\n')) {
       expect(line, 'no key, real or placeholder, in an example').not.toMatch(/mm_sk_/);
       expect(line, 'login --key reads the key from stdin').not.toMatch(/--key(?:=|\s+)(?!-(?:\s|$))\S/);
-      expect(line, 'no shell assignment of the key').not.toMatch(/(?:^|[\s;&|])(?:export\s+)?MOSS_MULTI_API_KEY=/);
+      expect(line, 'no key value, only a placeholder to paste over').not.toMatch(/(?:^|[\s;&|])(?:export\s+)?MOSS_MULTI_API_KEY=(?!<)/);
     }
     expect(doc).toMatch(/install -m 600 \/dev\/null ~\/\.config\/moss-multi\/watch\.env/);
     expect(doc).toMatch(/moss-multi login --server \S+ --key -/);

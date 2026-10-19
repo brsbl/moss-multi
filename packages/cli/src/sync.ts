@@ -697,7 +697,7 @@ async function fetchReached(ctx: SyncContext, rows: DocRow[], results: SyncResul
     for (const want of scope.missing) {
       const matches = rows.filter((row) => titleKey(row.title) === titleKey(want.title));
       const row = matches.length === 1 ? matches[0]! : undefined;
-      if (!row || tracked.has(row.id) || exists(root, want.path) || scopedNest(root, want.path) !== null) continue;
+      if (!row || scope.deniesTitle(row.title) || tracked.has(row.id) || exists(root, want.path) || scopedNest(root, want.path) !== null) continue;
       if (ctx.signal?.aborted) throw new Stopped('stopped');
       touch();
       tracked.add(row.id);

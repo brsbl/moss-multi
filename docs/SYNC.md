@@ -51,16 +51,30 @@ Mint one agent key per replica in the web app under **Settings → Agents** (for
 
 On each replica:
 
-1. **Sign in with the agent key.** Write `~/.config/moss-multi/watch.env` with the server and key, then make it
-   private. The service refuses the file unless its mode is 600.
+1. **Sign in with the agent key.** The key never goes on a command line, into shell history or into a file others can
+   read. Create the env file private first, then paste the key into it with an editor:
 
    ```sh
-   mkdir -p ~/.config/moss-multi
-   printf 'MOSS_MULTI_SERVER=%s\nMOSS_MULTI_API_KEY=%s\n' 'https://notes.example.com' 'mm_sk_...' > ~/.config/moss-multi/watch.env
-   chmod 600 ~/.config/moss-multi/watch.env
-   MOSS_MULTI_NO_OPEN=1 moss-multi login --server https://notes.example.com --key mm_sk_...
+   mkdir -p -m 700 ~/.config/moss-multi
+   install -m 600 /dev/null ~/.config/moss-multi/watch.env
+   ${EDITOR:-nano} ~/.config/moss-multi/watch.env
+   ```
+
+   The file holds two lines; paste the key after the second `=`:
+
+   ```ini
+   MOSS_MULTI_SERVER=https://notes.example.com
+   MOSS_MULTI_API_KEY=<paste the agent key>
+   ```
+
+   Then sign the CLI in from that file. `--key -` reads the key from stdin, and `login` stores it at mode 600:
+
+   ```sh
+   sed -n 's/^MOSS_MULTI_API_KEY=//p' ~/.config/moss-multi/watch.env | MOSS_MULTI_NO_OPEN=1 moss-multi login --server https://notes.example.com --key -
    moss-multi whoami
    ```
+
+   The service refuses the env file unless its mode is 600, and it never logs the key.
 
 2. **Scope the workspace.**
 
@@ -73,18 +87,31 @@ On each replica:
    moss-multi sync              # the first upload
    ```
 
-   On Linux, in an empty folder:
+   Still on the Mac, print the Linux replica's scope and copy it over (for example with `scp`):
+
+   ```sh
+   moss-multi scope replica > replica-scope.json
+   ```
+
+   It has the Mac's `follow`, `depth` and `deny`, plus a `**/<Title>` deny entry for each title a followed note links
+   to that a denied note goes by. L holds none of the denied notes, so these keep it from pulling a server note of the
+   same title in their place. Those titles already appear in the followed notes' text.
+
+   On Linux, in an empty folder, with `replica-scope.json` beside it:
 
    ```sh
    mkdir -p ~/Notes && cd ~/Notes
-   moss-multi init --scope --allow '**' --follow 'Moss Home' --deny 'Personal/**' --deny 'Admin/Finance/**'
+   moss-multi init
+   install -m 600 ~/replica-scope.json ~/Notes/.moss-multi/scope.json
    moss-multi sync              # pulls Moss Home and the notes it links to
    ```
 
-   `--allow '**'` lets L upload what its agents edit or create. L only ever holds notes it pulled through `follow`, plus
-   the agents' own notes. Use the same `--deny` list as the Mac, so a file an agent writes under a denied folder never
-   leaves L. A new note reaches the Mac only if a followed note links to it within the scope's `depth` (default 1, so
-   link it from Moss Home). On the Mac it is download only until `moss-multi scope confirm` adds it.
+   The replica scope's `allow: ["**"]` lets L upload what its agents edit or create. L only ever holds notes it pulled
+   through `follow`, plus the agents' own notes, and its deny list keeps a file an agent writes under a denied folder
+   from leaving L. A link that carries a Moss id (`[[Title|<id>]]`) reaches only the note with that id, never another
+   note of its title, so L follows title and path links only. A new note reaches the Mac only if a followed note links
+   to it within the scope's `depth` (default 1, so link it from Moss Home). On the Mac it is download only until
+   `moss-multi scope confirm` adds it. Run `scope replica` again after you change the Mac's scope or its private notes.
 
 3. **Install the service.** Make the log folder first, then follow the steps for that system.
 
