@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { ASSET_DIR, mediaTypeOf } from '@moss-multi/protocol/media';
 import { CliError } from './errors.ts';
 import { isUnsafeChar } from './output.ts';
 
@@ -30,6 +31,11 @@ export interface DocMeta {
   mode?: 'moss';
   /** For a moss note, the title its title line held when it was last synced. */
   title?: string;
+  /**
+   * Every media name a text from the server for this doc ever referenced (its bases, titles and what sync wrote into
+   * the file): such a name is the server's, only ever downloaded (T7.S9). Absent in a workspace from before it.
+   */
+  served?: string[];
   /**
    * The texts the file held, in the base's form, each time sync wrote over it within the last PRIOR_MS
    * (`prior-<hash>.md`), oldest first: an editor may still hold one and save it back (T7.P2).
@@ -94,6 +100,45 @@ const BAD_NAME = /[<>:"/\\|?*]/;
 export const isAllowedName = (name: string): boolean =>
   name !== '' && name !== '.' && name !== '..' && !BAD_NAME.test(name) && Buffer.byteLength(name, 'utf8') <= 255 &&
   ![...name].some((char) => char.charCodeAt(0) <= 0x1f || isUnsafeChar(char.charCodeAt(0)));
+
+export interface MediaRef {
+  /** The span of the reference's file name in the text. */
+  start: number;
+  end: number;
+  name: string;
+}
+
+const NAME_END = new Set([' ', '\t', '\n', '\r', ')', '>', '"', "'"]);
+
+/** Every `](assets/<file>)` (or `](./assets/…`, `](<assets/…`) reference to a moss media file in `text`, in order. */
+export function mediaRefs(text: string): MediaRef[] {
+  const refs: MediaRef[] = [];
+  let at = text.indexOf('](');
+  while (at >= 0) {
+    let i = at + 2;
+    if (text[i] === '<') i += 1;
+    if (text.startsWith('./', i)) i += 2;
+    let next = at + 2;
+    if (text.startsWith(ASSET_DIR, i)) {
+      const start = i + ASSET_DIR.length;
+      let end = start;
+      while (end < text.length && !NAME_END.has(text[end]!)) end += 1;
+      next = Math.max(next, end);
+      let name = text.slice(start, end);
+      try {
+        name = decodeURIComponent(name);
+      } catch {
+        // A stray % stays as it is.
+      }
+      if (mediaTypeOf(name) && isAllowedName(name)) refs.push({ start, end, name });
+    }
+    at = text.indexOf('](', next);
+  }
+  return refs;
+}
+
+/** The media names `text` references. */
+export const refNames = (text: string) => new Set(mediaRefs(text).map((ref) => ref.name));
 
 /** Each workspace root's real path and identity, recorded when the command selects it (`findRoot`, `pinRoot`). */
 const roots = new Map<string, { real: string; dev: number; ino: number }>();
@@ -273,6 +318,8 @@ export function readMeta(root: string, docId: string): DocMeta | null {
       })
       .map((prior): Prior => ({ hash: prior.hash, at: prior.at, ...(prior.refused === true ? { refused: true } : {}) }));
     delete meta.priors;
+    // An unreadable record of served names is no record: every name in the base counts as served then (servedNames).
+    if (!Array.isArray(meta.served) || !meta.served.every((name) => typeof name === 'string')) delete meta.served;
     return priors.length ? { ...meta, priors } : meta;
   } catch {
     return null;
@@ -328,6 +375,34 @@ export function recordedPriors(root: string, meta: DocMeta): Uint8Array[] | null
   return texts;
 }
 
+const decodeUtf8 = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
+
+/**
+ * The media names the server ever showed for the doc (DocMeta.served). A workspace from before the record counts its
+ * base, title and prior texts; null when one of those can no longer be read.
+ */
+export function servedNames(root: string, meta: DocMeta): Set<string> | null {
+  if (meta.served) return new Set(meta.served);
+  let base: Uint8Array;
+  try {
+    base = readBase(root, meta.docId);
+  } catch {
+    return null;
+  }
+  const priors = recordedPriors(root, meta);
+  if (priors === null) return null;
+  return new Set([base, ...priors].flatMap((text) => [...refNames(decodeUtf8(text))]).concat([...refNames(meta.title ?? '')]));
+}
+
+/** Adds the names `texts` reference to the doc's served names, before sync writes any of them into its file. */
+function serve(root: string, docId: string, texts: (Uint8Array | string | undefined)[]): void {
+  const meta = readMeta(root, docId);
+  if (meta) writeMeta(root, { ...meta, served: [...namesIn(texts)] });
+}
+
+const namesIn = (texts: (Uint8Array | string | undefined)[]): Set<string> =>
+  new Set(texts.flatMap((text) => (text === undefined ? [] : [...refNames(typeof text === 'string' ? text : decodeUtf8(text))])));
+
 /**
  * Evicts the oldest prior texts across the workspace until they fit its budget. Their records stay until their window
  * ends, so a save inside it is known to lack the text it may descend from.
@@ -374,6 +449,22 @@ export function probeFoldsCase(root: string): boolean {
   const lower = lstat(join(root, STATE_DIR));
   const upper = lstat(join(root, STATE_DIR.toUpperCase()));
   return lower !== null && upper !== null && lower.ino === upper.ino && lower.dev === upper.dev;
+}
+
+/**
+ * Whether the volume holding the existing `path` folds case, for a folder that is no workspace: the nearest name on the
+ * path with a letter in it, in the other case, is the same file.
+ */
+export function foldsAt(path: string): boolean {
+  for (let at = resolve(path); dirname(at) !== at; at = dirname(at)) {
+    const name = basename(at);
+    const swapped = [...name].map((char) => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase())).join('');
+    if (swapped === name) continue;
+    const one = lstat(at);
+    const other = lstat(join(dirname(at), swapped));
+    return one !== null && other !== null && one.ino === other.ino && one.dev === other.dev;
+  }
+  return false;
 }
 
 const foldPath = (path: string) => path.normalize('NFC').toLowerCase();
@@ -428,9 +519,18 @@ export function writeMediaRecord(root: string, docId: string, record: Record<str
   writeInside(root, stateRel(docId, 'media.json'), Buffer.from(`${JSON.stringify(record, null, 2)}\n`));
 }
 
-/** Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. */
+/**
+ * Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. Served names only grow: those
+ * recorded already, and those in the title, are kept whatever `meta` holds.
+ */
 export function writeMeta(root: string, meta: DocMeta): void {
-  writeInside(root, stateRel(meta.docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));
+  const recorded = readMeta(root, meta.docId);
+  const kept = recorded ? servedNames(root, recorded) : new Set<string>();
+  const served = kept === null && !meta.served ? undefined : [...new Set([...(kept ?? []), ...(meta.served ?? []), ...refNames(meta.title ?? '')])].sort();
+  const next: DocMeta = { ...meta };
+  delete next.served;
+  if (served) next.served = served;
+  writeInside(root, stateRel(meta.docId, 'meta.json'), Buffer.from(`${JSON.stringify(next, null, 2)}\n`));
 }
 
 /**
@@ -476,6 +576,7 @@ export function ensureStateDir(root: string): void {
  */
 export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, state: Pick<SyncedState, 'prior' | 'refused'> = {}): DocMeta {
   const rel = confined(root, file);
+  serve(root, docId, [bytes]);
   writeInside(root, rel, bytes, expectHash);
   return recordBase(root, docId, rel, bytes, folds, state);
 }
@@ -486,6 +587,7 @@ export function recordPull(root: string, docId: string, file: string, bytes: Uin
  */
 export function recordSynced(root: string, docId: string, file: string, local: Uint8Array, base: Uint8Array, expectHash: string | null, folds: boolean, state: SyncedState): DocMeta {
   const rel = confined(root, file);
+  serve(root, docId, [local, base, state.title]);
   writeInside(root, rel, local, expectHash);
   return recordBase(root, docId, rel, base, folds, { ...state, localHash: sha256Hex(local) });
 }
@@ -496,8 +598,10 @@ export function recordSynced(root: string, docId: string, file: string, local: U
  * one owner.
  */
 export function recordBase(root: string, docId: string, rel: string, bytes: Uint8Array, folds = false, state: SyncedState = {}): DocMeta {
-  writeInside(root, stateRel(docId, 'base.md'), bytes);
   const previous = readMeta(root, docId);
+  // Read before the base is replaced: a workspace from before the record counts the names its old base held.
+  const served = previous ? servedNames(root, previous) : new Set<string>();
+  writeInside(root, stateRel(docId, 'base.md'), bytes);
   const baseHash = sha256Hex(bytes);
   const known = state.filename ?? previous?.filename;
   const mode = state.mode ?? previous?.mode;
@@ -520,6 +624,7 @@ export function recordBase(root: string, docId: string, rel: string, bytes: Uint
     docId, file: rel, baseHash, pulledAt: Date.now(), ...(known !== undefined ? { filename: known } : {}),
     ...(state.localHash !== undefined && state.localHash !== baseHash ? { localHash: state.localHash } : {}),
     ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}), ...(priors.length ? { priors } : {}),
+    served: [...new Set([...(served ?? []), ...namesIn([bytes, title])])],
   };
   writeMeta(root, meta);
   if (state.prior !== undefined) trimPriors(root);

@@ -12,11 +12,11 @@ import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConf
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
-import { noteMedia, refNames, rewriteRefs } from './media.ts';
+import { noteBody, noteMedia, refNames, rewriteRefs } from './media.ts';
 import { exactPattern, noteFolderName, parseScope, readScope, SCOPE_FILE, scopePath } from './scope.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
-  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
+  confined, ensureStateDir, findRoot, foldsAt, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
   recordPull, resetRootPins, sha256Hex, writeStateFile,
 } from './workspace.ts';
 
@@ -361,7 +361,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         // A moss note with no title line takes its file's stem.
         if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
         // Its media follow; a file stored under another name moves the doc's reference too.
-        const media = await noteMedia({ root, client, upload: true, introduced: refNames(markdown) }, doc.id, path);
+        const media = await noteMedia({ root, client, folds: foldsCase(root) || foldsAt(path), upload: true, introduced: refNames(noteBody(markdown, moss)) }, doc.id, path);
         if (media.renames.size > 0) {
           const base = created.content ?? decoder.decode(await client.content(doc.id, true));
           const pushed = await client.push(doc.id, { newText: rewriteRefs(base, media.renames), baseHash: sha256Hex(base), baseText: base });

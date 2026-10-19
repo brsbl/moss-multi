@@ -11,7 +11,7 @@ import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
-import { noteMedia, refNames } from './media.ts';
+import { noteBody, noteMedia, refNames } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import { evaluateScope, noteUnit, readScope, type ScopeView, titleKey } from './scope.ts';
@@ -497,10 +497,12 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
   const { root, client, folds } = ctx;
   const bytes = readConfined(root, rel);
   const text = toLf(decode(bytes));
-  const refs = refNames(text);
   const stem = basename(rel, extname(rel));
   const folder = options.folderId ? { folderId: options.folderId } : {};
-  if (options.moss ?? isMossNote(rel, text)) {
+  const moss = options.moss ?? isMossNote(rel, text);
+  // A moss note's title line names the doc, so a reference on it is never its user's upload.
+  const refs = refNames(noteBody(text, moss));
+  if (moss) {
     const comments = ctx.scope?.denies(join(dirname(rel), 'comments.json')) ? undefined : readSidecar(root, rel);
     beforeWrite(ctx.signal);
     const created = await client.create({ ...(options.title !== undefined ? { title: options.title } : {}), markdown: text, titleLine: true, ...(comments ? { comments } : {}), ...folder });
