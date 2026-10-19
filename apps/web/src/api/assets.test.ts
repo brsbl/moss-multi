@@ -2,6 +2,7 @@
 // and a sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping
 // each `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder. Stored
 // bytes are the type their name declares (T3.B10).
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
@@ -10,7 +11,7 @@ import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limit
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { MEDIA_CAP_BYTES } from '@moss-multi/protocol/media';
-import { setUploadDeadlineForTests, uploadBufferSize } from './assets.ts';
+import { setUploadAllocationProbeForTests, setUploadDeadlineForTests } from './assets.ts';
 import { setRemoteFetchForTests } from './remote.ts';
 import { handleApi } from './router.ts';
 
@@ -57,6 +58,36 @@ const PrincipalDO = {
   }),
 };
 
+/** Node lacks workerd's FixedLengthStream, through which a video of several segments is put: a pass-through checking its length. */
+class NodeFixedLengthStream extends TransformStream<ArrayBuffer | ArrayBufferView, Uint8Array> {
+  constructor(expected: number) {
+    let seen = 0;
+    super({
+      transform(chunk, controller) {
+        seen += chunk.byteLength;
+        if (seen > expected) throw new Error('longer than its length');
+        controller.enqueue(ArrayBuffer.isView(chunk) ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength) : new Uint8Array(chunk));
+      },
+      flush() {
+        if (seen !== expected) throw new Error('shorter than its length');
+      },
+    });
+  }
+}
+(globalThis as { FixedLengthStream?: unknown }).FixedLengthStream ??= NodeFixedLengthStream;
+
+/** `bucket` with a streamed put read whole first: Miniflare's Node proxy cannot pass a stream of known length to workerd. */
+const streamedPuts = (bucket: R2Bucket): R2Bucket => new Proxy(bucket, {
+  get(target, key) {
+    if (key === 'put') {
+      return async (name: string, value: unknown, options?: R2PutOptions) =>
+        target.put(name, value instanceof ReadableStream ? new Uint8Array(await new Response(value).arrayBuffer()) : value as never, options);
+    }
+    const value = Reflect.get(target, key) as unknown;
+    return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+  },
+});
+
 let d1: TestD1;
 let env: AuthTestEnv & Parameters<typeof handleApi>[1];
 let ada: TestUser;
@@ -65,7 +96,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, ASSETS: d1.assets, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
+  env = { DB: d1.db, ASSETS: streamedPuts(d1.assets), BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: PrincipalDO as never };
   ada = await signedUpUser(env, 'assets-ada');
   ben = await signedUpUser(env, 'assets-ben', 'Ben');
   cy = await signedUpUser(env, 'assets-cy', 'Cy');
@@ -526,23 +557,110 @@ describe('upload bounds (T3.1s)', () => {
     const used = await d1.db.prepare('SELECT SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(kim.homeId).first<{ used: number }>();
     expect(used?.used).toBeLessThanOrEqual(VAULT_MEDIA_QUOTA_BYTES);
   }, 60_000);
-  it('grows an upload buffer to its declared length holding at most 1 MiB more, even for a near-cap video (B230, B219)', () => {
-    const length = MEDIA_CAP_BYTES.video;
-    for (const chunk of [4096, 64 * 1024, 1024 * 1024, 7_777_777]) {
-      let capacity = 0;
-      let peak = 0;
-      for (let offset = 0; offset < length; offset = Math.min(length, offset + chunk)) {
-        const next = uploadBufferSize(capacity, Math.min(length, offset + chunk), length);
-        // While the buffer grows, the old one stays live until its bytes are copied over.
-        if (next !== capacity) peak = Math.max(peak, capacity + next);
-        capacity = next;
-      }
-      expect(capacity, `${chunk}-byte chunks fill the declared length`).toBe(length);
-      expect(peak, `${chunk}-byte chunks: peak buffer bytes`).toBeLessThanOrEqual(length + 1024 * 1024);
+  /** Each upload's buffer allocations as the probe sees them: held bytes, and the body bytes received by then. */
+  const probed = () => {
+    const seen = new Map<Request, { held: number; received: number }[]>();
+    setUploadAllocationProbeForTests((request, held, received) => {
+      seen.set(request, [...(seen.get(request) ?? []), { held, received }]);
+    });
+    return seen;
+  };
+  const MIB = 1024 * 1024;
+  /** A webm body that sends `sent` bytes in 64 KiB chunks and then nothing more, ever. */
+  const stallingBody = (sent: number) => {
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= sent) return new Promise<void>(() => {});
+        const chunk = new Uint8Array(Math.min(64 * 1024, sent - offset)).fill(offset / 65536);
+        if (offset === 0) chunk.set([0x1a, 0x45, 0xdf, 0xa3]);
+        offset += chunk.byteLength;
+        controller.enqueue(chunk);
+        return undefined;
+      },
+    }, { highWaterMark: 0 });
+  };
+  it('holds about what a stalled upload declaring the cap sent, never its declared length (T3.B30)', async () => {
+    const uma = await signedUpUser(env, 'assets-b30-uma', 'Uma');
+    const docId = await insertDoc(d1.db, uma);
+    const sent = Math.round(1.1 * MIB);
+    const seen = probed();
+    setUploadDeadlineForTests(1_000);
+    try {
+      const response = await call('POST', `/api/docs/${docId}/assets?filename=slow.webm`, uma.cookie, {
+        body: stallingBody(sent), headers: { 'content-type': 'video/webm', 'content-length': String(MEDIA_CAP_BYTES.video) },
+      });
+      expect(response.status, await response.clone().text()).toBe(408);
+    } finally {
+      setUploadDeadlineForTests(null);
+      setUploadAllocationProbeForTests(null);
     }
-    // A body that sends a few bytes and stalls holds a small buffer, not its declared length.
-    expect(uploadBufferSize(0, 10, length)).toBeLessThanOrEqual(64 * 1024);
-  });
+    const allocations = [...seen.values()].flat();
+    expect(allocations.length).toBeGreaterThan(0);
+    for (const { held, received } of allocations) {
+      expect(held, `held after ${received} bytes received`).toBeLessThanOrEqual(3 * Math.max(received, 64 * 1024));
+    }
+    expect(Math.max(...allocations.map((a) => a.held)), 'peak buffer bytes for 1.1 MiB sent').toBeLessThanOrEqual(3 * sent);
+  }, 20_000);
+  it('keeps concurrent stalled uploads declaring the cap bounded by what they sent (T3.B30)', async () => {
+    const N = 4;
+    const users = await Promise.all(Array.from({ length: N }, (_, i) => signedUpUser(env, `assets-b30-con-${i}`, `Con ${i}`)));
+    const docs = await Promise.all(users.map((user) => insertDoc(d1.db, user)));
+    const sent = Math.round(1.1 * MIB);
+    const seen = probed();
+    setUploadDeadlineForTests(1_000);
+    try {
+      const responses = await Promise.all(users.map((user, i) => call('POST', `/api/docs/${docs[i]}/assets?filename=slow.webm`, user.cookie, {
+        body: stallingBody(sent), headers: { 'content-type': 'video/webm', 'content-length': String(MEDIA_CAP_BYTES.video) },
+      })));
+      expect(responses.map((r) => r.status)).toEqual(Array<number>(N).fill(408));
+    } finally {
+      setUploadDeadlineForTests(null);
+      setUploadAllocationProbeForTests(null);
+    }
+    expect(seen.size).toBe(N);
+    // Summed over the uploads, each at its own peak: the most they could hold at once.
+    const held = [...seen.values()].reduce((sum, allocations) => sum + Math.max(...allocations.map((a) => a.held)), 0);
+    expect(held, `${N} stalled uploads' peak buffer bytes`).toBeLessThanOrEqual(N * 3 * sent);
+  }, 30_000);
+  it('stores an honest upload at each cap byte-exact, a video holding at most one segment past its length (T3.B30, B219)', async () => {
+    const vic = await signedUpUser(env, 'assets-b30-vic', 'Vic');
+    const docId = await insertDoc(d1.db, vic);
+    const cases = [
+      // A video is held in segments, stored as R2 parts; an image is joined once to be sniffed whole.
+      { filename: 'cap.webm', contentType: 'video/webm', length: MEDIA_CAP_BYTES.video, magic: [0x1a, 0x45, 0xdf, 0xa3], bound: MEDIA_CAP_BYTES.video + 5 * MIB },
+      { filename: 'cap.png', contentType: 'image/png', length: MEDIA_CAP_BYTES.image, magic: [...PNG], bound: 2 * MEDIA_CAP_BYTES.image },
+    ];
+    for (const { filename, contentType, length, magic, bound } of cases) {
+      const hash = createHash('sha256');
+      let offset = 0;
+      // Chunks off any power-of-two boundary, as a network body arrives.
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = new Uint8Array(Math.min(MIB + 333, length - offset)).fill(offset % 251);
+          if (offset === 0) chunk.set(magic);
+          hash.update(chunk);
+          offset += chunk.byteLength;
+          controller.enqueue(chunk);
+          if (offset === length) controller.close();
+        },
+      }, { highWaterMark: 0 });
+      const seen = probed();
+      try {
+        const response = await call('POST', `/api/docs/${docId}/assets?filename=${filename}`, vic.cookie, {
+          body, headers: { 'content-type': contentType, 'content-length': String(length) },
+        });
+        expect((await uploaded(response)).asset.size).toBe(length);
+      } finally {
+        setUploadAllocationProbeForTests(null);
+      }
+      const peak = Math.max(...[...seen.values()].flat().map((a) => a.held));
+      expect(peak, `${filename}: peak buffer bytes`).toBeLessThanOrEqual(bound);
+      const served = await bytesOf(await call('GET', `/api/docs/${docId}/assets/${filename}`, vic.cookie));
+      expect(served.byteLength).toBe(length);
+      expect(createHash('sha256').update(served).digest('hex'), `${filename} is stored byte-exact`).toBe(hash.digest('hex'));
+    }
+  }, 120_000);
   it('refuses an upload whose body stalls past its deadline with 408, cancelling the stream (B230)', async () => {
     const docId = await insertDoc(d1.db, ada);
     let cancelled = false;
@@ -572,7 +690,6 @@ describe('upload bounds (T3.1s)', () => {
   }, 20_000);
   it('lets each upload chunk be collected once copied, so a large body holds about its length, not twice it (B230, B219)', async () => {
     const docId = await insertDoc(d1.db, ada);
-    const MIB = 1024 * 1024;
     const CHUNKS = 24;
     setFlagsFromString('--expose-gc');
     const gc = runInNewContext('gc') as () => void;
@@ -725,6 +842,86 @@ describe('upload storage bounds (T3.1s)', () => {
     expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/shot-2.png`, ory.cookie)), 'the retry filled the blob').toEqual(body);
     expect(await usage(), 'the retry added no asset').toEqual(before);
   });
+
+  /** A webm of `size` bytes, its bytes a pattern no two MiB share. */
+  const webmOf = (size: number) => {
+    const bytes = new Uint8Array(size);
+    for (let i = 0; i < size; i += 1) bytes[i] = (i * 7 + (i >> 20)) % 251;
+    bytes.set([0x1a, 0x45, 0xdf, 0xa3]);
+    return bytes;
+  };
+  /** `bucket` with every multipart upload begun and every put counted, the first `failures` puts cut off mid-body. */
+  const recorded = (bucket: R2Bucket, failures = 0) => {
+    const seen = { multipart: 0, puts: 0, failures };
+    const ASSETS = new Proxy(bucket, {
+      get(target, key) {
+        if (key === 'createMultipartUpload') {
+          return (...args: Parameters<R2Bucket['createMultipartUpload']>) => {
+            seen.multipart += 1;
+            return target.createMultipartUpload(...args);
+          };
+        }
+        if (key === 'put') {
+          return async (...args: Parameters<R2Bucket['put']>) => {
+            seen.puts += 1;
+            const [, value] = args;
+            if (seen.failures > 0) {
+              seen.failures -= 1;
+              // The client goes away after the first bytes reach R2: the put is cancelled with the rest unsent.
+              if (value instanceof ReadableStream) {
+                const reader = (value as ReadableStream<Uint8Array>).getReader();
+                await reader.read();
+                await reader.cancel().catch(() => undefined);
+              }
+              throw new Error('client disconnected');
+            }
+            return target.put(...args);
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    return { ASSETS, seen };
+  };
+
+  it('stores a video of several segments in one put, never an R2 multipart upload a disconnect could strand (T3.B30)', async () => {
+    const una = await signedUpUser(env, 'assets-b30-una', 'Una');
+    const docId = await insertDoc(d1.db, una);
+    const body = webmOf(12 * 1024 * 1024 + 4321);
+    const { ASSETS, seen } = recorded(streamedPuts(d1.assets));
+    const stored = await uploaded(await handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=long.webm`, {
+      method: 'POST', headers: { origin: BASE, cookie: una.cookie, 'content-type': 'video/webm', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, ASSETS }));
+    expect(stored.asset.size).toBe(body.byteLength);
+    expect(seen, 'one put of the whole video, no multipart upload').toEqual({ multipart: 0, puts: 1, failures: 0 });
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/long.webm`, una.cookie))).toEqual(body);
+  }, 60_000);
+
+  it('leaves nothing stored when a video put is cut off mid-body, and a same-file retry at the quota stores it once (T3.B30)', async () => {
+    const uli = await signedUpUser(env, 'assets-b30-uli', 'Uli');
+    const docId = await insertDoc(d1.db, uli);
+    const body = webmOf(11 * 1024 * 1024 + 99);
+    const hash = await hashOf(body);
+    // Room for exactly this file.
+    await fill(uli, uli.homeId, VAULT_MEDIA_QUOTA_BYTES - body.byteLength).run();
+    const { ASSETS, seen } = recorded(streamedPuts(d1.assets), 1);
+    const send = () => handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=cut.webm`, {
+      method: 'POST', headers: { origin: BASE, cookie: uli.cookie, 'content-type': 'video/webm', 'content-length': String(body.byteLength) }, body,
+    }), { ...env, ASSETS });
+    const failed = await send().catch(() => null);
+    expect(failed?.status ?? 500, 'the put is cut off after the rows commit').not.toBe(201);
+    expect(seen, 'one cut-off put, no multipart upload left pending').toEqual({ multipart: 0, puts: 1, failures: 0 });
+    expect(await d1.assets.head(`asset-blobs/sha256/${hash}`), 'no partial object').toBeNull();
+    const totals = () => d1.db.prepare('SELECT COUNT(*) AS n, SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(uli.homeId).first<{ n: number; used: number }>();
+    const before = await totals();
+    expect(before?.used).toBe(VAULT_MEDIA_QUOTA_BYTES);
+    const retried = await uploaded(await send());
+    expect(retried.filename).toBe('cut.webm');
+    expect(seen, 'the retry is one more put').toEqual({ multipart: 0, puts: 2, failures: 0 });
+    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/cut.webm`, uli.cookie)), 'the retry stored it whole').toEqual(body);
+    expect(await totals(), 'the retry added no asset or bytes to the quota').toEqual(before);
+  }, 60_000);
 
   it('refuses an import from a URL into a vault exactly at its quota before fetching anything (B236)', async () => {
     const pia = await signedUpUser(env, 'assets-fromurl-pia', 'Pia');
