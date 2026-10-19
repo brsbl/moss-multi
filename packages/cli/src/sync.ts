@@ -14,7 +14,7 @@ import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import {
-  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPrior, recordBase, recordPull, recordSynced,
+  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase, recordPull, recordSynced,
   renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
@@ -75,11 +75,25 @@ export async function pushWithBase(client: Api, root: string, meta: DocMeta, req
 const distance = (from: string, to: string): number =>
   editsOf(withoutFinalEol(from), withoutFinalEol(to), mergeBudget(), false).reduce((sum, edit) => sum + (edit.end - edit.start) + edit.text.length, 0);
 
+/** Lines `to` has more of than `from`, blank ones aside. */
+function addedLines(from: string, to: string): Set<string> {
+  const count = new Map<string, number>();
+  for (const line of from.split('\n')) count.set(line, (count.get(line) ?? 0) + 1);
+  const added = new Set<string>();
+  for (const line of to.split('\n')) {
+    const left = count.get(line) ?? 0;
+    if (left > 0) count.set(line, left - 1);
+    else if (line.trim()) added.add(line);
+  }
+  return added;
+}
+
 /**
  * The base a changed file's push merges against. Normally the recorded base; but a file saved by an editor that still
- * held the text from before sync last wrote over it (moss rewrites an open note from its editor, T7.P2) descends from
- * that prior text, not from the base: the pulled edits are missing and the prior text plus the typing explains it.
+ * held a text from before sync wrote over it (moss rewrites an open note from its editor, T7.P2) descends from that
+ * prior text, not from the base: the pulled edits are missing and the prior text plus the typing explains it.
  * Pushed against the base, that save would revert the pulled edits; against the prior text only the typing lands.
+ * Of the prior texts kept from the last minute's writes, the one nearest the save that explains it wins.
  */
 function pushBase(root: string, meta: DocMeta, local: string): { hash: string; bytes?: Uint8Array; stale: boolean } {
   const fresh = { hash: meta.baseHash, stale: false };
@@ -89,13 +103,25 @@ function pushBase(root: string, meta: DocMeta, local: string): { hash: string; b
   } catch {
     return fresh;
   }
-  const prior = readPrior(root, meta, savedAt);
-  if (!prior || meta.prior!.hash === meta.baseHash) return fresh;
-  const priorText = toLf(decode(prior));
-  // moss only saves an editor whose body differs from what it loaded, so exactly the prior text is a deliberate revert.
-  if (local === priorText) return fresh;
-  if (distance(priorText, local) >= distance(decode(readBase(root, meta.docId)), local)) return fresh;
-  return { hash: meta.prior!.hash, bytes: prior, stale: true };
+  const priors = readPriors(root, meta, savedAt).filter((prior) => prior.hash !== meta.baseHash);
+  if (!priors.length) return fresh;
+  const base = toLf(decode(readBase(root, meta.docId)));
+  let best: { hash: string; bytes?: Uint8Array; stale: boolean } = fresh;
+  let nearest = distance(base, local);
+  for (const prior of priors) {
+    const priorText = toLf(decode(prior.bytes));
+    // moss only saves an editor whose body differs from what it loaded, so exactly a prior text is a deliberate revert.
+    if (local === priorText) return fresh;
+    // An editor holding the prior text never saw the pulled lines: a save holding one of them came after a reload.
+    const pulled = addedLines(priorText, base);
+    if ([...addedLines(priorText, local)].some((line) => pulled.has(line))) continue;
+    const near = distance(priorText, local);
+    if (near < nearest) {
+      best = { hash: prior.hash, bytes: prior.bytes, stale: true };
+      nearest = near;
+    }
+  }
+  return best;
 }
 
 const STALE = 'saved over a pulled edit by an editor holding the older text: merged against that text, so the pulled edit stays; to remove it, delete it again and save';
@@ -300,10 +326,10 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   }
   const done = (action: SyncAction, extra: Partial<SyncResult> = {}): SyncResult => ({ ...id, action, ...(message ? { message } : {}), ...extra });
   /** The file becomes the doc's `text` in moss form, with the file's markers carried onto it; its body is kept as the prior text. */
-  const write = (text: Uint8Array) => {
+  const write = (text: Uint8Array, pushed = false) => {
     const rendered = renderMoss(decode(text), title, remapMarkers(note.markers, note.clean, decode(text)));
-    // A title-only write leaves the body, and so the prior text an editor may hold, as they were.
-    const prior = sha256Hex(text) === meta.baseHash ? {} : { prior: Buffer.from(note.clean) };
+    // A title-only write leaves the body, and so the prior texts an editor may hold, as they were; a push replaced it.
+    const prior = !pushed && sha256Hex(text) === meta.baseHash ? {} : { prior: Buffer.from(note.clean) };
     recordSynced(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title, ...prior });
   };
   if (!localChanged || sha256Hex(note.clean) === meta.baseHash) {
@@ -328,7 +354,7 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   if (base.stale) message = message ? `${message}; ${STALE}` : STALE;
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
   try {
-    write(merged);
+    write(merged, true);
   } catch (error) {
     if (!(error instanceof CliError)) throw error;
     return done(action, { ...(response.failedHunks.length ? { failedHunks: response.failedHunks.length, hunks: response.failedHunks } : {}), message: 'edited during the push, so the file was left as it is; the newer edits go on the next pass' });

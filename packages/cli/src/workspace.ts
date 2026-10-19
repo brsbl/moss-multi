@@ -31,10 +31,16 @@ export interface DocMeta {
   /** For a moss note, the title its title line held when it was last synced. */
   title?: string;
   /**
-   * The text the file held, in the base's form, before sync last wrote over it (`prior.md`): an editor may still hold
-   * it and save it back (T7.P2).
+   * The texts the file held, in the base's form, each time sync wrote over it within the last PRIOR_MS
+   * (`prior-<hash>.md`), oldest first: an editor may still hold one and save it back (T7.P2).
    */
-  prior?: { hash: string; at: number };
+  priors?: Prior[];
+}
+
+export interface Prior {
+  hash: string;
+  /** When sync wrote over it. */
+  at: number;
 }
 
 /**
@@ -42,6 +48,9 @@ export interface DocMeta {
  * within its 15 s unsaved window (1.5 s when idle), and reloads a clean one. A later save is from a reloaded editor.
  */
 export const PRIOR_MS = 60_000;
+/** A save's mtime may read up to this much before sync's write on a volume with coarse timestamps. */
+const MTIME_SLACK_MS = 2_000;
+const MAX_PRIORS = 8;
 
 /** What else a synced doc records beside its base. */
 export interface SyncedState {
@@ -49,7 +58,7 @@ export interface SyncedState {
   localHash?: string;
   mode?: 'moss';
   title?: string;
-  /** What the file held before this write, in the base's form; the prior text kept for the same file otherwise. */
+  /** What the file held before this write, in the base's form: it joins the prior texts kept for the same file. */
   prior?: Uint8Array;
 }
 
@@ -234,15 +243,24 @@ export function readBase(root: string, docId: string): Uint8Array {
   return readFileSync(noLinks(root, stateRel(docId, 'base.md')));
 }
 
-/** The doc's prior text (DocMeta.prior) if the file was saved (`savedAt`, its mtime) while it still counts, or null. */
-export function readPrior(root: string, meta: DocMeta, savedAt: number): Uint8Array | null {
-  if (!meta.prior || savedAt - meta.prior.at > PRIOR_MS) return null;
-  try {
-    const bytes = readFileSync(noLinks(root, stateRel(meta.docId, 'prior.md')));
-    return sha256Hex(bytes) === meta.prior.hash ? bytes : null;
-  } catch {
-    return null;
+const priorName = (hash: string) => `prior-${hash.slice(0, 32)}.md`;
+
+/**
+ * The doc's prior texts (DocMeta.priors) an editor could have saved back at `savedAt`, the file's mtime: from sync's
+ * write over each until PRIOR_MS after it. A file whose mtime predates the write (a restored copy) was saved by none.
+ */
+export function readPriors(root: string, meta: DocMeta, savedAt: number): (Prior & { bytes: Uint8Array })[] {
+  const out: (Prior & { bytes: Uint8Array })[] = [];
+  for (const prior of meta.priors ?? []) {
+    if (savedAt < prior.at - MTIME_SLACK_MS || savedAt - prior.at > PRIOR_MS) continue;
+    try {
+      const bytes = readFileSync(noLinks(root, stateRel(meta.docId, priorName(prior.hash))));
+      if (sha256Hex(bytes) === prior.hash) out.push({ ...prior, bytes });
+    } catch {
+      // Gone: it no longer counts.
+    }
   }
+  return out;
 }
 
 /**
@@ -367,15 +385,23 @@ export function recordBase(root: string, docId: string, rel: string, bytes: Uint
   const known = state.filename ?? previous?.filename;
   const mode = state.mode ?? previous?.mode;
   const title = state.title ?? previous?.title;
-  let prior = previous?.file === rel ? previous.prior : undefined;
+  // Every prior text still inside its window stays: an editor may hold one from before several writes.
+  const now = Date.now();
+  let priors = (previous?.file === rel ? previous.priors ?? [] : []).filter((prior) => now - prior.at <= PRIOR_MS);
   if (state.prior !== undefined) {
-    writeInside(root, stateRel(docId, 'prior.md'), state.prior);
-    prior = { hash: sha256Hex(state.prior), at: Date.now() };
+    const hash = sha256Hex(state.prior);
+    writeInside(root, stateRel(docId, priorName(hash)), state.prior);
+    priors = [...priors.filter((prior) => prior.hash !== hash), { hash, at: now }].slice(-MAX_PRIORS);
+  }
+  const kept = new Set(priors.map((prior) => priorName(prior.hash)));
+  const stateDir = noLinks(root, stateRel(docId));
+  for (const name of readdirSync(stateDir)) {
+    if (/^prior(-[0-9a-f]+)?\.md$/.test(name) && !kept.has(name)) rmSync(join(stateDir, name), { force: true });
   }
   const meta: DocMeta = {
     docId, file: rel, baseHash, pulledAt: Date.now(), ...(known !== undefined ? { filename: known } : {}),
     ...(state.localHash !== undefined && state.localHash !== baseHash ? { localHash: state.localHash } : {}),
-    ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}), ...(prior ? { prior } : {}),
+    ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}), ...(priors.length ? { priors } : {}),
   };
   writeMeta(root, meta);
   for (const name of readdirSync(join(root, STATE_DIR))) {
