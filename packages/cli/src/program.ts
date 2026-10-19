@@ -13,7 +13,7 @@ import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
-import { exactPattern, parseScope, SCOPE_FILE, scopePath } from './scope.ts';
+import { exactPattern, parseScope, readScope, SCOPE_FILE, scopePath } from './scope.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
   confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
@@ -376,8 +376,10 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const parsed = parseArgs(rest, ['force'], []);
       const [ref, fileArg] = arity(parsed, 1, 2, 'pull <doc> [file] [--force]');
       const client = api();
-      const id = await resolveDocId(client, ref);
       const root = findRoot(cwd()) ?? pinRoot(cwd());
+      // A scope file that cannot be read stops the pull before any request.
+      readScope(root);
+      const id = await resolveDocId(client, ref);
       const tracked = readMeta(root, id);
       if (tracked?.mode === 'moss') throw new CliError(1, `${tracked.file} is a moss note kept in moss format; \`moss-multi sync\` pulls and pushes it`);
       let rel: string;

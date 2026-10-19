@@ -162,15 +162,23 @@ export function findRoot(start: string): string | null {
 }
 
 /**
- * Refuses `rel` (relative to `root`) when a folder between them holds its own `.moss-multi`: that workspace's scope
- * governs the file, so a command run from outside it must not read, upload or write it.
+ * The folder between `root` and `rel` (relative to it) that is a workspace with its own scope file, or null. That scope
+ * governs the file, so nothing run from outside it reads, uploads or writes it. A nested workspace with no scope file
+ * stays reachable, as before scopes.
  */
-export function notInNested(root: string, rel: string): void {
+export function scopedNest(root: string, rel: string): string | null {
   let dir = root;
   for (const part of rel.split(sep).slice(0, -1)) {
     dir = join(dir, part);
-    if (lstat(join(dir, STATE_DIR))) throw new CliError(1, `${rel} is inside another moss-multi workspace (${dir}); run the command from there so its scope applies`);
+    if (lstat(join(dir, STATE_DIR, 'scope.json'))) return dir;
   }
+  return null;
+}
+
+/** Refuses `rel` when it is inside a nested scoped workspace (scopedNest). */
+export function notInNested(root: string, rel: string): void {
+  const dir = scopedNest(root, rel);
+  if (dir) throw new CliError(1, `${rel} is inside another moss-multi workspace with its own scope (${dir}); run the command from there so its scope applies`);
 }
 
 /**

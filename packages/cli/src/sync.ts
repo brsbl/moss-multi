@@ -16,7 +16,7 @@ import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.t
 import { evaluateScope, readScope, type ScopeView } from './scope.ts';
 import {
   confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, recordBase, recordPull, recordSynced,
-  renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
+  renameInside, sameFile, scopedNest, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
 export type SyncAction =
@@ -508,11 +508,13 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   const admitted = (rel: string) => !scope || scope.admits(rel);
   const files = all.filter(admitted);
   const untracked = files.filter((rel) => !metas.some((meta) => sameFile(meta.file, rel, folds)));
-  const { held, heldFiles } = followLocalRenames(root, metas.filter((meta) => admitted(meta.file)), untracked, results);
+  // A tracked note inside a nested workspace with its own scope is that workspace's to sync: it is never read or written here.
+  const nested = new Set(metas.filter((meta) => scopedNest(root, meta.file) !== null).map((meta) => meta.docId));
+  const { held, heldFiles } = followLocalRenames(root, metas.filter((meta) => !nested.has(meta.docId) && admitted(meta.file)), untracked, results);
   metas = trackedMetas(root);
 
   for (const tracked of metas) {
-    if (held.has(tracked.docId) || !admitted(tracked.file)) continue;
+    if (held.has(tracked.docId) || nested.has(tracked.docId) || scopedNest(root, tracked.file) !== null || !admitted(tracked.file)) continue;
     if (stopped()) return results;
     touch();
     try {
@@ -548,7 +550,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       results.push({ file: rel, action: 'failed', message: failure(error) });
     }
   }
-  if (scope && scope.outOfScope > 0) results.push({ file: '', action: 'out-of-scope', count: scope.outOfScope });
+  const outside = (scope?.outOfScope ?? 0) + nested.size;
+  if (outside > 0) results.push({ file: '', action: 'out-of-scope', count: outside });
   return results;
 }
 
@@ -562,7 +565,7 @@ export function syncExitCode(results: SyncResult[]): number {
 
 /** One line per result that did something. */
 export function describe(result: SyncResult): string {
-  if (result.action === 'out-of-scope') return `${result.count ?? 0} .md file(s) outside the workspace's scope (.moss-multi/scope.json) were left alone`;
+  if (result.action === 'out-of-scope') return `${result.count ?? 0} .md file(s) outside the workspace's scope (.moss-multi/scope.json), or inside a nested workspace with its own scope, were left alone`;
   const name = result.from ? `${result.from} → ${result.file}` : result.file;
   const hunks = (result.hunks ?? []).map((hunk) => `\nfailed hunk:\n${hunk}`).join('');
   // The message may quote the server (a title, a refusal): it stays on its line.

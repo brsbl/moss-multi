@@ -217,19 +217,19 @@ export function noteLinks(source: string, from: string): LinkTarget[] {
     if (target) out.push(target);
     at = close;
   }
-  // Where the last scan for each closing mark stopped (at it, a line break or the end): a scan starting before that
-  // stops there too, so the scan stays linear.
-  const stopped: Record<string, number> = { '>': -1, ')': -1 };
-  for (let at = text.indexOf(']('); at >= 0; at = text.indexOf('](', at + 2)) {
+  // A link's target ends at its closing mark and never runs past a line break or the next `](`, so each character is
+  // scanned for one opener only and the scan stays linear.
+  for (let at = text.indexOf(']('), next = at; at >= 0; at = next) {
+    next = text.indexOf('](', at + 2);
     let i = at + 2;
     const angled = text[i] === '<';
     if (angled) i += 1;
     const mark = angled ? '>' : ')';
-    let end = i <= stopped[mark]! ? stopped[mark]! : i;
-    while (end < text.length && text[end] !== mark && text[end] !== '\n') end += 1;
-    stopped[mark] = end;
+    const limit = next < 0 ? text.length : next;
+    let end = i;
+    while (end < limit && text[end] !== mark && text[end] !== '\n') end += 1;
     // An unclosed link is not a link.
-    if (text[end] !== mark) continue;
+    if (end >= limit || text[end] !== mark) continue;
     let target = text.slice(i, end);
     // A link title follows the path after a space; the path itself may hold spaces (`../Reading list/Reading list.md`).
     if (!angled) {
