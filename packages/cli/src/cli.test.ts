@@ -1716,4 +1716,127 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     expect(dec(server.content.get(ID_B))).toBe(B0.replace('Para four.', 'Para four, and my typing.'));
     expect(server.state.pushes.at(-1)?.baseHash, 'pushed against the pulled base').toBe(sha256Hex(ADDED));
   });
+
+  // Nine agent pushes, one per paragraph, each pulled within the same minute, under an editor holding S0 (checker P1).
+  const TEN = `# Notes\n\n${Array.from({ length: 10 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n')}\n`;
+  const agentEdits = (upTo: number) => {
+    let text = TEN;
+    for (let i = 1; i <= upTo; i++) text = text.replace(`Paragraph ${i}.`, `Paragraph ${i}, agent edit ${i}.`);
+    return text;
+  };
+  const ninePulls = async (doc: string, file: string, body: (text: string) => string = (text) => text) => {
+    for (let i = 1; i <= 9; i++) {
+      server.content.set(doc, enc(body(agentEdits(i))));
+      const pulled = await cli(['sync']);
+      expect(pulled.code, pulled.err).toBe(0);
+    }
+    expect(readFileSync(file, 'utf8')).toContain('agent edit 9.');
+  };
+  const withPriorBudget = async <T>(bytes: number, run: () => Promise<T>): Promise<T> => {
+    process.env.MOSS_MULTI_PRIOR_BYTES = String(bytes);
+    try {
+      return await run();
+    } finally {
+      delete process.env.MOSS_MULTI_PRIOR_BYTES;
+    }
+  };
+
+  it('nine pulls within a minute, then a save from the text before all of them: no agent edit is reverted', async () => {
+    server.content.set(ID_B, enc(TEN));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    await ninePulls(ID_B, file);
+
+    writeFileSync(file, editor.replace('Paragraph 10.', 'Paragraph 10, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(0);
+    const all = agentEdits(9).replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    expect(dec(server.content.get(ID_B)), 'all nine agent edits stay and the typing lands').toBe(all);
+    expect(readFileSync(file, 'utf8')).toBe(all);
+    expect(server.state.pushes.at(-1)?.baseHash, 'merged against the text the editor held').toBe(sha256Hex(TEN));
+  });
+
+  it('when the text the editor held is no longer kept, nothing is pushed: the server keeps every edit and the save goes to a conflict copy', async () => {
+    server.content.set(ID_B, enc(TEN));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    // A retention budget of about three texts: the oldest prior texts are evicted inside the window.
+    await withPriorBudget(TEN.length * 3 + 200, () => ninePulls(ID_B, file));
+    const pushes = server.state.pushes.length;
+
+    const typed = editor.replace('Paragraph 10.', 'Paragraph 10, and my typing.');
+    writeFileSync(file, typed);
+    const saved = await withPriorBudget(TEN.length * 3 + 200, () => cli(['sync', '--json']));
+    expect(saved.code, 'a conflict exits non-zero').toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B)), 'no revert reaches the server').toBe(agentEdits(9));
+    expect(readFileSync(file, 'utf8'), 'the file takes the server version').toBe(agentEdits(9));
+    expect(readFileSync(`${file}.rej`, 'utf8'), 'the whole save waits beside the note').toContain(typed.trimEnd());
+    const result = (JSON.parse(saved.out) as { docId?: string; message?: string }[]).find((row) => row.docId === ID_B);
+    expect(result?.message, 'an honest message').toMatch(/nothing was pushed/);
+    expect(result?.message).not.toMatch(/stays/);
+  });
+
+  it('a moss note: when the text the editor held is no longer kept, nothing is pushed and the save goes to a conflict copy', async () => {
+    expect((await cli(['init'])).code).toBe(0);
+    const NOTE = TEN.replace('# Notes', '# Field notes');
+    mkdirSync(join(dir, 'Field notes'));
+    const file = join(dir, 'Field notes', 'Field notes.md');
+    writeFileSync(file, NOTE);
+    server.state.createNew = { id: NEW, filename: 'field-notes.md' };
+    expect((await cli(['sync'])).code).toBe(0);
+    const body = (text: string) => text.replace('# Notes\n\n', '');
+    await withPriorBudget(TEN.length * 3 + 200, () => ninePulls(NEW, file, body));
+    const pushes = server.state.pushes.length;
+
+    writeFileSync(file, NOTE.replace('Paragraph 10.', 'Paragraph 10, and my typing.'));
+    const saved = await withPriorBudget(TEN.length * 3 + 200, () => cli(['sync', '--json']));
+    expect(saved.code, 'a conflict exits non-zero').toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(NEW))).toBe(body(agentEdits(9)));
+    expect(readFileSync(file, 'utf8')).toBe(agentEdits(9).replace('# Notes', '# Field notes'));
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Paragraph 10, and my typing.');
+  });
+
+  it('when two kept texts explain a save equally, nothing is pushed and the save goes to a conflict copy', async () => {
+    const S0 = B0.replace('Para three.', 'Para three, version aaaa.');
+    server.content.set(ID_B, enc(S0));
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const S1 = S0.replace('version aaaa', 'version bbbb');
+    server.content.set(ID_B, enc(S1));
+    expect((await cli(['sync'])).code).toBe(0);
+    const S2 = S1.replace('Para one.', 'Para one, edited by the agent.');
+    server.content.set(ID_B, enc(S2));
+    expect((await cli(['sync'])).code).toBe(0);
+    const pushes = server.state.pushes.length;
+
+    // As near S0 as S1: either could be the text the editor held.
+    writeFileSync(file, S0.replace('version aaaa', 'version cccc').replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, `${saved.out}${saved.err}`).toBe(2);
+    expect(server.state.pushes.length, 'nothing is pushed').toBe(pushes);
+    expect(dec(server.content.get(ID_B))).toBe(S2);
+    expect(readFileSync(file, 'utf8')).toBe(S2);
+    expect(readFileSync(`${file}.rej`, 'utf8')).toContain('Para four, and my typing.');
+  });
+
+  it('the stale-save message says the pulled edit stays only when the doc still holds it after the push', async () => {
+    expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
+    const file = join(dir, 'notes.md');
+    const editor = readFileSync(file, 'utf8');
+    server.content.set(ID_B, enc(AGENT));
+    expect((await cli(['sync'])).code).toBe(0);
+    // The doc loses the agent edit as the push lands (another writer reverts it on the server).
+    server.state.onPush = () => server.content.set(ID_B, enc(dec(server.content.get(ID_B)).replace('Para two, edited by the agent.', 'Para two.')));
+
+    writeFileSync(file, editor.replace('Para four.', 'Para four, and my typing.'));
+    const saved = await cli(['sync', '--json']);
+    expect(saved.code, 'not a clean sync').not.toBe(0);
+    const result = (JSON.parse(saved.out) as { docId?: string; message?: string }[]).find((row) => row.docId === ID_B);
+    expect(result?.message, 'no claim the server contradicts').not.toMatch(/stays/);
+    expect(result?.message).toMatch(/no longer holds/);
+  });
 });
