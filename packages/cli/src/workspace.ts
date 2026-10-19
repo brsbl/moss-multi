@@ -30,7 +30,35 @@ export interface DocMeta {
   mode?: 'moss';
   /** For a moss note, the title its title line held when it was last synced. */
   title?: string;
+  /**
+   * The texts the file held, in the base's form, each time sync wrote over it within the last PRIOR_MS
+   * (`prior-<hash>.md`), oldest first: an editor may still hold one and save it back (T7.P2).
+   */
+  priors?: Prior[];
 }
+
+export interface Prior {
+  hash: string;
+  /** When sync wrote over it. */
+  at: number;
+  /** A save sync refused (its ancestor unknown) or pushed with hunks that clashed: it never reached the doc whole, so it is no revert target. */
+  refused?: true;
+}
+
+/** The only hash form a prior record may hold: sha256Hex's. */
+const HASH = /^[0-9a-f]{64}$/;
+const PRIOR_FILE = /^prior-[0-9a-f]{32}\.md$/;
+
+/**
+ * How long after sync's write a save can still come from an editor holding the prior text: moss saves a dirty editor
+ * within its 15 s unsaved window (1.5 s when idle), and reloads a clean one. A later save is from a reloaded editor.
+ */
+export const PRIOR_MS = 60_000;
+/** A save's mtime may read up to this much before sync's write on a volume with coarse timestamps. */
+const MTIME_SLACK_MS = 2_000;
+/** The bytes of prior texts a workspace keeps (MOSS_MULTI_PRIOR_BYTES overrides); past it the oldest are evicted. */
+const PRIOR_BYTES = 64 * 1024 * 1024;
+const priorBudget = (): number => Number(process.env.MOSS_MULTI_PRIOR_BYTES) || PRIOR_BYTES;
 
 /** What else a synced doc records beside its base. */
 export interface SyncedState {
@@ -38,6 +66,10 @@ export interface SyncedState {
   localHash?: string;
   mode?: 'moss';
   title?: string;
+  /** What the file held before this write, in the base's form: it joins the prior texts kept for the same file. */
+  prior?: Uint8Array;
+  /** The prior is a save sync refused (Prior.refused). */
+  refused?: boolean;
 }
 
 export const sha256Hex = (bytes: Uint8Array | string): string => createHash('sha256').update(bytes).digest('hex');
@@ -231,7 +263,17 @@ export function readMeta(root: string, docId: string): DocMeta | null {
   if (!lstat(path)) return null;
   try {
     const meta = JSON.parse(readFileSync(path, 'utf8')) as DocMeta;
-    return meta.docId === docId && typeof meta.file === 'string' && typeof meta.baseHash === 'string' ? meta : null;
+    if (meta.docId !== docId || typeof meta.file !== 'string' || typeof meta.baseHash !== 'string') return null;
+    // A prior record names a state file: only the exact form the CLI writes is taken, so none can name another path.
+    const records: unknown[] = Array.isArray(meta.priors) ? meta.priors : [];
+    const priors = records
+      .filter((prior): prior is Prior => {
+        const record = prior as Partial<Prior> | null;
+        return typeof record?.hash === 'string' && HASH.test(record.hash) && typeof record.at === 'number' && Number.isFinite(record.at);
+      })
+      .map((prior): Prior => ({ hash: prior.hash, at: prior.at, ...(prior.refused === true ? { refused: true } : {}) }));
+    delete meta.priors;
+    return priors.length ? { ...meta, priors } : meta;
   } catch {
     return null;
   }
@@ -239,6 +281,73 @@ export function readMeta(root: string, docId: string): DocMeta | null {
 
 export function readBase(root: string, docId: string): Uint8Array {
   return readFileSync(noLinks(root, stateRel(docId, 'base.md')));
+}
+
+const priorName = (hash: string) => `prior-${hash.slice(0, 32)}.md`;
+
+/**
+ * The doc's prior texts (DocMeta.priors) an editor could have saved back at `savedAt`, the file's mtime: from sync's
+ * write over each until PRIOR_MS after it. A file whose mtime predates the write (a restored copy) was saved by none.
+ * `missing`: one of them is no longer kept (evicted or damaged), so the text the editor held may be unknown.
+ */
+export function readPriors(root: string, meta: DocMeta, savedAt: number): { priors: (Prior & { bytes: Uint8Array })[]; missing: boolean } {
+  const priors: (Prior & { bytes: Uint8Array })[] = [];
+  let missing = false;
+  for (const prior of meta.priors ?? []) {
+    if (!HASH.test(prior.hash)) continue;
+    if (savedAt < prior.at - MTIME_SLACK_MS || savedAt - prior.at > PRIOR_MS) continue;
+    const same = priors.find((kept) => kept.hash === prior.hash);
+    if (same) {
+      if (prior.refused) same.refused = true;
+      continue;
+    }
+    try {
+      const bytes = readFileSync(noLinks(root, stateRel(meta.docId, priorName(prior.hash))));
+      if (sha256Hex(bytes) === prior.hash) priors.push({ ...prior, bytes });
+      else missing = true;
+    } catch {
+      missing = true;
+    }
+  }
+  return { priors, missing };
+}
+
+/**
+ * Evicts the oldest prior texts across the workspace until they fit its budget. Their records stay until their window
+ * ends, so a save inside it is known to lack the text it may descend from.
+ */
+function trimPriors(root: string): void {
+  const files: { path: string; at: number; size: number }[] = [];
+  for (const docId of readdirSync(join(root, STATE_DIR))) {
+    if (!DOC_ID.test(docId)) continue;
+    // Only the doc's own prior files are candidates; its records give their times, never their paths.
+    const latest = new Map<string, number>();
+    for (const prior of readMeta(root, docId)?.priors ?? []) latest.set(priorName(prior.hash), Math.max(prior.at, latest.get(priorName(prior.hash)) ?? 0));
+    let dir: string;
+    try {
+      dir = noLinks(root, stateRel(docId));
+      if (!lstatSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !PRIOR_FILE.test(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (dirname(resolve(path)) !== resolve(dir)) continue;
+      try {
+        files.push({ path, at: latest.get(entry.name) ?? 0, size: lstatSync(path).size });
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+  let total = files.reduce((sum, file) => sum + file.size, 0);
+  const budget = priorBudget();
+  for (const file of files.sort((a, b) => a.at - b.at)) {
+    if (total <= budget) break;
+    rmSync(file.path, { force: true });
+    total -= file.size;
+  }
 }
 
 /**
@@ -349,10 +458,10 @@ export function ensureStateDir(root: string): void {
  * Writes the pulled bytes to `file` and records them as the base. `expectHash` is what the file must still hold
  * when it is replaced (null: still absent; undefined: --force replaces whatever is there).
  */
-export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, filename?: string): DocMeta {
+export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, state: Pick<SyncedState, 'prior' | 'refused'> = {}): DocMeta {
   const rel = confined(root, file);
   writeInside(root, rel, bytes, expectHash);
-  return recordBase(root, docId, rel, bytes, folds, filename !== undefined ? { filename } : {});
+  return recordBase(root, docId, rel, bytes, folds, state);
 }
 
 /**
@@ -377,12 +486,27 @@ export function recordBase(root: string, docId: string, rel: string, bytes: Uint
   const known = state.filename ?? previous?.filename;
   const mode = state.mode ?? previous?.mode;
   const title = state.title ?? previous?.title;
+  // Every write inside its window keeps its record, however many: an editor may hold a text from before all of them.
+  // Only the bytes are bounded (trimPriors); a later save is from an editor that reloaded since.
+  const now = Date.now();
+  let priors = (previous?.file === rel ? previous.priors ?? [] : []).filter((prior) => now - prior.at <= PRIOR_MS);
+  if (state.prior !== undefined) {
+    const hash = sha256Hex(state.prior);
+    writeInside(root, stateRel(docId, priorName(hash)), state.prior);
+    priors = [...priors, { hash, at: now, ...(state.refused ? { refused: true as const } : {}) }];
+  }
+  const kept = new Set(priors.map((prior) => priorName(prior.hash)));
+  const stateDir = noLinks(root, stateRel(docId));
+  for (const name of readdirSync(stateDir)) {
+    if (/^prior(-[0-9a-f]+)?\.md$/.test(name) && !kept.has(name)) rmSync(join(stateDir, name), { force: true });
+  }
   const meta: DocMeta = {
     docId, file: rel, baseHash, pulledAt: Date.now(), ...(known !== undefined ? { filename: known } : {}),
     ...(state.localHash !== undefined && state.localHash !== baseHash ? { localHash: state.localHash } : {}),
-    ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}),
+    ...(mode ? { mode } : {}), ...(title !== undefined ? { title } : {}), ...(priors.length ? { priors } : {}),
   };
   writeMeta(root, meta);
+  if (state.prior !== undefined) trimPriors(root);
   for (const name of readdirSync(join(root, STATE_DIR))) {
     if (name === docId || !DOC_ID.test(name)) continue;
     const other = readMeta(root, name);

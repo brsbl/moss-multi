@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (196 of 241 planned tasks verified)
+**Overall: 82% done** (197 of 241 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 21 / 21 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 22 / 22 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -222,6 +222,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T4.Q second pass verified: comments now run on m3's later fixes (upload reader deadline, the j09 pass-through route, read-only controls and folder permissions), with a reader's tabs and Add comment control both exempt in invariant 9 and the full lane green on the m4 head (already counted on 2026-10-14).
 - 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
 - 2026-10-18 — T6.Q second pass verified: history now runs on m5's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m6 head (already counted on 2026-10-15).
+- 2026-10-19 — T7.P2 verified: when Moss re-saves a note it held open while sync pulled an edit into it, sync keeps the pulled edit and lands only the new typing, sending anything it cannot place to `<file>.rej` instead of pushing a revert.
 
 ## T1.1s identity audit
 
@@ -264,6 +265,13 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T7.P1 checker P2 (Outer scope evaluation can still read a tracked note owned by a nested scoped vault): workspaceScope in sync.ts receives all trackedMetas before pass() drops nested notes, so an outer follow can read its links and scope confirm can print its path; nothing is uploaded or written.
 - T7.P1 checker P2 (scope confirm re-reads and re-parses a source note's base once per followed target): syncedLink runs per (target, source) pair, so a hub note linking many unconfirmed notes costs quadratic work.
 - T7.P1 checker P2 (Conflict .rej sidecars ignore deny rules): setAside writes <file>.rej without consulting the scope; local only, never uploaded.
+
+### From T7.P2's checker (2f710e5, 2026-10-19)
+
+- T7.P2 checker P2 (Plain-file adoption overwrites the file without keeping its prior text; Codex P1, downgraded): createFrom's plain path calls recordPull with no {prior: bytes}, so a peer edit between POST /api/docs and adoption's content GET followed by a stale save within the minute is pushed as a revert; plain path only, sub-second window on a doc whose id nobody else knows yet.
+- T7.P2 checker P2 (The explicit `push` command overwrites the file with merged text and keeps no prior): after a clean push program.ts writes the merged doc without a prior, so a stale Moss re-save can be pushed by the next sync as a revert of the pulled lines.
+- T7.P2 checker P2 (MTIME_SLACK_MS lets a save up to 2 s before the write count as stale): readPriors accepts savedAt >= prior.at - 2000 on every filesystem, so a precisely timestamped save made just before the pull can be treated as stale.
+- T7.P2 checker P2 (The prior record is written after the note is replaced): recordPull and recordSynced overwrite the file before recordBase writes prior-<hex>.md and meta.json, so a crash in between leaves no prior and a later stale save is treated as fresh.
 
 ### From T7.S6's checker (210bbd2, 2026-10-14)
 
