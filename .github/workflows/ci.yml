@@ -168,6 +168,25 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  # T3.B31: each near-cap note's create, save and export fit the DocDO's heap budget in workerd (V8 heap capped,
+  # GC traced); the table lands in the job summary.
+  memory:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: DocDO memory in workerd
+        run: node scripts/measure-memory.mjs
+        timeout-minutes: 25
+
   build:
     needs: plan
     if: needs.plan.outputs.build == 'true'
@@ -570,7 +589,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, memory]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

@@ -13,7 +13,15 @@ export class MeasuredDocDO extends DocDO {
   work(): PayloadWork {
     return { ...this.payloadWork };
   }
+
+  /** The note's encoded state size. */
+  stateBytes(): number {
+    return Y.encodeStateAsUpdate(this.document).byteLength;
+  }
 }
+
+/** A full GC, when workerd runs with `--expose-gc` (scripts/measure-memory.mjs); `--trace-gc` prints it as `testing`. */
+const collect = (globalThis as { gc?: () => void }).gc;
 
 interface Env {
   DocDO: DurableObjectNamespace<MeasuredDocDO>;
@@ -37,9 +45,28 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/ping') return new Response('ok');
     const docId = url.searchParams.get('doc') ?? '';
+    if (url.pathname === '/gc') {
+      if (!collect) return new Response('gc is not exposed', { status: 501 });
+      collect();
+      collect();
+      return new Response('ok');
+    }
+    if (url.pathname === '/state-bytes') {
+      return Response.json({ stateBytes: await (await getServerByName(env.DocDO, docId)).stateBytes() });
+    }
     if (url.pathname === '/create') {
       // The body is the note's markdown. A doc-cap refusal is a 413, as POST /api/docs answers it.
       const stub = await getServerByName(env.DocDO, docId);
+      if (url.searchParams.has('lean')) {
+        // Only the create, so its heap is the create's own (scripts/measure-memory.mjs).
+        try {
+          await stub.create({ folderId: 'measure', ownerId: 'measure-owner', markdown: await request.text() });
+        } catch (error) {
+          if (isDocCapError(error)) return Response.json({ error: 'doc-cap' }, { status: 413 });
+          throw error;
+        }
+        return new Response('ok');
+      }
       const work = linearImportStats.spent;
       try {
         await stub.create({ folderId: 'measure', ownerId: 'measure-owner', markdown: await request.text() });
@@ -52,6 +79,7 @@ export default {
     }
     if (url.pathname === '/export') {
       const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
+      if (url.searchParams.has('lean')) return Response.json({ length: markdown.length });
       return Response.json({ bytes: new TextEncoder().encode(markdown).byteLength, hash: textHash(markdown) });
     }
     if (url.pathname === '/work') {

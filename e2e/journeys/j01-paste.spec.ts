@@ -7,46 +7,8 @@
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { exported, fingerprint, MAX_STALL_MS, NEW_STEP_MS, normalized, pasteAndCheck, pastePlain, setup, UNDO } from '../lib/paste.ts';
+import { mixedMarkdown, prose } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
-
-const LAST = 'Last line of the paste.';
-
-const WORDS = ['moss', 'grows', 'on', 'the', 'north', 'side', 'of', 'old', 'stones', 'and', 'keeps', 'water', 'through', 'dry',
-  'weeks', 'while', 'notes', 'collect', 'ideas', 'from', 'many', 'people', 'working', 'together', 'in', 'one', 'shared', 'document'];
-
-/** A sentence of about `length` characters. */
-function prose(seed: number, length: number): string {
-  let out = '';
-  for (let k = 0; out.length < length; k += 1) out += `${out ? ' ' : ''}${WORDS[(seed * 7 + k * 3) % WORDS.length]}`;
-  return `${out[0].toUpperCase()}${out.slice(1)}.`;
-}
-
-/**
- * Mixed markdown of at least `size` characters, mostly prose as notes are: headings, inline formatting and links,
- * nested lists, checklists, ordered lists, quotes, tables and code. (Formatting every few words would encode past the
- * doc's state cap at 2 MB, A§5.1.)
- */
-function mixedMarkdown(size: number): string {
-  const parts = ['Pasted start.'];
-  let length = parts[0].length;
-  for (let i = 0; length < size; i += 1) {
-    const section = [
-      `## Section ${i}`,
-      `${prose(i, 220)} It has **bold ${i}**, *italic ${i}* and \`code ${i}\`, then a [link ${i}](https://example.invalid/page/${i}). ${prose(i + 1, 220)}`,
-      prose(i + 2, 420),
-      `- ${prose(i + 3, 60)}\n- ${prose(i + 4, 60)}\n  - ${prose(i + 5, 40)}`,
-      ...(i % 3 === 0 ? [`- [ ] open task ${i}\n- [x] done task ${i}`] : []),
-      ...(i % 5 === 0 ? [`1. first ${i}\n2. second ${i}`] : []),
-      `> ${prose(i + 6, 100)}`,
-      ...(i % 4 === 0 ? [`| Name ${i} | Value ${i} |\n| --- | --- |\n| row ${i} | ${i * 7} |`] : []),
-      ...(i % 10 === 0 ? [`\`\`\`js\nconst value${i} = ${i};\nconsole.log(value${i});\n\`\`\``] : []),
-    ].join('\n\n');
-    parts.push(section);
-    length += section.length + 2;
-  }
-  parts.push(LAST);
-  return parts.join('\n\n');
-}
 
 /** Bullet and numbered lists, alternating, of at least `size` characters, ending with a list of kind `last`. */
 function listMarkdown(size: number, last: 'bullet' | 'numbered'): string {

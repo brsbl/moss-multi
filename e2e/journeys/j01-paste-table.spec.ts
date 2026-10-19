@@ -6,14 +6,8 @@
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
+import { table } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
-
-/** A two-column table of `rows` rows; `last` ends the last cell. */
-function table(rows: number, last = ''): string {
-  const lines = ['| Name | Value |', '| --- | --- |'];
-  for (let i = 0; i < rows; i += 1) lines.push(`| row ${i} | value ${i}${i === rows - 1 ? last : ''} |`);
-  return lines.join('\n');
-}
 
 test('j01-paste-table: a 5,000-row table pasted between two paragraphs lands whole, in frames under the cap, without holding the tab, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(900_000);

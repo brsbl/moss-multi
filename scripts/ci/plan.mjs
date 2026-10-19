@@ -194,6 +194,8 @@ export function ciOk(needs) {
     editor: Boolean(plan.viewer),
     // The moss-editor-host artifact builds whenever the checks run.
     'editor-host': Boolean(plan.checks),
+    // The DocDO's heap budget in workerd (T3.B31) runs whenever the checks run.
+    memory: Boolean(plan.checks),
   };
   const problems = [];
   for (const [job, planned] of Object.entries(expected)) {
