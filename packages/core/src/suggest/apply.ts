@@ -53,6 +53,11 @@ export interface RecordMeta {
   mergedInto?: string;
   outdated?: GateReason[];
   broken?: GateReason;
+  /**
+   * Set at accept when it kept a block or payload the record changed only in item identity (`landing`): the author's
+   * fork, which holds the record's copies there, no longer reads as the body and rebuilds.
+   */
+  kept?: true;
 }
 
 /** The doc an op writes: the note's body, or a payload doc by its id (docs/design/registers.md). */
@@ -351,7 +356,11 @@ export interface ApplyOptions {
 }
 
 export type ApplyResult =
-  | { ok: true; hydrated: Uint8Array; inserted: Inserted; payloads: Map<string, Uint8Array> }
+  | {
+    ok: true; hydrated: Uint8Array; inserted: Inserted; payloads: Map<string, Uint8Array>;
+    /** Every item the record's transactions deleted, per doc (`BODY_DOC` or a payload id). */
+    removed: Map<string, IdSpan[]>;
+  }
   | { ok: false; reason: GateReason };
 
 export const itemKey = (id: Y.ID): string => `${id.client}:${id.clock}`;
@@ -384,9 +393,15 @@ export function hydrate(live: Y.Doc): Y.Doc {
 /** A delete-only V1 update naming exactly `spans`. */
 export function deleteUpdate(spans: readonly IdSpan[]): Uint8Array {
   const encoder = new Y.UpdateEncoderV1();
+  encoding.writeVarUint(encoder.restEncoder, 0);
+  writeDeletes(encoder, spans);
+  return encoder.toUint8Array();
+}
+
+/** A V1 update's delete set naming exactly `spans`. */
+function writeDeletes(encoder: Y.UpdateEncoderV1, spans: readonly IdSpan[]): void {
   const rest = encoder.restEncoder;
   const writeVarUint = encoding.writeVarUint;
-  writeVarUint(rest, 0);
   const byClient = new Map<number, IdSpan[]>();
   for (const span of spans) {
     const list = byClient.get(span.client);
@@ -402,7 +417,6 @@ export function deleteUpdate(spans: readonly IdSpan[]): Uint8Array {
       writeVarUint(rest, span.len);
     }
   }
-  return encoder.toUint8Array();
 }
 
 const spansOf = (ds: { clients: Map<number, { clock: number; len: number }[]> }): IdSpan[] =>
@@ -541,7 +555,72 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
 
   const payloads = new Map<string, Uint8Array>();
   for (const [id, t] of targets) if (t !== body) payloads.set(id, t.hydrated);
-  return { ok: true, hydrated: body.hydrated, inserted: body.inserted, payloads };
+  const removed = new Map<string, IdSpan[]>([...targets].map(([id, t]) => [id, t.deleted]));
+  return { ok: true, hydrated: body.hydrated, inserted: body.inserted, payloads, removed };
+}
+
+/**
+ * What accept lands from `doc` (a mirror the record was applied to, at state vector `sv` before it), and whether it
+ * keeps anything: every struct the record wrote and every item it removed (`removed`), except where `kept` holds (a
+ * block or payload that reads as it did, so the preview shows no hunk for it; suggestions.md §4.7). There the items it
+ * removed stay and the ones it added land removed, so the originals, the comments anchored on them and their authors
+ * stay: accept applies nothing the preview hides (I3). A map key it overwrote stays overwritten (Yjs removes the old
+ * value as the new one lands), with the same value, as the preview read it.
+ */
+export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], kept: (item: Y.Item) => boolean): { update: Uint8Array; kept: boolean } {
+  const before = Y.decodeStateVector(sv);
+  const state = (client: number) => before.get(client) ?? 0;
+  const current = (item: Y.Item) => item.parentSub === null || (item.parent as Y.AbstractType<unknown>)._map.get(item.parentSub) === item;
+  const stays: IdSpan[] = [];
+  for (const span of new SpanIndex(removed).ranges()) {
+    const [client, from, to] = span;
+    const end = Math.min(to, state(client));
+    for (const struct of structsIn(doc.store, client, from, end)) {
+      if (!(struct instanceof Y.Item) || !current(struct) || !kept(struct)) continue;
+      const lo = Math.max(from, struct.id.clock);
+      stays.push({ client, clock: lo, len: Math.min(end, struct.id.clock + struct.length) - lo });
+    }
+  }
+  const buried: IdSpan[] = [];
+  for (const client of doc.store.clients.keys()) {
+    const from = state(client);
+    for (const struct of structsIn(doc.store, client, from, Y.getState(doc.store, client))) {
+      if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null || !kept(struct)) continue;
+      const lo = Math.max(from, struct.id.clock);
+      buried.push({ client, clock: lo, len: struct.id.clock + struct.length - lo });
+    }
+  }
+  if (!stays.length && !buried.length) return { update: Y.encodeStateAsUpdate(doc, sv), kept: false };
+  const keep = new SpanIndex(stays);
+  const deletes: IdSpan[] = [...buried];
+  for (const [client, from, to] of new SpanIndex(removed).ranges()) {
+    for (const [lo, hi, covered] of keep.runs(client, from, to)) if (!covered) deletes.push({ client, clock: lo, len: hi - lo });
+  }
+  const encoder = new Y.UpdateEncoderV1();
+  writeStructsSince(encoder, doc, before);
+  writeDeletes(encoder, deletes);
+  return { update: encoder.toUint8Array(), kept: true };
+}
+
+/** Every struct of `doc` past `sv`, as Yjs writes an update's structs (encodeStateAsUpdate). */
+function writeStructsSince(encoder: Y.UpdateEncoderV1, doc: Y.Doc, sv: Map<number, number>): void {
+  const rest = encoder.restEncoder;
+  const from = new Map<number, number>();
+  for (const client of doc.store.clients.keys()) {
+    const clock = sv.get(client) ?? 0;
+    if (Y.getState(doc.store, client) > clock) from.set(client, clock);
+  }
+  encoding.writeVarUint(rest, from.size);
+  for (const [client, clock] of [...from].sort((a, b) => b[0] - a[0])) {
+    const structs = doc.store.clients.get(client) as (Y.Item | Y.GC)[];
+    const start = Math.max(clock, structs[0]!.id.clock);
+    const index = Y.findIndexSS(structs as never, start);
+    encoding.writeVarUint(rest, structs.length - index);
+    encoder.writeClient(client);
+    encoding.writeVarUint(rest, start);
+    structs[index]!.write(encoder, start - structs[index]!.id.clock);
+    for (let i = index + 1; i < structs.length; i += 1) structs[i]!.write(encoder, 0);
+  }
 }
 
 const APPLY = 'suggest-apply';
@@ -965,7 +1044,8 @@ export interface Restored {
  * its units line up with the original's from there (a copy split by typing keeps that right origin in every part). A
  * new unit restores a body unit when the original is live in `body`, removed in `doc`, in the same parent, reads the
  * same, and, for text, sits under the same text node (its property map, or the copy of it). Text a record rewrites
- * (a restyle, a replaced word) sits under a new map or reads differently, so it is not taken for a copy.
+ * (a restyle, a replaced word) sits under a new map or reads differently, so it is not taken for a copy. An undo, a
+ * redo and a second undo restore a copy of the first copy, which restores the same body unit.
  */
 export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
   const out: Restored = { copies: new Map(), originals: new Set(), clients: new Set() };
@@ -988,6 +1068,9 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
     return null;
   };
   const reads = (content: Y.Item['content']) => canonical(contentValue('body', 'root', content, false));
+  let added = 0;
+  /** A unit restores a new unit not yet known as a copy: a copy of a copy whose first copy a later client holds. */
+  let deferred = false;
   const pass = (strings: boolean) => {
     for (const [client, structs] of doc.store.clients) {
       const known = Y.getState(body.store, client);
@@ -1007,10 +1090,16 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
         let map: string | null | undefined;
         let bodyMap = null as { of: Y.Item; key: string | null } | null;
         for (let i = 0; i < struct.length; i += 1) {
-          const original = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);
-          const was = liveIn(body.store, original);
-          const gone = was && removedIn(original);
-          if (!was || !gone || gone.parent !== struct.parent) continue;
+          const copy = Y.createID(client, struct.id.clock + i);
+          if (out.copies.has(itemKey(copy))) continue;
+          const restores = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);
+          const gone = removedIn(restores);
+          if (!gone || gone.parent !== struct.parent) continue;
+          // An undo after a redo restores the copy an earlier undo made: the copy of a copy restores that copy's original.
+          const original = liveIn(body.store, restores) ? restores : out.copies.get(itemKey(restores));
+          if (!original && restores.clock >= Y.getState(body.store, restores.client)) deferred = true;
+          const was = original && liveIn(body.store, original);
+          if (!original || !was || !removedIn(original)) continue;
           if (strings) {
             const at = original.clock - was.id.clock;
             if (!(was.content instanceof Y.ContentString) || was.content.str[at] !== (struct.content as Y.ContentString).str[i]) continue;
@@ -1018,17 +1107,23 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
             if (map === undefined) map = mapOf(struct, true);
             if (under.key !== map) continue;
           } else if (reads(was.content) !== reads(struct.content)) continue;
-          const copy = Y.createID(client, struct.id.clock + i);
           out.copies.set(itemKey(copy), original);
           out.originals.add(itemKey(original));
           out.clients.add(client);
+          added += 1;
         }
       }
     }
   };
-  // Property maps and other items first, so a restored text node's characters find their map's copy.
-  pass(false);
-  pass(true);
+  // Property maps and other items first, so a restored text node's characters find their map's copy. A copy of a copy
+  // whose first copy a client iterated later holds is found on another round, while rounds still find copies.
+  for (let round = 0; round <= doc.store.clients.size; round += 1) {
+    added = 0;
+    deferred = false;
+    pass(false);
+    pass(true);
+    if (!deferred || added === 0) break;
+  }
   return out;
 }
 
@@ -1066,6 +1161,28 @@ export interface Hunk {
   after?: unknown;
   /** For an added block: the block it follows (null at the start). Positions are relative, never absolute. */
   at?: string | null;
+}
+
+/**
+ * The blocks (`block:<id>`) and payloads (`payload:<id>`) that read after as they did before, item identity aside:
+ * projectionDiff shows no hunk for them, so accept keeps them as they are (`landing`).
+ */
+export function unchangedReads(before: Projection, after: Projection): Set<string> {
+  const out = new Set<string>();
+  for (const [key, reads] of after.reads ?? []) if (before.reads?.get(key) === reads) out.add(key);
+  return out;
+}
+
+/** The top-level block holding `item` of `doc`, by item id key; null for the root's own keys and sequence items. */
+export function blockKeyOf(doc: Y.Doc, item: Y.Item): string | null {
+  const root = doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>;
+  let top = item;
+  while (top.parent !== root) {
+    const holder: Y.Item | null = (top.parent as Y.AbstractType<unknown> | null)?._item ?? null;
+    if (!holder) return null;
+    top = holder;
+  }
+  return top.parentSub === null && top.content instanceof Y.ContentType ? itemKey(top.id) : null;
 }
 
 export function projectionDiff(before: Projection, after: Projection): Hunk[] {

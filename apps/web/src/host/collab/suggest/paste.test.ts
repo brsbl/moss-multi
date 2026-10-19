@@ -1402,8 +1402,11 @@ it.each([
     const preview = previewRecord(pane.live, record!.meta.id);
     if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
     expect(preview.hunks, 'nothing is shown').toEqual([]);
+    const events: string[] = [];
+    pane.fork.on((event) => events.push(event.type));
     expect(acceptRecord(pane.live, record!.meta.id, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
     expect(JSON.stringify(spansOfText(pane.live, 'Intro line stays.')), 'the paragraph keeps its original items and authors').toBe(ids);
+    expect(events, 'the fork, which holds the copies, rebuilds from the body').toContain('rebuild');
     const anchor = Y.getItem(pane.live.store, comment.item!);
     expect(anchor instanceof Y.Item && !anchor.deleted, 'the comment stays anchored').toBe(true);
   } finally {

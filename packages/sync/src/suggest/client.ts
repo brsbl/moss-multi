@@ -1193,7 +1193,8 @@ export class SuggestFork {
       if (meta.status === 'accepted') {
         // Accepted text is body text now; the next edit writes a fresh group.
         if (this.#leases[0]?.record === record) this.#rotate();
-        continue;
+        // Unless accept kept what the record changed only in item identity (T5.S14): B holds the originals F removed.
+        if (!meta.kept) continue;
       }
       const owes = [...this.#inflight, ...this.#waiting].some(({ request }) =>
         (request.t === 'suggest-ops' || request.t === 'suggest-delete') && request.record === record);
