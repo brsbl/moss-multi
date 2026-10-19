@@ -1068,6 +1068,8 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
     return null;
   };
   const reads = (content: Y.Item['content']) => canonical(contentValue('body', 'root', content, false));
+  /** Every copy found, removed ones too, to the body unit it restores. */
+  const links = new Map<string, Y.ID>();
   let added = 0;
   /** A unit restores a new unit not yet known as a copy: a copy of a copy whose first copy a later client holds. */
   let deferred = false;
@@ -1084,19 +1086,19 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
         const origin = struct.rightOrigin;
         if (!right || !origin || origin.client !== right.client || origin.clock !== right.clock) start = struct.id.clock;
         right = origin;
-        if (struct.id.clock < known || struct.deleted || !origin || struct.parentSub !== null) continue;
+        if (struct.id.clock < known || !origin || struct.parentSub !== null) continue;
         if ((struct.content instanceof Y.ContentString) !== strings) continue;
         // Read once a unit needs it: walking left is linear in the block.
         let map: string | null | undefined;
         let bodyMap = null as { of: Y.Item; key: string | null } | null;
         for (let i = 0; i < struct.length; i += 1) {
           const copy = Y.createID(client, struct.id.clock + i);
-          if (out.copies.has(itemKey(copy))) continue;
+          if (out.copies.has(itemKey(copy)) || links.has(itemKey(copy))) continue;
           const restores = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);
           const gone = removedIn(restores);
           if (!gone || gone.parent !== struct.parent) continue;
           // An undo after a redo restores the copy an earlier undo made: the copy of a copy restores that copy's original.
-          const original = liveIn(body.store, restores) ? restores : out.copies.get(itemKey(restores));
+          const original = liveIn(body.store, restores) ? restores : links.get(itemKey(restores));
           if (!original && restores.clock >= Y.getState(body.store, restores.client)) deferred = true;
           const was = original && liveIn(body.store, original);
           if (!original || !was || !removedIn(original)) continue;
@@ -1107,10 +1109,13 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
             if (map === undefined) map = mapOf(struct, true);
             if (under.key !== map) continue;
           } else if (reads(was.content) !== reads(struct.content)) continue;
+          links.set(itemKey(copy), original);
+          added += 1;
+          // A removed copy (a redo took it back) is only a link to its original for a later copy of it.
+          if (struct.deleted) continue;
           out.copies.set(itemKey(copy), original);
           out.originals.add(itemKey(original));
           out.clients.add(client);
-          added += 1;
         }
       }
     }
