@@ -1047,7 +1047,10 @@ export interface Restored {
  * (a restyle, a replaced word) sits under a new map or reads differently, so it is not taken for a copy. An undo, a
  * redo and a second undo restore a copy of the first copy, which restores the same body unit.
  */
-export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
+export function restoredCopies(doc: Y.Doc, body: Y.Doc, steps?: { count: number }): Restored {
+  const tick = () => {
+    if (steps) steps.count += 1;
+  };
   const out: Restored = { copies: new Map(), originals: new Set(), clients: new Set() };
   const isMap = (item: Y.Item) => item.content instanceof Y.ContentType && item.content.type instanceof Y.Map;
   const liveIn = (store: Y.Doc['store'], id: Y.ID): Y.Item | null => {
@@ -1063,6 +1066,7 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
   /** The live property map a text item sits under, by key (a restored map by its original's). */
   const mapOf = (item: Y.Item, copies: boolean): string | null => {
     for (let left = item.left; left; left = left.left) {
+      tick();
       if (!left.deleted && isMap(left)) return itemKey((copies ? out.copies.get(itemKey(left.id)) : undefined) ?? left.id);
     }
     return null;
@@ -1079,6 +1083,7 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
       let start = 0;
       let right: Y.ID | null = null;
       for (const struct of structs) {
+        tick();
         if (!(struct instanceof Y.Item)) {
           right = null;
           continue;
@@ -1092,6 +1097,7 @@ export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
         let map: string | null | undefined;
         let bodyMap = null as { of: Y.Item; key: string | null } | null;
         for (let i = 0; i < struct.length; i += 1) {
+          tick();
           const copy = Y.createID(client, struct.id.clock + i);
           if (out.copies.has(itemKey(copy)) || links.has(itemKey(copy))) continue;
           const restores = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);

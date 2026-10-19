@@ -1414,6 +1414,56 @@ it.each([
   }
 });
 
+it.each([
+  // After " More", in the paragraph with the real change.
+  ['elsewhere goes on in a continuation, and the fork rebuilds once it is stored', null, false],
+  // Inside the restored rest, after one of its copies.
+  ['beside a kept copy is refused with its block offered back', 13, true],
+] as const)('T5.S14: typing still unacknowledged when accept keeps an undone Enter %s', { timeout: 120_000 }, (_name, at, refused) => {
+  const pane = suggesting();
+  try {
+    const settle = () => {
+      vi.runAllTimers();
+      pane.pump();
+    };
+    pane.select('Intro line', 6, 6);
+    pane.enter();
+    settle();
+    for (const step of [pane.undo, pane.redo, pane.undo]) {
+      step();
+      settle();
+    }
+    pane.stopCapturing();
+    pane.select('Closing line', 23, 23);
+    pane.type(' More');
+    settle();
+    const [record] = openRecords(pane.live);
+    // Not answered yet: the frame is in flight when the editor accepts.
+    if (at !== null) pane.select('Intro line', at, at);
+    pane.type('!');
+    expect(pane.fork.owes).toBe(true);
+    const preview = previewRecord(pane.live, record!.meta.id);
+    if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
+    const events: string[] = [];
+    pane.fork.on((event) => events.push(event.type));
+    expect(acceptRecord(pane.live, record!.meta.id, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+    if (refused) {
+      expect(pane.fork.closed, 'its copy is not where the body keeps the text').toBe(true);
+      expect(pane.unsaved.join('\n')).toContain('!');
+      return;
+    }
+    expect(pane.fork.closed, 'input stays open').toBe(false);
+    expect(events, 'nothing rebuilds under the frame in flight').not.toContain('rebuild');
+    pane.pump();
+    expect(pane.unsaved, 'nothing is offered back').toEqual([]);
+    expect(events, 'the fork rebuilds once nothing is owed').toContain('rebuild');
+    const [continuation] = openRecords(pane.live);
+    expect(continuation?.meta.continues, 'the typing continues the accepted record').toBe(record!.meta.id);
+  } finally {
+    pane.dispose();
+  }
+});
+
 it('T5.S14: a record with a real change and an identity-only block paints only the real change, for either side', () => {
   const live = seededBody('Intro line stays.\n\nClosing line stays too.\n');
   const paragraph = (doc: Y.Doc, prefix: string) => {
