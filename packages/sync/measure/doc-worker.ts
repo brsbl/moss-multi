@@ -5,13 +5,40 @@ import * as Y from 'yjs';
 import { encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../src/doc-do.ts';
 import type { PayloadWork } from '../src/payloads.ts';
+import { phases } from '../src/server-doc.ts';
 import { textHash } from './text-hash.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
+
+/** A full GC, when workerd runs with `--expose-gc` (scripts/measure-memory.mjs); `--trace-gc` prints it as `testing`. */
+const collect = (globalThis as { gc?: () => void }).gc;
+const tracedPhases: string[] = [];
 
 /** The DocDO, plus a method that reports its payload work (a getter is not an RPC method). */
 export class MeasuredDocDO extends DocDO {
   work(): PayloadWork {
     return { ...this.payloadWork };
+  }
+
+  #held: Y.Doc | null = null;
+
+  /** Collects garbage at each server write's and export's phase (`phases.mark`), recording the phases in order. */
+  tracePhases(on: boolean): string[] {
+    const seen = tracedPhases.splice(0);
+    phases.mark = on && collect ? (phase) => {
+      tracedPhases.push(phase);
+      collect();
+      collect();
+    } : null;
+    return seen;
+  }
+
+  /** Holds a plain Y.Doc of the note's state beside the note, or releases it. */
+  holdCopy(on: boolean): void {
+    this.#held?.destroy();
+    this.#held = null;
+    if (!on) return;
+    this.#held = new Y.Doc();
+    Y.applyUpdate(this.#held, Y.encodeStateAsUpdate(this.document));
   }
 
   /** The note's encoded state size. */
@@ -20,8 +47,7 @@ export class MeasuredDocDO extends DocDO {
   }
 }
 
-/** A full GC, when workerd runs with `--expose-gc` (scripts/measure-memory.mjs); `--trace-gc` prints it as `testing`. */
-const collect = (globalThis as { gc?: () => void }).gc;
+
 
 interface Env {
   DocDO: DurableObjectNamespace<MeasuredDocDO>;
@@ -49,6 +75,13 @@ export default {
       if (!collect) return new Response('gc is not exposed', { status: 501 });
       collect();
       collect();
+      return new Response('ok');
+    }
+    if (url.pathname === '/phases') {
+      return Response.json(await (await getServerByName(env.DocDO, docId)).tracePhases(url.searchParams.get('on') === '1'));
+    }
+    if (url.pathname === '/hold-copy') {
+      await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1');
       return new Response('ok');
     }
     if (url.pathname === '/state-bytes') {

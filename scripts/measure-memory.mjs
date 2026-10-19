@@ -164,18 +164,21 @@ async function settle(server, count) {
  * One note in a fresh workerd, phase by phase. Returns each phase's figures and the base heap, or where it failed:
  * under a heap cap, V8 aborts the isolate's process once a phase cannot fit.
  */
-async function measureNote(markdown, port, flags) {
+async function measureNote(markdown, port, flags, { trace = false } = {}) {
   const server = await startWorkerd(port, ['--expose-gc', '--trace-gc', ...flags]);
   const doc = `memory-${port}`;
   const result = { phases: {} };
   let phase = 'start';
   try {
     let gcs = 0;
+    // With `trace`, the DocDO collects garbage twice at each server write's and export's phase, named in order.
+    const traced = async () => (trace ? JSON.parse(await call(server.origin, `/phases?on=1&doc=${doc}`)) : []);
     const collect = async () => {
       await call(server.origin, '/gc');
       gcs += 2;
       return settle(server, gcs);
     };
+    await traced();
     let mark = await collect();
     result.baseMb = phaseFigures(gcEvents(server.logs.value)).restMb;
     const steps = {
@@ -185,12 +188,24 @@ async function measureNote(markdown, port, flags) {
     };
     for (phase of PHASES) {
       await steps[phase]();
+      const labels = await traced();
+      gcs += 2 * labels.length;
       const end = await collect();
-      result.phases[phase] = phaseFigures(gcEvents(server.logs.value.slice(mark, end)));
+      const events = gcEvents(server.logs.value.slice(mark, end));
+      const testing = events.filter((event) => event.testing);
+      result.phases[phase] = { ...phaseFigures(events), marks: labels.map((label, i) => ({ label, mb: testing[2 * i + 1]?.after ?? null })) };
       mark = end;
     }
     phase = 'state';
     result.stateBytes = JSON.parse(await call(server.origin, `/state-bytes?doc=${doc}`)).stateBytes;
+    if (trace) {
+      // A plain Y.Doc of the note's state, held beside it: what the note's Yjs structures alone take.
+      await call(server.origin, `/hold-copy?on=1&doc=${doc}`);
+      const held = phaseFigures(gcEvents(server.logs.value.slice(mark, (mark = await collect())))).restMb;
+      await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
+      const released = phaseFigures(gcEvents(server.logs.value.slice(mark, (mark = await collect())))).restMb;
+      result.copyMb = held - released;
+    }
   } catch (error) {
     const fatal = /Fatal[^\n]*|out of memory[^\n]*/i.exec(server.logs.value)?.[0];
     result.failed = { phase, message: fatal ?? String(error.message).split('\n')[0] };
@@ -219,7 +234,7 @@ async function main() {
   const notes = [];
   let port = 9910;
   for (const [name, markdown] of await cases()) {
-    const measured = await measureNote(markdown, port, []);
+    const measured = await measureNote(markdown, port, [], { trace: true });
     const capped = await measureNote(markdown, port + 1, [`--max-heap-size=${PEAK_BUDGET_MB}`]);
     port += 2;
     notes.push({ name, markdownBytes: Buffer.byteLength(markdown), measured, capped });
@@ -243,7 +258,13 @@ async function main() {
     if (n.measured.failed) console.error(`${n.name} (measured):\n${n.measured.logs}`);
     if (n.capped.failed) console.error(`${n.name} (capped):\n${n.capped.logs?.slice(-1_000)}`);
   }
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n`);
+  const traces = notes.map(({ name, measured: m }) => [
+    `- ${name}: a plain Y.Doc of the note ${mb(m.copyMb)};`,
+    PHASES.flatMap((phase) => (m.phases[phase]?.marks ?? []).map(({ label, mb: at }) => `${label} ${mb(at)}`)).join(', '),
+  ].join(' '));
+  const details = ['', 'Heap after a full GC at each phase of the server write and the export:', '', ...traces].join('\n');
+  console.log(details);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n${details}\n`);
   const problems = memoryProblems(notes);
   if (problems.length > 0) {
     console.error(`measure-memory: ${problems.join('; ')}`);

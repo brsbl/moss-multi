@@ -34,6 +34,10 @@ export interface PayloadSource {
 
 const sources = new WeakMap<Y.Doc, PayloadSource>();
 
+/** Measurement only (scripts/measure-memory.mjs): called between a server write's or an export's phases. */
+export const phases: { mark: ((phase: string) => void) | null } = { mark: null };
+const mark = (phase: string) => phases.mark?.(phase);
+
 export function attachPayloadSource(live: Y.Doc, source: PayloadSource): void {
   sources.set(live, source);
 }
@@ -124,9 +128,13 @@ function mirrorOf(live: Y.Doc): Mirror {
 function mirrorDiff(live: Y.Doc, mutate: (doc: Y.Doc) => void): { diff: Uint8Array; payloads: [string, Uint8Array][] } {
   const mirror = mirrorOf(live);
   try {
+    mark('write: mirror hydrated');
     const hydrated = Y.encodeStateVector(mirror.doc);
     mirror.editor.update(() => mutate(mirror.doc), { discrete: true });
-    return { diff: Y.encodeStateAsUpdate(mirror.doc, hydrated), payloads: mirror.written() };
+    mark('write: mutated');
+    const diff = Y.encodeStateAsUpdate(mirror.doc, hydrated);
+    mark('write: diff encoded');
+    return { diff, payloads: mirror.written() };
   } finally {
     mirror.dispose();
   }
@@ -143,6 +151,7 @@ export type Admit = (diff: Uint8Array, payloads: [string, Uint8Array][]) => void
  */
 export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) => void, admit: Admit = noop): boolean {
   const { diff, payloads } = mirrorDiff(live, mutate);
+  mark('write: mirror released');
   admit(diff, payloads);
   const source = sourceOf(live);
   for (const [id, update] of payloads) source.write(id, update);
@@ -156,6 +165,7 @@ export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) =
   } finally {
     live.off('update', onUpdate);
   }
+  mark('write: applied');
   return changed;
 }
 
@@ -187,8 +197,11 @@ export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontma
 export function exportDocMarkdown(live: Y.Doc, noteId = live.guid): string {
   const mirror = mirrorOf(live);
   try {
+    mark('export: mirror hydrated');
     mirror.editor.update(() => $recomputeExportFormulas(noteId), { discrete: true });
-    return composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(mirror.editor));
+    const markdown = composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(mirror.editor));
+    mark('export: exported');
+    return markdown;
   } finally {
     mirror.dispose();
   }
