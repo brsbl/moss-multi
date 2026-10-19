@@ -11,7 +11,7 @@ import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
-import { noteMedia } from './media.ts';
+import { noteMedia, refNames } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import { evaluateScope, noteUnit, readScope, type ScopeView, titleKey } from './scope.ts';
@@ -474,29 +474,30 @@ export interface AdoptOptions {
  * title line names the doc, its comments.json comes too, and the file is left in moss form.
  */
 export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
-  const adopted = await createFrom(ctx, rel, options);
-  // Every reference in a note being adopted is its own user's.
-  return { ...adopted, media: (await syncMedia({ ...ctx, force: false }, adopted.doc.id, true, 'all')).results };
+  const { refs, ...adopted } = await createFrom(ctx, rel, options);
+  // The references in the file as it was read for the create are its user's; one an edit brought in after it is not.
+  return { ...adopted, media: (await syncMedia({ ...ctx, force: false }, adopted.doc.id, true, refs)).results };
 }
 
 /**
  * The note's media step (media.ts) on the file the doc tracks now. With `settle`, a note whose references moved to the
  * names the server gave its files is pushed at once.
  */
-async function syncMedia(ctx: SyncContext, docId: string, settle: boolean, introduced?: Set<string> | 'all'): Promise<{ results: SyncResult[]; introduced?: Set<string> }> {
+async function syncMedia(ctx: SyncContext, docId: string, settle: boolean, introduced?: Set<string>): Promise<{ results: SyncResult[]; introduced?: Set<string> }> {
   const meta = readMeta(ctx.root, docId);
   if (!meta || !exists(ctx.root, meta.file)) return { results: [] };
   const scope = ctx.scope;
   const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
-  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: !ctx.downloadOnly, download: true, ...scoped, ...(introduced ? { introduced } : {}) }, docId, meta.file);
+  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, folds: ctx.folds, upload: !ctx.downloadOnly, download: true, ...scoped, ...(introduced ? { introduced } : {}) }, docId, meta.file);
   if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
   return step;
 }
 
-async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc }> {
+async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc; refs: Set<string> }> {
   const { root, client, folds } = ctx;
   const bytes = readConfined(root, rel);
   const text = toLf(decode(bytes));
+  const refs = refNames(text);
   const stem = basename(rel, extname(rel));
   const folder = options.folderId ? { folderId: options.folderId } : {};
   if (options.moss ?? isMossNote(rel, text)) {
@@ -514,7 +515,7 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
       doc = { ...doc, ...(await client.rename(doc.id, stem)) };
       writeMeta(root, { ...meta, title: doc.title });
     }
-    return { result: { docId: doc.id, file: rel, action: 'created' }, doc };
+    return { result: { docId: doc.id, file: rel, action: 'created' }, doc, refs };
   }
   beforeWrite(ctx.signal);
   const { doc } = await client.create({ title: options.title ?? stem, markdown: text, ...(options.titleLine ? { titleLine: true } : {}), ...folder });
@@ -535,7 +536,7 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
     // Edited during the create: the file and the base it was created from stay, and the next pass merges the edit.
     if (!(error instanceof CliError)) throw error;
   }
-  return { result: { docId: doc.id, file, ...(file !== rel ? { from: rel } : {}), action: 'created' }, doc };
+  return { result: { docId: doc.id, file, ...(file !== rel ? { from: rel } : {}), action: 'created' }, doc, refs };
 }
 
 /**

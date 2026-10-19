@@ -312,6 +312,22 @@ export function readPriors(root: string, meta: DocMeta, savedAt: number): { prio
   return { priors, missing };
 }
 
+/** Every prior text the doc still records, whatever its time; null when one of them is no longer kept. */
+export function recordedPriors(root: string, meta: DocMeta): Uint8Array[] | null {
+  const texts: Uint8Array[] = [];
+  for (const prior of meta.priors ?? []) {
+    if (!HASH.test(prior.hash)) continue;
+    try {
+      const bytes = readFileSync(noLinks(root, stateRel(meta.docId, priorName(prior.hash))));
+      if (sha256Hex(bytes) !== prior.hash) return null;
+      texts.push(bytes);
+    } catch {
+      return null;
+    }
+  }
+  return texts;
+}
+
 /**
  * Evicts the oldest prior texts across the workspace until they fit its budget. Their records stay until their window
  * ends, so a save inside it is known to lack the text it may descend from.

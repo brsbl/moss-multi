@@ -12,7 +12,7 @@ import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConf
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
-import { noteMedia, rewriteRefs } from './media.ts';
+import { noteMedia, refNames, rewriteRefs } from './media.ts';
 import { exactPattern, noteFolderName, parseScope, readScope, SCOPE_FILE, scopePath } from './scope.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
@@ -361,7 +361,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         // A moss note with no title line takes its file's stem.
         if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
         // Its media follow; a file stored under another name moves the doc's reference too.
-        const media = await noteMedia({ root, client, upload: true, introduced: 'all' }, doc.id, path);
+        const media = await noteMedia({ root, client, upload: true, introduced: refNames(markdown) }, doc.id, path);
         if (media.renames.size > 0) {
           const base = created.content ?? decoder.decode(await client.content(doc.id, true));
           const pushed = await client.push(doc.id, { newText: rewriteRefs(base, media.renames), baseHash: sha256Hex(base), baseText: base });
@@ -446,7 +446,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
       const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
-      reportMedia((await noteMedia({ root, client, upload: true, ...scoped }, meta.docId, path)).results);
+      reportMedia((await noteMedia({ root, client, folds: foldsCase(root), upload: true, ...scoped }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);

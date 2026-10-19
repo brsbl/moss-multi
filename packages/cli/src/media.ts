@@ -3,16 +3,19 @@
 // uploaded under a name the doc does not hold yet, downloaded when it is missing here, and neither side is ever
 // overwritten: a name the server stores under another name (another note's file holds it in the folder) moves the
 // note's reference to that name, and a local file that differs from the doc's bytes for its name is reported.
-// Uploads fail closed (T7.S9): a file goes up only for a reference this machine's user added (in the file, not in the
-// doc's last synced base, or the note being adopted) to a file no other note in the folder holds or references.
+// Uploads fail closed (T7.S9): a file goes up only for a reference this machine's user added (in the note's body, not in
+// the doc's last synced base or a prior text sync wrote over, or in the file as it was adopted) to a file no other note
+// in the folder holds or references.
 import { type Dirent, lstatSync, readdirSync } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
 import { ASSET_DIR, MEDIA_CAP_BYTES, mediaTypeOf } from '@moss-multi/protocol/media';
 import type { Api } from './api.ts';
 import { CliError } from './errors.ts';
+import { parseMoss, renderMoss } from './moss-format.ts';
 import type { SyncResult } from './sync.ts';
 import {
-  confined, isAllowedName, isWorkspace, type MediaState, readBase, readConfined, readMediaRecord, sha256Hex, trackedMetas, writeConfined, writeMediaRecord,
+  confined, isAllowedName, isWorkspace, type MediaState, readBase, readConfined, readMediaRecord, readMeta, recordedPriors, sha256Hex, trackedMetas, writeConfined,
+  writeMediaRecord,
 } from './workspace.ts';
 
 export interface MediaRef {
@@ -78,33 +81,53 @@ export interface MediaContext {
   sends?: (name: string) => boolean;
   /** With a scope, whether another note may be read to see which media it references; one that may not counts as referencing all. */
   reads?: (rel: string) => boolean;
+  /** The volume folds case, so names that differ only in case are one file. */
+  folds?: boolean;
   /**
-   * The references this machine's user added, the only ones that may upload: `all` for a note being adopted; by default
-   * those in the file but not in the doc's last synced base (none when there is no base).
+   * The references this machine's user added, the only ones that may upload: for a note being adopted, those in the file
+   * as it was read for the create; by default those in the note's body that neither the doc's last synced base nor a
+   * prior text holds (none when either is unknown).
    */
-  introduced?: Set<string> | 'all';
+  introduced?: Set<string>;
 }
 
 export interface MediaStep {
   results: SyncResult[];
   /** Files the server stored under another name; the note file now references the new names. */
   renames: Map<string, string>;
-  /** The references that could upload, so a step after a pull does not count the pulled ones as this user's. */
+  /** The references that could upload (by `nameKey`), so a step after a pull does not count the pulled ones as this user's. */
   introduced: Set<string>;
 }
 
 /** The media names `text` references. */
-const refNames = (text: string) => new Set(mediaRefs(text).map((ref) => ref.name));
+export const refNames = (text: string) => new Set(mediaRefs(text).map((ref) => ref.name));
 
-/** The references in `text` the doc's last synced base lacks; none without a readable base. */
-function localRefs(root: string, docId: string, text: string): Set<string> {
-  let base: Set<string>;
+/** A media name as the volume compares it. */
+const nameKey = (folds: boolean | undefined) => (name: string) => (folds ? name.toLowerCase() : name);
+
+const utf8 = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8');
+
+/**
+ * The references in the note's `text` that this machine's user added: those its body holds and neither the doc's last
+ * synced base nor any prior text sync wrote over (an editor may save one back) holds. A moss note's title line is the
+ * server's to set, so only its body counts, against the base as sync renders it. None when the base or a prior is unknown.
+ */
+function localRefs(root: string, docId: string, text: string, key: (name: string) => string): Set<string> {
+  const meta = readMeta(root, docId);
+  if (!meta) return new Set();
+  let base: string;
   try {
-    base = refNames(Buffer.from(readBase(root, docId)).toString('utf8'));
+    base = utf8(readBase(root, docId));
   } catch {
     return new Set();
   }
-  return new Set([...refNames(text)].filter((name) => !base.has(name)));
+  const priors = recordedPriors(root, meta);
+  if (priors === null) return new Set();
+  const moss = meta.mode === 'moss';
+  const body = moss ? parseMoss(text.replace(/\r\n?/g, '\n')).clean : text;
+  const synced = [base, ...(moss ? [renderMoss(base, meta.title ?? '', [])] : []), ...priors.map(utf8)];
+  const known = new Set(synced.flatMap((one) => [...refNames(one)].map(key)));
+  return new Set([...refNames(body)].map(key).filter((name) => !known.has(name)));
 }
 
 /**
@@ -113,11 +136,12 @@ function localRefs(root: string, docId: string, text: string): Set<string> {
  */
 function ownerElsewhere(ctx: MediaContext, docId: string, file: string, name: string, notes: Map<string, Set<string> | null>): string | null {
   const { root } = ctx;
+  const key = nameKey(ctx.folds);
   const folder = dirname(file);
   if (isWorkspace(root)) {
     for (const meta of trackedMetas(root)) {
       if (meta.docId === docId || dirname(meta.file).toLowerCase() !== folder.toLowerCase()) continue;
-      if (Object.hasOwn(readMediaRecord(root, meta.docId), name)) return meta.file;
+      if (Object.keys(readMediaRecord(root, meta.docId)).some((held) => key(held) === key(name))) return meta.file;
     }
   }
   if (notes.size === 0) {
@@ -136,13 +160,13 @@ function ownerElsewhere(ctx: MediaContext, docId: string, file: string, name: st
         continue;
       }
       try {
-        notes.set(rel, refNames(readConfined(root, rel).toString('utf8')));
+        notes.set(rel, new Set([...refNames(readConfined(root, rel).toString('utf8'))].map(key)));
       } catch {
         notes.set(rel, null);
       }
     }
   }
-  for (const [rel, names] of notes) if (rel !== file && (names === null || names.has(name))) return rel;
+  for (const [rel, names] of notes) if (rel !== file && (names === null || names.has(key(name)))) return rel;
   return null;
 }
 
@@ -168,7 +192,8 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   const note = confined(root, file);
   const dir = join(dirname(note), ASSET_DIR);
   const seen = new Set<string>();
-  const introduced = ctx.introduced === 'all' ? refNames(text) : ctx.introduced ? new Set(ctx.introduced) : (tracked ? localRefs(root, docId, text) : new Set<string>());
+  const key = nameKey(ctx.folds);
+  const introduced = ctx.introduced ? new Set([...ctx.introduced].map(key)) : tracked ? localRefs(root, docId, text, key) : new Set<string>();
   const notes = new Map<string, Set<string> | null>();
 
   for (const { name } of mediaRefs(text)) {
@@ -202,7 +227,7 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
           continue;
         }
         if (!ctx.upload) continue;
-        if (!introduced.has(name)) {
+        if (!introduced.has(key(name))) {
           failed(`${rel} was not uploaded: the reference to it came from the server or was synced before, so it is only downloaded. Save the file under a new name and reference that to upload it`);
           continue;
         }
@@ -238,7 +263,7 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
         const copied = localFile(root, copy)!;
         record[stored] = { hash, size: copied.size, mtimeMs: copied.mtimeMs };
         renames.set(name, stored);
-        introduced.add(stored);
+        introduced.add(key(stored));
         results.push({ docId, file: rel, action: 'uploaded', message: `the server already holds another ${name} here, so it is ${stored} there and the note now references ${copy}` });
         continue;
       }
