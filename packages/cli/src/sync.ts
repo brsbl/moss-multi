@@ -150,7 +150,7 @@ const keepsPulled = (base: PushBase, doc: Uint8Array): boolean => {
 const STALE = 'saved over a pulled edit by an editor holding the older text: merged against that text, so the pulled edit stays; to remove it, delete it again and save';
 const STALE_LOST = 'saved over a pulled edit by an editor holding the older text: merged against that text, but the doc no longer holds every line the pull brought in; check its history';
 const UNSURE = 'saved within a minute of a pulled edit, but the text the editor held is not known for certain (no longer kept, or two kept texts fit), so nothing was pushed';
-const AGAIN = 'saved within a minute of a save sync did not push whole (its lines are in the .rej file), and this save is that one again or typed on it, so nothing was pushed';
+const AGAIN = 'this save repeats, or adds typing to, a save sync could not push whole in the last minute, so nothing was pushed';
 const unsureMessage = (base: { again?: true }) => (base.again ? AGAIN : UNSURE);
 
 const isMarkdown = (name: string) => extname(name).toLowerCase() === '.md';
