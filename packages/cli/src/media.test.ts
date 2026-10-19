@@ -367,9 +367,9 @@ describe('note media provenance: every name the server ever showed stays downloa
     write(join('assets', 'SECRET.png'), png('secret'));
     write('plan.md', 'The plan ![s](assets/SECRET.png)\n');
     const added = await cli(['add', 'plan.md', '--json'], { foldsCase: () => true });
-    expect(added.code, added.err).toBe(0);
-    const plan = (JSON.parse(added.out) as { id: string }).id;
+    const plan = server.docs[0]!.id;
     expect(held(plan), added.err).toEqual([]);
+    expect(added.err).toContain('SECRET.png was not uploaded');
   });
 
   it('on a case-sensitive volume, Trip/ and trip/ are separate folders with separate files', async () => {
