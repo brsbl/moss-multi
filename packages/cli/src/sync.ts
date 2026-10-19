@@ -7,20 +7,22 @@
 import { watch as watchFs, type Dirent, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative } from 'node:path';
 import { editsOf, mergeBudget, withoutFinalEol } from '@moss-multi/core/merge';
+import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import type { Api, DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
 import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
+import { evaluateScope, readScope, type ScopeView } from './scope.ts';
 import {
   confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase, recordPull, recordSynced,
-  renameInside, sameFile, sha256Hex, trackedMetas, writeConfined, writeMeta,
+  renameInside, sameFile, scopedNest, sha256Hex, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
 export type SyncAction =
   | 'up-to-date' | 'pulled' | 'pushed' | 'merged' | 'suggested' | 'repulled' | 'created' | 'renamed' | 'remote-gone'
-  | 'skipped-degenerate' | 'failed' | 'uploaded' | 'downloaded';
+  | 'skipped-degenerate' | 'failed' | 'uploaded' | 'downloaded' | 'out-of-scope' | 'follow-only';
 
 export interface SyncResult {
   file: string;
@@ -32,6 +34,8 @@ export interface SyncResult {
   /** The text of each failed hunk: the file keeps it, and so does the output. */
   hunks?: string[];
   message?: string;
+  /** For `out-of-scope`: how many files the workspace's scope left alone (never their names). */
+  count?: number;
 }
 
 export interface SyncContext {
@@ -41,6 +45,10 @@ export interface SyncContext {
   force: boolean;
   /** Stops the pass (`watch` on Ctrl+C): no write starts after it, and every write already confirmed is recorded. */
   signal?: AbortSignal;
+  /** The workspace's scope this pass: a path it does not admit is never read, adopted or written. */
+  scope?: ScopeView;
+  /** The note is in scope only through `follow`: it is pulled, and nothing of it is sent. */
+  downloadOnly?: boolean;
 }
 
 /** The pass was stopped before a write; what it recorded so far stands. */
@@ -229,7 +237,9 @@ function followServerName(ctx: SyncContext, meta: DocMeta, row: DocRow | undefin
   }
   if (meta.filename === row.filename) return { meta };
   const to = join(dirname(meta.file), localName(row.filename, row.title));
-  if (to === meta.file) {
+  // A name outside the scope, or one that would change whether the note is sent, is never taken: the file keeps its name.
+  const scope = ctx.scope;
+  if (to === meta.file || (scope && (!scope.admits(to) || scope.uploads(to) !== scope.uploads(meta.file)))) {
     const next = { ...meta, filename: row.filename };
     writeMeta(ctx.root, next);
     return { meta: next };
@@ -265,6 +275,10 @@ function rejected(id: { docId: string; file: string }, hunks: string[], rej: str
   return { ...id, action: 'merged', failedHunks: hunks.length, hunks, message: `${hunks.length} hunk(s) did not apply: the file now holds the doc's text, and your rejected lines are in ${rej}` };
 }
 
+const CONFIRM = 'reached only through a followed link, so it is pulled but nothing of it is sent; `moss-multi scope confirm` adds it to allow';
+/** A note only `follow` reaches, untracked or with edits here: they wait. */
+const heldBack = (id: { docId?: string; file: string }): SyncResult => ({ ...id, action: 'follow-only', message: CONFIRM });
+
 /** glyphdown's reconcileTracked: one GET, then pull, push, merge or nothing. */
 async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefined): Promise<SyncResult> {
   const { root, client, folds } = ctx;
@@ -290,6 +304,7 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
   if (meta.mode === 'moss') return reconcileMoss(ctx, meta, row, remote, local);
   const localHash = sha256Hex(local);
   const localChanged = localHash !== syncedHash(meta);
+  if (localChanged && ctx.downloadOnly) return heldBack(id);
   if (!localChanged && remoteHash === meta.baseHash) return { ...id, action: 'up-to-date' };
   if (!localChanged) {
     recordPull(root, meta.docId, meta.file, remote, localHash, folds, { prior: local });
@@ -348,6 +363,7 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   const remoteHash = sha256Hex(remote);
   const note = parseMoss(toLf(decode(local)));
   const localChanged = localHash !== syncedHash(meta);
+  if (ctx.downloadOnly && (localChanged || meta.title === undefined)) return heldBack(id);
   let title = row?.title.trim() || meta.title || '';
   let message: string | undefined;
   // Adopted with no title, and the rename to the file's stem never finished: finish it.
@@ -457,7 +473,7 @@ export interface AdoptOptions {
  * content), and the file takes the doc's filename and text. A moss note goes through the moss interchange path: its
  * title line names the doc, its comments.json comes too, and the file is left in moss form.
  */
-export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
+export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
   const adopted = await createFrom(ctx, rel, options);
   return { ...adopted, media: await syncMedia({ ...ctx, force: false }, adopted.doc.id, true) };
 }
@@ -469,19 +485,21 @@ export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' |
 async function syncMedia(ctx: SyncContext, docId: string, settle: boolean): Promise<SyncResult[]> {
   const meta = readMeta(ctx.root, docId);
   if (!meta || !exists(ctx.root, meta.file)) return [];
-  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: true, download: true }, docId, meta.file);
+  const scope = ctx.scope;
+  const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
+  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: !ctx.downloadOnly, download: true, ...scoped }, docId, meta.file);
   if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
   return step.results;
 }
 
-async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc }> {
+async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc }> {
   const { root, client, folds } = ctx;
   const bytes = readConfined(root, rel);
   const text = toLf(decode(bytes));
   const stem = basename(rel, extname(rel));
   const folder = options.folderId ? { folderId: options.folderId } : {};
   if (options.moss ?? isMossNote(rel, text)) {
-    const comments = readSidecar(root, rel);
+    const comments = ctx.scope?.denies(join(dirname(rel), 'comments.json')) ? undefined : readSidecar(root, rel);
     beforeWrite(ctx.signal);
     const created = await client.create({ ...(options.title !== undefined ? { title: options.title } : {}), markdown: text, titleLine: true, ...(comments ? { comments } : {}), ...folder });
     let doc = created.doc;
@@ -499,11 +517,14 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
   }
   beforeWrite(ctx.signal);
   const { doc } = await client.create({ title: options.title ?? stem, markdown: text, ...(options.titleLine ? { titleLine: true } : {}), ...folder });
-  const to = options.keepName ? rel : join(dirname(rel), localName(doc.filename, doc.title));
+  // The doc's filename only when the scope still sends a note there, so a renamed file keeps syncing.
+  const named = join(dirname(rel), localName(doc.filename, doc.title));
+  const keepName = options.keepName || (ctx.scope !== undefined && !ctx.scope.uploads(named));
+  const to = keepName ? rel : named;
   const moved = to !== rel && renameInside(root, rel, to, folds);
   const file = moved ? to : rel;
   // A blocked move records no server name it matches, so a later pass tries the move again.
-  const filename = options.keepName ? {} : { filename: moved || to === rel ? doc.filename : '' };
+  const filename = keepName ? {} : { filename: moved || to === rel ? doc.filename : '' };
   // Tracked at once, so nothing failing below can turn this file into a second doc.
   recordBase(root, doc.id, file, bytes, folds, filename);
   const merged = await client.content(doc.id, true);
@@ -548,6 +569,16 @@ function followLocalRenames(root: string, metas: DocMeta[], untracked: string[],
   return { held, heldFiles };
 }
 
+/**
+ * The workspace's scope evaluated over its files now, or null when it has none (every note is in scope). A scope file
+ * that cannot be read is an error, so nothing syncs past it.
+ */
+export function workspaceScope(root: string, folds: boolean, files = markdownFiles(root)): ScopeView | null {
+  const scope = readScope(root);
+  if (!scope) return null;
+  return evaluateScope(root, scope, { files, tracked: trackedMetas(root), folds });
+}
+
 /** One sync pass over the workspace at `ctx.root`, which must already hold a state directory. */
 export async function syncOnce(ctx: SyncContext): Promise<SyncResult[]> {
   const { root } = ctx;
@@ -572,6 +603,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   const { root, client, folds } = ctx;
   /** Stopped: the rest of the pass is dropped, and what it recorded so far stands. */
   const stopped = (error?: unknown) => error instanceof Stopped || Boolean(ctx.signal?.aborted);
+  // A scope file that cannot be read stops the pass before any request.
+  readScope(root);
   let listed: DocRow[];
   try {
     listed = await client.listDocs();
@@ -585,24 +618,32 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
 
-  const files = markdownFiles(root);
+  const all = markdownFiles(root);
+  // With a scope, a file outside it is never read, adopted or written, and a tracked one outside it stops syncing.
+  const scope = workspaceScope(root, folds, all) ?? undefined;
+  ctx = scope ? { ...ctx, scope } : ctx;
+  const admitted = (rel: string) => !scope || scope.admits(rel);
+  const files = all.filter(admitted);
   const untracked = files.filter((rel) => !metas.some((meta) => sameFile(meta.file, rel, folds)));
-  const { held, heldFiles } = followLocalRenames(root, metas, untracked, results);
+  // A tracked note inside a nested workspace with its own scope is that workspace's to sync: it is never read or written here.
+  const nested = new Set(metas.filter((meta) => scopedNest(root, meta.file) !== null).map((meta) => meta.docId));
+  const { held, heldFiles } = followLocalRenames(root, metas.filter((meta) => !nested.has(meta.docId) && admitted(meta.file)), untracked, results);
   metas = trackedMetas(root);
 
   for (const tracked of metas) {
-    if (held.has(tracked.docId)) continue;
+    if (held.has(tracked.docId) || nested.has(tracked.docId) || scopedNest(root, tracked.file) !== null || !admitted(tracked.file)) continue;
     if (stopped()) return results;
     touch();
     try {
       const row = rows.get(tracked.docId);
-      const { meta, result } = followServerName(ctx, tracked, row, trackedMetas(root));
+      const noteCtx = scope && !scope.uploads(tracked.file) ? { ...ctx, downloadOnly: true } : ctx;
+      const { meta, result } = followServerName(noteCtx, tracked, row, trackedMetas(root));
       if (result) results.push(result);
       // Media first, so a pushed reference finds its file; a doc no longer listed is left to reconcile to report.
-      if (row) results.push(...(await syncMedia(ctx, meta.docId, false)));
-      const reconciled = await reconcile(ctx, meta, row);
+      if (row) results.push(...(await syncMedia(noteCtx, meta.docId, false)));
+      const reconciled = await reconcile(noteCtx, meta, row);
       results.push(reconciled);
-      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(ctx, meta.docId, true)));
+      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(noteCtx, meta.docId, true)));
     } catch (error) {
       if (stopped(error)) return results;
       if (error instanceof RateLimited) throw error;
@@ -611,6 +652,10 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   }
   for (const rel of untracked) {
     if (heldFiles.has(rel)) continue;
+    if (scope && !scope.uploads(rel)) {
+      results.push(heldBack({ file: rel }));
+      continue;
+    }
     if (stopped()) return results;
     touch();
     try {
@@ -622,6 +667,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       results.push({ file: rel, action: 'failed', message: failure(error) });
     }
   }
+  const outside = (scope?.outOfScope ?? 0) + nested.size;
+  if (outside > 0) results.push({ file: '', action: 'out-of-scope', count: outside });
   return results;
 }
 
@@ -635,6 +682,7 @@ export function syncExitCode(results: SyncResult[]): number {
 
 /** One line per result that did something. */
 export function describe(result: SyncResult): string {
+  if (result.action === 'out-of-scope') return `${result.count ?? 0} .md file(s) outside the workspace's scope (.moss-multi/scope.json), or inside a nested workspace with its own scope, were left alone`;
   const name = result.from ? `${result.from} → ${result.file}` : result.file;
   const hunks = (result.hunks ?? []).map((hunk) => `\nfailed hunk:\n${hunk}`).join('');
   // The message may quote the server (a title, a refusal): it stays on its line.
@@ -692,16 +740,23 @@ export async function watchLoop(ctx: SyncContext, options: WatchOptions): Promis
     void stopped.then(done);
   });
 
+  let heldBefore = new Set<string>();
   out(`watching ${ctx.root} (syncing on changes and every ${options.intervalMs / 1000} s; Ctrl+C stops)`);
   try {
     while (!signal.aborted) {
       const seen = changes;
       let limitedMs = 0;
       try {
+        const held = new Set<string>();
         for (const result of await syncOnce({ ...ctx, signal })) {
           if (result.action === 'failed' || result.action === 'skipped-degenerate' || result.failedHunks) err(describe(result));
-          else if (result.action !== 'up-to-date') out(describe(result));
+          else if (result.action === 'follow-only') {
+            // Said once, not every pass, until it changes.
+            held.add(result.file);
+            if (!heldBefore.has(result.file)) out(describe(result));
+          } else if (result.action !== 'up-to-date' && result.action !== 'out-of-scope') out(describe(result));
         }
+        heldBefore = held;
       } catch (error) {
         if (error instanceof RateLimited) limitedMs = error.retryAfterSec * 1000;
         err(`sync failed: ${fieldSafe(failure(error))}`);
