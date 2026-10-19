@@ -29,7 +29,7 @@ const DocDO = {
     },
     create: async () => undefined,
     createFromSnapshot: async () => undefined,
-    snapshotForDuplicate: async () => ({ title: 'Source', state: new Uint8Array() }),
+    snapshotForDuplicate: async () => ({ title: 'Source', state: new Uint8Array(), payloads: [] }),
     recheck: async () => ({ closed: 0 }),
   }),
 };
@@ -38,6 +38,7 @@ const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
+    takeCreateToken: async () => true,
     publish: async (event: { type: string }) => { published.set(id.name, [...(published.get(id.name) ?? []), event]); },
   }),
 };

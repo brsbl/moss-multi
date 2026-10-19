@@ -3,11 +3,11 @@
 // listing of its own (T2.4): an anonymous holder sees only the linked doc, or the linked folder as the root of a
 // one-vault workspace; a signed-in holder of a folder link they cannot otherwise see is offered that folder beside
 // their vaults. Link listings never name the owner's vault or the folders around the link.
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { can, foldRole, maxRole, type Role } from '@moss-multi/protocol/roles';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
-import { createDb, inJson, type Db } from '../db/client.ts';
+import { createDb, type Db } from '../db/client.ts';
 import { docMembers, docs as docsTable, folderMembers, folders as foldersTable } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { accessibleDocs, accessibleFolders, actingUserId, folderChain, grantees, liveLink, MAX_FOLDER_DEPTH, resolveDocAccess, resolveFolderAccess } from './access.ts';
@@ -28,25 +28,25 @@ function rolesById(rows: { id: string; role: Role }[]): (id: string) => Role[] {
 
 /**
  * Trashed notes the signed-in caller may manage, each with the vault its folder chain ends at, trashed folders
- * included. Rows come from ownership, doc grants and folder grants, each with its folder chain; the caller's grants are
- * then folded per row as resolveDocAccess does (the check trash and restore make), so a co-owner who trashes a note
- * finds it in Trash. Three queries, however large Trash grows.
+ * included; only those `only` names, when given. Rows come from ownership, doc grants and folder grants, each with its
+ * folder chain; the caller's grants are then folded per row as resolveDocAccess does (the check trash and restore
+ * make), so a co-owner who trashes a note finds it in Trash. Three queries, however large Trash grows.
  */
-async function managedTrash(db: D1Database, userId: string): Promise<(TrashedRow & { vaultId: string })[]> {
+async function managedTrash(db: D1Database, userId: string, only: readonly string[] | null): Promise<(TrashedRow & { vaultId: string })[]> {
   const [chains, folderGrants, docGrants] = await Promise.all([
     db.prepare(`WITH RECURSIVE granted(id, depth) AS (
       SELECT folder_id, 1 FROM folder_members WHERE principal_id = ?1
       UNION SELECT f.id, granted.depth + 1 FROM folders f JOIN granted ON f.parent_id = granted.id WHERE granted.depth < ${MAX_FOLDER_DEPTH}
     ), up(doc_id, id, parent_id, kind, depth) AS (
       SELECT d.id, f.id, f.parent_id, f.kind, 1 FROM docs d JOIN folders f ON f.id = d.folder_id
-        WHERE d.deleted_at IS NOT NULL AND (d.owner_user_id = ?1 OR d.folder_id IN (SELECT id FROM granted)
+        WHERE d.deleted_at IS NOT NULL AND (?2 IS NULL OR d.id IN (SELECT value FROM json_each(?2))) AND (d.owner_user_id = ?1 OR d.folder_id IN (SELECT id FROM granted)
           OR d.id IN (SELECT doc_id FROM doc_members WHERE principal_id = ?1))
       UNION ALL SELECT up.doc_id, f.id, f.parent_id, f.kind, up.depth + 1 FROM folders f JOIN up ON f.id = up.parent_id
         WHERE up.depth < ${MAX_FOLDER_DEPTH}
     ) SELECT d.id, d.title, d.filename, d.folder_id AS folderId, d.created_at AS createdAt, d.updated_at AS updatedAt,
         d.deleted_at AS trashedAt, d.owner_user_id AS ownerUserId, up.id AS chainId, up.kind
       FROM docs d JOIN up ON up.doc_id = d.id ORDER BY d.id, up.depth`)
-      .bind(userId).all<TrashedRow & { ownerUserId: string; chainId: string; kind: string }>(),
+      .bind(userId, only && JSON.stringify(only)).all<TrashedRow & { ownerUserId: string; chainId: string; kind: string }>(),
     db.prepare('SELECT folder_id AS id, role FROM folder_members WHERE principal_id = ?').bind(userId).all<{ id: string; role: Role }>(),
     db.prepare('SELECT doc_id AS id, role FROM doc_members WHERE principal_id = ?').bind(userId).all<{ id: string; role: Role }>(),
   ]);
@@ -62,6 +62,14 @@ async function managedTrash(db: D1Database, userId: string): Promise<(TrashedRow
     const role = foldRole({ owner: ownerUserId === userId, grants, link: null, anonymous: false });
     return vaultId && role && can(role, 'manage') ? [{ ...row, vaultId }] : [];
   });
+}
+
+/** Each folder's live notes, every one of which its folder's discoverers may open (A§8), in one grouped count. */
+async function noteCounts(db: D1Database, folderIds: readonly string[]): Promise<Map<string, number>> {
+  const rows = await db.prepare(`SELECT folder_id AS id, count(*) AS n FROM docs
+    WHERE deleted_at IS NULL AND folder_id IN (SELECT value FROM json_each(?1)) GROUP BY folder_id`)
+    .bind(JSON.stringify(folderIds)).all<{ id: string; n: number }>();
+  return new Map(rows.results.map((row) => [row.id, row.n]));
 }
 
 const byUpdated = (a: DocRow, b: DocRow) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
@@ -91,37 +99,72 @@ function pathMap(rootId: string, byId: Map<string, TreeNode>) {
 }
 
 /** The live subtree under `rootId` (the root excluded), at most MAX_FOLDER_DEPTH levels down. */
-async function subtree(db: Db, rootId: string, ownerUserId: string) {
-  const rows = await db.select().from(foldersTable).where(and(eq(foldersTable.ownerUserId, ownerUserId), isNull(foldersTable.deletedAt)));
-  const children = new Map<string, typeof rows>();
-  for (const row of rows) if (row.parentId) children.set(row.parentId, [...(children.get(row.parentId) ?? []), row]);
-  const found: typeof rows = [];
-  let level = [rootId];
-  for (let depth = 0; depth < MAX_FOLDER_DEPTH && level.length; depth += 1) {
-    const next = level.flatMap((id) => children.get(id) ?? []);
-    found.push(...next);
-    level = next.map((row) => row.id);
-  }
-  return found;
+async function subtree(db: Db, rootId: string, ownerUserId: string): Promise<string[]> {
+  const rows = await db.all<{ id: string }>(sql`
+    WITH RECURSIVE sub(id, depth) AS (
+      SELECT id, 0 FROM folders WHERE id = ${rootId}
+      UNION ALL SELECT f.id, sub.depth + 1 FROM folders f JOIN sub ON f.parent_id = sub.id
+        WHERE f.deleted_at IS NULL AND f.owner_user_id = ${ownerUserId} AND sub.depth < ${MAX_FOLDER_DEPTH}
+    ) SELECT id FROM sub WHERE depth > 0`);
+  return rows.map((row) => row.id);
+}
+
+/** A folder or a doc of a link's subtree, as folderLinkListing's one read returns them. */
+interface SubtreeRow {
+  type: 'folder' | 'doc';
+  id: string;
+  /** The folder's parent, or the doc's folder. */
+  parentId: string;
+  /** The folder's name, or the doc's title. */
+  name: string;
+  filename: string;
+  createdAt: number;
+  updatedAt: number;
+  ownerUserId: string;
+  /** A folder's live notes. */
+  noteCount: number;
 }
 
 /**
- * A folder link's workspace: the folder as the vault root, its subfolders and its docs, each at the caller's role as
- * resolveDocAccess and resolveFolderAccess fold it (ownership, grants up the chain, the link as a ceiling). At most six
- * queries with a fixed number of parameters, however large the subtree.
+ * A folder link's workspace: the folder as the vault root, its subfolders and its docs (only those `only` names, when
+ * given), each at the caller's role as resolveDocAccess and resolveFolderAccess fold it (ownership, grants up the
+ * chain, the link as a ceiling). The live subtree, its live docs and each folder's note count are one statement, so a
+ * folder moved out of the link meanwhile never brings notes the link does not cover. At most five queries with a fixed
+ * number of parameters, however large the subtree.
  */
-async function folderLinkListing(db: Db, principal: Principal, token: string, root: { id: string; name: string; ownerUserId: string; role: Role }) {
+async function folderLinkListing(db: Db, principal: Principal, token: string, root: { id: string; name: string; ownerUserId: string; role: Role },
+  only: readonly string[] | null) {
   const ids = grantees(principal);
-  const [below, rootChain, link, folderGrants, docGrants] = await Promise.all([
-    subtree(db, root.id, root.ownerUserId),
+  const [tree, rootChain, link, folderGrants, docGrants] = await Promise.all([
+    db.all<SubtreeRow>(sql`
+      WITH RECURSIVE sub(id, parent_id, name, owner_user_id, created_at, depth) AS (
+        SELECT id, parent_id, name, owner_user_id, created_at, 0 FROM folders WHERE id = ${root.id}
+        UNION ALL SELECT f.id, f.parent_id, f.name, f.owner_user_id, f.created_at, sub.depth + 1 FROM folders f JOIN sub ON f.parent_id = sub.id
+          WHERE f.deleted_at IS NULL AND f.owner_user_id = ${root.ownerUserId} AND sub.depth < ${MAX_FOLDER_DEPTH}
+      )
+      SELECT 'folder' AS type, id, parent_id AS parentId, name, NULL AS filename, created_at AS createdAt, NULL AS updatedAt,
+          owner_user_id AS ownerUserId, (SELECT count(*) FROM docs d WHERE d.folder_id = sub.id AND d.deleted_at IS NULL) AS noteCount
+        FROM sub WHERE depth > 0
+      UNION ALL
+      SELECT 'doc', d.id, d.folder_id, d.title, d.filename, d.created_at, d.updated_at, d.owner_user_id, NULL FROM docs d
+        WHERE d.deleted_at IS NULL AND d.folder_id IN (SELECT id FROM sub)
+          ${only ? sql`AND d.id IN (SELECT value FROM json_each(${JSON.stringify(only)}))` : sql``}`),
     folderChain(db, root.id),
     liveLink(db, token),
     ids.length ? db.select({ id: folderMembers.folderId, role: folderMembers.role }).from(folderMembers).where(inArray(folderMembers.principalId, ids)) : [],
     ids.length ? db.select({ id: docMembers.docId, role: docMembers.role }).from(docMembers).where(inArray(docMembers.principalId, ids)) : [],
   ]);
-  const byId = new Map<string, TreeNode>([[root.id, { id: root.id, name: root.name, parentId: null, kind: 'vault' }], ...below.map((row): [string, TreeNode] => [row.id, row])]);
+  const byId = new Map<string, TreeNode>([[root.id, { id: root.id, name: root.name, parentId: null, kind: 'vault' }]]);
+  const below: SubtreeRow[] = [];
+  const rows: SubtreeRow[] = [];
+  for (const row of tree) {
+    if (row.type === 'doc') rows.push(row);
+    else if (!byId.has(row.id)) {
+      byId.set(row.id, { id: row.id, name: row.name, parentId: row.parentId, kind: 'folder' });
+      below.push(row);
+    }
+  }
   const pathFor = pathMap(root.id, byId);
-  const rows = await db.select().from(docsTable).where(and(inJson(docsTable.folderId, [root.id, ...below.map((row) => row.id)]), isNull(docsTable.deletedAt)));
 
   const onFolder = rolesById(folderGrants);
   const onDoc = rolesById(docGrants);
@@ -145,17 +188,16 @@ async function folderLinkListing(db: Db, principal: Principal, token: string, ro
   };
 
   const docs = rows.flatMap((doc): DocRow[] => {
-    const role = roleOf(doc.ownerUserId, doc.id, doc.folderId);
-    const folderPath = pathFor(doc.folderId);
-    return role && folderPath ? [{ id: doc.id, title: doc.title, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
+    const role = roleOf(doc.ownerUserId, doc.id, doc.parentId);
+    const folderPath = pathFor(doc.parentId);
+    return role && folderPath ? [{ id: doc.id, title: doc.name, filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
       role, folderPath, surfaced: true }] : [];
   }).sort(byUpdated);
   // Each folder at the caller's own role, so a grant on a subfolder above the link's role shows.
   const folders: FolderRow[] = below.flatMap((folder): FolderRow[] => {
     const path = pathFor(folder.id);
     const role = roleOf(folder.ownerUserId, null, folder.id) ?? root.role;
-    return path ? [{ id: folder.id, name: path.split('/').pop()!, path, role, surfaced: true, createdAt: folder.createdAt,
-      noteCount: docs.filter((doc) => doc.folderPath === path).length }] : [];
+    return path ? [{ id: folder.id, name: path.split('/').pop()!, path, role, surfaced: true, createdAt: folder.createdAt, noteCount: folder.noteCount }] : [];
   });
   return { docs, folders };
 }
@@ -177,7 +219,8 @@ async function linkScope(db: Db, principal: Principal, token: string | null) {
   if (!access || access.deleted) return null;
   const vault: VaultRow = { id: link.targetId, name: access.name, role: access.role, owned: false };
   return { kind: 'folder' as const, vault, linkOnly: access.linkOnly,
-    list: () => folderLinkListing(db, principal, token, { id: link.targetId, name: access.name, ownerUserId: access.ownerUserId, role: access.role }) };
+    list: (only: readonly string[] | null) =>
+      folderLinkListing(db, principal, token, { id: link.targetId, name: access.name, ownerUserId: access.ownerUserId, role: access.role }, only) };
 }
 
 /** The docs and folders a presented link covers (a folder link covers its live subtree), with the link's role. */
@@ -188,7 +231,7 @@ async function linkCover(db: Db, token: string) {
   const [root] = await db.select({ ownerUserId: foldersTable.ownerUserId }).from(foldersTable).where(eq(foldersTable.id, link.targetId)).limit(1);
   if (!root) return null;
   const below = await subtree(db, link.targetId, root.ownerUserId);
-  return { role: link.role, docIds: new Set<string>(), folderIds: new Set([link.targetId, ...below.map((row) => row.id)]) };
+  return { role: link.role, docIds: new Set<string>(), folderIds: new Set([link.targetId, ...below]) };
 }
 
 export async function workspace(request: Request, env: AuthEnv): Promise<Response> {
@@ -199,17 +242,19 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   const params = new URL(request.url).searchParams;
   const ids = params.has('ids') ? new Set(params.getAll('ids')) : null;
   const only = (rows: DocRow[]) => (ids ? rows.filter((row) => ids.has(row.id)) : rows);
+  // An id-filtered refresh reads only those notes, and the one a `doc` landing follows.
+  const wanted = ids ? [...ids, ...params.getAll('doc')] : null;
 
   if (principal.type === 'anonymous') {
     const scope = await linkScope(db, principal, principal.shareToken);
     if (!scope) return notFound();
-    const { docs, folders } = scope.kind === 'doc' ? scope : await scope.list();
+    const { docs, folders } = scope.kind === 'doc' ? scope : await scope.list(wanted);
     return json({ vault: scope.vault, vaults: [scope.vault], docs: only(docs), folders }, 200, NO_STORE);
   }
 
   const home = await ensureDefaultVault(db, principal.id);
   const visible = await accessibleFolders(db, principal);
-  const docs = await accessibleDocs(db, principal, visible);
+  const [docs, counts] = await Promise.all([accessibleDocs(db, principal, visible, wanted), noteCounts(env.DB, visible.map((folder) => folder.id))]);
   const byId = new Map(visible.map((folder) => [folder.id, folder]));
   const vaults: VaultRow[] = visible.filter((folder) => folder.kind === 'vault').map((folder) => ({
     id: folder.id, name: folder.name, role: folder.role, owned: folder.ownerUserId === principal.id,
@@ -227,7 +272,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   // The link's own workspace when asked for, or when the landing's folder or doc is reachable only through it.
   const askedLink = linkVault !== null && params.get('vault') === linkVault.vault.id;
   if (linkVault && (askedLink || (!followed && (params.has('folder') || params.has('doc'))))) {
-    const { docs: rows, folders } = await linkVault.list();
+    const { docs: rows, folders } = await linkVault.list(wanted);
     const folderId = params.get('folder');
     if (askedLink || folderId === linkVault.vault.id || folders.some((folder) => folder.id === folderId)
       || rows.some((row) => row.id === params.get('doc'))) {
@@ -251,7 +296,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
     const path = pathFor(folder.id);
     return path ? [{ id: folder.id, name: path.split('/').pop()!, path, role: lift(folder.role, null, folder.id),
       surfaced: !folder.parentId || !byId.has(folder.parentId), createdAt: folder.createdAt,
-      noteCount: docs.filter((doc) => doc.folderId === folder.id).length }] : [];
+      noteCount: counts.get(folder.id) ?? 0 }] : [];
   });
   const rows = docs.flatMap((doc) => {
     const surfaced = !byId.has(doc.folderId);
@@ -261,7 +306,7 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   });
   // A trashed note shows under its folder while that folder is live, else at the root it would be restored to.
   // A note in a vault the caller cannot see surfaces in every vault, as a live one does.
-  const trashed = (await managedTrash(env.DB, principal.id)).filter((doc) => doc.vaultId === vault.id || !byId.has(doc.vaultId))
+  const trashed = (await managedTrash(env.DB, principal.id, wanted)).filter((doc) => doc.vaultId === vault.id || !byId.has(doc.vaultId))
     .map((doc): DocRow => ({ id: doc.id, title: doc.title,
     filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt, role: 'owner', folderPath: pathFor(doc.folderId) ?? 'Notes',
     surfaced: false, trashedAt: doc.trashedAt }));

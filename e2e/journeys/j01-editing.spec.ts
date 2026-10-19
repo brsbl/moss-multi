@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import type { TableNode } from '@lexical/table';
 import { expect, test, ui } from '../lib/test.ts';
@@ -33,18 +34,33 @@ async function paste(actor: Actor, id: string, markdown: string) {
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
   }, markdown);
 }
-async function widths(actor: Actor, id: string, write = false) {
-  return ui.body(actor, id).evaluate((element, write) => {
+async function widths(actor: Actor, id: string) {
+  return ui.body(actor, id).evaluate(element => {
     const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
-    const read = () => [...editor.getEditorState()._nodeMap.values()].filter(n => n.getType() === 'table').map(n => ({ text: n.getTextContent(), widths: (n as TableNode).getColWidths() ?? [] }));
-    if (write) editor.update(() => {
-      for (const node of editor.getEditorState()._nodeMap.values()) {
-        if (node.getType() === 'table') (node as TableNode).setColWidths([210, 170]);
-        if (node.getType() === 'tab-group') (node as unknown as { setTabWidths(w: number[]): void; setActiveIndex(i: number): void }).setTabWidths([180, 200]);
-      }
-    }, { discrete: true, tag: 'table-column-resize' });
-    return editor.getEditorState().read(read);
-  }, write);
+    return editor.getEditorState().read(() => [...editor.getEditorState()._nodeMap.values()].filter(n => n.getType() === 'table').map(n => ({ text: n.getTextContent(), widths: (n as TableNode).getColWidths() ?? [] })));
+  });
+}
+/** What the viewer sees: each table's first-row cell widths and each tab group's title widths, in CSS pixels. */
+async function rendered(actor: Actor, id: string) {
+  return ui.body(actor, id).evaluate(element => ({
+    tables: [...element.querySelectorAll('table')].map(table => ({
+      text: table.textContent ?? '',
+      cols: [...(table.rows[0]?.cells ?? [])].map(cell => cell.getBoundingClientRect().width),
+    })),
+    tabs: [...element.querySelectorAll('.moss-tab-group')].map(group => [...group.querySelectorAll('[data-tab-title]')].map(title => title.getBoundingClientRect().width)),
+  }));
+}
+type Rendered = Awaited<ReturnType<typeof rendered>>;
+const columns = (view: Rendered, heading: string) => view.tables.find(t => t.text.includes(heading))?.cols ?? [];
+const near = (actual: number[], expected: number[]) => actual.length === expected.length && expected.every((width, i) => Math.abs(actual[i] - width) <= 2);
+/** Drags a resize handle with the real pointer, in steps, as a person does. */
+async function drag(actor: Actor, handle: Locator, dx: number) {
+  const box = await handle.boundingBox();
+  if (!box) throw new Error('resize handle not visible');
+  const x = box.x + box.width / 2; const y = box.y + box.height / 2;
+  await actor.page.mouse.move(x, y); await actor.page.mouse.down();
+  await actor.page.mouse.move(x + dx / 2, y, { steps: 4 }); await actor.page.mouse.move(x + dx, y, { steps: 4 });
+  await actor.page.mouse.up();
 }
 async function tabs(actor: Actor, id: string) {
   return ui.body(actor, id).evaluate(element => {
@@ -86,8 +102,7 @@ test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-
   const { ada, ben, id } = await setup(actors, stack.baseUrl, '```moss-html\n<p>seed</p>\n```');
   const field = (actor: Actor) => ui.body(actor, id).locator('textarea');
   for (const actor of [ada, ben]) {
-    await ui.body(actor, id).locator('[data-moss-html-preview-viewport]').hover();
-    await ui.body(actor, id).getByTitle('Edit HTML', { exact: true }).click();
+    await ui.openHtmlSource(actor, id);
   }
   await Promise.all([ada.page.keyboard.type('AAAA', { delay: 60 }), ben.page.keyboard.type('BBBB', { delay: 60 })]);
   for (const actor of [ada, ben]) {
@@ -202,11 +217,24 @@ test('j01 editing: title undo is local and redo preserves the peer @p:col-3', as
 
 test('j01 editing: local layout survives reload and a peer table inserted above; frames exclude only viewer fields @p:R11 @p:col-1', async ({ actors, stack }) => {
   const { ada, ben, id, wire } = await setup(actors, stack.baseUrl);
-  await widths(ada, id, true);
+  const start = await rendered(ada, id); const benStart = await rendered(ben, id);
+  // A column resize and a tab title resize, each through its real handle.
+  await ui.body(ada, id).getByRole('cell', { name: 'cell', exact: true }).click();
+  await drag(ada, ada.page.getByRole('separator', { name: 'Resize table columns 1 and 2', exact: true }), 80);
+  await expect.poll(async () => columns(await rendered(ada, id), 'Original')[0] - columns(start, 'Original')[0]).toBeGreaterThan(70);
+  await drag(ada, ui.body(ada, id).getByRole('separator', { name: 'Resize First tab title', exact: true }), 60);
+  await expect.poll(async () => (await rendered(ada, id)).tabs[0][0] - start.tabs[0][0]).toBeGreaterThan(50);
   await ui.body(ada, id).getByText('Second', { exact: true }).click();
-  await expect.poll(() => tabs(ada, id)).toEqual([{ widths: [180, 200], active: 1 }]);
+  await expect.poll(async () => (await tabs(ada, id))[0].active).toBe(1);
+  const resized = await rendered(ada, id);
+  const stored = { table: (await widths(ada, id))[0].widths, tabs: (await tabs(ada, id))[0] };
+  expect(stored.table).toHaveLength(2);
+  expect(stored.tabs.widths[0]).toBeGreaterThan(0);
+  // The peer's layout is untouched, in its tree and on its screen.
   expect((await widths(ben, id))[0].widths).toEqual([]);
   expect((await tabs(ben, id))[0]).toEqual({ widths: [], active: 0 });
+  expect(near(columns(await rendered(ben, id), 'Original'), columns(benStart, 'Original')), 'the peer renders its own column widths').toBe(true);
+  expect(near((await rendered(ben, id)).tabs[0], benStart.tabs[0]), 'the peer renders its own tab widths').toBe(true);
   await ui.body(ada, id).getByRole('heading', { name: 'Fold me' }).hover();
   await ada.page.getByRole('button', { name: 'Collapse section', exact: true }).click();
   await expect(ui.body(ada, id).getByText('Hidden paragraph.', { exact: true })).toBeHidden();
@@ -214,16 +242,20 @@ test('j01 editing: local layout survives reload and a peer table inserted above;
   await expect.poll(() => ada.page.evaluate(id => JSON.parse(localStorage.getItem(`moss-multi:collapsed-headings:${id}`) ?? '[]').length, id)).toBe(1);
   await actors.reloadAll();
   for (const actor of [ada, ben]) await ui.waitLive(actor, id);
-  expect((await widths(ada, id))[0].widths).toEqual([210, 170]);
-  expect((await tabs(ada, id))[0]).toEqual({ widths: [180, 200], active: 1 });
+  expect((await widths(ada, id))[0].widths).toEqual(stored.table);
+  expect((await tabs(ada, id))[0]).toEqual(stored.tabs);
+  await expect.poll(async () => near(columns(await rendered(ada, id), 'Original'), columns(resized, 'Original')), 'the resized columns render after reload').toBe(true);
+  await expect.poll(async () => near((await rendered(ada, id)).tabs[0], resized.tabs[0]), 'the resized tab title renders after reload').toBe(true);
   await expect(ui.body(ada, id).getByText('Hidden paragraph.', { exact: true })).toBeHidden();
   await paragraphEnd(ben, id); await ben.page.keyboard.press('ControlOrMeta+Home');
   await paste(ben, id, '| Added | New |\n| --- | --- |\n| x | y |\n\n');
   await expect(ui.body(ada, id).locator('table')).toHaveCount(2);
   await actors.reloadAll();
   for (const actor of [ada, ben]) await ui.waitLive(actor, id);
-  expect((await widths(ada, id)).find(t => t.text.includes('Original'))?.widths).toEqual([210, 170]);
+  expect((await widths(ada, id)).find(t => t.text.includes('Original'))?.widths).toEqual(stored.table);
   expect((await widths(ada, id)).find(t => t.text.includes('Added'))?.widths).toEqual([]);
+  await expect.poll(async () => near(columns(await rendered(ada, id), 'Original'), columns(resized, 'Original')), 'the widths stay on their table after a peer insertion').toBe(true);
+  await expect.poll(async () => near(columns(await rendered(ada, id), 'Added'), columns(await rendered(ben, id), 'Added')), 'the inserted table takes no restored width').toBe(true);
   const frames = Buffer.concat(wire).toString('utf8');
   for (const key of ['__activeIndex', '__tabWidths', '__colWidths', '__resolutionState', '--formula-draft-chip', '--link-selection']) expect(frames).not.toContain(key);
   for (const key of ['__type', '__result', '__name']) expect(frames).toContain(key);
@@ -317,4 +349,125 @@ test('j01 editing: formula drafts and background conversions stay out of shared 
   for (const marker of ['--formula-draft-chip', '--formula-edit-id', '--formula-ref-note-id']) expect(frames).not.toContain(marker);
   await actors.reloadAll();
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await expect(ui.body(actor, id).locator('[data-formula-id]')).toHaveCount(1); await expect(ui.body(actor, id).locator('[data-color-value="#aabbcc"]')).toHaveCount(1); }
+});
+
+/** What the server exports for the note. */
+async function exported(actor: Actor, id: string) {
+  const response = await actor.context.request.get(`/api/docs/${id}/content`);
+  expect(response.status()).toBe(200);
+  return response.text();
+}
+
+test('j01 editing: inline shortcuts typed a character at a time keep their text and style, on a peer and after reload @p:col-1', async ({ actors, stack }) => {
+  // T3.B13 (B279): `==marked==` then Space latched moss's formula mode, which held back the highlight shortcut and then
+  // committed `marked` as a formula, dropping the word; `==two words=` latched it on `words=`.
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Shortcuts:');
+  await ui.body(ada, id).locator('p').filter({ hasText: /^Shortcuts:/ }).click();
+  await ada.page.keyboard.press('End');
+  await ada.page.keyboard.type(' ==marked== then **bold** and ==two words== and *it* and ~~gone~~ and `code` end', { delay: 30 });
+  const styled = async (actor: Actor) => {
+    const body = ui.body(actor, id);
+    await expect(body.locator('p').filter({ hasText: /^Shortcuts:/ }), `${actor.label}: every word survives`).toHaveText('Shortcuts: marked then bold and two words and it and gone and code end');
+    await expect(body.locator('span[style*="--obsidian-highlight"]'), `${actor.label}: only the marked words are highlighted`).toHaveText(['marked', 'two words']);
+    await expect(body.locator('strong')).toHaveText('bold');
+    await expect(body.locator('em')).toHaveText('it');
+    await expect(body.locator('.moss-strikethrough')).toHaveText('gone');
+    await expect(body.locator('code')).toHaveText('code');
+  };
+  for (const actor of [ada, ben]) await styled(actor);
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id)).toBe('Shortcuts: ==marked== then **bold** and ==two words== and *it* and ~~gone~~ and `code` end');
+  await ada.page.reload();
+  await ui.waitLive(ada, id); await ada.declareRemount(id);
+  await styled(ada);
+});
+
+test('j01 editing: a composition cancelled below a node-selected chart leaves the note as it was; a committed one and a peer\'s text stay @p:col-1', async ({ actors, stack, browserName }) => {
+  // T3.B13 (B204): a composition starting while a block is node-selected makes a paragraph below it (T3.13); cancelled
+  // with nothing composed, that paragraph stayed, a blank line synced to every collaborator.
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'First line');
+  const root = (actor: Actor) => ui.body(actor, id);
+  const blocks = (actor: Actor) => root(actor).evaluate((element) => element.children.length);
+  const lastBlock = (actor: Actor) => root(actor).evaluate((element) => element.lastElementChild?.textContent ?? '');
+  const selected = () => root(ada).evaluate((element) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const state = editor.getEditorState();
+    const selection = state._selection as { _nodes?: Set<string> } | null;
+    return selection?._nodes ? [...selection._nodes].map((key) => state._nodeMap.get(key)?.getType() ?? null) : null;
+  });
+  const insertChart = async () => {
+    await ada.page.keyboard.press('Enter');
+    await ada.page.keyboard.type('/bar');
+    await expect(ada.page.getByText('Bar Chart', { exact: true })).toBeVisible();
+    await ada.page.keyboard.press('Enter');
+    await expect.poll(selected, 'the inserted chart is node-selected').toEqual(['chart']);
+  };
+  const cdp = browserName === 'chromium' ? await ada.context.newCDPSession(ada.page) : null;
+  // A real IME in Chromium; Playwright drives none in WebKit, so there the engine's events are dispatched on the root.
+  const start = async () => {
+    if (cdp) await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+    else await root(ada).evaluate((element) => element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' })));
+  };
+  const end = async (text: string) => {
+    if (cdp) {
+      if (text) await cdp.send('Input.insertText', { text });
+      else await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 });
+      return;
+    }
+    if (text) await ada.page.keyboard.insertText(text);
+    await root(ada).evaluate((element, data) => element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data })), text);
+  };
+
+  await root(ada).locator('p').filter({ hasText: /^First line$/ }).click();
+  await ada.page.keyboard.press('End');
+  await insertChart();
+  for (const actor of [ada, ben]) await expect(root(actor).locator('.recharts-surface')).toHaveCount(1);
+  await ui.waitAcked(ada, id);
+  const before = await exported(ada, id);
+  const count = await blocks(ada);
+
+  // Cancelled: nothing changes, here or on the peer, and the chart is selected again.
+  await start();
+  await expect.poll(() => blocks(ben), 'the peer sees the paragraph the composition made').toBe(count + 1);
+  await end('');
+  for (const actor of [ada, ben]) await expect.poll(() => blocks(actor), `${actor.label}: the paragraph is taken back`).toBe(count);
+  await expect.poll(selected, 'the chart is selected again').toEqual(['chart']);
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id), 'the note exports as before').toBe(before);
+
+  // Committed: the composed text lands in a paragraph below the chart.
+  await start();
+  await end('日本');
+  for (const actor of [ada, ben]) await expect.poll(() => lastBlock(actor), `${actor.label}: the composed text stays`).toBe('日本');
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id)).toBe(`${before}\n\n日本`);
+
+  // A peer types into the paragraph while the composition is open; cancelling it keeps the peer's text.
+  await insertChart();
+  for (const actor of [ada, ben]) await expect(root(actor).locator('.recharts-surface')).toHaveCount(2);
+  const withTwo = await blocks(ada);
+  await start();
+  await expect.poll(() => blocks(ben)).toBe(withTwo + 1);
+  const box = await root(ben).evaluate((element) => {
+    element.lastElementChild!.scrollIntoView({ block: 'center' });
+    const rect = element.lastElementChild!.getBoundingClientRect();
+    return { x: rect.left + 4, y: rect.top + rect.height / 2 };
+  });
+  await ben.page.mouse.click(box.x, box.y);
+  await ben.page.keyboard.press('End');
+  await ben.page.keyboard.type('Peer');
+  await expect.poll(() => lastBlock(ben), 'the peer types into the composing paragraph').toContain('Peer');
+  await expect.poll(() => root(ada).evaluate((element) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    const state = editor.getEditorState();
+    return state.read(() => state._nodeMap.get('root')!.getTextContent());
+  }), 'the peer\'s text reaches the composing editor').toContain('Peer');
+  await end('');
+  await ui.waitAcked(ben, id);
+  for (const actor of [ada, ben]) {
+    await expect.poll(() => lastBlock(actor), `${actor.label}: the peer's text stays`).toContain('Peer');
+    expect(await blocks(actor)).toBe(withTwo + 1);
+  }
+  await ui.waitAcked(ada, id);
+  expect(await exported(ada, id)).toContain('Peer');
 });

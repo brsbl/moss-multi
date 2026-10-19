@@ -9,6 +9,8 @@ export const EXCLUDED_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'code-block': ['__code'],
   'html-block': ['__rawHtml'],
   formula: ['__formula'],
+  chart: ['__config'],
+  sketch: ['__grid', '__labels'],
   'tab-group': ['__activeIndex', '__tabWidths'],
   table: ['__colWidths'],
   'file-link': ['__resolutionState'],

@@ -17,6 +17,8 @@ import { toDisplaySrc } from '../utils/asset-url';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $isImageNode, ImageNode, OPEN_IMAGE_ALT_TEXT_EDITOR_COMMAND } from './ImageNode';
 import { registerNodeView } from './node-views';
+// moss-multi seam: capabilities (T3.B17): the missing-image fallback's buttons follow the block's edit capability.
+import { useBlockCanEdit } from '@moss-multi/host/capabilities';
 export { $createImageNode, $isImageNode, ImageNode, OPEN_IMAGE_ALT_TEXT_EDITOR_COMMAND } from './ImageNode';
 export type { SerializedImageNode } from './ImageNode';
 
@@ -41,6 +43,7 @@ function ImageComponent({
   const noteId = useCurrentNoteId();
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
+  const canEdit = useBlockCanEdit(); // moss-multi seam: capabilities (T3.B17)
   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
   const [hasError, setHasError] = useState(false);
   const [imageVersion, setImageVersion] = useState(0);
@@ -159,7 +162,8 @@ function ImageComponent({
 
   // Render error state — still selectable and removable: a missing asset must
   // not leave an undeletable block in the note.
-  // moss-multi seam: local asset delivery lands in M3; never request Electron's protocol in a browser.
+  // moss-multi seam: web-assets (A§16): uploaded media loads from its asset route; a file only moss desktop has (an
+  // absolute or nested local path) is never requested through Electron's protocol, and says why it is missing.
   const desktopAsset = displaySrc.startsWith('moss-asset:');
   if (hasError || desktopAsset) {
     const missingLabel = (obsidianRef || src).trim();
@@ -169,9 +173,10 @@ function ImageComponent({
         data-block-decorator-key={nodeKey}
         onClick={handleContainerClick}
       >
-        <span>{`"${missingLabel}" could not be found.`}</span>
+        <span>{desktopAsset ? `"${missingLabel}" is a desktop file that isn't available on the web.` : `"${missingLabel}" could not be found.`}</span>
         <span className="ml-2 inline-flex items-center gap-2">
-          {!desktopAsset && <button
+          {/* moss-multi seam: capabilities (T3.B17): a reader gets neither button, nothing focusable in a read-only body */}
+          {canEdit && !desktopAsset && <button
             type="button"
             className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"
             onClick={(e) => {
@@ -182,7 +187,7 @@ function ImageComponent({
           >
             Retry
           </button>}
-          <button
+          {canEdit && <button
             type="button"
             className="text-xs text-ink-faint underline-offset-2 hover:text-ink-muted hover:underline focus-visible:outline-none"
             onClick={(e) => {
@@ -191,7 +196,7 @@ function ImageComponent({
             }}
           >
             Remove
-          </button>
+          </button>}
         </span>
       </div>
     );

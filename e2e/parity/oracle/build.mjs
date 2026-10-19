@@ -5,7 +5,7 @@
 // Needs `pnpm install --frozen-lockfile --ignore-workspace` in e2e/parity/oracle first.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,6 +47,9 @@ function main(out) {
   writeFileSync(componentsPath, withPreamble(readFileSync(componentsPath, 'utf8'), fonts));
   // This story renders moss's packages/web, which is not vendored (A§2.1); no target uses it.
   rmSync(join(TREE, UNVENDORED_STORY));
+  // The node-family parity story (A§20) and the note it renders; oracle-only, never vendored.
+  copyFileSync(join(HERE, 'DemoNote.stories.tsx'), join(TREE, 'packages/desktop/stories/DemoNote.stories.tsx'));
+  copyFileSync(join(REPO, 'e2e/fixtures/demo-note.md'), join(TREE, 'packages/desktop/stories/demo-note.md'));
   const outDir = resolve(out);
   // Ladle joins --outDir onto its cwd.
   const viteConfig = join(HERE, 'vite.oracle.mjs');

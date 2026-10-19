@@ -6,7 +6,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import {
-  agentKey, BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser,
+  agentKey, BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser, unmeteredPrincipals,
 } from '../test/principals.ts';
 import { redeem } from '../test/invites.ts';
 import { handleApi } from './router.ts';
@@ -24,8 +24,8 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  // No PrincipalDO: nothing here renames a doc (its only required use), and nothing is published.
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: undefined as never };
+  // Notes are minted without limit and nothing is published.
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: unmeteredPrincipals as never };
   ada = await signedUpUser(env, 't24s-ada', 'Ada');
   ben = await signedUpUser(env, 't24s-ben', 'Ben');
   cy = await signedUpUser(env, 't24s-cy', 'Cy');

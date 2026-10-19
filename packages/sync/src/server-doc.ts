@@ -4,6 +4,7 @@
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
+import { refusingSpentImports } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { readField } from '@moss-multi/core/doc-fields';
@@ -169,10 +170,13 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
   });
 }
 
-/** Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). */
+/**
+ * Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). Throws
+ * IMPORT_BUDGET_SPENT, writing nothing, for markdown that spends the converter's whole work budget.
+ */
 export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontmatter?: string): boolean {
   return serverWrite(live, SERVER_IMPORT, (doc) => {
-    $importNoteBody(markdown, { comments: {} });
+    refusingSpentImports(() => $importNoteBody(markdown, { comments: {} }));
     if (frontmatter !== undefined) {
       importFrontmatter(doc, frontmatter, SERVER_IMPORT);
     }

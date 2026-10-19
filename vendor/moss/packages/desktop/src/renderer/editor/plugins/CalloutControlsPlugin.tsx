@@ -78,6 +78,9 @@ function CalloutControls({
   const [data, setData] = useState<CalloutData | null>(() => readCalloutData(editor, nodeKey));
   const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
   const [isLevelDropdownOpen, setIsLevelDropdownOpen] = useState(false);
+  // moss-multi seam: read-only-decorators (T3.8): a read-only callout names its type but offers no menu.
+  const [editable, setEditable] = useState(() => editor.isEditable());
+  useEffect(() => editor.registerEditableListener(setEditable), [editor]);
 
   const refresh = useCallback(() => {
     setData(readCalloutData(editor, nodeKey));
@@ -142,6 +145,7 @@ function CalloutControls({
             className="flex items-center gap-1.5 rounded-md px-1 py-0.5 text-sm font-medium text-ink-default transition-colors hover:bg-surface-badge-muted"
             onClick={(event) => event.stopPropagation()}
             aria-label="Callout type"
+            disabled={!editable /* moss-multi seam: read-only-decorators (T3.8) */}
           >
             <IconComponent className="h-4 w-4 text-ink-muted" />
             {CALLOUT_LABELS[data.calloutType]}
@@ -173,6 +177,7 @@ function CalloutControls({
               className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-ink-muted transition-colors hover:bg-surface-badge-muted"
               onClick={(event) => event.stopPropagation()}
               aria-label="Priority level"
+              disabled={!editable /* moss-multi seam: read-only-decorators (T3.8) */}
             >
               {PRIORITY_LEVEL_LABELS[data.level || 'medium']}
               <ChevronDown className="h-3 w-3" />

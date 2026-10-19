@@ -1,4 +1,6 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/SketchNode.tsx @ 762abb777 (extracted)
+// moss-multi seam: register payloads (A§10.10): cells and labels are per-key registers on a bound doc.
+import { readMapRegister, writeMapRegister, initRegisterNode } from '@moss-multi/host/collab/registers';
 import type { JSX } from 'react';
 import { $applyNodeReplacement, type DOMConversionMap, type DOMConversionOutput, type DOMExportOutput, DecoratorNode, type EditorConfig, type LexicalNode, type NodeKey, type SerializedLexicalNode, type Spread } from 'lexical';
 import { cloneCommentIds, exportCommentIds, importCommentIds, initCommentIds } from '../utils/commentable-node';
@@ -191,9 +193,15 @@ function $convertSketchElement(domNode: HTMLElement): DOMConversionOutput | null
 // ---------------------------------------------------------------------------
 
 export class SketchNode extends DecoratorNode<JSX.Element> {
+  __regId = initRegisterNode(this);
   __grid: boolean[];
   __labels: TextLabel[];
   __commentIds: string[];
+
+  afterCloneFrom(previous: this): void {
+    super.afterCloneFrom(previous);
+    this.__regId = previous.__regId;
+  }
 
   static getType(): string {
     return 'sketch';
@@ -226,7 +234,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
     return {
       type: 'sketch',
       version: 1,
-      grid: buildSketchMarkdown(this.__grid, this.__labels),
+      grid: buildSketchMarkdown(this.getGrid(), this.getLabels()),
       ...exportCommentIds(this.__commentIds)
     };
   }
@@ -247,7 +255,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
 
   exportDOM(): DOMExportOutput {
     const element = document.createElement('pre');
-    const text = buildSketchMarkdown(this.__grid, this.__labels);
+    const text = buildSketchMarkdown(this.getGrid(), this.getLabels());
     element.setAttribute('data-sketch-grid', text);
     element.textContent = text;
     return { element };
@@ -268,19 +276,22 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
   }
 
   getGrid(): boolean[] {
-    return this.__grid;
+    return (readMapRegister(this)?.__grid as boolean[] | undefined) ?? this.__grid;
   }
 
-  setGrid(grid: boolean[]): void {
+  /** `base` is the grid the caller drew on; cells it left alone keep a peer's concurrent strokes. */
+  setGrid(grid: boolean[], base?: boolean[]): void {
+    if (writeMapRegister(this, { __grid: grid }, base && { __grid: base })) return;
     const writable = this.getWritable();
     writable.__grid = grid;
   }
 
   getLabels(): TextLabel[] {
-    return this.__labels;
+    return (readMapRegister(this)?.__labels as TextLabel[] | undefined) ?? this.__labels;
   }
 
-  setLabels(labels: TextLabel[]): void {
+  setLabels(labels: TextLabel[], base?: TextLabel[]): void {
+    if (writeMapRegister(this, { __labels: labels }, base && { __labels: base })) return;
     const writable = this.getWritable();
     writable.__labels = labels;
   }
@@ -299,7 +310,7 @@ export class SketchNode extends DecoratorNode<JSX.Element> {
       '```' +
       MOSS_CANVAS_FENCE_NAME +
       '\n' +
-      buildSketchMarkdown(this.__grid, this.__labels) +
+      buildSketchMarkdown(this.getGrid(), this.getLabels()) +
       '\n```'
     );
   }
