@@ -91,7 +91,7 @@ function addedLines(from: string, to: string): Set<string> {
 type PushBase =
   | { kind: 'fresh'; hash: string }
   /** `pulled`: the lines sync wrote in since the prior text, which the push must leave on the doc. */
-  | { kind: 'stale'; hash: string; bytes: Uint8Array; pulled: Set<string> }
+  | { kind: 'stale'; hash: string; bytes: Uint8Array; pulled: Set<string>; refused?: true }
   | { kind: 'unsure' };
 
 /**
@@ -113,6 +113,8 @@ function pushBase(root: string, meta: DocMeta, local: string): PushBase {
   const { priors: all, missing } = readPriors(root, meta, savedAt);
   const priors = all.filter((prior) => prior.hash !== meta.baseHash);
   if (!priors.length && !missing) return fresh;
+  // A save sync refused never reached the doc: saved again, it is the same save, its ancestor still unknown.
+  if (priors.some((prior) => prior.refused && toLf(decode(prior.bytes)) === local)) return { kind: 'unsure' };
   // moss only saves an editor whose body differs from what it loaded, so exactly a prior text is a deliberate revert.
   if (priors.some((prior) => toLf(decode(prior.bytes)) === local)) return fresh;
   if (missing) return { kind: 'unsure' };
@@ -127,12 +129,13 @@ function pushBase(root: string, meta: DocMeta, local: string): PushBase {
     if ([...addedLines(priorText, local)].some((line) => pulled.has(line))) continue;
     const near = distance(priorText, local);
     if (near < nearest) {
-      best = { kind: 'stale', hash: prior.hash, bytes: prior.bytes, pulled };
+      best = { kind: 'stale', hash: prior.hash, bytes: prior.bytes, pulled, ...(prior.refused ? { refused: true as const } : {}) };
       nearest = near;
       tied = false;
     } else if (near === nearest && best.kind === 'stale') tied = true;
   }
-  return tied ? { kind: 'unsure' } : best;
+  // An editor still holding a refused save descends from it, and so from the same unknown ancestor.
+  return tied || (best.kind === 'stale' && best.refused) ? { kind: 'unsure' } : best;
 }
 
 /** Whether the doc still holds every line the pull brought in after the push: only then does the pulled edit stay. */
@@ -298,7 +301,7 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
     // Fail closed: the doc keeps its text, and the save waits whole beside the note.
     const rej = setAside(root, meta.file, [newText]);
     try {
-      recordPull(root, meta.docId, meta.file, remote, localHash, folds, { prior: local });
+      recordPull(root, meta.docId, meta.file, remote, localHash, folds, { prior: local, refused: true });
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
       return { ...id, action: 'failed', failedHunks: 1, message: `${UNSURE}; your save is in ${rej}, and the file was edited again, so it was left as it is` };
@@ -358,10 +361,10 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   }
   const done = (action: SyncAction, extra: Partial<SyncResult> = {}): SyncResult => ({ ...id, action, ...(message ? { message } : {}), ...extra });
   /** The file becomes the doc's `text` in moss form, with the file's markers carried onto it; its body is kept as the prior text. */
-  const write = (text: Uint8Array, pushed = false) => {
+  const write = (text: Uint8Array, pushed = false, refused = false) => {
     const rendered = renderMoss(decode(text), title, remapMarkers(note.markers, note.clean, decode(text)));
     // A title-only write leaves the body, and so the prior texts an editor may hold, as they were; a push replaced it.
-    const prior = !pushed && sha256Hex(text) === meta.baseHash ? {} : { prior: Buffer.from(note.clean) };
+    const prior = !pushed && sha256Hex(text) === meta.baseHash ? {} : { prior: Buffer.from(note.clean), ...(refused ? { refused } : {}) };
     recordSynced(root, meta.docId, meta.file, Buffer.from(rendered), text, localHash, folds, { title, ...prior });
   };
   if (!localChanged || sha256Hex(note.clean) === meta.baseHash) {
@@ -379,7 +382,7 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
     // Fail closed: the doc keeps its text, and the save waits whole beside the note.
     const rej = setAside(root, meta.file, [toLf(decode(local))]);
     try {
-      write(remote, true);
+      write(remote, true, true);
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
       return done('failed', { failedHunks: 1, message: also(`${UNSURE}; your save is in ${rej}, and the file was edited again, so it was left as it is`) });
