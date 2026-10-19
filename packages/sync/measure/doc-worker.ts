@@ -32,13 +32,29 @@ export class MeasuredDocDO extends DocDO {
     return seen;
   }
 
-  /** Holds a plain Y.Doc of the note's state beside the note, or releases it. */
-  holdCopy(on: boolean): void {
+  /**
+   * Holds a plain Y.Doc of the note's state beside the note, or releases it. `intern` shares each map key's string
+   * among the copy's items. Returns the copy's struct count.
+   */
+  holdCopy(on: boolean, intern = false): number {
     this.#held?.destroy();
     this.#held = null;
-    if (!on) return;
+    if (!on) return 0;
     this.#held = new Y.Doc();
     Y.applyUpdate(this.#held, Y.encodeStateAsUpdate(this.document));
+    const keys = new Map<string, string>();
+    let count = 0;
+    for (const structs of this.#held.store.clients.values()) {
+      count += structs.length;
+      if (!intern) continue;
+      for (const struct of structs) {
+        if (!(struct instanceof Y.Item) || struct.parentSub === null) continue;
+        const key = keys.get(struct.parentSub);
+        if (key === undefined) keys.set(struct.parentSub, struct.parentSub);
+        else struct.parentSub = key;
+      }
+    }
+    return count;
   }
 
   /** The note's encoded state size. */
@@ -81,8 +97,8 @@ export default {
       return Response.json(await (await getServerByName(env.DocDO, docId)).tracePhases(url.searchParams.get('on') === '1'));
     }
     if (url.pathname === '/hold-copy') {
-      await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1');
-      return new Response('ok');
+      const structs = await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1', url.searchParams.has('intern'));
+      return Response.json({ structs });
     }
     if (url.pathname === '/state-bytes') {
       return Response.json({ stateBytes: await (await getServerByName(env.DocDO, docId)).stateBytes() });

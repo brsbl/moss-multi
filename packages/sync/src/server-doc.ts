@@ -80,6 +80,8 @@ interface Mirror {
  */
 function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
+  // A client id V8 holds as a small integer, not a boxed number on each of the write's struct ids.
+  doc.clientID = Math.floor(Math.random() * 2 ** 30);
   const source = sourceOf(live);
   const payloads = new PayloadDocs((id) => source.read(id), (id) => source.has(id));
   const writes = new Map<string, Uint8Array[]>();

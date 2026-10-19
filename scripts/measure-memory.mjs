@@ -206,10 +206,14 @@ async function measureNote(markdown, port, flags, { trace = false } = {}) {
         mark = end;
         return figures.restMb;
       };
-      await call(server.origin, `/hold-copy?on=1&doc=${doc}`);
+      result.structs = JSON.parse(await call(server.origin, `/hold-copy?on=1&doc=${doc}`)).structs;
       const held = await rest();
       await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
       result.copyMb = held - (await rest());
+      await call(server.origin, `/hold-copy?on=1&intern&doc=${doc}`);
+      const interned = await rest();
+      await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
+      result.internedCopyMb = interned - (await rest());
     }
   } catch (error) {
     const fatal = /Fatal[^\n]*|out of memory[^\n]*/i.exec(server.logs.value)?.[0];
@@ -264,7 +268,7 @@ async function main() {
     if (n.capped.failed) console.error(`${n.name} (capped):\n${n.capped.logs?.slice(-1_000)}`);
   }
   const traces = notes.map(({ name, measured: m }) => [
-    `- ${name}: a plain Y.Doc of the note ${mb(m.copyMb)};`,
+    `- ${name}: a plain Y.Doc of the note ${mb(m.copyMb)} (${m.structs} structs, ${Math.round((m.copyMb * 2 ** 20) / m.structs)} B each; keys interned ${mb(m.internedCopyMb)});`,
     PHASES.flatMap((phase) => (m.phases[phase]?.marks ?? []).map(({ label, mb: at }) => `${label} ${mb(at)}`)).join(', '),
   ].join(' '));
   const details = ['', 'Heap after a full GC at each phase of the server write and the export:', '', ...traces].join('\n');
