@@ -34,8 +34,12 @@ async function cases() {
   ];
 }
 
-/** The worker isolate's inspector, through wrangler's proxy: its JS heap in use after two full GCs. */
-async function inspector(port) {
+/**
+ * The worker isolate's inspector, through wrangler's proxy: its JS heap in use after two full GCs. workerd runs a
+ * queued `HeapProfiler.collectGarbage` only when the isolate next takes a request, so each GC is followed by pings to
+ * `origin` until it answers.
+ */
+async function inspector(port, origin) {
   const [target] = await (await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(10_000) })).json();
   const ws = new WebSocket(target.webSocketDebuggerUrl, { headers: { origin: 'http://127.0.0.1' } });
   const pending = new Map();
@@ -63,8 +67,17 @@ async function inspector(port) {
   });
   return {
     async heap() {
-      await send('HeapProfiler.collectGarbage');
-      await send('HeapProfiler.collectGarbage');
+      for (let gc = 0; gc < 2; gc += 1) {
+        let done = false;
+        const collected = send('HeapProfiler.collectGarbage').finally(() => {
+          done = true;
+        });
+        while (!done) {
+          await call(origin, '/ping');
+          await Promise.race([collected, new Promise((resolve) => setTimeout(resolve, 250))]);
+        }
+        await collected;
+      }
       return (await send('Runtime.getHeapUsage')).usedSize;
     },
     close: () => ws.close(),
@@ -84,7 +97,7 @@ async function measureNote(name, markdown, port) {
   let probe;
   try {
     await call(server.origin, '/ping');
-    probe = await inspector(port + 1000);
+    probe = await inspector(port + 1000, server.origin);
     const doc = `memory-${port}`;
     const base = await probe.heap();
     const { stateBytes } = JSON.parse(await call(server.origin, `/create?doc=${doc}`, { method: 'POST', body: markdown }));
