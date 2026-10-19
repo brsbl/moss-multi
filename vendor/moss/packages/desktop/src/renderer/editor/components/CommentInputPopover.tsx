@@ -71,6 +71,12 @@ export function CommentInputPopover({
   const openDraftKeyRef = useRef<string | null>(null);
   const textRef = useRef(text);
   textRef.current = text;
+  // moss-multi seam: comments: drafts are kept per note, since a node key or a passage's first 50 characters repeats
+  // across notes and a draft restored in another note would post there
+  const currentDraftKey = useCallback(() => {
+    const key = getDraftKey(store.get(commentInputStateAtom(noteId)));
+    return key ? `${noteId}:${key}` : null;
+  }, [noteId, store]);
   const resolvedCollisionBoundary = useMemo(
     () => resolveCanvasCollisionBoundary(collisionBoundary, anchorRect),
     [anchorRect, collisionBoundary]
@@ -126,8 +132,7 @@ export function CommentInputPopover({
     openGenerationRef.current += 1; // moss-multi seam: comments
     if (open) {
       // Restore draft if exists and <24h old; prune expired
-      const inputState = store.get(commentInputStateAtom(noteId));
-      const key = getDraftKey(inputState);
+      const key = currentDraftKey(); // moss-multi seam: comments
       openDraftKeyRef.current = key; // moss-multi seam: comments
       const drafts = store.get(commentDraftAtom);
       const now = Date.now();
@@ -155,9 +160,8 @@ export function CommentInputPopover({
       }
     } else {
       // Save draft if text is non-empty, then clear
-      const inputState = store.get(commentInputStateAtom(noteId));
       // moss-multi seam: comments: the editor clears its target before this runs, so fall back to the key it opened on
-      const key = getDraftKey(inputState) ?? openDraftKeyRef.current;
+      const key = currentDraftKey() ?? openDraftKeyRef.current;
       openDraftKeyRef.current = null;
       if (key && (text.trim().length > 0 || imageUrls.length > 0)) {
         const drafts = new Map(store.get(commentDraftAtom));
@@ -212,13 +216,12 @@ export function CommentInputPopover({
   );
 
   const clearMatchingDraft = useCallback(() => {
-    const inputState = store.get(commentInputStateAtom(noteId));
-    const key = getDraftKey(inputState);
+    const key = currentDraftKey(); // moss-multi seam: comments
     if (!key) return;
     const drafts = new Map(store.get(commentDraftAtom));
     drafts.delete(key);
     store.set(commentDraftAtom, drafts);
-  }, [noteId, store]);
+  }, [currentDraftKey, store]);
 
   const handleSubmit = (currentText?: string) => {
     const nextText = typeof currentText === 'string' ? currentText : text;
@@ -229,19 +232,21 @@ export function CommentInputPopover({
 
     // moss-multi seam: comments (comments.md §4): on a bound note the composer keeps its text until the server takes the
     // comment, so a refused or lost write stays here and a resubmit retries it; a success clears only this draft, never
-    // text typed after it was sent.
+    // text typed after it was sent. The composer showing it is this one, or one dismissed and reopened on the same target
+    // (which restored the sent text as its draft, and would post it again).
     const answer = shared ? submitted(noteId, 'root') : null;
     if (answer) {
-      const key = getDraftKey(store.get(commentInputStateAtom(noteId))) ?? openDraftKeyRef.current;
+      const key = currentDraftKey() ?? openDraftKeyRef.current;
       const generation = openGenerationRef.current;
       void answer.then((result) => {
         if (!result.ok) return;
-        const stillOpen = openGenerationRef.current === generation;
-        if (stillOpen && textRef.current.trim() !== trimmedText) return;
+        const showing = openGenerationRef.current === generation || (key !== null && openDraftKeyRef.current === key);
+        const showsSent = showing && textRef.current.trim() === trimmedText;
+        if (showing && !showsSent) return;
         // A composer closed meanwhile saved its text as the draft: drop it only if it is what was sent.
         const drafts = new Map(store.get(commentDraftAtom));
-        if (key && (stillOpen || drafts.get(key)?.text.trim() === trimmedText) && drafts.delete(key)) store.set(commentDraftAtom, drafts);
-        if (!stillOpen) return;
+        if (key && (showsSent || drafts.get(key)?.text.trim() === trimmedText) && drafts.delete(key)) store.set(commentDraftAtom, drafts);
+        if (!showsSent) return;
         setImageUrls([]);
         setText('');
         onOpenChange(false);

@@ -865,18 +865,30 @@ export function MentionInput({
     const element = contentEditableRef.current;
     if (!element) return;
 
+    // moss-multi seam: comments (T4.B3): the height animation resizes the popover around this input, a shallower
+    // observed element, so run inside a ResizeObserver callback it was a ResizeObserver loop error in WebKit. A content
+    // change animates from the MutationObserver, before the frame's layout; any other resize animates a frame later.
+    let resizeFrame: number | null = null;
     const handleResize = () => {
-      if (responsiveFooterLatched) {
-        animateResponsiveHeightToNaturalSize();
-      } else {
-        scheduleResponsiveFooterMeasurement();
-      }
+      if (resizeFrame !== null) return;
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        if (responsiveFooterLatched) {
+          animateResponsiveHeightToNaturalSize();
+        } else {
+          scheduleResponsiveFooterMeasurement();
+        }
+      });
     };
     const resizeObserver = new ResizeObserver(handleResize);
     const mutationObserver =
-      responsiveFooterLatched || typeof MutationObserver === 'undefined'
+      typeof MutationObserver === 'undefined'
         ? null
-        : new MutationObserver(scheduleResponsiveFooterMeasurement);
+        : new MutationObserver(() =>
+            responsiveFooterLatched
+              ? animateResponsiveHeightToNaturalSize()
+              : scheduleResponsiveFooterMeasurement()
+          );
     resizeObserver.observe(element);
     mutationObserver?.observe(element, {
       childList: true,
@@ -884,6 +896,7 @@ export function MentionInput({
       subtree: true
     });
     return () => {
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
       resizeObserver.disconnect();
       mutationObserver?.disconnect();
     };

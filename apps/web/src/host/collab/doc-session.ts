@@ -16,7 +16,7 @@ import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput, settleRefusal } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
-import { ownUpdate, readStep1, Replay } from './replay.ts';
+import { ownUpdate, readStep1, readUpdate, Replay } from './replay.ts';
 import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
@@ -325,6 +325,8 @@ export class DocSession {
   /** A step 1 this session sent has had no step 2 back yet, and when a sync frame last arrived (T3.S6b). */
   #resyncOwed = false;
   #syncHeard = 0;
+  /** Sync updates received before the first step 2, applied with it. */
+  #firstSync: Uint8Array[] = [];
   #visibleSince = 0;
   #lastTick = 0;
   #failedHandshakes = 0;
@@ -414,9 +416,34 @@ export class DocSession {
     const sync = this.provider.messageHandlers[0];
     this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
       this.#syncHeard = Date.now();
-      if (decoder.arr[decoder.pos] === 1) this.#resyncOwed = false;
+      const step2 = decoder.arr[decoder.pos] === 1;
+      if (step2) this.#resyncOwed = false;
+      // Until the first sync, the answer's pieces are held and land with its step 2 as one transaction. A piece can
+      // leave the root with no visible block (a deleted seed, blocks waiting on a later piece), and @lexical/yjs fills
+      // an empty root by writing a paragraph into the doc, ahead of the note (T7.Q).
+      if (!this.#state.synced) {
+        const update = readUpdate(decoder);
+        if (update) {
+          this.#firstSync.push(update);
+          return;
+        }
+      }
       const started = performance.now();
-      sync(encoder, decoder, provider, emitSynced, type);
+      if (step2 && this.#firstSync.length) {
+        const held = this.#firstSync;
+        this.#firstSync = [];
+        this.doc.transact(() => {
+          for (const update of held) {
+            try {
+              Y.applyUpdate(this.doc, update, this.provider);
+            } catch (error) {
+              console.error('Caught error while handling a Yjs update', error);
+            }
+          }
+          sync(encoder, decoder, provider, false, type);
+        }, this.provider);
+        if (emitSynced) provider.synced = true;
+      } else sync(encoder, decoder, provider, emitSynced, type);
       if (performance.now() - started > 50) performance.measure('moss-sync-message', { start: started });
     };
     this.provider.messageHandlers[PAYLOAD_MESSAGE] = (_encoder, decoder) => {
