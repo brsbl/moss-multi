@@ -63,7 +63,7 @@ function fakeServer() {
     }
     if (sub === 'assets' && method === 'POST') {
       const name = url.searchParams.get('filename')!;
-      assets.set(`${id}/${name}`, new Uint8Array(await new Response(init.body as BodyInit).arrayBuffer()));
+      assets.set(`${id}/${name}`, new Uint8Array(init.body as Uint8Array));
       return reply(201, { filename: name });
     }
     if (sub?.startsWith('assets/')) {
