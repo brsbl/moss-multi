@@ -794,25 +794,47 @@ export interface Projection {
   order: string[];
   /** Each payload a live element names, by id. */
   payloads: Map<string, unknown>;
+  /** Each block and payload as it reads, item identity aside (`readsAs`): one that reads the same has no hunk. */
+  reads?: Map<string, string>;
 }
+
+/**
+ * How a projection names items: by Yjs id (`true`), not at all (`false`, a block as it reads), or by id with each
+ * restored copy named as the body unit it restores (`Restored`).
+ */
+export type Identity = boolean | Restored;
 
 /**
  * A type's live sequence as the preview shows it, each entry with the Yjs id it starts at, so a reviewer's rows align
  * text by item identity: runs of characters with consecutive ids as `{ id, s }`, every other item as `{ id, ...value }`.
  */
-function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): Record<string, unknown>[] {
+function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>, ids: Identity = true): Record<string, unknown>[] {
+  const restored = typeof ids === 'object' ? ids : null;
   const seq: Record<string, unknown>[] = [];
   let next: { client: number; clock: number } | null = null;
+  const chars = (s: string, client: number, clock: number) => {
+    const last = seq.at(-1);
+    // Without identity, adjacent characters are one run whoever wrote them.
+    if (last && typeof last.s === 'string' && (!ids || (next && next.client === client && next.clock === clock))) last.s += s;
+    else seq.push(ids ? { id: `${client}:${clock}`, s } : { s });
+    next = { client, clock: clock + s.length };
+  };
   for (let item = type._start; item; item = item.right) {
     if (item.deleted) continue;
-    const value = contentValue(doc, root, item.content);
-    const last = seq.at(-1);
+    const value = contentValue(doc, root, item.content, ids);
+    const { client, clock } = item.id;
     if (typeof value === 'string') {
-      if (last && typeof last.s === 'string' && next && next.client === item.id.client && next.clock === item.id.clock) last.s += value;
-      else seq.push({ id: itemKey(item.id), s: value });
-      next = { client: item.id.client, clock: item.id.clock + item.length };
+      if (!restored?.clients.has(client)) {
+        chars(value, client, clock);
+        continue;
+      }
+      for (let i = 0; i < value.length; i += 1) {
+        const was = restored.copies.get(`${client}:${clock + i}`);
+        chars(value[i]!, was ? was.client : client, was ? was.clock : clock + i);
+      }
     } else {
-      seq.push({ id: itemKey(item.id), ...(value as Record<string, unknown>) });
+      const was = restored?.copies.get(itemKey(item.id));
+      seq.push(ids ? { id: itemKey(was ?? item.id), ...(value as Record<string, unknown>) } : { v: value });
       next = null;
     }
   }
@@ -820,33 +842,33 @@ function seqValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): Re
 }
 
 /** A type's live keys as the preview shows them, sorted, as [key, value] pairs. */
-function keysValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>): [string, unknown][] {
+function keysValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>, ids: Identity = true): [string, unknown][] {
   return [...type._map]
     .filter(([, item]) => !item.deleted)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([key, item]) => [key, contentValue(doc, root, item.content)]);
+    .map(([key, item]) => [key, contentValue(doc, root, item.content, ids)]);
 }
 
 /**
  * A type as the preview shows it: exactly the channels the table lists for its kind (§4.4), recursively. Nothing else
  * is rendered, because G3 refuses every struct a record would write or remove anywhere else.
  */
-export function channelValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>, kind: TypeKind): unknown {
+export function channelValue(doc: DocKind, root: string, type: Y.AbstractType<unknown>, kind: TypeKind, ids: Identity = true): unknown {
   const rows = CHANNELS.filter((c) => c.doc === doc && c.root === root && c.parent === kind);
   return {
     type: kind,
     ...(type instanceof Y.XmlElement ? { name: type.nodeName } : {}),
-    ...(rows.some((c) => c.sub === 'seq') ? { seq: seqValue(doc, root, type) } : {}),
-    ...(rows.some((c) => c.sub === 'key') ? { keys: keysValue(doc, root, type) } : {}),
+    ...(rows.some((c) => c.sub === 'seq') ? { seq: seqValue(doc, root, type, ids) } : {}),
+    ...(rows.some((c) => c.sub === 'key') ? { keys: keysValue(doc, root, type, ids) } : {}),
   };
 }
 
 /** One item's content: characters as a string, a type by its channels, anything else tagged by its content kind. */
-function contentValue(doc: DocKind, root: string, content: Y.Item['content']): unknown {
+function contentValue(doc: DocKind, root: string, content: Y.Item['content'], ids: Identity = true): unknown {
   if (content instanceof Y.ContentString) return content.str;
   if (content instanceof Y.ContentType) {
     const kind = typeKind(content.type);
-    return kind === null ? { type: null } : channelValue(doc, root, content.type as Y.AbstractType<unknown>, kind);
+    return kind === null ? { type: null } : channelValue(doc, root, content.type as Y.AbstractType<unknown>, kind, ids);
   }
   if (content instanceof Y.ContentFormat) return { Format: [content.key, jsonSafe(content.value)] };
   if (content instanceof Y.ContentDoc) return { Doc: { guid: content.doc.guid, opts: jsonSafe(content.opts) } };
@@ -880,27 +902,160 @@ export function payloadValueOf(doc: Y.Doc): unknown {
   return { text, ids, map: keysValue('payload', 'payload-map', doc.getMap('payload-map') as unknown as Y.AbstractType<unknown>) };
 }
 
+/** A payload doc as it reads, item identity aside. */
+function payloadReads(doc: Y.Doc): string {
+  return canonical({
+    seq: seqValue('payload', 'payload', doc.getText('payload') as unknown as Y.AbstractType<unknown>, false),
+    map: keysValue('payload', 'payload-map', doc.getMap('payload-map') as unknown as Y.AbstractType<unknown>, false),
+  });
+}
+
+/**
+ * A top-level block as it reads, item identity aside: its channels, each run of characters joined whoever wrote it.
+ * The undo of a split restores the split rest as new copies (yjs redoItem), so the block reads as it did.
+ */
+export function readsAs(content: Y.Item['content']): string {
+  return canonical(contentValue('body', 'root', content, false));
+}
+
+/**
+ * Whether the top-level block holding item `id` of `doc` (F or C) reads as that block does in `body`, identity aside:
+ * what records wrote or removed there changes nothing a reader sees, so nothing is painted in it. Each block is read
+ * once per predicate.
+ */
+export function readsAsBody(doc: Y.Doc, body: Y.Doc): (id: Y.ID) => boolean {
+  const root = doc.get('root', Y.XmlText) as unknown as Y.AbstractType<unknown>;
+  const seen = new Map<Y.Item, boolean>();
+  return (id) => {
+    if (id.clock >= Y.getState(doc.store, id.client)) return false;
+    const found: Y.Item | Y.GC = Y.getItem(doc.store, id);
+    if (!(found instanceof Y.Item)) return false;
+    let top: Y.Item = found;
+    while (top.parent !== root) {
+      const holder: Y.Item | null = (top.parent as Y.AbstractType<unknown> | null)?._item ?? null;
+      if (!holder) return false;
+      top = holder;
+    }
+    const known = seen.get(top);
+    if (known !== undefined) return known;
+    let same = false;
+    if (!top.deleted && top.id.clock < Y.getState(body.store, top.id.client)) {
+      const was = Y.getItem(body.store, top.id);
+      same = was instanceof Y.Item && !was.deleted && readsAs(was.content) === readsAs(top.content);
+    }
+    seen.set(top, same);
+    return same;
+  };
+}
+
+/**
+ * The restored copies in `doc` (F, C or a review mirror): the undo of a split or a join brings the text a structural op
+ * removed back as new copies (yjs redoItem), with new ids. `copies` maps each copy unit (a character or another item,
+ * by id key) to the body unit it restores; `originals` holds those body units' keys; `clients` the copies' clients.
+ */
+export interface Restored {
+  copies: Map<string, Y.ID>;
+  originals: Set<string>;
+  clients: Set<number>;
+}
+
+/**
+ * Finds the restored copies in `doc` against `body`, the state before the records (suggestions.md §4.7). Yjs redoes a
+ * deleted item as a copy of its content inserted just before it, so the copy's right origin is the original's id and
+ * its units line up with the original's from there (a copy split by typing keeps that right origin in every part). A
+ * new unit restores a body unit when the original is live in `body`, removed in `doc`, in the same parent, reads the
+ * same, and, for text, sits under the same text node (its property map, or the copy of it). Text a record rewrites
+ * (a restyle, a replaced word) sits under a new map or reads differently, so it is not taken for a copy.
+ */
+export function restoredCopies(doc: Y.Doc, body: Y.Doc): Restored {
+  const out: Restored = { copies: new Map(), originals: new Set(), clients: new Set() };
+  const isMap = (item: Y.Item) => item.content instanceof Y.ContentType && item.content.type instanceof Y.Map;
+  const liveIn = (store: Y.Doc['store'], id: Y.ID): Y.Item | null => {
+    if (id.clock >= Y.getState(store, id.client)) return null;
+    const item = Y.getItem(store, id);
+    return item instanceof Y.Item && !item.deleted ? item : null;
+  };
+  const removedIn = (id: Y.ID): Y.Item | null => {
+    if (id.clock >= Y.getState(doc.store, id.client)) return null;
+    const item = Y.getItem(doc.store, id);
+    return item instanceof Y.Item && item.deleted ? item : null;
+  };
+  /** The live property map a text item sits under, by key (a restored map by its original's). */
+  const mapOf = (item: Y.Item, copies: boolean): string | null => {
+    for (let left = item.left; left; left = left.left) {
+      if (!left.deleted && isMap(left)) return itemKey((copies ? out.copies.get(itemKey(left.id)) : undefined) ?? left.id);
+    }
+    return null;
+  };
+  const reads = (content: Y.Item['content']) => canonical(contentValue('body', 'root', content, false));
+  const pass = (strings: boolean) => {
+    for (const [client, structs] of doc.store.clients) {
+      const known = Y.getState(body.store, client);
+      let start = 0;
+      let right: Y.ID | null = null;
+      for (const struct of structs) {
+        if (!(struct instanceof Y.Item)) {
+          right = null;
+          continue;
+        }
+        const origin = struct.rightOrigin;
+        if (!right || !origin || origin.client !== right.client || origin.clock !== right.clock) start = struct.id.clock;
+        right = origin;
+        if (struct.id.clock < known || struct.deleted || !origin || struct.parentSub !== null) continue;
+        if ((struct.content instanceof Y.ContentString) !== strings) continue;
+        // Read once a unit needs it: walking left is linear in the block.
+        let map: string | null | undefined;
+        let bodyMap = null as { of: Y.Item; key: string | null } | null;
+        for (let i = 0; i < struct.length; i += 1) {
+          const original = Y.createID(origin.client, origin.clock + struct.id.clock - start + i);
+          const was = liveIn(body.store, original);
+          const gone = was && removedIn(original);
+          if (!was || !gone || gone.parent !== struct.parent) continue;
+          if (strings) {
+            const at = original.clock - was.id.clock;
+            if (!(was.content instanceof Y.ContentString) || was.content.str[at] !== (struct.content as Y.ContentString).str[i]) continue;
+            const under = bodyMap?.of === was ? bodyMap : (bodyMap = { of: was, key: mapOf(was, false) });
+            if (map === undefined) map = mapOf(struct, true);
+            if (under.key !== map) continue;
+          } else if (reads(was.content) !== reads(struct.content)) continue;
+          const copy = Y.createID(client, struct.id.clock + i);
+          out.copies.set(itemKey(copy), original);
+          out.originals.add(itemKey(original));
+          out.clients.add(client);
+        }
+      }
+    }
+  };
+  // Property maps and other items first, so a restored text node's characters find their map's copy.
+  pass(false);
+  pass(true);
+  return out;
+}
+
 /**
  * Projects `doc`: each top-level block by its Yjs item id, rendered by the channel table, which is the whole of what a
  * record may write. `payload` resolves the payload docs live elements name, plus each id in `also` (the payloads a
  * record writes, named or not); each is projected in full.
  */
-export function projectDoc(doc: Y.Doc, payload?: (id: string) => Y.Doc | undefined, also: Iterable<string> = []): Projection {
+export function projectDoc(doc: Y.Doc, payload?: (id: string) => Y.Doc | undefined, also: Iterable<string> = [], restored?: Restored): Projection {
   const blocks = new Map<string, unknown>();
+  const reads = new Map<string, string>();
   const order: string[] = [];
   const root = doc.get('root', Y.XmlText);
   for (let item = root._start; item; item = item.right) {
     if (item.deleted) continue;
     const key = itemKey(item.id);
-    blocks.set(key, contentValue('body', 'root', item.content));
+    blocks.set(key, contentValue('body', 'root', item.content, restored ?? true));
+    reads.set(`block:${key}`, readsAs(item.content));
     order.push(key);
   }
   const payloads = new Map<string, unknown>();
   for (const id of new Set([...regRefs(doc).keys(), ...also])) {
     const held = payload?.(id);
     payloads.set(id, held ? payloadValueOf(held) : null);
+    if (held) reads.set(`payload:${id}`, payloadReads(held));
   }
-  return { note: keysValue('body', 'root', root as unknown as Y.AbstractType<unknown>), blocks, order, payloads };
+  return { note: keysValue('body', 'root', root as unknown as Y.AbstractType<unknown>), blocks, order, payloads, reads };
 }
 
 export interface Hunk {
@@ -915,6 +1070,11 @@ export interface Hunk {
 
 export function projectionDiff(before: Projection, after: Projection): Hunk[] {
   const hunks: Hunk[] = [];
+  // Changed only in item identity (a split and its undo): nothing a reader sees, so no hunk (suggestions.md §4.7).
+  const reads = (key: string) => {
+    const was = before.reads?.get(key);
+    return was !== undefined && was === after.reads?.get(key);
+  };
   if (canonical(before.note) !== canonical(after.note)) hunks.push({ kind: 'note', id: 'root', op: 'changed', before: before.note, after: after.note });
   const blockIds = [...new Set([...before.blocks.keys(), ...after.blocks.keys()])];
   const previous = new Map(after.order.map((id, index) => [id, index > 0 ? after.order[index - 1] : null]));
@@ -924,7 +1084,7 @@ export function projectionDiff(before: Projection, after: Projection): Hunk[] {
     if (b === undefined) {
       hunks.push({ kind: 'block', id, op: 'added', after: a, at: previous.get(id) ?? null });
     } else if (a === undefined) hunks.push({ kind: 'block', id, op: 'removed', before: b });
-    else if (canonical(a) !== canonical(b)) hunks.push({ kind: 'block', id, op: 'changed', before: b, after: a });
+    else if (canonical(a) !== canonical(b) && !reads(`block:${id}`)) hunks.push({ kind: 'block', id, op: 'changed', before: b, after: a });
   }
   const payloadIds = [...new Set([...before.payloads.keys(), ...after.payloads.keys()])];
   for (const id of payloadIds) {
@@ -932,7 +1092,7 @@ export function projectionDiff(before: Projection, after: Projection): Hunk[] {
     const a = after.payloads.get(id);
     if (b === undefined) hunks.push({ kind: 'payload', id, op: 'added', after: a });
     else if (a === undefined) hunks.push({ kind: 'payload', id, op: 'removed', before: b });
-    else if (canonical(a) !== canonical(b)) hunks.push({ kind: 'payload', id, op: 'changed', before: b, after: a });
+    else if (canonical(a) !== canonical(b) && !reads(`payload:${id}`)) hunks.push({ kind: 'payload', id, op: 'changed', before: b, after: a });
   }
   return hunks.sort((x, y) => (x.kind !== y.kind ? (x.kind < y.kind ? -1 : 1) : x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
 }

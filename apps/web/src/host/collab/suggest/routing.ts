@@ -8,6 +8,7 @@
 // own text operations (trace.ts), or, where an operation rebuilds a node from its text, by aligning what the
 // transaction deleted around a struck character with what it wrote. Undo of their strike re-creates them, as the author's own, where they stood.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
+import { $isTableSelection } from '@lexical/table';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import type { Rewrites, SuggestFork } from '@moss-multi/sync/suggest/client';
 import {
@@ -17,9 +18,10 @@ import {
   type LexicalEditor, type LexicalNode, type NodeKey, type RangeSelection, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
-import { registerSuggestPasteRoute, takesWholePaste } from '../../large-paste.ts';
+import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
 import { charsAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
+import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type UndoStep } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -200,7 +202,16 @@ function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.
   return { units, start };
 }
 
-export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork): () => void {
+/** A paste the pane could not measure (its paste handlers still loading, or the copy failed): nothing goes in. */
+const UNMEASURED = 'This paste could not be checked against the suggestion limits, so none of it was added. Try again.';
+/** A paste Lexical would write over table cells, removing what they hold: a suggestion cannot strike it there. */
+const OVER_CELLS = 'Pasting over table cells cannot be suggested yet, so none of it was added.';
+
+/**
+ * `pasteStack`: the pane's own paste handlers and content transforms (paste-stack.ts), which a paste runs on a copy of
+ * the fork first (paste.ts measurePaste); null until they load.
+ */
+export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork, options: { pasteStack?: () => PasteStack | null } = {}): () => void {
   const manager = (): Y.UndoManager | null => (editor as unknown as Record<symbol, Y.UndoManager | undefined>)[UNDO_MANAGER] ?? null;
   const undone: Strike[] = [];
   const redone: Strike[] = [];
@@ -531,7 +542,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
    * A non-collapsed selection: body items in it become one delete part, the author's own text in it is removed
    * natively, and the caret goes to its end (its start with `toStart`, for a backward word or line delete).
    * `own`: only the author's own text, which deletes natively. `skip`: nothing left to strike; the caret still moves.
-   * `joined`: the binding step that follows is the same edit (a whole paste), so its undo and redo take the strike too.
+   * `joined`: the binding step that follows is the same edit (a paste), so its undo and redo take the strike too.
    */
   const $routeRange = (toStart = false, joined = false): Routed => {
     const selection = $getSelection();
@@ -703,6 +714,37 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
   };
 
   const P = COMMAND_PRIORITY_CRITICAL;
+  const root = doc.get('root', Y.XmlText);
+  /**
+   * An undo or a redo is admitted before it changes anything (paste.ts admitStep): what the binding's step it replays
+   * restores, and a strike it takes back (the struck text a rewrite removed comes back as copies) or puts again.
+   * Refused, it shows why and leaves the history as it was.
+   */
+  const refusesStep = (kind: 'undo' | 'redo'): boolean => {
+    const undo = manager();
+    if (!undo) return false;
+    const stack = (kind === 'undo' ? undo.undoStack : undo.redoStack) as unknown as readonly (UndoStep | Y.UndoManager['undoStack'][number])[];
+    const last = (kind === 'undo' ? undone : redone).at(-1);
+    const expected = last ? last.depth + (last.native ? 1 : 0) : -1;
+    const strike = last && stack.length <= expected ? last : null;
+    const native = !strike || (strike.native && stack.length === expected);
+    let extra = 0;
+    let targets: IdSpan[] = [];
+    if (strike && kind === 'undo') {
+      for (const run of strike.runs) {
+        let gone = 0;
+        for (let i = 0; i < run.len; i += 1) if (removed(Y.createID(run.id.client, run.id.clock + i))) gone += 1;
+        if (gone) extra += gone * 5 + 64;
+      }
+    }
+    if (strike && kind === 'redo') targets = standing(strike.targets);
+    const steps: UndoStep[] = native
+      ? stack.map((step) => ('entries' in step ? step : { entries: [{ manager: undo, item: step }] }))
+      : [];
+    const notice = admitStep(fork, kind, root, steps, extra, targets);
+    if (notice) refuseInput(notice);
+    return notice !== null;
+  };
   return mergeRegister(
     () => watch(null),
     () => doc.off('beforeTransaction', settle),
@@ -731,21 +773,44 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       $routeRange();
       return false;
     }, P),
-    // A whole paste (large-paste.ts) strikes the selection inside its own landing, once the paste is admitted.
+    // A paste (paste.ts): measured on a copy of the fork, then admitted whole before anything changes, or refused with
+    // the selection kept. Admitted, it strikes the selection and Lexical's own paste goes in at its end, in this
+    // update: one undo step with the strike.
     editor.registerCommand(PASTE_COMMAND, (event) => {
-      if (!takesWholePaste(editor, event)) $routeRange();
+      const selection = $getSelection();
+      // Lexical writes a paste over selected cells natively, from the anchor cell on: refused, nothing changed.
+      if ($isTableSelection(selection)) {
+        event.preventDefault();
+        refuseInput(OVER_CELLS);
+        return true;
+      }
+      const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
+      // Over only his own text Lexical's paste replaces it natively; over anything else the routing strikes the
+      // selection and the paste goes in at its end ($routeRange).
+      const native = range !== null && range.body.length === 0 && range.mine.length + range.mineLeaves.length > 0;
+      const stack = options.pasteStack?.() ?? null;
+      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack) : null;
+      const notice = measured === null
+        ? UNMEASURED
+        : measured === 'cells'
+        ? OVER_CELLS
+        : $admitPaste(fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0);
+      if (notice) {
+        event.preventDefault();
+        refuseInput(notice);
+        return true;
+      }
+      // Nothing the copy wrote (files, which land later): the paste may make no step of its own to join.
+      const wrote = typeof measured === 'number' && measured > 0;
+      const routed = $routeRange(false, wrote);
+      if ((routed === 'none' || routed === 'own') && wrote) {
+        // At a caret, or over his own text only (no strike to join): the paste is its own step, apart from typing
+        // just before or after it.
+        manager()?.stopCapturing();
+        setTimeout(() => manager()?.stopCapturing(), 0);
+      }
       return false;
     }, P),
-    registerSuggestPasteRoute(editor, {
-      $targets: () => {
-        const selection = $getSelection();
-        const range = $isRangeSelection(selection) && !selection.isCollapsed() ? $inRange(selection) : null;
-        return range ? toSpans(range.body) : [];
-      },
-      $route: () => {
-        $routeRange(false, true);
-      },
-    }),
     editor.registerCommand(CUT_COMMAND, (event) => {
       const selection = $getSelection();
       if (!$isRangeSelection(selection) || selection.isCollapsed()) return false;
@@ -761,6 +826,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
     // Undo takes back the latest strike when no later step of his came after it; with own text it removed, the
     // binding's undo of that removal runs in the same keystroke.
     editor.registerCommand(UNDO_COMMAND, () => {
+      if (refusesStep('undo')) return true;
       const undo = manager();
       const last = undone.at(-1);
       if (!last || !undo) return false;
@@ -775,6 +841,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork)
       return !native;
     }, P),
     editor.registerCommand(REDO_COMMAND, () => {
+      if (refusesStep('redo')) return true;
       const undo = manager();
       const last = redone.at(-1);
       if (!last || !undo) return false;

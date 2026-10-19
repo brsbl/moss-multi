@@ -13,8 +13,28 @@ import { restoreCaret, type CaretMark } from './caret.ts';
 import { rangesWhere } from './chars.ts';
 import { ReviewMount, SuggestMount } from './mounts.ts';
 import { clearPaint, covers, drawMarks, editMarks, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
+import type { PasteStack } from './paste.ts';
 import { registerSuggestRouting } from './routing.ts';
 import { openSuggestion } from './SuggestionsPanel.tsx';
+
+/**
+ * The pane's paste handlers and transforms (paste-stack.ts), loaded beside moss's editor on first use: a Suggest-mode
+ * paste runs them on a copy of the fork before it goes in (paste.ts).
+ */
+let pasteStack: PasteStack | null = null;
+let pasteStackLoading = false;
+function loadedPasteStack(): PasteStack | null {
+  if (!pasteStack && !pasteStackLoading && !import.meta.env.SSR) {
+    pasteStackLoading = true;
+    import('./paste-stack.ts').then((module) => {
+      pasteStack = module.registerPasteStack;
+    }, (error: unknown) => {
+      pasteStackLoading = false;
+      console.error('[suggest] the paste handlers did not load', error);
+    });
+  }
+  return pasteStack;
+}
 
 export interface SuggestPane {
   readonly docId: string;
@@ -94,7 +114,8 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
 
     if (mount instanceof SuggestMount) {
       mount.editor = editor;
-      stops.push(registerSuggestRouting(editor, mount.fork));
+      loadedPasteStack();
+      stops.push(registerSuggestRouting(editor, mount.fork, { pasteStack: loadedPasteStack }));
     }
     // A click on a painted suggestion opens its card (§7 hit test): the record whose inserted or struck text is under
     // it. Review paints both; Edit paints strikes over the body (its inserts are wedges and gutter bars).

@@ -62,6 +62,8 @@ export const GROUPS = {
   suggest: ['j16'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
   suggestPaste: ['j16-paste'],
+  // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body.
+  suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.
