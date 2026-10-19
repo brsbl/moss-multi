@@ -364,6 +364,7 @@ describe('note media provenance: every name the server ever showed stays downloa
   it('a standalone add on a volume that folds case sees a sibling\'s file under any spelling', async () => {
     write('diary.md', 'Dear diary ![s](assets/secret.png)\n');
     write(join('assets', 'secret.png'), png('secret'));
+    write(join('assets', 'SECRET.png'), png('secret'));
     write('plan.md', 'The plan ![s](assets/SECRET.png)\n');
     const added = await cli(['add', 'plan.md', '--json'], { foldsCase: () => true });
     expect(added.code, added.err).toBe(0);
@@ -399,12 +400,7 @@ describe('note media provenance: every name the server ever showed stays downloa
     appendFileSync(join(dir, 'Trip', 'trip.md'), '\n![n](assets/new.png)\n');
     // Write and search, but no listing.
     chmodSync(join(dir, 'Trip'), 0o300);
-    let pushed = { code: 0, out: '', err: '' };
-    try {
-      pushed = await cli(['push', join('Trip', 'trip.md')]);
-    } finally {
-      chmodSync(join(dir, 'Trip'), 0o755);
-    }
+    const pushed = await cli(['push', join('Trip', 'trip.md')]).finally(() => chmodSync(join(dir, 'Trip'), 0o755));
     expect(held(trip), pushed.out + pushed.err).toEqual([]);
   });
 });
