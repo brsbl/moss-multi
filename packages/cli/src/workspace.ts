@@ -41,7 +41,7 @@ export interface Prior {
   hash: string;
   /** When sync wrote over it. */
   at: number;
-  /** A save sync refused because its ancestor was unknown: it never reached the doc, so it is no revert target. */
+  /** A save sync refused (its ancestor unknown) or pushed with hunks that clashed: it never reached the doc whole, so it is no revert target. */
   refused?: true;
 }
 

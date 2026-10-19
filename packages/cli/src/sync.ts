@@ -92,7 +92,8 @@ type PushBase =
   | { kind: 'fresh'; hash: string }
   /** `pulled`: the lines sync wrote in since the prior text, which the push must leave on the doc. */
   | { kind: 'stale'; hash: string; bytes: Uint8Array; pulled: Set<string>; refused?: true }
-  | { kind: 'unsure' };
+  /** `again`: the save is, or was typed on, one sync already refused. */
+  | { kind: 'unsure'; again?: true };
 
 /**
  * The base a changed file's push merges against. Normally the recorded base; but a file saved by an editor that still
@@ -113,8 +114,8 @@ function pushBase(root: string, meta: DocMeta, local: string): PushBase {
   const { priors: all, missing } = readPriors(root, meta, savedAt);
   const priors = all.filter((prior) => prior.hash !== meta.baseHash);
   if (!priors.length && !missing) return fresh;
-  // A save sync refused never reached the doc: saved again, it is the same save, its ancestor still unknown.
-  if (priors.some((prior) => prior.refused && toLf(decode(prior.bytes)) === local)) return { kind: 'unsure' };
+  // A save sync refused, or whose hunks clashed, never reached the doc whole: saved again, it is no revert.
+  if (priors.some((prior) => prior.refused && toLf(decode(prior.bytes)) === local)) return { kind: 'unsure', again: true };
   // moss only saves an editor whose body differs from what it loaded, so exactly a prior text is a deliberate revert.
   if (priors.some((prior) => toLf(decode(prior.bytes)) === local)) return fresh;
   if (missing) return { kind: 'unsure' };
@@ -134,8 +135,9 @@ function pushBase(root: string, meta: DocMeta, local: string): PushBase {
       tied = false;
     } else if (near === nearest && best.kind === 'stale') tied = true;
   }
-  // An editor still holding a refused save descends from it, and so from the same unknown ancestor.
-  return tied || (best.kind === 'stale' && best.refused) ? { kind: 'unsure' } : best;
+  // An editor still holding a refused save descends from it, and pushed against it the rest of it would land too.
+  if (best.kind === 'stale' && best.refused) return { kind: 'unsure', again: true };
+  return tied ? { kind: 'unsure' } : best;
 }
 
 /** Whether the doc still holds every line the pull brought in after the push: only then does the pulled edit stay. */
@@ -148,6 +150,8 @@ const keepsPulled = (base: PushBase, doc: Uint8Array): boolean => {
 const STALE = 'saved over a pulled edit by an editor holding the older text: merged against that text, so the pulled edit stays; to remove it, delete it again and save';
 const STALE_LOST = 'saved over a pulled edit by an editor holding the older text: merged against that text, but the doc no longer holds every line the pull brought in; check its history';
 const UNSURE = 'saved within a minute of a pulled edit, but the text the editor held is not known for certain (no longer kept, or two kept texts fit), so nothing was pushed';
+const AGAIN = 'saved within a minute of a save sync did not push whole (its lines are in the .rej file), and this save is that one again or typed on it, so nothing was pushed';
+const unsureMessage = (base: { again?: true }) => (base.again ? AGAIN : UNSURE);
 
 const isMarkdown = (name: string) => extname(name).toLowerCase() === '.md';
 /** Directories that are someone else's: installed packages, and another repository or workspace nested inside. */
@@ -304,9 +308,9 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
       recordPull(root, meta.docId, meta.file, remote, localHash, folds, { prior: local, refused: true });
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
-      return { ...id, action: 'failed', failedHunks: 1, message: `${UNSURE}; your save is in ${rej}, and the file was edited again, so it was left as it is` };
+      return { ...id, action: 'failed', failedHunks: 1, message: `${unsureMessage(base)}; your save is in ${rej}, and the file was edited again, so it was left as it is` };
     }
-    return { ...id, action: 'failed', failedHunks: 1, message: `${UNSURE}: the file now holds the doc's text, and your save is in ${rej}` };
+    return { ...id, action: 'failed', failedHunks: 1, message: `${unsureMessage(base)}: the file now holds the doc's text, and your save is in ${rej}` };
   }
   const response = await pushWithBase(client, root, meta, {
     newText,
@@ -320,8 +324,9 @@ async function reconcile(ctx: SyncContext, meta: DocMeta, row: DocRow | undefine
   // As glyphdown does, the file and base converge on the doc so web edits keep arriving; rejected text is kept first.
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
   try {
-    // The file's text is kept as the prior text: an editor that saved it may save it again over the merged file.
-    recordPull(root, meta.docId, meta.file, merged, localHash, folds, { prior: local });
+    // The file's text is kept as the prior text: an editor that saved it may save it again over the merged file. With
+    // hunks that clashed it never reached the doc whole, so it is refused: never a revert target.
+    recordPull(root, meta.docId, meta.file, merged, localHash, folds, { prior: local, refused: response.failedHunks.length > 0 });
   } catch (error) {
     if (!(error instanceof CliError)) throw error;
     // Edited again during the push: the file and its base stay, so the next pass three-way merges the newer text.
@@ -385,9 +390,9 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
       write(remote, true, true);
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
-      return done('failed', { failedHunks: 1, message: also(`${UNSURE}; your save is in ${rej}, and the file was edited again, so it was left as it is`) });
+      return done('failed', { failedHunks: 1, message: also(`${unsureMessage(base)}; your save is in ${rej}, and the file was edited again, so it was left as it is`) });
     }
-    return done('failed', { failedHunks: 1, message: also(`${UNSURE}: the file now holds the doc's text, and your save is in ${rej}`) });
+    return done('failed', { failedHunks: 1, message: also(`${unsureMessage(base)}: the file now holds the doc's text, and your save is in ${rej}`) });
   }
   const response = await pushWithBase(client, root, meta, {
     newText: note.clean,
@@ -402,7 +407,8 @@ async function reconcileMoss(ctx: SyncContext, meta: DocMeta, row: DocRow | unde
   if (base.kind === 'stale') message = also(kept ? STALE : STALE_LOST);
   const rej = response.failedHunks.length ? setAside(root, meta.file, response.failedHunks) : undefined;
   try {
-    write(merged, true);
+    // A save whose hunks clashed never reached the doc whole: its body is kept refused, never a revert target.
+    write(merged, true, response.failedHunks.length > 0);
   } catch (error) {
     if (!(error instanceof CliError)) throw error;
     return done(action, { ...(response.failedHunks.length ? { failedHunks: response.failedHunks.length, hunks: response.failedHunks } : {}), message: 'edited during the push, so the file was left as it is; the newer edits go on the next pass' });
