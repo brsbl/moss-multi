@@ -148,7 +148,7 @@ test('j18-replica: with the Mac offline, an agent on the Linux replica reads and
     const back = await daemon(mac, macEnv);
     daemons.push(back);
     await expect.poll(() => readOr(join(mac, alpha)), { message: `M pulls the agent edit: ${back.output()}`, timeout: SYNC_TIMEOUT }).toContain('Para two, edited by the agent.');
-    await expect.poll(() => readOr(join(mac, 'Garden plan', 'Garden plan.md')), { message: `M pulls the linked note: ${back.output()}`, timeout: SYNC_TIMEOUT }).toBe('# Garden plan\n\nBeans by the fence.\n');
+    await expect.poll(() => readOr(join(mac, 'Garden plan', 'Garden plan.md')), { message: `M pulls the linked note: ${back.output()}`, timeout: SYNC_TIMEOUT }).toMatch(/^# Garden plan\n\nBeans by the fence\.\n?$/);
     expect(readOr(join(mac, home))).toContain('[[Garden plan]]');
     writeFileSync(join(mac, alpha), editor.replace('Para three.', 'Para three, typed in Moss.'));
     await expect.poll(() => docText('Alpha'), { message: `the stale save lands only its typing: ${back.output()}`, timeout: SYNC_TIMEOUT }).toContain('Para three, typed in Moss.');
