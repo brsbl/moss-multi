@@ -12,7 +12,9 @@ export function createElementNodeGapCursor(
   gapCursor.setAttribute('data-block-gap-cursor', position);
   gapCursor.setAttribute('aria-label', label);
   gapCursor.setAttribute('role', 'button');
-  gapCursor.tabIndex = -1;
+  // moss-multi seam: read-only-decorators (T3.B17): no tabindex. A gap is pressed only with the mouse (its mousedown is
+  // prevented, so it never took focus while editable), and a read-only body keeps nothing focusable (invariant 9),
+  // including one that went read-only after this unmanaged element was made.
 
   const line = document.createElement('div');
   line.className = 'editor-block-gap-cursor-line w-16 rounded-full opacity-0 transition-opacity group-hover/gap:opacity-100';
