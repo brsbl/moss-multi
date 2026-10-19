@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 58% done** (136 of 236 planned tasks verified)
+**Overall: 58% done** (137 of 236 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 66 / 66 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 67 / 67 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -157,6 +157,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T3.B11 verified: a retried upload at the vault's quota now succeeds under its name or its -n name instead of being refused, an upload's memory stays within its declared size plus 1 MiB, a stalled upload is cut off with 408, an import into a full vault is refused before fetching, and the over-quota message says the vault's media storage is full.
 - 2026-10-14 — T4.Q verified: comments now run on m3's media-access, upload-quota and formula-merge fixes, with both sides kept and the full lane green on the m4 head.
 - 2026-10-18 — T4.B3 re-verified: a reply box that grows or shrinks no longer raises a WebKit ResizeObserver loop, comment drafts stay in their own note, and a composer dismissed and reopened on its target closes once its sent comment lands instead of sending it twice (already counted on 2026-10-14).
+- 2026-10-18 — T3.B11 re-verified: a large upload's chunks are now freed as they are copied, because the upload deadline cancels the reader instead of racing every read, so a big body is not held in memory twice.
+- 2026-10-18 — T3.B17 verified: + Note, Cmd/Ctrl+N and folder drag-and-drop now follow the role on the folder involved rather than the vault root, a refused move is undone and shows the server's reason once, a reader no longer sees Remove on a missing image or reaches hidden gap and resize controls, read-only tabs still switch by keyboard, and a refused restore's notice no longer covers the Trash banner.
 
 ## T1.1s identity audit
 
@@ -619,3 +621,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B15 (Register and formula collaborative editing) checker P2: astral token markers can collide with literal lone surrogates brought together by concurrent deletions — once every non-surrogate BMP unit is used, createTokenCodec reserves only astral code points already present as complete surrogate pairs, so a lone high and a lone low surrogate that two concurrent deletions bring together can form an assigned marker (e.g. U+F0000) and decode turns that literal text into a reference (needs a formula using every non-surrogate BMP unit plus lone surrogates) → also reserve astral code points a lone high or low surrogate in any source could form.
 - T3.B11 (Asset quota, streaming reads and near-cap probe) checker P2: the B219 near-cap probe has no staging run and no Worker memory telemetry — j11-media's SP9 probe runs in CI on the local wrangler stack and records only byte count and upload time, and local workerd does not enforce the 128 MB isolate limit (evidence gap, no demonstrated failure) → add the staging leg with memory and duration telemetry to the m8 canary (T8.2).
 - T4.Q (m4 on the m3 fixes) checker P2, owned by m3 (from T3.B10): a duplicate refused after source access is lost returns a different 404 body: `apps/web/src/api/docs.ts:195-198` answers the late refusal (source revoked or trashed while the snapshot is pending) with refuse(404, 'not-found', <message>) while admission uses `notFound()` (respond.ts:8, no message), so the two denials are not byte-identical as A§8 requires (no unauthorized copy).
+- T3.B11 (Asset quota, streaming reads and near-cap probe) re-check P2: SP9 probe records no Worker memory telemetry — j11-media's near-cap probe checks bytes, SHA-256, exact size and the 206 tail read but not Worker memory or 128 MB isolate headroom on deployed staging (same gap as above, already a required test under T8.2).
+- T3.B17 (Read-only controls and folder permission UI) checker P2: invariant 9's tab-navigation exemption also applies outside read-only bodies — the detector exempts any [role=tablist] > div[role=tab] under any non-live title or body binding without checking data-body-binding=readonly, so a focusable tab in an unbound or terminal body or a closed title passes; limit the exemption to a read-only body binding and add negative selftest fixtures for unbound and terminal bodies (test gate only; no product defect).
