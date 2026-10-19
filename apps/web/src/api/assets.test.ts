@@ -593,14 +593,15 @@ describe('upload bounds (T3.1s)', () => {
     const held = [...seen.values()].reduce((sum, allocations) => sum + Math.max(...allocations.map((a) => a.held)), 0);
     expect(held, `${N} stalled uploads' peak buffer bytes`).toBeLessThanOrEqual(N * 3 * sent);
   }, 30_000);
-  it('stores an honest upload at each cap byte-exact, its buffers at most one segment past its length (T3.B30, B219)', async () => {
+  it('stores an honest upload at each cap byte-exact, a video holding at most one segment past its length (T3.B30, B219)', async () => {
     const vic = await signedUpUser(env, 'assets-b30-vic', 'Vic');
     const docId = await insertDoc(d1.db, vic);
     const cases = [
-      { filename: 'cap.webm', contentType: 'video/webm', length: MEDIA_CAP_BYTES.video, magic: [0x1a, 0x45, 0xdf, 0xa3] },
-      { filename: 'cap.png', contentType: 'image/png', length: MEDIA_CAP_BYTES.image, magic: [...PNG] },
+      // A video is held in segments, stored as R2 parts; an image is joined once to be sniffed whole.
+      { filename: 'cap.webm', contentType: 'video/webm', length: MEDIA_CAP_BYTES.video, magic: [0x1a, 0x45, 0xdf, 0xa3], bound: MEDIA_CAP_BYTES.video + 5 * MIB },
+      { filename: 'cap.png', contentType: 'image/png', length: MEDIA_CAP_BYTES.image, magic: [...PNG], bound: 2 * MEDIA_CAP_BYTES.image },
     ];
-    for (const { filename, contentType, length, magic } of cases) {
+    for (const { filename, contentType, length, magic, bound } of cases) {
       const hash = createHash('sha256');
       let offset = 0;
       // Chunks off any power-of-two boundary, as a network body arrives.
@@ -624,7 +625,7 @@ describe('upload bounds (T3.1s)', () => {
         setUploadAllocationProbeForTests(null);
       }
       const peak = Math.max(...[...seen.values()].flat().map((a) => a.held));
-      expect(peak, `${filename}: peak buffer bytes`).toBeLessThanOrEqual(length + 5 * MIB);
+      expect(peak, `${filename}: peak buffer bytes`).toBeLessThanOrEqual(bound);
       const served = await bytesOf(await call('GET', `/api/docs/${docId}/assets/${filename}`, vic.cookie));
       expect(served.byteLength).toBe(length);
       expect(createHash('sha256').update(served).digest('hex'), `${filename} is stored byte-exact`).toBe(hash.digest('hex'));
