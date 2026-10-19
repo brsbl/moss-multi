@@ -1,7 +1,8 @@
 // A workspace scope (T7.P1): with `.moss-multi/scope.json`, sync adopts, pulls and pushes only the notes it allows or
 // reaches by following links from its entry notes, and never a denied path, even one an entry links to. Without the
 // file, every .md is synced as before. @p:agt-2
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,11 +16,12 @@ const TAXES_ID = '0a1b2c3d-2222-4222-8222-bbbbbbbbbbbb';
 interface Row { id: string; title: string; filename: string; folderId: string; vaultId: string; role: string; updatedAt: number }
 interface Call { method: string; path: string; body: unknown }
 
-/** A fake server holding many docs: create, list, content, rename and push, as the CLI calls them. */
+/** A fake server holding many docs: create, list, content, rename, push and media, as the CLI calls them. */
 function fakeServer() {
   const calls: Call[] = [];
   const docs: Row[] = [];
   const content = new Map<string, string>();
+  const assets = new Map<string, Uint8Array>();
   let next = 1;
   const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers });
@@ -59,10 +61,19 @@ function fakeServer() {
       content.set(id, (body as { newText: string }).newText);
       return reply(200, { ok: true, mode: 'edit', applied: 1, failedHunks: [] });
     }
-    if (sub?.startsWith('assets')) return reply(404, { error: 'not-found' });
+    if (sub === 'assets' && method === 'POST') {
+      const name = url.searchParams.get('filename')!;
+      assets.set(`${id}/${name}`, new Uint8Array(await new Response(init.body as BodyInit).arrayBuffer()));
+      return reply(201, { filename: name });
+    }
+    if (sub?.startsWith('assets/')) {
+      const stored = assets.get(`${id}/${decodeURIComponent(sub.slice('assets/'.length))}`);
+      if (!stored) return reply(404, { error: 'not-found' });
+      return new Response(method === 'HEAD' ? null : stored, { status: 200, headers: { etag: `"${createHash('sha256').update(stored).digest('hex')}"` } });
+    }
     return reply(404, { error: 'not-found' });
   }) as typeof fetch;
-  return { fetchImpl, calls, docs, content };
+  return { fetchImpl, calls, docs, content, assets };
 }
 
 let dir: string;
@@ -295,6 +306,130 @@ describe('a workspace scope', () => {
     expect(run.code, run.err).toBe(0);
     expect(created(run.results)).toEqual([join('Moss Home', 'Moss Home.md')]);
     expect(server.calls.filter((call) => call.path.includes('private.png'))).toEqual([]);
+  });
+
+  it('a server title or frontmatter that holds a link never makes a local note upload', async () => {
+    const home = note('', 'Moss Home', 'Start at [[Alpha]].');
+    note('', 'Alpha', 'The alpha note.');
+    note('', 'Hidden', 'Hidden here only.');
+    note('', 'Hidden Two', 'Also hidden here.');
+    expect((await cli(['init', '--scope', '--follow', 'Moss Home'])).code).toBe(0);
+    const first = await syncJson();
+    expect(first.code, first.err).toBe(0);
+    const homeId = first.results.find((result) => result.file === home && result.action === 'created')!.docId!;
+    // The web renames the doc to a title holding a link, and adds frontmatter holding another.
+    server.docs.find((doc) => doc.id === homeId)!.title = 'Moss Home [[Hidden]]';
+    server.content.set(homeId, `---\nrelated: "[[Hidden Two]]"\n---\n${server.content.get(homeId)!}`);
+    const pulled = await syncJson();
+    expect(pulled.code, pulled.err).toBe(0);
+    expect(readFileSync(join(dir, home), 'utf8')).toContain('# Moss Home [[Hidden]]');
+    const next = await syncJson();
+    expect(next.code, next.err).toBe(0);
+    expect(created([...pulled.results, ...next.results])).toEqual([]);
+    expect(sent()).not.toMatch(/hidden here/i);
+    expect(server.docs.map((doc) => doc.title).sort()).toEqual(['Alpha', 'Moss Home [[Hidden]]']);
+  });
+
+  it('a media reference that arrives in a pull never uploads a local file', async () => {
+    mkdirSync(join(dir, 'Notes', 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'Notes', 'Daily Plan.md'), 'Plan the day.\n');
+    writeFileSync(join(dir, 'Notes', 'Private.md'), 'Private, with ![s](assets/secret.png).\n');
+    writeFileSync(join(dir, 'Notes', 'assets', 'secret.png'), Buffer.from('89504e470d0a1a0a01', 'hex'));
+    note('', 'Moss Home', 'Home.');
+    mkdirSync(join(dir, 'Moss Home', 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'Moss Home', 'assets', 'old.png'), Buffer.from('89504e470d0a1a0a02', 'hex'));
+    mkdirSync(join(dir, '.moss-multi'), { recursive: true });
+    writeFileSync(join(dir, '.moss-multi', 'scope.json'), JSON.stringify({ allow: ['Notes/Daily Plan.md'], follow: ['Moss Home'] }));
+    const first = await syncJson();
+    expect(first.code, first.err).toBe(0);
+    const ids = first.results.filter((result) => result.action === 'created').map((result) => result.docId!);
+    expect(ids).toHaveLength(2);
+    // Another replica references files only this machine holds.
+    for (const id of ids) server.content.set(id, `${server.content.get(id)!.trimEnd()}\n\n![s](assets/secret.png) ![o](assets/old.png)\n`);
+    const pulled = await syncJson();
+    const next = await syncJson();
+    expect(pulled.code, pulled.err).toBe(0);
+    expect(next.code, next.err).toBe(0);
+    expect(readFileSync(join(dir, 'Notes', 'Daily Plan.md'), 'utf8')).toContain('assets/secret.png');
+    expect(server.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/assets'))).toEqual([]);
+    expect(server.assets.size).toBe(0);
+  });
+
+  it('a pull interrupted after the file was written still never turns its links into uploads', async () => {
+    const home = note('', 'Moss Home', 'Home.');
+    note('', 'Loose', 'Nobody links here.');
+    expect((await cli(['init', '--scope', '--follow', 'Moss Home'])).code).toBe(0);
+    const first = await syncJson();
+    expect(first.code, first.err).toBe(0);
+    const homeId = first.results.find((result) => result.file === home && result.action === 'created')!.docId!;
+    server.content.set(homeId, `${server.content.get(homeId)!.trimEnd()} And [[Loose]].\n`);
+    // The process dies after writing the pulled file and before recording its base: put the old base and meta back.
+    const state = join(dir, '.moss-multi', homeId);
+    const saved = mkdtempSync(join(tmpdir(), 'mm-saved-'));
+    for (const name of ['base.md', 'meta.json']) copyFileSync(join(state, name), join(saved, name));
+    expect((await syncJson()).code).toBe(0);
+    expect(readFileSync(join(dir, home), 'utf8')).toContain('[[Loose]]');
+    for (const name of ['base.md', 'meta.json']) copyFileSync(join(saved, name), join(state, name));
+    rmSync(saved, { recursive: true, force: true });
+    const next = await syncJson();
+    const after = await syncJson();
+    expect(next.code, next.err).toBe(0);
+    expect(created([...next.results, ...after.results])).toEqual([]);
+    expect(sent()).not.toContain('Nobody links here');
+  });
+
+  it('a title link reaches one note: a second note with that title is never uploaded through it', async () => {
+    note('', 'Moss Home', 'See [[Projects]].');
+    const projects = note('', 'Projects', 'Project list.');
+    mkdirSync(join(dir, '.moss-multi'), { recursive: true });
+    writeFileSync(join(dir, '.moss-multi', 'scope.json'), JSON.stringify({ follow: ['Moss Home'] }));
+    const first = await syncJson();
+    expect(first.code, first.err).toBe(0);
+    expect(created(first.results)).toEqual([join('Moss Home', 'Moss Home.md'), projects].sort());
+    note('Archive', 'Projects', 'Old private projects.');
+    const next = await syncJson();
+    expect(next.code, next.err).toBe(0);
+    expect(created(next.results)).toEqual([]);
+    expect(sent()).not.toContain('Old private projects');
+  });
+
+  it('pull never downloads a media file into a denied path', async () => {
+    mkdirSync(join(dir, '.moss-multi'), { recursive: true });
+    writeFileSync(join(dir, '.moss-multi', 'scope.json'), JSON.stringify({ allow: ['Notes/**'], deny: ['Notes/assets/**'] }));
+    const id = 'd0000000-0000-4000-8000-00000000abcd';
+    server.docs.push({ id, title: 'Plan', filename: 'plan.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 1 });
+    server.content.set(id, 'The plan. ![p](assets/pic.png)\n');
+    server.assets.set(`${id}/pic.png`, Buffer.from('89504e470d0a1a0a03', 'hex'));
+    const pulled = await cli(['pull', id, join('Notes', 'plan.md')]);
+    expect(pulled.code, pulled.err).toBe(0);
+    expect(existsSync(join(dir, 'Notes', 'plan.md'))).toBe(true);
+    expect(existsSync(join(dir, 'Notes', 'assets', 'pic.png'))).toBe(false);
+  });
+
+  it('a confirmed note renamed away lends nothing to the note the server moves to its old path', async () => {
+    writeFileSync(join(dir, 'hub.md'), 'See [[Later]].\n');
+    writeFileSync(join(dir, 'other.md'), 'Other.\n');
+    expect((await cli(['init', '--scope', '--follow', 'hub.md', '--allow', 'hub.md', '--allow', 'hub2.md', '--allow', 'other.md'])).code).toBe(0);
+    const first = await syncJson();
+    expect(first.code, first.err).toBe(0);
+    expect(created(first.results)).toEqual(['hub.md', 'other.md']);
+    const otherId = first.results.find((result) => result.file === 'other.md')!.docId!;
+    renameSync(join(dir, 'hub.md'), join(dir, 'hub2.md'));
+    const moved = await syncJson();
+    expect(moved.code, moved.err).toBe(0);
+    expect(moved.results.find((result) => result.action === 'renamed')?.file).toBe('hub2.md');
+    // The server moves the other doc to hub.md, with a link to a note only this machine holds.
+    const later = note('', 'Later', 'Only on this machine.');
+    server.docs.find((doc) => doc.id === otherId)!.filename = 'hub.md';
+    server.content.set(otherId, 'Other. And [[Later]].\n');
+    const renamed = await syncJson();
+    expect(renamed.code, renamed.err).toBe(0);
+    expect(readFileSync(join(dir, 'hub.md'), 'utf8')).toContain('[[Later]]');
+    const next = await syncJson();
+    expect(next.code, next.err).toBe(0);
+    expect(created([...renamed.results, ...next.results])).toEqual([]);
+    expect(next.results.find((result) => result.action === 'remote-link')?.file).toBe(later);
+    expect(sent()).not.toContain('Only on this machine');
   });
 
   it('without a scope file, every note is synced as before', async () => {
