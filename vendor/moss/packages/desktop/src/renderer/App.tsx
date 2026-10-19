@@ -174,6 +174,10 @@ import {
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: new-note (A§9, R2)
 import { armOpeningGuard } from '@moss-multi/host/opening-guard';
+// moss-multi seam: capabilities (T3.B17): "+ Note" and Cmd/Ctrl+N create only where the caller may add notes
+import { canCreateNote, noteTargetFolder } from '@moss-multi/host/folders';
+// moss-multi seam: notice-stack (T3.B17): a failure notice never covers the open note's Trash notice
+import { standAboveTrashNotice } from '@moss-multi/host/notice-stack';
 // moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
 import { useNarrow } from '@moss-multi/host/viewport';
 
@@ -2860,11 +2864,11 @@ export function App() {
 
     // Always create regular notes in a non-system folder.
     // If the active folder is a system folder, fall back to root.
-    const folders = store.get(backendFoldersAtom);
-    const isBlockedSystemFolder = folders.some(
-      (f) => f.path === activeFolderPath && f.type === 'system'
-    );
-    const targetFolderPath = isBlockedSystemFolder ? 'Notes' : activeFolderPath;
+    // moss-multi seam: capabilities (T3.B17): one target rule with "+ Note", and no create where the caller can't add.
+    const targetFolderPath = noteTargetFolder(activeFolderPath, store.get(backendFoldersAtom));
+    if (!canCreateNote(targetFolderPath)) {
+      return null;
+    }
 
     const finishCreation = (note: MockNote, preloadedRecord?: NoteWithContent): MockNote => {
       insertNote(note);
@@ -2931,6 +2935,8 @@ export function App() {
   ]);
 
   const handleCreateNote = useCallback(async () => {
+    // moss-multi seam: capabilities (T3.B17): Cmd/Ctrl+N where "+ Note" is not offered does nothing, focus included.
+    if (!canCreateNote(noteTargetFolder(activeFolderPath, store.get(backendFoldersAtom)))) return;
     // moss-multi seam: new-note (A§9, R2): the trigger lets go of focus, and keys typed before the note binds are
     // refused visibly rather than lost or pressing "+ Note" again.
     const opening = armOpeningGuard();
@@ -2941,7 +2947,7 @@ export function App() {
     }
     if (await createAndActivateNote({ focusTarget: 'title' })) opening.created();
     else opening.disarm();
-  }, [createAndActivateNote, flushBeforeNoteSwitch]);
+  }, [activeFolderPath, createAndActivateNote, flushBeforeNoteSwitch, store]);
 
   const handleDuplicateNote = useCallback(async (noteId: string) => {
     const canSwitch = await flushBeforeNoteSwitch();
@@ -4203,6 +4209,8 @@ export function App() {
       <SnapshotUiFixtureLayer fixture={automationUiFixture} />
       {operationFailure ? (
         <div
+          key={operationFailure.id /* moss-multi seam: notice-stack (T3.B17): each notice measures where it stands */}
+          ref={standAboveTrashNotice}
           className="pointer-events-none fixed bottom-8 left-1/2 z-50 -translate-x-1/2"
           style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
         >
