@@ -219,7 +219,8 @@ export function noteLinks(source: string, from: string): LinkTarget[] {
   }
   // A link's target ends at its closing mark and never runs past a line break or the next `](`, so each character is
   // scanned for one opener only and the scan stays linear.
-  for (let at = text.indexOf(']('), next = at; at >= 0; at = next) {
+  for (let next = text.indexOf(']('); next >= 0;) {
+    const at = next;
     next = text.indexOf('](', at + 2);
     let i = at + 2;
     const angled = text[i] === '<';
