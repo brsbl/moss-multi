@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@moss-multi/core": "workspace:*",
     "@moss-multi/protocol": "workspace:*",
     "@sanity/diff-match-patch": "3.2.0"
   },

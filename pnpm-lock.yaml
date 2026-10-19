@@ -379,6 +379,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@moss-multi/core':
+        specifier: workspace:*
+        version: link:../core
       '@moss-multi/protocol':
         specifier: workspace:*
         version: link:../protocol
