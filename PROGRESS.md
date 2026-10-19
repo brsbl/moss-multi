@@ -268,10 +268,15 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-15 — T8.Q verified: the shipping work now sits on the current M7, so staging carries M3–M7's media, comment-draft, quota and formula fixes, and the full CI lane is green on the restacked m8.
 - 2026-10-18 — T8.P1 verified: a separate pilot deployment now exists apart from staging, with its own Worker, D1, R2 and auth secret, sign-up limited to the allowlisted emails, and a gated deploy workflow that migrates D1 first and runs a read-only smoke.
 - 2026-10-18 — T8.P2 verified: the pilot now deploys from the workflow registered on main, `deploy-staging.yml -f target=pilot`, which runs only its gate and then calls `deploy-pilot.yml` with just the pilot and Cloudflare secrets; staging deploys run unchanged.
+- 2026-10-19 — T8.Q second pass verified: staging and the pilot now carry M7's later fixes (allowlisted scoped sync, stale-save priors, held first-sync pieces) and m3–m6's reply box, read-only controls, folder permissions and upload reader deadline, with the full lane green on the restacked m8 (already counted on 2026-10-15).
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.Q second pass's checker (c451736, 2026-10-19)
+
+- T8.Q second pass checker P2 (The suggest-ingest wall-clock timing failure is not shown to also fail on the base): full-lane attempts 1 and 2 failed packages/sync/test/harness/suggest-ingest.test.ts:703 (23.68 ms against 21.47 ms, then 24.05 ms against 20.04 ms) while attempt 3 and both checks dispatches passed (head 5.90/8.93 ms, m8 3.64/7.85 ms); test and measured code unchanged by the merge, but no identical failure is on record in m8 or m7 histories, so 'base flake' is unverified → count work instead of timing it (same item as the T5.P integration line).
 
 ### From T8.P2's checker (e2a5f14, 2026-10-18)
 
