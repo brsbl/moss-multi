@@ -14,7 +14,7 @@ import { CliError, EXIT } from './errors.ts';
 import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
-import { evaluateScope, readScope, type ScopeView } from './scope.ts';
+import { evaluateScope, noteUnit, readScope, type ScopeView, titleKey } from './scope.ts';
 import {
   confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase, recordPull, recordSynced,
   renameInside, sameFile, scopedNest, sha256Hex, trackedMetas, writeConfined, writeMeta,
@@ -667,9 +667,62 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       results.push({ file: rel, action: 'failed', message: failure(error) });
     }
   }
+  if (scope) {
+    try {
+      await fetchReached(ctx, listed, results, touch);
+    } catch (error) {
+      if (stopped(error)) return results;
+      throw error;
+    }
+  }
   const outside = (scope?.outOfScope ?? 0) + nested.size;
   if (outside > 0) results.push({ file: '', action: 'out-of-scope', count: outside });
   return results;
+}
+
+/**
+ * Pulls the server docs `follow` reaches that no note here holds (T7.P3), so a replica starts from its scope alone and
+ * a note another replica made and linked comes down. A doc is pulled only when exactly one doc it can open goes by the
+ * link's title, no doc here tracks it, and nothing is at its path; it is download only unless `allow` covers the path.
+ * A pulled note may link on within the scope's depth, so this repeats until nothing new comes down.
+ */
+async function fetchReached(ctx: SyncContext, rows: DocRow[], results: SyncResult[], touch: () => void): Promise<void> {
+  const { root, client, folds } = ctx;
+  // One round per hop at most: depth is at most 10.
+  for (let round = 0; round <= 10; round += 1) {
+    const scope = workspaceScope(root, folds);
+    if (!scope?.missing.length) return;
+    const tracked = new Set(trackedMetas(root).map((meta) => meta.docId));
+    let pulled = 0;
+    for (const want of scope.missing) {
+      const matches = rows.filter((row) => titleKey(row.title) === titleKey(want.title));
+      const row = matches.length === 1 ? matches[0]! : undefined;
+      if (!row || scope.deniesTitle(row.title) || tracked.has(row.id) || exists(root, want.path) || scopedNest(root, want.path) !== null) continue;
+      if (ctx.signal?.aborted) throw new Stopped('stopped');
+      touch();
+      tracked.add(row.id);
+      try {
+        const remote = await client.content(row.id);
+        const title = row.title.trim();
+        // Written only where nothing is: a file that appears meanwhile is left alone.
+        if (noteUnit(want.path) !== want.path) {
+          recordSynced(root, row.id, want.path, Buffer.from(renderMoss(decode(remote), title, [])), remote, null, folds, { mode: 'moss', title });
+        } else recordPull(root, row.id, want.path, remote, null, folds);
+      } catch (error) {
+        if (error instanceof CliError && error.status === 429) throw new RateLimited(60);
+        if (!(error instanceof CliError)) throw error;
+        results.push({ docId: row.id, file: want.path, action: 'failed', message: failure(error) });
+        continue;
+      }
+      pulled += 1;
+      const sends = scope.uploads(want.path);
+      const why = `${want.from ? `linked from ${want.from}` : 'named in follow'}${sends ? '' : '; download only until `moss-multi scope confirm` adds it'}`;
+      results.push({ docId: row.id, file: want.path, action: 'pulled', message: why });
+      const view = workspaceScope(root, folds) ?? scope;
+      results.push(...(await syncMedia({ ...ctx, scope: view, downloadOnly: !sends }, row.id, false)));
+    }
+    if (pulled === 0) return;
+  }
 }
 
 /** 0 clean, 2 failed hunks, 3 a degenerate push skipped, 1 anything else failed (A§17). */

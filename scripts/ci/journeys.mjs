@@ -59,6 +59,8 @@ export const GROUPS = {
   cli: ['j18-cli', 'j18-agents'],
   // The folder-watch daemon and sync against the stack.
   sync: ['j18-sync'],
+  // The pilot's Mac and Linux replicas, with the Mac offline (T7.P3).
+  replica: ['j18-replica'],
   // Version history: the History view, restore under a peer.
   history: ['j17'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
