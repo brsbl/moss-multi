@@ -8,15 +8,8 @@
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { expectRefusedPaste, MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
+import { shortParagraphs } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
-
-/** `count` short paragraphs, blank-line separated, ending with a known last line. */
-function shortParagraphs(count: number): string {
-  const lines: string[] = [];
-  for (let i = 0; i < count; i += 1) lines.push(`p${i}`);
-  lines.push('Last line of the paste.');
-  return lines.join('\n\n');
-}
 
 test('j01-paste-blocks: 40,000 short paragraphs pasted between two paragraphs land whole without holding the tab, caret after them, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(600_000);

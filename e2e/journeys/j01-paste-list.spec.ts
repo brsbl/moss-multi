@@ -7,14 +7,8 @@
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
+import { flatList } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
-
-/** `count` bullet items. */
-function flatList(count: number): string {
-  const lines: string[] = [];
-  for (let i = 0; i < count; i += 1) lines.push(`- item ${i}`);
-  return lines.join('\n');
-}
 
 test('j01-paste-list: a 30,000-item list pasted between two paragraphs lands whole, in frames under the cap, without holding the tab, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(900_000);

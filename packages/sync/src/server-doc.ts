@@ -334,18 +334,26 @@ export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontma
   return marks;
 }
 
+/** What an export reads: a headless editor holding `doc`'s tree. */
+export type ExportView = Pick<Mirror, 'doc' | 'editor' | 'dispose'>;
+
+/** The tree an export of `live` reads. */
+export function exportView(live: Y.Doc): ExportView {
+  return mirrorOf(live);
+}
+
 /** The `.md` file (A§12): the frontmatter block in its fences, then the body through the one converter. */
 export function exportDocMarkdown(live: Y.Doc, noteId = live.guid): string {
-  const mirror = mirrorOf(live);
+  const view = exportView(live);
   try {
-    return exportMirror(mirror, noteId);
+    return exportMirror(view, noteId);
   } finally {
-    mirror.dispose();
+    view.dispose();
   }
 }
 
 /** A mirror's `.md` file, its frontmatter included. It edits the mirror's tree, so take any diff first. */
-export function exportMirror(mirror: Mirror, noteId: string): string {
+export function exportMirror(mirror: Pick<Mirror, 'doc' | 'editor'>, noteId: string): string {
   mirror.editor.update(() => {
     // Defense in depth: comments are never in the tree, but a mark a client wrote must not reach a file.
     $stripCommentMarks();

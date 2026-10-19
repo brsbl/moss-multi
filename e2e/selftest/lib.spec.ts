@@ -18,7 +18,7 @@ import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import { classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
 import { awaitingRecovery, errorProblems, socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
-import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
+import { assertTestEmail, parseSetCookie, principalProblems, signIn } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
 import { unreachableControls } from '../lib/reach.js';
 import { makeSeverable } from '../lib/sever.ts';
@@ -306,6 +306,36 @@ test.describe('hibernation proof', () => {
       expect(await Promise.all([probe('d1'), probe('d2')])).toEqual([{ instanceId: 'i-d1', constructedAt: 1 }, { instanceId: 'i-d2', constructedAt: 1 }]);
       expect(await probe('d1')).toEqual({ instanceId: 'i-d1', constructedAt: 1 });
       expect(signIns, 'one sign-in for every probe').toBe(1);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+});
+
+test.describe('setup resends', () => {
+  // The run log and summary count these (scripts/deploy/canary-reporter.mjs), so a resend is never silent.
+  test('a sign-in resent after a 429 and after a lost forward is recorded on the test, with its count', async () => {
+    let posts = 0;
+    const server = createServer((req, res) => {
+      posts += 1;
+      if (posts === 1) {
+        res.writeHead(429, { 'x-retry-after': '1' });
+        res.end('limited');
+      } else if (posts === 2) {
+        res.writeHead(503);
+        res.end('Your worker restarted mid-request.');
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'session=s; Path=/; HttpOnly' });
+        res.end('{}');
+      }
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await signIn(baseUrl, { label: 'ada', name: 'Ada', email: 'mm-selftest-resend-1@example.invalid', password: 'p', id: null });
+      expect(posts).toBe(3);
+      const resends = test.info().annotations.filter((a) => a.type === 'setup-resend').map((a) => JSON.parse(a.description ?? ''));
+      expect(resends).toEqual([{ kind: 'sign-in', cause: '429', count: 1 }, { kind: 'sign-in', cause: 'lost forward', count: 1 }]);
     } finally {
       await new Promise((done) => server.close(done));
     }

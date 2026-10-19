@@ -69,7 +69,7 @@ const aliasPlugin = {
   },
 };
 
-async function bundle(name, entry, config = {}) {
+export async function bundle(name, entry, config = {}) {
   const outfile = join(OUT, name, 'worker.js');
   await esbuild.build({
     entryPoints: [entry],
@@ -113,7 +113,7 @@ function waitForPort(port, child, logs) {
   });
 }
 
-async function startWorker(name, port) {
+export async function startWorker(name, port) {
   const started = performance.now();
   const child = spawn(
     process.execPath,
@@ -130,7 +130,7 @@ async function startWorker(name, port) {
   return { child, logs, origin: `http://127.0.0.1:${port}`, startupMs: performance.now() - started };
 }
 
-async function stop(child) {
+export async function stop(child) {
   if (child.exitCode !== null) return;
   try {
     process.kill(-child.pid, 'SIGTERM');

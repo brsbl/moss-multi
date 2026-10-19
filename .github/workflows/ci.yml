@@ -186,6 +186,11 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/measure-converter.mjs
         timeout-minutes: 30
+      # T8.F: the DocDO's heap for the journeys' near-cap notes, read over the inspector; the table lands in the job summary.
+      - name: DocDO memory in workerd
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/measure-memory.mjs
+        timeout-minutes: 20
       # A missing converter golden is written here for review; it fails the run until committed.
       - name: Upload missing converter goldens
         if: ${{ failure() }}

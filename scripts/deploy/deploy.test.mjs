@@ -1058,6 +1058,35 @@ describe('the staging retry gate (T8.2)', () => {
     expect(text).toMatch(/1 retry on infrastructure\n {2}j01\.spec\.ts › network: connection reset/);
   });
 
+  const resend = (kind, cause, count) => ({ type: 'setup-resend', description: JSON.stringify({ kind, cause, count }) });
+
+  it('prints and counts every setup resend after a 429 or a lost forward, and no text of a malformed one', async () => {
+    const { default: CanaryReporter } = await import('./canary-reporter.mjs');
+    const lines = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    try {
+      const reporter = new CanaryReporter();
+      const test = (title) => ({ retries: 0, titlePath: () => ['', 'staging-webkit', 'j01.spec.ts', title] });
+      const annotations = [resend('sign-in', '429', 2), resend('sign-up', 'lost forward', 1), { type: 'setup-resend', description: 'secret@example.invalid' }];
+      reporter.onTestEnd(test('a'), { status: 'passed', duration: 5, retry: 0, errors: [], annotations });
+      reporter.onTestEnd(test('b'), { status: 'passed', duration: 5, retry: 0, errors: [], annotations: [] });
+      reporter.onEnd({ status: 'passed', duration: 20 });
+    } finally {
+      log.mockRestore();
+    }
+    const text = lines.join('\n');
+    expect(text).toMatch(/ {6}setup resends: sign-in after a 429 x2, sign-up after a lost forward x1\n/);
+    expect(text).toMatch(/3 setup resends\n {2}j01\.spec\.ts › a: sign-in after a 429 x2, sign-up after a lost forward x1/);
+    expect(text).not.toContain('secret');
+  });
+
+  it("counts a leg's setup resends in the summary, every attempt's", () => {
+    const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'expected', results: [
+      { status: 'passed', duration: 7, annotations: [resend('sign-in', '429', 1), resend('sign-in', '429', 2), { type: 'setup-resend', description: '{"kind":"x"}' }] },
+    ] }] }] }] };
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'passed', duration: 7, resends: { 'sign-in after a 429': 3 } }] });
+  });
+
   it("names a flaky leg's infrastructure class in the summary", () => {
     const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [
       { status: 'failed', duration: 5, errors: failed('page.goto: net::ERR_CONNECTION_RESET') }, { status: 'passed', duration: 7 },

@@ -5,13 +5,34 @@ import * as Y from 'yjs';
 import { encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../src/doc-do.ts';
 import type { PayloadWork } from '../src/payloads.ts';
+import { exportView, mirrorOf } from '../src/server-doc.ts';
 import { textHash } from './text-hash.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 
 /** The DocDO, plus a method that reports its payload work (a getter is not an RPC method). */
 export class MeasuredDocDO extends DocDO {
+  #held: { dispose(): void } | null = null;
+
   work(): PayloadWork {
     return { ...this.payloadWork };
+  }
+
+  /** The note's Yjs structs (items and GC ranges), every client's. */
+  structs(): number {
+    let count = 0;
+    for (const structs of this.document.store.clients.values()) count += structs.length;
+    return count;
+  }
+
+  /** Builds and keeps what an export reads (`export`) or a server write's mirror (`mirror`), so its heap can be read. */
+  hold(kind: 'export' | 'mirror'): void {
+    this.release();
+    this.#held = kind === 'export' ? exportView(this.document) : mirrorOf(this.document);
+  }
+
+  release(): void {
+    this.#held?.dispose();
+    this.#held = null;
   }
 }
 
@@ -53,6 +74,18 @@ export default {
     if (url.pathname === '/export') {
       const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
       return Response.json({ bytes: new TextEncoder().encode(markdown).byteLength, hash: textHash(markdown) });
+    }
+    if (url.pathname === '/structs') {
+      return Response.json({ structs: await (await getServerByName(env.DocDO, docId)).structs() });
+    }
+    if (url.pathname === '/hold') {
+      const kind = url.searchParams.get('kind') === 'mirror' ? 'mirror' : 'export';
+      await (await getServerByName(env.DocDO, docId)).hold(kind);
+      return new Response('ok');
+    }
+    if (url.pathname === '/release') {
+      await (await getServerByName(env.DocDO, docId)).release();
+      return new Response('ok');
     }
     if (url.pathname === '/work') {
       const stub = await getServerByName(env.DocDO, docId);
