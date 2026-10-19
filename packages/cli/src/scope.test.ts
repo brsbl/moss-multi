@@ -89,7 +89,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-interface Options { cwd?: string; folds?: boolean; confirm?: (question: string) => Promise<boolean> }
+interface Options { cwd?: string; folds?: boolean; confirm?: (question: string) => Promise<boolean>; signal?: AbortSignal }
 
 async function cli(args: string[], options: Options = {}) {
   const out: string[] = [];
@@ -103,6 +103,7 @@ async function cli(args: string[], options: Options = {}) {
     sleep: async () => undefined,
     foldsCase: () => options.folds ?? false,
     confirm: options.confirm ?? (async () => false),
+    ...(options.signal ? { signal: options.signal } : {}),
   });
   return { code, out: out.join(''), err: errors.join('\n') };
 }
@@ -582,6 +583,65 @@ describe('a workspace scope', () => {
     expect(noteLinks('x](y '.repeat(10_000), 'a.md')).toEqual([]);
     expect(noteLinks(`${'[[a\n'.repeat(50_000)}]]`, 'a.md')).toEqual([]);
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('many link openers sharing one closing mark are scanned in linear time', () => {
+    const started = Date.now();
+    // 40 000 openers (160 KB) before one `)`: a scan that keeps each opener's text to the shared mark is quadratic.
+    expect(noteLinks(`${'x](y'.repeat(40_000)})`, 'a.md').length).toBeLessThanOrEqual(1);
+    expect(noteLinks(`${'x](<y'.repeat(40_000)}>`, 'a.md').length).toBeLessThanOrEqual(1);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('sync and watch from an outer workspace leave a tracked note alone once a nested workspace scopes it out', async () => {
+    // The outer workspace tracked the diary before the vault inside it got a scope that denies it.
+    mkdirSync(join(dir, '.moss-multi'), { recursive: true });
+    const diary = join(dir, 'vault', 'Personal', 'Diary', 'Diary.md');
+    mkdirSync(join(dir, 'vault', 'Personal', 'Diary'), { recursive: true });
+    writeFileSync(diary, '# Diary\n\nDear diary.\n');
+    const first = await syncJson();
+    expect(first.code, first.err).toBe(0);
+    const [docId] = first.results.filter((result) => result.action === 'created').map((result) => result.docId!);
+    expect(docId).toBeDefined();
+    mkdirSync(join(dir, 'vault', '.moss-multi'), { recursive: true });
+    writeFileSync(join(dir, 'vault', '.moss-multi', 'scope.json'), JSON.stringify({ allow: ['Home'], deny: ['Personal/**'] }));
+
+    writeFileSync(diary, `# Diary\n\nDear diary, ${SECRET}.\n`);
+    server.content.set(docId!, 'A remote edit.\n');
+    const second = await syncJson();
+    expect(second.code, second.err).toBe(0);
+    expect(second.results.map((result) => result.action)).not.toContain('pushed');
+    expect(sent()).not.toContain(SECRET);
+    expect(readFileSync(diary, 'utf8')).toContain(SECRET);
+
+    const controller = new AbortController();
+    const before = server.calls.length;
+    const running = cli(['watch', '--interval', '0.1'], { signal: controller.signal });
+    const deadline = Date.now() + 3_000;
+    while (server.calls.slice(before).filter((call) => call.path === '/api/docs').length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    const watched = await running;
+    expect(watched.code, watched.err).toBe(0);
+    expect(server.calls.slice(before).filter((call) => call.path === '/api/docs').length).toBeGreaterThanOrEqual(2);
+    expect(sent()).not.toContain(SECRET);
+    expect(server.content.get(docId!)).toBe('A remote edit.\n');
+    expect(readFileSync(diary, 'utf8')).toContain(SECRET);
+  });
+
+  it('a nested workspace with no scope file is reachable from outside, as before scopes', async () => {
+    mkdirSync(join(dir, 'other', '.moss-multi'), { recursive: true });
+    writeFileSync(join(dir, 'other', 'mine.md'), 'Mine.\n');
+    const added = await cli(['add', join('other', 'mine.md')]);
+    expect(added.code, added.err).toBe(0);
+    expect(server.docs).toHaveLength(1);
+  });
+
+  it('pull stops on a scope file that cannot be read before any request', async () => {
+    mkdirSync(join(dir, '.moss-multi'), { recursive: true });
+    writeFileSync(join(dir, '.moss-multi', 'scope.json'), '{ not json');
+    const pulled = await cli(['pull', 'd0000000-0000-4000-8000-00000000beef', 'x.md']);
+    expect(pulled.code).toBe(1);
+    expect(server.calls).toEqual([]);
   });
 
   it('without a scope file, every note is synced as before', async () => {
