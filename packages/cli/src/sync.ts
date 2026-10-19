@@ -646,7 +646,12 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       if (before) results.push(...before.results);
       const reconciled = await reconcile(noteCtx, meta, row);
       results.push(reconciled);
-      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(noteCtx, meta.docId, true, before?.introduced ?? new Set())).results);
+      if (reconciled.action !== 'remote-gone') {
+        const after = await syncMedia(noteCtx, meta.docId, true, before?.introduced ?? new Set());
+        // A refusal the step before the pull already reported is not repeated.
+        const said = (result: SyncResult) => before?.results.some((first) => first.file === result.file && first.action === result.action && first.message === result.message);
+        results.push(...after.results.filter((result) => !said(result)));
+      }
     } catch (error) {
       if (stopped(error)) return results;
       if (error instanceof RateLimited) throw error;
