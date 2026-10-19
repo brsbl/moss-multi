@@ -889,7 +889,7 @@ describe('upload storage bounds (T3.1s)', () => {
     const una = await signedUpUser(env, 'assets-b30-una', 'Una');
     const docId = await insertDoc(d1.db, una);
     const body = webmOf(12 * 1024 * 1024 + 4321);
-    const { ASSETS, seen } = recorded(env.ASSETS);
+    const { ASSETS, seen } = recorded(streamedPuts(d1.assets));
     const stored = await uploaded(await handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=long.webm`, {
       method: 'POST', headers: { origin: BASE, cookie: una.cookie, 'content-type': 'video/webm', 'content-length': String(body.byteLength) }, body,
     }), { ...env, ASSETS }));
@@ -905,7 +905,7 @@ describe('upload storage bounds (T3.1s)', () => {
     const hash = await hashOf(body);
     // Room for exactly this file.
     await fill(uli, uli.homeId, VAULT_MEDIA_QUOTA_BYTES - body.byteLength).run();
-    const { ASSETS, seen } = recorded(env.ASSETS, 1);
+    const { ASSETS, seen } = recorded(streamedPuts(d1.assets), 1);
     const send = () => handleApi(new Request(`${BASE}/api/docs/${docId}/assets?filename=cut.webm`, {
       method: 'POST', headers: { origin: BASE, cookie: uli.cookie, 'content-type': 'video/webm', 'content-length': String(body.byteLength) }, body,
     }), { ...env, ASSETS });

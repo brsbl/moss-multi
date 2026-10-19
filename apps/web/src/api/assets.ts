@@ -63,19 +63,26 @@ function partsSha256Hex(parts: Uint8Array<ArrayBuffer>[]): string {
   return hash.digest('hex');
 }
 
-/** `parts` stored at `key`: one put, or one multipart upload of a part each (all but the last `SEGMENT_BYTES`). */
-async function putParts(bucket: R2Bucket, key: string, parts: Uint8Array<ArrayBuffer>[], options: R2PutOptions): Promise<void> {
+/**
+ * `parts` stored at `key` in one put: a single part as it is, several streamed through a FixedLengthStream of their
+ * `length`, so they are never joined. One put is all or nothing: a client gone mid-put leaves no partial object or
+ * pending multipart upload behind, which nothing would count against the vault's quota.
+ */
+async function putParts(bucket: R2Bucket, key: string, parts: Uint8Array<ArrayBuffer>[], length: number, options: R2PutOptions): Promise<void> {
   if (parts.length === 1) {
     await bucket.put(key, parts[0], options);
     return;
   }
-  const upload = await bucket.createMultipartUpload(key, options);
+  const { readable, writable } = new FixedLengthStream(length);
+  const writer = writable.getWriter();
+  const writing = (async () => {
+    for (const part of parts) await writer.write(part);
+    await writer.close();
+  })();
   try {
-    const uploaded: R2UploadedPart[] = [];
-    for (const [i, part] of parts.entries()) uploaded.push(await upload.uploadPart(i + 1, part));
-    await upload.complete(uploaded);
+    await Promise.all([bucket.put(key, readable, options), writing]);
   } catch (error) {
-    await upload.abort().catch(() => undefined);
+    await writer.abort(error).catch(() => undefined);
     throw error;
   }
 }
@@ -100,8 +107,7 @@ const UPLOAD_MIN_BYTES_PER_SECOND = 128 * 1024;
 const FIRST_BUFFER_BYTES = 64 * 1024;
 /**
  * An upload body is held in segments of this many bytes (the last one shorter), each filled before the next is begun,
- * so a body never holds more than its bytes plus one growing segment. A body of several is stored by R2 multipart,
- * one part per segment: R2's smallest part.
+ * so a body never holds more than its bytes plus one growing segment. A video of several is streamed to R2 in one put.
  */
 const SEGMENT_BYTES = 5 * 1024 * 1024;
 
@@ -438,7 +444,7 @@ async function storeBytes(request: Request, env: AssetsEnv, principal: Principal
   // Rows before bytes, so an upload that binds nothing (no free name, no room, no edit right left) stores nothing. The
   // caller references the file only after this 201; a failed put leaves a record that a retry of the upload fills.
   if (!(await env.ASSETS.head(blobKey(hash)))) {
-    await putParts(env.ASSETS, blobKey(hash), parts, { httpMetadata: { contentType: type.contentType } });
+    await putParts(env.ASSETS, blobKey(hash), parts, size, { httpMetadata: { contentType: type.contentType } });
   }
   return placed(media);
 }
