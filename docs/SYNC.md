@@ -22,11 +22,11 @@ The CLI is one bundled file with no install step. It needs Node 24.18.1 or later
 1. Download the `moss-multi-cli` artifact from a green CI run of the commit you want. With the GitHub CLI:
 
    ```sh
-   gh run download <run-id> --repo brsbl/moss-multi --name moss-multi-cli --dir moss-multi-cli
-   cd moss-multi-cli
+   gh run download <run-id> --repo brsbl/moss-multi --name moss-multi-cli --dir ~/moss-multi-cli
+   cd ~/moss-multi-cli
    ```
 
-   You can also download the artifact zip from the run's page and unzip it.
+   You can also download the artifact zip from the run's page and unzip it into `~/moss-multi-cli`. The steps below use that folder.
 
 2. Verify the checksums. On macOS, run `shasum -a 256 -c SHA256SUMS`. On Linux, run `sha256sum -c SHA256SUMS`. Every
    line must say `OK`. The bundle's SHA-256 must also match the `sha256` printed in that run's **Pack the CLI** step.
@@ -90,14 +90,14 @@ On each replica:
    Still on the Mac, print the Linux replica's scope and copy it over (for example with `scp`):
 
    ```sh
-   moss-multi scope replica > replica-scope.json
+   moss-multi scope replica > ~/replica-scope.json
    ```
 
    It has the Mac's `follow`, `depth` and `deny`, plus a `**/<Title>` deny entry for each title a followed note links
    to that a denied note goes by. L holds none of the denied notes, so these keep it from pulling a server note of the
    same title in their place. Those titles already appear in the followed notes' text.
 
-   On Linux, in an empty folder, with `replica-scope.json` beside it:
+   On Linux, in an empty folder, with `~/replica-scope.json` copied from the Mac:
 
    ```sh
    mkdir -p ~/Notes && cd ~/Notes
@@ -119,7 +119,7 @@ On each replica:
 
    ```sh
    mkdir -p ~/Library/Logs/moss-multi ~/Library/LaunchAgents
-   sed "s#/Users/YOU#$HOME#g" moss-multi-cli/app.moss-multi.watch.plist > ~/Library/LaunchAgents/app.moss-multi.watch.plist
+   sed "s#/Users/YOU#$HOME#g" ~/moss-multi-cli/app.moss-multi.watch.plist > ~/Library/LaunchAgents/app.moss-multi.watch.plist
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/app.moss-multi.watch.plist
    ```
 
@@ -131,7 +131,7 @@ On each replica:
 
    ```sh
    mkdir -p ~/.local/state/moss-multi ~/.config/systemd/user
-   cp moss-multi-cli/moss-multi-watch.service ~/.config/systemd/user/
+   cp ~/moss-multi-cli/moss-multi-watch.service ~/.config/systemd/user/
    systemctl --user daemon-reload
    systemctl --user enable --now moss-multi-watch
    loginctl enable-linger "$USER"

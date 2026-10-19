@@ -785,6 +785,28 @@ describe('follow brings server notes down', () => {
     for (const absent of ['Diary', 'Refunds', 'Ledger']) expect(existsSync(join(dir, absent)), absent).toBe(false);
   });
 
+  it('a replica never pulls a server note a relative markdown link names by a denied note\'s title', async () => {
+    const files = pilotVault(PILOT);
+    const home = join(dir, files.home);
+    writeFileSync(home, readFileSync(home, 'utf8').replace('Private:', 'Also [tax](Taxes%202026.md). Private:'));
+    const exported = await cli(['scope', 'replica']);
+    expect(exported.code, exported.err).toBe(0);
+    const replica = JSON.parse(exported.out) as Record<string, unknown>;
+    expect(replica.deny).toEqual(['Personal/**', 'Admin/Finance/**', '**/Diary', '**/Taxes 2026']);
+
+    // L: an empty folder with that scope; the server holds a web note of the denied title.
+    for (const entry of readdirSync(dir)) if (entry !== '.moss-multi') rmSync(join(dir, entry), { recursive: true, force: true });
+    writeScope(replica);
+    serverDoc('Moss Home', 'Start at [[Alpha]]. Also [tax](Taxes%202026.md).\n');
+    serverDoc('Alpha', 'Alpha.\n');
+    const taxesId = serverDoc('Taxes 2026', 'A web note named like the private one.\n');
+    const run = await syncJson();
+    expect(run.code, run.err).toBe(0);
+    expect(pulled(run.results)).toEqual(['Alpha', 'Moss Home'].map(mossNote).sort());
+    expect(server.calls.filter((call) => call.path.startsWith(`/api/docs/${taxesId}`))).toEqual([]);
+    expect(existsSync(join(dir, 'Moss Home', 'Taxes 2026.md'))).toBe(false);
+  });
+
   it('a follow entry naming a .md file is pulled to exactly that path, and never when deny names it', async () => {
     const secretId = serverDoc('Secret', 'Private.\n');
     serverDoc('Plan', 'The plan.\n');
