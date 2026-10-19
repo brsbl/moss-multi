@@ -2,6 +2,7 @@
 // and a sandboxed SVG; editors upload, readers (a share link included) read. A doc's media are its own record, mapping
 // each `assets/<file>` it uses to the exact version placed in it: never a filename looked up in its folder. Stored
 // bytes are the type their name declares (T3.B10).
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
@@ -10,7 +11,7 @@ import { UPLOAD_RATE, VAULT_MEDIA_QUOTA_BYTES } from '@moss-multi/protocol/limit
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { MEDIA_CAP_BYTES } from '@moss-multi/protocol/media';
-import { setUploadDeadlineForTests, uploadBufferSize } from './assets.ts';
+import { setUploadAllocationProbeForTests, setUploadDeadlineForTests } from './assets.ts';
 import { setRemoteFetchForTests } from './remote.ts';
 import { handleApi } from './router.ts';
 
@@ -526,23 +527,109 @@ describe('upload bounds (T3.1s)', () => {
     const used = await d1.db.prepare('SELECT SUM(size) AS used FROM assets WHERE folder_id = ?1').bind(kim.homeId).first<{ used: number }>();
     expect(used?.used).toBeLessThanOrEqual(VAULT_MEDIA_QUOTA_BYTES);
   }, 60_000);
-  it('grows an upload buffer to its declared length holding at most 1 MiB more, even for a near-cap video (B230, B219)', () => {
-    const length = MEDIA_CAP_BYTES.video;
-    for (const chunk of [4096, 64 * 1024, 1024 * 1024, 7_777_777]) {
-      let capacity = 0;
-      let peak = 0;
-      for (let offset = 0; offset < length; offset = Math.min(length, offset + chunk)) {
-        const next = uploadBufferSize(capacity, Math.min(length, offset + chunk), length);
-        // While the buffer grows, the old one stays live until its bytes are copied over.
-        if (next !== capacity) peak = Math.max(peak, capacity + next);
-        capacity = next;
-      }
-      expect(capacity, `${chunk}-byte chunks fill the declared length`).toBe(length);
-      expect(peak, `${chunk}-byte chunks: peak buffer bytes`).toBeLessThanOrEqual(length + 1024 * 1024);
+  /** Each upload's buffer allocations as the probe sees them: held bytes, and the body bytes received by then. */
+  const probed = () => {
+    const seen = new Map<Request, { held: number; received: number }[]>();
+    setUploadAllocationProbeForTests((request, held, received) => {
+      seen.set(request, [...(seen.get(request) ?? []), { held, received }]);
+    });
+    return seen;
+  };
+  const MIB = 1024 * 1024;
+  /** A webm body that sends `sent` bytes in 64 KiB chunks and then nothing more, ever. */
+  const stallingBody = (sent: number) => {
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= sent) return new Promise<void>(() => {});
+        const chunk = new Uint8Array(Math.min(64 * 1024, sent - offset)).fill(offset / 65536);
+        if (offset === 0) chunk.set([0x1a, 0x45, 0xdf, 0xa3]);
+        offset += chunk.byteLength;
+        controller.enqueue(chunk);
+        return undefined;
+      },
+    }, { highWaterMark: 0 });
+  };
+  it('holds about what a stalled upload declaring the cap sent, never its declared length (T3.B30)', async () => {
+    const uma = await signedUpUser(env, 'assets-b30-uma', 'Uma');
+    const docId = await insertDoc(d1.db, uma);
+    const sent = Math.round(1.1 * MIB);
+    const seen = probed();
+    setUploadDeadlineForTests(1_000);
+    try {
+      const response = await call('POST', `/api/docs/${docId}/assets?filename=slow.webm`, uma.cookie, {
+        body: stallingBody(sent), headers: { 'content-type': 'video/webm', 'content-length': String(MEDIA_CAP_BYTES.video) },
+      });
+      expect(response.status, await response.clone().text()).toBe(408);
+    } finally {
+      setUploadDeadlineForTests(null);
+      setUploadAllocationProbeForTests(null);
     }
-    // A body that sends a few bytes and stalls holds a small buffer, not its declared length.
-    expect(uploadBufferSize(0, 10, length)).toBeLessThanOrEqual(64 * 1024);
-  });
+    const allocations = [...seen.values()].flat();
+    expect(allocations.length).toBeGreaterThan(0);
+    for (const { held, received } of allocations) {
+      expect(held, `held after ${received} bytes received`).toBeLessThanOrEqual(3 * Math.max(received, 64 * 1024));
+    }
+    expect(Math.max(...allocations.map((a) => a.held)), 'peak buffer bytes for 1.1 MiB sent').toBeLessThanOrEqual(3 * sent);
+  }, 20_000);
+  it('keeps concurrent stalled uploads declaring the cap bounded by what they sent (T3.B30)', async () => {
+    const N = 4;
+    const users = await Promise.all(Array.from({ length: N }, (_, i) => signedUpUser(env, `assets-b30-con-${i}`, `Con ${i}`)));
+    const docs = await Promise.all(users.map((user) => insertDoc(d1.db, user)));
+    const sent = Math.round(1.1 * MIB);
+    const seen = probed();
+    setUploadDeadlineForTests(1_000);
+    try {
+      const responses = await Promise.all(users.map((user, i) => call('POST', `/api/docs/${docs[i]}/assets?filename=slow.webm`, user.cookie, {
+        body: stallingBody(sent), headers: { 'content-type': 'video/webm', 'content-length': String(MEDIA_CAP_BYTES.video) },
+      })));
+      expect(responses.map((r) => r.status)).toEqual(Array<number>(N).fill(408));
+    } finally {
+      setUploadDeadlineForTests(null);
+      setUploadAllocationProbeForTests(null);
+    }
+    expect(seen.size).toBe(N);
+    // Summed over the uploads, each at its own peak: the most they could hold at once.
+    const held = [...seen.values()].reduce((sum, allocations) => sum + Math.max(...allocations.map((a) => a.held)), 0);
+    expect(held, `${N} stalled uploads' peak buffer bytes`).toBeLessThanOrEqual(N * 3 * sent);
+  }, 30_000);
+  it('stores an honest upload at each cap byte-exact, its buffers at most one segment past its length (T3.B30, B219)', async () => {
+    const vic = await signedUpUser(env, 'assets-b30-vic', 'Vic');
+    const docId = await insertDoc(d1.db, vic);
+    const cases = [
+      { filename: 'cap.webm', contentType: 'video/webm', length: MEDIA_CAP_BYTES.video, magic: [0x1a, 0x45, 0xdf, 0xa3] },
+      { filename: 'cap.png', contentType: 'image/png', length: MEDIA_CAP_BYTES.image, magic: [...PNG] },
+    ];
+    for (const { filename, contentType, length, magic } of cases) {
+      const hash = createHash('sha256');
+      let offset = 0;
+      // Chunks off any power-of-two boundary, as a network body arrives.
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = new Uint8Array(Math.min(MIB + 333, length - offset)).fill(offset % 251);
+          if (offset === 0) chunk.set(magic);
+          hash.update(chunk);
+          offset += chunk.byteLength;
+          controller.enqueue(chunk);
+          if (offset === length) controller.close();
+        },
+      }, { highWaterMark: 0 });
+      const seen = probed();
+      try {
+        const response = await call('POST', `/api/docs/${docId}/assets?filename=${filename}`, vic.cookie, {
+          body, headers: { 'content-type': contentType, 'content-length': String(length) },
+        });
+        expect((await uploaded(response)).asset.size).toBe(length);
+      } finally {
+        setUploadAllocationProbeForTests(null);
+      }
+      const peak = Math.max(...[...seen.values()].flat().map((a) => a.held));
+      expect(peak, `${filename}: peak buffer bytes`).toBeLessThanOrEqual(length + 5 * MIB);
+      const served = await bytesOf(await call('GET', `/api/docs/${docId}/assets/${filename}`, vic.cookie));
+      expect(served.byteLength).toBe(length);
+      expect(createHash('sha256').update(served).digest('hex'), `${filename} is stored byte-exact`).toBe(hash.digest('hex'));
+    }
+  }, 120_000);
   it('refuses an upload whose body stalls past its deadline with 408, cancelling the stream (B230)', async () => {
     const docId = await insertDoc(d1.db, ada);
     let cancelled = false;
@@ -572,7 +659,6 @@ describe('upload bounds (T3.1s)', () => {
   }, 20_000);
   it('lets each upload chunk be collected once copied, so a large body holds about its length, not twice it (B230, B219)', async () => {
     const docId = await insertDoc(d1.db, ada);
-    const MIB = 1024 * 1024;
     const CHUNKS = 24;
     setFlagsFromString('--expose-gc');
     const gc = runInNewContext('gc') as () => void;

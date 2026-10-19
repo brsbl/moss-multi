@@ -56,6 +56,12 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 }
 
 let deadlineOverride: number | null = null;
+let allocationProbe: ((request: Request, held: number, received: number) => void) | null = null;
+
+/** Unit tests see each upload buffer allocation: the buffer bytes `request` then holds and the body bytes received. */
+export function setUploadAllocationProbeForTests(probe: typeof allocationProbe): void {
+  allocationProbe = probe;
+}
 
 /** Unit tests shorten every upload's body deadline to `ms` (null restores the size-scaled one). */
 export function setUploadDeadlineForTests(ms: number | null): void {
@@ -116,6 +122,7 @@ async function readDeclared(request: Request, length: number): Promise<Uint8Arra
       }
       if (offset + value.byteLength > bytes.byteLength) {
         const grown = new Uint8Array(uploadBufferSize(bytes.byteLength, offset + value.byteLength, length));
+        allocationProbe?.(request, bytes.byteLength + grown.byteLength, offset + value.byteLength);
         grown.set(bytes.subarray(0, offset));
         bytes = grown;
       }
