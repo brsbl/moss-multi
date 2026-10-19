@@ -2,7 +2,7 @@
 // download only, and a file in a shared assets/ folder that another note holds or references never goes up for this one.
 // @p:agt-2
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -287,5 +287,124 @@ describe('note media provenance: what the server controls never counts as this u
     const synced = await syncJson(folds);
     expect(held(plan), JSON.stringify(synced.results)).toEqual([]);
     expect(failedFor(synced.results, plan, join('assets', 'SECRET.png')), JSON.stringify(synced.results)).toBe(true);
+  });
+});
+
+describe('note media provenance: every name the server ever showed stays download only (T7.S9 third check)', () => {
+  it('a collaborator\'s title that broke onto a body line, then reset, uploads nothing when a stale editor saves it', async () => {
+    write(join('Trip', 'Trip.md'), '# Trip\n\nThe trip.\n');
+    write(join('Trip', 'assets', 'private.png'), png('private'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const trip = createdId(first.results, join('Trip', 'Trip.md'))!;
+    expect(trip).toBeTruthy();
+
+    const row = server.docs.find((doc) => doc.id === trip)!;
+    row.title = 'Trip\n\n![x](assets/private.png)';
+    await syncJson();
+    const injected = readFileSync(join(dir, 'Trip', 'Trip.md'), 'utf8');
+    expect(injected).toContain('assets/private.png');
+    row.title = 'Trip';
+    await syncJson();
+    expect(readFileSync(join(dir, 'Trip', 'Trip.md'), 'utf8')).not.toContain('private.png');
+
+    // Ada's editor still held the injected render, and saves it with typing of her own.
+    write(join('Trip', 'Trip.md'), `${injected.trimEnd()}\n\nMore of my own.\n`);
+    const stale = await syncJson();
+    await syncJson();
+    expect(held(trip), JSON.stringify(stale.results)).toEqual([]);
+  });
+
+  it('explicit pull then push of a stale save of a reference the server added and removed uploads nothing', async () => {
+    write('plan.md', 'The plan.\n');
+    write(join('assets', 'private.png'), png('private'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const plan = createdId(first.results, 'plan.md')!;
+    const clean = server.content.get(plan)!;
+
+    const withRef = `${clean.trimEnd()}\n\n![x](assets/private.png)\n`;
+    server.content.set(plan, withRef);
+    expect((await cli(['pull', plan, 'plan.md'])).code).toBe(0);
+    server.content.set(plan, clean);
+    expect((await cli(['pull', plan, 'plan.md'])).code).toBe(0);
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).not.toContain('private.png');
+
+    write('plan.md', withRef.replace('The plan.', 'The plan (edited).'));
+    const pushed = await cli(['push', 'plan.md']);
+    expect(held(plan), pushed.out + pushed.err).toEqual([]);
+  });
+
+  it('adoption never counts a reference on a moss note\'s title line', async () => {
+    write(join('Trip', 'Trip.md'), '# Trip ![x](assets/private.png)\n\nThe trip.\n');
+    write(join('Trip', 'assets', 'private.png'), png('private'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const trip = createdId(first.results, join('Trip', 'Trip.md'))!;
+    expect(trip).toBeTruthy();
+    await syncJson();
+    expect(held(trip)).toEqual([]);
+  });
+
+  it('a name another note references in another Unicode form is still that note\'s file', async () => {
+    const nfc = 'café.png';
+    const nfd = 'café.png';
+    write('diary.md', `Dear diary ![s](assets/${nfc})\n`);
+    write(join('assets', nfc), png('secret'));
+    write('plan.md', 'The plan.\n');
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const plan = createdId(first.results, 'plan.md')!;
+    write(join('assets', nfd), png('secret'));
+    appendFileSync(join(dir, 'plan.md'), `\n![s](assets/${nfd})\n`);
+    const synced = await syncJson();
+    expect(held(plan), JSON.stringify(synced.results)).toEqual([]);
+  });
+
+  it('a standalone add on a volume that folds case sees a sibling\'s file under any spelling', async () => {
+    write('diary.md', 'Dear diary ![s](assets/secret.png)\n');
+    write(join('assets', 'secret.png'), png('secret'));
+    write('plan.md', 'The plan ![s](assets/SECRET.png)\n');
+    const added = await cli(['add', 'plan.md', '--json'], { foldsCase: () => true });
+    expect(added.code, added.err).toBe(0);
+    const plan = (JSON.parse(added.out) as { id: string }).id;
+    expect(held(plan), added.err).toEqual([]);
+  });
+
+  it('on a case-sensitive volume, Trip/ and trip/ are separate folders with separate files', async () => {
+    write(join('trip', 'a.md'), 'A ![a](assets/a.png)\n');
+    write(join('trip', 'assets', 'a.png'), png('lower'));
+    // Only where the volume tells the two folders apart.
+    if (existsSync(join(dir, 'TRIP', 'a.md'))) return;
+    write(join('Trip', 'b.md'), 'B.\n');
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const a = createdId(first.results, join('trip', 'a.md'))!;
+    const b = createdId(first.results, join('Trip', 'b.md'))!;
+    expect(held(a)).toEqual(['a.png']);
+    write(join('Trip', 'assets', 'a.png'), png('upper'));
+    appendFileSync(join(dir, 'Trip', 'b.md'), '\n![a](assets/a.png)\n');
+    const synced = await syncJson();
+    expect(synced.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: b, file: join('Trip', 'assets', 'a.png') }));
+  });
+
+  it('a note folder that cannot be listed uploads nothing', async () => {
+    if (process.getuid?.() === 0) return;
+    write(join('Trip', 'trip.md'), 'The trip.\n');
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const trip = createdId(first.results, join('Trip', 'trip.md'))!;
+    expect(trip).toBeTruthy();
+    write(join('Trip', 'assets', 'new.png'), png('new'));
+    appendFileSync(join(dir, 'Trip', 'trip.md'), '\n![n](assets/new.png)\n');
+    // Write and search, but no listing.
+    chmodSync(join(dir, 'Trip'), 0o300);
+    let pushed = { code: 0, out: '', err: '' };
+    try {
+      pushed = await cli(['push', join('Trip', 'trip.md')]);
+    } finally {
+      chmodSync(join(dir, 'Trip'), 0o755);
+    }
+    expect(held(trip), pushed.out + pushed.err).toEqual([]);
   });
 });
