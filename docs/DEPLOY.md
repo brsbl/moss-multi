@@ -151,6 +151,10 @@ done
 
 Each note lands as `<title>.md`, and its media next to it. After that, `moss-multi sync ~/moss-pilot-backup` refreshes every pulled note. Run the loop again to pick up notes created since. Syncing also pushes any edit made to a backup file, so leave the backup unedited. `moss-multi history <doc>` lists a note's versions. For the account data, `wrangler d1 export moss-multi-pilot --remote --output pilot.sql` dumps the D1 database (it needs the token).
 
+## Staging status (2026-10-19)
+
+On the integrated m8 candidate `87358d9` (full lane 39261915491, deploy 39266568307): the deploy, `/api/version` and the test-hook 404s, the canary, SP9, the security sweep (52 of 52) and a demo re-run that added nothing all pass. The full suite does not. Every leg that imports a near-cap note through `POST /api/docs` fails in both engines, even run alone with `suite_grep`: `DocDO.create` passes the isolate's memory limit (and once its CPU limit), and the Worker answers 503 or 500. These are j01-large (40,000 lines), j01-paste-blocks (40,000 paragraphs), j01-paste-list, j01-paste-table, j01-paste-race and j01-paste's 2 MB leg. In full runs each such reset also drops the other Durable Objects in its isolate, so legs running in the same minute fail with 1006, 1013 or 503 as collateral. This is the server import's memory, still open from T0.7 in `docs/METHOD.md`, and not a staging fault.
+
 ## Demo content
 
 `scripts/demo.mjs` builds the demo folder in two test accounts through the real UI, then captures the signature shot. It drives one bb Browser Automation session through `scripts/qa.mjs`, so run it on a machine with bb.

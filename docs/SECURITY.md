@@ -13,7 +13,7 @@ The adversarial checklist of BUILDPLAN T8.3, run first against a local productio
 
 ## Checklist and results
 
-Local results are from 2026-10-08, branch `t/T8.3a`, on a `stack.mjs start` stack without `--hooks`. Staging results are from 2026-10-09 (the deploy of m8 `372ee1e`, branch `t/T8.3`), repeated on 2026-10-14 against the final m8 build (`6bc3c66`, T8.F): 52 of 52 checks both times.
+Local results are from 2026-10-08, branch `t/T8.3a`, on a `stack.mjs start` stack without `--hooks`. Staging results are from 2026-10-09 (the deploy of m8 `372ee1e`, branch `t/T8.3`), repeated on 2026-10-14 against the final m8 build (`6bc3c66`, T8.F), and on 2026-10-19 against the integrated m8 candidate (`87358d9`, T8.F): 52 of 52 checks each time.
 
 | Area | What is checked | How | Local | Staging |
 |---|---|---|---|---|
