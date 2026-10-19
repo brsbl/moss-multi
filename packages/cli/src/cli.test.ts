@@ -1670,7 +1670,7 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
   });
 
   // A pull holding a small wanted edit and a long unwanted paragraph; the user keeps the first and deletes the second.
-  const LONG = 'A long agent paragraph that the user reads and decides she does not want in her note at all.\n\n';
+  const LONG = 'A long agent paragraph she does not want.\n\n';
   it('removing only the long pulled paragraph lands on the first save: a save holding a pulled edit is not stale', async () => {
     expect((await cli(['pull', ID_B, 'notes.md'])).code).toBe(0);
     const file = join(dir, 'notes.md');
