@@ -335,17 +335,6 @@ describe('note media provenance: every name the server ever showed stays downloa
     expect(held(plan), pushed.out + pushed.err).toEqual([]);
   });
 
-  it('adoption never counts a reference on a moss note\'s title line', async () => {
-    write(join('Trip', 'Trip.md'), '# Trip ![x](assets/private.png)\n\nThe trip.\n');
-    write(join('Trip', 'assets', 'private.png'), png('private'));
-    expect((await cli(['init'])).code).toBe(0);
-    const first = await syncJson();
-    const trip = createdId(first.results, join('Trip', 'Trip.md'))!;
-    expect(trip).toBeTruthy();
-    await syncJson();
-    expect(held(trip)).toEqual([]);
-  });
-
   it('a name another note references in another Unicode form is still that note\'s file', async () => {
     const nfc = 'café.png';
     const nfd = 'café.png';
@@ -402,5 +391,135 @@ describe('note media provenance: every name the server ever showed stays downloa
     chmodSync(join(dir, 'Trip'), 0o300);
     const pushed = await cli(['push', join('Trip', 'trip.md')]).finally(() => chmodSync(join(dir, 'Trip'), 0o755));
     expect(held(trip), pushed.out + pushed.err).toEqual([]);
+  });
+});
+
+describe('the folder taint store: a name the server ever showed in a folder never uploads from it (T7.S9 round 4)', () => {
+  const state = (...parts: string[]) => join(dir, '.moss-multi', ...parts);
+
+  it('a spaced destination in a collaborator\'s title or body, normalised by the editor on save, uploads nothing', async () => {
+    write(join('Trip', 'Trip.md'), '# Trip\n\nThe trip.\n');
+    write(join('Trip', 'assets', 'private.png'), png('private'));
+    write(join('Trip', 'assets', 'hidden.png'), png('hidden'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const trip = createdId(first.results, join('Trip', 'Trip.md'))!;
+    expect(trip).toBeTruthy();
+
+    // Ben renames the doc with a title that breaks onto a body line, and adds a spaced reference to the body.
+    server.docs.find((doc) => doc.id === trip)!.title = 'Trip\n\n![x]( assets/private.png )';
+    server.content.set(trip, `${server.content.get(trip)!.trimEnd()}\n\n![y]( assets/hidden.png )\n`);
+    await syncJson();
+    const injected = readFileSync(join(dir, 'Trip', 'Trip.md'), 'utf8');
+    expect(injected).toContain('( assets/private.png )');
+    expect(injected).toContain('( assets/hidden.png )');
+
+    // Ada's Moss editor normalises both destinations when it saves her typing.
+    write(join('Trip', 'Trip.md'), `${injected.replace(/\(\s+assets\/([^\s)]+)\s+\)/g, '(assets/$1)').trimEnd()}\n\nMy own line.\n`);
+    expect(readFileSync(join(dir, 'Trip', 'Trip.md'), 'utf8')).toContain('](assets/private.png)');
+    const saved = await syncJson();
+    await syncJson();
+    expect(held(trip), JSON.stringify(saved.results)).toEqual([]);
+    expect(failedFor(saved.results, trip, join('Trip', 'assets', 'private.png')), JSON.stringify(saved.results)).toBe(true);
+
+    // Positive control: an image Ada adds herself goes up.
+    write(join('Trip', 'assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'Trip', 'Trip.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: trip, file: join('Trip', 'assets', 'mine.png') }));
+    expect(held(trip)).toEqual(['mine.png']);
+  });
+
+  it('a file a pull left behind, at its old path or under --force, uploads nothing when it is adopted', async () => {
+    write(join('assets', 'stray.png'), png('stray'));
+    write(join('assets', 'odd.png'), png('odd'));
+    write('c.md', 'Mine.\n');
+    expect((await cli(['init'])).code).toBe(0);
+    const doc = 'd0000000-0000-4000-8000-0000000000bb';
+    server.docs.push({ id: doc, title: 'shared', filename: 'shared.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 1 });
+    server.content.set(doc, 'Shared ![s](assets/stray.png)\n');
+    expect((await cli(['pull', doc, 'a.md'])).code).toBe(0);
+    server.content.set(doc, 'Shared ![o](assets/odd.png)\n');
+    // A pull to a new path leaves a.md behind; one with --force over c.md leaves b.md behind.
+    expect((await cli(['pull', doc, 'b.md'])).code).toBe(0);
+    expect((await cli(['pull', doc, 'c.md', '--force'])).code).toBe(0);
+
+    const adopted = await syncJson();
+    const a = createdId(adopted.results, 'a.md')!;
+    const b = createdId(adopted.results, 'b.md')!;
+    expect(a && b, JSON.stringify(adopted.results)).toBeTruthy();
+    await syncJson();
+    expect(held(a), JSON.stringify(adopted.results)).toEqual([]);
+    expect(held(b), JSON.stringify(adopted.results)).toEqual([]);
+    expect(held(doc)).toEqual([]);
+    expect(failedFor(adopted.results, a, join('assets', 'stray.png')), JSON.stringify(adopted.results)).toBe(true);
+
+    // Positive control: an image Ada adds to the adopted note goes up.
+    write(join('assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'a.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: a, file: join('assets', 'mine.png') }));
+    expect(held(a)).toEqual(['mine.png']);
+  });
+
+  for (const damage of ['missing', 'corrupt'] as const) {
+    it(`a ${damage} store is rebuilt closed: a stale save of a pulled reference uploads nothing`, async () => {
+      write('plan.md', 'The plan.\n');
+      write(join('assets', 'stray.png'), png('stray'));
+      expect((await cli(['init'])).code).toBe(0);
+      const first = await syncJson();
+      const plan = createdId(first.results, 'plan.md')!;
+      const clean = server.content.get(plan)!;
+      const withRef = `${clean.trimEnd()}\n\n![s](assets/stray.png)\n`;
+      server.content.set(plan, withRef);
+      await syncJson();
+      expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toContain('assets/stray.png');
+
+      // The workspace loses its record of what the server showed: the store, and any per-doc record and base.
+      if (damage === 'missing') rmSync(state('served-names.json'), { force: true });
+      else writeFileSync(state('served-names.json'), '{ "folders": ');
+      const metaPath = state(plan, 'meta.json');
+      const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
+      delete meta.served;
+      writeFileSync(metaPath, JSON.stringify(meta));
+      rmSync(state(plan, 'base.md'), { force: true });
+
+      // Ben removes the reference again; Ada's editor still holds it and saves it with typing of her own.
+      server.content.set(plan, clean);
+      await syncJson();
+      expect(readFileSync(join(dir, 'plan.md'), 'utf8')).not.toContain('stray.png');
+      write('plan.md', `${withRef}\nA line of my own.\n`);
+      const stale = await syncJson();
+      await syncJson();
+      expect(held(plan), JSON.stringify(stale.results)).toEqual([]);
+
+      // Positive control: an image Ada adds afterwards goes up.
+      write(join('assets', 'new.png'), png('new'));
+      appendFileSync(join(dir, 'plan.md'), '\n![n](assets/new.png)\n');
+      const own = await syncJson();
+      expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: plan, file: join('assets', 'new.png') }));
+    });
+  }
+
+  it('a note written just before a crash, with no record of its doc yet, uploads nothing when adopted', async () => {
+    write(join('assets', 'stray.png'), png('stray'));
+    expect((await cli(['init'])).code).toBe(0);
+    const doc = 'd0000000-0000-4000-8000-0000000000cc';
+    server.docs.push({ id: doc, title: 'shared', filename: 'shared.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 1 });
+    server.content.set(doc, 'Shared ![s](assets/stray.png)\n');
+    expect((await cli(['pull', doc, 'shared.md'])).code).toBe(0);
+    // The crash: the note is on disk, the doc's record never was.
+    rmSync(state(doc), { recursive: true, force: true });
+
+    const adopted = await syncJson();
+    const note = createdId(adopted.results, 'shared.md')!;
+    expect(note, JSON.stringify(adopted.results)).toBeTruthy();
+    await syncJson();
+    expect(held(note), JSON.stringify(adopted.results)).toEqual([]);
+
+    write(join('assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'shared.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: note, file: join('assets', 'mine.png') }));
   });
 });

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Actor } from '../lib/actors.ts';
+import { grantDoc } from '../lib/grants.ts';
 import type { Stack } from '../lib/stack.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -304,6 +305,66 @@ test('j18-sync media: a note\'s image and video round-trip through sync and pull
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(away, { recursive: true, force: true });
+  }
+});
+
+test('j18-sync media taint: references a collaborator puts in a title and a body never upload the files they name, and the owner\'s own new image does @p:agt-2 @p:R9 @p:note-8', async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const benPrincipal = await actors.principal('ben');
+  const ben = await actors.session(benPrincipal);
+  const dir = scratch();
+  const benDir = scratch();
+  const env = await agentEnv(ada, stack, dir);
+  const benEnv = await agentEnv(ben, stack, benDir);
+  type Result = { action: string; docId?: string; file: string; message?: string };
+  const syncJson = async (): Promise<{ run: Run; results: Result[] }> => {
+    const run = await moss(['sync', '--json'], env, dir);
+    return { run, results: run.stdout.trim() ? (JSON.parse(run.stdout) as Result[]) : [] };
+  };
+  const note = join(dir, 'Trip', 'Trip.md');
+  try {
+    // Ada's moss note keeps two files no note references yet beside it.
+    mkdirSync(join(dir, 'Trip', 'assets'), { recursive: true });
+    writeFileSync(note, '# Trip\n\nThe trip.\n');
+    writeFileSync(join(dir, 'Trip', 'assets', 'private.png'), fixture('pattern.png'));
+    writeFileSync(join(dir, 'Trip', 'assets', 'secret.png'), DOT_PNG);
+    expect((await moss(['init'], env, dir)).code).toBe(0);
+    const first = await syncJson();
+    expect(first.run.code, first.run.stderr).toBe(0);
+    const trip = first.results.find((result) => result.action === 'created')?.docId;
+    expect(trip, first.run.stdout).toBeTruthy();
+    await grantDoc(ada, trip!, benPrincipal, 'editor');
+
+    // Ben, on his own replica: a body reference to one file, and a title naming the other with a spaced destination.
+    expect((await moss(['init'], benEnv, benDir)).code).toBe(0);
+    const pulled = await moss(['pull', trip!, 'trip.md'], benEnv, benDir);
+    expect(pulled.code, pulled.stderr).toBe(0);
+    writeFileSync(join(benDir, 'trip.md'), `${readFileSync(join(benDir, 'trip.md'), 'utf8').trimEnd()}\n\n![s](assets/secret.png)\n`);
+    const pushed = await moss(['push', 'trip.md'], benEnv, benDir);
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const renamed = await moss(['mv', trip!, 'Trip ![x]( assets/private.png )'], benEnv, benDir);
+    expect(renamed.code, renamed.stderr).toBe(0);
+
+    // Ada's sync brings both down; then her editor saves the note with the destinations normalised and an image of her own.
+    await expect.poll(async () => {
+      await syncJson();
+      const text = readOr(note);
+      return text.includes('assets/secret.png') && text.includes('assets/private.png');
+    }, { message: 'Ben\'s title and body reach Ada\'s file', timeout: SYNC_TIMEOUT }).toBe(true);
+    writeFileSync(join(dir, 'Trip', 'assets', 'mine.png'), fixture('pattern.png'));
+    writeFileSync(note, `${readOr(note).replace(/\(\s+assets\/([^\s)]+)\s+\)/g, '(assets/$1)').trimEnd()}\n\nMy own photo.\n\n![m](assets/mine.png)\n`);
+    const saved = await syncJson();
+    await syncJson();
+    const refusedFiles = saved.results.filter((result) => result.action === 'failed').map((result) => result.file);
+    expect(refusedFiles, saved.run.stdout).toEqual(expect.arrayContaining([join('Trip', 'assets', 'secret.png'), join('Trip', 'assets', 'private.png')]));
+    expect(saved.results, saved.run.stdout).toContainEqual(expect.objectContaining({ action: 'uploaded', file: join('Trip', 'assets', 'mine.png') }));
+    expect((await asset(ada, trip!, 'mine.png')).body.equals(fixture('pattern.png')), 'Ada\'s own image reaches the server').toBe(true);
+    expect((await asset(ada, trip!, 'private.png')).status, 'the file the title named never leaves Ada\'s disk').toBe(404);
+    expect((await asset(ada, trip!, 'secret.png')).status, 'nor does the file the body named').toBe(404);
+    expect((await asset(ben, trip!, 'secret.png')).status, 'so Ben cannot read it').toBe(404);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(benDir, { recursive: true, force: true });
   }
 });
 
