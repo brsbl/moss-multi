@@ -314,6 +314,7 @@ describe('deploy-staging.yml', () => {
 const PILOT_WORKFLOW = yaml.load(readFileSync(fileURLToPath(new URL('../../.github/workflows/deploy-pilot.yml', import.meta.url)), 'utf8'));
 const PILOT_SECRETS = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'PILOT_URL', 'PILOT_BETTER_AUTH_SECRET', 'PILOT_ALLOWED_EMAILS'];
 const triggers = (workflow) => workflow.on ?? workflow[true];
+const PILOT_GROUP = "${{ inputs.target == 'pilot' && 'deploy-staging-pilot' || 'deploy-staging' }}";
 
 // Whether a job or step runs for a target. Only the conditions the deploy workflows use; anything else fails the test.
 function runsFor(condition, target) {
@@ -350,7 +351,8 @@ function stagingView(workflow) {
     if (!runsFor(job.if, 'staging')) continue;
     jobs[name] = strip({ ...job, ...(job.steps ? { steps: job.steps.map(strip) } : {}) });
   }
-  const { name, permissions, concurrency, env } = workflow;
+  const { name, permissions, env } = workflow;
+  const concurrency = { ...workflow.concurrency, group: workflow.concurrency.group === PILOT_GROUP ? 'deploy-staging' : workflow.concurrency.group };
   return { name, on, permissions, concurrency, env, jobs };
 }
 
@@ -366,6 +368,7 @@ describe('deploy-staging.yml target', () => {
     expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary']);
     expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
     // deploy-staging.yml at main a3bb1b31 through stagingView: byte-identical jobs, steps, triggers, env and concurrency.
+    // A deliberate change to the staging jobs updates this hash.
     expect(sha256(stagingView(WORKFLOW))).toBe('ebb9449a5ac7380ba7f741dc661350d1c5437611a50f00fe0d22397f889e8f72');
   });
 
@@ -376,6 +379,11 @@ describe('deploy-staging.yml target', () => {
     expect(running.preflight.steps.map((step) => step.id ?? step.uses)).toEqual(['actions/checkout@v6', 'gate']);
     expect(running.preflight.steps.at(-1).run).toMatch(/run-gate\.mjs/);
     for (const name of ['deploy', 'canary']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toBe("inputs.target == 'staging'");
+  });
+
+  it('queues the pilot apart from staging, and apart from the group deploy-pilot.yml holds', () => {
+    expect(WORKFLOW.concurrency).toEqual({ group: PILOT_GROUP, 'cancel-in-progress': false });
+    expect(PILOT_WORKFLOW.concurrency.group).not.toBe('deploy-staging-pilot');
   });
 
   it('scopes secrets per target: staging never sees a pilot secret, the pilot only its own and the Cloudflare ones', () => {

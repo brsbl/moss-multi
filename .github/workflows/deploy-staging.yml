@@ -29,9 +29,10 @@ permissions:
   contents: read
   actions: read
 
-# One deploy at a time, never cancelled half way.
+# One deploy at a time, never cancelled half way. The pilot queues apart from staging's long runs, and apart from
+# deploy-pilot.yml's own group, which a caller sharing would deadlock.
 concurrency:
-  group: deploy-staging
+  group: ${{ inputs.target == 'pilot' && 'deploy-staging-pilot' || 'deploy-staging' }}
   cancel-in-progress: false
 
 env:

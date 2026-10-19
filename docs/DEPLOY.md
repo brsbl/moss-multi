@@ -87,7 +87,7 @@ The pilot holds the owner's real notes for the Moss pilot (T8.P1), apart from st
 1. Run the full lane on the branch to deploy and wait for it to pass: `gh workflow run ci.yml --ref m8 -f lane=full`.
 2. Dispatch the deploy with that run's id. The gate is the same as staging's: a green full lane in both engines, a push or dispatch run of this repository, its head still on its branch, under 3 days old.
    `gh workflow run deploy-staging.yml --ref m8 -f ci_run_id=<run id> -f target=pilot`
-   With `target=pilot`, `deploy-staging.yml` runs only its gate, then calls `deploy-pilot.yml`, passing it only the three `PILOT_*` secrets and the two Cloudflare ones. Its staging deploy and canary are skipped, and no staging or canary secret is in reach. Once `deploy-pilot.yml` is on `main`, `gh workflow run deploy-pilot.yml --ref m8 -f ci_run_id=<run id>` does the same.
+   With `target=pilot`, `deploy-staging.yml` runs only its gate, then calls `deploy-pilot.yml`, passing it only the three `PILOT_*` secrets and the two Cloudflare ones. Its staging deploy and canary are skipped, no staging or canary secret is in reach, and it never queues behind a staging run. Once `deploy-pilot.yml` is on `main`, `gh workflow run deploy-pilot.yml --ref m8 -f ci_run_id=<run id>` does the same.
 3. Watch it with `gh run watch <id> --interval 60 --exit-status`. The run is named "Deploy staging" either way; its `pilot` job does the work. It:
    - gates the run;
    - checks the secrets, including that `PILOT_URL` is not the staging Worker and the allowlist holds only email addresses;
