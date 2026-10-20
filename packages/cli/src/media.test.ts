@@ -1,8 +1,9 @@
 // A note's media step uploads only what its own user put there (T7.S9): a reference that arrived from the server is
 // download only, and a file in a shared assets/ folder that another note holds or references never goes up for this one.
 // @p:agt-2
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -521,5 +522,189 @@ describe('the folder taint store: a name the server ever showed in a folder neve
     appendFileSync(join(dir, 'shared.md'), '\n![m](assets/mine.png)\n');
     const own = await syncJson();
     expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: note, file: join('assets', 'mine.png') }));
+  });
+});
+
+describe('the folder taint store holds under concurrency, Moss\'s own path normalisation, damage and moves (T7.S9 round 5)', () => {
+  const state = (...parts: string[]) => join(dir, '.moss-multi', ...parts);
+
+  it('a pull while another process updates the store keeps both updates: the pulled reference never uploads', async () => {
+    write(join('assets', 'secret.png'), png('secret'));
+    expect((await cli(['init'])).code).toBe(0);
+    expect(existsSync(state('served-names.json'))).toBe(true);
+    const doc = 'd0000000-0000-4000-8000-0000000000dd';
+    server.docs.push({ id: doc, title: 'shared', filename: 'shared.md', folderId: 'f', vaultId: 'v', role: 'owner', updatedAt: 1 });
+    server.content.set(doc, 'Shared ![s](assets/secret.png)\n');
+
+    // Another moss-multi process (the watch daemon) holds the store's lock: it has read the store and writes it back later.
+    const other = spawn(process.execPath, ['-e', `
+      const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+      const state = path.join(process.argv[1], '.moss-multi');
+      const lock = path.join(state, '.served-names.lock');
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), nonce: 'other', at: Date.now() }), { flag: 'wx' });
+      const store = path.join(state, 'served-names.json');
+      const data = JSON.parse(fs.readFileSync(store, 'utf8'));
+      process.stdout.write('held\\n');
+      setTimeout(() => {
+        (data.folders['notes/assets'] ??= []).push('theirs.png');
+        fs.writeFileSync(store + '.other', JSON.stringify(data));
+        fs.renameSync(store + '.other', store);
+        fs.unlinkSync(lock);
+        process.exit(0);
+      }, 1500);
+    `, dir], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const exited = new Promise<number | null>((done) => other.on('exit', done));
+    await new Promise<void>((done) => other.stdout.on('data', (chunk: Buffer) => chunk.toString().includes('held') && done()));
+    const pulled = await cli(['pull', doc, 'shared.md']);
+    expect(await exited).toBe(0);
+    expect(pulled.code, pulled.err).toBe(0);
+    const store = JSON.parse(readFileSync(state('served-names.json'), 'utf8')) as { folders: Record<string, string[]> };
+    expect(store.folders['notes/assets'], 'the other process\'s update stands').toContain('theirs.png');
+
+    appendFileSync(join(dir, 'shared.md'), '\nA line of my own.\n');
+    const pushed = await cli(['push', 'shared.md']);
+    expect(held(doc), pushed.out + pushed.err).toEqual([]);
+
+    // Positive control: an image Ada adds goes up.
+    write(join('assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'shared.md'), '\n![m](assets/mine.png)\n');
+    const own = await cli(['push', 'shared.md']);
+    expect(held(doc), own.out + own.err).toEqual(['mine.png']);
+  }, 30_000);
+
+  it('a reference Moss resolves only after stripping invisible characters and mapping spaces uploads nothing once the editor saves it', async () => {
+    write('plan.md', 'The plan.\n');
+    write(join('assets', 'secret.png'), png('secret'));
+    write(join('assets', 'my file.png'), png('my file'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const plan = createdId(first.results, 'plan.md')!;
+    expect(plan).toBeTruthy();
+
+    // Ben's references: Moss strips U+200B, and maps U+200B&#8239;U+200B to a space, when it resolves a local asset.
+    server.content.set(plan, `${server.content.get(plan)!.trimEnd()}\n\n![x](assets/sec​ret.png)\n\n![y](assets/my​&#8239;​file.png)\n`);
+    await syncJson();
+    const injected = readFileSync(join(dir, 'plan.md'), 'utf8');
+    expect(injected).toContain('sec​ret.png');
+
+    // Ada's editor saves the resolved paths with her typing.
+    write('plan.md', `${injected.replace('sec​ret.png', 'secret.png').replace('my​&#8239;​file.png', 'my%20file.png').trimEnd()}\n\nMy own line.\n`);
+    const saved = await syncJson();
+    await syncJson();
+    expect(held(plan), JSON.stringify(saved.results)).toEqual([]);
+
+    write(join('assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'plan.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: plan, file: join('assets', 'mine.png') }));
+    expect(held(plan)).toEqual(['mine.png']);
+  });
+
+  it('a store rebuilt while an assets folder cannot be listed is not trusted: a stale save uploads nothing once it can', async () => {
+    write('plan.md', 'The plan.\n');
+    write(join('assets', 'stray.png'), png('stray'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const plan = createdId(first.results, 'plan.md')!;
+    const clean = server.content.get(plan)!;
+    const withRef = `${clean.trimEnd()}\n\n![s](assets/stray.png)\n`;
+    server.content.set(plan, withRef);
+    await syncJson();
+    server.content.set(plan, clean);
+
+    // The store, the base and the prior texts are lost; the store is rebuilt while assets/ can be searched but not listed.
+    rmSync(state('served-names.json'), { force: true });
+    for (const name of readdirSync(state(plan))) if (name !== 'meta.json') rmSync(state(plan, name), { force: true });
+    chmodSync(join(dir, 'assets'), 0o100);
+    await syncJson().finally(() => chmodSync(join(dir, 'assets'), 0o755));
+    await syncJson();
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).not.toContain('stray.png');
+
+    write('plan.md', `${withRef}\nA line of my own.\n`);
+    const stale = await syncJson();
+    await syncJson();
+    expect(held(plan), JSON.stringify(stale.results)).toEqual([]);
+
+    write(join('assets', 'new.png'), png('new'));
+    appendFileSync(join(dir, 'plan.md'), '\n![n](assets/new.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: plan, file: join('assets', 'new.png') }));
+  });
+
+  it('a note moved to another folder carries its folder\'s whole taint: a stale save there uploads nothing', async () => {
+    write(join('A', 'n.md'), 'Note.\n');
+    write(join('A', 'assets', 'x.png'), png('x'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const note = createdId(first.results, join('A', 'n.md'))!;
+    const clean = server.content.get(note)!;
+    const withRef = `${clean.trimEnd()}\n\n![x](assets/x.png)\n`;
+    // The server shows the reference, then removes it.
+    server.content.set(note, withRef);
+    await syncJson();
+    server.content.set(note, clean);
+    await syncJson();
+    expect(readFileSync(join(dir, 'A', 'n.md'), 'utf8')).not.toContain('x.png');
+
+    // Ada moves the note, with its images, to B/.
+    mkdirSync(join(dir, 'B', 'assets'), { recursive: true });
+    renameSync(join(dir, 'A', 'n.md'), join(dir, 'B', 'n.md'));
+    writeFileSync(join(dir, 'B', 'assets', 'x.png'), png('x'));
+    const moved = await syncJson();
+    expect(moved.results).toContainEqual(expect.objectContaining({ action: 'renamed', docId: note, file: join('B', 'n.md') }));
+
+    // A stale editor save re-adds the reference there.
+    write(join('B', 'n.md'), `${withRef}\nA line of my own.\n`);
+    const stale = await syncJson();
+    await syncJson();
+    expect(held(note), JSON.stringify(stale.results)).toEqual([]);
+
+    write(join('B', 'assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'B', 'n.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: note, file: join('B', 'assets', 'mine.png') }));
+  });
+
+  it('a server text naming more media than the scan records leaves its folder fully tainted and the store under its cap', async () => {
+    write(join('Big', 'big.md'), 'Big.\n');
+    write(join('Other', 'other.md'), 'Other.\n');
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const big = createdId(first.results, join('Big', 'big.md'))!;
+    const other = createdId(first.results, join('Other', 'other.md'))!;
+    // About 1 MB of distinct a-a-a-…-a.png tokens.
+    const flood = Array.from({ length: 12_000 }, (_, i) => `${'a-'.repeat(40)}${i}.png`).join(' ');
+    server.content.set(big, `${server.content.get(big)!.trimEnd()}\n\n${flood}\n`);
+    await syncJson();
+    expect(readFileSync(join(dir, 'Big', 'big.md'), 'utf8')).toContain('a-a-a-');
+    expect(statSync(state('served-names.json')).size).toBeLessThan(4 * 1024 * 1024);
+
+    // Nothing uploads from Big/ afterwards, and that is reported; Other/ is unaffected.
+    write(join('Big', 'assets', 'fresh.png'), png('fresh'));
+    appendFileSync(join(dir, 'Big', 'big.md'), '\n![f](assets/fresh.png)\n');
+    write(join('Other', 'assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'Other', 'other.md'), '\n![m](assets/mine.png)\n');
+    const after = await syncJson();
+    expect(held(big), JSON.stringify(after.results)).toEqual([]);
+    expect(failedFor(after.results, big, join('Big', 'assets', 'fresh.png')), JSON.stringify(after.results)).toBe(true);
+    expect(after.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: other, file: join('Other', 'assets', 'mine.png') }));
+  }, 60_000);
+
+  it('a sibling note that references a file through a spaced destination owns it', async () => {
+    write('diary.md', 'Dear diary ![s]( assets/secret.png )\n');
+    write('plan.md', 'The plan.\n');
+    write(join('assets', 'secret.png'), png('secret'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const plan = createdId(first.results, 'plan.md')!;
+    appendFileSync(join(dir, 'plan.md'), '\n![s](assets/secret.png)\n');
+    const shared = await syncJson();
+    expect(held(plan), JSON.stringify(shared.results)).toEqual([]);
+    expect(failedFor(shared.results, plan, join('assets', 'secret.png')), JSON.stringify(shared.results)).toBe(true);
+
+    write(join('assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'plan.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: plan, file: join('assets', 'mine.png') }));
   });
 });
