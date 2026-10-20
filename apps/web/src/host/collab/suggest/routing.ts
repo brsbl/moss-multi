@@ -4,9 +4,11 @@
 // pending text in the same selection deletes natively. Undo and redo take a strike back and put it again, in order
 // with the binding's own undo steps. Everything else is native and recorded verbatim (a join at a block edge too).
 // A native rewrite that re-creates struck text has the copy removed by the fork (client.ts, keepStrikes), so the
-// struck characters leave F and their delete parts stay; where each struck character went is traced through Lexical's
-// own text operations (trace.ts), or, where an operation rebuilds a node from its text, by aligning what the
-// transaction deleted around a struck character with what it wrote. Undo of their strike re-creates them, as the author's own, where they stood.
+// struck characters leave F (the editor still shows them struck where they stood, paint.ts drawGhosts) and their
+// delete parts stay; where each struck character went is traced through Lexical's own text operations (trace.ts,
+// a node rebuilt from a slice of its text included), or, where an operation rebuilds a node from text it changed, by
+// aligning what the transaction deleted around a struck character with what it wrote. Undo of their strike re-creates
+// them, as the author's own, where they stood.
 import { $getClipboardDataFromSelection, setLexicalClipboardDataTransfer } from '@lexical/clipboard';
 import { $isTableSelection } from '@lexical/table';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
@@ -18,9 +20,10 @@ import {
   type LexicalEditor, type LexicalNode, type NodeKey, type RangeSelection, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
+import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
-import { charsAround, idKey, sharedItem, textIds, toSpans } from './chars.ts';
+import { charsAround, idKey, isPending, sharedItem, textIds, toSpans } from './chars.ts';
 import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type UndoStep } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
@@ -193,17 +196,12 @@ function align(from: readonly Unit[], to: readonly Unit[]): Map<number, number> 
 /** Units a rebuild read from deleted runs, and the lookups it made of struck units in them; tests bound both. */
 export const rebuildWork = { units: 0, lookups: 0 };
 
-/**
- * The run of units `tr` deleted around `item` in its parent (tombstones from earlier transactions skipped); a live item
- * ends it. `start`: the run's first item, the same for every item in it.
- */
-function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.Item } {
-  let start = item;
-  while (start.left && start.left.deleted) start = start.left;
-  const units: Unit[] = [];
-  for (let n: Y.Item | null = start; n && n.deleted; n = n.right) if (Y.isDeleted(tr.deleteSet, n.id)) units.push(...unitsOf(n));
-  rebuildWork.units += units.length;
-  return { units, start };
+/** A run of units a transaction deleted, read once, with each unit's index by id. */
+interface DeletedRun {
+  units: Unit[];
+  at: Map<string, number>;
+  /** Its alignment with each run the transaction wrote, once asked for. */
+  pairs: (Map<number, number> | null)[] | null;
 }
 
 /** A paste the pane could not measure (its paste handlers still loading, or the copy failed): nothing goes in. */
@@ -216,36 +214,38 @@ const OVER_CELLS = 'Pasting over table cells cannot be suggested yet, so none of
  * the fork first (paste.ts measurePaste); null until they load.
  */
 export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork, options: { pasteStack?: () => PasteStack | null } = {}): () => void {
+  // The binding's undo manager is the body's one stack (undo.ts createBindingUndoManager).
   const manager = (): Y.UndoManager | null => (editor as unknown as Record<symbol, Y.UndoManager | undefined>)[UNDO_MANAGER] ?? null;
+  const bodyUndo = (): BodyUndo | null => manager() as unknown as BodyUndo | null;
   const undone: Strike[] = [];
   const redone: Strike[] = [];
   const { doc } = fork;
   /** Each struck item undo re-created, by the original's id. */
   const restoredAs = new Map<string, Y.ID>();
-  let watched: Y.UndoManager | null = null;
+  let watched: BodyUndo | null = null;
   /** The body's own undo manager under the binding's stack (BodyUndo also relays its payload docs' managers). */
   let watchedRoot: Y.UndoManager | null = null;
   /** Struck originals a rewrite re-created and the fork removed again: no undo step of the body restores them. */
   const keptOut: IdSpan[] = [];
   /** The body stack the last rewrite's step went to: characters the fork stands in afterwards join that step. */
   let keptIn: Y.UndoManager['undoStack'] | null = null;
-  // Any new edit of his own ends the redo history, strikes included.
+  // Any new edit of his own ends the redo history, strikes included; a step undo or redo replays is none.
   const onStack = (event: { type: 'undo' | 'redo' }) => {
-    if (event.type === 'undo' && watched && !watched.undoing && !watched.redoing) redone.length = 0;
+    if (event.type === 'undo' && watched && !watched.replaying) redone.length = 0;
   };
   // Body ids only: a payload doc's items can carry the same client and clock.
   const onRootStack = (event: { stackItem?: { deletions: DeleteSet } }) => {
     const item = event.stackItem;
     if (item && keptOut.length) item.deletions = without(item.deletions, keptOut);
   };
-  const watch = (undo: Y.UndoManager | null) => {
+  const watch = (undo: BodyUndo | null) => {
     if (undo === watched) return;
     watched?.off('stack-item-added', onStack);
     watched?.off('stack-item-updated', onStack);
     watchedRoot?.off('stack-item-added', onRootStack);
     watchedRoot?.off('stack-item-updated', onRootStack);
     watched = undo;
-    watchedRoot = undo ? ((undo as unknown as { root?: Y.UndoManager }).root ?? undo) : null;
+    watchedRoot = undo ? (undo.root ?? (undo as unknown as Y.UndoManager)) : null;
     undo?.on('stack-item-added', onStack);
     undo?.on('stack-item-updated', onStack);
     watchedRoot?.on('stack-item-added', onRootStack);
@@ -270,7 +270,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
   /** A strike joins the undo history as its own step; `native` when the next binding step belongs to it. */
   const remember = (part: string, targets: IdSpan[], native: boolean, ids: readonly Y.ID[]) => {
     const undo = manager();
-    watch(undo);
+    watch(bodyUndo());
     undo?.stopCapturing();
     undone.push({ part, targets, depth: undo?.undoStack.length ?? 0, native, runs: runsOf(ids), copies: [] });
     redone.length = 0;
@@ -348,10 +348,11 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
   };
 
   /**
-   * Struck originals `tr` deleted with no copy traced: an operation rebuilt their node from its text (a Markdown
-   * shortcut's replace, a typeahead's cut into a new node), so the text the transaction wrote holds the copy. The
-   * units it deleted around each one are aligned with the runs of units it wrote, and the unit the struck one aligns
-   * with, beside an aligned neighbour, is its copy.
+   * Struck originals `tr` deleted with no copy traced: an operation rebuilt their node from text the trace could not
+   * follow (a shortcut that also unescapes its text, a typeahead's cut into a new node), so the text the transaction
+   * wrote holds the copy. The units it deleted around each one are aligned with the runs of units it wrote, and the
+   * unit the struck one aligns with, beside an aligned neighbour, is its copy. Each deleted run is read once, whatever
+   * its strikes; the alignment is capped (ALIGN_CAP).
    */
   const rebuilt = (tr: Y.Transaction, traced: readonly [Y.ID, Y.ID][]): [Y.ID, Y.ID][] => {
     const paired = new Set(traced.map(([, original]) => idKey(original)));
@@ -371,8 +372,10 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     // The runs of units the transaction wrote: live fresh items side by side (tombstones between them skipped).
     const runs: Unit[][] = [];
     const seen = new Set<Y.Item>();
-    for (const struct of doc.store.clients.get(doc.clientID) ?? []) {
-      if (!(struct instanceof Y.Item) || struct.id.clock + struct.length <= before || struct.deleted || struct.parentSub !== null || seen.has(struct)) continue;
+    const structs = doc.store.clients.get(doc.clientID) ?? [];
+    for (let i = before < Y.getState(doc.store, doc.clientID) ? Y.findIndexSS(structs, before) : structs.length; i < structs.length; i += 1) {
+      const struct = structs[i];
+      if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null || seen.has(struct)) continue;
       let start = struct;
       while (start.left && (start.left.deleted || isFresh(start.left))) start = start.left;
       const units: Unit[] = [];
@@ -384,27 +387,49 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       if (units.length) runs.push(units);
     }
     if (runs.length === 0) return [];
-    const found: [Y.ID, Y.ID][] = [];
-    const alignments = new Map<Y.Item, { units: Unit[]; pairs: (Map<number, number> | null)[] }>();
-    for (const { id, item } of lost) {
-      const run = deletedRun(tr, item);
-      let aligned = alignments.get(run.start);
-      if (!aligned) {
-        aligned = { units: run.units, pairs: runs.map((units) => align(run.units, units)) };
-        alignments.set(run.start, aligned);
+    // The deleted run around each lost item: tombstones to its left (earlier ones too) up to a live item, each item
+    // walked once; the run holds the units this transaction deleted.
+    const startOf = new Map<Y.Item, Y.Item>();
+    const runStart = (item: Y.Item): Y.Item => {
+      const path: Y.Item[] = [];
+      let start = item;
+      while (!startOf.has(start) && start.left && start.left.deleted) {
+        path.push(start);
+        start = start.left;
       }
-      const at = aligned.units.findIndex((unit) => {
-        rebuildWork.lookups += 1;
-        return Y.compareIDs(unit.id, id);
-      });
-      if (at < 0) continue;
+      const found = startOf.get(start) ?? start;
+      for (const n of path) startOf.set(n, found);
+      startOf.set(start, found);
+      return found;
+    };
+    const deleted = new Map<Y.Item, DeletedRun>();
+    const runAt = (start: Y.Item): DeletedRun => {
+      let run = deleted.get(start);
+      if (!run) {
+        const units: Unit[] = [];
+        for (let n: Y.Item | null = start; n && n.deleted; n = n.right) if (Y.isDeleted(tr.deleteSet, n.id)) units.push(...unitsOf(n));
+        rebuildWork.units += units.length;
+        const at = new Map<string, number>();
+        units.forEach((unit, index) => at.set(idKey(unit.id), index));
+        run = { units, at, pairs: null };
+        deleted.set(start, run);
+      }
+      return run;
+    };
+    const found: [Y.ID, Y.ID][] = [];
+    for (const { id, item } of lost) {
+      const run = runAt(runStart(item));
+      rebuildWork.lookups += 1;
+      const at = run.at.get(idKey(id));
+      if (at === undefined) continue;
+      const aligned = (run.pairs ??= runs.map((units) => align(run.units, units)));
       let best: { copy: Y.ID; score: number } | null = null;
       for (let r = 0; r < runs.length; r += 1) {
-        const pairs = aligned.pairs[r];
+        const pairs = aligned[r];
         const to = pairs?.get(at);
         if (!pairs || to === undefined) continue;
         // A neighbour aligned beside it: the struck unit sits in the same text, not on a lone equal character.
-        const beside = pairs.get(at - 1) === to - 1 || pairs.get(at + 1) === to + 1 || aligned.units.length === 1;
+        const beside = pairs.get(at - 1) === to - 1 || pairs.get(at + 1) === to + 1 || run.units.length === 1;
         const copy = runs[r][to].id;
         if (beside && !used.has(idKey(copy)) && (!best || pairs.size > best.score)) best = { copy, score: pairs.size };
       }
@@ -584,6 +609,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     const binding = bindingOf(editor);
     if (!binding) return null;
     const own = fork.ownClients();
+    const mineAt = (id: Y.ID) => isPending(id, own, fork.body);
     const [start, end] = selection.isBackward() ? [selection.focus, selection.anchor] : [selection.anchor, selection.focus];
     const body: Y.ID[] = [];
     const mine: { node: TextNode; from: number; to: number }[] = [];
@@ -597,7 +623,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
         let run = -1;
         for (let i = from; i < to; i += 1) {
           const id = ids[i];
-          if (own.has(id.client)) {
+          if (mineAt(id)) {
             if (run < 0) run = i;
             continue;
           }
@@ -612,7 +638,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       // A line break or a decorator inside the selection.
       const item = sharedItem(binding, node.getKey());
       if (!item) continue;
-      if (own.has(item.id.client)) mineLeaves.push(node);
+      if (mineAt(item.id)) mineLeaves.push(node);
       else if (!fork.isStruck(item.id)) body.push(item.id);
     }
     return { start, end, body, mine, mineLeaves };
@@ -627,6 +653,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     const binding = bindingOf(editor);
     if (!$isRangeSelection(selection) || !selection.isCollapsed() || selection.anchor.type !== 'text' || !binding) return false;
     const own = fork.ownClients();
+    const mineAt = (id: Y.ID) => isPending(id, own, fork.body);
     let node: LexicalNode = selection.anchor.getNode();
     let offset = selection.anchor.offset;
     const step = (from: LexicalNode): boolean => {
@@ -657,12 +684,12 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
             offset = backward ? from : to;
             continue;
           }
-          if (own.has(id.client)) {
+          if (mineAt(id)) {
             const caret = backward ? to : from;
             text.select(caret, caret);
             return false;
           }
-          const body = ids.slice(from, to).filter((unit) => !own.has(unit.client) && !fork.isStruck(unit));
+          const body = ids.slice(from, to).filter((unit) => !mineAt(unit) && !fork.isStruck(unit));
           strike(body);
           const caret = backward ? from : to;
           text.select(caret, caret);
@@ -679,7 +706,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       const leaf: LexicalNode = node;
       const item = sharedItem(binding, leaf.getKey());
       if (!item) return false;
-      if (own.has(item.id.client)) {
+      if (mineAt(item.id)) {
         if (backward) leaf.selectNext(0, 0);
         else leaf.selectPrevious();
         return false;
@@ -869,7 +896,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     fork.on((event) => {
       // Before the undo manager records the step that re-created them.
       if (event.type === 'kept') {
-        watch(manager());
+        watch(bodyUndo());
         keptOut.push(...event.originals);
         if (event.added.length) {
           // Made after the rewrite's step was recorded: undo of that step removes them too.

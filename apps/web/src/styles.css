@@ -100,6 +100,31 @@
   pointer-events: auto;
   cursor: pointer;
 }
+/* Struck text a rewrite took out of the suggester's fork, drawn above the gap where it stood. */
+.moss-suggest-ghost {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid var(--accent-terracotta);
+  background: var(--surface-raised-card, var(--highlight-green));
+  color: var(--accent-terracotta);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+  text-decoration: line-through;
+  text-decoration-color: var(--accent-terracotta);
+  pointer-events: none;
+}
+.moss-suggest-ghost::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 1px;
+  height: var(--ghost-line, 1em);
+  background: var(--accent-terracotta);
+}
 .moss-suggest-dot {
   position: absolute;
   width: 6px;

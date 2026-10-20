@@ -4,7 +4,7 @@
 import { $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, type LexicalEditor } from 'lexical';
 import type * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
-import { charIndex, idKey, sharedItem, textIds } from './chars.ts';
+import { charIndex, idKey, isPending, sharedItem, textIds } from './chars.ts';
 
 export interface CaretMark {
   client: number;
@@ -13,8 +13,12 @@ export interface CaretMark {
   after: boolean;
 }
 
-/** The caret as a body item beside it; `pending` are clients whose items are not body text. */
-export function captureCaret(editor: LexicalEditor, pending: ReadonlySet<number> = new Set(), _body: Y.Doc | null = null): CaretMark | null {
+/**
+ * The caret as a body item beside it; `own`: clients whose items past what `body` holds are pending, not body text
+ * (isPending).
+ */
+export function captureCaret(editor: LexicalEditor, own: ReadonlySet<number> = new Set(), body: Y.Doc | null = null): CaretMark | null {
+  const pending = (id: Y.ID) => isPending(id, own, body);
   const binding = bindingOf(editor);
   if (!binding) return null;
   return editor.getEditorState().read(() => {
@@ -23,16 +27,16 @@ export function captureCaret(editor: LexicalEditor, pending: ReadonlySet<number>
     const { anchor } = selection;
     if (anchor.type === 'element') {
       const item = sharedItem(binding, anchor.key);
-      return item && !pending.has(item.id.client) ? { client: item.id.client, clock: item.id.clock, after: false } : null;
+      return item && !pending(item.id) ? { client: item.id.client, clock: item.id.clock, after: false } : null;
     }
     const ids = textIds(binding, anchor.key);
     if (!ids) return null;
     const offset = Math.min(anchor.offset, ids.length);
-    for (let i = offset - 1; i >= 0; i -= 1) if (!pending.has(ids[i].client)) return { client: ids[i].client, clock: ids[i].clock, after: true };
-    for (let i = offset; i < ids.length; i += 1) if (!pending.has(ids[i].client)) return { client: ids[i].client, clock: ids[i].clock, after: false };
+    for (let i = offset - 1; i >= 0; i -= 1) if (!pending(ids[i])) return { client: ids[i].client, clock: ids[i].clock, after: true };
+    for (let i = offset; i < ids.length; i += 1) if (!pending(ids[i])) return { client: ids[i].client, clock: ids[i].clock, after: false };
     const block = anchor.getNode().getTopLevelElement();
     const item = block && sharedItem(binding, block.getKey());
-    return item && !pending.has(item.id.client) ? { client: item.id.client, clock: item.id.clock, after: false } : null;
+    return item && !pending(item.id) ? { client: item.id.client, clock: item.id.clock, after: false } : null;
   });
 }
 

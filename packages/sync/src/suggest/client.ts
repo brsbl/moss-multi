@@ -746,6 +746,34 @@ export class SuggestFork {
     return [...this.#parts.values()].flatMap(({ targets }) => targets);
   }
 
+  /**
+   * Struck originals F no longer holds while B does (a rewrite's copy of each was removed again), in id order: each
+   * with the items of F it stood as, its latest copy first and itself last, for the editor to show it struck there.
+   */
+  removedStrikes(): { original: Y.ID; stood: Y.ID[] }[] {
+    const copies = new Map<string, Y.ID[]>();
+    for (const { copy, original } of this.#copyOf.values()) {
+      const held = copies.get(idKey(original));
+      if (held) held.push(copy);
+      else copies.set(idKey(original), [copy]);
+    }
+    const out: { original: Y.ID; stood: Y.ID[] }[] = [];
+    for (const { targets } of this.#parts.values()) {
+      for (const span of targets) {
+        for (let i = 0; i < span.len; i += 1) {
+          const original = Y.createID(span.client, span.clock + i);
+          const item = itemAt(this.doc, original);
+          if (item && !item.deleted) continue;
+          if (itemAt(this.body, original)?.deleted !== false) continue;
+          const made = copies.get(idKey(original)) ?? [];
+          if (made.some((copy) => itemAt(this.doc, copy)?.deleted === false)) continue;
+          out.push({ original, stood: [...made].reverse().concat(item ? [original] : []) });
+        }
+      }
+    }
+    return out.sort((x, y) => x.original.client - y.original.client || x.original.clock - y.original.clock);
+  }
+
   /** The leased clients of the author's open records and of this fork: items under them are the author's own. */
   ownClients(): Set<number> {
     const own = new Set<number>(this.#openMine().keys());
@@ -1069,9 +1097,11 @@ export class SuggestFork {
     const inserted = [...tr.afterState].some(([client, clock]) => clock > (tr.beforeState.get(client) ?? 0));
     if (!inserted) return;
     const own = this.ownClients();
+    // The author's pending text deletes natively and is never struck; an accepted record's text is body text.
+    const pending = (id: Y.ID) => own.has(id.client) && id.clock >= Y.getState(this.body.store, id.client);
     const struckOriginal = (id: Y.ID): Y.ID | null => {
       const original = this.#copyOf.get(idKey(id))?.original ?? id;
-      return !own.has(original.client) && this.isStruck(original) ? original : null;
+      return !pending(original) && this.isStruck(original) ? original : null;
     };
     const fresh = (id: Y.ID) => id.clock >= (tr.beforeState.get(id.client) ?? 0) && id.clock < (tr.afterState.get(id.client) ?? 0);
     const copies = new Map<string, { copy: Y.ID; original: Y.ID }>();
@@ -1095,7 +1125,7 @@ export class SuggestFork {
       const struck = struckOriginal(original);
       if (struck && fresh(copy)) keep(copy, struck);
     }
-    const displaced = (traced?.displaced ?? []).filter((id) => !own.has(id.client) && this.isStruck(id) && itemAt(this.doc, id)?.deleted === false);
+    const displaced = (traced?.displaced ?? []).filter((id) => !pending(id) && this.isStruck(id) && itemAt(this.doc, id)?.deleted === false);
     if (copies.size === 0 && displaced.length === 0) return;
     for (const entry of copies.values()) this.#copyOf.set(idKey(entry.copy), entry);
     const originals = [...copies.values()].map(({ original }) => original).sort((x, y) => x.client - y.client || x.clock - y.clock);

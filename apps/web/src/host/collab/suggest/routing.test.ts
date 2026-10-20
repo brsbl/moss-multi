@@ -1256,7 +1256,7 @@ describe('a rebuild costs linear work in the run and the strikes @p:mean-2 @p:R1
     const { text, at } = textWith(strikes);
     const closing = elsewhere ? `closing ${'k'.repeat(elsewhere)} end` : 'closing line stays too.';
     const pane = suggesting(`intro line stays.\n\n${text.replace('\\*', '\\\\\\*')}\n\n${closing}\n`);
-    let work = { units: 0, lookups: 0, spots: 0 };
+    let work: { units: number; lookups: number; spots: number };
     try {
       expect(pane.text(), 'the escape is in the text').toContain(text);
       for (const where of at) {
