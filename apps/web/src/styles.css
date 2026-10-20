@@ -54,11 +54,12 @@
   text-decoration: line-through;
   text-decoration-color: var(--accent-terracotta);
 }
+/* Above moss's block gap cursors (z-20 hit areas at each block edge), so a wedge there takes the hover and click. */
 .moss-suggest-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 1;
+  z-index: 21;
 }
 .moss-suggest-wedge {
   position: absolute;
@@ -75,9 +76,10 @@
   position: absolute;
   top: 10px;
   left: -8px;
-  /* Sized to its text, not to the 8px wedge that holds it. */
+  /* Sized to its text, not to the 8px wedge that holds it, and never wider than the viewport; drawMarks shifts it
+     back inside the viewport when it opens near an edge. */
   width: max-content;
-  max-width: 320px;
+  max-width: min(320px, calc(100vw - 16px));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   padding: 6px 8px;
@@ -89,7 +91,8 @@
   line-height: 1.4;
   box-shadow: 0 2px 8px var(--ink-shadow-soft, transparent);
 }
-.moss-suggest-wedge:hover .moss-suggest-preview {
+.moss-suggest-wedge:hover .moss-suggest-preview,
+.moss-suggest-wedge[data-open] .moss-suggest-preview {
   display: block;
 }
 .moss-suggest-gutter {

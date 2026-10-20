@@ -316,10 +316,11 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
  }
  
  export type MarkdownEditorHandle = {
-@@ -462,3062 +307,26 @@ const theme = {
+@@ -461,3063 +306,27 @@ const theme = {
+   embedPill: 'inline-flex items-center',
    colorCode: 'inline-flex items-center',
    table: 'moss-table',
-   tableCell: 'moss-table-cell',
+-  tableCell: 'moss-table-cell',
 -  tableCellHeader: 'moss-table-cell-header',
 -  tableRow: 'moss-table-row',
 -  tableScrollableWrapper: 'moss-table-scroll-shell moss-table-scroll-viewport',
@@ -3214,6 +3215,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
 -  // Set only on the live editing path (markdown `\`\`\`` shortcut / pasted
 -  // empty fence) — never during disk import, which would steal focus on load.
 -  autoEditEmptyBlocks?: boolean;
++  tableCell: 'moss-table-cell',
 +  tableCellHeader: 'moss-table-cell-header',
 +  tableRow: 'moss-table-row',
 +  tableScrollableWrapper: 'moss-table-scroll-shell moss-table-scroll-viewport',
@@ -4527,7 +4529,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          <HorizontalRulePlugin />
          <TablePlugin hasCellMerge={false} hasHorizontalScroll />
          <TableColumnLayoutPlugin />
-@@ -8088,14 +4404,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -8088,17 +4404,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          {!readOnly && <TableActionMenuPlugin noteId={noteId} />}
          {!readOnly && <TableExitPlugin />}
          <CodeHighlighterPlugin />
@@ -4539,12 +4541,16 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          {!readOnly && <TabIndentPlugin />}
          {!readOnly && <ListHotkeyPlugin />}
          {!readOnly && <DoubleEmptyListExitPlugin />}
--        {!readOnly && (
-+        {backgroundWriters && (
++        {/* moss-multi seam: suggest-formulas (T5.B3): mounted whenever editable, so Suggest commits a typed formula; only its background writes follow backgroundWriters. */}
+         {!readOnly && (
            <MathCalculationPlugin
              noteId={noteId}
              onDraftPillActiveChange={setIsFormulaDraftPillActive}
-@@ -8110,13 +4426,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
++            backgroundWrites={backgroundWriters}
+           />
+         )}
+         <FormulaPlugin noteId={noteId} />
+@@ -8110,13 +4428,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          <InAppHyperlinkPlugin noteId={noteId} />
          <CommentPlugin noteId={noteId} />
          <CommentAnchorTrackerPlugin noteId={noteId} />
@@ -4561,7 +4567,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.tsx b/packages/
          <CollapsibleHeadingPlugin noteId={noteId} />
          {enableSearchPlugin ? <SearchPlugin /> : null}
          {!readOnly && <CodeFormatBoundaryPlugin />}
-@@ -8132,7 +4450,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
+@@ -8132,7 +4452,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
          {!readOnly && <WebpageEmbedPastePlugin />}
          {!readOnly && <EditorInputSamplingPlugin />}
          {!readOnly && <FocusGuardPlugin />}

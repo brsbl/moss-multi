@@ -4412,10 +4412,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         {!readOnly && <TabIndentPlugin />}
         {!readOnly && <ListHotkeyPlugin />}
         {!readOnly && <DoubleEmptyListExitPlugin />}
-        {backgroundWriters && (
+        {/* moss-multi seam: suggest-formulas (T5.B3): mounted whenever editable, so Suggest commits a typed formula; only its background writes follow backgroundWriters. */}
+        {!readOnly && (
           <MathCalculationPlugin
             noteId={noteId}
             onDraftPillActiveChange={setIsFormulaDraftPillActive}
+            backgroundWrites={backgroundWriters}
           />
         )}
         <FormulaPlugin noteId={noteId} />

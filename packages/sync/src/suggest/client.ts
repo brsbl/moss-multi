@@ -310,11 +310,83 @@ const isShim = (origin: unknown) => origin === SHIM_BODY_APPLY || origin === SHI
 /** The fork's removal of re-created struck items: forwarded like any edit, never an undo step of the binding's. */
 export const KEEP_STRIKES = 'suggest-keep-strikes';
 
-/** Comparisons made answering strike membership (`isStruck`, paint); the paint tests bound their growth. */
+/** Comparisons made building and answering strike membership (SpanSet); the paint tests bound their growth. */
 export const spanWork = { steps: 0 };
 
-const covers = (spans: readonly IdSpan[], client: number, clock: number) =>
-  spans.some((span) => ((spanWork.steps += 1), span.client === client && span.clock <= clock && clock < span.clock + span.len));
+/**
+ * Membership in a set of id spans: each client's spans sorted and merged once, then a binary search per lookup, so a
+ * repaint over C characters and S spans costs O(S log S + C log S) rather than C × S.
+ */
+export class SpanSet {
+  readonly #runs = new Map<number, { from: number[]; to: number[] }>();
+
+  constructor(spans: Iterable<IdSpan>) {
+    const byClient = new Map<number, IdSpan[]>();
+    for (const span of spans) {
+      if (span.len <= 0) continue;
+      const held = byClient.get(span.client);
+      if (held) held.push(span);
+      else byClient.set(span.client, [span]);
+    }
+    for (const [client, list] of byClient) {
+      list.sort((a, b) => ((spanWork.steps += 1), a.clock - b.clock));
+      const from: number[] = [];
+      const to: number[] = [];
+      for (const { clock, len } of list) {
+        const last = to.length - 1;
+        if (last >= 0 && clock <= to[last]!) to[last] = Math.max(to[last]!, clock + len);
+        else {
+          from.push(clock);
+          to.push(clock + len);
+        }
+      }
+      this.#runs.set(client, { from, to });
+    }
+  }
+
+  has(id: { client: number; clock: number }): boolean {
+    const runs = this.#runs.get(id.client);
+    if (!runs) return false;
+    let lo = 0;
+    let hi = runs.from.length - 1;
+    while (lo <= hi) {
+      spanWork.steps += 1;
+      const mid = (lo + hi) >> 1;
+      if (id.clock < runs.from[mid]!) hi = mid - 1;
+      else if (id.clock >= runs.to[mid]!) lo = mid + 1;
+      else return true;
+    }
+    return false;
+  }
+
+  get empty(): boolean {
+    return this.#runs.size === 0;
+  }
+}
+
+/** The author's delete parts by id; the strike set is rebuilt only after a part is added or removed. */
+class Parts extends Map<string, { record: string; targets: IdSpan[] }> {
+  #strikes: SpanSet | null = null;
+
+  override set(key: string, value: { record: string; targets: IdSpan[] }): this {
+    this.#strikes = null;
+    return super.set(key, value);
+  }
+
+  override delete(key: string): boolean {
+    this.#strikes = null;
+    return super.delete(key);
+  }
+
+  override clear(): void {
+    this.#strikes = null;
+    super.clear();
+  }
+
+  strikes(): SpanSet {
+    return (this.#strikes ??= new SpanSet([...this.values()].flatMap(({ targets }) => targets)));
+  }
+}
 
 const idKey = (id: { client: number; clock: number }) => `${id.client}:${id.clock}`;
 
@@ -498,7 +570,7 @@ export class SuggestFork {
   /** Leases that carried an op or a part: the next group takes a fresh one. */
   readonly #used = new Set<number>();
   /** Delete parts of the author's open records, proposed or acknowledged, by part id. */
-  readonly #parts = new Map<string, { record: string; targets: IdSpan[] }>();
+  readonly #parts = new Parts();
   /** Parts this fork proposed, and those it took back (the body holds a taken-back part until its undelete lands). */
   readonly #proposed = new Set<string>();
   readonly #withdrawn = new Set<string>();
@@ -762,8 +834,12 @@ export class SuggestFork {
   }
 
   isStruck(id: { client: number; clock: number }): boolean {
-    for (const { targets } of this.#parts.values()) if (covers(targets, id.client, id.clock)) return true;
-    return false;
+    return this.#parts.strikes().has(id);
+  }
+
+  /** The strike set (`struck`) for membership lookups, rebuilt only when a part is added or removed. */
+  strikes(): SpanSet {
+    return this.#parts.strikes();
   }
 
   /** Every struck span: the author's open delete parts. */

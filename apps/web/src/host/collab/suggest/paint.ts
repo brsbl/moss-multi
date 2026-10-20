@@ -3,11 +3,11 @@
 // Edit mode, on B, each run of record items in C gets a wedge at its left body neighbour, a gutter bar beside its
 // block and a hover preview of its text; delete targets paint struck; a block a record restyles gets a dot.
 import type { Binding } from '@lexical/yjs';
-import { BODY_DOC, readsAsBody, regRefs, restoredCopies } from '@moss-multi/core/suggest/apply';
+import { attrsOf, BODY_DOC, canonical, readsAsBody, regRefs, restoredCopies, yValue } from '@moss-multi/core/suggest/apply';
 import { SUGGEST_MARK_ATTR, OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
-import { openRecords, payloadIdsOf, spanWork, type Built, type SuggestFork } from '@moss-multi/sync/suggest/client';
+import { openRecords, payloadIdsOf, SpanSet, type Built, type SuggestFork } from '@moss-multi/sync/suggest/client';
 import type { LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { charIndex, idKey, isPending, rangesWhere, type CharPlace } from './chars.ts';
@@ -40,17 +40,16 @@ export function clearPaint(owner: object): void {
   if (layers.delete(owner)) publish();
 }
 
-export const covers = (spans: readonly IdSpan[], id: Y.ID) =>
-  spans.some((span) => ((spanWork.steps += 1), span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len));
-
 /**
  * Paint for an editor bound to F or C: items of `own` clients that B lacks as inserts (an accepted record's text is
- * body text, though a continuation writes on under its lease), `struck` spans as deletes.
+ * body text, though a continuation writes on under its lease), `struck` spans as deletes. Pass the fork's cached
+ * `strikes()` where there is one; an array is indexed once per call.
  */
-export function paintBound(owner: object, editor: LexicalEditor, binding: Binding, own: ReadonlySet<number>, struck: readonly IdSpan[], body?: Y.Doc | null): void {
+export function paintBound(owner: object, editor: LexicalEditor, binding: Binding, own: ReadonlySet<number>, struck: readonly IdSpan[] | SpanSet, body?: Y.Doc | null): void {
   const pending = pendingInserts(binding.doc, own, body);
   const insert = own.size ? rangesWhere(editor, binding, pending) : [];
-  const strike = struck.length ? rangesWhere(editor, binding, (id) => covers(struck, id)) : [];
+  const strikes = struck instanceof SpanSet ? struck : new SpanSet(struck);
+  const strike = strikes.empty ? [] : rangesWhere(editor, binding, (id) => strikes.has(id));
   paintRanges(owner, insert, strike);
 }
 
@@ -143,11 +142,14 @@ function plain(type: Y.AbstractType<unknown>): string {
   return '';
 }
 
-/** A payload as C's records leave it: its text, or a compound payload's fields. */
+/**
+ * A payload as C's records leave it: its text, or a compound payload's fields as stable JSON, read from the map's own
+ * entries (a `__proto__` key stays a field) with what JSON cannot hold (a BigInt) tagged, never thrown.
+ */
 function payloadPreview(doc: Y.Doc | undefined): string {
   if (!doc) return '';
   const map = payloadMap(doc);
-  return map.size ? JSON.stringify(map.toJSON()) : payloadText(doc).toString();
+  return map.size ? canonical(Object.fromEntries([...map.entries()].map(([key, value]) => [key, yValue(value)]))) : payloadText(doc).toString();
 }
 
 /** The marks Edit mode paints for C's records over B's binding. */
@@ -225,7 +227,8 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
       if (id.clock >= Y.getState(body.store, id.client)) continue;
       const before = Y.getItem(body.store, id);
       const was = before instanceof Y.Item && before.content instanceof Y.ContentType ? (before.content.type as Y.XmlText) : null;
-      if (!was || JSON.stringify(was.getAttributes()) === JSON.stringify(insert.getAttributes())) continue;
+      // Read from each map's live entries, as stable JSON: a BigInt or a `__proto__` key compares like any value.
+      if (!was || canonical(attrsOf(was)) === canonical(attrsOf(insert))) continue;
       const place = index.get(idKey(id));
       // The record whose leased client wrote one of the changed attributes.
       let record = '';
@@ -279,6 +282,21 @@ function blockElement(editor: LexicalEditor, key: string): HTMLElement | null {
   return element && element.parentElement === root ? element : null;
 }
 
+/** The gap a preview keeps from the viewport's edges. */
+const PREVIEW_MARGIN = 8;
+
+/** Shows a wedge's preview, shifted along the line so all of it is inside the viewport. */
+function openPreview(wedge: HTMLElement, preview: HTMLElement): void {
+  wedge.dataset.open = '';
+  preview.style.left = '';
+  const box = preview.getBoundingClientRect();
+  const viewport = document.documentElement.clientWidth;
+  let shift = 0;
+  if (box.right > viewport - PREVIEW_MARGIN) shift = viewport - PREVIEW_MARGIN - box.right;
+  if (box.left + shift < PREVIEW_MARGIN) shift = PREVIEW_MARGIN - box.left;
+  if (shift !== 0) preview.style.left = `${parseFloat(getComputedStyle(preview).left) + shift}px`;
+}
+
 /** Draws Edit-mode marks into `overlay` (pointer-transparent; wedges and gutter bars take hover and a click). */
 export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Mark[], onOpen?: (record: string) => void): void {
   overlay.replaceChildren();
@@ -316,6 +334,11 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
     preview.className = 'moss-suggest-preview';
     preview.textContent = mark.text.trim() || '(new block)';
     wedge.appendChild(preview);
+    wedge.addEventListener('pointerenter', () => openPreview(wedge, preview));
+    wedge.addEventListener('pointerleave', () => {
+      delete wedge.dataset.open;
+      preview.style.left = '';
+    });
     overlay.appendChild(wedge);
     if (block && !gutters.has(block)) {
       gutters.add(block);
