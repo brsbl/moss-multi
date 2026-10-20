@@ -16,7 +16,7 @@ import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
 import { evaluateScope, noteUnit, readScope, type ScopeView, titleKey } from './scope.ts';
 import {
-  confined, type DocMeta, ensureTaintStore, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase,
+  carryTaint, confined, type DocMeta, ensureTaintStore, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase,
   recordPull, recordSynced, renameInside, sameFile, scopedNest, sha256Hex, taintNote, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
@@ -568,17 +568,8 @@ function followLocalRenames(root: string, metas: DocMeta[], untracked: string[],
     if (candidates.length === 0) continue;
     const rivals = missing.filter((other) => syncedHash(other) === want);
     if (candidates.length === 1 && rivals.length === 1) {
-      // Moved to another folder: what the server showed for the doc is the server's there too.
-      if (dirname(candidates[0]!) !== dirname(meta.file)) {
-        let base: Uint8Array | undefined;
-        try {
-          base = readBase(root, meta.docId);
-        } catch {
-          // No base left: the note's text itself stands for it.
-          base = readFileSync(join(root, confined(root, candidates[0]!)));
-        }
-        taintNote(root, candidates[0]!, [base, meta.title]);
-      }
+      // Moved to another folder: everything the server showed in the old one is the server's in the new one too.
+      carryTaint(root, meta, candidates[0]!);
       writeMeta(root, { ...meta, file: candidates[0]! });
       untracked.splice(untracked.indexOf(candidates[0]!), 1);
       results.push({ docId: meta.docId, file: candidates[0]!, from: meta.file, action: 'renamed' });

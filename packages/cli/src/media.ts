@@ -13,7 +13,7 @@ import type { Api } from './api.ts';
 import { CliError } from './errors.ts';
 import type { SyncResult } from './sync.ts';
 import {
-  confined, isWorkspace, type MediaState, mediaRefs, readConfined, readMediaRecord, refNames, sha256Hex, taintCheck, taintNames, trackedMetas, writeConfined,
+  confined, couldName, isWorkspace, type MediaState, mediaRefs, readConfined, readMediaRecord, sha256Hex, taintCheck, taintNames, trackedMetas, writeConfined,
   writeMediaRecord,
 } from './workspace.ts';
 
@@ -61,14 +61,16 @@ const nameKey = (folds: boolean | undefined) => (name: string) => (folds ? name.
 
 /**
  * Why a file in the assets/ beside the note `file` may be another note's, by name: another tracked doc in that folder
- * holds it in its media record, or another note there references it. A note that cannot be read counts as referencing
- * every name, and so does a folder that cannot be listed. Read once per media step.
+ * holds it in its media record, or another note there could name it (the taint store's liberal scan, not the markdown
+ * parser). A note that cannot be read counts as referencing every name, and so does a folder that cannot be listed.
+ * Read once per media step.
  */
 function folderOwners(ctx: MediaContext, docId: string, file: string): (name: string) => string | null {
   const { root } = ctx;
   const key = nameKey(ctx.folds);
   const folder = dirname(file);
   const owners = new Map<string, string>();
+  const named: { rel: string; names: (name: string) => boolean }[] = [];
   let every: string | null = null;
   if (isWorkspace(root)) {
     for (const meta of trackedMetas(root)) {
@@ -91,12 +93,16 @@ function folderOwners(ctx: MediaContext, docId: string, file: string): (name: st
       continue;
     }
     try {
-      for (const name of refNames(readConfined(root, rel).toString('utf8'))) if (!owners.has(key(name))) owners.set(key(name), `${rel} also uses it`);
+      named.push({ rel, names: couldName(root, folder, readConfined(root, rel).toString('utf8')) });
     } catch {
       every ??= unread;
     }
   }
-  return (name) => every ?? owners.get(key(name)) ?? null;
+  return (name) => {
+    if (every !== null) return every;
+    const note = named.find((other) => other.names(name));
+    return owners.get(key(name)) ?? (note ? `${note.rel} also uses it` : null);
+  };
 }
 
 const capMessage = (kind: 'image' | 'video') =>
@@ -122,7 +128,7 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   const dir = join(dirname(note), ASSET_DIR);
   const seen = new Set<string>();
   // Outside a workspace nothing was ever written from the server, so only ownership decides.
-  let served: ((rel: string, name: string) => boolean) | undefined;
+  let served: ((rel: string, name: string) => string | null) | undefined;
   let owners: ((name: string) => string | null) | undefined;
 
   for (const { name } of mediaRefs(text)) {
@@ -156,9 +162,10 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
           continue;
         }
         if (!ctx.upload) continue;
-        served ??= tracked ? taintCheck(root) : () => false;
-        if (served(note, name)) {
-          failed(`${rel} was not uploaded: text from the server named it in this folder, so it is only ever downloaded. Save the file under a new name and reference that to upload it`);
+        served ??= tracked ? taintCheck(root) : () => null;
+        const why = served(note, name);
+        if (why !== null) {
+          failed(`${rel} was not uploaded: ${why}`);
           continue;
         }
         owners ??= folderOwners(ctx, docId, note);
