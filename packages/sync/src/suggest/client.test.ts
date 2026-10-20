@@ -730,6 +730,7 @@ describe('T5.S14 an accept that keeps never loses typing still in flight @p:mean
       expect(refusals, 'refused loudly, once').toHaveLength(1);
       expect(m.fork.closed, 'input closes').toBe(true);
       expect(refusals[0].unsaved.join('\n'), 'the typed text is offered back where it was typed').toContain('itemLOST b');
+      expect(refusals[0].unsaved.filter((text) => !text.includes('LOST')), 'and the block is not offered again without it').toEqual([]);
     } finally {
       m.dispose();
     }

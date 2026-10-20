@@ -1293,11 +1293,14 @@ export class SuggestFork {
     const rescued = this.#rescued.filter(({ owed }) => owed.some((entry) => entries.includes(entry)));
     this.#rescued = [];
     const now = this.#exported(entries);
-    // A block as it was before a body update removed owed input beneath it, beside the block as it is now.
+    // A block as it was before a body update removed owed input beneath it; as it is now too only where a later
+    // frame changed it.
+    const later = new Set(touchedBlocks(this.doc, entries.filter((entry) => entry.op && !rescued.some(({ owed }) => owed.includes(entry))).map((entry) => entry.op!)));
     const unsaved: string[] = [];
     for (const [block, text] of now) {
-      for (const was of rescued) if (was.block === block) unsaved.push(was.text);
-      unsaved.push(text);
+      const was = rescued.filter((each) => each.block === block);
+      for (const each of was) unsaved.push(each.text);
+      if (!was.length || later.has(block)) unsaved.push(text);
     }
     for (const was of rescued) if (!now.some(([block]) => block === was.block)) unsaved.push(was.text);
     this.#emit({ type: 'refused', reason, unsaved: [...new Set(unsaved)].filter((text) => text.trim().length > 0) });
