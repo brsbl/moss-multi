@@ -567,7 +567,7 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
  * stay: accept applies nothing the preview hides (I3). So too for each copy in `restored`, which the preview reads as
  * its original: the original stays and the copy lands removed. A key it overwrote in a live map stays overwritten,
  * with the same value, as the preview read it. Null (accept refuses) where the record wrote anything
- * beneath a restored copy, its original or an item it removed that stays, which the preview cannot show.
+ * beneath an original or an item it removed that stays, or removed or overwrote anything beneath a restored copy.
  */
 export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], kept: (item: Y.Item) => boolean, restored?: Restored): { update: Uint8Array; kept: boolean } | null {
   const before = Y.decodeStateVector(sv);
@@ -602,35 +602,46 @@ export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], 
     }
   }
   // The preview reads a restored copy as its original, and a kept item as it was, so it shows nothing the record
-  // wrote beneath either; such a write (a map key included, which overwrites as it lands) is refused, never landed.
+  // wrote beneath either. Beneath an original or a kept item a write would land on the item that stays (a map key
+  // overwrites as it lands), so any is refused. A copy lands removed with all it holds, so what an undo restored
+  // into it lands inert; a struct removed or overwritten beneath it is no restore, and is refused too.
   const keep = new SpanIndex(stays);
-  const hidden = new Map<Y.AbstractType<unknown>, boolean>();
-  const beneathHidden = (struct: Y.Item): boolean => {
+  const NONE = 0;
+  const COPY = 1;
+  const STAYS = 2;
+  /** Each parent type to what it lies beneath, the strongest of its holders. */
+  const beneath = new Map<Y.AbstractType<unknown>, number>();
+  const levelOf = (start: Y.AbstractType<unknown>): number => {
     const walked: Y.AbstractType<unknown>[] = [];
-    let found = false;
-    for (let type = struct.parent as Y.AbstractType<unknown> | null; type; type = (type._item?.parent ?? null) as Y.AbstractType<unknown> | null) {
-      const seen = hidden.get(type);
+    let level = NONE;
+    for (let type: Y.AbstractType<unknown> | null = start; type; type = (type._item?.parent ?? null) as Y.AbstractType<unknown> | null) {
+      const seen = beneath.get(type);
       if (seen !== undefined) {
-        found = seen;
+        level = seen;
         break;
       }
       walked.push(type);
-      const holder = type._item;
-      if (!holder) break;
-      const key = itemKey(holder.id);
-      if (restored?.copies.has(key) || restored?.originals.has(key) || keep.covers(holder.id.client, holder.id.clock, holder.id.clock + 1)) {
-        found = true;
-        break;
-      }
     }
-    for (const type of walked) hidden.set(type, found);
-    return found;
+    // From the outermost walked type in, each takes its holder's level over what holds it.
+    for (let i = walked.length - 1; i >= 0; i -= 1) {
+      const holder = walked[i]._item;
+      if (holder) {
+        const key = itemKey(holder.id);
+        if (restored?.originals.has(key) || keep.covers(holder.id.client, holder.id.clock, holder.id.clock + 1)) level = STAYS;
+        else if (restored?.copies.has(key)) level = Math.max(level, COPY);
+      }
+      beneath.set(walked[i], level);
+    }
+    return level;
   };
   const buried: IdSpan[] = [];
   for (const client of doc.store.clients.keys()) {
     const from = state(client);
     for (const struct of structsIn(doc.store, client, from, Y.getState(doc.store, client))) {
-      if (struct instanceof Y.Item && beneathHidden(struct)) return null;
+      if (struct instanceof Y.Item) {
+        const level = levelOf(struct.parent as Y.AbstractType<unknown>);
+        if (level === STAYS || (level === COPY && struct.deleted)) return null;
+      }
       if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null) continue;
       const lo = Math.max(from, struct.id.clock);
       if (kept(struct)) buried.push({ client, clock: lo, len: struct.id.clock + struct.length - lo });
