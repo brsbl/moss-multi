@@ -66,6 +66,8 @@ export const GROUPS = {
   suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
+  // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
+  suggestMarks: ['j16-marks'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.
   censusBlocks: ['j16-census-blocks'],
   censusNested: ['j16-census-nested'],
