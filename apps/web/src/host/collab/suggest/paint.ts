@@ -299,9 +299,12 @@ function openPreview(wedge: HTMLElement, preview: HTMLElement): void {
 
 /** Draws Edit-mode marks into `overlay` (pointer-transparent; wedges and gutter bars take hover and a click). */
 export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Mark[], onOpen?: (record: string) => void): void {
+  // A repaint (an edit, a resize) replaces the wedges; the one whose preview is open stays open.
+  const open = overlay.querySelector<HTMLElement>('.moss-suggest-wedge[data-open]')?.dataset.markKey;
   overlay.replaceChildren();
   const host = overlay.getBoundingClientRect();
   const gutters = new Set<HTMLElement>();
+  const reopen: [HTMLElement, HTMLElement][] = [];
   for (const mark of marks) {
     const rect = rectOf(editor, mark);
     if (!rect) continue;
@@ -324,6 +327,7 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
     wedge.setAttribute(SUGGEST_MARK_ATTR, 'insert');
     wedge.className = 'moss-suggest-wedge';
     wedge.dataset.suggestionId = mark.record;
+    wedge.dataset.markKey = `${mark.place.key}:${mark.place.offset}:${mark.record}`;
     wedge.setAttribute('aria-label', `Suggested insert: ${mark.text.trim()}`);
     wedge.style.left = `${(mark.after ? rect.right : rect.left) - host.left - 4}px`;
     wedge.style.top = `${rect.bottom - host.top - 2}px`;
@@ -334,6 +338,7 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
     preview.className = 'moss-suggest-preview';
     preview.textContent = mark.text.trim() || '(new block)';
     wedge.appendChild(preview);
+    if (open !== undefined && wedge.dataset.markKey === open) reopen.push([wedge, preview]);
     wedge.addEventListener('pointerenter', () => openPreview(wedge, preview));
     wedge.addEventListener('pointerleave', () => {
       delete wedge.dataset.open;
@@ -353,6 +358,17 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
       if (onOpen && mark.record) bar.addEventListener('click', () => onOpen(mark.record));
       overlay.appendChild(bar);
     }
+  }
+  for (const [wedge, preview] of reopen) {
+    openPreview(wedge, preview);
+    // The pointer never entered the new wedge, so no pointerleave closes it: the next move off it does.
+    const off = (event: PointerEvent) => {
+      if (event.target instanceof Node && wedge.contains(event.target)) return;
+      document.removeEventListener('pointermove', off, true);
+      delete wedge.dataset.open;
+      preview.style.left = '';
+    };
+    document.addEventListener('pointermove', off, true);
   }
 }
 
