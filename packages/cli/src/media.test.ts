@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type ProgramDeps, runCli } from './program.ts';
 
@@ -836,5 +837,94 @@ describe('the folder taint store follows edited moves, Moss\'s exact path rules 
     const added = await cli(['add', '.old.md']);
     expect(added.code, added.err).toBe(0);
     expect(held(newest()), added.out + added.err).toEqual(['mine.png']);
+  });
+});
+
+describe('the taint scan decodes to a fixed point, never less deeply than any path that resolves a name (T7.S9 round 7)', () => {
+  const ZW = String.fromCodePoint(0x200b);
+  // assets/private.png behind four layers: an entity, percent-encoded three times over, and a zero-width space.
+  const NESTED = `%252526%252523112%25253B${ZW}rivate.png`;
+
+  it('a collaborator\'s title naming a file through four nested encodings uploads nothing after the editor saves it', async () => {
+    write(join('Trip', 'Trip.md'), '# Trip\n\nThe trip.\n');
+    write(join('Trip', 'assets', 'private.png'), png('private'));
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const trip = createdId(first.results, join('Trip', 'Trip.md'))!;
+    expect(trip).toBeTruthy();
+    server.docs.find((doc) => doc.id === trip)!.title = `Trip\n\n![x](assets/${NESTED})`;
+    await syncJson();
+    const injected = readFileSync(join(dir, 'Trip', 'Trip.md'), 'utf8');
+    expect(injected).toContain(NESTED);
+
+    write(join('Trip', 'Trip.md'), `${injected.replace(NESTED, 'private.png').trimEnd()}\n\nMy own line.\n`);
+    const saved = await syncJson();
+    await syncJson();
+    expect(held(trip), JSON.stringify(saved.results)).toEqual([]);
+    expect(failedFor(saved.results, trip, join('Trip', 'assets', 'private.png')), JSON.stringify(saved.results)).toBe(true);
+
+    write(join('Trip', 'assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'Trip', 'Trip.md'), '\n![m](assets/mine.png)\n');
+    const own = await syncJson();
+    expect(own.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: trip, file: join('Trip', 'assets', 'mine.png') }));
+  });
+
+  it('a text encoded in more layers than the scan decodes leaves its folder fully tainted', async () => {
+    write(join('Big', 'big.md'), 'Big.\n');
+    write(join('Other', 'other.md'), 'Other.\n');
+    expect((await cli(['init'])).code).toBe(0);
+    const first = await syncJson();
+    const big = createdId(first.results, join('Big', 'big.md'))!;
+    const other = createdId(first.results, join('Other', 'other.md'))!;
+    // assets/private.png with its p percent-encoded 10,000 times over.
+    server.content.set(big, `${server.content.get(big)!.trimEnd()}\n\n![p](assets/%${'25'.repeat(10_000)}70rivate.png)\n`);
+    await syncJson();
+    expect(readFileSync(join(dir, 'Big', 'big.md'), 'utf8')).toContain('2525');
+
+    write(join('Big', 'assets', 'fresh.png'), png('fresh'));
+    appendFileSync(join(dir, 'Big', 'big.md'), '\n![f](assets/fresh.png)\n');
+    write(join('Other', 'assets', 'mine.png'), png('mine'));
+    appendFileSync(join(dir, 'Other', 'other.md'), '\n![m](assets/mine.png)\n');
+    const after = await syncJson();
+    expect(held(big), JSON.stringify(after.results)).toEqual([]);
+    expect(failedFor(after.results, big, join('Big', 'assets', 'fresh.png')), JSON.stringify(after.results)).toBe(true);
+    expect(after.results).toContainEqual(expect.objectContaining({ action: 'uploaded', docId: other, file: join('Other', 'assets', 'mine.png') }));
+  }, 60_000);
+
+  it('every name the CLI\'s reference parser or moss\'s path rules resolve from a text is one the scan records for it', async () => {
+    const { couldName, mediaRefs } = await import('./workspace.ts');
+    // Moss's own local path normalisation, as vendored at the pin.
+    const vendored = fileURLToPath(new URL('../../../vendor/moss/packages/desktop/src/renderer/editor/utils/asset-url.ts', import.meta.url));
+    const { normalizeLocalAssetPathForDisplay: mossNormalize } = (await import(vendored)) as { normalizeLocalAssetPathForDisplay: (src: string) => string };
+    const fw = String.fromCodePoint(0xff53, 0xff45, 0xff43);
+    const destinations = [
+      'assets/secret.png', 'assets/sec%72et.png', 'assets/sec&#114;et.png', `assets/sec${ZW}ret.png`, `assets/my${ZW}&#8239;${ZW}file.png`,
+      `assets/${NESTED}`, 'assets/&#00000000115;ecret.png', 'assets/&#x00000000073;ecret.png', `assets/${fw}${ZW}ret.png`,
+      'assets/a&nbsp;b.png', 'assets/%E2%80%8Bsecret.png', 'assets/%2573ecret.png',
+      `assets/${ZW}%2526%2523115;ecret.png`, 'assets/a%C2%A0b.png', 'assets/a&#x202F;b.png',
+    ];
+    for (const destination of destinations) {
+      const text = `Ben wrote ![x](${destination}) here.\n`;
+      const names = couldName(dir, '.', text);
+      const resolved = new Set(mediaRefs(text).map((ref) => ref.name));
+      // The editor shows the path through moss's rules (and its moss-asset URL decodes it first), saves what it resolved,
+      // and may load and save that again: every step's name, to its fixed point.
+      for (let path = destination, step = 0; step < 50; step += 1) {
+        let decoded = path;
+        try {
+          decoded = decodeURIComponent(path);
+        } catch {
+          // A stray % stays as it is.
+        }
+        for (const next of [mossNormalize(path), mossNormalize(decoded)]) {
+          for (const ref of mediaRefs(`![x](${next.replace(/ /g, '%20')})`)) resolved.add(ref.name);
+        }
+        const next = mossNormalize(decoded);
+        if (next === path) break;
+        path = next;
+      }
+      expect(resolved.size, destination).toBeGreaterThan(0);
+      for (const name of resolved) expect(names(name), `${destination} resolves to ${name}`).toBe(true);
+    }
   });
 });
