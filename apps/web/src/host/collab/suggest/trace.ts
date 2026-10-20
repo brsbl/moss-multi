@@ -55,9 +55,13 @@ function active(): Tracer | null {
   return tracer;
 }
 
+/** Spots visited while carrying them through text operations; tests bound it. */
+export const traceWork = { spots: 0 };
+
 /** Moves the text spots in `key` to where `to` says, dropping those it deletes. */
 function move(tracer: Tracer, key: NodeKey, to: (offset: number) => { key: NodeKey; offset: number } | null): void {
   tracer.spots = tracer.spots.flatMap((spot) => {
+    traceWork.spots += 1;
     if (spot.key !== key || spot.offset < 0) return [spot];
     const next = to(spot.offset);
     return next ? [{ id: spot.id, ...next }] : [];

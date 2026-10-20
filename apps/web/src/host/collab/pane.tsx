@@ -253,7 +253,7 @@ class PaneBinding implements SuggestPane {
       // Kept on body text, which every mode's doc holds: never on a pending insert.
       const mount = this.#mount;
       const pending = mount instanceof SuggestMount ? mount.fork.ownClients() : mount instanceof ReviewMount ? new Set(mount.clients.keys()) : new Set<number>();
-      if (this.#editor) this.#caret = captureCaret(this.#editor, pending) ?? this.#caret;
+      if (this.#editor) this.#caret = captureCaret(this.#editor, pending, this.body) ?? this.#caret;
       this.#mode = this.#target;
       this.set({ resetting: true, mode: this.#mode });
     };

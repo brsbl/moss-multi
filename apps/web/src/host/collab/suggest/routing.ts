@@ -190,6 +190,9 @@ function align(from: readonly Unit[], to: readonly Unit[]): Map<number, number> 
   return pairs;
 }
 
+/** Units a rebuild read from deleted runs, and the lookups it made of struck units in them; tests bound both. */
+export const rebuildWork = { units: 0, lookups: 0 };
+
 /**
  * The run of units `tr` deleted around `item` in its parent (tombstones from earlier transactions skipped); a live item
  * ends it. `start`: the run's first item, the same for every item in it.
@@ -199,6 +202,7 @@ function deletedRun(tr: Y.Transaction, item: Y.Item): { units: Unit[]; start: Y.
   while (start.left && start.left.deleted) start = start.left;
   const units: Unit[] = [];
   for (let n: Y.Item | null = start; n && n.deleted; n = n.right) if (Y.isDeleted(tr.deleteSet, n.id)) units.push(...unitsOf(n));
+  rebuildWork.units += units.length;
   return { units, start };
 }
 
@@ -389,7 +393,10 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
         aligned = { units: run.units, pairs: runs.map((units) => align(run.units, units)) };
         alignments.set(run.start, aligned);
       }
-      const at = aligned.units.findIndex((unit) => Y.compareIDs(unit.id, id));
+      const at = aligned.units.findIndex((unit) => {
+        rebuildWork.lookups += 1;
+        return Y.compareIDs(unit.id, id);
+      });
       if (at < 0) continue;
       let best: { copy: Y.ID; score: number } | null = null;
       for (let r = 0; r < runs.length; r += 1) {

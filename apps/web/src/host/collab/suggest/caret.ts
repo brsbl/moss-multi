@@ -2,6 +2,7 @@
 // character beside it (never a pending insert, which another mode's doc may not hold), or of its empty block, and put
 // back, focused, once the remounted editor holds that item and is editable.
 import { $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, type LexicalEditor } from 'lexical';
+import type * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
 import { charIndex, idKey, sharedItem, textIds } from './chars.ts';
 
@@ -13,7 +14,7 @@ export interface CaretMark {
 }
 
 /** The caret as a body item beside it; `pending` are clients whose items are not body text. */
-export function captureCaret(editor: LexicalEditor, pending: ReadonlySet<number> = new Set()): CaretMark | null {
+export function captureCaret(editor: LexicalEditor, pending: ReadonlySet<number> = new Set(), _body: Y.Doc | null = null): CaretMark | null {
   const binding = bindingOf(editor);
   if (!binding) return null;
   return editor.getEditorState().read(() => {

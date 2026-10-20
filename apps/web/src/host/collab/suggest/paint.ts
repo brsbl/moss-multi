@@ -325,3 +325,17 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
     }
   }
 }
+
+/** A struck original F no longer holds, shown struck where it stood (presentation only). */
+export interface Ghost {
+  text: string;
+  place: CharPlace;
+  /** After the character at `place` rather than at it. */
+  after: boolean;
+}
+
+export function ghostsOf(_fork: unknown, _binding: Binding): Ghost[] {
+  return [];
+}
+
+export function drawGhosts(_editor: LexicalEditor, _overlay: HTMLElement, _ghosts: readonly Ghost[]): void {}
