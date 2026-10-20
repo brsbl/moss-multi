@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 64% done** (160 of 250 planned tasks verified)
+**Overall: 64% done** (161 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 67 / 67 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 25 / 25 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 26 / 26 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -186,6 +186,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T5.S10 verified: in Suggest mode a paste is Lexical's own paste, admitted whole or refused whole against every suggest limit by what it actually writes, pastes over table cells are refused, undo and redo are admitted the same way, and an undone paste or Enter no longer shows its restored rest as a suggestion.
 - 2026-10-19 — T5.S14 verified: accepting a suggestion no longer applies an identity-only change, so an item replaced by an identical copy keeps its original, its comment anchors and its authorship; accept refuses writes beneath a restored copy with 409, and input a kept accept would bury is offered back first.
 - 2026-10-19 — T5.B2 verified: in Suggest mode, deleting text a continuation's accepted prefix holds strikes it and keeps the caret, a replayed undo or redo no longer wipes the strikes' redo, a struck character or long struck run survives a rewrite of its node, and struck text a rewrite removed is still drawn struck where it stood.
+- 2026-10-20 — T5.B3 verified: Edit-mode suggestion marks no longer crash on a BigInt or `__proto__` value, strikes are kept in a sorted span set so painting stays fast, a wedge's preview fits its text, stays on screen and stays open across a repaint, and a formula typed in Suggest mode commits on Space or Enter.
 
 ## T1.1s identity audit
 
@@ -732,3 +733,6 @@ Local browser verification remains assigned to the independent checker under the
 - T5.B2 (Suggest-mode routing, rebuild provenance and pending ownership) checker P2: B302 struck text rebuilt alone at the start of a block draws no ghost: placeOf (paint.ts:369-398) searches only leftward, so with no anchor ghostsOf drops it (e.g. strike the first x of 'x tail x.' and highlight only that x).
 - T5.B2 (Suggest-mode routing, rebuild provenance and pending ownership) checker P2: B302 adjacent ghost characters are joined in id order (removedStrikes sorts by client and clock, client.ts:795), not document order, so a run created out of order reads 'bx' instead of 'xb'.
 - T5.B2 (Suggest-mode routing, rebuild provenance and pending ownership) checker P2: emptiedMaps walks left past tombstones for each removed id (client.ts:345-351), an unmeasured O(N^2) cost on the editing path for a densely struck text node.
+- T5.B3 (Suggestion paint, preview layout and Suggest-mode formulas) checker P2: reopened-preview pointermove listeners are not disposed on redraw or unmount; each redraw that keeps a preview open adds a document-level listener that removes itself only on a later pointer move, so a stationary pointer during a peer's typing accumulates listeners and keeps detached wedges in memory (bounded, not data loss).
+- T5.B3 (Suggestion paint, preview layout and Suggest-mode formulas) checker P2: Review-mode paintBound rebuilds the SpanSet on every repaint because Review mode passes partTargets(...) as an array, so each selection or resize repaint re-sorts and re-merges the strike index (O(S log S) per paint).
+- T5.B3 (Suggestion paint, preview layout and Suggest-mode formulas) checker P2: a suggested formula paragraph has an empty wedge label ('Suggested insert: ') and a '(new block)' preview in Edit mode, and its card lists raw formulaId and regId hashes (cosmetic, newly reachable since B306).
