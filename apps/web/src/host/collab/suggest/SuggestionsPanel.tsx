@@ -4,7 +4,7 @@
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { Button } from '@moss/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
-import { BODY_DOC, recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '@moss-multi/protocol/dom-contract';
@@ -16,6 +16,7 @@ import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
+import { suggestedText } from './copy-text.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
 import { usePreviewRows } from './rows.ts';
@@ -73,22 +74,6 @@ function useRecords(source: SuggestionsSource): SuggestionRecord[] {
     if (!body) return [];
     return recordIds(body).map((id) => readRecord(body, id)).filter((record): record is SuggestionRecord => !!record && !record.meta.mergedInto);
   }, [body, version]);
-}
-
-/** The text a record would add, decoded from its own ops (§4.7 "Copy suggested text"). */
-export function suggestedText(record: SuggestionRecord): string {
-  const parts: string[] = [];
-  for (const op of record.ops) {
-    try {
-      for (const struct of Y.decodeUpdate(op.update).structs) {
-        if (struct instanceof Y.Item && struct.content instanceof Y.ContentString) parts.push(struct.content.str);
-      }
-    } catch {
-      // An undecodable op adds nothing to copy.
-    }
-    if (op.doc !== BODY_DOC) parts.push('\n');
-  }
-  return parts.join('').trim();
 }
 
 const REASONS: Record<string, string> = {
