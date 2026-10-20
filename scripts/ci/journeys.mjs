@@ -55,11 +55,25 @@ export const GROUPS = {
   workspace: ['j05', 'j06', 'j12', 'j13', 'export'],
   // Media, embeds and the demo note.
   media: ['j11', 'j14'],
-  // Comments, suggestions, history, agents.
-  meaning: ['j15', 'j16', 'j17', 'j18'],
+  // Comments, history, agents.
+  meaning: ['j15', 'j17', 'j18'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
   // frames and offline comments (meaning's WebKit shard is full).
   social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],
+  // Suggest mode and the suggestions server.
+  suggest: ['j16'],
+  // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
+  suggestPaste: ['j16-paste'],
+  // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body.
+  suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo'],
+  // Reviewing suggestions: the panel, accept, reject and withdraw.
+  review: ['j16-review'],
+  // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
+  suggestMarks: ['j16-marks'],
+  // The strike census: every block kind on each side of a boundary, every edge key and strike position.
+  censusBlocks: ['j16-census-blocks'],
+  censusNested: ['j16-census-nested'],
+  censusEdges: ['j16-census-edges'],
 };
 
 /**

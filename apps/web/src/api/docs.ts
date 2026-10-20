@@ -1,9 +1,9 @@
 // /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
-// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export; /comments and its
-// edit, delete, resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same
-// 404 on every route (A§8).
+// (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export (?view=working adds
+// open suggestions); /suggestions/:sid/* is suggestions.ts; /comments and its edit, delete, resolve and reactions routes
+// are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import {
@@ -22,6 +22,7 @@ import {
 } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
 import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
+import { admitWorkingExport, handleSuggestion, SUGGESTION_ROUTE, workingRateLimited } from './suggestions.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
@@ -270,7 +271,16 @@ async function readContent(request: Request, env: DocsEnv, docId: string): Promi
   if (!principal) return unauthenticated();
   const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
   if (!access || access.deleted) return notFound();
-  const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
+  // `?view=working` adds every valid open suggestion; the default is the clean body (docs/design/suggestions.md §4.7).
+  const working = new URL(request.url).searchParams.get('view') === 'working';
+  if (working) {
+    // Metered before the DocDO is reached (I5); past its per-doc bound the DocDO answers null.
+    const refused = await admitWorkingExport(request, env, principal);
+    if (refused) return refused;
+  }
+  const stub = await getServerByName(env.DocDO, docId);
+  const markdown = working ? await stub.exportWorking() : await stub.exportMarkdown();
+  if (markdown === null) return workingRateLimited();
   return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
 }
 
@@ -324,6 +334,8 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     if (request.method === 'DELETE') return deleteComment(request, env, one[1], one[2]);
     return json({ error: 'method-not-allowed' }, 405, { allow: 'PATCH, DELETE' });
   }
+  const suggestion = SUGGESTION_ROUTE.exec(pathname);
+  if (suggestion) return handleSuggestion(request, env, suggestion[1], suggestion[2], suggestion[3] as 'preview' | 'accept' | 'reject' | 'withdraw');
   const content = CONTENT.exec(pathname);
   if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);

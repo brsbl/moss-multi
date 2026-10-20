@@ -477,6 +477,11 @@ export class BodyUndo extends Observable<StackEvent> {
     };
   }
 
+  /** True while undo or redo replays a step: the stack items its managers add then are no new edit. */
+  get replaying(): boolean {
+    return this.#replaying;
+  }
+
   get undoStack(): readonly Step[] {
     return this.undone;
   }
@@ -562,7 +567,12 @@ export class BodyUndo extends Observable<StackEvent> {
         if (replayed.length === 0) return;
         const entries = mergeReplayed(replayed);
         this.undone.push({ entries, stamp: step.stamp });
-        this.emit('stack-item-added', [{ type: 'undo', stackItem: entries.at(-1)!.item }, this]);
+        this.#replaying = true;
+        try {
+          this.emit('stack-item-added', [{ type: 'undo', stackItem: entries.at(-1)!.item }, this]);
+        } finally {
+          this.#replaying = false;
+        }
       },
     };
   }

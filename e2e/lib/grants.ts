@@ -5,7 +5,7 @@
 import type { Actor } from './actors.ts';
 import { signIn, type Principal } from './principals.ts';
 
-export type GrantRole = 'viewer' | 'commenter' | 'editor';
+export type GrantRole = 'viewer' | 'commenter' | 'suggester' | 'editor';
 export type InviteTarget = { docId: string } | { folderId: string };
 
 const pathOf = (target: InviteTarget): string =>

@@ -3,6 +3,7 @@ import type { Binding } from '@lexical/yjs';
 import { $getRoot, $isElementNode, SKIP_DOM_SELECTION_TAG, type EditorState, type LexicalEditor, type LexicalNode } from 'lexical';
 import { $isTableNode } from '@lexical/table';
 import { getState } from 'yjs';
+import { publishBinding } from './binding-registry.ts';
 
 interface Tabs extends LexicalNode {
   getTabWidths(): (number | null)[];
@@ -23,6 +24,7 @@ const isLayout = (value: unknown): value is Layout => !!value && typeof value ==
 
 /** Yjs item identities survive reloads and peer insertions; Lexical keys and ordinals do not. */
 export function bindLocalLayout(editor: LexicalEditor, binding: Binding): () => void {
+  const unpublish = publishBinding(editor, binding);
   const identityKey = keyFor(binding.id);
   const legacyKey = `moss-multi:layout:${binding.id}`;
   const stored: Record<string, string | null> = { [identityKey]: read(identityKey), [legacyKey]: read(legacyKey) };
@@ -152,5 +154,5 @@ export function bindLocalLayout(editor: LexicalEditor, binding: Binding): () => 
   restore(scan(editor.getEditorState()));
   const win = typeof window === 'undefined' ? null : window;
   win?.addEventListener('pagehide', flush);
-  return () => { stopped = true; stop(); win?.removeEventListener('pagehide', flush); flush(); };
+  return () => { stopped = true; stop(); win?.removeEventListener('pagehide', flush); flush(); unpublish(); };
 }

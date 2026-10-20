@@ -47,6 +47,29 @@ declare module '@moss-desktop/common/embed-iframe-policy' {
   };
 }
 
+// The pane's paste handlers and content transforms, which a Suggest-mode paste also runs on a copy (suggest/paste-stack.ts).
+declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
+  import type { LinkMatcher } from '@lexical/link';
+  import type { LexicalEditor } from 'lexical';
+  export const AUTOLINK_MATCHERS: LinkMatcher[];
+  export function registerPasteFormattingHandlers(editor: LexicalEditor): () => void;
+}
+
+declare module '@moss-desktop/renderer/editor/AutoArrowPlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerAutoArrow(editor: LexicalEditor): () => void;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/SafePastePlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerSafePaste(editor: LexicalEditor): () => void;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/WebpageEmbedPastePlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerWebpageEmbedPaste(editor: LexicalEditor): () => void;
+}
+
 declare module '@moss-desktop/common/web-embed-url' {
   export function resolveRemoteWebSurfaceUrl(text: string): string;
 }
@@ -179,7 +202,7 @@ declare module '@moss/shared/components/ui/card' {
 
 declare module '@moss/shared/components/ui/dropdown-menu' {
   import type { ComponentType, HTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react';
-  export const DropdownMenu: ComponentType<{ children: ReactNode }>;
+  export const DropdownMenu: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void; modal?: boolean }>;
   export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
   export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; onCloseAutoFocus?: (event: Event) => void }>;
   export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;

@@ -11,6 +11,7 @@ import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
+import { forkOf } from '@moss-multi/sync/suggest/forks';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
   $createLineBreakNode, $createParagraphNode, $createTabNode, $createTextNode, $getNodeByKey, $getRoot, $getSelection,
@@ -139,6 +140,12 @@ function heldBytes(doc: Y.Doc): { local: number; server: number } {
   for (const payload of payloadDocsFor(doc).docs.values()) payloads += Y.encodeStateAsUpdate(payload).byteLength;
   const note = gcBytes(Y.encodeStateAsUpdate(doc));
   return { local: note + payloads, server: note + countedPayloadBytes(doc) };
+}
+
+/** `doc` and its payload docs as the DocDO counts them against the cap, the larger of heldBytes' two figures. */
+export function noteBytes(doc: Y.Doc): number {
+  const { local, server } = heldBytes(doc);
+  return Math.max(local, server);
 }
 
 /** Room under the frame cap for a frame's own header beyond what a piece or payload frame measures. */
@@ -909,6 +916,15 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   jobs.set(editor, job);
   job.start();
   return true;
+}
+
+/**
+ * Whether `editor` lands a large paste through pasteLarge. Not in Suggest mode (the editor writes a fork, forks.ts):
+ * there a paste is Lexical's own, one update, admitted whole first (collab/suggest/paste.ts).
+ */
+export function pastesInBatches(editor: LexicalEditor): boolean {
+  const doc = noteDoc(editor);
+  return !doc || !forkOf(doc);
 }
 
 /** Lands `request` in batches, after its scratch replay fits; a paste still landing in `editor` lands first. */

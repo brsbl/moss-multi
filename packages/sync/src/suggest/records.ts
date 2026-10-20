@@ -1,11 +1,139 @@
 // Suggestion records in `Y.Map('suggestions')` (docs/design/suggestions.md §1). Only the DocDO writes them, under
-// SUGGESTIONS_ORIGIN; a record's ops are stored and never applied to the body except by accept.
+// SUGGESTIONS_ORIGIN and, once a SuggestionsWriter is bound, under its reserved Yjs client id S, so no client frame
+// can reach the map (I2). A record's ops are stored and never applied to the body except by accept.
 import * as Y from 'yjs';
 import type { DeletePart, RecordMeta, RecordOp, SuggestionRecord } from '@moss-multi/core/suggest/apply';
 
 export const SUGGESTIONS = 'suggestions';
 export const SUGGESTIONS_ORIGIN = 'server-suggestions';
 export const SUGGEST_ACCEPT = 'suggest-accept';
+
+type Decoded = ReturnType<typeof Y.decodeUpdate>;
+
+/**
+ * The one writer of `suggestions`. Every write runs under the reserved client S; a client frame is refused if it
+ * carries an S struct, names S as an origin, right origin or parent, names any item inside the map (tombstones included),
+ * uses `suggestions` as a string parent, or deletes a live S item. A non-S item can then never land in the map (the comments.md §2 argument), and the check is
+ * O(frame · log n): the live S clocks are kept sorted.
+ */
+export class SuggestionsWriter {
+  #live: number[] = [];
+
+  constructor(
+    readonly doc: Y.Doc,
+    readonly client: number,
+  ) {
+    if (doc.clientID === client) throw new Error('the doc writes as S');
+    for (const struct of doc.store.clients.get(client) ?? []) {
+      if (struct instanceof Y.Item && !struct.deleted) for (let i = 0; i < struct.length; i += 1) this.#live.push(struct.id.clock + i);
+    }
+    // Any transaction that deletes an S item, whoever runs it, drops those clocks.
+    doc.on('afterTransaction', (txn: Y.Transaction) => {
+      for (const { clock, len } of txn.deleteSet.clients.get(client) ?? []) this.#drop(clock, clock + len);
+    });
+    writers.set(doc, this);
+  }
+
+  write(fn: () => void): void {
+    const own = this.doc.clientID;
+    const before = Y.getState(this.doc.store, this.client);
+    this.doc.clientID = this.client;
+    try {
+      this.doc.transact(fn, SUGGESTIONS_ORIGIN);
+    } finally {
+      this.doc.clientID = own;
+    }
+    const after = Y.getState(this.doc.store, this.client);
+    for (let clock = before; clock < after; clock += 1) {
+      const struct = Y.getItem(this.doc.store, Y.createID(this.client, clock));
+      if (struct instanceof Y.Item && !struct.deleted) this.#live.push(clock);
+    }
+  }
+
+  /** True when a client frame would touch `suggestions`. */
+  touches({ structs, ds }: Decoded): boolean {
+    const s = this.client;
+    for (const struct of structs) {
+      if (struct.id.client === s) return true;
+      if (!(struct instanceof Y.Item)) continue;
+      if (struct.origin?.client === s || struct.rightOrigin?.client === s) return true;
+      const parent = struct.parent as unknown;
+      if (parent === SUGGESTIONS || (parent instanceof Y.ID && parent.client === s)) return true;
+      // Yjs takes a parent from the origin or the parent item: any of them in the map, live or a tombstone another
+      // client wrote (a duplicate copies the source's), lands the item there.
+      if (this.#inMap(struct.origin) || this.#inMap(struct.rightOrigin) || (parent instanceof Y.ID && this.#inMap(parent))) return true;
+    }
+    for (const { clock, len } of ds.clients.get(s) ?? []) if (this.#coversLive(clock, clock + len)) return true;
+    return false;
+  }
+
+  /** True when `id` names a stored item inside `suggestions`, deleted or not; O(log n). */
+  #inMap(id: Y.ID | null): boolean {
+    if (!id || id.clock >= Y.getState(this.doc.store, id.client)) return false;
+    const item = Y.getItem(this.doc.store, id);
+    if (!(item instanceof Y.Item)) return false;
+    const map = this.doc.share.get(SUGGESTIONS);
+    // Only the server nests in the map, a few levels deep; a deeper chain is the body.
+    let type: unknown = item.parent;
+    for (let depth = 0; depth < 8 && type instanceof Y.AbstractType; depth += 1) {
+      if (type === map) return true;
+      type = type._item?.parent;
+    }
+    return false;
+  }
+
+  #lower(clock: number): number {
+    let lo = 0;
+    let hi = this.#live.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.#live[mid] < clock) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  #coversLive(from: number, to: number): boolean {
+    const at = this.#lower(from);
+    return at < this.#live.length && this.#live[at] < to;
+  }
+
+  #drop(from: number, to: number): void {
+    const lo = this.#lower(from);
+    const hi = this.#lower(to);
+    if (hi > lo) this.#live.splice(lo, hi - lo);
+  }
+}
+
+const writers = new WeakMap<Y.Doc, SuggestionsWriter>();
+const closedListeners = new WeakMap<Y.Doc, Set<(id: string, meta: RecordMeta) => void>>();
+
+/** Hears every record `closeRecord` closes, in the same turn. */
+export function onRecordClosed(doc: Y.Doc, listener: (id: string, meta: RecordMeta) => void): () => void {
+  const listeners = closedListeners.get(doc) ?? new Set();
+  closedListeners.set(doc, listeners);
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** A fresh id for S: not the doc's own, and not one any struct already uses. */
+export function newSuggestionsClient(doc: Y.Doc): number {
+  for (;;) {
+    const id = crypto.getRandomValues(new Uint32Array(1))[0];
+    if (id !== 0 && id !== doc.clientID && !doc.store.clients.has(id)) return id;
+  }
+}
+
+export function suggestionsWriter(doc: Y.Doc): SuggestionsWriter | null {
+  return writers.get(doc) ?? null;
+}
+
+/** One server transaction on the records: under S once a writer is bound (the DocDO), else under the doc's id. */
+export function writeSuggestions(doc: Y.Doc, fn: () => void): void {
+  const writer = writers.get(doc);
+  if (writer) writer.write(fn);
+  else doc.transact(fn, SUGGESTIONS_ORIGIN);
+}
 
 const recordMap = (doc: Y.Doc, id: string): Y.Map<unknown> | null => {
   const value = doc.getMap(SUGGESTIONS).get(id);
@@ -15,6 +143,12 @@ const recordMap = (doc: Y.Doc, id: string): Y.Map<unknown> | null => {
 export function readMeta(doc: Y.Doc, id: string): RecordMeta | null {
   const meta = recordMap(doc, id)?.get('meta');
   return typeof meta === 'string' ? (JSON.parse(meta) as RecordMeta) : null;
+}
+
+/** The length of a record's stored meta JSON; 0 when there is none. O(1). */
+export function metaBytes(doc: Y.Doc, id: string): number {
+  const meta = recordMap(doc, id)?.get('meta');
+  return typeof meta === 'string' ? meta.length : 0;
 }
 
 export function readRecord(doc: Y.Doc, id: string): SuggestionRecord | null {
@@ -30,11 +164,102 @@ export function readRecord(doc: Y.Doc, id: string): SuggestionRecord | null {
   };
 }
 
+export const partBytes = (part: DeletePart): number => part.id.length + part.quote.length * 2 + part.targets.length * 24 + 16;
+
+/** The bytes of ops and parts a record holds, as the record cap counts them. */
+export const recordBytes = (record: SuggestionRecord): number =>
+  record.ops.reduce((sum, op) => sum + op.update.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0);
+
+/**
+ * A record's chain followed to its head: `next` names a closed record's successor (the record it merged into, or its
+ * continuation). The DocDO walks its own index of successors; a client walks the metas (`successorIn`).
+ */
+export function chainHead(id: string, next: (id: string) => string | undefined): string {
+  let head = id;
+  const seen = new Set([head]);
+  for (let step = next(head); step !== undefined && !seen.has(step); step = next(head)) {
+    seen.add(step);
+    head = step;
+  }
+  return head;
+}
+
+/** A closed record's successor as its meta names it. */
+export const successorIn = (doc: Y.Doc) => (id: string): string | undefined => {
+  const meta = readMeta(doc, id);
+  return meta?.mergedInto ?? meta?.continuedBy;
+};
+
+/**
+ * Where a frame for a record whose chain heads at a record of `status` lands: in that record while it is open, in a
+ * new continuation of it (a new open record) once accepted, nowhere once rejected or withdrawn. The DocDO's routing of
+ * every frame and a client's admission of an edit before it is made both decide by this.
+ */
+export function landingOf(status: RecordMeta['status']): 'head' | 'continuation' | 'closed' {
+  if (status === 'open') return 'head';
+  return status === 'accepted' ? 'continuation' : 'closed';
+}
+
+/** The bytes lib0 spends on `n` as a var uint. */
+export function varUintBytes(n: number): number {
+  let bytes = 1;
+  for (let rest = n; rest > 127; rest = Math.floor(rest / 128)) bytes += 1;
+  return bytes;
+}
+
+/**
+ * The encoded bytes the doc holds for `suggestions`: every struct under S (open ops, closed records' metadata, the
+ * tombstones closes and merges leave) and S's share of the delete set. O(S structs + the delete set), so for a wake or
+ * a compaction, not a frame. Without a bound writer (unit tests) the records' JSON stands in.
+ */
+export function suggestionStateBytes(doc: Y.Doc): number {
+  const writer = writers.get(doc);
+  if (!writer) {
+    let bytes = 0;
+    for (const id of recordIds(doc)) {
+      const record = readRecord(doc, id);
+      if (record) bytes += id.length + metaBytes(doc, id) + recordBytes(record) + 64;
+    }
+    return bytes;
+  }
+  const full = Y.encodeStateVector(doc);
+  const without = Y.decodeStateVector(full);
+  without.delete(writer.client);
+  const structs = Y.encodeStateAsUpdate(doc, Y.encodeStateVector(without)).byteLength - Y.encodeStateAsUpdate(doc, full).byteLength;
+  // S's delete-set entry: its client, its range count and each deleted run's clock and length.
+  let deletes = 0;
+  let ranges = 0;
+  let from = -1;
+  let len = 0;
+  for (const struct of [...(doc.store.clients.get(writer.client) ?? []), null]) {
+    if (struct?.deleted) {
+      if (from < 0) from = struct.id.clock;
+      len += struct.length;
+    } else if (from >= 0) {
+      deletes += varUintBytes(from) + varUintBytes(len);
+      ranges += 1;
+      from = -1;
+      len = 0;
+    }
+  }
+  return structs + (ranges ? varUintBytes(writer.client) + varUintBytes(ranges) + deletes : 0);
+}
+
 export function recordIds(doc: Y.Doc): string[] {
   return [...doc.getMap(SUGGESTIONS).keys()];
 }
 
-/** Call inside a SUGGESTIONS_ORIGIN transaction. */
+/** Open records, oldest first; only `author`'s when given. */
+export function openRecords(body: Y.Doc, author?: string): SuggestionRecord[] {
+  const records: SuggestionRecord[] = [];
+  for (const id of recordIds(body)) {
+    const record = readRecord(body, id);
+    if (record && record.meta.status === 'open' && (author === undefined || record.meta.author === author)) records.push(record);
+  }
+  return records.sort((a, b) => a.meta.createdAt - b.meta.createdAt || (a.meta.id < b.meta.id ? -1 : 1));
+}
+
+/** Call inside writeSuggestions. */
 export function createRecord(doc: Y.Doc, meta: RecordMeta): void {
   const map = new Y.Map<unknown>();
   doc.getMap(SUGGESTIONS).set(meta.id, map);
@@ -43,7 +268,7 @@ export function createRecord(doc: Y.Doc, meta: RecordMeta): void {
   map.set('parts', new Y.Array<DeletePart>());
 }
 
-/** Call inside a SUGGESTIONS_ORIGIN transaction. */
+/** Call inside writeSuggestions. */
 export function patchMeta(doc: Y.Doc, id: string, patch: Partial<RecordMeta>): RecordMeta {
   const map = recordMap(doc, id);
   const meta = readMeta(doc, id);
@@ -62,13 +287,19 @@ export function partsOf(doc: Y.Doc, id: string): Y.Array<DeletePart> {
   return recordMap(doc, id)!.get('parts') as Y.Array<DeletePart>;
 }
 
-/** Closes a record: the status, who and when, and its ops and parts cleared, in one server transaction. */
+/**
+ * Closes a record: the status, who and when, and its ops and parts cleared, in one server transaction. The ingest
+ * hears of it in the same turn (an accepted record's leases are spent, design §4.3).
+ */
 export function closeRecord(doc: Y.Doc, id: string, patch: Partial<RecordMeta>): void {
-  doc.transact(() => {
-    patchMeta(doc, id, patch);
+  let meta: RecordMeta | null = null;
+  writeSuggestions(doc, () => {
+    meta = patchMeta(doc, id, patch);
     const ops = opsOf(doc, id);
     const parts = partsOf(doc, id);
     ops.delete(0, ops.length);
     parts.delete(0, parts.length);
-  }, SUGGESTIONS_ORIGIN);
+  });
+  const closed = meta as RecordMeta | null;
+  if (closed) for (const listener of closedListeners.get(doc) ?? []) listener(id, closed);
 }
