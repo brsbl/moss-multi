@@ -482,6 +482,9 @@ it('detaches a socket that stays open and silent while every tick runs late, onc
   const fresh = latest();
   expect(fresh, 'it reconnects').not.toBe(socket);
   fresh.open();
+  // The backlog replays on the server's step 1 (comments.md §6).
+  serverStep1(fresh, Y.encodeStateVector(new Y.Doc()));
+  await vi.advanceTimersByTimeAsync(1_000);
   expect(sentTitle(fresh), 'the reconnect replays the unacked edit').toBe('kept');
   expect(session.state.unacked).toBe(true);
 });
@@ -548,6 +551,9 @@ it('detaches an outbox stalled at its budget with writes still queued and conver
   const fresh = latest();
   expect(fresh).not.toBe(socket);
   fresh.open();
+  // The backlog replays on the server's step 1 (comments.md §6).
+  serverStep1(fresh, Y.encodeStateVector(new Y.Doc()));
+  await vi.advanceTimersByTimeAsync(1_000);
   expect(fresh.sent.some((frame) => writeOf(frame) !== null), 'the ledger replays on the fresh socket').toBe(true);
   // Transport restored: a DocDO that held only the peers' updates applies what the fresh socket sends, and acks that.
   const server = new Y.Doc();
