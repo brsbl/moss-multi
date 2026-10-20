@@ -241,6 +241,8 @@ export class Composite {
     for (const step of this.#chain.splice(keep)) for (const doc of step.own) doc.destroy();
     const last = this.#chain.at(-1);
     let doc = last?.state ? hydrate(this.body, last.state) : hydrate(this.body);
+    // A checkpoint holds B as it was: B's later writes (only to the records, or the chain would be stale) catch it up.
+    if (last?.state) Y.applyUpdate(doc, Y.encodeStateAsUpdate(this.body, Y.encodeStateVector(doc)));
     for (const record of records.slice(keep)) {
       const prev = this.#chain.at(-1);
       const step: Step = {

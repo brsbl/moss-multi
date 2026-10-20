@@ -157,7 +157,7 @@ export function suggestedText(record: SuggestionRecord, body?: Y.Doc | null): st
   };
   if (body) {
     const root = docs.get(BODY_DOC)?.doc.share.get('root');
-    if (root) walkBody(root);
+    if (root) walkBody(root as Y.AbstractType<unknown>);
     flush();
     for (const id of payloads) walkPayload(id);
   }
