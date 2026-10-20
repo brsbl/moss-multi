@@ -549,34 +549,38 @@ const mossPath = (text: string): string =>
 /** The same rules, liberally: every default-ignorable character goes and every space separator becomes a plain space. */
 const looseSpaces = (text: string): string => text.replace(/\p{Default_Ignorable_Code_Point}/gu, '').replace(/\p{Zs}/gu, ' ');
 
+/** At most this many distinct decoded forms of one text; past it the text's folder is fully tainted instead. */
+const FORMS_PER_TEXT = 128;
+
 /**
- * Calls `visit` with `text` and every form a reader could decode it to: up to three rounds of entities, percent and
- * backslash escapes, moss's exact path rules and their liberal superset, then each form also compatibility-folded.
+ * Calls `visit` with `text` and every form a reader could decode it to, to a fixed point: entities, percent and
+ * backslash escapes, moss's exact path rules and their liberal superset, in any order and any number of times, every
+ * intermediate form kept, each also compatibility-folded (a name is case- and NFC-folded when it is taken). False when
+ * the text has more than FORMS_PER_TEXT forms: the caller then taints its whole folder.
  */
-function decodedForms(text: string, visit: (form: string) => void): void {
-  // Forms are remembered by hash and only the previous round's are held, so a long text costs little memory.
+function decodedForms(text: string, visit: (form: string) => void): boolean {
+  // Forms are remembered by hash, so only the forms still to decode are held.
   const seen = new Set<string>();
+  const queue: string[] = [];
   const fresh = (form: string): boolean => {
     const key = sha256Hex(form);
-    if (seen.has(key)) return false;
+    if (seen.has(key)) return true;
+    if (seen.size >= FORMS_PER_TEXT) return false;
     seen.add(key);
     visit(form);
     const folded = form.normalize('NFKC');
-    if (folded !== form && !seen.has(sha256Hex(folded))) visit(folded);
+    if (folded !== form) visit(folded);
+    queue.push(form);
     return true;
   };
-  fresh(text);
-  let frontier = [text];
-  for (let round = 0; round < 3 && frontier.length > 0; round += 1) {
-    const next: string[] = [];
-    for (const form of frontier) {
-      for (const decode of [decodeEntities, decodePercent, unescapeMarkdown, mossPath, looseSpaces]) {
-        const decoded = decode(form);
-        if (fresh(decoded) && round < 2) next.push(decoded);
-      }
+  if (!fresh(text)) return false;
+  while (queue.length > 0) {
+    const form = queue.pop()!;
+    for (const decode of [decodeEntities, decodePercent, unescapeMarkdown, mossPath, looseSpaces]) {
+      if (!fresh(decode(form))) return false;
     }
-    frontier = next;
   }
+  return true;
 }
 
 const MEDIA_END = new RegExp(`\\.(?:${Object.keys(MEDIA_TYPES).join('|')})(?![\\p{L}\\p{N}\\p{M}_])`, 'giu');
@@ -643,13 +647,13 @@ function namesIn(root: string, folder: string, texts: (Uint8Array | string | und
   const names = new Set<string>();
   for (const text of texts) {
     if (text === undefined) continue;
-    decodedForms(typeof text === 'string' ? text : Buffer.from(text).toString('utf8'), (form) => {
+    const decoded = decodedForms(typeof text === 'string' ? text : Buffer.from(text).toString('utf8'), (form) => {
       if (names.size > NAMES_PER_TEXT) return;
       mediaTokens(form, (name) => names.add(name));
       const folded = fold(form);
       for (const name of present) if (folded.includes(name)) names.add(name);
     });
-    if (names.size > NAMES_PER_TEXT) return new Set([ALL]);
+    if (!decoded || names.size > NAMES_PER_TEXT) return new Set([ALL]);
   }
   return names;
 }
@@ -876,23 +880,26 @@ export function taintAdopted(root: string, rel: string, gone: Iterable<string>):
 }
 
 /** Makes sure the store exists before a pass tracks anything: an empty one for a workspace that tracks no doc yet. */
-export function ensureTaintStore(root: string): void {
+export function ensureTaintStore(root: string): Store | null {
   try {
-    withTaintLock(root, () => {
+    return withTaintLock(root, () => {
       const store = loadTaint(root);
       if (store.fresh) writeInside(root, join(STATE_DIR, TAINT_FILE), serializeTaint(store, []), store.raw ? sha256Hex(store.raw) : null, true);
+      return store;
     });
   } catch {
     // Read again (and rebuilt) by every check, and a write it blocks fails closed.
+    return null;
   }
 }
 
 /**
  * Why the media `name` beside the note `rel` must not upload as far as the store goes (the server showed it in that
- * folder, the folder is fully tainted, or the store could not be rebuilt in full), or null; read once per call.
+ * folder, the folder is fully tainted, or the store could not be rebuilt in full), or null; read once per call. A
+ * store rebuilt here is saved, so a file added after a rebuild completes is not taken for one the rebuild found.
  */
 export function taintCheck(root: string): (rel: string, name: string) => string | null {
-  const { taint, incomplete } = loadTaint(root);
+  const { taint, incomplete } = ensureTaintStore(root) ?? loadTaint(root);
   return (rel, name) => {
     if (incomplete !== null) return `moss-multi lost its record of the media names the server showed and cannot rebuild it in full (${incomplete}), so nothing uploads until it can`;
     const held = taint.get(folderKey(dirname(rel)));
