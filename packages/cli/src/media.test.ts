@@ -743,15 +743,15 @@ describe('the folder taint store follows edited moves, Moss\'s exact path rules 
 
   it('a fullwidth name Moss resolves after stripping only invisible characters uploads nothing once the editor saves it', async () => {
     write('plan.md', 'The plan.\n');
-    write(join('assets', 'ｓｅｃｒｅｔ.png'), png('fullwidth'));
+    write(join('assets', '\uFF53\uFF45\uFF43\uFF52\uFF45\uFF54.png'), png('fullwidth'));
     expect((await cli(['init'])).code).toBe(0);
     const first = await syncJson();
     const plan = createdId(first.results, 'plan.md')!;
-    server.content.set(plan, `${server.content.get(plan)!.trimEnd()}\n\n![x](assets/ｓｅｃ​ｒｅｔ.png)\n`);
+    server.content.set(plan, `${server.content.get(plan)!.trimEnd()}\n\n![x](assets/\uFF53\uFF45\uFF43\u200B\uFF52\uFF45\uFF54.png)\n`);
     await syncJson();
     const injected = readFileSync(join(dir, 'plan.md'), 'utf8');
-    expect(injected).toContain('ｃ​ｒ');
-    write('plan.md', `${injected.replace('ｃ​ｒ', 'ｃｒ').trimEnd()}\n\nMy own line.\n`);
+    expect(injected).toContain('\uFF43\u200B\uFF52');
+    write('plan.md', `${injected.replace('\uFF43\u200B\uFF52', '\uFF43\uFF52').trimEnd()}\n\nMy own line.\n`);
     const saved = await syncJson();
     await syncJson();
     expect(held(plan), JSON.stringify(saved.results)).toEqual([]);

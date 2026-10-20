@@ -17,7 +17,7 @@ import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.t
 import { evaluateScope, noteUnit, readScope, type ScopeView, titleKey } from './scope.ts';
 import {
   carryTaint, confined, type DocMeta, ensureTaintStore, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase,
-  recordPull, recordSynced, renameInside, sameFile, scopedNest, sha256Hex, taintNote, trackedMetas, writeConfined, writeMeta,
+  recordPull, recordSynced, renameInside, sameFile, scopedNest, sha256Hex, taintAdopted, taintNote, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
 export type SyncAction =
@@ -469,6 +469,8 @@ export interface AdoptOptions {
   titleLine?: boolean;
   /** Keep the file's name instead of taking the doc's filename (`add`). */
   keepName?: boolean;
+  /** Folders of tracked notes whose files vanished this pass; every tracked note missing now when absent. */
+  gone?: string[];
 }
 
 /**
@@ -477,6 +479,10 @@ export interface AdoptOptions {
  * title line names the doc, its comments.json comes too, and the file is left in moss form.
  */
 export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
+  const { root } = ctx;
+  // The note may be a moved or copied one: what the server showed in other folders stays the server's in this one,
+  // recorded before the doc exists, so a failure here leaves the file untracked and tried again.
+  taintAdopted(root, rel, options.gone ?? trackedMetas(root).filter((meta) => !exists(root, meta.file)).map((meta) => dirname(meta.file)));
   const { settle, ...adopted } = await createFrom(ctx, rel, options);
   // Its media go up from the file as its user left it, before any text from the server is written into it.
   const media = await syncMedia({ ...ctx, force: false }, adopted.doc.id, true);
@@ -647,6 +653,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   const nested = new Set(metas.filter((meta) => scopedNest(root, meta.file) !== null).map((meta) => meta.docId));
   const { held, heldFiles } = followLocalRenames(root, metas.filter((meta) => !nested.has(meta.docId) && admitted(meta.file)), untracked, results);
   metas = trackedMetas(root);
+  // Tracked files gone and not followed: a note adopted below may be one of them, moved and edited (taintAdopted).
+  const gone = metas.filter((meta) => !exists(root, meta.file)).map((meta) => dirname(meta.file));
 
   for (const tracked of metas) {
     if (held.has(tracked.docId) || nested.has(tracked.docId) || scopedNest(root, tracked.file) !== null || !admitted(tracked.file)) continue;
@@ -682,7 +690,7 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
     if (stopped()) return results;
     touch();
     try {
-      const adopted = await adopt(ctx, rel);
+      const adopted = await adopt(ctx, rel, { gone });
       results.push(adopted.result, ...adopted.media);
     } catch (error) {
       if (stopped(error)) return results;

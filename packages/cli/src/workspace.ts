@@ -313,11 +313,19 @@ function stateRel(docId: string, name?: string): string {
   return name ? join(STATE_DIR, docId, name) : join(STATE_DIR, docId);
 }
 
-export function readMeta(root: string, docId: string): DocMeta | null {
+/** A doc's record, or null when there is none or it does not parse; `strict`, one that cannot be read throws instead. */
+export function readMeta(root: string, docId: string, strict = false): DocMeta | null {
   const path = noLinks(root, stateRel(docId, 'meta.json'));
   if (!lstat(path)) return null;
+  let raw: string;
   try {
-    const meta = JSON.parse(readFileSync(path, 'utf8')) as DocMeta;
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return null;
+  }
+  try {
+    const meta = JSON.parse(raw) as DocMeta;
     if (meta.docId !== docId || typeof meta.file !== 'string' || typeof meta.baseHash !== 'string') return null;
     // A prior record names a state file: only the exact form the CLI writes is taken, so none can name another path.
     const records: unknown[] = Array.isArray(meta.priors) ? meta.priors : [];
@@ -513,7 +521,7 @@ const NAMED_ENTITIES: Record<string, string> = {
   plus: '+', comma: ',', semi: ';', quest: '?', ast: '*', verbar: '|', vert: '|', commat: '@', dollar: '$', hat: '^', lcub: '{', rcub: '}',
 };
 const decodeEntities = (text: string): string =>
-  text.replace(/&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});?/g, (whole, body: string) => {
+  text.replace(/&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});?/g, (whole, body: string) => {
     if (body.startsWith('#')) {
       const code = /^#[xX]/.test(body) ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
       return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
@@ -524,33 +532,50 @@ const decodePercent = (text: string): string =>
   text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => Buffer.from(run.replace(/%/g, ''), 'hex').toString('utf8'));
 const unescapeMarkdown = (text: string): string => text.replace(/\\([!-/:-@[-`{-~])/g, '$1');
 /**
- * What moss does to a local asset path before it opens the file (vendor asset-url.ts normalizeLocalAssetPathForDisplay,
- * markdown-image.ts normalizeLocalImageSrc): invisible characters go, every other space becomes a plain one. Liberally:
- * every default-ignorable character, every space separator, and compatibility forms.
+ * Exactly what moss does to a local asset path before it opens the file (vendor asset-url.ts
+ * normalizeLocalAssetPathForDisplay): U+200B-U+200D and U+FEFF go, numeric entities of any length and &nbsp; are
+ * decoded, and the spaces it lists become a plain one. No compatibility folding.
  */
-const mossPath = (text: string): string => text.replace(/\p{Default_Ignorable_Code_Point}/gu, '').replace(/\p{Zs}/gu, ' ').normalize('NFKC');
+const mossPath = (text: string): string =>
+  text
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/&(#\d+|#x[\da-fA-F]+|nbsp);/gi, (whole, body: string) => {
+      const lower = body.toLowerCase();
+      if (lower === 'nbsp') return '\u00A0';
+      const code = lower.startsWith('#x') ? Number.parseInt(lower.slice(2), 16) : Number.parseInt(lower.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    })
+    .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
+/** The same rules, liberally: every default-ignorable character goes and every space separator becomes a plain space. */
+const looseSpaces = (text: string): string => text.replace(/\p{Default_Ignorable_Code_Point}/gu, '').replace(/\p{Zs}/gu, ' ');
 
-/** Calls `visit` with `text` and every form a reader could decode it to: entities, percent and backslash escapes, moss's path rules. */
+/**
+ * Calls `visit` with `text` and every form a reader could decode it to: up to three rounds of entities, percent and
+ * backslash escapes, moss's exact path rules and their liberal superset, then each form also compatibility-folded.
+ */
 function decodedForms(text: string, visit: (form: string) => void): void {
-  const seen = new Set([text]);
+  // Forms are remembered by hash and only the previous round's are held, so a long text costs little memory.
+  const seen = new Set<string>();
+  const fresh = (form: string): boolean => {
+    const key = sha256Hex(form);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    visit(form);
+    const folded = form.normalize('NFKC');
+    if (folded !== form && !seen.has(sha256Hex(folded))) visit(folded);
+    return true;
+  };
+  fresh(text);
   let frontier = [text];
-  visit(text);
   for (let round = 0; round < 3 && frontier.length > 0; round += 1) {
     const next: string[] = [];
     for (const form of frontier) {
-      for (const decode of [decodeEntities, decodePercent, unescapeMarkdown, mossPath]) {
+      for (const decode of [decodeEntities, decodePercent, unescapeMarkdown, mossPath, looseSpaces]) {
         const decoded = decode(form);
-        if (seen.has(decoded)) continue;
-        seen.add(decoded);
-        next.push(decoded);
-        visit(decoded);
+        if (fresh(decoded) && round < 2) next.push(decoded);
       }
     }
     frontier = next;
-  }
-  for (const form of frontier) {
-    const last = mossPath(form);
-    if (!seen.has(last)) visit(last);
   }
 }
 
@@ -829,6 +854,27 @@ export function carryTaint(root: string, from: DocMeta, rel: string, texts: (Uin
   });
 }
 
+/**
+ * Records, before the untracked note `rel` is adopted and its media may upload, every name its text could name that
+ * the server showed in any other folder (one fully tainted counts for every name), and the whole taint of each folder
+ * in `gone`, the folders of tracked notes whose files vanished: the note may be one of them, moved and edited, or a
+ * copy. Text the server showed elsewhere never makes a name uploadable by leaving its folder.
+ */
+export function taintAdopted(root: string, rel: string, gone: Iterable<string>): void {
+  const folder = dirname(rel);
+  const to = folderKey(folder);
+  const text = readConfined(root, rel);
+  addTaint(root, (current) => {
+    const names = namesIn(root, folder, [text]);
+    const carried = new Set<string>();
+    for (const from of gone) for (const name of current.get(folderKey(from)) ?? []) carried.add(name);
+    const elsewhere = new Set<string>();
+    for (const [key, held] of current) if (key !== to) for (const name of held) elsewhere.add(name);
+    for (const name of names) if (name === ALL || elsewhere.has(ALL) || elsewhere.has(name)) carried.add(name);
+    return new Map([[to, carried]]);
+  });
+}
+
 /** Makes sure the store exists before a pass tracks anything: an empty one for a workspace that tracks no doc yet. */
 export function ensureTaintStore(root: string): void {
   try {
@@ -858,8 +904,9 @@ export function taintCheck(root: string): (rel: string, name: string) => string 
 /**
  * The store rebuilt closed: for every tracked doc's folder and every folder holding notes or an assets/ folder, every
  * name in those assets/ folders, and every name the note files, conflict files, bases, prior texts, titles and media
- * records there could name. A doc whose record cannot be read counts for every folder. Anything that exists and cannot
- * be read makes it `incomplete`: nothing uploads, and it is rebuilt again until it can be read.
+ * records there could name; every folder is walked, hidden ones included. A doc whose record does not parse counts for
+ * every folder. Anything that exists and cannot be read (a record, a note, a folder) makes it `incomplete`: nothing
+ * uploads, and it is rebuilt again until it can be read.
  */
 function rebuildTaint(root: string): { taint: Taint; incomplete: string | null } {
   const texts: { folder: string | null; text: Uint8Array | string }[] = [];
@@ -890,7 +937,12 @@ function rebuildTaint(root: string): { taint: Taint; incomplete: string | null }
     let meta: DocMeta | null = null;
     let own: (Uint8Array | string)[] = [];
     try {
-      meta = readMeta(root, id);
+      // A record that exists and cannot be read leaves the rebuild incomplete; one that does not parse counts everywhere.
+      meta = readMeta(root, id, true);
+    } catch (error) {
+      unread(stateRel(id, 'meta.json'), error);
+    }
+    try {
       own = stateTexts(root, id);
     } catch (error) {
       unread(stateRel(id), error);
@@ -924,22 +976,24 @@ function rebuildTaint(root: string): { taint: Taint; incomplete: string | null }
     }
     if (entries.some((entry) => entry.name === ASSETS || /\.md$/i.test(entry.name))) folders.add(dir);
     for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
       const rel = join(dir, entry.name);
+      // Every folder a command could write a note into is scanned, hidden ones and nested workspaces included; only a
+      // state directory holds no notes.
       if (entry.isDirectory()) {
-        if (entry.name === 'node_modules') continue;
+        if (entry.name.toLowerCase() === STATE_DIR) continue;
+        walk(rel);
+      } else if (entry.isFile() && /\.(md|rej)$/i.test(entry.name)) {
+        let text: Buffer;
         try {
-          if (['.git', STATE_DIR].some((marker) => lstat(join(root, rel, marker)))) continue;
+          text = readFileSync(join(root, rel));
         } catch (error) {
           unread(rel, error);
           continue;
         }
-        walk(rel);
-      } else if (entry.isFile() && /\.(md|rej)$/i.test(entry.name)) {
         try {
-          texts.push({ folder: dir, text: readFileSync(join(root, rel)) });
-        } catch (error) {
-          unread(rel, error);
+          add(dir, namesIn(root, dir, [text]));
+        } catch {
+          // Its assets/ cannot be listed: incomplete below.
         }
       }
     }

@@ -156,8 +156,11 @@ retrying; launchd retries every 10 seconds until you fix it.
   `.moss-multi/served-names.json` every media name that text could refer to. A name recorded there is only ever
   downloaded from that folder, so a collaborator cannot make your replica upload a file you keep. The limit: once the
   server has shown a name in a folder, a file of that name never uploads from it again. To change an image, save it
-  under a new name. A note moved to another folder takes its old folder's names with it. A text that names more than
-  10,000 media files makes its whole folder download-only, and sync reports that on each upload it skips. If
-  `served-names.json` is lost or damaged, sync rebuilds it from every note, base and file present, so the images
-  already in those folders upload only under new names after that. If part of the workspace cannot be read during the
-  rebuild, nothing uploads anywhere until it can, and sync reports which path it could not read.
+  under a new name. A note moved to another folder takes its old folder's names with it, even when you edit it before
+  the next sync. When sync starts tracking a new note (a moved, copied or new file), a media name in it that the server
+  showed in any other folder does not upload from the new note either, so give a new image a name of its own. A text
+  that names more than 10,000 media files makes its whole folder download-only, and sync reports that on each upload
+  it skips. If `served-names.json` is lost or damaged, sync rebuilds it from every note (hidden ones included), base
+  and file present, so the images already in those folders upload only under new names after that. If part of the
+  workspace cannot be read during the rebuild, nothing uploads anywhere until it can, and sync reports which path it
+  could not read.
