@@ -36,7 +36,8 @@ function integrations<T>(run: () => T): { count: number; result: T } {
     return own.apply(this, args);
   };
   try {
-    return { count, result: run() };
+    const result = run();
+    return { count, result };
   } finally {
     proto.integrate = own;
   }
