@@ -481,6 +481,8 @@ export class SuggestFork {
   readonly #applied = new Map<string, number>();
   #inflight: Pending[] = [];
   #waiting: Pending[] = [];
+  /** Blocks exported before a body update removed owed input beneath them (#rescue), with the frames they hold. */
+  #rescued: { block: Block; text: string; owed: Pending[] }[] = [];
   readonly #listeners = new Set<(event: ForkEvent) => void>();
   readonly #closedSeen = new Set<string>();
   readonly #merged = new Set<string>();
@@ -1172,6 +1174,7 @@ export class SuggestFork {
 
   readonly #fromBody = (update: Uint8Array): void => {
     if (!this.#ready || this.#disposed) return;
+    this.#rescue(update);
     Y.applyUpdate(this.doc, update, SHIM_BODY_APPLY);
     let changed = false;
     const queue = [...new Set([...this.#mine.values(), ...[...this.#parts.values()].map((part) => part.record)])];
@@ -1193,6 +1196,13 @@ export class SuggestFork {
       if (meta.status === 'accepted') {
         // Accepted text is body text now; the next edit writes a fresh group.
         if (this.#leases[0]?.record === record) this.#rotate();
+        if (!meta.kept) continue;
+        // Accept kept what the record changed only in item identity (T5.S14): B holds the originals where F held the
+        // record's copies, and applying B removed the copies from F. F rebuilds, which would drop any frame still owed
+        // (to this record or another), so an owed frame is refused loudly with its block offered back (I6).
+        const edits = [...this.#inflight, ...this.#waiting].some(({ request }) => request.t !== 'suggest-lease');
+        if (edits) this.#halt('record-closed');
+        else if (!this.#closed) this.#emit({ type: 'rebuild' });
         continue;
       }
       const owes = [...this.#inflight, ...this.#waiting].some(({ request }) =>
@@ -1280,12 +1290,72 @@ export class SuggestFork {
     if (this.#closed) return;
     this.#closed = true;
     const entries = [...(refused ? [refused] : []), ...this.#inflight, ...this.#waiting];
+    const rescued = this.#rescued.filter(({ owed }) => owed.some((entry) => entries.includes(entry)));
+    this.#rescued = [];
+    const now = this.#exported(entries);
+    // A block as it was before a body update removed owed input beneath it; as it is now too only where a later
+    // frame changed it.
+    const later = new Set(touchedBlocks(this.doc, entries.filter((entry) => entry.op && !rescued.some(({ owed }) => owed.includes(entry))).map((entry) => entry.op!)));
+    const unsaved: string[] = [];
+    for (const [block, text] of now) {
+      const was = rescued.filter((each) => each.block === block);
+      for (const each of was) unsaved.push(each.text);
+      if (!was.length || later.has(block)) unsaved.push(text);
+    }
+    for (const was of rescued) if (!now.some(([block]) => block === was.block)) unsaved.push(was.text);
+    this.#emit({ type: 'refused', reason, unsaved: [...new Set(unsaved)].filter((text) => text.trim().length > 0) });
+    // Refused before its first lease (a note with no room): F still shows the note, read-only.
+    if (!this.#ready) this.#start();
+  }
+
+  /** Each block of F holding a change of `entries` the server never acknowledged, with its export. */
+  #exported(entries: readonly Pending[]): [Block, string][] {
     const ops = entries.flatMap((entry) => (entry.op ? [entry.op] : []));
     const spans = entries.flatMap(({ request }) => (request.t === 'suggest-delete' ? request.part.targets : []));
     const blocks = touchedBlocks(this.doc, ops, spans);
-    const unsaved = this.options.exportBlocks?.(blocks) ?? blocks.map((block) => blockText(this.doc, block));
-    this.#emit({ type: 'refused', reason, unsaved: unsaved.filter((text) => text.trim().length > 0) });
-    // Refused before its first lease (a note with no room): F still shows the note, read-only.
-    if (!this.#ready) this.#start();
+    const texts = this.options.exportBlocks?.(blocks) ?? blocks.map((block) => blockText(this.doc, block));
+    return blocks.map((block, i) => [block, texts[i] ?? blockText(this.doc, block)]);
+  }
+
+  /**
+   * Before body `update` enters F: where it removes an item that owed input sits beneath (an accept that keeps removes
+   * the record's restored copies with all they hold), the blocks are exported as they are now, to be offered back
+   * if the frame is refused (I6), since F will no longer hold that input.
+   */
+  #rescue(update: Uint8Array): void {
+    if (this.#closed) return;
+    const owed = [...this.#inflight, ...this.#waiting].filter(({ op }) => op?.doc === BODY_DOC);
+    if (owed.length === 0) {
+      this.#rescued = [];
+      return;
+    }
+    let removes: ReturnType<typeof Y.decodeUpdate>['ds'];
+    try {
+      removes = Y.decodeUpdate(update).ds;
+    } catch {
+      return;
+    }
+    if (removes.clients.size === 0) return;
+    const store = this.doc.store;
+    const beneath = (entry: Pending) => {
+      let decoded: ReturnType<typeof Y.decodeUpdate>;
+      try {
+        decoded = Y.decodeUpdate(entry.op!.update);
+      } catch {
+        return false;
+      }
+      for (const struct of decoded.structs) {
+        if (!(struct instanceof Y.Item) || struct.id.clock >= Y.getState(store, struct.id.client)) continue;
+        const item = Y.getItem(store, struct.id);
+        if (!(item instanceof Y.Item)) continue;
+        for (let holder = (item.parent as Y.AbstractType<unknown>)._item; holder; holder = (holder.parent as Y.AbstractType<unknown>)._item) {
+          if (Y.isDeleted(removes, holder.id)) return true;
+        }
+      }
+      return false;
+    };
+    const hit = owed.filter(beneath);
+    if (hit.length === 0) return;
+    for (const [block, text] of this.#exported(hit)) this.#rescued.push({ block, text, owed: hit });
   }
 }

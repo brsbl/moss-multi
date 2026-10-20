@@ -4,7 +4,7 @@
 // falls back to the body when binding C throws; a record closed under the author offers back every unacked block,
 // and typing after the remount lands. Payload edits travel per payload doc under the lease and stay proposals.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { $getRoot } from 'lexical';
+import { $createRangeSelection, $getRoot, $setSelection } from 'lexical';
 import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -15,7 +15,7 @@ import { Composite, GROUP_IDLE_MS, reviewDoc, SuggestFork, type ForkEvent } from
 import { bindEditor } from './fork-shim.ts';
 import { createRecord, opsOf, readMeta, readRecord, recordIds, writeSuggestions } from './records.ts';
 import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
-import { CENSUS, codeBlock, deterministicIds, EDITOR, exported, insertBlock, LEASED, resetIds, seededBody, select, spansOfText, SUGGESTER, type Step } from './test-support.ts';
+import { CENSUS, codeBlock, deterministicIds, EDITOR, exported, insertBlock, LEASED, resetIds, seededBody, select, spansOfText, SUGGESTER, textNode, type Step } from './test-support.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -695,6 +695,42 @@ describe('T5.B1 a resume of many leases goes in chunks @p:mean-2 @p:tech-7', () 
       link.deliver(m.fork);
       expect(ops(), 'typing after the resume lands').toBe(groups + 2);
       expect(link.replies.filter((reply) => reply.t === 'suggest-refused')).toEqual([]);
+    } finally {
+      m.dispose();
+    }
+  });
+});
+
+describe('T5.S14 an accept that keeps never loses typing still in flight @p:mean-2 @p:tech-7 @p:R17', () => {
+  it('typing inside a list item an undone merge restored, unacknowledged when accept keeps the list, is offered back whole', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      // Forward-Delete at the end of "item a" merges "item b" into it; the undo restores "item b" as a copy.
+      m.act(() => {
+        const selection = $createRangeSelection();
+        selection.anchor.set(textNode('item a').getKey(), 'item a'.length, 'text');
+        selection.focus.set(textNode('item b').getKey(), 0, 'text');
+        $setSelection(selection);
+        selection.removeText();
+      });
+      m.act('undo');
+      m.act(() => select('join tail', 10).insertText(' Q'));
+      link.deliver(m.fork);
+      const [record] = recordIds(live);
+      // Not answered yet: the frame is in flight when the editor accepts.
+      m.act(() => select('item b', 4).insertText('LOST'));
+      expect(m.fork.owes).toBe(true);
+      const preview = previewRecord(live, record);
+      if (!preview.ok) throw new Error(`preview refused: ${preview.reason}`);
+      expect(acceptRecord(live, record, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+      expect(readMeta(live, record)?.kept, 'accept kept the list the undo restored').toBe(true);
+      const refusals = m.events.filter((event): event is Extract<ForkEvent, { type: 'refused' }> => event.type === 'refused');
+      expect(refusals, 'refused loudly, once').toHaveLength(1);
+      expect(m.fork.closed, 'input closes').toBe(true);
+      expect(refusals[0].unsaved.join('\n'), 'the typed text is offered back where it was typed').toContain('itemLOST b');
+      expect(refusals[0].unsaved.filter((text) => !text.includes('LOST')), 'and the block is not offered again without it').toEqual([]);
     } finally {
       m.dispose();
     }
