@@ -5,7 +5,7 @@
 // enters F or C only after G1–G3 and the headless bind check pass on scratch copies.
 import * as Y from 'yjs';
 import {
-  BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, type Inserted, type RecordOp, type SuggestionRecord,
+  BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, structsIn, type Inserted, type RecordOp, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -159,26 +159,97 @@ function bodyPayload(body: Y.Doc, id: string, named: () => ReadonlyMap<string, u
   return host.awaiting(id) ? undefined : doc;
 }
 
-/** The composite C, built on demand from B's records. Bind-check verdicts are kept per record and op count. */
+/** One open record's place in C's checkpoint chain: what it was built from, and C after it. */
+interface Step {
+  id: string;
+  /** The record's stored ops, compared by identity: an open record's ops are only ever appended. */
+  ops: readonly RecordOp[];
+  clients: number[];
+  outcome: 'valid' | 'broken' | 'waiting';
+  /** Each payload the record read from B (null: one B neither names nor holds, so it started empty). */
+  bases: Map<string, Y.Doc | null>;
+  /** C's body after the record, encoded; null while no record up to it is valid (C is B). */
+  state: Uint8Array | null;
+  /** The payload docs C holds after the record. */
+  payloads: Map<string, Y.Doc>;
+  /** The payload docs this step made, destroyed with it. */
+  own: Y.Doc[];
+}
+
+const sameClients = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((client, i) => client === b[i]);
+
+/** True when `tr` wrote or removed anything in `doc` outside `suggestions` (a GC struct counts: its parent is unknown). */
+function touchesBody(doc: Y.Doc, tr: Y.Transaction): boolean {
+  const records = doc.share.get(SUGGESTIONS);
+  const outside = (struct: Y.Item | Y.GC) => {
+    if (!(struct instanceof Y.Item)) return true;
+    let type = struct.parent as Y.AbstractType<unknown> | null;
+    while (type instanceof Y.AbstractType) {
+      if (type === records) return false;
+      type = (type._item?.parent ?? null) as Y.AbstractType<unknown> | null;
+    }
+    return true;
+  };
+  for (const [client, after] of tr.afterState) {
+    for (const struct of structsIn(doc.store, client, tr.beforeState.get(client) ?? 0, after)) if (outside(struct)) return true;
+  }
+  for (const [client, spans] of (tr.deleteSet as unknown as { clients: Map<number, { clock: number; len: number }[]> }).clients) {
+    for (const { clock, len } of spans) for (const struct of structsIn(doc.store, client, clock, clock + len)) if (outside(struct)) return true;
+  }
+  return false;
+}
+
+/**
+ * The composite C, built on demand from B's records. Each open record's result is kept as a checkpoint, so a rebuild
+ * reapplies only the records from the first one that changed (ops appended, a record closed, a payload it edits
+ * arriving), starting from the checkpoint before it. A change to B outside the records, or to a B payload a record
+ * read, drops every checkpoint. Bind-check verdicts are kept per record and op count. `dispose` stops watching B.
+ */
 export class Composite {
   readonly #verdicts = new Map<string, { ops: number; ok: boolean }>();
+  readonly #chain: Step[] = [];
+  #stale = true;
+  readonly #watched = new Map<Y.Doc, () => void>();
+  readonly #onBody = (tr: Y.Transaction) => {
+    if (!this.#stale && touchesBody(this.body, tr)) this.#stale = true;
+  };
 
   constructor(
     readonly body: Y.Doc,
     readonly options: { author?: string; check?: BindCheck } = {},
-  ) {}
+  ) {
+    body.on('afterTransaction', this.#onBody);
+  }
 
   build(): Built {
-    const built: Built = { doc: hydrate(this.body), payloads: new Map(), valid: [], broken: [], waiting: [], clients: new Map() };
+    if (this.#stale) this.#reset();
+    this.#stale = false;
     let named: Map<string, unknown> | null = null;
     const names = () => (named ??= regRefs(this.body));
-    for (const record of openRecords(this.body, this.options.author)) {
-      const id = record.meta.id;
+    const records = openRecords(this.body, this.options.author);
+    // The prefix of the chain still current: the same records with the same ops, each reading the same payloads from B
+    // and waiting exactly when it waited.
+    let keep = 0;
+    for (; keep < Math.min(records.length, this.#chain.length); keep++) {
+      const step = this.#chain[keep];
+      const record = records[keep];
+      if (step.id !== record.meta.id || !sameClients(step.clients, record.meta.clients) || step.ops.length !== record.ops.length) break;
+      if (step.ops.some((op, i) => op !== record.ops[i])) break;
+      if (this.#waits(record, this.#chain[keep - 1]?.payloads, names) !== (step.outcome === 'waiting')) break;
+      if ([...step.bases].some(([id, doc]) => (bodyPayload(this.body, id, names) ?? null) !== doc)) break;
+    }
+    for (const step of this.#chain.splice(keep)) for (const doc of step.own) doc.destroy();
+    const last = this.#chain.at(-1);
+    let doc = last?.state ? hydrate(this.body, last.state) : hydrate(this.body);
+    for (const record of records.slice(keep)) {
+      const prev = this.#chain.at(-1);
+      const step: Step = {
+        id: record.meta.id, ops: record.ops, clients: record.meta.clients, outcome: 'waiting', bases: new Map(), state: prev?.state ?? null, payloads: new Map(prev?.payloads), own: [],
+      };
+      this.#chain.push(step);
       // A record editing a payload whose state has not arrived would park; it waits for the payload instead.
-      if (payloadIdsOf(record).some((payload) => !built.payloads.has(payload) && bodyPayload(this.body, payload, names) === undefined)) {
-        built.waiting.push(id);
-        continue;
-      }
+      if (this.#waits(record, prev?.payloads, names)) continue;
+      const id = record.meta.id;
       const check: BindCheck = (scratch, inserted, deleted) => {
         const known = this.#verdicts.get(id);
         if (known && known.ops === record.ops.length) return known.ok;
@@ -186,22 +257,66 @@ export class Composite {
         this.#verdicts.set(id, { ops: record.ops.length, ok });
         return ok;
       };
-      const next = applyForView(built.doc, record, check, (payload) => built.payloads.get(payload) ?? bodyPayload(this.body, payload, names) ?? undefined);
+      const payloadOf = (payload: string) => {
+        const held = step.payloads.get(payload);
+        if (held) return held;
+        const from = bodyPayload(this.body, payload, names) ?? null;
+        step.bases.set(payload, from);
+        if (from) this.#watch(from);
+        return from ?? undefined;
+      };
+      const next = applyForView(doc, record, check, payloadOf);
       if (!next) {
-        built.broken.push(id);
+        step.outcome = 'broken';
         continue;
       }
-      built.doc.destroy();
-      built.doc = next.doc;
-      for (const [payload, doc] of next.payloads) {
-        built.payloads.get(payload)?.destroy();
-        built.payloads.set(payload, doc);
+      step.outcome = 'valid';
+      doc.destroy();
+      doc = next.doc;
+      step.state = Y.encodeStateAsUpdate(doc);
+      for (const [payload, made] of next.payloads) {
+        step.payloads.set(payload, made);
+        step.own.push(made);
       }
-      built.valid.push(id);
-      for (const client of record.meta.clients) built.clients.set(client, id);
     }
+    // The caller owns what it is given: the last doc (never a checkpoint's) and copies of C's payloads.
+    const built: Built = { doc, payloads: new Map(), valid: [], broken: [], waiting: [], clients: new Map() };
+    for (const step of this.#chain) {
+      if (step.outcome === 'valid') {
+        built.valid.push(step.id);
+        for (const client of step.clients) built.clients.set(client, step.id);
+      } else (step.outcome === 'broken' ? built.broken : built.waiting).push(step.id);
+    }
+    for (const [payload, made] of this.#chain.at(-1)?.payloads ?? []) built.payloads.set(payload, hydrate(made));
     attachViewPayloads(this.body, built.doc, built.payloads);
     return built;
+  }
+
+  /** Stops watching B and drops every checkpoint. */
+  dispose(): void {
+    this.body.off('afterTransaction', this.#onBody);
+    this.#reset();
+    this.#stale = true;
+  }
+
+  /** True while a payload `record` edits has not arrived from the server and no record before it wrote that payload. */
+  #waits(record: SuggestionRecord, before: ReadonlyMap<string, Y.Doc> | undefined, names: () => ReadonlyMap<string, unknown>): boolean {
+    return payloadIdsOf(record).some((payload) => !before?.has(payload) && bodyPayload(this.body, payload, names) === undefined);
+  }
+
+  #watch(doc: Y.Doc): void {
+    if (this.#watched.has(doc)) return;
+    const stale = () => {
+      this.#stale = true;
+    };
+    doc.on('update', stale);
+    this.#watched.set(doc, () => doc.off('update', stale));
+  }
+
+  #reset(): void {
+    for (const step of this.#chain.splice(0)) for (const doc of step.own) doc.destroy();
+    for (const stop of this.#watched.values()) stop();
+    this.#watched.clear();
   }
 }
 
@@ -996,7 +1111,9 @@ export class SuggestFork {
     this.#stopArrivals = null;
     if (active) this.#setClient(active.client);
     Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(this.body), SHIM_BODY_APPLY);
-    const built = new Composite(this.body, { author: this.options.me, check: this.options.check }).build();
+    const composite = new Composite(this.body, { author: this.options.me, check: this.options.check });
+    const built = composite.build();
+    composite.dispose();
     destroyView(built);
     const valid = new Set(built.valid);
     for (const record of own) {

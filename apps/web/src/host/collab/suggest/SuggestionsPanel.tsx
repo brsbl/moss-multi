@@ -105,7 +105,7 @@ const previews = createPreviewLoader((docId, id) => call(`/api/docs/${encodeURIC
 
 const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
 
-function SuggestionCard({ docId, record, me, role, active, root, opened }: {
+function SuggestionCard({ docId, record, me, role, active, root, opened, body }: {
   docId: string;
   record: SuggestionRecord;
   me: string | null;
@@ -113,6 +113,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   active: boolean;
   root: Element | null;
   opened: string;
+  body: Y.Doc | null;
 }): ReactNode {
   const { meta } = record;
   const open = meta.status === 'open';
@@ -141,9 +142,9 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   const act = async (action: 'accept' | 'reject' | 'withdraw') => {
     setBusy(true);
     setError(null);
-    const body = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
+    const request = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
     try {
-      const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, body);
+      const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, request);
       if (!result.ok) {
         const reason = String(result.json.error ?? 'refused');
         setError(reasonText(reason));
@@ -210,7 +211,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
                 type="button"
                 className="shrink-0 text-micro text-ink-default underline"
                 onClick={() => {
-                  void navigator.clipboard?.writeText(suggestedText(record)).then(() => setCopied(true), () => setCopied(false));
+                  void navigator.clipboard?.writeText(suggestedText(record, body)).then(() => setCopied(true), () => setCopied(false));
                 }}
               >
                 {copied ? 'Copied' : 'Copy suggested text'}
@@ -249,7 +250,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
 }
 
 /** The panel's cards: the open ones newest first, then the latest reviewed. */
-export function SuggestionList({ docId, open, reviewed, me, role, active, opened = '' }: {
+export function SuggestionList({ docId, open, reviewed, me, role, active, opened = '', body = null }: {
   docId: string;
   open: SuggestionRecord[];
   reviewed: SuggestionRecord[];
@@ -257,6 +258,8 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
   role: Role;
   active: string | null;
   opened?: string;
+  /** The note, so a copied suggestion reads as it stands in it. */
+  body?: Y.Doc | null;
 }): ReactNode {
   // The scroll box the cards' visibility is measured in.
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -271,11 +274,11 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
         </div>
       ) : null}
       {open.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} />
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
       ))}
       {reviewed.length ? <p className="mt-1 px-1 text-micro font-medium uppercase tracking-wide text-ink-faint">Reviewed</p> : null}
       {reviewed.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} />
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
       ))}
     </div>
   );
@@ -319,7 +322,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
           <span className="text-xs font-medium text-ink-default">Suggestions</span>
           {open.length ? <span className="text-micro text-ink-faint">{open.length} open</span> : null}
         </div>
-        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} />
+        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
