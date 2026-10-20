@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 63% done** (158 of 250 planned tasks verified)
+**Overall: 64% done** (159 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 67 / 67 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 23 / 23 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 24 / 24 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -184,6 +184,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T4.Q second pass verified: comments now run on m3's later fixes (upload reader deadline, the j09 pass-through route, read-only controls and folder permissions), with a reader's tabs and Add comment control both exempt in invariant 9 and the full lane green on the m4 head (already counted on 2026-10-14).
 - 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
 - 2026-10-19 — T5.S10 verified: in Suggest mode a paste is Lexical's own paste, admitted whole or refused whole against every suggest limit by what it actually writes, pastes over table cells are refused, undo and redo are admitted the same way, and an undone paste or Enter no longer shows its restored rest as a suggestion.
+- 2026-10-19 — T5.S14 verified: accepting a suggestion no longer applies an identity-only change, so an item replaced by an identical copy keeps its original, its comment anchors and its authorship; accept refuses writes beneath a restored copy with 409, and input a kept accept would bury is offered back first.
 
 ## T1.1s identity audit
 
@@ -722,3 +723,7 @@ Local browser verification remains assigned to the independent checker under the
 - T5.Q second pass (m5 on the later m4 fixes) checker P2: j01-paste-check stall flake is closer to the bound than reported — attempts 1 and 2 of run 39200483704 failed e2e (chromium, pasterace) at e2e/lib/paste.ts:294, attempt 1 at 5395 ms against a 5112 ms bound, and t/T7.P2 failed it at 5029 ms (run 39181829307), so the timing sensitivity spans branches → T3.B27's calibrated stall bounds reaching m5 is the stated fix (same item as the T5.S7 and T5.P lines).
 - T5.Q second pass (m5 on the later m4 fixes) checker P2, owned by m3 (from T3.B17): invariant 9's tab exemption (e2e/lib/detectors.js:91-100) covers every non-live binding, not only readonly bodies (same item as the T3.B17 line above; not introduced by the merge).
 - T5.S10 (Suggest-mode paste is Lexical's own) checker P2: typing after an undo, redo and second undo of an Enter brings the restored rest back as a suggestion → T5.S14 red-first line.
+- T5.S14 (Accept never applies an identity-only change) checker P2: an unsaved deletion inside a restored list item is not in the offered text after a kept accept (coordinator override: nothing written is lost; the offered text holds the pre-deletion content).
+- T5.S14 (Accept never applies an identity-only change) checker P2: addendum 3 item 1 narrowed by coordinator ruling: shown text lands, unshown text is buried (recorded in the brief).
+- T5.S14 (Accept never applies an identity-only change) checker P2: the deleted-anchor 409 is tested only through the relocation helper.
+- T5.S14 (Accept never applies an identity-only change) checker P2: after a kept accept halts input, the suggester pane hides the restored item until reload.
