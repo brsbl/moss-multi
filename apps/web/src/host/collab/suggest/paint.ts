@@ -361,9 +361,14 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
   }
   for (const [wedge, preview] of reopen) {
     openPreview(wedge, preview);
-    // The pointer never entered the new wedge, so no pointerleave closes it: the next move off it does.
+    // The pointer never entered the new wedge, so no pointerleave closes it: the next move off it and its preview
+    // does (by position: the move a layout change makes may name another target).
     const off = (event: PointerEvent) => {
-      if (event.target instanceof Node && wedge.contains(event.target)) return;
+      const over = (element: Element) => {
+        const box = element.getBoundingClientRect();
+        return event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+      };
+      if (wedge.isConnected && (over(wedge) || over(preview))) return;
       document.removeEventListener('pointermove', off, true);
       delete wedge.dataset.open;
       preview.style.left = '';
