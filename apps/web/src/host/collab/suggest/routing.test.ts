@@ -1201,7 +1201,8 @@ describe('a highlight rewrite carries each struck character by offset @p:mean-2 
     }
     const { record, inserted, working, body } = reviewed(pane);
     expect(record.parts, 'the strike stays a part').toHaveLength(1);
-    expect(inserted.join('|'), 'the card adds no "x"').not.toContain('x');
+    // The rest of the node, " tail x.", is rewritten with its own "x"; the struck one is not.
+    expect(inserted.join('|'), 'the card adds no struck "x"').not.toMatch(/x[\\=]* tail/);
     expect(working).not.toMatch(/x[\\=]* tail/);
     expect(body, 'accept leaves the struck "x" out').not.toMatch(/x[\\=]* tail/);
     expect(body, 'and keeps the other').toContain(' tail x.');
