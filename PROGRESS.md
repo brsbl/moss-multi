@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 64% done** (161 of 250 planned tasks verified)
+**Overall: 65% done** (162 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 67 / 67 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 26 / 26 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 27 / 27 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -187,6 +187,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T5.S14 verified: accepting a suggestion no longer applies an identity-only change, so an item replaced by an identical copy keeps its original, its comment anchors and its authorship; accept refuses writes beneath a restored copy with 409, and input a kept accept would bury is offered back first.
 - 2026-10-19 — T5.B2 verified: in Suggest mode, deleting text a continuation's accepted prefix holds strikes it and keeps the caret, a replayed undo or redo no longer wipes the strikes' redo, a struck character or long struck run survives a rewrite of its node, and struck text a rewrite removed is still drawn struck where it stood.
 - 2026-10-20 — T5.B3 verified: Edit-mode suggestion marks no longer crash on a BigInt or `__proto__` value, strikes are kept in a sorted span set so painting stays fast, a wedge's preview fits its text, stays on screen and stays open across a repaint, and a formula typed in Suggest mode commits on Space or Enter.
+- 2026-10-20 — T5.B4 verified: an outdated or broken suggestion card's Copy suggested text copies its surviving proposed text in document order, plus what it typed that no longer lands; replaying a record and rebuilding the suggester's view no longer cost time quadratic in its ops or a whole-note copy per open record, and a nested node added or removed whole is described by the field it sits in.
 
 ## T1.1s identity audit
 
@@ -736,3 +737,5 @@ Local browser verification remains assigned to the independent checker under the
 - T5.B3 (Suggestion paint, preview layout and Suggest-mode formulas) checker P2: reopened-preview pointermove listeners are not disposed on redraw or unmount; each redraw that keeps a preview open adds a document-level listener that removes itself only on a later pointer move, so a stationary pointer during a peer's typing accumulates listeners and keeps detached wedges in memory (bounded, not data loss).
 - T5.B3 (Suggestion paint, preview layout and Suggest-mode formulas) checker P2: Review-mode paintBound rebuilds the SpanSet on every repaint because Review mode passes partTargets(...) as an array, so each selection or resize repaint re-sorts and re-merges the strike index (O(S log S) per paint).
 - T5.B3 (Suggestion paint, preview layout and Suggest-mode formulas) checker P2: a suggested formula paragraph has an empty wedge label ('Suggested insert: ') and a '(new block)' preview in Edit mode, and its card lists raw formulaId and regId hashes (cosmetic, newly reachable since B306).
+- T5.B4 (Suggestion apply, describe and copy correctness and cost) checker P2: Copy suggested text splits proposed text at inline links: walkBody flushes the run entering and leaving every non-Map ContentType, including a link's nested Y.XmlText, so 'See [site](url) now.' copies as 'See \nsite\n now.' (copy-text.test.ts has no link case).
+- T5.B4 (Suggestion apply, describe and copy correctness and cost) checker P2: the fallback for typed text that no longer lands appends ContentString in typing order, not document order, and drops linebreak and tab nodes, so 'tail' then a prepended 'head' in a deleted, GC'd paragraph copies as 'tailhead'.
