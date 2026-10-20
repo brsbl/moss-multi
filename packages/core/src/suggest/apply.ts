@@ -908,7 +908,7 @@ export function yValue(value: unknown): unknown {
 }
 
 /** A type's live attributes, read from its map: `getAttributes` builds a plain object, which drops a `__proto__` key. */
-function attrsOf(type: { _map: Map<string, Y.Item> }): [string, unknown][] {
+export function attrsOf(type: { _map: Map<string, Y.Item> }): [string, unknown][] {
   return [...type._map]
     .filter(([, item]) => !item.deleted)
     .sort(([a], [b]) => (a < b ? -1 : 1))
