@@ -1417,7 +1417,13 @@ export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restor
         const moving = new Set(moves.flatMap(({ units }) => units.map((unit) => unit.key)));
         const gone = [...past()].filter(([key]) => moving.has(key)).map(([, end]) => end - 1).sort((a, b) => b - a);
         if (gone.length !== moving.size) return refuse();
-        for (const index of gone) type.delete(index, 1);
+        // Adjacent indexes as one range, last range first: one removal per range keeps a long run linear.
+        for (let i = 0; i < gone.length; ) {
+          const end = gone[i]!;
+          let start = end;
+          for (i += 1; i < gone.length && gone[i] === start - 1; i += 1) start -= 1;
+          type.delete(start, end - start + 1);
+        }
         const index = past();
         const placed: { at: number; units: Unit[] }[] = [];
         for (const { after, units } of moves) {
@@ -1441,7 +1447,12 @@ export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restor
               continue;
             }
             flush();
-            type.insertEmbed(next, new Y.Map(Object.entries((item.content as Y.ContentType).type.toJSON() as Record<string, unknown>)));
+            // Entry by entry from the map itself: toJSON would drop a key such as __proto__ the preview reads.
+            const fresh = new Y.Map<unknown>();
+            for (const [key, entry] of (item.content as Y.ContentType).type._map) {
+              if (!entry.deleted) fresh.set(key, (entry.content as Y.ContentAny).getContent()[entry.length - 1]);
+            }
+            type.insertEmbed(next, fresh);
             next += 1;
           }
           flush();
