@@ -507,3 +507,31 @@ test('j16-suggest census: lists, tables, checkboxes, new blocks and registers th
   await runCensus(ben, docId, steps);
   expect(await content(ada, docId), 'no suggestion wrote the body').toBe(before);
 });
+
+test('j16-suggest formulas (T5.B3, B306): a formula typed while suggesting commits with Space and with Enter, is recorded, leaves the note alone, and idling sends nothing @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId, before } = await sharedNote(actors, 'Sums below.\n\nTail line.');
+  await openIn(ben, docId);
+  await ben.observeEditor(docId);
+  const body = ui.body(ben, docId);
+  await caret(ben, docId, 'Tail line.', 'Tail line.'.length);
+  await ben.page.keyboard.press('Enter');
+  await ben.page.keyboard.type('=2+3');
+  await ben.page.keyboard.press(' ');
+  await expect(body.locator('[data-formula-id]'), 'Space commits the formula').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await ben.page.keyboard.press('Enter');
+  await ben.page.keyboard.type('=4*5');
+  await ben.page.keyboard.press('Enter');
+  await expect(body.locator('[data-formula-id]'), 'Enter commits the formula').toHaveCount(2, { timeout: BIND_TIMEOUT });
+  await settled(ben, docId, 'the formulas');
+  await expect.poll(() => content(ada, docId, 'working'), { message: 'both formulas are in the suggestion', timeout: BIND_TIMEOUT }).toMatch(/\{\{2\+3\|[^}]*\}\}[\s\S]*\{\{4\*5\|/);
+  expect(await content(ada, docId), 'the note is unchanged until an accept').toBe(before);
+
+  // Idle: nothing recalculates and writes on its own.
+  const sent = await sentCount(ben, docId);
+  const working = await content(ada, docId, 'working');
+  await ben.page.waitForTimeout(3_000);
+  await settled(ben, docId, 'idle');
+  expect(await sentCount(ben, docId), 'idling sends no suggestion').toBe(sent);
+  expect(await content(ada, docId, 'working')).toBe(working);
+  expect(await content(ada, docId)).toBe(before);
+});

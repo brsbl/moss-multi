@@ -310,8 +310,11 @@ const isShim = (origin: unknown) => origin === SHIM_BODY_APPLY || origin === SHI
 /** The fork's removal of re-created struck items: forwarded like any edit, never an undo step of the binding's. */
 export const KEEP_STRIKES = 'suggest-keep-strikes';
 
+/** Comparisons made answering strike membership (`isStruck`, paint); the paint tests bound their growth. */
+export const spanWork = { steps: 0 };
+
 const covers = (spans: readonly IdSpan[], client: number, clock: number) =>
-  spans.some((span) => span.client === client && span.clock <= clock && clock < span.clock + span.len);
+  spans.some((span) => ((spanWork.steps += 1), span.client === client && span.clock <= clock && clock < span.clock + span.len));
 
 const idKey = (id: { client: number; clock: number }) => `${id.client}:${id.clock}`;
 

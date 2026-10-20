@@ -7,7 +7,7 @@ import { BODY_DOC, readsAsBody, regRefs, restoredCopies } from '@moss-multi/core
 import { SUGGEST_MARK_ATTR, OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
-import { openRecords, payloadIdsOf, type Built, type SuggestFork } from '@moss-multi/sync/suggest/client';
+import { openRecords, payloadIdsOf, spanWork, type Built, type SuggestFork } from '@moss-multi/sync/suggest/client';
 import type { LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { charIndex, idKey, isPending, rangesWhere, type CharPlace } from './chars.ts';
@@ -41,7 +41,7 @@ export function clearPaint(owner: object): void {
 }
 
 export const covers = (spans: readonly IdSpan[], id: Y.ID) =>
-  spans.some((span) => span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len);
+  spans.some((span) => ((spanWork.steps += 1), span.client === id.client && span.clock <= id.clock && id.clock < span.clock + span.len));
 
 /**
  * Paint for an editor bound to F or C: items of `own` clients that B lacks as inserts (an accepted record's text is

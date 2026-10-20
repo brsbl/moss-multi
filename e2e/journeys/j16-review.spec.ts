@@ -537,3 +537,55 @@ test("j16-review: a strike, then the '==' highlight shortcut around it, keeps th
   await expect.poll(() => content(ada, docId), { message: 'accept lands the highlight without the struck "b"', timeout: BIND_TIMEOUT })
     .toContain('Intro line stays.\n\n==ac== tail.\n\nClosing line stays too.');
 });
+
+test('j16-review Edit-mode wedges (T5.B3, B305): a wedge takes the hover and the click over the gap cursor, and a multi-word preview reads wide and stays in view @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Code below.\n\n```js\nseed\n```\n\nTail paragraph here.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ben.observeEditor(docId);
+  await ui.body(ben, docId).locator('.moss-codeblock-pre').click();
+  const field = ui.body(ben, docId).getByPlaceholder('Enter code...');
+  await expect(field).toBeVisible();
+  await field.press('End');
+  await field.pressSequentially('!');
+  await expect(field).toHaveValue('seed!');
+  await acked(ben, docId, 'the code edit');
+
+  // The code block's wedge sits at its bottom edge, where moss's gap cursor takes the pointer unless the wedge is above it.
+  const wedge = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][aria-label*="seed!"]`);
+  await expect(wedge, 'a wedge marks the code block').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  const hit = await wedge.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return top === element || element.contains(top);
+  });
+  expect(hit, 'the wedge is the topmost element at its centre').toBe(true);
+  await wedge.hover({ timeout: 5_000 });
+  await expect(wedge.locator('[data-suggest-preview]'), 'hovering shows the preview').toBeVisible();
+  await expect(wedge.locator('[data-suggest-preview]')).toContainText('seed!');
+  await wedge.click({ timeout: 5_000 });
+  await expect(panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`), 'the click reaches the wedge and opens its card').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await closePanel(ada);
+
+  // A long inline suggestion at a line end, in a narrow window: the preview is wider than a word and inside the viewport.
+  const words = ' plus several more words that make a long preview line';
+  await suggestText(ben, docId, 'Tail paragraph here.', 'Tail paragraph here.'.length, words);
+  await ada.page.setViewportSize({ width: 400, height: 800 });
+  const inline = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][aria-label*="several more words"]`);
+  await expect(inline, 'a wedge marks the inline suggestion').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await inline.hover({ timeout: 5_000 });
+  const preview = inline.locator('[data-suggest-preview]');
+  await expect(preview).toBeVisible();
+  const box = await preview.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const lines = new Set([...range.getClientRects()].map((line) => Math.round(line.top))).size;
+    return { left: rect.left, right: rect.right, width: rect.width, lines, viewport: document.documentElement.clientWidth };
+  });
+  expect(box.width, 'wider than one word').toBeGreaterThan(150);
+  expect(box.lines, 'a few lines, not one word per line').toBeLessThanOrEqual(3);
+  expect(box.left, 'inside the viewport on the left').toBeGreaterThanOrEqual(0);
+  expect(box.right, 'inside the viewport on the right').toBeLessThanOrEqual(box.viewport);
+});
