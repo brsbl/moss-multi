@@ -2,7 +2,7 @@
 // doc, whatever order writers chose their client ids in, and without recursion however writers shaped the chain.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { itemKey, restoredCopies } from './apply.ts';
+import { itemKey, landing, relocated, restoredCopies } from './apply.ts';
 
 const BASE = 1_000_000;
 const CHAIN = 2_000;
