@@ -16,7 +16,7 @@ import { noteMedia, rewriteRefs } from './media.ts';
 import { exactPattern, noteFolderName, parseScope, readScope, SCOPE_FILE, scopePath } from './scope.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
-  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
+  confined, ensureStateDir, ensureTaintStore, findRoot, foldsAt, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
   recordPull, resetRootPins, sha256Hex, writeStateFile,
 } from './workspace.ts';
 
@@ -339,6 +339,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const lock = await lockWorkspace(workspace);
         try {
           if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
+          ensureTaintStore(workspace);
           const adopted = await adopt({ root: workspace, client, folds: foldsCase(workspace), ...(scope ? { scope } : {}) }, rel, {
             moss, keepName: true, ...(title !== undefined ? { title, titleLine: true } : {}), ...(folderId ? { folderId } : {}),
           });
@@ -361,7 +362,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         // A moss note with no title line takes its file's stem.
         if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
         // Its media follow; a file stored under another name moves the doc's reference too.
-        const media = await noteMedia({ root, client, upload: true }, doc.id, path);
+        const media = await noteMedia({ root, client, folds: foldsCase(root) || foldsAt(path), upload: true }, doc.id, path);
         if (media.renames.size > 0) {
           const base = created.content ?? decoder.decode(await client.content(doc.id, true));
           const pushed = await client.push(doc.id, { newText: rewriteRefs(base, media.renames), baseHash: sha256Hex(base), baseText: base });
@@ -445,8 +446,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const scope = inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
-      const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
-      reportMedia((await noteMedia({ root, client, upload: true, ...scoped }, meta.docId, path)).results);
+      const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
+      reportMedia((await noteMedia({ root, client, folds: foldsCase(root), upload: true, ...scoped }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
@@ -540,12 +541,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (!existsSync(root)) throw new CliError(1, `no such directory: ${dir ?? root}`);
       if (!scoped) {
         ensureStateDir(root);
+        ensureTaintStore(root);
         line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
         return;
       }
       // Checked as sync reads it, so a scope init writes is one sync accepts.
       const scope = parseScope(JSON.stringify({ ...lists, depth: depth === undefined ? 1 : Number(depth) }));
       ensureStateDir(pinRoot(root));
+      ensureTaintStore(root);
       if (readStateFile(root, SCOPE_FILE)) throw new CliError(1, `${root} already has a scope; edit .moss-multi/${SCOPE_FILE} to change it`);
       writeStateFile(root, SCOPE_FILE, Buffer.from(`${JSON.stringify({ allow: lists.allow, follow: lists.follow, depth: scope.depth, deny: lists.deny }, null, 2)}\n`));
       line(`${root} is a moss-multi workspace scoped by .moss-multi/${SCOPE_FILE}: \`moss-multi sync\` uploads only the notes it allows, pulls those --follow reaches, and never touches what it denies`);

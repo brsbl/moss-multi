@@ -3,51 +3,21 @@
 // uploaded under a name the doc does not hold yet, downloaded when it is missing here, and neither side is ever
 // overwritten: a name the server stores under another name (another note's file holds it in the folder) moves the
 // note's reference to that name, and a local file that differs from the doc's bytes for its name is reported.
-import { lstatSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+// Uploads fail closed (T7.S9): a file goes up only from the note's own assets/, under a name no text the server ever
+// showed in that folder could name (the workspace's folder taint store), when no other note in the folder holds or
+// references it.
+import { type Dirent, lstatSync, readdirSync } from 'node:fs';
+import { basename, dirname, extname, join } from 'node:path';
 import { ASSET_DIR, MEDIA_CAP_BYTES, mediaTypeOf } from '@moss-multi/protocol/media';
 import type { Api } from './api.ts';
 import { CliError } from './errors.ts';
 import type { SyncResult } from './sync.ts';
 import {
-  confined, isAllowedName, isWorkspace, type MediaState, readConfined, readMediaRecord, sha256Hex, writeConfined, writeMediaRecord,
+  confined, couldName, isWorkspace, type MediaState, mediaRefs, readConfined, readMediaRecord, sha256Hex, taintCheck, taintNames, trackedMetas, writeConfined,
+  writeMediaRecord,
 } from './workspace.ts';
 
-export interface MediaRef {
-  /** The span of the reference's file name in the text. */
-  start: number;
-  end: number;
-  name: string;
-}
-
-const NAME_END = new Set([' ', '\t', '\n', '\r', ')', '>', '"', "'"]);
-
-/** Every `](assets/<file>)` (or `](./assets/…`, `](<assets/…`) reference to a moss media file in `text`, in order. */
-export function mediaRefs(text: string): MediaRef[] {
-  const refs: MediaRef[] = [];
-  let at = text.indexOf('](');
-  while (at >= 0) {
-    let i = at + 2;
-    if (text[i] === '<') i += 1;
-    if (text.startsWith('./', i)) i += 2;
-    let next = at + 2;
-    if (text.startsWith(ASSET_DIR, i)) {
-      const start = i + ASSET_DIR.length;
-      let end = start;
-      while (end < text.length && !NAME_END.has(text[end]!)) end += 1;
-      next = Math.max(next, end);
-      let name = text.slice(start, end);
-      try {
-        name = decodeURIComponent(name);
-      } catch {
-        // A stray % stays as it is.
-      }
-      if (mediaTypeOf(name) && isAllowedName(name)) refs.push({ start, end, name });
-    }
-    at = text.indexOf('](', next);
-  }
-  return refs;
-}
+export { type MediaRef, mediaRefs, refNames } from './workspace.ts';
 
 /** `text` with each reference to a renamed file pointing at its new name. */
 export function rewriteRefs(text: string, renames: Map<string, string>): string {
@@ -74,12 +44,65 @@ export interface MediaContext {
   denies?: (rel: string) => boolean;
   /** With a scope, whether the local media file `name` may be read and sent; a file it refuses is only ever downloaded when missing. */
   sends?: (name: string) => boolean;
+  /** With a scope, whether another note may be read to see which media it references; one that may not counts as referencing all. */
+  reads?: (rel: string) => boolean;
+  /** The volume folds case, so names that differ only in case are one file. */
+  folds?: boolean;
 }
 
 export interface MediaStep {
   results: SyncResult[];
   /** Files the server stored under another name; the note file now references the new names. */
   renames: Map<string, string>;
+}
+
+/** A media name or folder as the volume compares it: one Unicode form, and one case where the volume folds case. */
+const nameKey = (folds: boolean | undefined) => (name: string) => (folds ? name.normalize('NFC').toLowerCase() : name.normalize('NFC'));
+
+/**
+ * Why a file in the assets/ beside the note `file` may be another note's, by name: another tracked doc in that folder
+ * holds it in its media record, or another note there could name it (the taint store's liberal scan, not the markdown
+ * parser). A note that cannot be read counts as referencing every name, and so does a folder that cannot be listed.
+ * Read once per media step.
+ */
+function folderOwners(ctx: MediaContext, docId: string, file: string): (name: string) => string | null {
+  const { root } = ctx;
+  const key = nameKey(ctx.folds);
+  const folder = dirname(file);
+  const owners = new Map<string, string>();
+  const named: { rel: string; names: (name: string) => boolean }[] = [];
+  let every: string | null = null;
+  if (isWorkspace(root)) {
+    for (const meta of trackedMetas(root)) {
+      if (meta.docId === docId || key(dirname(meta.file)) !== key(folder)) continue;
+      for (const held of Object.keys(readMediaRecord(root, meta.docId))) if (!owners.has(key(held))) owners.set(key(held), `${meta.file} also uses it`);
+    }
+  }
+  let entries: Dirent[] = [];
+  try {
+    entries = readdirSync(join(root, folder), { withFileTypes: true });
+  } catch {
+    every = `the notes in ${folder === '.' ? 'its folder' : folder} cannot be listed, so another may use it`;
+  }
+  for (const entry of entries) {
+    const rel = join(folder, entry.name);
+    if (entry.name === basename(file) || extname(entry.name).toLowerCase() !== '.md') continue;
+    const unread = `${rel} cannot be read, so it may use it`;
+    if (!entry.isFile() || ctx.denies?.(rel) || (ctx.reads && !ctx.reads(rel))) {
+      every ??= unread;
+      continue;
+    }
+    try {
+      named.push({ rel, names: couldName(root, folder, readConfined(root, rel).toString('utf8')) });
+    } catch {
+      every ??= unread;
+    }
+  }
+  return (name) => {
+    if (every !== null) return every;
+    const note = named.find((other) => other.names(name));
+    return owners.get(key(name)) ?? (note ? `${note.rel} also uses it` : null);
+  };
 }
 
 const capMessage = (kind: 'image' | 'video') =>
@@ -101,8 +124,12 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   const tracked = isWorkspace(root);
   const record = tracked ? readMediaRecord(root, docId) : {};
   const before = JSON.stringify(record);
-  const dir = join(dirname(confined(root, file)), ASSET_DIR);
+  const note = confined(root, file);
+  const dir = join(dirname(note), ASSET_DIR);
   const seen = new Set<string>();
+  // Outside a workspace nothing was ever written from the server, so only ownership decides.
+  let served: ((rel: string, name: string) => string | null) | undefined;
+  let owners: ((name: string) => string | null) | undefined;
 
   for (const { name } of mediaRefs(text)) {
     if (seen.has(name)) continue;
@@ -135,6 +162,18 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
           continue;
         }
         if (!ctx.upload) continue;
+        served ??= tracked ? taintCheck(root) : () => null;
+        const why = served(note, name);
+        if (why !== null) {
+          failed(`${rel} was not uploaded: ${why}`);
+          continue;
+        }
+        owners ??= folderOwners(ctx, docId, note);
+        const owner = owners(name);
+        if (owner !== null) {
+          failed(`${rel} was not uploaded: ${owner}, and a file in a shared assets folder goes up only for the one note that uses it. Give this note its own copy under a new name`);
+          continue;
+        }
         const type = mediaTypeOf(name)!;
         if (bytes.byteLength > MEDIA_CAP_BYTES[type.kind]) {
           failed(capMessage(type.kind));
@@ -186,6 +225,8 @@ export async function noteMedia(ctx: MediaContext, docId: string, file: string):
   if (tracked && JSON.stringify(record) !== before) writeMediaRecord(root, docId, record);
   if (renames.size > 0) {
     try {
+      // The names the server gave are the server's: recorded before the note references them.
+      if (tracked) taintNames(root, note, renames.values());
       writeConfined(root, file, Buffer.from(rewriteRefs(text, renames)), sha256Hex(original));
     } catch (error) {
       if (!(error instanceof CliError)) throw error;

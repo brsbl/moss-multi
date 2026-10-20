@@ -5,11 +5,12 @@
 // goes through `confined`.
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  closeSync, constants, type Dirent, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   utimesSync, writeFileSync, type Stats,
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { ASSET_DIR, MEDIA_TYPES, mediaTypeOf } from '@moss-multi/protocol/media';
 import { CliError } from './errors.ts';
 import { isUnsafeChar } from './output.ts';
 
@@ -95,6 +96,45 @@ export const isAllowedName = (name: string): boolean =>
   name !== '' && name !== '.' && name !== '..' && !BAD_NAME.test(name) && Buffer.byteLength(name, 'utf8') <= 255 &&
   ![...name].some((char) => char.charCodeAt(0) <= 0x1f || isUnsafeChar(char.charCodeAt(0)));
 
+export interface MediaRef {
+  /** The span of the reference's file name in the text. */
+  start: number;
+  end: number;
+  name: string;
+}
+
+const NAME_END = new Set([' ', '\t', '\n', '\r', ')', '>', '"', "'"]);
+
+/** Every `](assets/<file>)` (or `](./assets/…`, `](<assets/…`) reference to a moss media file in `text`, in order. */
+export function mediaRefs(text: string): MediaRef[] {
+  const refs: MediaRef[] = [];
+  let at = text.indexOf('](');
+  while (at >= 0) {
+    let i = at + 2;
+    if (text[i] === '<') i += 1;
+    if (text.startsWith('./', i)) i += 2;
+    let next = at + 2;
+    if (text.startsWith(ASSET_DIR, i)) {
+      const start = i + ASSET_DIR.length;
+      let end = start;
+      while (end < text.length && !NAME_END.has(text[end]!)) end += 1;
+      next = Math.max(next, end);
+      let name = text.slice(start, end);
+      try {
+        name = decodeURIComponent(name);
+      } catch {
+        // A stray % stays as it is.
+      }
+      if (mediaTypeOf(name) && isAllowedName(name)) refs.push({ start, end, name });
+    }
+    at = text.indexOf('](', next);
+  }
+  return refs;
+}
+
+/** The media names `text` references. */
+export const refNames = (text: string) => new Set(mediaRefs(text).map((ref) => ref.name));
+
 /** Each workspace root's real path and identity, recorded when the command selects it (`findRoot`, `pinRoot`). */
 const roots = new Map<string, { real: string; dev: number; ino: number }>();
 
@@ -147,7 +187,7 @@ function noLinks(root: string, rel: string): string {
  * Writes `bytes` to `rel` through a temporary file and a rename. With `expectHash` the file must still hash to it
  * (null: still be absent) just before the replace, so an edit saved while a request was in flight is not lost.
  */
-function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: string | null): void {
+function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: string | null, durable = false): void {
   const target = noLinks(root, rel);
   mkdirSync(dirname(target), { recursive: true });
   noLinks(root, rel);
@@ -157,6 +197,7 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
   let made: Stats;
   try {
     writeFileSync(fd, bytes);
+    if (durable) fsyncSync(fd);
     made = fstatSync(fd);
   } finally {
     closeSync(fd);
@@ -176,6 +217,20 @@ function writeInside(root: string, rel: string, bytes: Uint8Array, expectHash?: 
   } catch (error) {
     rmSync(temp, { force: true });
     throw error;
+  }
+  if (durable) syncDir(dirname(target));
+}
+
+/** Flushes a directory's entries (a rename into it), where the platform allows it. */
+function syncDir(dir: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(dir, 'r');
+    fsyncSync(fd);
+  } catch {
+    // Not every platform opens or flushes a directory.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -258,11 +313,19 @@ function stateRel(docId: string, name?: string): string {
   return name ? join(STATE_DIR, docId, name) : join(STATE_DIR, docId);
 }
 
-export function readMeta(root: string, docId: string): DocMeta | null {
+/** A doc's record, or null when there is none or it does not parse; `strict`, one that cannot be read throws instead. */
+export function readMeta(root: string, docId: string, strict = false): DocMeta | null {
   const path = noLinks(root, stateRel(docId, 'meta.json'));
   if (!lstat(path)) return null;
+  let raw: string;
   try {
-    const meta = JSON.parse(readFileSync(path, 'utf8')) as DocMeta;
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return null;
+  }
+  try {
+    const meta = JSON.parse(raw) as DocMeta;
     if (meta.docId !== docId || typeof meta.file !== 'string' || typeof meta.baseHash !== 'string') return null;
     // A prior record names a state file: only the exact form the CLI writes is taken, so none can name another path.
     const records: unknown[] = Array.isArray(meta.priors) ? meta.priors : [];
@@ -360,6 +423,22 @@ export function probeFoldsCase(root: string): boolean {
   return lower !== null && upper !== null && lower.ino === upper.ino && lower.dev === upper.dev;
 }
 
+/**
+ * Whether the volume holding the existing `path` folds case, for a folder that is no workspace: the nearest name on the
+ * path with a letter in it, in the other case, is the same file.
+ */
+export function foldsAt(path: string): boolean {
+  for (let at = resolve(path); dirname(at) !== at; at = dirname(at)) {
+    const name = basename(at);
+    const swapped = [...name].map((char) => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase())).join('');
+    if (swapped === name) continue;
+    const one = lstat(at);
+    const other = lstat(join(dirname(at), swapped));
+    return one !== null && other !== null && one.ino === other.ino && one.dev === other.dev;
+  }
+  return false;
+}
+
 const foldPath = (path: string) => path.normalize('NFC').toLowerCase();
 /** Whether two tracked paths name one file. */
 const samePath = (a: string, b: string, folds: boolean) => (folds ? foldPath(a) === foldPath(b) : a === b);
@@ -412,6 +491,555 @@ export function writeMediaRecord(root: string, docId: string, record: Record<str
   writeInside(root, stateRel(docId, 'media.json'), Buffer.from(`${JSON.stringify(record, null, 2)}\n`));
 }
 
+/**
+ * The folder taint store (T7.S9), `.moss-multi/served-names.json`: for each note folder's assets/, every media name a
+ * text the CLI wrote into that folder from the server could name. It only grows, it is flushed to disk before the text
+ * is written, and a name in it never uploads from that folder. Folders and names are kept in one Unicode form and one
+ * case on every volume, so a lookup never misses a spelling the volume would match. Every update holds the store's own
+ * lock (`.served-names.lock`), so two processes (a pull beside the watch daemon) never drop each other's names.
+ */
+export const TAINT_FILE = 'served-names.json';
+const TAINT_LOCK = join(STATE_DIR, '.served-names.lock');
+const ASSETS = ASSET_DIR.replace(/\/$/, '');
+type Taint = Map<string, Set<string>>;
+/** In a folder's set: the folder is fully tainted, so nothing uploads from it. No file name holds a `*`. */
+const ALL = '*';
+/** At most this many names are recorded for one text; past it the folder is fully tainted instead. */
+const NAMES_PER_TEXT = 10_000;
+/** The store's size cap; past it the folders being added to (then the largest) are fully tainted instead. */
+const STORE_BYTES = 4 * 1024 * 1024;
+/** How long an update waits for another process's update before it fails (and the text is not written). */
+const TAINT_WAIT_MS = 60_000;
+
+const fold = (text: string): string => text.normalize('NFC').toLowerCase();
+/** The store's key for the assets/ folder of the notes in `folder`. */
+const folderKey = (folder: string): string => fold(join(folder, ASSETS));
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", sol: '/', bsol: '\\', period: '.', lpar: '(', rpar: ')', lsqb: '[', rsqb: ']', lbrack: '[',
+  rbrack: ']', colon: ':', excl: '!', num: '#', percnt: '%', equals: '=', nbsp: ' ', hyphen: '-', dash: '-', lowbar: '_', grave: '`', tilde: '~',
+  plus: '+', comma: ',', semi: ';', quest: '?', ast: '*', verbar: '|', vert: '|', commat: '@', dollar: '$', hat: '^', lcub: '{', rcub: '}',
+};
+const decodeEntities = (text: string): string =>
+  text.replace(/&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});?/g, (whole, body: string) => {
+    if (body.startsWith('#')) {
+      const code = /^#[xX]/.test(body) ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
+  });
+const decodePercent = (text: string): string =>
+  text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => Buffer.from(run.replace(/%/g, ''), 'hex').toString('utf8'));
+const unescapeMarkdown = (text: string): string => text.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+/**
+ * Exactly what moss does to a local asset path before it opens the file (vendor asset-url.ts
+ * normalizeLocalAssetPathForDisplay): U+200B-U+200D and U+FEFF go, numeric entities of any length and &nbsp; are
+ * decoded, and the spaces it lists become a plain one. No compatibility folding.
+ */
+const mossPath = (text: string): string =>
+  text
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/&(#\d+|#x[\da-fA-F]+|nbsp);/gi, (whole, body: string) => {
+      const lower = body.toLowerCase();
+      if (lower === 'nbsp') return '\u00A0';
+      const code = lower.startsWith('#x') ? Number.parseInt(lower.slice(2), 16) : Number.parseInt(lower.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    })
+    .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
+/** The same rules, liberally: every default-ignorable character goes and every space separator becomes a plain space. */
+const looseSpaces = (text: string): string => text.replace(/\p{Default_Ignorable_Code_Point}/gu, '').replace(/\p{Zs}/gu, ' ');
+
+/** At most this many distinct decoded forms of one text; past it the text's folder is fully tainted instead. */
+const FORMS_PER_TEXT = 128;
+
+/**
+ * Calls `visit` with `text` and every form a reader could decode it to, to a fixed point: entities, percent and
+ * backslash escapes, moss's exact path rules and their liberal superset, in any order and any number of times, every
+ * intermediate form kept, each also compatibility-folded (a name is case- and NFC-folded when it is taken). False when
+ * the text has more than FORMS_PER_TEXT forms: the caller then taints its whole folder.
+ */
+function decodedForms(text: string, visit: (form: string) => void): boolean {
+  // Forms are remembered by hash, so only the forms still to decode are held.
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  const fresh = (form: string): boolean => {
+    const key = sha256Hex(form);
+    if (seen.has(key)) return true;
+    if (seen.size >= FORMS_PER_TEXT) return false;
+    seen.add(key);
+    visit(form);
+    const folded = form.normalize('NFKC');
+    if (folded !== form) visit(folded);
+    queue.push(form);
+    return true;
+  };
+  if (!fresh(text)) return false;
+  while (queue.length > 0) {
+    const form = queue.pop()!;
+    for (const decode of [decodeEntities, decodePercent, unescapeMarkdown, mossPath, looseSpaces]) {
+      if (!fresh(decode(form))) return false;
+    }
+  }
+  return true;
+}
+
+const MEDIA_END = new RegExp(`\\.(?:${Object.keys(MEDIA_TYPES).join('|')})(?![\\p{L}\\p{N}\\p{M}_])`, 'giu');
+/** Characters no file name holds: a run of name characters stops at one. */
+const NOT_NAME = /[<>:"/\\|?*\p{Cc}]/u;
+/** Characters a name sits after in markdown or prose: the last one in a run starts its last segment. */
+const SEGMENT = /[\s()[\]!'`=,;]/u;
+/** The longest a file name can be: a longer run names no file. */
+const NAME_BYTES = 255;
+
+/**
+ * Every token in `text` that could name a media file, liberally and without the markdown parser, at most three per
+ * token: each maximal run of name characters ending in a media extension, trimmed, and its last segment after a space
+ * or markdown punctuation. A run is followed back at most 256 characters, so a long text costs linear time.
+ */
+function mediaTokens(text: string, add: (name: string) => void): void {
+  const take = (name: string) => {
+    if (Buffer.byteLength(name, 'utf8') <= NAME_BYTES && isAllowedName(name)) add(fold(name));
+  };
+  for (const match of text.matchAll(MEDIA_END)) {
+    const dot = match.index ?? 0;
+    const end = dot + match[0].length;
+    let start = dot;
+    while (start > 0 && dot - start <= NAME_BYTES && !NOT_NAME.test(text[start - 1]!)) start -= 1;
+    const whole = start === 0 || NOT_NAME.test(text[start - 1]!);
+    const run = text.slice(start, end);
+    if (whole) {
+      take(run);
+      take(run.trim());
+    }
+    let cut = run.length - match[0].length;
+    while (cut > 0 && !SEGMENT.test(run[cut - 1]!)) cut -= 1;
+    if (cut > 0 || whole) take(run.slice(cut));
+  }
+}
+
+/**
+ * The names of the entries in the assets/ beside the notes in `folder`: none when there is none (or a link, which no
+ * upload reads through), null when it exists and cannot be listed.
+ */
+function assetEntries(root: string, folder: string): string[] | null {
+  let dir: string;
+  try {
+    dir = noLinks(root, join(folder, ASSETS));
+    if (!lstat(dir)?.isDirectory()) return [];
+  } catch {
+    return [];
+  }
+  try {
+    return readdirSync(dir);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
+  }
+}
+
+/**
+ * The names `texts` could name in the assets/ beside the notes in `folder`: its files they mention, and every media
+ * token; just ALL past NAMES_PER_TEXT. Throws when that assets/ folder cannot be listed.
+ */
+function namesIn(root: string, folder: string, texts: (Uint8Array | string | undefined)[]): Set<string> {
+  const entries = assetEntries(root, folder);
+  if (entries === null) throw new CliError(1, `${join(folder, ASSETS)} cannot be listed, so moss-multi cannot record which of its files a text names`);
+  const present = entries.map(fold);
+  const names = new Set<string>();
+  for (const text of texts) {
+    if (text === undefined) continue;
+    const decoded = decodedForms(typeof text === 'string' ? text : Buffer.from(text).toString('utf8'), (form) => {
+      if (names.size > NAMES_PER_TEXT) return;
+      mediaTokens(form, (name) => names.add(name));
+      const folded = fold(form);
+      for (const name of present) if (folded.includes(name)) names.add(name);
+    });
+    if (!decoded || names.size > NAMES_PER_TEXT) return new Set([ALL]);
+  }
+  return names;
+}
+
+/**
+ * Whether `text`, a note in `folder`, could name the media file `name` there (used for ownership): the same liberal
+ * scan as the store's. True for every name when the folder's assets/ cannot be listed.
+ */
+export function couldName(root: string, folder: string, text: string): (name: string) => boolean {
+  let names: Set<string>;
+  try {
+    names = namesIn(root, folder, [text]);
+  } catch {
+    return () => true;
+  }
+  return (name) => names.has(ALL) || names.has(fold(name));
+}
+
+interface Store { taint: Taint; raw: Buffer | null; fresh: boolean; incomplete: string | null }
+
+const isTaint = (value: unknown): value is { folders: Record<string, string[]>; incomplete?: string } => {
+  const store = value as { folders?: unknown; incomplete?: unknown } | null;
+  const folders = store?.folders;
+  return typeof folders === 'object' && folders !== null && !Array.isArray(folders) && (store!.incomplete === undefined || typeof store!.incomplete === 'string') &&
+    Object.values(folders).every((names) => Array.isArray(names) && names.every((name) => typeof name === 'string'));
+};
+
+/** Whether the state directory holds any doc's record, readable or not. */
+const tracksAny = (root: string): boolean => {
+  try {
+    return readdirSync(noLinks(root, STATE_DIR)).some((name) => DOC_ID.test(name));
+  } catch (error) {
+    // No state directory yet: nothing was ever tracked here. Anything else counts as tracked.
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+};
+
+const merge = (into: Taint, from: Taint): Taint => {
+  for (const [key, names] of from) {
+    const held = into.get(key) ?? new Set<string>();
+    into.set(key, held);
+    for (const name of names) held.add(name);
+  }
+  return into;
+};
+
+/**
+ * The store as it stands, and the bytes it was read from (null: there is none). One that is missing while the
+ * workspace tracks a doc, or that cannot be read or parsed, is rebuilt closed (rebuildTaint); it is never taken as
+ * empty. One whose rebuild could not read everything is `incomplete` and rebuilt again on every read until it can.
+ */
+function loadTaint(root: string): Store {
+  let raw: Buffer | null;
+  try {
+    raw = readStateFile(root, TAINT_FILE);
+  } catch {
+    return { ...rebuildTaint(root), raw: null, fresh: true };
+  }
+  if (raw === null) return tracksAny(root) ? { ...rebuildTaint(root), raw: null, fresh: true } : { taint: new Map(), incomplete: null, raw: null, fresh: true };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.toString('utf8')) as unknown;
+  } catch {
+    parsed = null;
+  }
+  if (!isTaint(parsed)) return { ...rebuildTaint(root), raw, fresh: true };
+  const taint: Taint = new Map(Object.entries(parsed.folders).map(([key, names]): [string, Set<string>] => [key, new Set(names)]));
+  if (parsed.incomplete === undefined) return { taint, incomplete: null, raw, fresh: false };
+  const again = rebuildTaint(root);
+  return { taint: merge(taint, again.taint), incomplete: again.incomplete, raw, fresh: true };
+}
+
+/** The store's bytes, every name sorted; past STORE_BYTES the folders in `growing`, then the largest, become ALL. */
+function serializeTaint(store: Store, growing: Iterable<string>): Buffer {
+  const { taint } = store;
+  for (const [key, names] of taint) if (names.has(ALL) && names.size > 1) taint.set(key, new Set([ALL]));
+  const bytes = () => Buffer.from(`${JSON.stringify({
+    version: 1, ...(store.incomplete !== null ? { incomplete: store.incomplete } : {}),
+    folders: Object.fromEntries([...taint].sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, names]) => [key, [...names].sort()])),
+  })}\n`);
+  let out = bytes();
+  if (out.byteLength <= STORE_BYTES) return out;
+  for (const key of growing) taint.set(key, new Set([ALL]));
+  out = bytes();
+  while (out.byteLength > STORE_BYTES) {
+    const largest = [...taint].filter(([, names]) => !names.has(ALL)).sort(([, a], [, b]) => b.size - a.size)[0];
+    if (!largest) break;
+    taint.set(largest[0], new Set([ALL]));
+    out = bytes();
+  }
+  return out;
+}
+
+const pause = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Runs `update` holding the store's lock, taken with an exclusive create; it waits for another process's update (a
+ * stale lock is taken over) and fails after TAINT_WAIT_MS, so nothing is written past an update it could not make.
+ */
+function withTaintLock<T>(root: string, update: () => T): T {
+  const path = noLinks(root, TAINT_LOCK);
+  mkdirSync(dirname(path), { recursive: true });
+  const body = JSON.stringify({ pid: process.pid, host: hostname(), nonce: randomBytes(8).toString('hex'), at: Date.now() });
+  const deadline = Date.now() + TAINT_WAIT_MS;
+  for (;;) {
+    try {
+      writeFileSync(path, body, { flag: 'wx' });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const held = readLock(path);
+    if (!held) continue;
+    if (isStale(held)) {
+      breakStale(path, held.raw);
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new CliError(1, `another moss-multi process${held.owner ? ` (pid ${held.owner.pid})` : ''} is updating ${join(STATE_DIR, TAINT_FILE)}, so nothing from the server was written; try again`);
+    }
+    Atomics.wait(pause, 0, 0, 25);
+  }
+  try {
+    return update();
+  } finally {
+    if (readLock(path)?.raw === body) rmSync(path, { force: true });
+  }
+}
+
+/** Adds what `build` returns (given the store as it stands) to the store and flushes it, under its lock; a failure throws. */
+function addTaint(root: string, build: (current: Taint) => Taint): void {
+  withTaintLock(root, () => {
+    const store = loadTaint(root);
+    const add = build(store.taint);
+    let grew = store.fresh;
+    for (const [key, names] of add) {
+      const held = store.taint.get(key) ?? new Set<string>();
+      store.taint.set(key, held);
+      if (held.has(ALL)) continue;
+      for (const name of names) {
+        if (held.has(name)) continue;
+        held.add(name);
+        grew = true;
+      }
+    }
+    if (!grew) return;
+    writeInside(root, join(STATE_DIR, TAINT_FILE), serializeTaint(store, add.keys()), store.raw ? sha256Hex(store.raw) : null, true);
+  });
+}
+
+/**
+ * Records, before a text from the server is written into the note `rel` (or beside it), every media name the texts
+ * could name in that note's assets/. Throws when it cannot be recorded, so the text is not written.
+ */
+export function taintNote(root: string, rel: string, texts: (Uint8Array | string | undefined)[]): void {
+  const folder = dirname(rel);
+  addTaint(root, () => new Map([[folderKey(folder), namesIn(root, folder, texts)]]));
+}
+
+/** Records `names` themselves (names the server gave files) as the server's in the assets/ beside the note `rel`. */
+export function taintNames(root: string, rel: string, names: Iterable<string>): void {
+  addTaint(root, () => new Map([[folderKey(dirname(rel)), new Set([...names].map(fold))]]));
+}
+
+/** The base and prior texts kept for a doc; a state file that exists and cannot be read throws. */
+function stateTexts(root: string, docId: string): Uint8Array[] {
+  let names: string[];
+  try {
+    names = readdirSync(noLinks(root, stateRel(docId)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  return names.filter((name) => name === 'base.md' || /^prior(-[0-9a-f]+)?\.md$/.test(name)).flatMap((name) => {
+    try {
+      return [readFileSync(noLinks(root, stateRel(docId, name)))];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+  });
+}
+
+/**
+ * Records, before the tracked doc `from` holds the file `rel` in another folder, the whole taint of its old folder for
+ * the new one, and every name its texts (the file itself, its base, prior texts and title) could name there: a name
+ * the server showed in the old folder never becomes uploadable by moving the note.
+ */
+export function carryTaint(root: string, from: DocMeta, rel: string, texts: (Uint8Array | string | undefined)[] = []): void {
+  const folder = dirname(rel);
+  const to = folderKey(folder);
+  const source = folderKey(dirname(from.file));
+  if (to === source) return;
+  addTaint(root, (current) => {
+    const own: (Uint8Array | string | undefined)[] = [...texts, from.title, ...stateTexts(root, from.docId)];
+    try {
+      own.push(readFileSync(noLinks(root, rel)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    return new Map([[to, new Set([...(current.get(source) ?? []), ...namesIn(root, folder, own)])]]);
+  });
+}
+
+/**
+ * Records, before the untracked note `rel` is adopted and its media may upload, every name its text could name that
+ * the server showed in any other folder (one fully tainted counts for every name), and the whole taint of each folder
+ * in `gone`, the folders of tracked notes whose files vanished: the note may be one of them, moved and edited, or a
+ * copy. Text the server showed elsewhere never makes a name uploadable by leaving its folder.
+ */
+export function taintAdopted(root: string, rel: string, gone: Iterable<string>): void {
+  const folder = dirname(rel);
+  const to = folderKey(folder);
+  const text = readConfined(root, rel);
+  addTaint(root, (current) => {
+    const names = namesIn(root, folder, [text]);
+    const carried = new Set<string>();
+    for (const from of gone) for (const name of current.get(folderKey(from)) ?? []) carried.add(name);
+    const elsewhere = new Set<string>();
+    for (const [key, held] of current) if (key !== to) for (const name of held) elsewhere.add(name);
+    for (const name of names) if (name === ALL || elsewhere.has(ALL) || elsewhere.has(name)) carried.add(name);
+    return new Map([[to, carried]]);
+  });
+}
+
+/** Makes sure the store exists before a pass tracks anything: an empty one for a workspace that tracks no doc yet. */
+export function ensureTaintStore(root: string): Store | null {
+  try {
+    return withTaintLock(root, () => {
+      const store = loadTaint(root);
+      if (store.fresh) writeInside(root, join(STATE_DIR, TAINT_FILE), serializeTaint(store, []), store.raw ? sha256Hex(store.raw) : null, true);
+      return store;
+    });
+  } catch {
+    // Read again (and rebuilt) by every check, and a write it blocks fails closed.
+    return null;
+  }
+}
+
+/**
+ * Why the media `name` beside the note `rel` must not upload as far as the store goes (the server showed it in that
+ * folder, the folder is fully tainted, or the store could not be rebuilt in full), or null; read once per call. A
+ * store rebuilt here is saved, so a file added after a rebuild completes is not taken for one the rebuild found.
+ */
+export function taintCheck(root: string): (rel: string, name: string) => string | null {
+  const { taint, incomplete } = ensureTaintStore(root) ?? loadTaint(root);
+  return (rel, name) => {
+    if (incomplete !== null) return `moss-multi lost its record of the media names the server showed and cannot rebuild it in full (${incomplete}), so nothing uploads until it can`;
+    const held = taint.get(folderKey(dirname(rel)));
+    if (held?.has(ALL)) return 'text from the server named more media files in this folder than moss-multi records, so nothing uploads from it; keep new images beside another note';
+    return held?.has(fold(name)) ? 'text from the server named it in this folder, so it is only ever downloaded. Save the file under a new name and reference that to upload it' : null;
+  };
+}
+
+/**
+ * The store rebuilt closed: for every tracked doc's folder and every folder holding notes or an assets/ folder, every
+ * name in those assets/ folders, and every name the note files, conflict files, bases, prior texts, titles and media
+ * records there could name; every folder is walked, hidden ones included. A doc whose record does not parse counts for
+ * every folder. Anything that exists and cannot be read (a record, a note, a folder) makes it `incomplete`: nothing
+ * uploads, and it is rebuilt again until it can be read.
+ */
+function rebuildTaint(root: string): { taint: Taint; incomplete: string | null } {
+  const texts: { folder: string | null; text: Uint8Array | string }[] = [];
+  const folders = new Set<string>();
+  const taint: Taint = new Map();
+  let incomplete: string | null = null;
+  // Gone is not there to scan, and a record that does not parse names nothing; anything else that cannot be read
+  // (a permission, a link refused) leaves the rebuild incomplete.
+  const unread = (what: string, error: unknown) => {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT' || (code === undefined && !(error instanceof CliError))) return;
+    incomplete ??= `${what} cannot be read`;
+  };
+  const add = (folder: string, names: Iterable<string>) => {
+    const key = folderKey(folder);
+    const held = taint.get(key) ?? new Set<string>();
+    taint.set(key, held);
+    for (const name of names) held.add(name === ALL ? ALL : fold(name));
+  };
+  let ids: string[] = [];
+  try {
+    ids = readdirSync(noLinks(root, STATE_DIR)).filter((name) => DOC_ID.test(name));
+  } catch (error) {
+    unread(STATE_DIR, error);
+  }
+  const loose: string[] = [];
+  for (const id of ids) {
+    let meta: DocMeta | null = null;
+    let own: (Uint8Array | string)[] = [];
+    try {
+      // A record that exists and cannot be read leaves the rebuild incomplete; one that does not parse counts everywhere.
+      meta = readMeta(root, id, true);
+    } catch (error) {
+      unread(stateRel(id, 'meta.json'), error);
+    }
+    try {
+      own = stateTexts(root, id);
+    } catch (error) {
+      unread(stateRel(id), error);
+    }
+    if (meta?.title) own.push(meta.title);
+    let media: string[] = [];
+    try {
+      if (lstat(noLinks(root, stateRel(id, 'media.json')))) {
+        media = Object.keys(JSON.parse(readFileSync(noLinks(root, stateRel(id, 'media.json')), 'utf8')) as Record<string, unknown>);
+      }
+    } catch (error) {
+      unread(stateRel(id, 'media.json'), error);
+    }
+    if (meta) {
+      const folder = dirname(meta.file);
+      folders.add(folder);
+      add(folder, media);
+      for (const text of own) texts.push({ folder, text });
+    } else {
+      loose.push(...media);
+      for (const text of own) texts.push({ folder: null, text });
+    }
+  }
+  const walk = (dir: string) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(join(root, dir), { withFileTypes: true });
+    } catch (error) {
+      unread(dir, error);
+      return;
+    }
+    if (entries.some((entry) => entry.name === ASSETS || /\.md$/i.test(entry.name))) folders.add(dir);
+    for (const entry of entries) {
+      const rel = join(dir, entry.name);
+      // Every folder a command could write a note into is scanned, hidden ones and nested workspaces included; only a
+      // state directory holds no notes.
+      if (entry.isDirectory()) {
+        if (entry.name.toLowerCase() === STATE_DIR) continue;
+        walk(rel);
+      } else if (entry.isFile() && /\.(md|rej)$/i.test(entry.name)) {
+        let text: Buffer;
+        try {
+          text = readFileSync(join(root, rel));
+        } catch (error) {
+          unread(rel, error);
+          continue;
+        }
+        try {
+          add(dir, namesIn(root, dir, [text]));
+        } catch {
+          // Its assets/ cannot be listed: incomplete below.
+        }
+      }
+    }
+  };
+  walk('.');
+  for (const folder of folders) {
+    const entries = assetEntries(root, folder);
+    if (entries === null) incomplete ??= `${join(folder, ASSETS)} cannot be listed`;
+    add(folder, [...(entries ?? []), ...loose]);
+  }
+  for (const { folder, text } of texts) {
+    for (const target of folder === null ? folders : [folder]) {
+      try {
+        add(target, namesIn(root, target, [text]));
+      } catch {
+        // Its assets/ cannot be listed: already incomplete above.
+      }
+    }
+  }
+  return { taint, incomplete };
+}
+
+/**
+ * Writes a text from the server into the note `rel` of doc `docId`, recording what it could name first (and, for a
+ * doc that moves folder with it, its old folder's taint); a file that already holds it is left alone.
+ */
+function writeServed(root: string, docId: string, rel: string, bytes: Uint8Array, expectHash: string | null | undefined, extra: (string | undefined)[]): void {
+  const previous = readMeta(root, docId);
+  if (previous) carryTaint(root, previous, rel, extra);
+  try {
+    const path = join(root, rel);
+    if (lstat(path)?.isFile() && readFileSync(path).equals(bytes)) return;
+  } catch {
+    // Written below, or refused there.
+  }
+  taintNote(root, rel, [bytes, ...extra]);
+  writeInside(root, rel, bytes, expectHash);
+}
+
 /** Rewrites a doc's meta.json (its file or server filename moved); the base is unchanged. */
 export function writeMeta(root: string, meta: DocMeta): void {
   writeInside(root, stateRel(meta.docId, 'meta.json'), Buffer.from(`${JSON.stringify(meta, null, 2)}\n`));
@@ -460,7 +1088,7 @@ export function ensureStateDir(root: string): void {
  */
 export function recordPull(root: string, docId: string, file: string, bytes: Uint8Array, expectHash: string | null | undefined, folds = false, state: Pick<SyncedState, 'prior' | 'refused'> = {}): DocMeta {
   const rel = confined(root, file);
-  writeInside(root, rel, bytes, expectHash);
+  writeServed(root, docId, rel, bytes, expectHash, []);
   return recordBase(root, docId, rel, bytes, folds, state);
 }
 
@@ -470,7 +1098,7 @@ export function recordPull(root: string, docId: string, file: string, bytes: Uin
  */
 export function recordSynced(root: string, docId: string, file: string, local: Uint8Array, base: Uint8Array, expectHash: string | null, folds: boolean, state: SyncedState): DocMeta {
   const rel = confined(root, file);
-  writeInside(root, rel, local, expectHash);
+  writeServed(root, docId, rel, local, expectHash, [state.title]);
   return recordBase(root, docId, rel, base, folds, { ...state, localHash: sha256Hex(local) });
 }
 
