@@ -935,6 +935,42 @@ describe('T5.S14 accept never applies a change the preview hides @p:mean-2 @p:R1
     expect(idsOf(live, text), 'the copied paragraph keeps its original items').toBe(ids);
     expect(anchored(live, comment), 'and its comment stays anchored').toBe(true);
   });
+
+  it.each([
+    ['the restored copy', 'copy', false],
+    ['the restored copy, beside a real change', 'copy', true],
+    ['its original', 'original', false],
+    ['its original, beside a real change', 'original', true],
+  ] as const)("a record that overwrites a key inside %s of a peer's text node shows nothing there, and accept refuses with 409, the doc byte-identical", (_name, where, real) => {
+    const live = seededBody();
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => {
+      const target = paragraph(doc, 'Hello');
+      const mapIn = () => (target.toDelta() as { insert: unknown }[]).map(({ insert }) => insert).find((x) => x instanceof Y.Map) as Y.Map<unknown>;
+      const original = mapIn();
+      // An undo restores the text node (its property map and text) as copies, as yjs redoes removed items.
+      const undo = new Y.UndoManager(target, { captureTimeout: 0 });
+      doc.transact(() => target.delete(0, target.length));
+      undo.undo();
+      undo.destroy();
+      const copy = mapIn();
+      expect(copy, 'the map is a copy').not.toBe(original);
+      const key = [...original.keys()].find((k) => k !== '__type') ?? '__type';
+      if (where === 'copy') copy.set(key, copy.get(key));
+      else original.set(key, 'overwritten');
+      if (real) {
+        const tail = paragraph(doc, 'join tail');
+        tail.insert(tail.length, ' More.');
+      }
+    })]);
+    const preview = previewRecord(live, 'g');
+    if (!preview.ok) throw new Error(preview.reason);
+    const hello = paragraph(live, 'Hello')._item!.id;
+    expect(preview.hunks.map((hunk) => hunk.id), 'nothing is shown for the restored paragraph').not.toContain(`${hello.client}:${hello.clock}`);
+    expect(preview.hunks.length, 'only the real change is shown').toBe(real ? 1 : 0);
+    const before = Y.encodeStateAsUpdate(live);
+    expect(acceptRecord(live, 'g', { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'changed' });
+    expect(Y.encodeStateAsUpdate(live), 'the doc is byte-identical').toEqual(before);
+  });
 });
 
 /** Each live item of a payload's text, by id and length. */
