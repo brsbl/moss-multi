@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (198 of 241 planned tasks verified)
+**Overall: 80% done** (199 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 22 / 22 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 23 / 23 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 24 / 24 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -225,6 +225,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T7.P2 verified: when Moss re-saves a note it held open while sync pulled an edit into it, sync keeps the pulled edit and lands only the new typing, sending anything it cannot place to `<file>.rej` instead of pushing a revert.
 - 2026-10-19 — T7.Q second pass verified: agent sync, Bot presence and the watch daemon now run on m6's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), and a large note opened in a fresh session no longer gains an empty paragraph ahead of its first line, because the first sync's answer pieces are held and applied with its step 2 (already counted on 2026-10-15).
 - 2026-10-19 — T7.P3 verified: a scope's `follow` now pulls the server notes its links reach, so an empty Linux replica starts from its scope while the Mac is offline and a note an agent makes and links comes down on the Mac; `watch` runs as a launchd agent or systemd user unit, `scope replica` prints the replica's scope, and CI packs the bundled CLI whose `--version` names its commit.
+- 2026-10-19 — T7.S9 verified: sync, pull and push now record every media name the server's text could name in a folder before writing that text, so a collaborator's reference can no longer make the CLI upload a private file from the owner's disk; only images the owner adds upload.
 
 ## T1.1s identity audit
 
@@ -258,6 +259,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.S9's checker (4922516, 2026-10-19)
+
+- T7.S9 checker P2 (Directory flush failures are swallowed before server text is written): syncDir catches every error from opening or flushing the state directory, including a real EIO, so after a storage error and a crash an older valid served-names.json can survive and loadTaint trusts it without a rebuild; storage-failure only, not an exfiltration path in normal operation.
+- T7.S9 checker P2 (Folder keys alone can push the taint store past its 4 MB cap): serializeTaint reduces a folder's names to ['*'], but when the folder keys alone exceed STORE_BYTES it returns the oversized buffer; still fail-closed, a workspace-wide taint fallback would restore the bound.
+- T7.S9 checker P2 (The push-event run at the head is red on two packages/sync timing assertions): push run 39369113727 on 4922516 failed only checks, on suggest-ingest 'costs the same on a small doc and the 1.69 MB doc' (21.09 ms vs 20.08 ms) and push-markers.linear 'landPush: a marker opener and blank lines'; the dispatched full lane on the same SHA (39369113607) passed; code untouched by T7.S9.
+- T7.S9 checker P2 (The implementer edited its own brief's form cap from 64 to 128, and the brief has no COORDINATOR RULE): commit 4922516 rewrote the T7.S9 BUILDPLAN line to '128 decoded forms'; Codex found 128 still bounded and fail-closed (a 129th form taints the folder); coordinator to confirm the 128 cap.
 
 ### From T7.P3's checker (071fb18, 2026-10-19)
 
