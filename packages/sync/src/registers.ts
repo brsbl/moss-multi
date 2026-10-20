@@ -411,6 +411,8 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   for (const key of editor.getEditorState()._nodeMap.keys()) index(key, editor.getEditorState());
   refresh();
   return () => {
+    // A paste landing as its pane closes commits in the task that unbinds: its first texts are written now.
+    if (registry.minted.size && editor._pendingEditorState === null) writeFirstTexts(editor.getEditorState());
     stopped = true;
     stops.forEach((stop) => stop());
     registries.delete(editor);

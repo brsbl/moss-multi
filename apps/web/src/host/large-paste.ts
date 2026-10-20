@@ -21,7 +21,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
-import { countedPayloadBytes, WRITE_REFUSED } from './collab/doc-session.ts';
+import { countedPayloadBytes, PASTE_LIMIT_BYTES, WRITE_REFUSED } from './collab/doc-session.ts';
 import { markLanding, runBatchGeometry } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
@@ -130,34 +130,38 @@ function gcBytes(update: Uint8Array): number {
 }
 
 /**
- * The note's doc and its payload docs, as the DocDO counts them against the cap (A§5.1). The DocDO counts every payload
- * it stores, withheld ones too (a deleted code block's text, kept for an undo), and this tab holds only the ones its
- * tree names, so the payloads count as the larger of the DocDO's last word and what this tab holds.
+ * The note's doc and its payload docs, as the DocDO counts them against the cap (A§5.1): with the payloads this tab
+ * holds (`local`), and with the payload bytes the DocDO counts, as countedPayloadBytes reads them (`server`). The DocDO
+ * counts every payload it stores, withheld ones too (a deleted code block's text, kept for an undo), and this tab holds
+ * only the ones its tree names, so the larger of the two is held.
  */
-function heldBytes(editor: LexicalEditor): number | null {
-  const doc = noteDoc(editor);
-  return doc ? noteBytes(doc) : null;
-}
-
-/** `doc` and its payload docs as the DocDO counts them against the cap (heldBytes). */
-export function noteBytes(doc: Y.Doc): number {
+function heldBytes(doc: Y.Doc): { local: number; server: number } {
   let payloads = 0;
   for (const payload of payloadDocsFor(doc).docs.values()) payloads += Y.encodeStateAsUpdate(payload).byteLength;
-  return gcBytes(Y.encodeStateAsUpdate(doc)) + Math.max(payloads, countedPayloadBytes(doc));
+  const note = gcBytes(Y.encodeStateAsUpdate(doc));
+  return { local: note + payloads, server: note + countedPayloadBytes(doc) };
+}
+
+/** `doc` and its payload docs as the DocDO counts them against the cap, the larger of heldBytes' two figures. */
+export function noteBytes(doc: Y.Doc): number {
+  const { local, server } = heldBytes(doc);
+  return Math.max(local, server);
 }
 
 /** Room under the frame cap for a frame's own header beyond what a piece or payload frame measures. */
 const FRAME_SLACK = 64;
 
 /**
- * Below `share` of the cap (a little headroom for what the estimate leaves out; a suggestion stops at the reserve kept
- * for edits); every frame within the frame cap. The figures are a User Timing mark (`moss-paste-admission`), so a
- * refusal can be told apart from a bug.
+ * Below the cap with a little headroom for what the estimate leaves out (PASTE_LIMIT_BYTES); every frame within the
+ * frame cap. The figures are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart from a bug.
  */
-function fits(editor: LexicalEditor, bytes: number, largestFrame: number, share = 0.97): boolean {
-  const held = heldBytes(editor);
-  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= STATE_CAP_BYTES * share);
-  performance.mark('moss-paste-admission', { detail: { adds: bytes, held, largestFrame, fit } });
+export function pasteFits(doc: Y.Doc | undefined, bytes: number, largestFrame: number): boolean {
+  const figures = doc ? heldBytes(doc) : null;
+  const held = figures ? Math.max(figures.local, figures.server) : null;
+  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= PASTE_LIMIT_BYTES);
+  performance.mark('moss-paste-admission', {
+    detail: { adds: bytes, held, heldLocal: figures?.local ?? null, heldServer: figures?.server ?? null, limit: PASTE_LIMIT_BYTES, largestFrame, fit },
+  });
   return fit;
 }
 
@@ -801,7 +805,7 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
 
   // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
   const { bytes, largestFrame } = yield* rehearse(request, max, noteDoc(editor));
-  if (!fits(editor, bytes, largestFrame)) {
+  if (!pasteFits(noteDoc(editor), bytes, largestFrame)) {
     refuseInput(WRITE_REFUSED['doc-cap']);
     return;
   }

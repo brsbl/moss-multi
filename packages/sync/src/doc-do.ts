@@ -39,7 +39,7 @@ import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payl
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { titleDiff } from './server-title.ts';
-import { splitUpdate } from './update-pieces.ts';
+import { splitAnswer } from './update-pieces.ts';
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -866,7 +866,8 @@ export class DocDO extends YServer<SyncEnv> {
    */
   #answer(connection: Connection, vector: Uint8Array): void {
     const update = Y.encodeStateAsUpdate(this.document, vector);
-    const pieces = update.byteLength > ANSWER_PIECE_BYTES ? splitUpdate(update, ANSWER_PIECE_BYTES).map((piece) => piece.update) : [update];
+    // In dependency order: the doc has many authors, and a piece in client order could need a later one (B212).
+    const pieces = splitAnswer(update, ANSWER_PIECE_BYTES);
     for (const [index, piece] of pieces.entries()) send(connection, encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece));
   }
 
