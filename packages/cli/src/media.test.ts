@@ -793,21 +793,26 @@ describe('the folder taint store follows edited moves, Moss\'s exact path rules 
     const other = createdId(first.results, join('Other', 'other.md'))!;
     expect(plan && other).toBeTruthy();
 
-    // The store is lost while another doc's record cannot be read.
+    // The store is lost and rebuilt while another doc's record cannot be read; then Ada adds an image.
     rmSync(state('served-names.json'), { force: true });
     chmodSync(state(other, 'meta.json'), 0o000);
-    write(join('assets', 'mine.png'), png('mine'));
-    appendFileSync(join(dir, 'plan.md'), '\n![m](assets/mine.png)\n');
     try {
+      expect((await cli(['init'])).code).toBe(0);
+      write(join('assets', 'mine.png'), png('mine'));
+      appendFileSync(join(dir, 'plan.md'), '\n![m](assets/mine.png)\n');
       const blocked = await cli(['push', 'plan.md']);
       expect(held(plan), blocked.out + blocked.err).toEqual([]);
-      expect(readFileSync(state('served-names.json'), 'utf8'), 'the rebuilt store is marked incomplete').toContain('"incomplete"');
+      expect(blocked.out + blocked.err).toContain('cannot rebuild it in full');
     } finally {
       chmodSync(state(other, 'meta.json'), 0o644);
     }
-    // Positive control: once the record can be read, the rebuild completes and her image goes up.
+    // Positive control: once the record can be read the rebuild completes (taking the names present then), and an image
+    // she adds after that goes up.
+    await cli(['push', 'plan.md']);
+    write(join('assets', 'new.png'), png('new'));
+    appendFileSync(join(dir, 'plan.md'), '\n![n](assets/new.png)\n');
     const again = await cli(['push', 'plan.md']);
-    expect(held(plan), again.out + again.err).toEqual(['mine.png']);
+    expect(held(plan), again.out + again.err).toEqual(['new.png']);
   });
 
   it('a rebuild scans a dot-prefixed note a pull left behind: adopting it uploads nothing it names', async () => {
@@ -821,8 +826,10 @@ describe('the folder taint store follows edited moves, Moss\'s exact path rules 
     expect((await cli(['pull', doc, 'current.md'])).code).toBe(0);
     expect(readFileSync(join(dir, '.old.md'), 'utf8')).toContain('assets/secret.png');
 
-    // The store is lost; later a file under the name .old.md references appears, and Ada adds .old.md with an image of her own.
+    // The store is lost and rebuilt; later a file under the name .old.md references appears, and Ada adds .old.md with an
+    // image of her own.
     rmSync(state('served-names.json'), { force: true });
+    expect((await cli(['init'])).code).toBe(0);
     write(join('assets', 'secret.png'), png('secret'));
     write(join('assets', 'mine.png'), png('mine'));
     appendFileSync(join(dir, '.old.md'), '\n![m](assets/mine.png)\n');
