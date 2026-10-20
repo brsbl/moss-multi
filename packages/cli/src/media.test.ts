@@ -600,7 +600,7 @@ describe('the folder taint store holds under concurrency, Moss\'s own path norma
     expect(held(plan)).toEqual(['mine.png']);
   });
 
-  it('a store rebuilt while an assets folder cannot be listed is not trusted: a stale save uploads nothing once it can', async () => {
+  it('a store rebuilt while an assets folder cannot be listed is not trusted: a name it held uploads nothing once it can be listed', async () => {
     write('plan.md', 'The plan.\n');
     write(join('assets', 'stray.png'), png('stray'));
     expect((await cli(['init'])).code).toBe(0);
@@ -620,10 +620,11 @@ describe('the folder taint store holds under concurrency, Moss\'s own path norma
     await syncJson();
     expect(readFileSync(join(dir, 'plan.md'), 'utf8')).not.toContain('stray.png');
 
-    write('plan.md', `${withRef}\nA line of my own.\n`);
-    const stale = await syncJson();
+    // The name comes back in an edit of Ada's own (not a stale editor save, which sync's prior texts catch first).
+    write('plan.md', `${clean.trimEnd()}\n\nAgain ![again](assets/stray.png)\n`);
+    const later = await syncJson();
     await syncJson();
-    expect(held(plan), JSON.stringify(stale.results)).toEqual([]);
+    expect(held(plan), JSON.stringify(later.results)).toEqual([]);
 
     write(join('assets', 'new.png'), png('new'));
     appendFileSync(join(dir, 'plan.md'), '\n![n](assets/new.png)\n');
