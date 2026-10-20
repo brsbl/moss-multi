@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 66% done** (166 of 250 planned tasks verified)
+**Overall: 67% done** (167 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 70 / 70 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 17 / 17 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 27 / 27 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 28 / 28 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -192,6 +192,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T3.B30 verified: an upload's memory now follows the bytes it has actually sent rather than its declared size, and a video is stored in one streamed put, so a disconnect cannot leave a multipart upload outside the vault's quota.
 - 2026-10-19 — T3.B28 verified: a note shaped with thousands of interleaved writers no longer makes the server do quadratic work to answer a reader's sync, and a huge answer can no longer overflow the stack, so any reader still gets the note in bounded time.
 - 2026-10-20 — T4.U verified: comments now run on m3's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads), with both sides kept and the full lane green on the m4 head.
+- 2026-10-20 — T5.U verified: suggestions now run on m4's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads); a Suggest-mode paste is still judged by T5.S10's rule against the larger of the local and server note sizes, and the full lane is green on the m5 head.
 
 ## T1.1s identity audit
 
@@ -748,3 +749,5 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B30 (An upload's memory follows the bytes it has sent) checker P2: the unit test for a disconnect never starts a real streamed R2 put — the recorded-bucket helper in apps/web/src/api/assets.test.ts:868-876 cancels the readable and throws before target.put (:878), so the null head assertion (:917) comes from the helper rather than an interrupted native put and would still pass if putParts stopped aborting its writer; no production defect (no-multipart and quota-retry assertions remain valid).
 - T3.B28 (splitAnswer is linear and stack-safe) checker P2: the 'at the cap' fixture is about 2 MB of encoded state, not the DocDO state cap — the harness and unit tests seed interleavedChains(2000, 120000) (~2 MB), while STATE_CAP_BYTES is ~26 MiB (2 MiB markdown cap x STATE_RATIO x 1.25); a fixture sized to stateCapBytes would make the boundary explicit (coverage gap only; the algorithm is linear).
 - T4.U (m4 on m3's sync and upload fixes) checker P2: intermittent WebKit j03-connection socket-count failure still unexplained — in attempt 1 of run 39425153421, 'a refused write rebinds fresh and a deleted doc locks in place' failed with Ben opening 3 doc sockets where 2 are allowed; it passed on rerun and in an exact-head WebKit repeat_each=3 run (39429710184); root cause and whether base lanes show it are not established (the merge changed only tests after T3.B4; related Chromium flake logged under T1.S1).
+- T5.U (m5 on m4's sync and upload fixes) checker P2: WebKit j00-import tables.md invariant 5 intermittently fails with a table column resize handle covering the canvas at 852,947 (1 in 3 on the T5.U head and on each parent, m5 and m4); e2e/lib/detectors.js:21-45 rejects handles mounted on the body while vendor TableColumnResizePlugin.tsx:713-772 portals them there.
+- T5.U (m5 on m4's sync and upload fixes) checker P2: timing budgets are tight: the j01-paste-check stall failed once at 5320 ms against 5300 ms and the converter's entity-tabs import at 260 ms against 250 ms (reruns 4002 ms and 230 ms; parents show the same variance).
