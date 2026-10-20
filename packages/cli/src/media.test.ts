@@ -611,6 +611,8 @@ describe('the folder taint store holds under concurrency, Moss\'s own path norma
     server.content.set(plan, withRef);
     await syncJson();
     server.content.set(plan, clean);
+    await syncJson();
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).not.toContain('stray.png');
 
     // The store, the base and the prior texts are lost; the store is rebuilt while assets/ can be searched but not listed.
     rmSync(state('served-names.json'), { force: true });
@@ -618,7 +620,6 @@ describe('the folder taint store holds under concurrency, Moss\'s own path norma
     chmodSync(join(dir, 'assets'), 0o100);
     await syncJson().finally(() => chmodSync(join(dir, 'assets'), 0o755));
     await syncJson();
-    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).not.toContain('stray.png');
 
     // The name comes back in an edit of Ada's own (not a stale editor save, which sync's prior texts catch first).
     write('plan.md', `${clean.trimEnd()}\n\nAgain ![again](assets/stray.png)\n`);
