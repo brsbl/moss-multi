@@ -582,13 +582,13 @@ describe('the folder taint store holds under concurrency, Moss\'s own path norma
     expect(plan).toBeTruthy();
 
     // Ben's references: Moss strips U+200B, and maps U+200B&#8239;U+200B to a space, when it resolves a local asset.
-    server.content.set(plan, `${server.content.get(plan)!.trimEnd()}\n\n![x](assets/sec​ret.png)\n\n![y](assets/my​&#8239;​file.png)\n`);
+    server.content.set(plan, `${server.content.get(plan)!.trimEnd()}\n\n![x](assets/sec\u200Bret.png)\n\n![y](assets/my\u200B&#8239;\u200Bfile.png)\n`);
     await syncJson();
     const injected = readFileSync(join(dir, 'plan.md'), 'utf8');
-    expect(injected).toContain('sec​ret.png');
+    expect(injected).toContain('sec\u200Bret.png');
 
     // Ada's editor saves the resolved paths with her typing.
-    write('plan.md', `${injected.replace('sec​ret.png', 'secret.png').replace('my​&#8239;​file.png', 'my%20file.png').trimEnd()}\n\nMy own line.\n`);
+    write('plan.md', `${injected.replace('sec\u200Bret.png', 'secret.png').replace('my\u200B&#8239;\u200Bfile.png', 'my%20file.png').trimEnd()}\n\nMy own line.\n`);
     const saved = await syncJson();
     await syncJson();
     expect(held(plan), JSON.stringify(saved.results)).toEqual([]);
