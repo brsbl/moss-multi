@@ -378,15 +378,16 @@ function rootType(type: Y.AbstractType<unknown>): (new () => Y.AbstractType<unkn
 /**
  * A gc-free copy of `live`, so a record's own deletes stay readable while the gates run. Its roots are typed as
  * `live`'s before the state is applied: a root typed afterwards loses what integration set on it (a Y.Text's
- * formatting flag), so the copy would skip a cleanup `live` runs.
+ * formatting flag), so the copy would skip a cleanup `live` runs. With `state`, the copy holds that state instead (a
+ * checkpoint of a doc derived from `live`), its roots still typed as `live`'s.
  */
-export function hydrate(live: Y.Doc): Y.Doc {
+export function hydrate(live: Y.Doc, state?: Uint8Array): Y.Doc {
   const mirror = new Y.Doc({ gc: false });
   for (const [name, type] of live.share) {
     const ctor = rootType(type as Y.AbstractType<unknown>);
     if (ctor) mirror.get(name, ctor as never);
   }
-  Y.applyUpdate(mirror, Y.encodeStateAsUpdate(live));
+  Y.applyUpdate(mirror, state ?? Y.encodeStateAsUpdate(live));
   return mirror;
 }
 
@@ -500,11 +501,13 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
       const collect = (transaction: Y.Transaction) => {
         for (const span of spansOf(transaction.deleteSet as never)) deleted.push(span);
       };
+      // One merged update per doc (its delete sets unioned), so ops that name the same structs again walk them once.
+      // t.groups keeps each step for G5, and record.ops its bytes for recordDigest.
+      const updates = t === body ? [...t.ops, ...record.parts.map((part) => deleteUpdate(part.targets))] : t.ops;
       t.doc.on('afterTransaction', collect);
       try {
         Y.transact(t.doc, () => {
-          for (const op of t.ops) Y.applyUpdate(t.doc, op);
-          if (t === body) for (const part of record.parts) Y.applyUpdate(t.doc, deleteUpdate(part.targets));
+          if (updates.length) Y.applyUpdate(t.doc, updates.length === 1 ? updates[0] : Y.mergeUpdates(updates));
         }, APPLY, false);
       } finally {
         t.doc.off('afterTransaction', collect);
@@ -746,7 +749,7 @@ class SpanIndex {
 }
 
 /** The structs of `client` overlapping [clock, end), in order. */
-function* structsIn(store: Y.Doc['store'], client: number, clock: number, end: number): Generator<Y.Item | Y.GC> {
+export function* structsIn(store: Y.Doc['store'], client: number, clock: number, end: number): Generator<Y.Item | Y.GC> {
   const structs = store.clients.get(client) as (Y.Item | Y.GC)[] | undefined;
   if (!structs || clock >= end) return;
   for (let i = Y.findIndexSS(structs as never, clock); i < structs.length && structs[i].id.clock < end; i++) yield structs[i];

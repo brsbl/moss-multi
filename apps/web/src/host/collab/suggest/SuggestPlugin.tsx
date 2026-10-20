@@ -184,6 +184,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       stops.push(() => {
         body.off('update', onUpdate);
         stopArrivals();
+        composite.dispose();
       });
       rebuild();
     }
