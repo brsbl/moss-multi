@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 64% done** (159 of 250 planned tasks verified)
+**Overall: 64% done** (160 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 67 / 67 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 16 / 16 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 24 / 24 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 25 / 25 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -185,6 +185,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
 - 2026-10-19 — T5.S10 verified: in Suggest mode a paste is Lexical's own paste, admitted whole or refused whole against every suggest limit by what it actually writes, pastes over table cells are refused, undo and redo are admitted the same way, and an undone paste or Enter no longer shows its restored rest as a suggestion.
 - 2026-10-19 — T5.S14 verified: accepting a suggestion no longer applies an identity-only change, so an item replaced by an identical copy keeps its original, its comment anchors and its authorship; accept refuses writes beneath a restored copy with 409, and input a kept accept would bury is offered back first.
+- 2026-10-19 — T5.B2 verified: in Suggest mode, deleting text a continuation's accepted prefix holds strikes it and keeps the caret, a replayed undo or redo no longer wipes the strikes' redo, a struck character or long struck run survives a rewrite of its node, and struck text a rewrite removed is still drawn struck where it stood.
 
 ## T1.1s identity audit
 
@@ -727,3 +728,7 @@ Local browser verification remains assigned to the independent checker under the
 - T5.S14 (Accept never applies an identity-only change) checker P2: addendum 3 item 1 narrowed by coordinator ruling: shown text lands, unshown text is buried (recorded in the brief).
 - T5.S14 (Accept never applies an identity-only change) checker P2: the deleted-anchor 409 is tested only through the relocation helper.
 - T5.S14 (Accept never applies an identity-only change) checker P2: after a kept accept halts input, the suggester pane hides the restored item until reload.
+- T5.B2 (Suggest-mode routing, rebuild provenance and pending ownership) checker P2: B300/B301 provenance still comes from matching text values (trace.ts sliceOf maps offsets only when the new text is one unique slice of the old), so a long rewrite that also unescapes text falls past ALIGN_CAP and drops the strike silently (routing.ts:174, 425-430), and an ambiguous serif-wrapper match can align the wrong character → carry the transform's real source offsets.
+- T5.B2 (Suggest-mode routing, rebuild provenance and pending ownership) checker P2: B302 struck text rebuilt alone at the start of a block draws no ghost: placeOf (paint.ts:369-398) searches only leftward, so with no anchor ghostsOf drops it (e.g. strike the first x of 'x tail x.' and highlight only that x).
+- T5.B2 (Suggest-mode routing, rebuild provenance and pending ownership) checker P2: B302 adjacent ghost characters are joined in id order (removedStrikes sorts by client and clock, client.ts:795), not document order, so a run created out of order reads 'bx' instead of 'xb'.
+- T5.B2 (Suggest-mode routing, rebuild provenance and pending ownership) checker P2: emptiedMaps walks left past tombstones for each removed id (client.ts:345-351), an unmeasured O(N^2) cost on the editing path for a densely struck text node.
