@@ -1329,7 +1329,7 @@ export class SuggestFork {
       this.#rescued = [];
       return;
     }
-    let removes: Y.DeleteSet;
+    let removes: ReturnType<typeof Y.decodeUpdate>['ds'];
     try {
       removes = Y.decodeUpdate(update).ds;
     } catch {
