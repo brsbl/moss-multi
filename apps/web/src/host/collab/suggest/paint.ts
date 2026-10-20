@@ -7,10 +7,10 @@ import { BODY_DOC, readsAsBody, regRefs, restoredCopies } from '@moss-multi/core
 import { SUGGEST_MARK_ATTR, OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
 import type { IdSpan } from '@moss-multi/protocol/suggest';
 import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
-import { openRecords, payloadIdsOf, type Built } from '@moss-multi/sync/suggest/client';
+import { openRecords, payloadIdsOf, type Built, type SuggestFork } from '@moss-multi/sync/suggest/client';
 import type { LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
-import { charIndex, idKey, rangesWhere, type CharPlace } from './chars.ts';
+import { charIndex, idKey, isPending, rangesWhere, type CharPlace } from './chars.ts';
 
 const INSERT = 'suggest-insert';
 const DELETE = 'suggest-delete';
@@ -62,7 +62,7 @@ export function paintBound(owner: object, editor: LexicalEditor, binding: Bindin
 export function pendingInserts(doc: Y.Doc, own: ReadonlySet<number>, body?: Y.Doc | null): (id: Y.ID) => boolean {
   const unchanged = body ? readsAsBody(doc, body) : () => false;
   const { copies } = body ? restoredCopies(doc, body) : { copies: new Map<string, Y.ID>() };
-  return (id) => own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client)) && !copies.has(idKey(id)) && !unchanged(id);
+  return (id) => isPending(id, own, body) && !copies.has(idKey(id)) && !unchanged(id);
 }
 
 /** Every valid open record's delete targets. */
@@ -251,16 +251,23 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
 
 /** Where a mark sits, relative to `host`. */
 function rectOf(editor: LexicalEditor, mark: Mark): DOMRect | null {
-  const element = editor.getElementByKey(mark.place.key);
+  return rectAt(editor, mark.place, mark.after);
+}
+
+/** The collapsed rect at a character of the editor (after it with `after`), or its element's. */
+function rectAt(editor: LexicalEditor, place: CharPlace, after: boolean): DOMRect | null {
+  const element = editor.getElementByKey(place.key);
   if (!element) return null;
-  if (mark.place.offset < 0) return element.getBoundingClientRect();
+  if (place.offset < 0) return element.getBoundingClientRect();
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   const text = walker.nextNode() as Text | null;
   if (!text) return element.getBoundingClientRect();
   const range = document.createRange();
-  const offset = Math.min(mark.place.offset + (mark.after ? 1 : 0), text.data.length);
+  const offset = Math.min(place.offset + (after ? 1 : 0), text.data.length);
   range.setStart(text, offset);
   range.setEnd(text, offset);
+  // jsdom lays nothing out and has no range rects.
+  if (typeof range.getClientRects !== 'function') return element.getBoundingClientRect();
   return range.getClientRects()[0] ?? range.getBoundingClientRect();
 }
 
@@ -323,5 +330,116 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
       if (onOpen && mark.record) bar.addEventListener('click', () => onOpen(mark.record));
       overlay.appendChild(bar);
     }
+  }
+}
+
+/** A struck original F no longer holds, shown struck where it stood (presentation only, never in the tree or a record). */
+export interface Ghost {
+  text: string;
+  place: CharPlace;
+  /** After the character at `place` rather than at it. */
+  after: boolean;
+}
+
+function itemIn(doc: Y.Doc, id: Y.ID): Y.Item | null {
+  if (id.clock >= Y.getState(doc.store, id.client)) return null;
+  const struct = Y.getItem(doc.store, id);
+  return struct instanceof Y.Item ? struct : null;
+}
+
+/** The live unit standing for `id` now: itself, or what undo or redo restored it as. */
+function liveUnit(doc: Y.Doc, id: Y.ID): { item: Y.Item; id: Y.ID } | null {
+  let at = id;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    const item = itemIn(doc, at);
+    if (!item) return null;
+    if (!item.deleted) return { item, id: at };
+    if (!item.redone) return null;
+    at = Y.createID(item.redone.client, item.redone.clock + at.clock - item.id.clock);
+  }
+  return null;
+}
+
+/**
+ * Where a removed item of F stood, by the binding: after the live character before it (other struck text it removed
+ * skipped, text undo or redo restored followed), or at the start of the text node whose map is before it. Undefined
+ * when the unit before it is gone for good (the text around it moved on), unless `lenient`: then older tombstones are
+ * passed over too, to the nearest live unit in its block.
+ */
+function placeOf(doc: Y.Doc, id: Y.ID, gone: ReadonlySet<string>, index: Map<string, CharPlace>, lenient: boolean): Omit<Ghost, 'text'> | undefined {
+  let item = itemIn(doc, id);
+  if (!item) return undefined;
+  let offset = id.clock - item.id.clock - 1;
+  for (let guard = 0; guard < 100_000; guard += 1) {
+    if (offset < 0) {
+      item = item.left;
+      if (!item) return undefined;
+      offset = item.length - 1;
+      continue;
+    }
+    // Formatting marks hold no place; a collected tombstone (ContentDeleted) keeps its length.
+    if (item.content instanceof Y.ContentFormat) {
+      offset = -1;
+      continue;
+    }
+    const unit = Y.createID(item.id.client, item.id.clock + offset);
+    const live = item.deleted && gone.has(idKey(unit)) ? null : liveUnit(doc, unit);
+    if (!live) {
+      if (item.deleted && (lenient || gone.has(idKey(unit)))) {
+        offset -= 1;
+        continue;
+      }
+      return undefined;
+    }
+    const place = index.get(idKey(live.id));
+    if (!place) return undefined;
+    const { content } = live.item;
+    if (content instanceof Y.ContentString) return { place, after: true };
+    return content instanceof Y.ContentType && content.type instanceof Y.Map && place.offset === 0 ? { place, after: false } : undefined;
+  }
+  return undefined;
+}
+
+/** The struck text a rewrite removed from F (`removedStrikes`), each run placed where it stood in the editor. */
+export function ghostsOf(fork: Pick<SuggestFork, 'doc' | 'body' | 'removedStrikes'>, binding: Binding): Ghost[] {
+  const removed = fork.removedStrikes();
+  if (removed.length === 0) return [];
+  const index = charIndex(binding);
+  const gone = new Set(removed.flatMap(({ stood }) => stood.map(idKey)));
+  const out = new Map<string, Ghost>();
+  for (const { original, stood } of removed) {
+    const source = itemIn(fork.body, original);
+    if (!(source?.content instanceof Y.ContentString)) continue;
+    const text = source.content.str[original.clock - source.id.clock] ?? '';
+    // Its latest copy that still has text beside it, else where the original stood.
+    let at: Omit<Ghost, 'text'> | undefined;
+    for (const id of stood) if ((at = placeOf(fork.doc, id, gone, index, false))) break;
+    at ??= placeOf(fork.doc, stood.at(-1) ?? original, gone, index, true);
+    if (!at) continue;
+    const key = `${at.place.key}:${at.place.offset}:${at.after}`;
+    const held = out.get(key);
+    if (held) held.text += text;
+    else out.set(key, { text, ...at });
+  }
+  return [...out.values()];
+}
+
+/** Draws `ghosts` into `overlay` (pointer-transparent), struck, each at the gap where its text stood. */
+export function drawGhosts(editor: LexicalEditor, overlay: HTMLElement, ghosts: readonly Ghost[]): void {
+  for (const old of overlay.querySelectorAll('[data-suggest-ghost]')) old.remove();
+  const host = overlay.getBoundingClientRect();
+  for (const ghost of ghosts) {
+    const element = document.createElement('span');
+    element.dataset.suggestGhost = '';
+    element.className = 'moss-suggest-ghost';
+    element.setAttribute('aria-hidden', 'true');
+    element.textContent = ghost.text;
+    const rect = rectAt(editor, ghost.place, ghost.after);
+    if (rect) {
+      element.style.left = `${rect.left - host.left}px`;
+      element.style.top = `${rect.top - host.top}px`;
+      element.style.setProperty('--ghost-line', `${rect.height}px`);
+    }
+    overlay.appendChild(element);
   }
 }

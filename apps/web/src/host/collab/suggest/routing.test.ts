@@ -10,13 +10,14 @@ import { describeHunks } from '@moss-multi/core/suggest/describe';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { IdSpan, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
-  $createRangeSelection, $getRoot, $setSelection, type RangeSelection, COMMAND_PRIORITY_EDITOR, COMMAND_PRIORITY_HIGH, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
+  $createRangeSelection, $getNodeByKey, $getRoot, $setSelection, createEditor, type RangeSelection, COMMAND_PRIORITY_EDITOR, COMMAND_PRIORITY_HIGH, DELETE_CHARACTER_COMMAND, REDO_COMMAND, UNDO_COMMAND, $getSelection, $isRangeSelection,
   $createTextNode, $isElementNode, $isParagraphNode, $isTextNode, $parseSerializedNode, TextNode, type LexicalEditor, type LexicalNode,
   type SerializedLexicalNode,
 } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
+import { MARKDOWN_EDITOR_NODES } from '../../../../../../packages/sync/src/converter/index.ts';
 import { Composite, destroyView, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
 import { readRecord, recordIds } from '../../../../../../packages/sync/src/suggest/records.ts';
@@ -28,9 +29,11 @@ import {
 import { deterministicIds, EDITOR, exported, NOTE_ID, seededBody, select, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { publishBinding } from '../binding-registry.ts';
 import { createBindingUndoManager } from '../undo.ts';
+import { captureCaret } from './caret.ts';
 import { charWork, textIds } from './chars.ts';
-import { struckByRecord } from './paint.ts';
-import { registerSuggestRouting } from './routing.ts';
+import { drawGhosts, ghostsOf, struckByRecord } from './paint.ts';
+import { rebuildWork, registerSuggestRouting } from './routing.ts';
+import { traceWork } from './trace.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -60,12 +63,24 @@ function wire(live: Y.Doc) {
   };
 }
 
-/** A suggester's pane: a moss editor bound to F, with the routing, the body's undo stack and a native Backspace. */
-function suggesting(markdown: string) {
+/**
+ * A suggester's pane: a moss editor bound to F, with the routing, the body's undo stack and a native Backspace.
+ * `dom`: the editor renders into a root element, as the pane's does.
+ */
+function suggesting(markdown: string, options: { dom?: boolean } = {}) {
   const live = seededBody(markdown);
   const link = wire(live);
   const fork = new SuggestFork(live, { me: SUGGESTER.id, name: SUGGESTER.name, send: link.send, now: () => 1_000 });
-  const bound = bindEditor(fork.doc);
+  let root: HTMLElement | null = null;
+  let domEditor: LexicalEditor | undefined;
+  if (options.dom) {
+    root = document.createElement('div');
+    root.contentEditable = 'true';
+    document.body.appendChild(root);
+    domEditor = createEditor({ namespace: 'routing-dom', nodes: MARKDOWN_EDITOR_NODES, onError: (error) => { throw error; } });
+    domEditor.setRootElement(root);
+  }
+  const bound = bindEditor(fork.doc, domEditor);
   const editor: LexicalEditor = bound.editor;
   const undo = createBindingUndoManager(bound.binding);
   (editor as unknown as Record<symbol, unknown>)[Symbol.for('@lexical/yjs/UndoManager')] = undo;
@@ -136,6 +151,10 @@ function suggesting(markdown: string) {
       undo.destroy();
       bound.dispose();
       fork.dispose();
+      if (root) {
+        editor.setRootElement(null);
+        root.remove();
+      }
     },
   };
 }
@@ -564,11 +583,15 @@ describe('a rewrite that also inserts text equal to the struck text keeps the st
   });
 });
 
-/** As @lexical/markdown runs a text-match transformer on its trigger, with moss's highlight transformer's replace. */
-const $highlight = (match: string) => {
+/**
+ * As @lexical/markdown runs a text-match transformer on its trigger, with moss's highlight transformer's replace;
+ * `unescape`: its text unescaped, as moss's unescapeInlineMarkdownText reads `\*`.
+ */
+const $highlight = (match: string, unescape = false) => {
   const node = textNode(match);
   const [matched] = node.splitText(match.length);
-  const highlighted = $createTextNode(match.slice(2, -2));
+  const inner = match.slice(2, -2);
+  const highlighted = $createTextNode(unescape ? inner.replace(/\\(.)/g, '$1') : inner);
   highlighted.setFormat(matched.getFormat());
   highlighted.setStyle('background-color: var(--highlight-yellow); --obsidian-highlight: true');
   matched.replace(highlighted);
@@ -1021,5 +1044,310 @@ describe('Backspace past a long struck run is linear and strikes the whole graph
       stop();
       pane.dispose();
     }
+  });
+});
+
+const openIds = (live: Y.Doc) => recordIds(live).filter((id) => readRecord(live, id)?.meta.status === 'open');
+
+/** Accepts every open record, each as previewed. */
+function acceptAll(live: Y.Doc): void {
+  for (const id of openIds(live)) {
+    const preview = previewRecord(live, id);
+    if (!preview.ok) throw new Error(`preview of ${id} refused`);
+    expect(acceptRecord(live, id, { previewHash: preview.hash, digest: preview.digest }, EDITOR), `accept ${id}`).toEqual({ ok: true });
+  }
+}
+
+// B285: a continuation writes on under an accepted record's lease, so an own client's items are pending only past what
+// the body holds of that client.
+describe("an accepted record's text, under a lease the fork still writes, is body text @p:mean-2 @p:R17", () => {
+  const idsOf = (pane: Pane) => pane.editor.getEditorState().read(() => textIds(pane.binding, textNode('abc').getKey())!);
+  /** "XYZ" typed after "abc tail." is accepted while "W" typed after it is in flight; "W" lands in a continuation. */
+  const acceptedPrefix = (pane: Pane) => {
+    pane.caret('abc', 9);
+    pane.edit(() => ($getSelection() as RangeSelection).insertText('XYZ'));
+    const [record] = openIds(pane.live);
+    pane.editor.update(() => ($getSelection() as RangeSelection).insertText('W'), { discrete: true });
+    pane.editor.update(() => {}, { discrete: true });
+    const preview = previewRecord(pane.live, record);
+    if (!preview.ok) throw new Error('no preview');
+    expect(acceptRecord(pane.live, record, { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+    pane.edit(() => {});
+    expect(pane.replies.filter((reply) => reply.t === 'suggest-refused'), 'never refused').toEqual([]);
+    expect(pane.text()).toContain('abc tail.XYZW');
+    const [, y, z, w] = idsOf(pane).slice(9, 13);
+    expect(w.client, 'the continuation writes under the accepted lease').toBe(y.client);
+    expect(pane.fork.ownClients().has(y.client), "that lease is still the author's").toBe(true);
+    return { y, z };
+  };
+
+  it('Backspace on the accepted prefix strikes it, never deletes it natively, and accept removes it', () => {
+    const pane = suggesting(NOTE);
+    try {
+      const { y } = acceptedPrefix(pane);
+      pane.caret('abc', 11);
+      pane.press('Backspace');
+      expect(pane.fork.struck(), 'a strike of the accepted "Y"').toEqual([{ client: y.client, clock: y.clock, len: 1 }]);
+      expect(pane.text(), 'F keeps it, struck').toContain('abc tail.XYZW');
+    } finally {
+      pane.dispose();
+    }
+    expect(pane.replies.filter((reply) => reply.t === 'suggest-refused'), 'never refused').toEqual([]);
+    acceptAll(pane.live);
+    expect(exported(pane.live)).toContain('abc tail.XZW');
+  });
+
+  it('a mode switch keeps the caret on the accepted prefix, not on the body text before it', () => {
+    const pane = suggesting(NOTE);
+    try {
+      const { y, z } = acceptedPrefix(pane);
+      pane.caret('abc', 11);
+      expect(captureCaret(pane.editor, pane.fork.ownClients(), pane.live), 'just after "Y"').toEqual({ client: y.client, clock: y.clock, after: true });
+      pane.caret('abc', 13);
+      expect(captureCaret(pane.editor, pane.fork.ownClients(), pane.live), 'past the pending "W", after "Z"').toEqual({ client: z.client, clock: z.clock, after: true });
+    } finally {
+      pane.dispose();
+    }
+  });
+});
+
+// B284: the body's undo stack replays a native step as a new stack item; only a new edit ends the strikes' redo.
+describe('native undo steps between strikes keep the strikes redoable @p:mean-2 @p:R17', () => {
+  const managerOf = (pane: Pane) => (pane.editor as unknown as Record<symbol, { stopCapturing(): void }>)[Symbol.for('@lexical/yjs/UndoManager')];
+  const sorted = (spans: readonly IdSpan[]) => [...spans].sort((x, y) => x.client - y.client || x.clock - y.clock);
+
+  it('strikes between native body and payload edits: undo all, redo all, and every strike is redone', () => {
+    const pane = suggesting(NOTE);
+    try {
+      const payload = payloadDocsFor(pane.fork.doc).hold('p-redo', true);
+      const steps: (() => void)[] = [
+        () => {
+          pane.caret('abc', 1);
+          pane.press('Backspace');
+        },
+        () => {
+          pane.caret('Closing', 23);
+          pane.edit(() => ($getSelection() as RangeSelection).insertText('Q'));
+        },
+        () => {
+          pane.caret('abc', 3);
+          pane.press('Backspace');
+        },
+        () => {
+          payload.transact(() => payloadText(payload).insert(0, 'z'), REGISTER_LOCAL_ORIGIN);
+          pane.edit(() => {});
+        },
+        () => {
+          pane.caret('Intro', 1);
+          pane.press('Backspace');
+        },
+      ];
+      for (const step of steps) {
+        managerOf(pane).stopCapturing();
+        step();
+      }
+      const struck = sorted(pane.fork.struck());
+      expect(struck.reduce((sum, span) => sum + span.len, 0), 'three strikes').toBe(3);
+      const text = pane.text();
+      for (let i = 0; i < steps.length; i += 1) pane.undo();
+      expect(pane.fork.struck(), 'undo took every strike back').toEqual([]);
+      expect(payloadText(payload).toString(), 'and the payload edit').toBe('');
+      expect(pane.text(), 'and the body edit').not.toContain('Q');
+      for (let i = 0; i < steps.length; i += 1) pane.redo();
+      expect(sorted(pane.fork.struck()), 'redo put every strike back').toEqual(struck);
+      expect(payloadText(payload).toString()).toBe('z');
+      expect(pane.text()).toBe(text);
+    } finally {
+      pane.dispose();
+    }
+    expect(pane.replies.filter((reply) => reply.t === 'suggest-refused'), 'never refused').toEqual([]);
+  });
+
+  it('a new edit after an undo still ends the strike redo', () => {
+    const pane = suggesting(NOTE);
+    try {
+      pane.caret('abc', 1);
+      pane.press('Backspace');
+      pane.undo();
+      expect(pane.fork.struck()).toEqual([]);
+      managerOf(pane).stopCapturing();
+      pane.caret('Closing', 23);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('Q'));
+      pane.redo();
+      expect(pane.fork.struck(), 'nothing to redo').toEqual([]);
+    } finally {
+      pane.dispose();
+    }
+  });
+});
+
+// B300, B301: a rewrite that rebuilds a text node from its text carries each character's identity by offset, whatever
+// the run's length and however short the match.
+describe('a highlight rewrite carries each struck character by offset @p:mean-2 @p:R17', () => {
+  it("strike the lone 'x' of 'x tail x.', type '==' either side and highlight: F, the card, the working export and accept never bring it back", () => {
+    const pane = suggesting('Intro line stays.\n\nx tail x.\n\nClosing line stays too.\n');
+    try {
+      pane.caret('x tail', 1);
+      pane.press('Backspace');
+      pane.caret('x tail', 0);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+      pane.caret('==x', 3);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+      pane.edit(() => $highlight('==x=='));
+      expect(pane.text(), 'F: highlighted, without the struck "x"').not.toMatch(/x=* tail/);
+      expect(pane.text(), 'the other "x" stays').toContain(' tail x.');
+    } finally {
+      pane.dispose();
+    }
+    const { record, inserted, working, body } = reviewed(pane);
+    expect(record.parts, 'the strike stays a part').toHaveLength(1);
+    // The rest of the node, " tail x.", is rewritten with its own "x"; the struck one is not.
+    expect(inserted.join('|'), 'the card adds no struck "x"').not.toMatch(/x[\\=]* tail/);
+    expect(working).not.toMatch(/x[\\=]* tail/);
+    expect(body, 'accept leaves the struck "x" out').not.toMatch(/x[\\=]* tail/);
+    expect(body, 'and keeps the other').toContain(' tail x.');
+  });
+
+  /** Repeated text of `length`, a struck character in the middle, highlighted whole. */
+  const longRun = (length: number) => {
+    const text = 'lorem ipsum dolor '.repeat(Math.ceil(length / 18)).slice(0, length - 1) + 'q';
+    const at = text.indexOf('d', Math.floor(length / 2));
+    const kept = text.slice(0, at) + text.slice(at + 1);
+    const pane = suggesting(`Intro line stays.\n\n${text}\n\nClosing line stays too.\n`);
+    try {
+      pane.caret('lorem', at + 1);
+      pane.press('Backspace');
+      pane.caret('lorem', 0);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+      pane.caret('==lorem', length + 2);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+      pane.edit(() => $highlight(`==${text}==`));
+      expect(pane.text(), 'F leaves the struck character out').toContain(`\n\n${kept}\n\n`);
+    } finally {
+      pane.dispose();
+    }
+    const { inserted, working, body } = reviewed(pane);
+    expect(inserted.join('|'), 'the card adds the text without it').not.toContain(text);
+    expect(working).not.toContain(text);
+    expect(body, 'accept leaves it out').toContain(`==${kept}==`);
+    expect(body).toContain('Closing line stays too.');
+  };
+
+  it('a run just past the old alignment limit keeps its interior strike', () => longRun(2_010));
+  it('a run below it keeps its interior strike too', () => longRun(1_980));
+});
+
+// B303: a rebuild reads each deleted run once, and the trace carries only the spots of the node an operation changes.
+describe('a rebuild costs linear work in the run and the strikes @p:mean-2 @p:R17', () => {
+  const LENGTH = 600;
+  /** Lower-case text with `strikes` capitals spread through it and an escape in the middle, so the rewrite is no slice of it. */
+  const textWith = (strikes: number) => {
+    const chars = 'lorem ipsum dolor sit amet '.repeat(Math.ceil(LENGTH / 27)).slice(0, LENGTH).split('');
+    const at: number[] = [];
+    for (let i = 0; i < strikes; i += 1) {
+      const where = 10 + Math.floor((i * (LENGTH - 20)) / strikes);
+      chars[where] = 'Z';
+      at.push(where);
+    }
+    chars[LENGTH / 2 + 3] = '\\';
+    chars[LENGTH / 2 + 4] = '*';
+    return { text: chars.join(''), at };
+  };
+  const rewrite = (strikes: number, elsewhere = 0) => {
+    const { text, at } = textWith(strikes);
+    const closing = elsewhere ? `closing ${'k'.repeat(elsewhere)} end` : 'closing line stays too.';
+    const pane = suggesting(`intro line stays.\n\n${text.replace('\\*', '\\\\\\*')}\n\n${closing}\n`);
+    let work: { units: number; lookups: number; spots: number };
+    try {
+      expect(pane.text(), 'the escape is in the text').toContain(text);
+      for (const where of at) {
+        pane.caret('lorem', where + 1);
+        pane.press('Backspace');
+      }
+      if (elsewhere) {
+        pane.caret('closing', 8, 8 + elsewhere);
+        pane.press('Backspace');
+      }
+      rebuildWork.units = 0;
+      rebuildWork.lookups = 0;
+      traceWork.spots = 0;
+      pane.caret('lorem', 0);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+      pane.caret('==lorem', LENGTH + 2);
+      pane.edit(() => ($getSelection() as RangeSelection).insertText('=='));
+      pane.edit(() => $highlight(`==${text}==`, true));
+      work = { units: rebuildWork.units, lookups: rebuildWork.lookups, spots: traceWork.spots };
+      expect(pane.text(), 'F leaves every struck capital out').not.toMatch(/Z/);
+      pane.undo();
+      expect(pane.text(), 'undo: still out').not.toMatch(/Z/);
+      pane.redo();
+      expect(pane.text(), 'redo: still out').not.toMatch(/Z/);
+    } finally {
+      pane.dispose();
+    }
+    const { inserted, working, body } = reviewed(pane);
+    expect(inserted.join('|'), 'the card adds no struck capital').not.toMatch(/Z/);
+    expect(working).not.toMatch(/Z/);
+    expect(body, 'accept leaves every struck capital out').not.toMatch(/Z/);
+    expect(body, 'and keeps the rest').toContain('lorem ipsum');
+    return work;
+  };
+
+  it('8 and then 16 struck characters in a 600-character paragraph: units read and lookups stay linear', () => {
+    const one = rewrite(8);
+    const two = rewrite(16);
+    for (const [label, work] of [['8', one], ['16', two]] as const) {
+      expect(work.units, `${label} strikes: each deleted run read once`).toBeLessThanOrEqual(2 * (LENGTH + 20));
+      expect(work.lookups, `${label} strikes: a lookup per struck character`).toBeLessThanOrEqual(4 * 16);
+    }
+    expect(two.units, 'twice the strikes, no more units').toBeLessThanOrEqual(one.units + 40);
+  });
+
+  it("strikes in another paragraph add nothing to the trace's work on this one", () => {
+    const alone = rewrite(8);
+    const crowded = rewrite(8, 200);
+    expect(crowded.spots, 'only the spots in the nodes each operation changes').toBeLessThanOrEqual(alone.spots + 20);
+  });
+});
+
+// B302: struck text a rewrite took out of F is drawn struck where it stood, outside the editor's tree and the record.
+describe('a struck character a rewrite removed stays visible and struck where it stood @p:mean-2 @p:R17', () => {
+  it("strike 'b' of 'abc' and highlight: the author's DOM shows a struck 'b' after 'a', through undo and redo; the card, the working export and accept omit it", () => {
+    const pane = suggesting(NOTE, { dom: true });
+    const overlay = document.createElement('div');
+    document.body.appendChild(overlay);
+    const look = (label: string) => {
+      const ghosts = pane.editor.getEditorState().read(() => ghostsOf(pane.fork, pane.binding));
+      expect(ghosts.map((ghost) => ghost.text), `${label}: the struck "b" is shown`).toEqual(['b']);
+      const [ghost] = ghosts;
+      pane.editor.getEditorState().read(() => {
+        const content = $getNodeByKey(ghost.place.key)!.getTextContent();
+        const at = ghost.place.offset + (ghost.after ? 1 : 0);
+        expect(content.slice(0, at), `${label}: just after "a"`).toMatch(/a$/);
+        expect(content.slice(at), `${label}: just before "c"`).toMatch(/^c/);
+      });
+      drawGhosts(pane.editor, overlay, ghosts);
+      const shown = [...overlay.querySelectorAll<HTMLElement>('[data-suggest-ghost]')];
+      expect(shown.map((element) => element.textContent), `${label}: drawn struck`).toEqual(['b']);
+      expect(shown[0].className).toContain('moss-suggest-ghost');
+      expect(pane.editor.getRootElement()!.textContent, `${label}: never in the editor's own text`).not.toMatch(/a=*b/);
+    };
+    try {
+      highlighted(pane);
+      expect(pane.editor.getRootElement()!.textContent, 'the editor renders F').toContain('ac');
+      look('the rewrite');
+      pane.undo();
+      look('undo');
+      pane.redo();
+      look('redo');
+    } finally {
+      overlay.remove();
+      pane.dispose();
+    }
+    const { inserted, working, body } = reviewed(pane);
+    expect(inserted.join('|'), 'the card omits the "b"').not.toContain('b');
+    expect(working).not.toMatch(/a[\\=]*b/);
+    expect(body).not.toMatch(/a[\\=]*b/);
+    expect(body).toMatch(/a[\\=]*c/);
   });
 });

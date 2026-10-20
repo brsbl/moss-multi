@@ -12,7 +12,7 @@ import { bindingOf } from '../binding-registry.ts';
 import { restoreCaret, type CaretMark } from './caret.ts';
 import { rangesWhere } from './chars.ts';
 import { ReviewMount, SuggestMount } from './mounts.ts';
-import { clearPaint, covers, drawMarks, editMarks, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
+import { clearPaint, covers, drawGhosts, drawMarks, editMarks, ghostsOf, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
 import type { PasteStack } from './paste.ts';
 import { registerSuggestRouting } from './routing.ts';
 import { openSuggestion } from './SuggestionsPanel.tsx';
@@ -78,7 +78,8 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     // Edit mode: each valid record's struck body items, rebuilt with C.
     let struckBy = new Map<string, IdSpan[]>();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const overlay = mode === 'edit' ? overlayFor(editor.getRootElement()) : null;
+    // Edit-mode marks; in Suggest mode, the struck text a rewrite took out of F (drawGhosts).
+    const overlay = mode === 'edit' || mount instanceof SuggestMount ? overlayFor(editor.getRootElement()) : null;
 
     const paint = () => {
       frame = 0;
@@ -91,6 +92,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       }
       if (mount instanceof SuggestMount) {
         paintBound(owner, editor, binding, mount.fork.ownClients(), mount.fork.struck(), body);
+        if (overlay) drawGhosts(editor, overlay, ghostsOf(mount.fork, binding));
       } else if (mount instanceof ReviewMount) {
         paintBound(owner, editor, binding, new Set(mount.clients.keys()), body ? partTargets(body, new Set(mount.valid)) : [], body);
       } else if (built && body) {
