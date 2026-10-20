@@ -333,6 +333,17 @@ export function fence(language: string, bytes: number, line: (i: number) => stri
   return `\`\`\`${language}\n${lines.join('\n')}\n\`\`\``;
 }
 
+/** A paste's admission figures (the `moss-paste-admission` mark): what it adds, what the tab counts as held, the limit. */
+export interface Admission {
+  adds: number;
+  held: number;
+  heldLocal: number;
+  heldServer: number;
+  limit: number;
+  largestFrame: number;
+  fit: boolean;
+}
+
 /**
  * Pastes `pasted` after the note's "Kept." and checks it is refused whole and visibly: nothing of it in the editor, on
  * the server or on the collaborator's screen, the tab never held past MAX_STALL_MS, the note still editable, and, with
@@ -342,10 +353,11 @@ export async function expectRefusedPaste(
   { ada, ben, docId, wire }: { ada: Actor; ben: Actor; docId: string; wire: Wire },
   stack: Stack,
   pasted: string,
-  { checkWire = true }: { checkWire?: boolean } = {},
+  { checkWire = true, admission: checkAdmission }: { checkWire?: boolean; admission?: (figures: Admission) => void } = {},
 ): Promise<void> {
   await ui.waitAcked(ada, docId, 30_000);
   const before = await exported(ada, docId);
+  const benBefore = await exported(ben, docId);
   const print = await fingerprint(ada, docId);
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
   await ada.page.keyboard.press('End');
@@ -354,7 +366,12 @@ export async function expectRefusedPaste(
   await pastePlain(ada, docId, pasted);
   // The admission's own figures (what the paste adds, what the tab counts as held), so a paste admitted that should
   // not have been says why.
-  const admission = () => ada.page.evaluate(() => performance.getEntriesByName('moss-paste-admission').map((mark) => (mark as PerformanceMark).detail));
+  const admission = () => ada.page.evaluate(() => performance.getEntriesByName('moss-paste-admission').map((mark) => (mark as PerformanceMark).detail as Admission));
+  if (checkAdmission) {
+    let figures: Admission | undefined;
+    await expect.poll(async () => (figures = (await admission()).at(-1)) !== undefined, { message: 'the paste is measured', timeout: 120_000 }).toBe(true);
+    checkAdmission(figures!);
+  }
   try {
     await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
   } catch (error) {
@@ -370,6 +387,7 @@ export async function expectRefusedPaste(
   expect(await fingerprint(ada, docId), 'nothing of the paste is in the editor').toEqual(print);
   await ada.page.waitForTimeout(3_000);
   expect(await exported(ada, docId), 'nothing of the paste reached the server').toBe(before);
+  expect(await exported(ben, docId), 'nor the collaborator\'s export').toBe(benBefore);
   expect(await fingerprint(ben, docId), 'nor the collaborator').toEqual(print);
   await ui.typeBody(ada, docId, ' Still typing.');
   await ui.waitAcked(ada, docId, 30_000);

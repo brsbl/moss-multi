@@ -58,7 +58,9 @@ function client(seed: Y.Doc) {
   const stopHold = host.onHold((_id, payload) => { undo.trackPayload(payload, REGISTER_LOCAL_ORIGIN, 500); });
   share(seed, doc);
   editor.update(noop, { discrete: true });
-  return { doc, editor, undo, dispose: () => { stopHold(); undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); host.destroy(); doc.destroy(); } };
+  let registersStopped = false;
+  const unbindRegisters = () => { if (!registersStopped) { registersStopped = true; stopRegisters(); } };
+  return { doc, editor, undo, unbindRegisters, dispose: () => { stopHold(); undo.destroy(); stop(); unbindRegisters(); root.unobserveDeep(observer); host.destroy(); doc.destroy(); } };
 }
 
 const cases = [
@@ -229,6 +231,26 @@ describe('L4 decorator registers @p:col-1 @p:col-3 @p:tech-1', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(seen).toEqual(['minted();']);
       expect(a.editor.read(() => (findAll('code-block')[0] as unknown as { getCode(): string }).getCode())).toBe('minted();');
+    } finally { a.dispose(); seed.destroy(); }
+  });
+
+  it('writes a new block\'s first text when the binding stops before the queued write runs (a paste landing as its pane closes, T3.B4)', async () => {
+    const seed = new Y.Doc(); seedEmptyParagraph(seed);
+    const a = client(seed);
+    try {
+      let key = '';
+      a.editor.update(() => {
+        const klass = a.editor._nodes.get('code-block')!.klass as unknown as new (code: string) => LexicalNode;
+        const node = new klass('minted();');
+        $getRoot().append(node);
+        key = node.getKey();
+      }, { discrete: true });
+      const id = (a.editor.getEditorState()._nodeMap.get(key) as unknown as { __regId: string }).__regId;
+      // The pane's effects clean up in the same task as the commit that landed the paste.
+      a.unbindRegisters();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const held = payloadDocsFor(a.doc).docs.get(id);
+      expect(held && payloadText(held).toString()).toBe('minted();');
     } finally { a.dispose(); seed.destroy(); }
   });
 

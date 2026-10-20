@@ -429,3 +429,187 @@ it('a doc REST still has in Trash stays terminal, and a live session is left alo
   expect(terminalOf('doc')).toBe('deleted');
   expect(sockets).toHaveLength(1);
 });
+
+/** The update a sync write frame (`[0, 1|2, varUint8Array]`) carries, else null. */
+function writeOf(frame: unknown): Uint8Array | null {
+  if (!(frame instanceof Uint8Array) || frame[0] !== 0 || (frame[1] !== 1 && frame[1] !== 2)) return null;
+  let length = 0;
+  let at = 2;
+  for (let shift = 0; at < frame.length; shift += 7) {
+    const byte = frame[at++];
+    length += (byte & 0x7f) * 2 ** shift;
+    if (byte < 0x80) break;
+  }
+  return frame.subarray(at, at + length);
+}
+/** The title the sync writes `socket` sent from index `from` on carry, applied to an empty doc. */
+function sentTitle(socket: FakeSocket, from = 0): string {
+  const doc = new Y.Doc();
+  for (const frame of socket.sent.slice(from)) {
+    const update = writeOf(frame);
+    if (update) Y.applyUpdate(doc, update);
+  }
+  return doc.getText('title').toString();
+}
+let peerFrames = 0;
+/** Every peer update delivered, as the DocDO holds them. */
+const peerUpdates: Uint8Array[] = [];
+/** A peer's update arriving on `socket`, stamped on the fake clock as the provider would stamp it. */
+function peerUpdate(socket: FakeSocket): void {
+  const peer = new Y.Doc();
+  peer.getText('peer').insert(0, `${peerFrames++}`);
+  peerUpdates.push(Y.encodeStateAsUpdate(peer));
+  socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(2, Y.encodeStateAsUpdate(peer)).slice().buffer }));
+  session.provider.wsLastMessageReceived = Date.now();
+}
+/** A server event on `socket`, as y-partyserver unicasts one. */
+function serverEvent(socket: FakeSocket, event: object): void {
+  socket.dispatchEvent(new MessageEvent('message', { data: `__YPS:${JSON.stringify(event)}` }));
+}
+const base64 = (bytes: Uint8Array) => btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
+const step1Count = (socket: FakeSocket) => socket.sent.filter((frame) => frame instanceof Uint8Array && frame[0] === 0 && frame[1] === 0).length;
+
+it('detaches a socket that stays open and silent while every tick runs late, once the bounded busy grace runs out, and replays the ledger (B208)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  session.doc.getText('title').insert(0, 'kept');
+  // Every 1 s tick runs 2.5 s late and nothing is ever heard: busy, but the socket is dead too.
+  for (let i = 0; i < 60 && !socket.closes.includes(4408); i += 1) {
+    vi.setSystemTime(Date.now() + 1_500);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(socket.closes, 'the busy grace is bounded').toContain(4408);
+  await vi.advanceTimersByTimeAsync(1_000);
+  const fresh = latest();
+  expect(fresh, 'it reconnects').not.toBe(socket);
+  fresh.open();
+  expect(sentTitle(fresh), 'the reconnect replays the unacked edit').toBe('kept');
+  expect(session.state.unacked).toBe(true);
+});
+it('keeps a socket through one long block of the main thread, whose frames are read once it ends (B208)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  await vi.advanceTimersByTimeAsync(1_000);
+  // A collaborator's 40,000-paragraph paste rendered here holds the thread 60 s: the frames sent meanwhile wait behind it.
+  vi.setSystemTime(Date.now() + 60_000);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(socket.closes, 'a frame queued behind the block is not silence').toEqual([]);
+  peerUpdate(socket);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(socket.closes).toEqual([]);
+  expect(sockets).toHaveLength(1);
+});
+it('keeps a busy tab connected for as long as frames keep arriving (B208)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  for (let i = 0; i < 60; i += 1) {
+    vi.setSystemTime(Date.now() + 1_500);
+    await vi.advanceTimersByTimeAsync(1_000);
+    if (i % 2 === 0) peerUpdate(socket);
+  }
+  expect(socket.closes).toEqual([]);
+  expect(sockets).toHaveLength(1);
+});
+it('reads a socket that hears only server events (acks) as alive, not silent', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const ds = base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map())));
+  for (let i = 0; i < 30; i += 1) {
+    serverEvent(socket, { t: 'ack', sv: base64(Y.encodeStateVector(session.doc)), ds });
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(socket.closes).toEqual([]);
+  expect(sockets).toHaveLength(1);
+});
+it('sends a fresh step 1 once the outstanding one is held back past its maximum, though peer updates keep arriving, and replays the unacked edit (B213)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  session.doc.getText('title').insert(0, 'unacked');
+  expect(step1Count(socket), 'the step 1 on open').toBe(1);
+  // The step 2 answering it is lost; a peer's update arrives every second.
+  for (let i = 0; i < 60 && step1Count(socket) < 2; i += 1) {
+    peerUpdate(socket);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(step1Count(socket), 'a fresh step 1 after the maximum hold-back').toBeGreaterThanOrEqual(2);
+  let resent = socket.sent.length - 1;
+  while (resent > 0 && !(socket.sent[resent] instanceof Uint8Array && (socket.sent[resent] as Uint8Array)[0] === 0 && (socket.sent[resent] as Uint8Array)[1] === 0)) resent -= 1;
+  expect(sentTitle(socket, resent), 'and the unacked edit is replayed').toBe('unacked');
+  expect(socket.closes).toEqual([]);
+});
+it('detaches an outbox stalled at its budget with writes still queued and converges on the next socket, without a reload (B209)', async () => {
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  // A paste of about 3 MB, past the 1.5 MB budget, in blocks the outbox sends as pieces.
+  session.doc.transact(() => {
+    session.doc.getArray<Y.Text>('blocks').push(Array.from({ length: 3_000 }, (_, i) => new Y.Text(`${i} ${'x'.repeat(1_000)}`)));
+  });
+  // Every ack is lost; peer updates keep the socket from reading as silent.
+  for (let i = 0; i < 90 && !socket.closes.includes(4408); i += 1) {
+    peerUpdate(socket);
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  expect(socket.closes, 'stalled at the budget: detached').toContain(4408);
+  await vi.advanceTimersByTimeAsync(1_000);
+  const fresh = latest();
+  expect(fresh).not.toBe(socket);
+  fresh.open();
+  expect(fresh.sent.some((frame) => writeOf(frame) !== null), 'the ledger replays on the fresh socket').toBe(true);
+  // Transport restored: a DocDO that held only the peers' updates applies what the fresh socket sends, and acks that.
+  const server = new Y.Doc();
+  for (const update of peerUpdates) Y.applyUpdate(server, update);
+  let read = 0;
+  for (let i = 0; i < 200 && session.state.unacked; i += 1) {
+    for (; read < fresh.sent.length; read += 1) {
+      const update = writeOf(fresh.sent[read]);
+      if (update) Y.applyUpdate(server, update);
+    }
+    serverEvent(fresh, { t: 'ack', sv: base64(Y.encodeStateVector(server)), ds: base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map()))) });
+    await vi.advanceTimersByTimeAsync(100);
+  }
+  expect(session.state.unacked, 'every write acked').toBe(false);
+  expect(server.store.pendingStructs, 'nothing the server holds waits on a missing write').toBeNull();
+  expect(server.getArray('blocks').toJSON(), 'the server converged on the whole paste').toEqual(session.doc.getArray('blocks').toJSON());
+  expect(session.state.resync, 'no reload').toBe(false);
+  expect(terminalOf('doc')).toBeNull();
+  expect(fresh.closes).toEqual([]);
+});
+it('counts a payload write the DocDO\'s usage figure already includes once, though its ack was lost (B207)', async () => {
+  const { countedPayloadBytes } = sessionModule;
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  nameInTree('code');
+  const payload = session.payloads.hold('code', true);
+  payload.getText('payload').insert(0, 'y'.repeat(100_000));
+  // The write persisted and its ack was lost with the socket: the next connect's usage figure includes it.
+  socket.ended(1006);
+  await vi.advanceTimersByTimeAsync(5_000);
+  const fresh = latest(); fresh.open();
+  const persisted = 4_000_000 + Y.encodeStateAsUpdate(payload).byteLength;
+  serverEvent(fresh, { t: 'usage', pb: persisted });
+  expect(countedPayloadBytes(session.doc), 'counted once').toBe(persisted);
+  payload.getText('payload').insert(0, 'z'.repeat(10_000));
+  const grown = countedPayloadBytes(session.doc) - persisted;
+  expect(grown, 'growth after the figure still counts').toBeGreaterThanOrEqual(10_000);
+  expect(grown).toBeLessThan(10_200);
+});
+it('counts payloads as the DocDO\'s total plus unacked local growth: a paste that fits only beside the larger of the two is refused, and the ack neither loses nor double-counts the growth (B207)', async () => {
+  const { pasteFits } = await import('../large-paste.ts');
+  const { countedPayloadBytes, PASTE_LIMIT_BYTES } = sessionModule;
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  // The DocDO counts 4 MB of withheld payloads this tab does not hold.
+  const server = 4_000_000;
+  serverEvent(socket, { t: 'usage', pb: server });
+  nameInTree('code');
+  const payload = session.payloads.hold('code', true);
+  payload.getText('payload').insert(0, 'y'.repeat(300_000));
+  const grown = Y.encodeStateAsUpdate(payload).byteLength;
+  const note = Y.encodeStateAsUpdate(session.doc).byteLength;
+  // Fits beside the larger of what this tab holds and what the DocDO last said; not beside that total plus the growth.
+  const paste = PASTE_LIMIT_BYTES - note - server - 150_000;
+  expect(note + Math.max(grown, server) + paste).toBeLessThanOrEqual(PASTE_LIMIT_BYTES);
+  expect(countedPayloadBytes(session.doc), 'the unacked growth counts').toBeGreaterThan(server + grown - 64);
+  expect(pasteFits(session.doc, paste, 1_000), 'refused before anything of it is applied').toBe(false);
+  // The ack: the DocDO now counts the growth itself.
+  const acked = server + grown;
+  serverEvent(socket, {
+    t: 'ack', sv: base64(Y.encodeStateVector(session.doc)), pb: acked,
+    p: { code: { sv: base64(Y.encodeStateVector(payload)) } },
+  });
+  expect(session.state.unacked).toBe(false);
+  expect(countedPayloadBytes(session.doc), 'neither lost nor double-counted').toBe(acked);
+  expect(pasteFits(session.doc, PASTE_LIMIT_BYTES - note - acked - 1_000, 1_000)).toBe(true);
+});
