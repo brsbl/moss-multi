@@ -550,10 +550,17 @@ it('detaches an outbox stalled at its budget with writes still queued and conver
   await vi.advanceTimersByTimeAsync(1_000);
   const fresh = latest();
   expect(fresh).not.toBe(socket);
+  const pre: string[] = [`t0 ${Date.now()} heard ${session.provider.wsLastMessageReceived} state ${JSON.stringify(session.state)}`];
   fresh.open();
+  pre.push(`open heard ${session.provider.wsLastMessageReceived} ws ${session.provider.ws === fresh}`);
   // The backlog replays on the server's step 1 (comments.md §6).
   serverStep1(fresh, Y.encodeStateVector(new Y.Doc()));
-  await vi.advanceTimersByTimeAsync(1_000);
+  pre.push(`step1 heard ${session.provider.wsLastMessageReceived} sent ${fresh.sent.length} closes ${fresh.closes}`);
+  for (let i = 0; i < 10; i += 1) {
+    await vi.advanceTimersByTimeAsync(100);
+    pre.push(`+${(i + 1) * 100} now ${Date.now()} heard ${session.provider.wsLastMessageReceived} sent ${fresh.sent.length} closes ${fresh.closes} conn ${session.state.connection}`);
+  }
+  console.log('DIAGPRE', pre.join(' | '));
   expect(fresh.sent.some((frame) => writeOf(frame) !== null), 'the ledger replays on the fresh socket').toBe(true);
   // Transport restored: a DocDO that held only the peers' updates applies what the fresh socket sends, and acks that.
   const server = new Y.Doc();
@@ -570,7 +577,7 @@ it('detaches an outbox stalled at its budget with writes still queued and conver
     await vi.advanceTimersByTimeAsync(100);
   }
   console.log('DIAGTRACE', trace.join(' | '));
-  expect(session.state.unacked, `DIAG every write acked: ${JSON.stringify({ sent: fresh.sent.length, writes: fresh.sent.filter((f) => writeOf(f) !== null).length, own: session.doc.clientID, serverClock: Y.getState(server.store, session.doc.clientID), localClock: Y.getState(session.doc.store, session.doc.clientID), pending: server.store.pendingStructs !== null, closes: fresh.closes, sockets: sockets.length, latestIsFresh: latest() === fresh, state: session.state, trace })}`).toBe(false);
+  expect(session.state.unacked, `DIAG every write acked: ${JSON.stringify({ sent: fresh.sent.length, writes: fresh.sent.filter((f) => writeOf(f) !== null).length, own: session.doc.clientID, serverClock: Y.getState(server.store, session.doc.clientID), localClock: Y.getState(session.doc.store, session.doc.clientID), pending: server.store.pendingStructs !== null, closes: fresh.closes, sockets: sockets.length, latestIsFresh: latest() === fresh, state: session.state, trace, pre })}`).toBe(false);
   expect(server.store.pendingStructs, 'nothing the server holds waits on a missing write').toBeNull();
   expect(server.getArray('blocks').toJSON(), 'the server converged on the whole paste').toEqual(session.doc.getArray('blocks').toJSON());
   expect(session.state.resync, 'no reload').toBe(false);
