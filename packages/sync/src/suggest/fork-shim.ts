@@ -22,8 +22,7 @@ const noop = () => {};
  * attached to `doc`). Payloads bind as the server mirror binds them, so a new block's first text is written in the
  * update that creates it, synchronously, rather than in a microtask; the bytes are the client's.
  */
-export function bindEditor(doc: Y.Doc): { editor: LexicalEditor; binding: Binding; undo: Y.UndoManager; dispose: () => void } {
-  const editor = createConverterEditor();
+export function bindEditor(doc: Y.Doc, editor: LexicalEditor = createConverterEditor()): { editor: LexicalEditor; binding: Binding; undo: Y.UndoManager; dispose: () => void } {
   const stopLists = registerList(editor);
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
