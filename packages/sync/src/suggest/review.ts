@@ -288,18 +288,25 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
     if (bytes > (options.stateCap ?? STATE_CAP_BYTES)) return { ok: false, status: 409, reason: 'doc-cap' };
     // Payloads first, as serverWrite does, so the body's elements name payloads the note already holds. A block or
     // payload that reads as it did, which the preview shows no hunk for, is kept as it is (T5.S14).
+    // Everything is landed before anything is written: where accept cannot land exactly what the preview showed (a
+    // write beneath a restored copy or its original, an anchor or holder it cannot resolve), nothing is written.
+    const landed: [string, Uint8Array][] = [];
     let kept = false;
     for (const [payload, sv] of touched) {
       const same = unchanged.has(`payload:${payload}`);
-      const landed = landing(payloads.doc(payload), sv, removed.get(payload) ?? [], () => same);
-      kept ||= landed.kept;
-      source.write(payload, landed.update);
+      const one = landing(payloads.doc(payload), sv, removed.get(payload) ?? [], () => same);
+      if (!one) return { ok: false, status: 409, reason: 'changed' };
+      kept ||= one.kept;
+      landed.push([payload, one.update]);
     }
     // A restored copy, read as its original, lands as that original, and what the record wrote among the copies lands
     // where the preview showed it (relocated).
     const body = landing(mirror, hydrated, removed.get(BODY_DOC) ?? [], (item) => unchanged.has(`block:${blockKeyOf(mirror, item)}`), restored);
+    const update = body && relocated(live, body.update, mirror, restored);
+    if (!body || !update) return { ok: false, status: 409, reason: 'changed' };
     kept ||= body.kept;
-    Y.applyUpdate(live, relocated(live, body.update, mirror, restored), SUGGEST_ACCEPT);
+    for (const [payload, payloadUpdate] of landed) source.write(payload, payloadUpdate);
+    Y.applyUpdate(live, update, SUGGEST_ACCEPT);
     closeRecord(live, id, { status: 'accepted', resolvedBy: reviewer.id, resolvedAt: options.now ?? Date.now(), ...(kept ? { kept: true as const } : {}) });
     return { ok: true };
   } finally {

@@ -565,10 +565,11 @@ export function applyRecord(mirror: Y.Doc, record: SuggestionRecord, options: Ap
  * block or payload that reads as it did, so the preview shows no hunk for it; suggestions.md §4.7). There the items it
  * removed stay and the ones it added land removed, so the originals, the comments anchored on them and their authors
  * stay: accept applies nothing the preview hides (I3). So too for each copy in `restored`, which the preview reads as
- * its original: the original stays and the copy lands removed. A map key it overwrote stays overwritten (Yjs removes
- * the old value as the new one lands), with the same value, as the preview read it.
+ * its original: the original stays and the copy lands removed. A key it overwrote in a live map stays overwritten,
+ * with the same value, as the preview read it. Null (accept refuses) where the record wrote anything
+ * beneath a restored copy, its original or an item it removed that stays, which the preview cannot show.
  */
-export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], kept: (item: Y.Item) => boolean, restored?: Restored): { update: Uint8Array; kept: boolean } {
+export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], kept: (item: Y.Item) => boolean, restored?: Restored): { update: Uint8Array; kept: boolean } | null {
   const before = Y.decodeStateVector(sv);
   const state = (client: number) => before.get(client) ?? 0;
   const current = (item: Y.Item) => item.parentSub === null || (item.parent as Y.AbstractType<unknown>)._map.get(item.parentSub) === item;
@@ -600,10 +601,36 @@ export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], 
       else if (restored?.originals.size) units(struct, lo, hi, (key) => restored!.originals.has(key), stays);
     }
   }
+  // The preview reads a restored copy as its original, and a kept item as it was, so it shows nothing the record
+  // wrote beneath either; such a write (a map key included, which overwrites as it lands) is refused, never landed.
+  const keep = new SpanIndex(stays);
+  const hidden = new Map<Y.AbstractType<unknown>, boolean>();
+  const beneathHidden = (struct: Y.Item): boolean => {
+    const walked: Y.AbstractType<unknown>[] = [];
+    let found = false;
+    for (let type = struct.parent as Y.AbstractType<unknown> | null; type; type = (type._item?.parent ?? null) as Y.AbstractType<unknown> | null) {
+      const seen = hidden.get(type);
+      if (seen !== undefined) {
+        found = seen;
+        break;
+      }
+      walked.push(type);
+      const holder = type._item;
+      if (!holder) break;
+      const key = itemKey(holder.id);
+      if (restored?.copies.has(key) || restored?.originals.has(key) || keep.covers(holder.id.client, holder.id.clock, holder.id.clock + 1)) {
+        found = true;
+        break;
+      }
+    }
+    for (const type of walked) hidden.set(type, found);
+    return found;
+  };
   const buried: IdSpan[] = [];
   for (const client of doc.store.clients.keys()) {
     const from = state(client);
     for (const struct of structsIn(doc.store, client, from, Y.getState(doc.store, client))) {
+      if (struct instanceof Y.Item && beneathHidden(struct)) return null;
       if (!(struct instanceof Y.Item) || struct.deleted || struct.parentSub !== null) continue;
       const lo = Math.max(from, struct.id.clock);
       if (kept(struct)) buried.push({ client, clock: lo, len: struct.id.clock + struct.length - lo });
@@ -611,7 +638,6 @@ export function landing(doc: Y.Doc, sv: Uint8Array, removed: readonly IdSpan[], 
     }
   }
   if (!stays.length && !buried.length) return { update: Y.encodeStateAsUpdate(doc, sv), kept: false };
-  const keep = new SpanIndex(stays);
   const deletes: IdSpan[] = [...buried];
   for (const [client, from, to] of new SpanIndex(removed).ranges()) {
     for (const [lo, hi, covered] of keep.runs(client, from, to)) if (!covered) deletes.push({ client, clock: lo, len: hi - lo });
@@ -1308,7 +1334,7 @@ export function orderPlan(
   for (const [after, units] of runsOf(shown)) {
     const there = have.get(after) ?? [];
     if (there.length === units.length && there.every((unit, i) => unit.key === units[i]!.key)) continue;
-    if (!countable || !units.every(({ item }) => item.content instanceof Y.ContentString || plainMap(item))) return refused;
+    if (!countable || !rewritable(parent) || !units.every(({ item }) => item.content instanceof Y.ContentString || plainMap(item))) return refused;
     moves.push({ after: after || null, units });
   }
   return { ok: true, moves };
@@ -1319,17 +1345,28 @@ const plainMap = (item: Y.Item): boolean =>
   item.content instanceof Y.ContentType && item.content.type instanceof Y.Map && item.content.type._start === null &&
   [...item.content.type._map.values()].every((entry) => entry.deleted || entry.content instanceof Y.ContentAny);
 
+/** A holder runs can be written afresh into (orderPlan and relocated share it): a live text node's sequence. */
+const rewritable = (type: unknown): type is Y.XmlText => type instanceof Y.XmlText && type._item !== null && !type._item.deleted;
+
+/** The item at `id` in `doc`, or null where `doc` has none. */
+function itemAt(doc: Y.Doc, id: Y.ID): Y.Item | null {
+  if (id.clock >= Y.getState(doc.store, id.client)) return null;
+  const item = Y.getItem(doc.store, id);
+  return item instanceof Y.Item ? item : null;
+}
+
 /**
  * `update`, what accept lands on `live` from `mirror` (`landing`), with each run of new units a record wrote between
  * restored copies put where the preview showed it (orderPlan): landed, the copies are removed and the originals kept,
  * so such a run would sit before the originals instead of among them. It is removed and written afresh in its place.
+ * Null (accept refuses) where a plan, its holder or an anchor cannot be resolved: never a guessed place or a skip.
  */
-export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restored: Restored): Uint8Array {
+export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restored: Restored): Uint8Array | null {
   const byParent = new Map<Y.AbstractType<unknown>, Map<string, Y.ID>>();
   for (const [copy, original] of restored.copies) {
     const [client, clock] = copy.split(':').map(Number) as [number, number];
-    const item = Y.getItem(mirror.store, Y.createID(client, clock));
-    if (!(item instanceof Y.Item)) continue;
+    const item = itemAt(mirror, Y.createID(client, clock));
+    if (!item) return null;
     const parent = item.parent as Y.AbstractType<unknown>;
     (byParent.get(parent) ?? byParent.set(parent, new Map()).get(parent)!).set(copy, original);
   }
@@ -1337,18 +1374,25 @@ export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restor
   const plans: { parent: Y.ID; moves: { after: string | null; units: Unit[] }[] }[] = [];
   for (const [parent, copies] of byParent) {
     const plan = orderPlan(parent, copies, isNew);
-    if (parent._item && plan.ok && plan.moves.length) plans.push({ parent: parent._item.id, moves: plan.moves });
+    if (!plan.ok) return null;
+    // orderPlan admits moves only into a rewritable holder, so it has an item.
+    if (plan.moves.length) plans.push({ parent: parent._item!.id, moves: plan.moves });
   }
   if (!plans.length) return update;
   const scratch = hydrate(live);
+  let refused = false;
+  const refuse = () => {
+    refused = true;
+  };
   try {
     const sv = Y.encodeStateVector(scratch);
     Y.applyUpdate(scratch, update);
     scratch.transact(() => {
       for (const { parent, moves } of plans) {
-        const holder = Y.getItem(scratch.store, parent);
-        if (!(holder instanceof Y.Item) || !(holder.content instanceof Y.ContentType) || !(holder.content.type instanceof Y.XmlText)) continue;
-        const type = holder.content.type;
+        // The same holder check as orderPlan's, on the doc as accept lands it.
+        const holder = itemAt(scratch, parent);
+        const type = holder?.content instanceof Y.ContentType ? holder.content.type : null;
+        if (!rewritable(type)) return refuse();
         /** Each live unit's key to the index just past it. */
         const past = () => {
           const out = new Map<string, number>();
@@ -1361,9 +1405,15 @@ export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restor
         };
         const moving = new Set(moves.flatMap(({ units }) => units.map((unit) => unit.key)));
         const gone = [...past()].filter(([key]) => moving.has(key)).map(([, end]) => end - 1).sort((a, b) => b - a);
+        if (gone.length !== moving.size) return refuse();
         for (const index of gone) type.delete(index, 1);
         const index = past();
-        const placed = moves.map(({ after, units }) => ({ at: after === null ? 0 : index.get(after) ?? 0, units }));
+        const placed: { at: number; units: Unit[] }[] = [];
+        for (const { after, units } of moves) {
+          const at = after === null ? 0 : index.get(after);
+          if (at === undefined) return refuse();
+          placed.push({ at, units });
+        }
         // The last place first, so writing a run moves no place still to be written.
         for (const { at, units } of placed.sort((a, b) => b.at - a.at)) {
           // Characters in one string, so a surrogate pair is written whole.
@@ -1387,7 +1437,7 @@ export function relocated(live: Y.Doc, update: Uint8Array, mirror: Y.Doc, restor
         }
       }
     });
-    return Y.encodeStateAsUpdate(scratch, sv);
+    return refused ? null : Y.encodeStateAsUpdate(scratch, sv);
   } finally {
     scratch.destroy();
   }
