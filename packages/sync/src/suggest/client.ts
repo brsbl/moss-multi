@@ -340,6 +340,28 @@ function removeItems(doc: Y.Doc, ids: readonly Y.ID[]): void {
 }
 
 /**
+ * The property maps `fresh` made whose text nodes the removal of `ids` left with no characters: a node a rewrite
+ * rebuilt from struck text alone. Lexical drops an empty text node, so a record keeping its map would not bind.
+ */
+function emptiedMaps(doc: Y.Doc, ids: readonly Y.ID[], fresh: (id: Y.ID) => boolean): Y.ID[] {
+  const maps = new Map<Y.Item, Y.ID>();
+  for (const id of ids) {
+    let map = itemAt(doc, id);
+    while (map && (map.deleted || map.content instanceof Y.ContentString || map.content instanceof Y.ContentFormat)) map = map.left;
+    if (!map || !(map.content instanceof Y.ContentType) || !(map.content.type instanceof Y.Map) || !fresh(map.id) || maps.has(map)) continue;
+    let empty = true;
+    for (let n = map.right; n && !(n.content instanceof Y.ContentType) && !(n.content instanceof Y.ContentEmbed); n = n.right) {
+      if (!n.deleted && n.content instanceof Y.ContentString) {
+        empty = false;
+        break;
+      }
+    }
+    if (empty) maps.set(map, map.id);
+  }
+  return [...maps.values()];
+}
+
+/**
  * Stands fresh characters in for the live struck characters at `ids` (each the same text, at the same place), and
  * deletes the originals; returns the new items' ids.
  */
@@ -1135,7 +1157,13 @@ export class SuggestFork {
       if (last && last.client === client && last.clock + last.len === clock) last.len += 1;
       else if (!last || last.client !== client || last.clock + last.len < clock) spans.push({ client, clock, len: 1 });
     }
-    if (copies.size) this.doc.transact(() => removeItems(this.doc, [...copies.values()].map(({ copy }) => copy)), KEEP_STRIKES);
+    if (copies.size) {
+      this.doc.transact(() => {
+        const removed = [...copies.values()].map(({ copy }) => copy);
+        removeItems(this.doc, removed);
+        removeItems(this.doc, emptiedMaps(this.doc, removed, fresh));
+      }, KEEP_STRIKES);
+    }
     // Still inside the rewrite's transaction: the undo manager records its step after this.
     this.#emit({ type: 'kept', originals: spans, added: [] });
     if (displaced.length === 0) return;
