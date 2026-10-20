@@ -567,7 +567,7 @@ it('detaches an outbox stalled at its budget with writes still queued and conver
     serverEvent(fresh, { t: 'ack', sv: base64(Y.encodeStateVector(server)), ds: base64(Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSet(), new Map()))) });
     await vi.advanceTimersByTimeAsync(100);
   }
-  expect(session.state.unacked, 'every write acked').toBe(false);
+  expect(session.state.unacked, `DIAG every write acked: ${JSON.stringify({ sent: fresh.sent.length, writes: fresh.sent.filter((f) => writeOf(f) !== null).length, own: session.doc.clientID, serverClock: Y.getState(server.store, session.doc.clientID), localClock: Y.getState(session.doc.store, session.doc.clientID), pending: server.store.pendingStructs !== null, closes: fresh.closes, sockets: sockets.length, latestIsFresh: latest() === fresh, state: session.state })}`).toBe(false);
   expect(server.store.pendingStructs, 'nothing the server holds waits on a missing write').toBeNull();
   expect(server.getArray('blocks').toJSON(), 'the server converged on the whole paste').toEqual(session.doc.getArray('blocks').toJSON());
   expect(session.state.resync, 'no reload').toBe(false);
