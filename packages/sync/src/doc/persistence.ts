@@ -36,6 +36,7 @@ export class DocStore {
   private readonly sql: SqlStorage;
   private rows = 0;
   private bytes = 0;
+  #oversized = false;
   /** The encoded doc state: exact at load and at each compaction, plus each update's bytes in between. */
   stateBytes = 0;
   readonly revoked: Revoked = { token: new Map(), session: new Map(), principal: new Map() };
@@ -80,19 +81,24 @@ export class DocStore {
   }
 
   /**
-   * Persists an update `doc` has applied: a log row, or a compaction when the log is due or the update alone would
-   * pass the 2 MB row cap (a large paste or server import).
+   * Persists an update `doc` has applied as a log row. It never compacts here: the update handler runs inside the
+   * transaction, before the DocDO purges what a client frame left parked, and a compaction encodes parked structs
+   * (comments.md §3, I2). An update too large for one row is left to `compactIfDue`, which the DocDO runs next.
    */
-  record(update: Uint8Array, doc: Y.Doc): void {
+  record(update: Uint8Array): void {
     if (update.byteLength > STATE_CHUNK_BYTES) {
-      this.compact(doc);
+      this.#oversized = true;
       return;
     }
     this.sql.exec('INSERT INTO yupdates (data) VALUES (?)', blob(update));
     this.rows += 1;
     this.bytes += update.byteLength;
     this.stateBytes += update.byteLength;
-    if (this.shouldCompact) this.compact(doc);
+  }
+
+  /** Compacts when the log is due or an update was too large for a row. Call it only with nothing parked. */
+  compactIfDue(doc: Y.Doc): void {
+    if (this.#oversized || this.shouldCompact) this.compact(doc);
   }
 
   get pendingRows(): number {
@@ -116,6 +122,7 @@ export class DocStore {
     });
     this.rows = 0;
     this.bytes = 0;
+    this.#oversized = false;
     this.stateBytes = state.byteLength;
   }
 

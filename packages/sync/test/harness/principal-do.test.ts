@@ -2,7 +2,7 @@
 // wakes empty, so the window lives in its storage and an exhausted identity stays refused after a wake. Also its
 // workspace channel: publishing reaches hibernated sockets, and clients cannot publish.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { REST_WRITE_RATE, UPLOAD_RATE } from '@moss-multi/protocol/limits';
+import { COMMENT_OP_RATE, REST_WRITE_RATE, UPLOAD_RATE } from '@moss-multi/protocol/limits';
 import { TRUSTED } from '@moss-multi/protocol/sync';
 import { PrincipalDO } from '../../src/principal-do.ts';
 import { Backing, FakeState, serverEnds } from './workerd.ts';
@@ -80,6 +80,24 @@ describe('PrincipalDO upload window across wakes (T3.1s)', () => {
     vi.advanceTimersByTime(UPLOAD_RATE.windowMs);
     opened = wake(opened);
     expect(opened.dobj.takeUploadToken()).toBe(true);
+  });
+});
+
+describe('PrincipalDO comment window across wakes (T4.1)', () => {
+  it('grants the 60th comment operation, refuses the 61st, and keeps refusing after an eviction', () => {
+    expect(COMMENT_OP_RATE).toEqual({ max: 60, windowMs: 60_000 });
+    let opened = open(new Backing('principal-comments'));
+    for (let i = 0; i < 60; i += 1) expect(opened.dobj.takeCommentToken(), `operation ${i + 1}`).toBe(true);
+    expect(opened.dobj.takeCommentToken(), 'operation 61').toBe(false);
+    expect(opened.dobj.takeWriteToken(), 'a rename is counted on its own window').toBe(true);
+
+    vi.advanceTimersByTime(10_000);
+    opened = wake(opened);
+    expect(opened.dobj.takeCommentToken()).toBe(false);
+
+    vi.advanceTimersByTime(COMMENT_OP_RATE.windowMs);
+    opened = wake(opened);
+    expect(opened.dobj.takeCommentToken()).toBe(true);
   });
 });
 

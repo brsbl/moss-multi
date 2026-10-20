@@ -6,8 +6,6 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection';
 import { Undo2, Redo2, Eraser, Check, X, CopyPlus, Minus, Pen, Type, StickyNote } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: register payloads (A§10.10): peer strokes reach an open canvas; local writes carry their base.
 import { useSketchPeerSync, type Rebase } from '@moss-multi/host/collab/sketch-sync';
 import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
@@ -21,6 +19,7 @@ import {
 } from '../components/block-node-primitives';
 // moss-multi seam: read-only-decorators (T3.8)
 import { useIsEditorEditable } from '../components/media-primitives';
+import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 import {
   registerDecoratorDraftFlusher,
@@ -336,6 +335,7 @@ function SketchSurface({
   grid,
   labels,
   isEditing,
+  editable,
   toolMode,
   onToolModeChange,
   onGridChange,
@@ -344,6 +344,7 @@ function SketchSurface({
   grid: boolean[];
   labels: TextLabel[];
   isEditing: boolean;
+  editable: boolean; // moss-multi seam: read-only-decorators (T4.B3): a read-only body holds nothing focusable
   toolMode: 'draw' | 'erase' | 'label';
   onToolModeChange: (mode: 'draw' | 'erase' | 'label') => void;
   onGridChange: (newGrid: boolean[]) => void;
@@ -780,7 +781,7 @@ function SketchSurface({
           overflow: 'hidden'
         }}
         onKeyDown={handleOverlayKeyDown}
-        tabIndex={isEditing ? 0 : -1}
+        tabIndex={isEditing ? 0 : editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T4.B3) */}
       >
         {labels.map(label => {
           const isEditingThis = editingLabelId === label.id;
@@ -990,6 +991,7 @@ function SketchWrapper({
   const isGridEmpty = grid.every((v) => !v);
   // moss-multi seam: read-only-decorators (T3.8): a read-only canvas offers no Draw, Duplicate, comment or gap.
   const editable = useIsEditorEditable() && payloadWritable;
+  const canAddComment = useBlockCanComment(editor, editable); // moss-multi seam: comments (T4.B3)
 
   const handleEditClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1324,9 +1326,11 @@ function SketchWrapper({
                   </Tooltip>
                 </div>
               </TooltipProvider>
-            ) : !editable ? null /* moss-multi seam: read-only-decorators (T3.8) */ : (
+            ) : !editable && !canAddComment ? null /* moss-multi seam: read-only-decorators (T3.8) */ : (
               <TooltipProvider delayDuration={200}>
                 <div className="flex items-center gap-1">
+                  {/* moss-multi seam: read-only-decorators (T3.8): a read-only body offers no Duplicate or Draw */}
+                  {!editable ? null : (<>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -1353,8 +1357,9 @@ function SketchWrapper({
                     </TooltipTrigger>
                     <TooltipContent side="bottom"><p>Edit canvas</p></TooltipContent>
                   </Tooltip>
-                  {/* moss-multi seam: hide-registry (A§9) */}
-                  {hidden('comments') ? null : (
+                  </>)}
+                  {/* moss-multi seam: comments (T4.B3): Add comment follows the comment capability, so a commenter has it */}
+                  {!canAddComment ? null : (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -1363,6 +1368,7 @@ function SketchWrapper({
                           e.stopPropagation();
                           editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
                         }}
+                        data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
                         className="flex h-6 w-6 items-center justify-center rounded border border-surface-panel bg-surface-raised-control text-ink-muted shadow-sm hover:bg-surface-canvas hover:text-ink-default"
                       >
                         <StickyNote className="h-3 w-3" />
@@ -1383,6 +1389,7 @@ function SketchWrapper({
             grid={grid}
             labels={labels}
             isEditing={isEditing}
+            editable={editable}
             toolMode={toolMode}
             onToolModeChange={setToolMode}
             onGridChange={handleGridChange}

@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
 --- a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
 +++ b/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx
-@@ -1,28 +1,23 @@
+@@ -1,28 +1,22 @@
 +// moss-multi seam: publish decorator drafts as register edits.
 +import { resumeField, useRegisterDraft } from '@moss-multi/host/collab/register-input';
 +import { registerDoc } from '@moss-multi/host/collab/registers';
@@ -30,18 +30,17 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
 -import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
 -import { cloneCommentIds } from '../utils/commentable-node';
 -import { getThemeById, DEFAULT_THEME } from '../plugins/code-block/themes';
-+// moss-multi seam: hide-registry (A§9)
-+import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: converter-split (A§12; S-conv §2.3)
 +import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 +import { getThemeById } from '../plugins/code-block/themes';
  import { highlightCodeToHtml } from '../utils/code-highlighting';
 +// moss-multi seam: read-only-decorators (T2.3): a read-only or terminal editor offers no code-block edit
 +import { useIsEditorEditable } from '../components/media-primitives';
++import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
  import {
    BLOCK_HEADER_CLASSNAME,
    BLOCK_SURFACE_CLASSNAME,
-@@ -35,26 +30,11 @@ import {
+@@ -35,26 +29,11 @@ import {
    isSnapshotModeEnabled,
    markCodeblockReady,
  } from '../../automation/snapshot-mode';
@@ -73,11 +72,12 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
  
  /**
   * CodeBlock component with inline toolbar and edit/display modes
-@@ -76,23 +56,29 @@ function CodeBlockComponent({
+@@ -76,23 +55,30 @@ function CodeBlockComponent({
    commentIds?: string[];
  }): JSX.Element {
    const [editor] = useLexicalComposerContext();
 +  const editable = useIsEditorEditable(); // moss-multi seam: read-only-decorators (T2.3)
++  const canAddComment = useBlockCanComment(editor, editable); // moss-multi seam: comments (T4.B3)
    const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
 -  const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey));
 +  const [isEditing, setIsEditing] = useState(() => consumeAutoEdit(nodeKey) || resumeField(editor, nodeKey));
@@ -206,12 +206,16 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                  onDropdownOpenChange={setIsDropdownOpen}
 +                readOnly={!editable /* moss-multi seam: read-only-decorators (T2.3) */}
                />
-+              {/* moss-multi seam: hide-registry (A§9) */}
-+              {hidden('comments') ? null : (
++              {/* moss-multi seam: comments (T4.B3): Add comment follows the comment capability, so a commenter has it */}
++              {!canAddComment ? null : (
                <button
                  type="button"
                  onClick={(e) => {
-@@ -384,6 +385,7 @@ function CodeBlockComponent({
+@@ -381,9 +382,11 @@ function CodeBlockComponent({
+                 }}
+                 className="moss-code-toolbar-btn"
+                 title="Add comment"
++                data-comment-entry="" /* moss-multi seam: comments (T4.B3) */
                >
                  <StickyNote className="h-3 w-3" />
                </button>
@@ -219,7 +223,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            </div>
  
-@@ -400,6 +402,7 @@ function CodeBlockComponent({
+@@ -400,6 +403,7 @@ function CodeBlockComponent({
              {isEditing ? (
                <textarea
                  ref={textareaRef}
@@ -227,7 +231,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
                  value={localCode}
                  onChange={(e) => setLocalCode(e.target.value)}
                  onKeyDown={handleTextareaKeyDown}
-@@ -431,11 +434,11 @@ function CodeBlockComponent({
+@@ -431,11 +435,11 @@ function CodeBlockComponent({
                <span className="inline-flex items-center gap-1 align-middle">
                  <KeyboardShortcut keys={['⌘', '⏎']} size="compact" />
                </span>{' '}
@@ -241,7 +245,7 @@ diff --git a/packages/desktop/src/renderer/editor/nodes/CodeBlockNode.view.tsx b
              </div>
            )}
          </div>
-@@ -444,164 +447,15 @@ function CodeBlockComponent({
+@@ -444,164 +448,15 @@ function CodeBlockComponent({
    );
  }
  

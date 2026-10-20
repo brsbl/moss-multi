@@ -55,7 +55,7 @@ export function closeAction(code: number): CloseAction {
 /** Unicast events travel as `__YPS:<json>`, the envelope the provider delivers as `custom-message`. */
 export const CUSTOM_PREFIX = '__YPS:';
 
-export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
+export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved' | 'protected-type';
 
 /** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
 export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);

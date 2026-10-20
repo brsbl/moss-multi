@@ -65,8 +65,11 @@ export const DOC_CREATE_RATE = { max: 60, windowMs: 60_000 } as const;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const DOC_CREATE_DAILY = { max: 2_000, windowMs: DAY_MS } as const;
 
-/** The largest `POST /api/docs` body: 2 MB of markdown even if JSON escapes every byte (`\u00XX`), plus the fields. */
-export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
+/**
+ * The largest `POST /api/docs` body: 2 MB of markdown and a 2 MB comments sidecar, each even if JSON escapes every
+ * byte (`\u00XX`), plus the fields.
+ */
+export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 12 + 64 * 1024;
 
 /**
  * Live (untrashed) notes one acting user has created, wherever they are and their agents' included; a create or
@@ -95,6 +98,12 @@ export const VAULT_MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** Server fetches of caller-supplied URLs (unfurls, remote images) per identity per window; 429 past it (A§18). */
 export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
+
+/** Comment operations (create, reply, later edit, resolve, react) per principal per window, counted by its PrincipalDO; 429 past it. */
+export const COMMENT_OP_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/** The longest comment text, in UTF-16 units; longer is 413 `text-too-long` (comments.md §4). */
+export const COMMENT_TEXT_MAX = 10_000;
 
 /**
  * How long a PrincipalDO remembers an ended session and a session's doc sockets (A§5.2): better-auth's default session

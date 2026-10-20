@@ -15,6 +15,8 @@ import { commentThreadFilterAtom, noteCommentsMapAtom } from '@moss/shared/state
 import { COMMENT_COLORS } from './media-primitives';
 import { isCommentResolved, isCommentVisibleForStatus } from '../utils/comment-thread-count';
 import { applyCommentHoverState, clearCommentHoverState } from '../utils/comment-hover-state';
+// moss-multi seam: comments (comments.md §12)
+import { subscribePaint, targets } from '@moss-multi/host/comments/adapter';
 
 const ICON_HEIGHT = 32;
 
@@ -39,6 +41,16 @@ function shouldSkipElement(element: HTMLElement): boolean {
 function getCommentPositions(
   editor: ReturnType<typeof useLexicalComposerContext>[0]
 ): CommentGutterEntry[] {
+  // moss-multi seam: comments (comments.md §12): a bound note's rows come from the painted anchors, not MarkNodes
+  const painted = targets(editor);
+  if (painted) {
+    painted.sort((a, b) => a.top - b.top);
+    for (let i = 1; i < painted.length; i++) {
+      const minTop = painted[i - 1].top + ICON_HEIGHT;
+      if (painted[i].top < minTop) painted[i] = { ...painted[i], top: minTop };
+    }
+    return painted;
+  }
   const rootElement = editor.getRootElement();
   if (!rootElement) return [];
   const containerRect = rootElement.getBoundingClientRect();
@@ -126,6 +138,7 @@ export function CommentGutter({ noteId, onIconClick, activeCommentId, className 
 
     const initialRaf = requestAnimationFrame(updatePositions);
     const unregMutation = editor.registerMutationListener(MarkNode, () => updatePositions());
+    const unregPaint = subscribePaint(editor, scheduleUpdate); // moss-multi seam: comments
     // Dirty-gated: only reposition when content changes (e.g. lines added above
     // a comment), not on selection-only changes (click-to-focus, arrow keys).
     const unregUpdate = editor.registerUpdateListener(({ dirtyElements, dirtyLeaves }) => {
@@ -143,6 +156,7 @@ export function CommentGutter({ noteId, onIconClick, activeCommentId, className 
     return () => {
       cancelAnimationFrame(initialRaf);
       unregMutation();
+      unregPaint(); // moss-multi seam: comments
       unregUpdate();
       ro?.disconnect();
       if (rafRef.current !== null) {
