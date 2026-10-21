@@ -43,6 +43,8 @@ export const GROUPS = {
   pastecap: ['j01-paste-cap'],
   // A paste past the cap only with the deleted blocks' payloads the server still counts, refused whole.
   pasteheld: ['j01-paste-held'],
+  // A paste cut short near the cap by another writer (a known limitation): the notice, convergence and undo.
+  pastetail: ['j01-paste-tail'],
   // A peer's edits while a large paste is checked, its redo after a peer's new block, and a check list's order.
   pasterace: ['j01-paste-race', 'j01-paste-check'],
   // Titles and properties.
@@ -64,8 +66,12 @@ export const GROUPS = {
   suggest: ['j16'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
   suggestPaste: ['j16-paste'],
+  // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body.
+  suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
+  // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
+  suggestMarks: ['j16-marks'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.
   censusBlocks: ['j16-census-blocks'],
   censusNested: ['j16-census-nested'],

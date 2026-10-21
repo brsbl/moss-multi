@@ -54,11 +54,12 @@
   text-decoration: line-through;
   text-decoration-color: var(--accent-terracotta);
 }
+/* Above moss's block gap cursors (z-20 hit areas at each block edge), so a wedge there takes the hover and click. */
 .moss-suggest-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 1;
+  z-index: 21;
 }
 .moss-suggest-wedge {
   position: absolute;
@@ -75,18 +76,23 @@
   position: absolute;
   top: 10px;
   left: -8px;
-  max-width: 320px;
+  /* Sized to its text, not to the 8px wedge that holds it, and never wider than the viewport; drawMarks shifts it
+     back inside the viewport when it opens near an edge. */
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   padding: 6px 8px;
   border-radius: 6px;
   border: 1px solid var(--accent-brand);
-  background: var(--surface-raised-card, var(--highlight-green));
+  background: var(--surface-floating, #fff);
   color: var(--ink-default, inherit);
   font-size: 12px;
   line-height: 1.4;
   box-shadow: 0 2px 8px var(--ink-shadow-soft, transparent);
 }
-.moss-suggest-wedge:hover .moss-suggest-preview {
+.moss-suggest-wedge:hover .moss-suggest-preview,
+.moss-suggest-wedge[data-open] .moss-suggest-preview {
   display: block;
 }
 .moss-suggest-gutter {
@@ -96,6 +102,31 @@
   background: var(--accent-brand);
   pointer-events: auto;
   cursor: pointer;
+}
+/* Struck text a rewrite took out of the suggester's fork, drawn above the gap where it stood. */
+.moss-suggest-ghost {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid var(--accent-terracotta);
+  background: var(--surface-floating, #fff);
+  color: var(--accent-terracotta);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+  text-decoration: line-through;
+  text-decoration-color: var(--accent-terracotta);
+  pointer-events: none;
+}
+.moss-suggest-ghost::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 1px;
+  height: var(--ghost-line, 1em);
+  background: var(--accent-terracotta);
 }
 .moss-suggest-dot {
   position: absolute;
