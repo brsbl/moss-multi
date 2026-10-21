@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 87% done** (226 of 260 planned tasks verified)
+**Overall: 87% done** (227 of 260 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 28 / 28 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 15 / 15 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -283,10 +283,17 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T8.P1 verified: a separate pilot deployment now exists apart from staging, with its own Worker, D1, R2 and auth secret, sign-up limited to the allowlisted emails, and a gated deploy workflow that migrates D1 first and runs a read-only smoke.
 - 2026-10-18 — T8.P2 verified: the pilot now deploys from the workflow registered on main, `deploy-staging.yml -f target=pilot`, which runs only its gate and then calls `deploy-pilot.yml` with just the pilot and Cloudflare secrets; staging deploys run unchanged.
 - 2026-10-19 — T8.Q second pass verified: staging and the pilot now carry M7's later fixes (allowlisted scoped sync, stale-save priors, held first-sync pieces) and m3–m6's reply box, read-only controls, folder permissions and upload reader deadline, with the full lane green on the restacked m8 (already counted on 2026-10-15).
+- 2026-10-20 — T8.U verified: m8 now sits on the final M7, so staging carries T3.B4's paste path without reservations, T3.B28/T3.B30, T5.B2–B4 and T5.S14, T7.P3's packed CLI and replicas, and T7.S9, with the full lane green on the restacked m8.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.U's checker (19acaf6, 2026-10-20)
+
+- T8.U checker P2 (Unrecorded one-off 503 from the security sweep's body-cap check): supplemental run 39542725892 attempt 1's Security sweep got a 503 text/plain for a JSON body just over 1048576 bytes instead of the Worker's JSON 413 (scripts/security/sweep.mjs:526-528); it passed on retry, in the push run and in the full lane on the same SHA, and the merge touched neither the Worker body-cap path nor scripts/security, so it is not attributed to T8.U → coordinator: record it as a first sighting and watch later sweeps for a repeat.
+- T8.U integration P2 (T6.1 reconcile property found a counterexample): full-lane run 39545792788 attempt 1 failed packages/sync/src/reconcile.test.ts:236 with fast-check seed -1728704967, path 34:3:2:5:5:7:7:7:9:9:11:12:12:12:12:16:15:14:14:14:14:17:17:17:17:9:12:12. Base five blocks [p,p,p,p,ul] all "alpha", fates keep,keep,drop,drop,edit, two "golf" paragraphs inserted at 3, and the edited list's anchor on "alpha" came back null. Neither the reconcile nor its test changed in the merge, so the failure comes from the random seed and has always been possible → T6.B2's owner: replay the seed red-first and fix the edited-list anchor.
+- T8.U integration P2 (j08 read-only checkbox locator timeout): in the same run, e2e (chromium, share) failed j08-share.spec.ts:478 because the viewer's 'ranked task' checkbox locator.boundingBox timed out after 10 s. No changed code is involved, and the failure did not appear on 19acaf6 → watch it in later full lanes.
 
 ### From T8.Q second pass's checker (c451736, 2026-10-19)
 
