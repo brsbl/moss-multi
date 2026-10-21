@@ -1,0 +1,19 @@
+# moss-multi watch as a systemd user unit (docs/SYNC.md). Install to ~/.config/systemd/user/, set the workspace on the
+# ExecStart line, then: systemctl --user enable --now moss-multi-watch; loginctl enable-linger "$USER" keeps it
+# running without a login session and starts it at boot.
+[Unit]
+Description=moss-multi watch: keep a notes folder in sync with moss-multi
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/bin/sh %h/.local/lib/moss-multi/moss-multi-watch.sh %h/.config/moss-multi/watch.env %h/Notes
+Environment=MOSS_MULTI_NO_OPEN=1
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=78
+StandardOutput=append:%h/.local/state/moss-multi/watch.log
+StandardError=append:%h/.local/state/moss-multi/watch.log
+
+[Install]
+WantedBy=default.target

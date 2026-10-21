@@ -13,10 +13,10 @@ import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
 import { fieldSafe, jsonSafe, redact, ttySafe } from './output.ts';
 import { noteMedia, rewriteRefs } from './media.ts';
-import { exactPattern, parseScope, readScope, SCOPE_FILE, scopePath } from './scope.ts';
+import { exactPattern, noteFolderName, parseScope, readScope, SCOPE_FILE, scopePath } from './scope.ts';
 import { adopt, describe, readSidecar, syncExitCode, syncOnce, type SyncResult, watchLoop, workspaceScope } from './sync.ts';
 import {
-  confined, ensureStateDir, findRoot, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
+  confined, ensureStateDir, ensureTaintStore, findRoot, foldsAt, localName, lockWorkspace, metaForFile, notInNested, pinRoot, probeFoldsCase, readBase, readConfined, readMeta, readStateFile,
   recordPull, resetRootPins, sha256Hex, writeStateFile,
 } from './workspace.ts';
 
@@ -35,6 +35,8 @@ export interface ProgramDeps {
   signal?: AbortSignal;
   /** Asks a yes-or-no question (`scope confirm`); a terminal prompt when absent, and no without a terminal. */
   confirm?: (question: string) => Promise<boolean>;
+  /** Reads all of stdin (`login --key -`); process.stdin when absent. */
+  stdin?: () => Promise<string>;
 }
 
 export const AGENT_KEY_PREFIX = 'mm_sk_';
@@ -44,9 +46,15 @@ const ROLES: Record<string, string> = {
   edit: 'editor', editor: 'editor',
 };
 
+/** Stamped by build.mjs into the bundle: the package version and the commit it was built from. */
+declare const MOSS_MULTI_BUILD: { version: string; commit: string; node: string } | undefined;
+export const BUILD = typeof MOSS_MULTI_BUILD === 'undefined' ? { version: '0.0.0', commit: 'unbundled', node: '' } : MOSS_MULTI_BUILD;
+
 export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a terminal.
 
-  login [--key <mm_sk_...>] [--server <url>]   sign in (device flow in the browser, or an agent key)
+  login [--key - | --key <mm_sk_...>] [--server <url>]
+                                               sign in (device flow in the browser, or an agent key; --key -
+                                               reads it from stdin, keeping it off the command line)
   logout                                       forget the stored credentials
   whoami                                       who the CLI acts as
   list [--json]                                the docs you can open
@@ -73,9 +81,13 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
                                                add them to allow; without a terminal, --yes adds exactly the
                                                paths named. Only allow uploads: a note only follow reaches is
                                                pulled but never sent ("follow-only")
+  scope replica                                print the scope.json for a replica of this workspace's notes: its
+                                               follow, depth and deny, plus a deny entry for each title its
+                                               followed notes link to that a denied note goes by
   sync [dir] [--force] [--json]                pull and push every tracked file; an untracked .md becomes a
                                                doc; deleting a file here never deletes the doc. With a scope,
-                                               only notes in it; --json counts the rest as "out-of-scope"
+                                               only notes in it, and a note follow reaches that only the server
+                                               holds is pulled; --json counts the rest as "out-of-scope"
   watch [dir] [--interval <s>]                 sync on every change and every 60 s, until Ctrl+C
   history <doc> [--json]                       the doc's versions
   comments <doc> [--json]                      the doc's comment threads
@@ -83,6 +95,7 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
   snapshot <doc> <name>                        save a named version
   comment <doc> <text> (--quote <text> | --reply <comment id>)
   share <doc> <email | agent id> [--role view|comment|suggest|edit]
+  --version                                    the version and the commit it was built from
 
 <doc> is a doc id, its URL, or the start of its title. Credentials: MOSS_MULTI_API_KEY, MOSS_MULTI_SERVER, or the
 config file that \`login\` writes. Exit codes: 0 done, 1 error, 2 a push left failed hunks, 3 a push was refused as degenerate.
@@ -182,6 +195,13 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     }
   });
 
+  const readStdin = deps.stdin ?? (async () => {
+    if (process.stdin.isTTY) process.stderr.write('paste the agent key, then press Enter and Ctrl+D\n');
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk as Uint8Array));
+    return Buffer.concat(chunks).toString('utf8');
+  });
+
   const server = (override?: string): string => {
     const url = override ? normalizeServer(override) : resolveConfig(env).serverUrl;
     if (!url) throw new CliError(1, 'no server: set MOSS_MULTI_SERVER or run `moss-multi login --server <url>`');
@@ -224,9 +244,13 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
   const commands: Record<string, (rest: string[]) => Promise<number | void>> = {
     async login(rest) {
       const parsed = parseArgs(rest, [], ['key', 'server']);
-      arity(parsed, 0, 0, 'login [--key <mm_sk_...>] [--server <url>]');
+      arity(parsed, 0, 0, 'login [--key - | --key <mm_sk_...>] [--server <url>]');
       const serverUrl = server(value(parsed, 'server'));
-      const key = value(parsed, 'key');
+      let key = value(parsed, 'key');
+      if (key === '-') {
+        key = (await readStdin()).trim();
+        if (!key) throw new CliError(1, 'no agent key on stdin');
+      }
       if (key) secrets.add(key);
       if (key !== undefined) {
         if (!key.startsWith(AGENT_KEY_PREFIX)) throw new CliError(1, `an agent key starts with ${AGENT_KEY_PREFIX}; mint one in Settings → Agents`);
@@ -315,6 +339,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         const lock = await lockWorkspace(workspace);
         try {
           if (metaForFile(workspace, rel, foldsCase(workspace))) throw new CliError(1, `${rel} is already tracked here; \`moss-multi sync\` sends its edits`);
+          ensureTaintStore(workspace);
           const adopted = await adopt({ root: workspace, client, folds: foldsCase(workspace), ...(scope ? { scope } : {}) }, rel, {
             moss, keepName: true, ...(title !== undefined ? { title, titleLine: true } : {}), ...(folderId ? { folderId } : {}),
           });
@@ -337,7 +362,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         // A moss note with no title line takes its file's stem.
         if (!doc.title.trim()) doc = { ...doc, ...(await client.rename(doc.id, stem)) };
         // Its media follow; a file stored under another name moves the doc's reference too.
-        const media = await noteMedia({ root, client, upload: true }, doc.id, path);
+        const media = await noteMedia({ root, client, folds: foldsCase(root) || foldsAt(path), upload: true }, doc.id, path);
         if (media.renames.size > 0) {
           const base = created.content ?? decoder.decode(await client.content(doc.id, true));
           const pushed = await client.push(doc.id, { newText: rewriteRefs(base, media.renames), baseHash: sha256Hex(base), baseText: base });
@@ -421,8 +446,8 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       const scope = inScope(root, meta.file, 'upload');
       const client = api();
       // Its media first, so a pushed reference finds its file; a file stored under another name moves the reference.
-      const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
-      reportMedia((await noteMedia({ root, client, upload: true, ...scoped }, meta.docId, path)).results);
+      const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
+      reportMedia((await noteMedia({ root, client, folds: foldsCase(root), upload: true, ...scoped }, meta.docId, path)).results);
       const local = readConfined(root, path);
       if (sha256Hex(local) === meta.baseHash) {
         line(`${meta.file}: nothing to push`);
@@ -516,12 +541,14 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
       if (!existsSync(root)) throw new CliError(1, `no such directory: ${dir ?? root}`);
       if (!scoped) {
         ensureStateDir(root);
+        ensureTaintStore(root);
         line(`${root} is a moss-multi workspace: \`moss-multi sync\` turns every .md file in it into a doc`);
         return;
       }
       // Checked as sync reads it, so a scope init writes is one sync accepts.
       const scope = parseScope(JSON.stringify({ ...lists, depth: depth === undefined ? 1 : Number(depth) }));
       ensureStateDir(pinRoot(root));
+      ensureTaintStore(root);
       if (readStateFile(root, SCOPE_FILE)) throw new CliError(1, `${root} already has a scope; edit .moss-multi/${SCOPE_FILE} to change it`);
       writeStateFile(root, SCOPE_FILE, Buffer.from(`${JSON.stringify({ allow: lists.allow, follow: lists.follow, depth: scope.depth, deny: lists.deny }, null, 2)}\n`));
       line(`${root} is a moss-multi workspace scoped by .moss-multi/${SCOPE_FILE}: \`moss-multi sync\` uploads only the notes it allows, pulls those --follow reaches, and never touches what it denies`);
@@ -530,8 +557,21 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
 
     async scope(rest) {
       const parsed = parseArgs(rest, ['yes'], []);
-      const usage = 'usage: moss-multi scope confirm [--yes <path>...]';
+      const usage = 'usage: moss-multi scope confirm [--yes <path>...] | scope replica';
       const [action, ...named] = parsed.positionals;
+      if (action === 'replica') {
+        if (named.length || parsed.flags.size) throw new CliError(1, usage);
+        const root = workspaceAt();
+        const scope = readScope(root);
+        const view = workspaceScope(root, foldsCase(root));
+        if (!scope || !view) throw new CliError(1, `${root} has no scope: \`moss-multi init --scope\` makes one`);
+        // A replica holds none of the denied notes, so it denies the titles they go by that its notes link to.
+        const titled = view.deniedLinks.map(noteFolderName).filter(Boolean).map((name) => `**/${name}`);
+        const replica = { allow: ['**'], follow: scope.follow, depth: scope.depth, deny: [...new Set([...scope.deny, ...titled])] };
+        parseScope(JSON.stringify(replica));
+        stdout(`${JSON.stringify(replica, null, 2)}\n`);
+        return;
+      }
       if (action !== 'confirm') throw new CliError(1, usage);
       const yes = parsed.flags.has('yes');
       const root = workspaceAt();
@@ -714,6 +754,11 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
     if (!command || command === 'help' || command === '--help' || command === '-h') {
       stdout(USAGE);
       return command ? EXIT.ok : EXIT.other;
+    }
+    if (command === '--version' || command === 'version') {
+      arity(parseArgs(rest, [], []), 0, 0, '--version');
+      line(`moss-multi ${BUILD.version} (commit ${BUILD.commit})`);
+      return EXIT.ok;
     }
     const run = Object.hasOwn(commands, command) ? commands[command] : undefined;
     if (!run) throw new CliError(1, `unknown command "${command}"; run \`moss-multi help\``);
