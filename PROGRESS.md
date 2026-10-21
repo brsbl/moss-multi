@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 84% done** (210 of 250 planned tasks verified)
+**Overall: 84% done** (211 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 17 / 17 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 28 / 28 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 24 / 24 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -237,6 +237,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-20 — T4.U verified: comments now run on m3's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads), with both sides kept and the full lane green on the m4 head.
 - 2026-10-20 — T5.U verified: suggestions now run on m4's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads); a Suggest-mode paste is still judged by T5.S10's rule against the larger of the local and server note sizes, and the full lane is green on the m5 head.
 - 2026-10-20 — T6.U verified: history now runs on m5's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with the DocDO answering through splitAnswer beside the version imports and the full lane, j17 included, green on the m6 head.
+- 2026-10-20 — T7.U verified: agent sync, Bot presence and the watch daemon now run on m6's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with T7.P1-P3 and T7.S9's folder taint store unchanged.
 
 ## T1.1s identity audit
 
@@ -270,6 +271,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.U's checker (5d942c8, 2026-10-20)
+
+- T7.U checker P1, owned by m5 (inherited, not caused by the merge): an open Review view keeps stale tombstones after a T5.S14 kept accept — ReviewMount.#refresh (apps/web/src/host/collab/suggest/mounts.ts:248-254) applies the new composite in place instead of remounting for accepted records, so a peer keeping Review open may miss original text until reload; persisted body correct; SuggestFork already checks meta.kept and remounts (packages/sync/src/suggest/client.ts:1455-1461).
+- T7.U integration: j01-paste-check (chromium) stall flake recurred on the m7 merge head b6ccc7b (5302 > 5075 ms during moss-paste-batch layout, full run 39535137027 attempt 1), the same pre-existing m6 flake logged under T6.U.
 
 ### From T7.S9's checker (4922516, 2026-10-19)
 
