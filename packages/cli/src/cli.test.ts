@@ -335,6 +335,17 @@ describe('sign-in', () => {
     expect((await cli(['login', '--key', 'not-a-key', '--server', SERVER], {})).code).toBe(1);
   });
 
+  it('login --key - reads the key from stdin, so it never sits on a command line', async () => {
+    const result = await cli(['login', '--key', '-', '--server', SERVER], {}, { stdin: async () => `${KEY}\n` });
+    expect(result.code, result.err).toBe(0);
+    expect(result.out).toContain('agent Scribe');
+    expect(result.out + result.err).not.toContain(KEY);
+    expect(JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf8'))).toEqual({ serverUrl: SERVER, apiKey: KEY });
+    const empty = await cli(['login', '--key', '-', '--server', SERVER], {}, { stdin: async () => '\n' });
+    expect(empty.code).toBe(1);
+    expect(empty.err).toMatch(/stdin/);
+  });
+
   it('device login polls through pending and slow_down, then stores the session', async () => {
     server.state.token = 'session-1';
     server.state.deviceAnswers.push({ status: 400, body: { error: 'authorization_pending' } }, { status: 400, body: { error: 'slow_down' } });
@@ -1158,7 +1169,7 @@ describe('one sync at a time per workspace (T7.S7)', () => {
   const FIRST = '77777777-7777-4777-8777-777777777777';
   const SECOND = '88888888-8888-4888-8888-888888888888';
   const creates = () => server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs');
-  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.'));
+  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.') && name !== 'served-names.json');
   const untrackedNote = () => {
     mkdirSync(join(dir, 'Pea trellis'));
     writeFileSync(join(dir, 'Pea trellis', 'Pea trellis.md'), '# Pea trellis\n\nTwine, not wire.\n');
@@ -1193,7 +1204,7 @@ describe('one sync at a time per workspace (T7.S7)', () => {
 
 describe('stopping watch stops the pass (T7.S8)', () => {
   const creates = () => server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs');
-  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.'));
+  const records = () => readdirSync(join(dir, '.moss-multi')).filter((name) => !name.startsWith('.') && name !== 'served-names.json');
   const meta = (id: string) => JSON.parse(readFileSync(join(dir, '.moss-multi', id, 'meta.json'), 'utf8')) as { file: string; baseHash: string };
   /** Resolves with the run and how long after `stop` it took, or with null past `limitMs`. */
   const stoppedWithin = async (running: Promise<Awaited<ReturnType<typeof cli>>>, stop: number, limitMs: number) => {
@@ -1977,5 +1988,16 @@ describe('a stale editor save never reverts a pulled edit (T7.P2)', () => {
     const result = (JSON.parse(saved.out) as { docId?: string; message?: string }[]).find((row) => row.docId === ID_B);
     expect(result?.message, 'no claim the server contradicts').not.toMatch(/stays/);
     expect(result?.message).toMatch(/no longer holds/);
+  });
+});
+
+describe('--version (T7.P3)', () => {
+  it('prints the version and the commit it was built from, and needs no server or key', async () => {
+    for (const args of [['--version'], ['version']]) {
+      const result = await cli(args, {});
+      expect(result.code, result.err).toBe(0);
+      expect(result.out).toMatch(/^moss-multi \d+\.\d+\.\d+ \(commit (?:[0-9a-f]{40}|unbundled)\)\n$/);
+      expect(server.seen).toEqual([]);
+    }
   });
 });

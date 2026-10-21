@@ -7,6 +7,7 @@
 import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '@moss-multi/protocol/client-protocol';
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
+import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
@@ -294,15 +295,34 @@ const byDoc = new WeakMap<Y.Doc, DocSession>();
 const BUSY_TICK_MS = 2 * HEARTBEAT_CHECK_MS;
 
 /**
- * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too, as it last said (T3.S6): a
- * tab holds only the payloads its tree names. 0 for a doc no session holds, or before the DocDO has said.
+ * A late tick keeps a silent socket for at most this long after the last frame heard, counted in time the thread was
+ * free to read frames: a late tick adds one interval, since frames sent during the block wait behind it (B208).
  */
-export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.payloadBytes ?? 0;
+const BUSY_GRACE_MS = 30_000;
+/** A step 1 still unanswered this long is sent again, however many frames still arrive (B213). */
+const RESYNC_HOLD_MS = 30_000;
+/** An outbox stalled at its budget with writes still queued this long reconnects and replays the ledger (B209). */
+const STUCK_MS = 20_000;
+
+/**
+ * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too (T3.S6): a tab holds only the
+ * payloads its tree names. Its last word, plus the payload writes of this tab no ack has covered, made since its last
+ * usage figure: an ack's count includes the writes it covers, and a usage figure those that persisted with their acks
+ * lost, so none is counted twice (B207). 0 for a doc no session holds.
+ */
+export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.countedPayloadBytes ?? 0;
+
+/** What a paste may bring the note to: the cap less 3% for what its estimate leaves out (T3.S6). */
+export const PASTE_LIMIT_BYTES = Math.floor(STATE_CAP_BYTES * 0.97);
 
 export class DocSession {
   readonly doc = new Y.Doc();
   /** The DocDO's last word on the payload bytes it counts against the cap (countedPayloadBytes). */
   payloadBytes = 0;
+
+  get countedPayloadBytes(): number {
+    return this.payloadBytes + this.#ledger.pendingPayloadBytes();
+  }
   /** The payload docs this tab holds beside the note (A§10.10), destroyed with it. */
   readonly payloads = attachPayloadDocs(this.doc, new PayloadDocs());
   readonly #payloadSync: PayloadSync;
@@ -336,6 +356,9 @@ export class DocSession {
   #firstSync: Uint8Array[] = [];
   #visibleSince = 0;
   #lastTick = 0;
+  /** The last frame stamp a tick saw, and the free time since it (BUSY_GRACE_MS). */
+  #heardSeen = 0;
+  #quietFor = 0;
   #failedHandshakes = 0;
   #accessRetries = 0;
   #accessRetry: ReturnType<typeof setTimeout> | undefined;
@@ -792,19 +815,36 @@ export class DocSession {
     // A main thread busy enough to hold this 1 s tick back (a 2 MB paste, its undo, a peer's large paste applied
     // here) reads its frames late: that is not a silent socket. Held 6 s was the bar, and a collaborator's tab
     // applying a 40,000-block paste, its ticks late by 1-5 s, read the server as silent and reconnected.
-    if (this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS) this.#visibleSince = now;
+    // The grace is bounded by the last frame heard, so a socket that stays silent through it still reads as half-open.
+    const heard = this.provider.wsLastMessageReceived;
+    const late = this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS;
+    if (heard !== this.#heardSeen) {
+      this.#heardSeen = heard;
+      this.#quietFor = 0;
+    } else if (this.#lastTick > 0) {
+      this.#quietFor += late ? HEARTBEAT_CHECK_MS : now - this.#lastTick;
+    }
+    if (late && this.#quietFor < BUSY_GRACE_MS) this.#visibleSince = now;
     this.#lastTick = now;
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
-      const heard = this.provider.wsLastMessageReceived;
       if (now - Math.max(heard, this.#visibleSince) > SILENCE_LIMIT_MS) {
         // Half-open: close 4408 and reconnect now; the old socket's close event may never come (A§10.5).
         this.#update({ type: 'silent', lastHeard: heard });
         ws.detach(CLOSE.heartbeat, 'heartbeat');
         return;
       }
+      // Writes queued behind a budget no ack frees (acks lost while frames still arrive): the reconnect's step 2
+      // replays the ledger, and its fresh outbox starts with an empty window.
+      if ((ws.outbox?.blockedFor(now) ?? 0) > STUCK_MS) {
+        this.#update({ type: 'silent', lastHeard: heard });
+        ws.detach(CLOSE.heartbeat, 'stalled');
+        return;
+      }
       // While sync frames still arrive, the answer to the last step 1 is queued behind them: another would only
       // queue the whole backlog again. A peer behind a large paste was sent it once per 4 s, megabytes each time.
-      if (now - this.#lastResync >= RESYNC_MS && !(this.#resyncOwed && now - this.#syncHeard < RESYNC_MS)) this.#resync(ws);
+      // Held back at most RESYNC_HOLD_MS: an answer that was lost never arrives.
+      const holding = this.#resyncOwed && now - this.#syncHeard < RESYNC_MS && now - this.#lastResync < RESYNC_HOLD_MS;
+      if (now - this.#lastResync >= RESYNC_MS && !holding) this.#resync(ws);
     }
     this.#update(null);
   }
@@ -873,8 +913,14 @@ export class DocSession {
     } catch {
       return;
     }
+    // A server event is a frame heard: y-partyserver stamps only binary ones, and a socket hearing just acks while a
+    // large replay converges is alive, not silent.
+    this.provider.wsLastMessageReceived = Date.now();
     if (event.t === 'usage') {
       this.payloadBytes = event.pb;
+      this.#ledger.usageReported();
+      // Once per connect: a test can wait for the DocDO's figure before it sizes a paste against it (j01-paste-held).
+      performance.mark('moss-payload-usage', { detail: { pb: event.pb, limit: PASTE_LIMIT_BYTES } });
     } else if (event.t === 'ack') {
       this.payloadBytes = event.pb ?? 0;
       try {

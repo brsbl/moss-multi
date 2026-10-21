@@ -49,14 +49,20 @@ export interface LeaseGrant {
   clocks: Record<string, number>;
 }
 
+/**
+ * `room` on a reply: the bytes of suggestion state the DocDO may still retain after the request (short of
+ * `SUGGEST_LIMITS.stateShare`, and of the reserve), so a fork can refuse an edit past it before anything changes.
+ * `reserve`: what the note's state may still grow by short of the reserve alone, which a merge's copied ops count
+ * against as well.
+ */
 export type SuggestReply =
-  | { t: 'suggest-leased'; leases: LeaseGrant[] }
+  | { t: 'suggest-leased'; leases: LeaseGrant[]; room?: number; reserve?: number }
   /**
    * The frame landed in `record`, which differs from `requested` when the request opened a continuation of an
    * accepted record or followed a merge. `sv` is each of the record's leases' acknowledged clock in `doc`, the doc the
    * frame wrote (`body` for every frame but a payload op); `parts` the delete parts the record now holds.
    */
-  | { t: 'suggest-ack'; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[] }
+  | { t: 'suggest-ack'; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[]; room?: number; reserve?: number }
   | { t: 'suggest-refused'; record: string | null; reason: SuggestRefusal };
 
 export const SUGGEST_LIMITS = {

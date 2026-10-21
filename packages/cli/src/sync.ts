@@ -14,10 +14,10 @@ import { CliError, EXIT } from './errors.ts';
 import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
 import { hasMarkers, parseMoss, remapMarkers, renderMoss } from './moss-format.ts';
-import { evaluateScope, readScope, type ScopeView } from './scope.ts';
+import { evaluateScope, noteUnit, readScope, type ScopeView, titleKey } from './scope.ts';
 import {
-  confined, type DocMeta, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase, recordPull, recordSynced,
-  renameInside, sameFile, scopedNest, sha256Hex, trackedMetas, writeConfined, writeMeta,
+  carryTaint, confined, type DocMeta, ensureTaintStore, isAllowedName, isWorkspace, localName, lockWorkspace, pinRoot, readBase, readConfined, readMeta, readPriors, recordBase,
+  recordPull, recordSynced, renameInside, sameFile, scopedNest, sha256Hex, taintAdopted, taintNote, trackedMetas, writeConfined, writeMeta,
 } from './workspace.ts';
 
 export type SyncAction =
@@ -266,7 +266,10 @@ function setAside(root: string, file: string, hunks: string[]): string {
     // None yet.
   }
   const stamp = `--- not applied to the doc, ${new Date().toISOString()}\n`;
-  writeConfined(root, rej, Buffer.from(`${before}${stamp}${hunks.map((hunk) => `${hunk.replace(/(?<!\n)\n*$/, '')}\n`).join('')}`));
+  const text = `${before}${stamp}${hunks.map((hunk) => `${hunk.replace(/(?<!\n)\n*$/, '')}\n`).join('')}`;
+  // A conflict file sits beside the note and holds text from the server's answer: what it names is recorded first.
+  taintNote(root, rej, [text]);
+  writeConfined(root, rej, Buffer.from(text));
   return rej;
 }
 
@@ -466,6 +469,8 @@ export interface AdoptOptions {
   titleLine?: boolean;
   /** Keep the file's name instead of taking the doc's filename (`add`). */
   keepName?: boolean;
+  /** Folders of tracked notes whose files vanished this pass; every tracked note missing now when absent. */
+  gone?: string[];
 }
 
 /**
@@ -474,8 +479,15 @@ export interface AdoptOptions {
  * title line names the doc, its comments.json comes too, and the file is left in moss form.
  */
 export async function adopt(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions = {}): Promise<{ result: SyncResult; doc: CreatedDoc; media: SyncResult[] }> {
-  const adopted = await createFrom(ctx, rel, options);
-  return { ...adopted, media: await syncMedia({ ...ctx, force: false }, adopted.doc.id, true) };
+  const { root } = ctx;
+  // The note may be a moved or copied one: what the server showed in other folders stays the server's in this one,
+  // recorded before the doc exists, so a failure here leaves the file untracked and tried again.
+  taintAdopted(root, rel, options.gone ?? trackedMetas(root).filter((meta) => !exists(root, meta.file)).map((meta) => dirname(meta.file)));
+  const { settle, ...adopted } = await createFrom(ctx, rel, options);
+  // Its media go up from the file as its user left it, before any text from the server is written into it.
+  const media = await syncMedia({ ...ctx, force: false }, adopted.doc.id, true);
+  await settle?.();
+  return { ...adopted, media };
 }
 
 /**
@@ -486,13 +498,17 @@ async function syncMedia(ctx: SyncContext, docId: string, settle: boolean): Prom
   const meta = readMeta(ctx.root, docId);
   if (!meta || !exists(ctx.root, meta.file)) return [];
   const scope = ctx.scope;
-  const scoped = scope ? { denies: scope.denies, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
-  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, upload: !ctx.downloadOnly, download: true, ...scoped }, docId, meta.file);
+  const scoped = scope ? { denies: scope.denies, reads: scope.admits, sends: (name: string) => scope.sendsAsset(meta.file, join(dirname(meta.file), ASSET_DIR, name)) } : {};
+  const step = await noteMedia({ root: ctx.root, client: ctx.client, signal: ctx.signal, folds: ctx.folds, upload: !ctx.downloadOnly, download: true, ...scoped }, docId, meta.file);
   if (settle && step.renames.size > 0) step.results.push(await reconcile(ctx, readMeta(ctx.root, docId) ?? meta, undefined));
   return step.results;
 }
 
-async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc }> {
+/**
+ * Creates the doc from an untracked file and tracks the file at once. `settle`, for a plain file, then writes the doc's
+ * text as the server holds it into the file: run it after the media step, so nothing the server wrote is uploaded.
+ */
+async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | 'signal' | 'scope'>, rel: string, options: AdoptOptions): Promise<{ result: SyncResult; doc: CreatedDoc; settle?: () => Promise<void> }> {
   const { root, client, folds } = ctx;
   const bytes = readConfined(root, rel);
   const text = toLf(decode(bytes));
@@ -527,14 +543,18 @@ async function createFrom(ctx: Pick<SyncContext, 'root' | 'client' | 'folds' | '
   const filename = keepName ? {} : { filename: moved || to === rel ? doc.filename : '' };
   // Tracked at once, so nothing failing below can turn this file into a second doc.
   recordBase(root, doc.id, file, bytes, folds, filename);
-  const merged = await client.content(doc.id, true);
-  try {
-    recordPull(root, doc.id, file, merged, sha256Hex(bytes), folds);
-  } catch (error) {
-    // Edited during the create: the file and the base it was created from stay, and the next pass merges the edit.
-    if (!(error instanceof CliError)) throw error;
-  }
-  return { result: { docId: doc.id, file, ...(file !== rel ? { from: rel } : {}), action: 'created' }, doc };
+  const settle = async () => {
+    // Already settled by the media step's push: nothing more to write.
+    if (readMeta(root, doc.id)?.baseHash !== sha256Hex(bytes)) return;
+    const merged = await client.content(doc.id, true);
+    try {
+      recordPull(root, doc.id, file, merged, sha256Hex(bytes), folds);
+    } catch (error) {
+      // Edited during the create: the file and the base it was created from stay, and the next pass merges the edit.
+      if (!(error instanceof CliError)) throw error;
+    }
+  };
+  return { result: { docId: doc.id, file, ...(file !== rel ? { from: rel } : {}), action: 'created' }, doc, settle };
 }
 
 /**
@@ -554,6 +574,8 @@ function followLocalRenames(root: string, metas: DocMeta[], untracked: string[],
     if (candidates.length === 0) continue;
     const rivals = missing.filter((other) => syncedHash(other) === want);
     if (candidates.length === 1 && rivals.length === 1) {
+      // Moved to another folder: everything the server showed in the old one is the server's in the new one too.
+      carryTaint(root, meta, candidates[0]!);
       writeMeta(root, { ...meta, file: candidates[0]! });
       untracked.splice(untracked.indexOf(candidates[0]!), 1);
       results.push({ docId: meta.docId, file: candidates[0]!, from: meta.file, action: 'renamed' });
@@ -614,6 +636,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   }
   // The root as pinned when the command chose it: one swapped during the request is refused before it is scanned.
   pinRoot(root);
+  // The folder taint store exists before anything is tracked this pass (rebuilt closed if it was lost).
+  ensureTaintStore(root);
   const rows = new Map(listed.map((row) => [row.id, row]));
   const results: SyncResult[] = [];
   let metas = trackedMetas(root);
@@ -629,6 +653,8 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
   const nested = new Set(metas.filter((meta) => scopedNest(root, meta.file) !== null).map((meta) => meta.docId));
   const { held, heldFiles } = followLocalRenames(root, metas.filter((meta) => !nested.has(meta.docId) && admitted(meta.file)), untracked, results);
   metas = trackedMetas(root);
+  // Tracked files gone and not followed: a note adopted below may be one of them, moved and edited (taintAdopted).
+  const gone = metas.filter((meta) => !exists(root, meta.file)).map((meta) => dirname(meta.file));
 
   for (const tracked of metas) {
     if (held.has(tracked.docId) || nested.has(tracked.docId) || scopedNest(root, tracked.file) !== null || !admitted(tracked.file)) continue;
@@ -640,10 +666,15 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       const { meta, result } = followServerName(noteCtx, tracked, row, trackedMetas(root));
       if (result) results.push(result);
       // Media first, so a pushed reference finds its file; a doc no longer listed is left to reconcile to report.
-      if (row) results.push(...(await syncMedia(noteCtx, meta.docId, false)));
+      const before = row ? await syncMedia(noteCtx, meta.docId, false) : [];
+      results.push(...before);
       const reconciled = await reconcile(noteCtx, meta, row);
       results.push(reconciled);
-      if (reconciled.action !== 'remote-gone') results.push(...(await syncMedia(noteCtx, meta.docId, true)));
+      if (reconciled.action !== 'remote-gone') {
+        // A refusal the step before the pull already reported is not repeated.
+        const said = (result: SyncResult) => before.some((first) => first.file === result.file && first.action === result.action && first.message === result.message);
+        results.push(...(await syncMedia(noteCtx, meta.docId, true)).filter((result) => !said(result)));
+      }
     } catch (error) {
       if (stopped(error)) return results;
       if (error instanceof RateLimited) throw error;
@@ -659,7 +690,7 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
     if (stopped()) return results;
     touch();
     try {
-      const adopted = await adopt(ctx, rel);
+      const adopted = await adopt(ctx, rel, { gone });
       results.push(adopted.result, ...adopted.media);
     } catch (error) {
       if (stopped(error)) return results;
@@ -667,9 +698,62 @@ async function pass(ctx: SyncContext, touch: () => void): Promise<SyncResult[]> 
       results.push({ file: rel, action: 'failed', message: failure(error) });
     }
   }
+  if (scope) {
+    try {
+      await fetchReached(ctx, listed, results, touch);
+    } catch (error) {
+      if (stopped(error)) return results;
+      throw error;
+    }
+  }
   const outside = (scope?.outOfScope ?? 0) + nested.size;
   if (outside > 0) results.push({ file: '', action: 'out-of-scope', count: outside });
   return results;
+}
+
+/**
+ * Pulls the server docs `follow` reaches that no note here holds (T7.P3), so a replica starts from its scope alone and
+ * a note another replica made and linked comes down. A doc is pulled only when exactly one doc it can open goes by the
+ * link's title, no doc here tracks it, and nothing is at its path; it is download only unless `allow` covers the path.
+ * A pulled note may link on within the scope's depth, so this repeats until nothing new comes down.
+ */
+async function fetchReached(ctx: SyncContext, rows: DocRow[], results: SyncResult[], touch: () => void): Promise<void> {
+  const { root, client, folds } = ctx;
+  // One round per hop at most: depth is at most 10.
+  for (let round = 0; round <= 10; round += 1) {
+    const scope = workspaceScope(root, folds);
+    if (!scope?.missing.length) return;
+    const tracked = new Set(trackedMetas(root).map((meta) => meta.docId));
+    let pulled = 0;
+    for (const want of scope.missing) {
+      const matches = rows.filter((row) => titleKey(row.title) === titleKey(want.title));
+      const row = matches.length === 1 ? matches[0]! : undefined;
+      if (!row || scope.deniesTitle(row.title) || tracked.has(row.id) || exists(root, want.path) || scopedNest(root, want.path) !== null) continue;
+      if (ctx.signal?.aborted) throw new Stopped('stopped');
+      touch();
+      tracked.add(row.id);
+      try {
+        const remote = await client.content(row.id);
+        const title = row.title.trim();
+        // Written only where nothing is: a file that appears meanwhile is left alone.
+        if (noteUnit(want.path) !== want.path) {
+          recordSynced(root, row.id, want.path, Buffer.from(renderMoss(decode(remote), title, [])), remote, null, folds, { mode: 'moss', title });
+        } else recordPull(root, row.id, want.path, remote, null, folds);
+      } catch (error) {
+        if (error instanceof CliError && error.status === 429) throw new RateLimited(60);
+        if (!(error instanceof CliError)) throw error;
+        results.push({ docId: row.id, file: want.path, action: 'failed', message: failure(error) });
+        continue;
+      }
+      pulled += 1;
+      const sends = scope.uploads(want.path);
+      const why = `${want.from ? `linked from ${want.from}` : 'named in follow'}${sends ? '' : '; download only until `moss-multi scope confirm` adds it'}`;
+      results.push({ docId: row.id, file: want.path, action: 'pulled', message: why });
+      const view = workspaceScope(root, folds) ?? scope;
+      results.push(...(await syncMedia({ ...ctx, scope: view, downloadOnly: !sends }, row.id, false)));
+    }
+    if (pulled === 0) return;
+  }
 }
 
 /** 0 clean, 2 failed hunks, 3 a degenerate push skipped, 1 anything else failed (A§17). */
