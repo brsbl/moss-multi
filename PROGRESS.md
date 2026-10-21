@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 74% done** (185 of 250 planned tasks verified)
+**Overall: 74% done** (186 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 70 / 70 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 17 / 17 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 28 / 28 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 18 / 18 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -212,6 +212,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T3.B28 verified: a note shaped with thousands of interleaved writers no longer makes the server do quadratic work to answer a reader's sync, and a huge answer can no longer overflow the stack, so any reader still gets the note in bounded time.
 - 2026-10-20 — T4.U verified: comments now run on m3's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads), with both sides kept and the full lane green on the m4 head.
 - 2026-10-20 — T5.U verified: suggestions now run on m4's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads); a Suggest-mode paste is still judged by T5.S10's rule against the larger of the local and server note sizes, and the full lane is green on the m5 head.
+- 2026-10-20 — T6.U verified: history now runs on m5's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with the DocDO answering through splitAnswer beside the version imports and the full lane, j17 included, green on the m6 head.
 
 ## T1.1s identity audit
 
@@ -824,3 +825,6 @@ Local browser verification remains assigned to the independent checker under the
 - T4.U (m4 on m3's sync and upload fixes) checker P2: intermittent WebKit j03-connection socket-count failure still unexplained — in attempt 1 of run 39425153421, 'a refused write rebinds fresh and a deleted doc locks in place' failed with Ben opening 3 doc sockets where 2 are allowed; it passed on rerun and in an exact-head WebKit repeat_each=3 run (39429710184); root cause and whether base lanes show it are not established (the merge changed only tests after T3.B4; related Chromium flake logged under T1.S1).
 - T5.U (m5 on m4's sync and upload fixes) checker P2: WebKit j00-import tables.md invariant 5 intermittently fails with a table column resize handle covering the canvas at 852,947 (1 in 3 on the T5.U head and on each parent, m5 and m4); e2e/lib/detectors.js:21-45 rejects handles mounted on the body while vendor TableColumnResizePlugin.tsx:713-772 portals them there.
 - T5.U (m5 on m4's sync and upload fixes) checker P2: timing budgets are tight: the j01-paste-check stall failed once at 5320 ms against 5300 ms and the converter's entity-tabs import at 260 ms against 250 ms (reruns 4002 ms and 230 ms; parents show the same variance).
+- T6.U (m6 on m5's sync and upload fixes) checker P2, owned by m5: the suggestion checkpoint cache is not bounded by bytes — Composite.build keeps a full encoded document in each valid record's Step and retains every Step, so a 5 MiB note with 100 open records could hold about 500 MiB (static reading; no OOM reproduced).
+- T6.U (m6 on m5's sync and upload fixes) checker P2, owned by m5: ghostsOf rescans the removed strike prefix for each ghost character — placeOf walks back through the gone set per removed character, quadratic on long struck runs (up to 20,000 items; static reading, not measured).
+- T6.U (m6 on m5's sync and upload fixes) checker P2: j01-paste-check (chromium) stall budget flakes at e2e/lib/paste.ts:294 (5634>5212 and 5083>5000 ms during moss-paste-batch layout, 2 of 3 repeats on 8b49e971); base m6 06591a08 fails it 2 of 3 too (run 39522279454), while the merge head passed 3 of 3 (run 39522281687) and m5 104d4cce 3 of 3 (run 39522277036) — a pre-existing m6 flake that needs its own fix (same family as the T5.Q second pass and T5.U lines; T3.B27's calibrated stall bounds).
