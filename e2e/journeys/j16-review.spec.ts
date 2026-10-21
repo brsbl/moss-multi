@@ -475,13 +475,16 @@ const pasteHtml = (actor: Actor, docId: string, html: string, plain: string): Pr
   }, [html, plain] as const);
 
 const PASTES = [
-  ["at the block's start, pasting the struck character itself", 1, '<p>a</p><p>x</p>', 'a\n\nx', ['Intro line stays.', 'a', 'xbc tail.', 'Closing line stays too.']],
-  ['just before the struck character, pasting the same character', 2, '<p>b</p><p>x</p>', 'b\n\nx', ['Intro line stays.', 'ab', 'xc tail.', 'Closing line stays too.']],
+  ["at the block's start, pasting the struck character itself", 1, '<p>a</p><p>x</p>', 'a\n\nx', ['Intro line stays.', 'a', 'xbc tail.', 'Closing line stays too.'], false],
+  // The pasted "b" sits just before the struck one, in its text node, so it reads as that "b" restored: accept keeps
+  // the original (T5.S14) and ben's fork, which held the pasted one, rebuilds on a fresh socket.
+  ['just before the struck character, pasting the same character', 2, '<p>b</p><p>x</p>', 'b\n\nx', ['Intro line stays.', 'ab', 'xc tail.', 'Closing line stays too.'], true],
 ] as const;
 
-for (const [label, offset, html, plain, expected] of PASTES) {
+for (const [label, offset, html, plain, expected, kept] of PASTES) {
   test(`j16-review: a paste ${label} keeps the pasted text and leaves the struck one out, through the card and accept @p:mean-2 @p:R17`, async ({ actors }) => {
     const { ada, ben, docId } = await sharedNote(actors, 'Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
+    if (kept) ben.expectReconnects(1, docId);
     await openIn(ben, docId, 'suggest');
     await openIn(ada, docId, 'edit');
     await actors.requireDistinct(2);

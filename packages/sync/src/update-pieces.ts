@@ -100,3 +100,178 @@ export function splitUpdate(update: Uint8Array, limit: number): UpdatePiece[] {
   if (deletes && (!fits || runs.length === 0)) pieces.push(encodePiece([], deletes));
   return pieces;
 }
+
+/** The ids an item needs before it can integrate: its left and right origins and an explicit parent. */
+function dependencies(struct: Struct): Y.ID[] {
+  if (!(struct instanceof Y.Item)) return [];
+  const ids: Y.ID[] = [];
+  if (struct.origin) ids.push(struct.origin);
+  if (struct.rightOrigin) ids.push(struct.rightOrigin);
+  if (struct.parent instanceof Y.ID) ids.push(struct.parent);
+  return ids;
+}
+
+/** Clients blocked on one client, a min-heap by the clock each needs. */
+class Waiters {
+  private readonly clocks: number[] = [];
+  private readonly clients: number[] = [];
+
+  get size(): number {
+    return this.clocks.length;
+  }
+
+  /** The smallest clock a waiter needs. */
+  peek(): number {
+    return this.clocks[0];
+  }
+
+  push(clock: number, client: number): void {
+    let at = this.clocks.length;
+    this.clocks.push(clock);
+    this.clients.push(client);
+    while (at > 0) {
+      const parent = (at - 1) >> 1;
+      if (this.clocks[parent] <= clock) break;
+      this.move(parent, at);
+      at = parent;
+    }
+    this.clocks[at] = clock;
+    this.clients[at] = client;
+  }
+
+  /** Removes the waiter needing the smallest clock and returns its client. */
+  pop(): number {
+    const top = this.clients[0];
+    const clock = this.clocks.pop()!;
+    const client = this.clients.pop()!;
+    const size = this.clocks.length;
+    if (size === 0) return top;
+    let at = 0;
+    for (;;) {
+      let child = 2 * at + 1;
+      if (child >= size) break;
+      if (child + 1 < size && this.clocks[child + 1] < this.clocks[child]) child += 1;
+      if (this.clocks[child] >= clock) break;
+      this.move(child, at);
+      at = child;
+    }
+    this.clocks[at] = clock;
+    this.clients[at] = client;
+    return top;
+  }
+
+  private move(from: number, to: number): void {
+    this.clocks[to] = this.clocks[from];
+    this.clients[to] = this.clients[from];
+  }
+}
+
+/**
+ * `structs` in dependency order: an item goes once its origins and explicit parent are in an earlier struct (or before
+ * the update's range of their client) and every earlier clock of its own client has gone. A blocked client waits for
+ * the exact clock it needs (T3.B28), so the work is linear in structs and dependencies times a heap's log, and a hard
+ * budget bounds it: past the budget, or on a cycle or a dependency outside the update (only a crafted frame makes
+ * one), what is left goes in client order, as the receiver would hold it pending anyway.
+ */
+function dependencyOrder(structs: Struct[]): Struct[] {
+  const byClient = new Map<number, Struct[]>();
+  for (const struct of structs) {
+    const run = byClient.get(struct.id.client);
+    if (run) run.push(struct);
+    else byClient.set(struct.id.client, [struct]);
+  }
+  // Per client in the update: the clock up to which its structs are placed, and the next one to place.
+  const placed = new Map<number, number>();
+  const next = new Map<number, number>();
+  for (const [client, run] of byClient) {
+    placed.set(client, run[0].id.clock);
+    next.set(client, 0);
+  }
+  const present = (id: Y.ID) => {
+    const upTo = placed.get(id.client);
+    return upTo === undefined || id.clock < upTo;
+  };
+  // Clients blocked on another's clock, keyed by that client. A client is in `ready` or one heap, never both.
+  const waiting = new Map<number, Waiters>();
+  const ready: number[] = [];
+  for (const client of byClient.keys()) ready.push(client);
+  const ordered: Struct[] = [];
+  // Each struct is placed once and blocks at most once per dependency, so an honest answer stays well within this.
+  let budget = 16 * (structs.length + 1);
+  while (ready.length > 0 && budget > 0) {
+    const client = ready.pop()!;
+    const run = byClient.get(client)!;
+    const from = next.get(client)!;
+    let at = from;
+    while (at < run.length && budget > 0) {
+      const struct = run[at];
+      budget -= 1;
+      let missing: Y.ID | undefined;
+      for (const id of dependencies(struct)) {
+        budget -= 1;
+        if (!present(id)) {
+          missing = id;
+          break;
+        }
+      }
+      if (missing) {
+        budget -= 1;
+        let waiters = waiting.get(missing.client);
+        if (!waiters) waiting.set(missing.client, (waiters = new Waiters()));
+        waiters.push(missing.clock, client);
+        break;
+      }
+      ordered.push(struct);
+      placed.set(client, struct.id.clock + struct.length);
+      at += 1;
+    }
+    next.set(client, at);
+    // Wake only the waiters whose clock is now placed; the rest keep waiting without being visited.
+    const heap = at > from ? waiting.get(client) : undefined;
+    if (heap) {
+      const upTo = placed.get(client)!;
+      while (heap.size > 0 && heap.peek() < upTo) {
+        budget -= 1;
+        ready.push(heap.pop());
+      }
+    }
+  }
+  for (const [client, run] of byClient) for (let at = next.get(client)!; at < run.length; at += 1) ordered.push(run[at]);
+  return ordered;
+}
+
+/**
+ * A server answer (B212): `update` (Yjs v1, any number of authors) as pieces of at most about `limit` bytes, its structs
+ * in dependency order (dependencyOrder), so each piece needs only what the receiver holds and the pieces before it.
+ * Cut only between clients or before an embedded type, as splitUpdate is.
+ */
+export function splitAnswer(update: Uint8Array, limit: number): Uint8Array[] {
+  if (update.byteLength <= limit) return [update];
+  const { structs, ds } = Y.decodeUpdate(update);
+  const ordered = dependencyOrder(structs);
+
+  const budget = Math.max(1, limit - HEADER_BYTES);
+  const scratch = new Y.UpdateEncoderV1();
+  const runs: Struct[][] = [];
+  let run: Struct[] = [];
+  let size = 0;
+  let previous: number | null = null;
+  for (const struct of ordered) {
+    const before = encoding.length(scratch.restEncoder);
+    struct.write(scratch, 0);
+    const bytes = encoding.length(scratch.restEncoder) - before;
+    if (run.length > 0 && size + bytes > budget && (struct.id.client !== previous || startsType(struct))) {
+      runs.push(run);
+      run = [];
+      size = 0;
+    }
+    run.push(struct);
+    size += bytes;
+    previous = struct.id.client;
+  }
+  if (run.length > 0) runs.push(run);
+  const deletes = [...ds.clients.values()].some((items) => items.length > 0) ? ds : null;
+  const pieces = runs.map((structsOf) => encodePiece(structsOf, null).update);
+  if (deletes) pieces.push(encodePiece([], deletes).update);
+  return pieces;
+}

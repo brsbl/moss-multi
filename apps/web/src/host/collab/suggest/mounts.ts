@@ -267,6 +267,7 @@ export class ReviewMount {
 
   dispose(): void {
     for (const stop of this.#stops.splice(0)) stop();
+    this.#composite.dispose();
     this.#payloads.stop();
     for (const doc of this.#built.values()) doc.destroy();
     this.doc.destroy();
