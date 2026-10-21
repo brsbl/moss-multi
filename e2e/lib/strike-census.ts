@@ -276,7 +276,7 @@ async function review(ada: Actor, ben: Actor, docId: string, original: string, l
   await expect(ui.pane(ben, docId), `${label}: never refused`).toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
   // The author leaves, so accepting his records never touches his socket.
   await ben.goto('/');
-  await expect(ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`)).toHaveAttribute('aria-label', /[1-9]\d* open/, { timeout: BIND_TIMEOUT });
+  await expect(ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`)).toHaveAttribute('aria-label', /(?<!\d)0*[1-9]\d* open/, { timeout: BIND_TIMEOUT });
   await expect.poll(async () => (await readBody(ada, docId)).unpainted, { message: `${label}: Edit mode paints every struck capital`, timeout: BIND_TIMEOUT }).toEqual([]);
   const previews = await ui.pane(ada, docId).locator('[data-suggest-preview]').allTextContents();
   expect(capitals(previews.join(' ')), `${label}: no Edit-mode insert mark previews a struck capital (${previews.join(' | ')})`).toBe('');

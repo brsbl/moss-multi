@@ -52,6 +52,12 @@ export const ACK_COALESCE_MS = 250;
 export const REST_WRITE_RATE = { max: 60, windowMs: 60_000 } as const;
 
 /**
+ * CLI pushes per acting user per window (A§5.2, A§17): an agent's pushes count against its owner, so more keys add no
+ * rate, and no one else's pushes reach the bucket. Denied attempts count; 429 with retry-after past it.
+ */
+export const PUSH_RATE = { max: 60, windowMs: 60_000 } as const;
+
+/**
  * Notes minted (created, imported or duplicated) per acting user per window, counted by their PrincipalDO before any
  * row or DocDO (A§5.2, A§18); an agent key counts against its owner. 429 past it. The heaviest journey mints well under
  * ten a minute per principal, and a person filing notes by hand far fewer.

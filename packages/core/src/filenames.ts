@@ -6,9 +6,9 @@ export function slug(title: string): string {
     .trim()
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/^-+|(?<!-)-+$/g, '')
     .slice(0, 80)
-    .replace(/-+$/, '');
+    .replace(/(?<!-)-+$/, '');
 }
 
 /** The stem for a title with no letters or digits. */

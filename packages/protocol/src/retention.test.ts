@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { RETENTION_DAYS, TRASH_COPY, TRASHED_ACTION } from './retention.ts';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
-const ROOTS = ['apps/web/src', 'packages/core/src', 'packages/protocol/src', 'packages/sync/src', 'packages/ui/src', 'packages/viewer/src',
+const ROOTS = ['apps/web/src', 'packages/cli/src', 'packages/core/src', 'packages/protocol/src', 'packages/sync/src', 'packages/ui/src', 'packages/viewer/src',
   'vendor/moss/packages/desktop/src', 'vendor/moss/packages/shared/src'];
 const MODULE = 'packages/protocol/src/retention.ts';
 const R = 'vendor/moss/packages/desktop/src/renderer';
@@ -18,6 +18,7 @@ const R = 'vendor/moss/packages/desktop/src/renderer';
 const SURFACES: Record<string, string[]> = {
   'apps/web/src/api/trash.ts': ['apps/web/src/api/trash.ts'],
   'apps/web/src/api/folders.ts': ['apps/web/src/api/folders.ts'],
+  'packages/cli/src/api.ts': ['packages/cli/src/program.ts'],
   'apps/web/src/host/bridge/index.ts': ['apps/web/src/host/surfaces/TrashConfirmation.tsx', 'apps/web/src/host/collab/ConnectionNotice.tsx'],
   [`${R}/App.tsx`]: [`${R}/panels/CanvasAreaContent.tsx`, `${R}/editor/MarkdownEditor.tsx`, `${R}/panels/TrashedNotesPanelContent.tsx`],
   [`${R}/panels/NotesListPanelContent.tsx`]: [`${R}/panels/NotesListPanelContent.tsx`, `${R}/panels/TrashedNotesPanelContent.tsx`],

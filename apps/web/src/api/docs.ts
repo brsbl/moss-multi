@@ -1,11 +1,12 @@
-// /api/docs. POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
+// /api/docs. GET lists the docs the caller can open (the CLI; T7.1). POST writes the D1 row in a folder the caller may edit, then DocDO.create seeds the doc (A§9 "+ Note").
 // GET /api/docs/:id is the doc and the caller's role on it; DELETE and POST /restore are trash.ts; /members is the
 // members API (members.ts) and /links the share links (links.ts); GET /api/docs/:id/instance is the owner-only DO probe
 // (A§19), which reads nothing from the doc; GET /api/docs/:id/content is the doc's markdown export (?view=working adds
-// open suggestions); /suggestions/:sid/* is suggestions.ts; /versions is versions.ts; /comments and its edit, delete,
-// resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
+// open suggestions) and POST /push a CLI push (push.ts); /suggestions/:sid/* is suggestions.ts; /versions is versions.ts; /comments and its
+// edit, delete, resolve and reactions routes are comments.ts. A missing doc and one the caller cannot open get the same 404 on every route (A§8).
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
+import { liftTitleLine } from '@moss-multi/sync/title-line';
 import {
   CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
 } from '@moss-multi/protocol/limits';
@@ -18,16 +19,18 @@ import { docs } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
 import {
-  actingUserId, actorLive, editsLiveFolder, liveLink, liveNotesBy, readsLiveDoc, resolveDocAccess, resolveFolderAccess, writeActor, writeActorArgs, type WriteActor,
+  accessibleDocs, accessibleFolders, actingUserId, actorLive, editsLiveFolder, liveLink, liveNotesBy, readsLiveDoc, resolveDocAccess,
+  resolveFolderAccess, writeActor, writeActorArgs, type WriteActor,
 } from './access.ts';
 import { admitDuplicateMedia, copyMedia } from './assets.ts';
-import { createComment, deleteComment, editComment, reactComment, resolveComment } from './comments.ts';
-import { admitWorkingExport, handleSuggestion, SUGGESTION_ROUTE, workingRateLimited } from './suggestions.ts';
+import { createComment, deleteComment, editComment, listDocComments, reactComment, resolveComment } from './comments.ts';
+import { admitWorkingExport, handleSuggestion, listSuggestions, SUGGESTION_ROUTE, SUGGESTIONS_ROUTE, workingRateLimited } from './suggestions.ts';
 import { folderNotFound, liveIn, moveDoc, upFrom, vaultOf } from './folders.ts';
 import { handleInviteLinks } from './invites.ts';
 import { handleLinks } from './links.ts';
 import { handleMembers, type MembersEnv } from './members.ts';
 import { restoreDoc, trashDoc } from './trash.ts';
+import { handlePush, PUSH_ROUTE } from './push.ts';
 import { handleVersions, VERSIONS_ROUTE } from './versions.ts';
 import { NO_STORE, notFound, parseJsonObject, readCapped, readJsonObject, refuse, unauthenticated } from './respond.ts';
 import { ensureDefaultVault } from './vaults.ts';
@@ -92,10 +95,14 @@ const noteCap = () => refuse(409, 'note-cap',
 
 const docCap = () => json({ error: 'doc-cap' }, 413, NO_STORE);
 
-/** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
+/**
+ * Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}, plus
+ * `content` when `run` answers the created revision's export.
+ */
 async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
+  let content: unknown;
   try {
-    await run();
+    content = await run();
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
     if (isDocCapError(error)) return docCap();
@@ -103,7 +110,7 @@ async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<u
     throw error;
   }
   const [projected] = await db.select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt }).from(docs).where(eq(docs.id, doc.id));
-  return json({ doc: projected, role }, 201, NO_STORE);
+  return json({ doc: projected, role, ...(typeof content === 'string' ? { content } : {}) }, 201, NO_STORE);
 }
 
 /**
@@ -149,17 +156,40 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   if (!roleAtLeast(folder.role, 'editor')) {
     return json({ error: 'forbidden', message: 'You can view this folder but not add notes to it.' }, 403, NO_STORE);
   }
-  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  let title = typeof body.title === 'string' ? body.title.trim() : '';
+  let markdown = typeof body.markdown === 'string' ? body.markdown : undefined;
+  // `titleLine`: a leading `# Title` line is the note's name, not a body H1 (moss interchange, A§12).
+  if (body.titleLine === true && markdown !== undefined) {
+    const lifted = liftTitleLine(markdown, title || undefined);
+    markdown = lifted.markdown;
+    title = lifted.title ?? '';
+  }
   const actor = writeActor(principal, shareTokenOf(request))!;
   const doc = await insertDoc(env, db, actor, { folderId, ownerUserId: folder.ownerUserId, createdBy: principal.id, actingUserId: userId });
   if (doc === 'full') return noteCap();
   if (!doc) return refuseInsert(env, db, principal, actor, folderId);
   const stub = await getServerByName(env.DocDO, doc.id);
-  return seeded(db, doc, folder.role, async () => {
-    await stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
-      ...(typeof body.markdown === 'string' ? { markdown: body.markdown } : {}),
-      ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) });
-  });
+  // `content`: the created revision's export, the base the CLI adopts a file against (A§17).
+  return seeded(db, doc, folder.role, () => stub.create({ folderId, ownerId: folder.ownerUserId, ...(title ? { title } : {}),
+    ...(markdown !== undefined ? { markdown } : {}),
+    ...(sidecar !== undefined ? { comments: sidecar as Record<string, unknown>, author: principal.id } : {}) }));
+}
+
+/**
+ * GET /api/docs: every live doc a signed-in person or an agent can open, through the discovery closure lists use
+ * (A§8), newest first. The CLI's `list` and its title-prefix references read it (T7.1). A share token alone lists nothing.
+ */
+async function listDocs(request: Request, env: DocsEnv): Promise<Response> {
+  const principal = await resolvePrincipal(request, env);
+  if (!principal || principal.type === 'anonymous') return unauthenticated();
+  const db = createDb(env.DB);
+  const folders = await accessibleFolders(db, principal);
+  const vaultOfFolder = new Map(folders.map((folder) => [folder.id, folder.vaultId]));
+  const rows = (await accessibleDocs(db, principal, folders)).map((doc) => ({
+    id: doc.id, title: doc.title, filename: doc.filename, folderId: doc.folderId, vaultId: vaultOfFolder.get(doc.folderId) ?? null,
+    role: doc.role, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
+  })).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  return json({ docs: rows }, 200, NO_STORE);
 }
 
 /** Duplicate content at one server snapshot; grants stay on the source and folder access is inherited. */
@@ -250,8 +280,8 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
   if (!roleAtLeast(access.role, 'editor')) return json({ error: 'forbidden' }, 403, NO_STORE);
   if (!body || typeof body.title !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
   try {
-    // Per identity, not per doc: a rename diffs caller text, so one principal cannot spread a flood across docs.
-    const principalDO = await getServerByName(env.PrincipalDO, principal.id);
+    // Per person, not per doc: a rename diffs caller text, so one person (and their agents) cannot spread a flood across docs.
+    const principalDO = await getServerByName(env.PrincipalDO, actingUserId(principal) ?? principal.id);
     if (!(await principalDO.takeWriteToken())) {
       return json({ error: 'rate-limited' }, 429, { ...NO_STORE, 'retry-after': String(REST_WRITE_RATE.windowMs / 1000) });
     }
@@ -280,7 +310,8 @@ async function readContent(request: Request, env: DocsEnv, docId: string): Promi
     if (refused) return refused;
   }
   const stub = await getServerByName(env.DocDO, docId);
-  const markdown = working ? await stub.exportWorking() : await stub.exportMarkdown();
+  // A clean export is what a pull holds, so the DocDO keeps it as a push base (A§17).
+  const markdown = working ? await stub.exportWorking() : await stub.pullMarkdown();
   if (markdown === null) return workingRateLimited();
   return new Response(markdown, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', ...NO_STORE } });
 }
@@ -299,7 +330,10 @@ const only = (method: string, request: Request, run: () => Promise<Response>): P
 
 export async function handleDocs(request: Request, env: DocsEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
-  if (pathname === '/api/docs') return only('POST', request, () => createDoc(request, env));
+  if (pathname === '/api/docs') {
+    if (request.method === 'GET') return listDocs(request, env);
+    return request.method === 'POST' ? createDoc(request, env) : json({ error: 'method-not-allowed' }, 405, { allow: 'GET, POST' });
+  }
   const duplicate = /^\/api\/docs\/([^/]+)\/duplicate$/.exec(pathname);
   if (duplicate) return only('POST', request, () => duplicateDoc(request, env, duplicate[1]));
   const restore = /^\/api\/docs\/([^/]+)\/restore$/.exec(pathname);
@@ -324,7 +358,10 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
     return access ? json({ role: access.role, deleted: access.deleted }, 200, NO_STORE) : notFound();
   });
   const comments = COMMENTS.exec(pathname);
-  if (comments) return only('POST', request, () => createComment(request, env, comments[1]));
+  if (comments) {
+    if (request.method === 'GET') return listDocComments(request, env, comments[1]);
+    return only('POST', request, () => createComment(request, env, comments[1]));
+  }
   const resolve = RESOLVE.exec(pathname);
   if (resolve) return only('POST', request, () => resolveComment(request, env, resolve[1], resolve[2]));
   const reactions = REACTIONS.exec(pathname);
@@ -337,8 +374,12 @@ export async function handleDocs(request: Request, env: DocsEnv): Promise<Respon
   }
   const versions = VERSIONS_ROUTE.exec(pathname);
   if (versions) return handleVersions(request, env, versions);
+  const listed = SUGGESTIONS_ROUTE.exec(pathname);
+  if (listed) return listSuggestions(request, env, listed[1]);
   const suggestion = SUGGESTION_ROUTE.exec(pathname);
   if (suggestion) return handleSuggestion(request, env, suggestion[1], suggestion[2], suggestion[3] as 'preview' | 'accept' | 'reject' | 'withdraw');
+  const pushed = PUSH_ROUTE.exec(pathname);
+  if (pushed) return handlePush(request, env, pushed[1]);
   const content = CONTENT.exec(pathname);
   if (content) return only('GET', request, () => readContent(request, env, content[1]));
   const instance = INSTANCE.exec(pathname);

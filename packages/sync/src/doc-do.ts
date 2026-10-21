@@ -20,13 +20,18 @@ import {
 import {
   attachmentFrom, classifySync, connectCode, deletesCovered, EVERYONE, parseFrame, revocationCode, stateBytesAfter, windowed, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
-import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
+import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence, sendPresence } from './doc/awareness.ts';
+import { AGENT_PRESENCE_MS, AGENT_PRESENCE_REFRESH_MS, colorOf, seedColor } from '@moss-multi/protocol/presence';
+import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
-import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
+import {
+  coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, listComments, type CommentCreate, type CommentDeleteScope, type CommentListing, type CommentResult,
+  type CommentSource,
+} from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
 import { SuggestCooldowns } from './doc/suggest-cooldown.ts';
-import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
+import { newSuggestionsClient, patchMeta, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter, writeSuggestions } from './suggest/records.ts';
 import {
   acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, IDLE_BATCH, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
 } from './suggest/review.ts';
@@ -42,6 +47,8 @@ import { titleDiff } from './server-title.ts';
 import { splitAnswer } from './update-pieces.ts';
 import { captureContent, restoreContent, type RestoredSpans, type VersionContent } from './doc/version-content.ts';
 import { ReconcileRefused } from './reconcile.ts';
+import { BaseCache, sha256Hex } from './doc/bases.ts';
+import { landPush } from './push.ts';
 import { decodeRestoreBase, StaleBase, type DecodedBase } from './restore-base.ts';
 import {
   ACTIVITY_MS, ACTIVITY_UPDATES, VERSION_BOUNDS, VERSION_NAME_MAX, VERSION_SPILL_BYTES, VersionStore, type VersionBlobs,
@@ -50,6 +57,39 @@ import {
 
 /** A restore's server write (A§14). */
 export const VERSION_RESTORE = 'version-restore';
+
+/** A CLI push's server write (A§17). */
+export const CLI_PUSH = 'cli-push';
+
+/** What a push answers: the merge landed (possibly with hunks it could not place), or why it was refused. */
+export type PushVerdict =
+  /** `suggestionId`: a `--suggest` push landed as this open suggestion and the doc is unchanged. */
+  | { ok: true; applied: number; failedHunks: string[]; suggestionId?: string }
+  | { ok: false; status: number; reason: string; deletedRatio?: number; message?: string };
+
+/** The awareness origin of an agent's Bot-badged presence entry (A§10.7). */
+const AGENT_PRESENCE = Symbol('agent-presence');
+
+/** Why a `--suggest` push could not be recorded, in the CLI's words. */
+const SUGGEST_REFUSALS: Partial<Record<string, string>> = {
+  'record-cap': 'the change is too large for one suggestion; push it in smaller parts',
+  'ops-cap': 'this note holds too many pending suggestions; review some first',
+  'open-cap': 'you have too many open suggestions on this note; withdraw some or wait for them to be reviewed',
+  'lease-cap': 'you have too many suggestions in progress on this note; try again shortly',
+  'doc-cap': 'the note is full; a note holds at most 2 MB of markdown',
+  channel: 'a suggestion can change only the note\'s text',
+  'node-type': 'the change holds a block this note cannot show',
+};
+
+/** One awareness entry `[client, clock, state]` as an awareness update. */
+function awarenessEntry(client: number, clock: number, state: unknown): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 1);
+  encoding.writeVarUint(encoder, client);
+  encoding.writeVarUint(encoder, clock);
+  encoding.writeVarString(encoder, JSON.stringify(state));
+  return encoding.toUint8Array(encoder);
+}
 
 /** How long after a wake the doc re-feeds search. */
 const WAKE_FEED_MS = 1_000;
@@ -183,6 +223,19 @@ export type ReviewRefusal = { ok: false; status: number; reason: string };
 export type SuggestionPreview = Preview & { closed?: boolean };
 
 /** A new live suggestion, for the bell. */
+/** One open suggestion as the CLI's `suggestions` lists it (A§17). Times in ms. */
+export interface SuggestionListing {
+  id: string;
+  author: string;
+  authorName: string;
+  status: string;
+  source: 'live' | 'cli';
+  createdAt: number;
+  updatedAt: number;
+  /** An editor changed the text under it since, or it cannot be shown: it cannot be accepted as it is. */
+  outdated: boolean;
+}
+
 export type SuggestionNotifier = (notice: { docId: string; author: string; record: string }) => Promise<void>;
 
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
@@ -460,6 +513,8 @@ export class DocDO extends YServer<SyncEnv> {
   /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
   #suggestions: SuggestionsWriter | null = null;
   #ingest: SuggestIngest | null = null;
+  /** A `push --suggest` in progress, by its connection: the records it created, noticed only once it is admitted whole. */
+  #heldNotices = new Map<string, { record: string; author: string }[]>();
   /**
    * When the next idle check of open records is due (§4.7: an idle record with nothing to show is rejected by the
    * system), and the `updatedAt` each open record was last checked at, kept in storage (`idle-checked`) across wakes.
@@ -469,6 +524,7 @@ export class DocDO extends YServer<SyncEnv> {
   /** Suggest refusals per principal in the last window, and principals cooling down (until when). In storage. */
   #cooldowns: SuggestCooldowns | null = null;
   #versions: VersionStore | null = null;
+  #bases: BaseCache | null = null;
   /** Updates since the last auto version, and who made them; persisted in meta so a wake keeps them (A§14). */
   #versionUpdates = 0;
   #stagedRetry: ReturnType<typeof setTimeout> | null = null;
@@ -476,6 +532,8 @@ export class DocDO extends YServer<SyncEnv> {
   #migrating = false;
   #migrateAgain = false;
   #versionAuthors = new Set<string>();
+  /** Agents shown in the face pile after a push (A§10.7), by agent id: their awareness client and until when. In memory. */
+  readonly #bots = new Map<string, { client: number; name: string; until: number; timer: ReturnType<typeof setTimeout> | null }>();
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -505,6 +563,7 @@ export class DocDO extends YServer<SyncEnv> {
     const Doc = this.constructor as typeof DocDO;
     this.#versions = new VersionStore(this.ctx.storage.sql, this.name, () => Doc.versionBlobs(this.env), Doc.versionSpillBytes,
       (run) => this.ctx.storage.transactionSync(run), () => Doc.versionBounds);
+    this.#bases = new BaseCache(this.ctx.storage.sql);
     store.load(this.document);
     this.#store = store;
     this.#payloads = payloads;
@@ -547,8 +606,11 @@ export class DocDO extends YServer<SyncEnv> {
       stateBytes: () => store.stateBytes + payloads.totalBytes,
       // Only a served payload places a payload op; a withheld one is accept's G4 to refuse, and reads as unknown here.
       payloadDoc: (id) => (payloads.served(id) ? payloads.doc(id) : undefined),
-      onCreated: (record, author, continues) => {
-        if (!continues) this.#noticeSuggestion(record, author);
+      onCreated: (record, author, continues, connection) => {
+        if (continues) return;
+        const held = this.#heldNotices.get(connection);
+        if (held) held.push({ record, author });
+        else this.#noticeSuggestion(record, author);
       },
     });
     store.onCompacted = () => this.#ingest?.compacted();
@@ -836,7 +898,7 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     if (frame.kind === 'awareness') {
-      if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
+      if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()], (id) => this.#botClient(id));
       return;
     }
     if (frame.kind === 'step1') {
@@ -1143,12 +1205,13 @@ export class DocDO extends YServer<SyncEnv> {
   /**
    * Records the doc's folder and owner and writes its starting content: the seed, or an imported body. Idempotent:
    * a repeated create changes nothing. Throws DocCapError for a body past the state cap or the converter's work budget,
-   * or frontmatter past its expansion budget.
+   * or frontmatter past its expansion budget. Returns the created revision's export, kept as a push base: the base the
+   * CLI adopts a file against (A§17).
    */
-  async create(input: CreateDocInput): Promise<void> {
+  async create(input: CreateDocInput): Promise<string> {
     const store = await this.#ready();
     this.#seed(store);
-    if (store.meta('created') !== null) return;
+    if (store.meta('created') !== null) return this.pullMarkdown();
     const title = input.title?.trim();
     // The body is admitted with the title's bytes, so a body and title past the cap together write neither.
     const titleBytes = title ? (titleDiff(this.document, title)?.byteLength ?? 0) : 0;
@@ -1176,12 +1239,17 @@ export class DocDO extends YServer<SyncEnv> {
     }
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
     if (title) this.#writeTitle(store, title);
+    // Taken before the first await, so no later write can reach it.
+    const markdown = exportDocMarkdown(this.document, this.name);
+    this.#exported = markdown;
     this.#comments?.flush();
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     if (!title) this.#projections?.initializeEmpty();
     await this.#projections?.flush();
     store.setMeta('created', '1');
+    this.#bases?.put(await sha256Hex(markdown), markdown);
+    return markdown;
   }
 
   /**
@@ -1665,6 +1733,193 @@ export class DocDO extends YServer<SyncEnv> {
     return this.#exported;
   }
 
+  /** The doc as a `.md` file for a pull (A§17): the export, remembered as a push base under its hash. */
+  async pullMarkdown(): Promise<string> {
+    const markdown = await this.exportMarkdown();
+    this.#bases?.put(await sha256Hex(markdown), markdown);
+    return markdown;
+  }
+
+  /**
+   * A CLI push (A§17), for an editor or above, in the serialized write after the actor is re-authorized (A§8): the
+   * base is the cached one its hash names, or `baseText` when it hashes to it; the file is merged three ways and
+   * landed through the identity-preserving reconcile as one server write, the state cap checked on the simulated
+   * result. A degenerate push is refused unless forced. An auto version follows a push that changed the doc (A§14).
+   * With `suggest` (a suggester or above), the same merge is written as a fork under a fresh lease and recorded as an
+   * open suggestion through the suggestion ingest, so it meets every gate a live suggestion meets; the doc is unchanged
+   * (docs/design/suggestions.md §5). `presence` (an agent) shows it in the face pile for about 15 s (A§10.7).
+   */
+  async push(input: {
+    newText: string; baseHash: string; baseText?: string; force?: boolean; suggest?: boolean; authorName?: string;
+    presence?: { id: string; name: string }; reviewer: Reviewer; actor?: CommentActor;
+  }): Promise<PushVerdict> {
+    const store = await this.#ready();
+    const bases = this.#bases;
+    if (!bases) throw new Error('DocDO started without a base cache');
+    const supplied = typeof input.baseText === 'string' ? input.baseText : null;
+    if (supplied !== null) {
+      if ((await sha256Hex(supplied)) !== input.baseHash) return { ok: false, status: 400, reason: 'base-mismatch' };
+    }
+    const landed = { changed: false };
+    const verdict = await this.#review(input, input.suggest ? 'suggester' : 'editor', (reviewer): PushVerdict => {
+      const base = supplied ?? bases.get(input.baseHash);
+      if (base === null) return { ok: false, status: 409, reason: 'base-missing' };
+      try {
+        if (input.suggest) {
+          const suggested = this.#suggestPush(reviewer, input.authorName ?? reviewer.id, { base, newText: input.newText, force: input.force === true });
+          if (suggested.ok && suggested.suggestionId) {
+            if (supplied !== null) bases.put(input.baseHash, supplied);
+            landed.changed = true;
+          }
+          return suggested;
+        }
+        const outcome = landPush(this.document, this.name, { base, newText: input.newText, force: input.force === true }, CLI_PUSH,
+          (diff, payloads) => this.#admitServerWrite(store, diff, payloads));
+        if (!outcome.ok) {
+          return outcome.reason === 'degenerate' ? { ok: false, status: 409, reason: 'degenerate', deletedRatio: outcome.deletedRatio } : { ok: false, status: 409, reason: outcome.reason };
+        }
+        if (supplied !== null) bases.put(input.baseHash, supplied);
+        landed.changed = outcome.changed;
+        if (outcome.changed) {
+          this.#comments?.flush();
+          this.#projections?.touch();
+          if (!this.#versionAuthors.has(reviewer.id)) {
+            this.#versionAuthors.add(reviewer.id);
+            store.setMeta('version-authors', JSON.stringify([...this.#versionAuthors]));
+          }
+        }
+        return { ok: true, applied: outcome.applied, failedHunks: outcome.failedHunks };
+      } catch (error) {
+        if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'too-large' };
+        if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'push-unverified', message: error.message };
+        throw error;
+      }
+    });
+    if (landed.changed && input.presence) this.#showAgent(input.presence);
+    if (landed.changed && !input.suggest) await this.#autoVersion(store, input.reviewer.id);
+    return verdict;
+  }
+
+  /**
+   * `push --suggest`, inside the push's serialized write: one lease on a connection of its own, the merge written as a
+   * fork under it, each op through the ingest exactly as a live suggester's fork transactions arrive. A push that
+   * changes nothing suggests nothing; a refusal after the first op withdraws the record, so no partial one stays open.
+   */
+  #suggestPush(reviewer: Reviewer, name: string, push: { base: string; newText: string; force: boolean }): PushVerdict {
+    const ingest = this.#ingest;
+    if (!ingest) throw new Error('DocDO started without the suggestion ingest');
+    const who: Suggester = { id: reviewer.id, name, role: reviewer.role, connection: `cli-push:${crypto.randomUUID()}` };
+    const refused = (reason: string): PushVerdict => ({
+      ok: false, status: 409, reason: 'suggest-refused', message: SUGGEST_REFUSALS[reason] ?? `the suggestion was refused (${reason})`,
+    });
+    const leased = ingest.lease(who, [], 1);
+    if (!leased.ok) return refused(leased.reason);
+    const lease = leased.leases[0]!;
+    // The record is created at the first op, but a later op may still be refused and withdraw it: nobody hears of
+    // it until every op is in.
+    const held: { record: string; author: string }[] = [];
+    this.#heldNotices.set(who.connection, held);
+    try {
+      const fork = { client: lease.client, ops: [] as { doc: string; update: Uint8Array }[] };
+      const outcome = landPush(this.document, this.name, { ...push, fork }, CLI_PUSH);
+      if (!outcome.ok) {
+        if (outcome.reason === 'degenerate') return { ok: false, status: 409, reason: 'degenerate', deletedRatio: outcome.deletedRatio };
+        return { ok: false, status: 409, reason: 'suggest-refused', message: 'a suggestion can change only the note\'s text, not its properties; nothing was suggested' };
+      }
+      if (fork.ops.length === 0) return { ok: true, applied: 0, failedHunks: outcome.failedHunks };
+      let record = lease.record;
+      let created = false;
+      for (const op of fork.ops) {
+        const result = ingest.ops(who, record, op);
+        if (!result.ok) {
+          if (created) ingest.withdraw(who, record);
+          return refused(result.reason);
+        }
+        record = result.record;
+        created = true;
+      }
+      writeSuggestions(this.document, () => patchMeta(this.document, record, { source: 'cli' }));
+      this.#heldNotices.delete(who.connection);
+      for (const notice of held) this.#noticeSuggestion(notice.record, notice.author);
+      return { ok: true, applied: outcome.applied, failedHunks: outcome.failedHunks, suggestionId: record };
+    } finally {
+      this.#heldNotices.delete(who.connection);
+      ingest.expireConnection(who.connection);
+    }
+  }
+
+  /** True for the awareness client of an agent shown after a push: no socket may claim it. */
+  #botClient(id: number): boolean {
+    for (const bot of this.#bots.values()) if (bot.client === id) return true;
+    return false;
+  }
+
+  /**
+   * Shows an agent in every member's face pile for AGENT_PRESENCE_MS after its push (A§10.7), Bot-badged: a server-owned
+   * awareness entry, re-sent before a client's 12 s sweep would drop it, then removed. A second push extends it.
+   */
+  #showAgent(agent: { id: string; name: string }): void {
+    const awareness = this.document.awareness;
+    let bot = this.#bots.get(agent.id);
+    if (!bot) {
+      let client = 0;
+      while (client === 0 || awareness.getStates().has(client) || awareness.meta.has(client) || this.document.store.clients.has(client)) {
+        client = crypto.getRandomValues(new Uint32Array(1))[0]! >>> 1;
+      }
+      bot = { client, name: agent.name, until: 0, timer: null };
+      this.#bots.set(agent.id, bot);
+    }
+    bot.until = Date.now() + AGENT_PRESENCE_MS;
+    this.#sayAgent(agent.id);
+  }
+
+  /** `send` false: the entry is refreshed or removed here, but no socket hears it. */
+  #sayAgent(agentId: string, send = true): void {
+    const bot = this.#bots.get(agentId);
+    if (!bot) return;
+    if (bot.timer) clearTimeout(bot.timer);
+    bot.timer = null;
+    const awareness = this.document.awareness;
+    const now = Date.now();
+    const recipients = () => [...this.getConnections()].filter(isOpen);
+    if (now >= bot.until) {
+      this.#bots.delete(agentId);
+      if (!awareness.getStates().has(bot.client)) return;
+      removeAwarenessStates(awareness, [bot.client], AGENT_PRESENCE);
+      if (send) sendPresence(recipients(), awarenessFrame(awareness, [bot.client]));
+      return;
+    }
+    if (send) {
+      const slot = seedColor(agentId);
+      const color = colorOf(slot);
+      const state = { name: bot.name, color, user: { principalId: agentId, name: bot.name, color, colorSettled: true, isAgent: true, slot } };
+      applyAwarenessUpdate(awareness, awarenessEntry(bot.client, (awareness.meta.get(bot.client)?.clock ?? 0) + 1, state), AGENT_PRESENCE);
+      sendPresence(recipients(), awarenessFrame(awareness, [bot.client]));
+    }
+    const timer: ReturnType<typeof setTimeout> = setTimeout(() => void this.#sayAgentLater(agentId, timer), Math.min(AGENT_PRESENCE_REFRESH_MS, bot.until - now));
+    bot.timer = timer;
+  }
+
+  /**
+   * The timer's refresh or removal: the sockets are validated first in the serialized write (A§8), so one whose access
+   * is gone closes before it hears anything, even when its kick was missed. A validation that cannot answer sends
+   * nothing; the entry still expires on time. A push meanwhile owns the entry's timer, and this one stands down.
+   */
+  async #sayAgentLater(agentId: string, timer: ReturnType<typeof setTimeout>): Promise<void> {
+    const check = this.#accessCheck();
+    let validated = true;
+    if (check) {
+      try {
+        await this.#serial(() => this.#validate(check));
+      } catch (error) {
+        console.error('DocDO could not validate before an agent presence frame; not sending it', error);
+        validated = false;
+      }
+    }
+    if (this.#bots.get(agentId)?.timer !== timer) return;
+    this.#sayAgent(agentId, validated);
+  }
+
   /**
    * The working view (§4.7): the note with every valid open suggestion applied, memoized until the next note, record
    * or payload update. Computing it runs the accept gates per open record, so it is bounded per doc (I5); null past it.
@@ -1675,6 +1930,25 @@ export class DocDO extends YServer<SyncEnv> {
     if (!this.#chargeWorking(store)) return null;
     this.#working = exportWorkingMarkdown(this.document, this.name);
     return this.#working;
+  }
+
+  /** The doc's comment threads, for any reader (A§17 `comments`). */
+  async listComments(input: { reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; comments: CommentListing[] } | ReviewRefusal> {
+    const result = await this.#review(input, 'viewer', () => listComments(this.document));
+    return Array.isArray(result) ? { ok: true, comments: result } : result;
+  }
+
+  /** The doc's open suggestions, oldest first, for any reader (A§17 `suggestions`). */
+  async listSuggestions(input: { reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; suggestions: SuggestionListing[] } | ReviewRefusal> {
+    const result = await this.#review(input, 'viewer', () => recordIds(this.document)
+      .map((id) => readMeta(this.document, id))
+      .filter((meta): meta is NonNullable<typeof meta> => meta !== null && meta.status === 'open')
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((meta): SuggestionListing => ({
+        id: meta.id, author: meta.author, authorName: meta.authorName, status: meta.status, source: meta.source,
+        createdAt: meta.createdAt, updatedAt: meta.updatedAt, outdated: (meta.outdated?.length ?? 0) > 0 || meta.broken !== undefined,
+      })));
+    return Array.isArray(result) ? { ok: true, suggestions: result } : result;
   }
 
   /** The doc's versions, newest first, for any reader (A§14). */

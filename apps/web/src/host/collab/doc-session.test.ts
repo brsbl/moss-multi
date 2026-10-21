@@ -464,6 +464,77 @@ it('a doc REST still has in Trash stays terminal, and a live session is left alo
   expect(sockets).toHaveLength(1);
 });
 
+it('a first sync answered in pieces lands as one change, so the editor writes no empty paragraph ahead of the note (T7.Q)', async () => {
+  const { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical } = await import('@lexical/yjs');
+  const { $createParagraphNode, $createTextNode, $getRoot } = await import('lexical');
+  const { createConverterEditor } = await import('@moss-multi/sync/converter');
+  const { excludedPropertiesFor } = await import('@moss-multi/sync/excluded-properties');
+  const { splitUpdate } = await import('@moss-multi/sync/update-pieces');
+  const noop = () => {};
+  const quiet = {
+    awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
+    connect: noop, disconnect: noop, on: noop, off: noop,
+  } as unknown as Parameters<typeof createBinding>[1];
+  /** A Lexical editor bound to `doc` before anything reaches it, as the collaboration plugin binds one. */
+  const bind = (doc: Y.Doc) => {
+    const editor = createConverterEditor();
+    const binding = createBinding(editor, quiet, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
+    editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
+      syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
+    });
+    binding.root.getSharedType().observeDeep((events, transaction) => {
+      if (transaction.origin !== binding) syncYjsChangesToLexical(binding, quiet, events as never, false, noop);
+    });
+    return editor;
+  };
+  /** One server write under its own Yjs client, as each DocDO write's mirror makes one. */
+  const write = (server: Y.Doc, client: number, edit: () => void) => {
+    const mirror = new Y.Doc();
+    mirror.clientID = client;
+    const editor = bind(mirror);
+    Y.applyUpdate(mirror, Y.encodeStateAsUpdate(server));
+    editor.update(noop, { discrete: true });
+    editor.update(edit, { discrete: true });
+    Y.applyUpdate(server, Y.encodeStateAsUpdate(mirror, Y.encodeStateVector(server)));
+  };
+  const paragraph = (text: string) => $createParagraphNode().append($createTextNode(text));
+  const server = new Y.Doc();
+  // The seed, the import that replaced it, then an agent's large push. Yjs writes higher clients first, so the answer's
+  // first piece holds the deleted seed and push blocks that wait on the import, which comes last.
+  write(server, 900, () => { $getRoot().append($createParagraphNode()); });
+  write(server, 100, () => { $getRoot().clear().append(paragraph('The first line.')); });
+  write(server, 500, () => {
+    for (let i = 0; i < 200; i += 1) $getRoot().append(paragraph(`Paragraph ${i}: the beans climb the trellis.`));
+  });
+  const pieces = splitUpdate(Y.encodeStateAsUpdate(server), 4_096).map((piece) => piece.update);
+  expect(pieces.length, 'the answer comes in pieces').toBeGreaterThan(2);
+
+  // The lowest client, so a paragraph it wrote would sort ahead of the import's; the awareness keeps its own id.
+  const clientID = session.doc.clientID;
+  session.doc.clientID = 1;
+  try {
+    const editor = bind(session.doc);
+    const local: unknown[] = [];
+    session.doc.on('update', (_update: Uint8Array, origin: unknown) => {
+      if (origin !== session.provider) local.push(origin);
+    });
+    const socket = latest(); socket.open();
+    for (const [index, piece] of pieces.entries()) {
+      socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(index === pieces.length - 1 ? 1 : 2, piece).slice().buffer }));
+      // Each frame is its own task in the browser: Lexical commits what it reconciled before the next one is read.
+      await vi.advanceTimersByTimeAsync(0);
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    }
+    expect(session.state.synced).toBe(true);
+    expect(local, 'opening the note writes nothing to it').toEqual([]);
+    const blocks = editor.getEditorState().read(() => $getRoot().getChildren().map((node) => node.getTextContent()));
+    expect(blocks[0], 'the note opens on its first line').toBe('The first line.');
+    expect(blocks).toHaveLength(201);
+  } finally {
+    session.doc.clientID = clientID;
+  }
+});
+
 /** The update a sync write frame (`[0, 1|2, varUint8Array]`) carries, else null. */
 function writeOf(frame: unknown): Uint8Array | null {
   if (!(frame instanceof Uint8Array) || frame[0] !== 0 || (frame[1] !== 1 && frame[1] !== 2)) return null;

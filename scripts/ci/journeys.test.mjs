@@ -31,7 +31,8 @@ describe('groupOf', () => {
     expect(groupOf('j11-media.spec.ts')).toBe('media');
     expect(groupOf('j04-hibernation.spec.ts')).toBe('session');
     expect(groupOf('j05-trash.spec.ts')).toBe('workspace');
-    expect(groupOf('j18-agents.spec.ts')).toBe('meaning');
+    expect(groupOf('j18-agents.spec.ts')).toBe('cli');
+    expect(groupOf('j18-other.spec.ts')).toBe('meaning');
   });
 
   it('matches whole name segments, and the longest prefix wins', () => {

@@ -121,3 +121,16 @@ export function readStep1(decoder: Decoder): Uint8Array | null {
   decoder.pos += length;
   return sv;
 }
+
+/** The Yjs update a sync update message (type 2) carries, consumed from `decoder`; any other leaves it unread (null). */
+export function readUpdate(decoder: Decoder): Uint8Array | null {
+  const at = decoder.pos;
+  if (varUint(decoder) !== 2) {
+    decoder.pos = at;
+    return null;
+  }
+  const length = varUint(decoder);
+  const update = decoder.arr.subarray(decoder.pos, decoder.pos + length);
+  decoder.pos += length;
+  return update;
+}

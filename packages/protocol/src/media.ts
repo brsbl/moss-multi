@@ -51,7 +51,7 @@ export function mediaFilename(raw: string): string | null {
     .replace(/-{2,}/g, '-')
     .slice(0, STEM_MAX)
     // Trimmed after the cap, which can leave a separator last, so the result folds to itself.
-    .replace(/^[-.]+|[-.]+$/g, '');
+    .replace(/^[-.]+|(?<![-.])[-.]+$/g, '');
   return `${stem || 'media'}.${type.extension}`;
 }
 
@@ -62,7 +62,7 @@ export function mediaFilename(raw: string): string | null {
 export function suffixedFilename(filename: string, n: number): string {
   const dot = filename.lastIndexOf('.');
   const suffix = `-${n}`;
-  const stem = filename.slice(0, dot).slice(0, STEM_MAX - suffix.length).replace(/[-.]+$/, '') || 'media';
+  const stem = filename.slice(0, dot).slice(0, STEM_MAX - suffix.length).replace(/(?<![-.])[-.]+$/, '') || 'media';
   return `${stem}${suffix}${filename.slice(dot)}`;
 }
 

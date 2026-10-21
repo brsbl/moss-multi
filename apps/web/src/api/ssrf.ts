@@ -41,7 +41,7 @@ export function assertPublicUrl(raw: string): URL {
   return url;
 }
 
-const unbracket = (host: string) => host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+const unbracket = (host: string) => host.toLowerCase().replace(/^\[|\]$/g, '').replace(/(?<!\.)\.+$/, '');
 
 /** A bare host as the URL parser would route it: IDN and fullwidth forms folded (UTS 46); null when it cannot parse. */
 function normalized(hostname: string): string | null {
