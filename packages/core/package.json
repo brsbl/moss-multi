@@ -13,13 +13,15 @@
     "./group-pending": "./src/group-pending.ts",
     "./tree-anchor": "./src/tree-anchor.ts",
     "./suggest/apply": "./src/suggest/apply.ts",
-    "./suggest/describe": "./src/suggest/describe.ts"
+    "./suggest/describe": "./src/suggest/describe.ts",
+    "./reconcile": "./src/reconcile.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "js-yaml": "4.3.0",
+    "lexical": "0.48.0",
     "lib0": "0.2.119",
     "yjs": "13.6.31"
   },
