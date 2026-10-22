@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gcEvents, memoryProblems, phaseFigures, REST_BUDGET_MB } from './measure-memory.mjs';
+import { gcEvents, kindCosts, median, memoryProblems, mergeShapeRuns, phaseFigures, REST_BUDGET_MB } from './measure-memory.mjs';
 
 const LOG = [
   '[123:0x7f00]     1200 ms: Scavenge 30.5 (40.0) -> 22.1 (41.0) MB, pooled: 0 MB, 3.10 / 0.00 ms  (average mu = 1.000, current mu = 1.000) allocation failure;',
@@ -39,5 +39,34 @@ describe('memoryProblems', () => {
     expect(problems[0]).toMatch(/^capped: the create does not fit a 96 MB heap/);
     expect(problems[1]).toMatch(/^heavy: the note at rest holds/);
     expect(problems[2]).toMatch(/^lost: not measured/);
+  });
+});
+
+describe('kindCosts and median', () => {
+  it('gives the heap per struct a shape adds over its base, and per block', () => {
+    const shapes = [
+      { shape: 'XmlText', n: 1_000, structs: 1_000, mb: 1 },
+      { shape: 'XmlText + 7 entries', n: 1_000, structs: 8_000, mb: 2 },
+    ];
+    const costs = kindCosts(shapes);
+    const block = costs.find((cost) => cost.shape === 'XmlText');
+    expect(block.perStruct).toBeCloseTo(2 ** 20 / 1_000);
+    expect(block.structsPerBlock).toBe(1);
+    const entries = costs.find((cost) => cost.shape === 'XmlText + 7 entries' && cost.base === 'XmlText');
+    expect(entries.structsPerBlock).toBe(7);
+    expect(entries.perStruct).toBeCloseTo(2 ** 20 / 7_000);
+    expect(entries.perBlock).toBeCloseTo(2 ** 20 / 1_000);
+    expect(costs.find((cost) => cost.shape === 'XmlText + string').missing).toBe(true);
+  });
+
+  it("takes the median of each shape's rounds across processes", () => {
+    expect(median([3, 1, 2])).toBe(2);
+    expect(median([4, 1, 2, 3])).toBe(2.5);
+    const shape = (rounds) => ({ shape: 'XmlText', n: 10, structs: 10, kinds: {}, rounds });
+    const merged = mergeShapeRuns([{ shapes: [shape([1, 2])] }, { shapes: [shape([4, 3])], failed: 'lost' }]);
+    expect(merged.shapes).toHaveLength(1);
+    expect(merged.shapes[0].processes).toEqual([[1, 2], [4, 3]]);
+    expect(merged.shapes[0].mb).toBe(2.5);
+    expect(merged.failed).toBe('lost');
   });
 });
