@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gcEvents, memoryProblems, phaseFigures, REST_BUDGET_MB, smallestCap } from './measure-memory.mjs';
+import { gcEvents, memoryProblems, phaseFigures, reliableCap, REST_BUDGET_MB, smallestCap } from './measure-memory.mjs';
 
 const LOG = [
   '[123:0x7f00]     1200 ms: Scavenge 30.5 (40.0) -> 22.1 (41.0) MB, pooled: 0 MB, 3.10 / 0.00 ms  (average mu = 1.000, current mu = 1.000) allocation failure;',
@@ -80,5 +80,21 @@ describe('smallestCap', () => {
 
   it('gives up past the ceiling', async () => {
     expect(await smallestCap(async () => false, 90, 120)).toBeNull();
+  });
+});
+
+describe('reliableCap', () => {
+  it('steps up past a cap that fits only some of the time', async () => {
+    // Fits from 100 MB, but 100 and 101 MB fail every other try.
+    const tries = new Map();
+    const fits = async (cap) => {
+      tries.set(cap, (tries.get(cap) ?? 0) + 1);
+      if (cap < 100) return false;
+      if (cap < 102) return tries.get(cap) % 2 === 1;
+      return true;
+    };
+    const cap = await reliableCap(fits, 60, 140);
+    expect(cap).toBeGreaterThanOrEqual(102);
+    expect(cap).toBeLessThanOrEqual(104);
   });
 });

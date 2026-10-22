@@ -295,6 +295,19 @@ export async function smallestCap(fits, low, high) {
   return high;
 }
 
+/**
+ * smallestCap, then confirmed: V8's verdict near the limit varies from run to run (its give-up heuristics are timed),
+ * so the cap found must fit twice more, or the next one up is tried. Null past NEED_CEILING_MB.
+ */
+export async function reliableCap(fits, low, high) {
+  let cap = await smallestCap(fits, low, high);
+  while (cap !== null && !((await fits(cap)) && (await fits(cap)))) {
+    cap += NEED_STEP_MB;
+    if (cap > NEED_CEILING_MB) return null;
+  }
+  return cap;
+}
+
 /** Runs `request` against a workerd capped at `cap` MB; whether it answered (V8 aborts the process past the cap). */
 const OUT_OF_HEAP = /heap limit|out of memory/i;
 
@@ -311,10 +324,16 @@ async function fitsUnder(cap, port, storage, request) {
     await request(server.origin);
     return server.child.exitCode === null;
   } catch (error) {
-    // Only V8 giving up on the heap counts as not fitting.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    if (OUT_OF_HEAP.test(server.logs.value)) return false;
-    throw new Error(`under ${cap} MB the request failed without running out of heap: ${error.message}\n${server.logs.value.slice(-1_000)}`);
+    // Only V8 giving up on the heap counts as not fitting: it aborts the process, so wait for the exit and its message.
+    const exited = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(server.child.exitCode !== null || server.child.signalCode !== null), 10_000);
+      server.child.once('close', () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+    if (exited && OUT_OF_HEAP.test(server.logs.value)) return false;
+    throw new Error(`under ${cap} MB the request failed without running out of heap (exited: ${exited}): ${error.message}\n${server.logs.value.slice(-1_000)}`, { cause: error });
   } finally {
     await stopWorkerd(server.child);
   }
@@ -356,9 +375,9 @@ async function measureNeeds(markdown, port, guess) {
     return ok;
   };
   const needs = {};
-  needs.create = await smallestCap(logged('create', (cap) => fitsUnder(cap, port, fresh('probe'), create)), guess.low, guess.create);
-  needs.wake = await smallestCap(logged('wake', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/wake?doc=${NEED_DOC}`))), guess.low, guess.wake);
-  needs.export = await smallestCap(logged('export', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/export?lean&doc=${NEED_DOC}`))), guess.low, guess.export);
+  needs.create = await reliableCap(logged('create', (cap) => fitsUnder(cap, port, fresh('probe'), create)), guess.low, guess.create);
+  needs.wake = await reliableCap(logged('wake', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/wake?doc=${NEED_DOC}`))), guess.low, guess.wake);
+  needs.export = await reliableCap(logged('export', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/export?lean&doc=${NEED_DOC}`))), guess.low, guess.export);
   rmSync(storage('saved'), { recursive: true, force: true });
   rmSync(storage('probe'), { recursive: true, force: true });
   return needs;
@@ -414,7 +433,7 @@ async function main() {
   if (bisect) {
     lines.push(
       '',
-      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under, in a fresh workerd, and that as a multiple of the note at rest (the untraced run's heap after the save's full GC, base included). Wake: a DocDO loading the saved note; export: a wake, then the export (what the search feed and a download run).`,
+      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under three times running, in a fresh workerd each, and that as a multiple of the note at rest (the untraced run's heap after the save's full GC, base included). Wake: a DocDO loading the saved note; export: a wake, then the export (what the search feed and a download run).`,
       '',
       '| Note | At rest | Create needs | Wake needs | Export needs |',
       '| --- | --- | --- | --- | --- |',
