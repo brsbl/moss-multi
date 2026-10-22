@@ -184,8 +184,10 @@ export default {
     }
     if (url.pathname === '/hold-copy') {
       const shape = url.searchParams.get('shape');
-      const structs = await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1', url.searchParams.has('intern'), shape === 'rebuilt' || shape === 'untyped' ? shape : 'state');
-      return Response.json({ structs });
+      const stub = await getServerByName(env.DocDO, docId);
+      const structs = await stub.holdCopy(url.searchParams.get('on') === '1', url.searchParams.has('intern'), shape === 'rebuilt' || shape === 'untyped' ? shape : 'state');
+      // The DocDO's instance, so the harness can tell a copy measured across a restart.
+      return Response.json({ structs, instance: (await stub.probeInstance()).instanceId });
     }
     if (url.pathname === '/layout') {
       const layout = url.searchParams.get('name') ?? 'lean';

@@ -216,11 +216,15 @@ async function measureNote(markdown, port, flags, { trace = false, layout = 'lea
         return figures.restMb;
       };
       const base = await rest();
+      const first = JSON.parse(await call(server.origin, `/hold-copy?on=0&doc=${doc}`)).instance;
+      // A copy measured across a DocDO restart (a fresh instance holds no note) has no figure.
       const hold = async (query) => {
-        const { structs } = JSON.parse(await call(server.origin, `/hold-copy?on=1${query}&doc=${doc}`));
+        const { structs, instance } = JSON.parse(await call(server.origin, `/hold-copy?on=1${query}&doc=${doc}`));
         const mb = (await rest()) - base;
-        await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
-        return { structs, mb };
+        const after = JSON.parse(await call(server.origin, `/hold-copy?on=0&doc=${doc}`)).instance;
+        if (instance === first && after === first) return { structs, mb };
+        const notice = /[^\n]*(?:exceeded|reset|restart|broken|overloaded)[^\n]*/i.exec(server.logs.value)?.[0];
+        return { structs, mb: null, restarted: notice ?? 'the DocDO restarted' };
       };
       const plain = await hold('');
       result.structs = plain.structs;
@@ -309,7 +313,8 @@ async function main() {
     ...pairs.map(([, lean]) => {
       const { rebuilt, untyped } = lean.measured;
       if (!rebuilt || !untyped) return `| ${lean.name} | ? | ? | ? |`;
-      return `| ${lean.name} | ${mb(rebuilt.mb)} (${rebuilt.structs} structs) | ${mb(untyped.mb)} (${untyped.structs} structs) | ${(rebuilt.structs / lean.lines).toFixed(2)} / ${(untyped.structs / lean.lines).toFixed(2)} |`;
+      const copy = (c) => `${mb(c.mb)} (${c.structs} structs${c.restarted ? `; not measured: ${c.restarted.slice(0, 120)}` : ''})`;
+      return `| ${lean.name} | ${copy(rebuilt)} | ${copy(untyped)} | ${(rebuilt.structs / lean.lines).toFixed(2)} / ${(untyped.structs / lean.lines).toFixed(2)} |`;
     }),
   ];
   const report = [...lines, ...comparison, ...implicit].join('\n');
