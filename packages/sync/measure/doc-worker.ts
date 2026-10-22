@@ -34,14 +34,19 @@ export class MeasuredDocDO extends DocDO {
 
   /**
    * Holds a plain Y.Doc of the note's state beside the note, or releases it. `intern` shares each map key's string
-   * among the copy's items. Returns the copy's struct count.
+   * among the copy's items. `shape` `rebuilt` copies the body item by item instead, and `untyped` does so without each
+   * paragraph's and text run's `__type` (MEM.lean: what implicit types would save). Returns the copy's struct count.
    */
-  holdCopy(on: boolean, intern = false): number {
+  holdCopy(on: boolean, intern = false, shape: 'state' | 'rebuilt' | 'untyped' = 'state'): number {
     this.#held?.destroy();
     this.#held = null;
     if (!on) return 0;
-    this.#held = new Y.Doc();
-    Y.applyUpdate(this.#held, Y.encodeStateAsUpdate(this.document));
+    if (shape === 'state') {
+      this.#held = new Y.Doc();
+      Y.applyUpdate(this.#held, Y.encodeStateAsUpdate(this.document));
+    } else {
+      this.#held = rebuilt(this.document, shape === 'untyped');
+    }
     const keys = new Map<string, string>();
     let count = 0;
     for (const structs of this.#held.store.clients.values()) {
@@ -82,6 +87,68 @@ function setLayout(layout: string): void {
   else delete global.__MOSS_YJS_LAYOUT;
 }
 
+type Delta = { insert: unknown; attributes?: Record<string, unknown> }[];
+const copyOf = (value: unknown): unknown => (value !== null && typeof value === 'object' ? structuredClone(value) : value);
+
+/**
+ * `source`'s body rebuilt item by item in one transaction. With `untyped`, a paragraph's and a text run's `__type`
+ * are left out, as a layout that read a missing type as those two would store them. Nested Y.Maps (node state) are
+ * copied; other nested types are skipped (the measured notes hold none).
+ */
+function rebuilt(source: Y.Doc, untyped: boolean): Y.Doc {
+  const doc = new Y.Doc();
+  const implicit = (key: string, value: unknown) => untyped && key === '__type' && (value === 'paragraph' || value === 'text');
+  const fillMap = (from: Y.Map<unknown>, to: Y.Map<unknown>) => {
+    for (const [key, value] of from.entries()) {
+      if (implicit(key, value)) continue;
+      if (value instanceof Y.Map) fillMap(value, to.set(key, new Y.Map()));
+      else if (!(value instanceof Y.AbstractType) && !(value instanceof Y.Doc)) to.set(key, copyOf(value));
+    }
+  };
+  // Both kinds keep attributes in their own map; one signature serves both.
+  const fillAttributes = (from: Y.XmlText | Y.XmlElement, to: Y.XmlText | Y.XmlElement) => {
+    const set = (key: string, value: unknown) => (to as Y.XmlText).setAttribute(key, value);
+    for (const [key, value] of Object.entries((from as Y.XmlText).getAttributes() as Record<string, unknown>)) {
+      if (implicit(key, value)) continue;
+      if (value instanceof Y.Map) {
+        const map = new Y.Map<unknown>();
+        set(key, map);
+        fillMap(value, map);
+      } else if (!(value instanceof Y.AbstractType) && !(value instanceof Y.Doc)) set(key, copyOf(value));
+    }
+  };
+  const fillText = (from: Y.XmlText, to: Y.XmlText) => {
+    fillAttributes(from, to);
+    let index = 0;
+    for (const op of from.toDelta() as Delta) {
+      if (typeof op.insert === 'string') {
+        to.insert(index, op.insert, op.attributes ?? {});
+        index += op.insert.length;
+        continue;
+      }
+      const child = op.insert;
+      if (child instanceof Y.XmlText) {
+        const copy = new Y.XmlText();
+        to.insertEmbed(index, copy, op.attributes ?? {});
+        fillText(child, copy);
+      } else if (child instanceof Y.Map) {
+        const copy = new Y.Map<unknown>();
+        to.insertEmbed(index, copy, op.attributes ?? {});
+        fillMap(child as Y.Map<unknown>, copy);
+      } else if (child instanceof Y.XmlElement) {
+        const copy = new Y.XmlElement(child.nodeName);
+        to.insertEmbed(index, copy, op.attributes ?? {});
+        fillAttributes(child, copy);
+      } else {
+        to.insertEmbed(index, copyOf(child) as object, op.attributes ?? {});
+      }
+      index += 1;
+    }
+  };
+  doc.transact(() => fillText(source.get('root', Y.XmlText), doc.get('root', Y.XmlText)));
+  return doc;
+}
+
 
 
 interface Env {
@@ -116,7 +183,8 @@ export default {
       return Response.json(await (await getServerByName(env.DocDO, docId)).tracePhases(url.searchParams.get('on') === '1'));
     }
     if (url.pathname === '/hold-copy') {
-      const structs = await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1', url.searchParams.has('intern'));
+      const shape = url.searchParams.get('shape');
+      const structs = await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1', url.searchParams.has('intern'), shape === 'rebuilt' || shape === 'untyped' ? shape : 'state');
       return Response.json({ structs });
     }
     if (url.pathname === '/layout') {

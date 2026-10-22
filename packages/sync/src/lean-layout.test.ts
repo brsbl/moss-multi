@@ -2,6 +2,7 @@
 // written and reads back as the default; a text node's other properties ride one `__props` entry. A plain paragraph
 // costs five structs instead of fifteen, every fixture exports as it did, a doc written in the earlier layout (v1)
 // reads the same, and peers converge.
+import { readdirSync, readFileSync } from 'node:fs';
 import { registerList } from '@lexical/list';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
@@ -9,13 +10,16 @@ import { $getRoot, $isElementNode, $isTextNode, TextNode, type LexicalNode } fro
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createConverterEditor, exportMarkdown } from './converter/index.ts';
-import { FIXTURES } from './converter/fixtures.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
 import { payloadDocsFor } from './payload-docs.ts';
 import { bindRegisters } from './registers.ts';
 import { exportDocMarkdown, importBody } from './server-doc.ts';
 
 type Layout = 'v1' | 'lean';
+
+/** The converter's family corpus, read as search-core.golden.test.ts reads it. */
+const FIXTURES_DIR = new URL('./converter/fixtures/', import.meta.url);
+const FIXTURES = readdirSync(FIXTURES_DIR).filter((file) => file.endsWith('.md')).sort().map((file) => [file, readFileSync(new URL(file, FIXTURES_DIR), 'utf8')] as const);
 const layoutGlobal = globalThis as { __MOSS_YJS_LAYOUT?: string };
 
 /** Runs `run` with every binding it creates on `layout`. */
@@ -115,7 +119,7 @@ describe('MEM.lean stored layout', () => {
     ]);
   });
 
-  it.each(FIXTURES.map((f) => [f.name, f.markdown] as const))('%s exports the same under either layout, and its v1 doc reads the same under lean', (_name, markdown) => {
+  it.each(FIXTURES)('%s exports the same under either layout, and its v1 doc reads the same under lean', (_name, markdown) => {
     const v1 = written(markdown, 'v1');
     const lean = written(markdown, 'lean');
     const expected = withLayout('v1', () => exportDocMarkdown(v1));

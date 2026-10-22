@@ -12,7 +12,8 @@
 // `stdbuf` (coreutils) so workerd's GC lines arrive as they happen.
 // MEM.lean: each note is measured under both stored layouts of the @lexical/yjs patch in the same run, `v1` (the
 // layout before LEAN_LAYOUT, the baseline) and `lean`, each also under a heap capped at the isolate's 128 MB; the
-// budgets judge the lean layout. MEASURE_MEMORY_PORT moves the first workerd port (9910).
+// budgets judge the lean layout. MEASURE_MEMORY_PORT moves the first workerd port (9910);
+// MEASURE_MEMORY_ONLY measures only the notes whose name contains it.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -206,21 +207,31 @@ async function measureNote(markdown, port, flags, { trace = false, layout = 'lea
     phase = 'state';
     result.stateBytes = JSON.parse(await call(server.origin, `/state-bytes?doc=${doc}`)).stateBytes;
     if (trace) {
-      // A plain Y.Doc of the note's state, held beside it: what the note's Yjs structures alone take.
+      // A plain Y.Doc of the note's state, held beside it: what the note's Yjs structures alone take. Each copy is
+      // measured against the heap before the first: a released copy can stay reachable until the DocDO's next copy.
       const rest = async () => {
         const end = await collect();
         const figures = phaseFigures(gcEvents(server.logs.value.slice(mark, end)));
         mark = end;
         return figures.restMb;
       };
-      result.structs = JSON.parse(await call(server.origin, `/hold-copy?on=1&doc=${doc}`)).structs;
-      const held = await rest();
-      await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
-      result.copyMb = held - (await rest());
-      await call(server.origin, `/hold-copy?on=1&intern&doc=${doc}`);
-      const interned = await rest();
-      await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
-      result.internedCopyMb = interned - (await rest());
+      const base = await rest();
+      const hold = async (query) => {
+        const { structs } = JSON.parse(await call(server.origin, `/hold-copy?on=1${query}&doc=${doc}`));
+        const mb = (await rest()) - base;
+        await call(server.origin, `/hold-copy?on=0&doc=${doc}`);
+        return { structs, mb };
+      };
+      const plain = await hold('');
+      result.structs = plain.structs;
+      result.copyMb = plain.mb;
+      result.internedCopyMb = (await hold('&intern')).mb;
+      if (layout === 'lean') {
+        // The body rebuilt item by item, with and without each paragraph's and text run's `__type`: what a layout
+        // that reads a missing type as one of those two would save.
+        result.rebuilt = await hold('&shape=rebuilt');
+        result.untyped = await hold('&shape=untyped');
+      }
     }
   } catch (error) {
     const fatal = /Fatal[^\n]*|out of memory[^\n]*/i.exec(server.logs.value)?.[0];
@@ -254,7 +265,7 @@ async function main() {
   await bundle(NAME, join(REPO, 'packages/sync/measure/doc-worker.ts'));
   const notes = [];
   let port = Number(process.env.MEASURE_MEMORY_PORT ?? 9910);
-  for (const [name, markdown] of await cases()) {
+  for (const [name, markdown] of (await cases()).filter(([name]) => name.includes(process.env.MEASURE_MEMORY_ONLY ?? ''))) {
     for (const layout of LAYOUTS) {
       const measured = await measureNote(markdown, port, [], { trace: true, layout });
       const capped = await measureNote(markdown, port + 1, [`--max-heap-size=${PEAK_BUDGET_MB}`], { layout });
@@ -289,7 +300,19 @@ async function main() {
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
     ...pairs.map(([v1, lean]) => `| ${v1.name} | ${v1.measured.structs} / ${lean.measured.structs} (${ratio(v1.measured.structs, lean.measured.structs)}) | ${perLine(v1)} / ${perLine(lean)} | ${state(v1)} / ${state(lean)} | ${pair(v1.measured.copyMb, lean.measured.copyMb)} | ${pair(v1.measured.phases.export?.restMb, lean.measured.phases.export?.restMb)} | ${pair(peakLive(v1.measured), peakLive(lean.measured))} | ${pair(peakInUse(v1.measured), peakInUse(lean.measured))} |`),
   ];
-  const report = [...lines, ...comparison].join('\n');
+  const implicit = [
+    '',
+    'A step past lean, estimated on a copy: the lean body rebuilt item by item, then rebuilt again without each paragraph\'s and text run\'s `__type` (a layout would read a missing type as one of those two).',
+    '',
+    '| Note | Rebuilt lean copy | Without paragraph and text types | Per line |',
+    '| --- | --- | --- | --- |',
+    ...pairs.map(([, lean]) => {
+      const { rebuilt, untyped } = lean.measured;
+      if (!rebuilt || !untyped) return `| ${lean.name} | ? | ? | ? |`;
+      return `| ${lean.name} | ${mb(rebuilt.mb)} (${rebuilt.structs} structs) | ${mb(untyped.mb)} (${untyped.structs} structs) | ${(rebuilt.structs / lean.lines).toFixed(2)} / ${(untyped.structs / lean.lines).toFixed(2)} |`;
+    }),
+  ];
+  const report = [...lines, ...comparison, ...implicit].join('\n');
   console.log(report);
   const strip = (run) => ({ ...run, logs: undefined });
   writeFileSync(join(OUT, 'memory.json'), `${JSON.stringify(notes.map((n) => ({ ...n, measured: strip(n.measured), capped: strip(n.capped), isolate: strip(n.isolate) })), null, 2)}\n`);
@@ -298,7 +321,7 @@ async function main() {
     if (n.capped.failed) console.error(`${n.name} ${n.layout} (capped):\n${n.capped.logs?.slice(-1_000)}`);
   }
   const traces = notes.map(({ name, layout, measured: m }) => [
-    `- ${name} (${layout}): a plain Y.Doc of the note ${mb(m.copyMb)} (${m.structs} structs, ${Math.round((m.copyMb * 2 ** 20) / m.structs)} B each; keys interned ${mb(m.internedCopyMb)});`,
+    `- ${name} (${layout}): a plain Y.Doc of the note ${mb(m.copyMb)} (${m.structs} structs, ${Math.round((m.copyMb * 2 ** 20) / m.structs)} B each; keys interned ${mb(m.internedCopyMb)}${m.untyped ? `; rebuilt ${mb(m.rebuilt.mb)} (${m.rebuilt.structs} structs), without paragraph and text types ${mb(m.untyped.mb)} (${m.untyped.structs} structs)` : ''});`,
     PHASES.flatMap((phase) => (m.phases[phase]?.marks ?? []).map(({ label, mb: at }) => `${label} ${mb(at)}`)).join(', '),
   ].join(' '));
   const details = ['', 'Heap after a full GC at each phase of the server write and the export:', '', ...traces].join('\n');
