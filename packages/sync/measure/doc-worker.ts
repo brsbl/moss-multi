@@ -61,6 +61,25 @@ export class MeasuredDocDO extends DocDO {
   stateBytes(): number {
     return Y.encodeStateAsUpdate(this.document).byteLength;
   }
+
+  /**
+   * The stored layout every binding created after this call writes and reads (the @lexical/yjs patch's LEAN_LAYOUT):
+   * `v1` is the layout before it, so one run measures both.
+   */
+  useLayout(layout: string): string {
+    setLayout(layout);
+    return (globalThis as LayoutGlobal).__MOSS_YJS_LAYOUT ?? 'lean';
+  }
+}
+
+interface LayoutGlobal {
+  __MOSS_YJS_LAYOUT?: string;
+}
+
+function setLayout(layout: string): void {
+  const global = globalThis as LayoutGlobal;
+  if (layout === 'v1') global.__MOSS_YJS_LAYOUT = 'v1';
+  else delete global.__MOSS_YJS_LAYOUT;
 }
 
 
@@ -99,6 +118,11 @@ export default {
     if (url.pathname === '/hold-copy') {
       const structs = await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1', url.searchParams.has('intern'));
       return Response.json({ structs });
+    }
+    if (url.pathname === '/layout') {
+      const layout = url.searchParams.get('name') ?? 'lean';
+      setLayout(layout);
+      return Response.json({ layout: await (await getServerByName(env.DocDO, docId)).useLayout(layout) });
     }
     if (url.pathname === '/state-bytes') {
       return Response.json({ stateBytes: await (await getServerByName(env.DocDO, docId)).stateBytes() });

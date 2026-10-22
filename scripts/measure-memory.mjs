@@ -10,6 +10,9 @@
 // the export) must hold under REST_BUDGET_MB. Prints a markdown table (and appends it to $GITHUB_STEP_SUMMARY), writes
 // the figures to .cache/measure/memory.json, and exits non-zero when a note misses either budget. Linux needs
 // `stdbuf` (coreutils) so workerd's GC lines arrive as they happen.
+// MEM.lean: each note is measured under both stored layouts of the @lexical/yjs patch in the same run, `v1` (the
+// layout before LEAN_LAYOUT, the baseline) and `lean`, each also under a heap capped at the isolate's 128 MB; the
+// budgets judge the lean layout. MEASURE_MEMORY_PORT moves the first workerd port (9910).
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -29,6 +32,8 @@ const REQUEST_TIMEOUT_MS = 300_000;
 /** y-partyserver saves 2 s after the last update; the save compacts the note's rows. */
 const SAVE_WAIT_MS = 4_000;
 const PHASES = ['create', 'save', 'export'];
+/** The stored layouts measured, baseline first; the budgets judge the last. */
+export const LAYOUTS = ['v1', 'lean'];
 
 const requireFromSync = createRequire(join(REPO, 'packages/sync/package.json'));
 const WORKERD = createRequire(requireFromSync.resolve('wrangler'))('workerd').default;
@@ -118,7 +123,7 @@ async function startWorkerd(port, flags) {
   const file = join(dir, `workerd-${port}.capnp`);
   writeFileSync(file, config(port, flags, storage));
   // Line-buffered, so each GC line is in the log when the request that caused it answers.
-  const stdbuf = spawnSync('stdbuf', ['--version']).status === 0;
+  const stdbuf = spawnSync('stdbuf', ['-oL', 'true']).status === 0;
   const [command, args] = stdbuf ? ['stdbuf', ['-oL', '-eL', WORKERD, 'serve', '--experimental', file]] : [WORKERD, ['serve', '--experimental', file]];
   const child = spawn(command, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   const logs = { value: '' };
@@ -164,12 +169,14 @@ async function settle(server, count) {
  * One note in a fresh workerd, phase by phase. Returns each phase's figures and the base heap, or where it failed:
  * under a heap cap, V8 aborts the isolate's process once a phase cannot fit.
  */
-async function measureNote(markdown, port, flags, { trace = false } = {}) {
+async function measureNote(markdown, port, flags, { trace = false, layout = 'lean' } = {}) {
   const server = await startWorkerd(port, ['--expose-gc', '--trace-gc', ...flags]);
   const doc = `memory-${port}`;
   const result = { phases: {} };
   let phase = 'start';
   try {
+    result.layout = JSON.parse(await call(server.origin, `/layout?name=${layout}&doc=${doc}`)).layout;
+    if (result.layout !== layout) throw new Error(`the DocDO runs layout ${result.layout}, not ${layout}`);
     let gcs = 0;
     // With `trace`, the DocDO collects garbage twice at each server write's and export's phase, named in order.
     const traced = async () => (trace ? JSON.parse(await call(server.origin, `/phases?on=1&doc=${doc}`)) : []);
@@ -237,44 +244,67 @@ export function memoryProblems(notes) {
   return problems;
 }
 
+/** A run's highest heap left after a full GC over every phase (the traced phase marks included). */
+export const peakLive = (measured) => Math.max(0, ...PHASES.map((phase) => measured.phases?.[phase]?.liveMb ?? 0));
+/** A run's highest heap in use before a GC over every phase, garbage included. */
+export const peakInUse = (measured) => Math.max(0, ...PHASES.map((phase) => measured.phases?.[phase]?.highMb ?? 0));
+
 async function main() {
   mkdirSync(OUT, { recursive: true });
   await bundle(NAME, join(REPO, 'packages/sync/measure/doc-worker.ts'));
   const notes = [];
-  let port = 9910;
+  let port = Number(process.env.MEASURE_MEMORY_PORT ?? 9910);
   for (const [name, markdown] of await cases()) {
-    const measured = await measureNote(markdown, port, [], { trace: true });
-    const capped = await measureNote(markdown, port + 1, [`--max-heap-size=${PEAK_BUDGET_MB}`]);
-    port += 2;
-    notes.push({ name, markdownBytes: Buffer.byteLength(markdown), measured, capped });
-    console.error(`measure-memory: ${name} done`);
+    for (const layout of LAYOUTS) {
+      const measured = await measureNote(markdown, port, [], { trace: true, layout });
+      const capped = await measureNote(markdown, port + 1, [`--max-heap-size=${PEAK_BUDGET_MB}`], { layout });
+      const isolate = await measureNote(markdown, port + 2, [`--max-heap-size=${ISOLATE_LIMIT_MB}`], { layout });
+      port += 3;
+      notes.push({ name, layout, markdownBytes: Buffer.byteLength(markdown), lines: markdown.split('\n').filter((line) => line.trim() !== '').length, measured, capped, isolate });
+      console.error(`measure-memory: ${name} (${layout}) done`);
+    }
   }
   const mb = (value) => (typeof value === 'number' ? `${value.toFixed(1)} MB` : '?');
   const figures = (phase) => (phase ? `${mb(phase.highMb)} / ${mb(phase.liveMb)}` : '');
+  const fits = (run) => (run.failed ? `FAILED in ${run.failed.phase}` : 'yes');
   const lines = [
-    '### DocDO memory in workerd (T3.B31)',
+    '### DocDO memory in workerd (T3.B31, MEM.lean)',
     '',
-    `Isolate JS heap from V8's GC trace: per phase, the highest in use before a GC / the highest left after a full GC. Budget: every phase fits a ${PEAK_BUDGET_MB} MB heap cap (V8 collecting as hard as it can), and the note at rest holds under ${REST_BUDGET_MB} MB; the isolate limit is ${ISOLATE_LIMIT_MB} MB. Array buffers (the stored state) are outside these figures.`,
+    `Isolate JS heap from V8's GC trace: per phase, the highest in use before a GC / the highest left after a full GC. Budget: every phase fits a ${PEAK_BUDGET_MB} MB heap cap (V8 collecting as hard as it can), and the note at rest holds under ${REST_BUDGET_MB} MB; the isolate limit is ${ISOLATE_LIMIT_MB} MB. Array buffers (the stored state) are outside these figures. Layout v1 is the stored layout before MEM.lean (the baseline), lean the prototype; the budgets judge lean.`,
     '',
-    '| Note | Markdown | State | Base | Create | Save | Export | At rest | Under the cap |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    ...notes.map(({ name, markdownBytes, measured: m, capped: c }) => `| ${name} | ${mb(markdownBytes / 2 ** 20)} | ${m.stateBytes ? mb(m.stateBytes / 2 ** 20) : '?'} | ${mb(m.baseMb)} | ${figures(m.phases.create)} | ${figures(m.phases.save)} | ${figures(m.phases.export)} | ${mb(m.phases.export?.restMb)} | ${c.failed ? `FAILED in ${c.failed.phase}` : 'yes'} |`),
+    `| Note | Layout | Markdown | State | Base | Create | Save | Export | At rest | Peak live | Under ${PEAK_BUDGET_MB} MB | Under ${ISOLATE_LIMIT_MB} MB |`,
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...notes.map(({ name, layout, markdownBytes, measured: m, capped: c, isolate: i }) => `| ${name} | ${layout} | ${mb(markdownBytes / 2 ** 20)} | ${m.stateBytes ? mb(m.stateBytes / 2 ** 20) : '?'} | ${mb(m.baseMb)} | ${figures(m.phases.create)} | ${figures(m.phases.save)} | ${figures(m.phases.export)} | ${mb(m.phases.export?.restMb)} | ${mb(peakLive(m))} | ${fits(c)} | ${fits(i)} |`),
   ];
-  const report = lines.join('\n');
+  const pairs = [...new Set(notes.map((n) => n.name))].map((name) => LAYOUTS.map((layout) => notes.find((n) => n.name === name && n.layout === layout)));
+  const ratio = (before, after) => (typeof before === 'number' && typeof after === 'number' && after > 0 ? `${(before / after).toFixed(2)}x` : '?');
+  const pair = (a, b) => `${mb(a)} / ${mb(b)} (${ratio(a, b)})`;
+  const perLine = (n) => (n.measured.structs ? (n.measured.structs / n.lines).toFixed(2) : '?');
+  const state = (n) => (n.measured.stateBytes ? mb(n.measured.stateBytes / 2 ** 20) : '?');
+  const comparison = [
+    '',
+    "Lean against v1, same run. Structs: a plain Y.Doc of the note's state; per line: structs over the markdown's non-empty lines (a paragraph, a list item or a table row each).",
+    '',
+    '| Note | Structs v1 / lean | Per line v1 / lean | State v1 / lean | Plain Y.Doc v1 / lean | At rest v1 / lean | Peak live v1 / lean | Peak in use v1 / lean |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...pairs.map(([v1, lean]) => `| ${v1.name} | ${v1.measured.structs} / ${lean.measured.structs} (${ratio(v1.measured.structs, lean.measured.structs)}) | ${perLine(v1)} / ${perLine(lean)} | ${state(v1)} / ${state(lean)} | ${pair(v1.measured.copyMb, lean.measured.copyMb)} | ${pair(v1.measured.phases.export?.restMb, lean.measured.phases.export?.restMb)} | ${pair(peakLive(v1.measured), peakLive(lean.measured))} | ${pair(peakInUse(v1.measured), peakInUse(lean.measured))} |`),
+  ];
+  const report = [...lines, ...comparison].join('\n');
   console.log(report);
-  writeFileSync(join(OUT, 'memory.json'), `${JSON.stringify(notes.map((n) => ({ ...n, measured: { ...n.measured, logs: undefined }, capped: { ...n.capped, logs: undefined } })), null, 2)}\n`);
+  const strip = (run) => ({ ...run, logs: undefined });
+  writeFileSync(join(OUT, 'memory.json'), `${JSON.stringify(notes.map((n) => ({ ...n, measured: strip(n.measured), capped: strip(n.capped), isolate: strip(n.isolate) })), null, 2)}\n`);
   for (const n of notes) {
-    if (n.measured.failed) console.error(`${n.name} (measured):\n${n.measured.logs}`);
-    if (n.capped.failed) console.error(`${n.name} (capped):\n${n.capped.logs?.slice(-1_000)}`);
+    if (n.measured.failed) console.error(`${n.name} ${n.layout} (measured):\n${n.measured.logs}`);
+    if (n.capped.failed) console.error(`${n.name} ${n.layout} (capped):\n${n.capped.logs?.slice(-1_000)}`);
   }
-  const traces = notes.map(({ name, measured: m }) => [
-    `- ${name}: a plain Y.Doc of the note ${mb(m.copyMb)} (${m.structs} structs, ${Math.round((m.copyMb * 2 ** 20) / m.structs)} B each; keys interned ${mb(m.internedCopyMb)});`,
+  const traces = notes.map(({ name, layout, measured: m }) => [
+    `- ${name} (${layout}): a plain Y.Doc of the note ${mb(m.copyMb)} (${m.structs} structs, ${Math.round((m.copyMb * 2 ** 20) / m.structs)} B each; keys interned ${mb(m.internedCopyMb)});`,
     PHASES.flatMap((phase) => (m.phases[phase]?.marks ?? []).map(({ label, mb: at }) => `${label} ${mb(at)}`)).join(', '),
   ].join(' '));
   const details = ['', 'Heap after a full GC at each phase of the server write and the export:', '', ...traces].join('\n');
   console.log(details);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n${details}\n`);
-  const problems = memoryProblems(notes);
+  const problems = memoryProblems(notes.filter((n) => n.layout === LAYOUTS[LAYOUTS.length - 1]));
   if (problems.length > 0) {
     console.error(`measure-memory: ${problems.join('; ')}`);
     process.exitCode = 1;

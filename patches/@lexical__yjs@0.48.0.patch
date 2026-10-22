@@ -1,5 +1,5 @@
 diff --git a/dist/LexicalYjs.dev.js b/dist/LexicalYjs.dev.js
-index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f196c4d7c9c 100644
+index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..43a4c8b118922af09edd2b038fb429431c990539 100644
 --- a/dist/LexicalYjs.dev.js
 +++ b/dist/LexicalYjs.dev.js
 @@ -380,6 +380,26 @@ class CollabElementNode {
@@ -179,7 +179,174 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f19
      if (!(offset !== -1)) {
        formatDevErrorMessage(`splice: expected offset to be greater than zero`);
      }
-@@ -1393,9 +1448,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+@@ -911,6 +966,8 @@ function createBaseBinding(editor, id, doc, docMap, excludedProperties) {
+     editor,
+     excludedProperties: excludedProperties || new Map(),
+     id,
++    // moss-multi patch (MEM.lean): the stored layout this binding writes and reads (LEAN_LAYOUT, below).
++    lean: isLeanLayout(),
+     nodeProperties: new Map()
+   };
+   initializeNodeProperties(binding);
+@@ -1249,10 +1306,19 @@ function createLexicalNodeFromCollabNode(binding, collabNode, parentKey) {
+   return lexicalNode;
+ }
+ function $syncPropertiesFromYjs(binding, sharedType, lexicalNode, keysChanged) {
+-  const properties = keysChanged === null ? sharedType instanceof yjs.Map ? Array.from(sharedType.keys()) : sharedType instanceof yjs.XmlText || sharedType instanceof yjs.XmlElement ? Object.keys(sharedType.getAttributes()) : Object.keys(sharedType) : Array.from(keysChanged);
++  let properties = keysChanged === null ? sharedType instanceof yjs.Map ? Array.from(sharedType.keys()) : sharedType instanceof yjs.XmlText || sharedType instanceof yjs.XmlElement ? Object.keys(sharedType.getAttributes()) : Object.keys(sharedType) : Array.from(keysChanged);
++  // moss-multi patch (MEM.lean): every property of the class is read when the node is built or its packed entry
++  // changed, so a key the writer left out takes its default.
++  const defaults = binding.lean === true ? getDefaultNodeProperties(lexicalNode, binding) : null;
++  if (defaults !== null && (keysChanged === null || properties.includes(PACKED_KEY))) {
++    properties = Array.from(new Set([...properties, ...Object.keys(defaults)]));
++  }
+   let writableNode;
+   for (let i = 0; i < properties.length; i++) {
+     const property = properties[i];
++    if (defaults !== null && property === PACKED_KEY) {
++      continue;
++    }
+     if (isExcludedProperty(property, lexicalNode, binding)) {
+       if (property === '__state' && isBindingV1(binding)) {
+         if (!writableNode) {
+@@ -1264,7 +1330,10 @@ function $syncPropertiesFromYjs(binding, sharedType, lexicalNode, keysChanged) {
+     }
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     const prevValue = lexicalNode[property];
+-    let nextValue = sharedTypeGet(sharedType, property);
++    let nextValue = defaults !== null ? leanGet(sharedType, property, defaults) : sharedTypeGet(sharedType, property);
++    if (nextValue === NO_VALUE) {
++      continue;
++    }
+     if (prevValue !== nextValue) {
+       if (nextValue instanceof yjs.Doc) {
+         const yjsDocMap = binding.docMap;
+@@ -1296,6 +1365,84 @@ function $syncPropertiesFromYjs(binding, sharedType, lexicalNode, keysChanged) {
+     }
+   }
+ }
++// moss-multi patch (MEM.lean) LEAN_LAYOUT: a leaner stored layout. A property whose value is its node class's default
++// (a primitive, as `new Klass()` sets it) is not written, and a missing key reads as that default. A text node's other
++// properties ride one Y.Map entry, PACKED_KEY: an object of the values off their defaults, absent when there are none,
++// so a text node at its defaults stores `__type` alone. `__type` and nested editors keep their own keys. A loose key
++// (the earlier layout, from an older doc or client) wins over the packed value, and writing the packed value folds a
++// node's loose keys into it.
++const PACKED_KEY = '__props';
++/** Measurement only: `globalThis.__MOSS_YJS_LAYOUT = 'v1'`, set before a binding is created, keeps the earlier layout. */
++function isLeanLayout() {
++  return globalThis.__MOSS_YJS_LAYOUT !== 'v1';
++}
++const NO_VALUE = Symbol('no value');
++const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
++const isPrimitive = value => value === null || typeof value !== 'object' && typeof value !== 'function';
++/** Whether the lean layout leaves `property` unwritten at `value`: its class's primitive default. */
++function isDefaultValue(defaults, property, value) {
++  return property !== '__type' && hasOwn(defaults, property) && isPrimitive(defaults[property]) && defaults[property] === value;
++}
++function sharedTypeHas(sharedType, property) {
++  if (sharedType.doc === null) {
++    return false;
++  }
++  return sharedType instanceof yjs.Map ? sharedType.has(property) : sharedType.getAttribute(property) !== undefined;
++}
++function sharedTypeDelete(sharedType, property) {
++  if (!sharedTypeHas(sharedType, property)) {
++    return;
++  }
++  if (sharedType instanceof yjs.Map) {
++    sharedType.delete(property);
++  } else {
++    sharedType.removeAttribute(property);
++  }
++}
++/** A property's value in the lean layout: its loose key, else its packed value, else its primitive default. */
++function leanGet(sharedType, property, defaults) {
++  const loose = sharedTypeGet(sharedType, property);
++  if (loose !== undefined) {
++    return loose;
++  }
++  if (sharedType instanceof yjs.Map) {
++    const packed = sharedType.get(PACKED_KEY);
++    if (packed !== null && typeof packed === 'object' && hasOwn(packed, property)) {
++      return packed[property];
++    }
++  }
++  if (hasOwn(defaults, property)) {
++    // A non-primitive default is always written, so a missing one is a field its writer did not have: leave it.
++    return isPrimitive(defaults[property]) ? defaults[property] : NO_VALUE;
++  }
++  return undefined;
++}
++/** A text node's packed entry: the values off their defaults, with its loose keys folded in (deleted). */
++function writePacked(sharedType, nextLexicalNode, defaults, EditorClass) {
++  let packed = null;
++  for (const property of Object.keys(defaults)) {
++    if (property === '__type') {
++      continue;
++    }
++    const value = nextLexicalNode[property];
++    if (value instanceof EditorClass) {
++      continue;
++    }
++    sharedTypeDelete(sharedType, property);
++    if (isDefaultValue(defaults, property, value)) {
++      continue;
++    }
++    if (packed === null) {
++      packed = {};
++    }
++    packed[property] = value;
++  }
++  if (packed !== null) {
++    sharedType.set(PACKED_KEY, packed);
++  } else {
++    sharedTypeDelete(sharedType, PACKED_KEY);
++  }
++}
+ function sharedTypeGet(sharedType, property) {
+   if (sharedType instanceof yjs.Map) {
+     return sharedType.get(property);
+@@ -1355,9 +1502,14 @@ function syncNodeStateFromLexical(binding, sharedType, prevLexicalNode, nextLexi
+   }
+ }
+ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLexicalNode) {
+-  const properties = Object.keys(getDefaultNodeProperties(nextLexicalNode, binding));
++  const defaults = getDefaultNodeProperties(nextLexicalNode, binding);
++  const properties = Object.keys(defaults);
+   const EditorClass = binding.editor.constructor;
+   syncNodeStateFromLexical(binding, sharedType, prevLexicalNode, nextLexicalNode);
++  // moss-multi patch (MEM.lean): LEAN_LAYOUT. Only a text node syncs its properties into a Y.Map.
++  const lean = binding.lean === true;
++  const packs = lean && sharedType instanceof yjs.Map;
++  let packedChanged = false;
+   for (let i = 0; i < properties.length; i++) {
+     const property = properties[i];
+     const prevValue =
+@@ -1366,6 +1518,16 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     let nextValue = nextLexicalNode[property];
+     if (prevValue !== nextValue) {
++      if (lean && property !== '__type' && !(nextValue instanceof EditorClass)) {
++        if (packs) {
++          packedChanged = true;
++          continue;
++        }
++        if (isDefaultValue(defaults, property, nextValue)) {
++          sharedTypeDelete(sharedType, property);
++          continue;
++        }
++      }
+       if (nextValue instanceof EditorClass) {
+         const yjsDocMap = binding.docMap;
+         let prevDoc;
+@@ -1389,13 +1551,18 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+       sharedTypeSet(sharedType, property, nextValue);
+     }
+   }
++  if (packedChanged) {
++    writePacked(sharedType, nextLexicalNode, defaults, EditorClass);
++  }
+ }
  function spliceString(str, index, delCount, newText) {
    return str.slice(0, index) + newText + str.slice(index + delCount);
  }
@@ -194,7 +361,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f19
    const children = node._children;
    const childrenLength = children.length;
    for (; i < childrenLength; i++) {
-@@ -1414,7 +1471,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1414,7 +1581,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: diffLength,
          node: child,
          nodeIndex: i,
@@ -204,7 +371,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f19
        };
      }
      if (index > offset) {
-@@ -1422,14 +1480,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1422,14 +1590,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: 0,
          node: child,
          nodeIndex: i,
@@ -223,7 +390,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f19
        };
      }
    }
-@@ -1437,7 +1497,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1437,7 +1607,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
      length: 0,
      node: null,
      nodeIndex: 0,
@@ -233,7 +400,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f19
    };
  }
  function doesSelectionNeedRecovering(selection) {
-@@ -1465,32 +1526,30 @@ function syncWithTransaction(binding, fn) {
+@@ -1465,32 +1636,30 @@ function syncWithTransaction(binding, fn) {
    binding.doc.transact(fn, binding);
  }
  function $moveSelectionToPreviousNode(anchorNodeKey, currentEditorState) {
@@ -291,7 +458,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..135892f0b9c4bb013114a18c13d37f19
  }
  
 diff --git a/dist/LexicalYjs.dev.mjs b/dist/LexicalYjs.dev.mjs
-index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..9b13bcb3e96dfd8d21359d32ff850df094eb3efb 100644
+index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..22d8ce2e84d63181b0819093e7cb5a801d673c00 100644
 --- a/dist/LexicalYjs.dev.mjs
 +++ b/dist/LexicalYjs.dev.mjs
 @@ -378,6 +378,26 @@ class CollabElementNode {
@@ -471,7 +638,174 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..9b13bcb3e96dfd8d21359d32ff850df0
      if (!(offset !== -1)) {
        formatDevErrorMessage(`splice: expected offset to be greater than zero`);
      }
-@@ -1391,9 +1446,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+@@ -909,6 +964,8 @@ function createBaseBinding(editor, id, doc, docMap, excludedProperties) {
+     editor,
+     excludedProperties: excludedProperties || new Map(),
+     id,
++    // moss-multi patch (MEM.lean): the stored layout this binding writes and reads (LEAN_LAYOUT, below).
++    lean: isLeanLayout(),
+     nodeProperties: new Map()
+   };
+   initializeNodeProperties(binding);
+@@ -1247,10 +1304,19 @@ function createLexicalNodeFromCollabNode(binding, collabNode, parentKey) {
+   return lexicalNode;
+ }
+ function $syncPropertiesFromYjs(binding, sharedType, lexicalNode, keysChanged) {
+-  const properties = keysChanged === null ? sharedType instanceof Map$1 ? Array.from(sharedType.keys()) : sharedType instanceof XmlText || sharedType instanceof XmlElement ? Object.keys(sharedType.getAttributes()) : Object.keys(sharedType) : Array.from(keysChanged);
++  let properties = keysChanged === null ? sharedType instanceof Map$1 ? Array.from(sharedType.keys()) : sharedType instanceof XmlText || sharedType instanceof XmlElement ? Object.keys(sharedType.getAttributes()) : Object.keys(sharedType) : Array.from(keysChanged);
++  // moss-multi patch (MEM.lean): every property of the class is read when the node is built or its packed entry
++  // changed, so a key the writer left out takes its default.
++  const defaults = binding.lean === true ? getDefaultNodeProperties(lexicalNode, binding) : null;
++  if (defaults !== null && (keysChanged === null || properties.includes(PACKED_KEY))) {
++    properties = Array.from(new Set([...properties, ...Object.keys(defaults)]));
++  }
+   let writableNode;
+   for (let i = 0; i < properties.length; i++) {
+     const property = properties[i];
++    if (defaults !== null && property === PACKED_KEY) {
++      continue;
++    }
+     if (isExcludedProperty(property, lexicalNode, binding)) {
+       if (property === '__state' && isBindingV1(binding)) {
+         if (!writableNode) {
+@@ -1262,7 +1328,10 @@ function $syncPropertiesFromYjs(binding, sharedType, lexicalNode, keysChanged) {
+     }
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     const prevValue = lexicalNode[property];
+-    let nextValue = sharedTypeGet(sharedType, property);
++    let nextValue = defaults !== null ? leanGet(sharedType, property, defaults) : sharedTypeGet(sharedType, property);
++    if (nextValue === NO_VALUE) {
++      continue;
++    }
+     if (prevValue !== nextValue) {
+       if (nextValue instanceof Doc) {
+         const yjsDocMap = binding.docMap;
+@@ -1294,6 +1363,84 @@ function $syncPropertiesFromYjs(binding, sharedType, lexicalNode, keysChanged) {
+     }
+   }
+ }
++// moss-multi patch (MEM.lean) LEAN_LAYOUT: a leaner stored layout. A property whose value is its node class's default
++// (a primitive, as `new Klass()` sets it) is not written, and a missing key reads as that default. A text node's other
++// properties ride one Y.Map entry, PACKED_KEY: an object of the values off their defaults, absent when there are none,
++// so a text node at its defaults stores `__type` alone. `__type` and nested editors keep their own keys. A loose key
++// (the earlier layout, from an older doc or client) wins over the packed value, and writing the packed value folds a
++// node's loose keys into it.
++const PACKED_KEY = '__props';
++/** Measurement only: `globalThis.__MOSS_YJS_LAYOUT = 'v1'`, set before a binding is created, keeps the earlier layout. */
++function isLeanLayout() {
++  return globalThis.__MOSS_YJS_LAYOUT !== 'v1';
++}
++const NO_VALUE = Symbol('no value');
++const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
++const isPrimitive = value => value === null || typeof value !== 'object' && typeof value !== 'function';
++/** Whether the lean layout leaves `property` unwritten at `value`: its class's primitive default. */
++function isDefaultValue(defaults, property, value) {
++  return property !== '__type' && hasOwn(defaults, property) && isPrimitive(defaults[property]) && defaults[property] === value;
++}
++function sharedTypeHas(sharedType, property) {
++  if (sharedType.doc === null) {
++    return false;
++  }
++  return sharedType instanceof Map$1 ? sharedType.has(property) : sharedType.getAttribute(property) !== undefined;
++}
++function sharedTypeDelete(sharedType, property) {
++  if (!sharedTypeHas(sharedType, property)) {
++    return;
++  }
++  if (sharedType instanceof Map$1) {
++    sharedType.delete(property);
++  } else {
++    sharedType.removeAttribute(property);
++  }
++}
++/** A property's value in the lean layout: its loose key, else its packed value, else its primitive default. */
++function leanGet(sharedType, property, defaults) {
++  const loose = sharedTypeGet(sharedType, property);
++  if (loose !== undefined) {
++    return loose;
++  }
++  if (sharedType instanceof Map$1) {
++    const packed = sharedType.get(PACKED_KEY);
++    if (packed !== null && typeof packed === 'object' && hasOwn(packed, property)) {
++      return packed[property];
++    }
++  }
++  if (hasOwn(defaults, property)) {
++    // A non-primitive default is always written, so a missing one is a field its writer did not have: leave it.
++    return isPrimitive(defaults[property]) ? defaults[property] : NO_VALUE;
++  }
++  return undefined;
++}
++/** A text node's packed entry: the values off their defaults, with its loose keys folded in (deleted). */
++function writePacked(sharedType, nextLexicalNode, defaults, EditorClass) {
++  let packed = null;
++  for (const property of Object.keys(defaults)) {
++    if (property === '__type') {
++      continue;
++    }
++    const value = nextLexicalNode[property];
++    if (value instanceof EditorClass) {
++      continue;
++    }
++    sharedTypeDelete(sharedType, property);
++    if (isDefaultValue(defaults, property, value)) {
++      continue;
++    }
++    if (packed === null) {
++      packed = {};
++    }
++    packed[property] = value;
++  }
++  if (packed !== null) {
++    sharedType.set(PACKED_KEY, packed);
++  } else {
++    sharedTypeDelete(sharedType, PACKED_KEY);
++  }
++}
+ function sharedTypeGet(sharedType, property) {
+   if (sharedType instanceof Map$1) {
+     return sharedType.get(property);
+@@ -1353,9 +1500,14 @@ function syncNodeStateFromLexical(binding, sharedType, prevLexicalNode, nextLexi
+   }
+ }
+ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLexicalNode) {
+-  const properties = Object.keys(getDefaultNodeProperties(nextLexicalNode, binding));
++  const defaults = getDefaultNodeProperties(nextLexicalNode, binding);
++  const properties = Object.keys(defaults);
+   const EditorClass = binding.editor.constructor;
+   syncNodeStateFromLexical(binding, sharedType, prevLexicalNode, nextLexicalNode);
++  // moss-multi patch (MEM.lean): LEAN_LAYOUT. Only a text node syncs its properties into a Y.Map.
++  const lean = binding.lean === true;
++  const packs = lean && sharedType instanceof Map$1;
++  let packedChanged = false;
+   for (let i = 0; i < properties.length; i++) {
+     const property = properties[i];
+     const prevValue =
+@@ -1364,6 +1516,16 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     let nextValue = nextLexicalNode[property];
+     if (prevValue !== nextValue) {
++      if (lean && property !== '__type' && !(nextValue instanceof EditorClass)) {
++        if (packs) {
++          packedChanged = true;
++          continue;
++        }
++        if (isDefaultValue(defaults, property, nextValue)) {
++          sharedTypeDelete(sharedType, property);
++          continue;
++        }
++      }
+       if (nextValue instanceof EditorClass) {
+         const yjsDocMap = binding.docMap;
+         let prevDoc;
+@@ -1387,13 +1549,18 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+       sharedTypeSet(sharedType, property, nextValue);
+     }
+   }
++  if (packedChanged) {
++    writePacked(sharedType, nextLexicalNode, defaults, EditorClass);
++  }
+ }
  function spliceString(str, index, delCount, newText) {
    return str.slice(0, index) + newText + str.slice(index + delCount);
  }
@@ -486,7 +820,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..9b13bcb3e96dfd8d21359d32ff850df0
    const children = node._children;
    const childrenLength = children.length;
    for (; i < childrenLength; i++) {
-@@ -1412,7 +1469,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1412,7 +1579,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: diffLength,
          node: child,
          nodeIndex: i,
@@ -496,7 +830,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..9b13bcb3e96dfd8d21359d32ff850df0
        };
      }
      if (index > offset) {
-@@ -1420,14 +1478,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1420,14 +1588,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: 0,
          node: child,
          nodeIndex: i,
@@ -515,7 +849,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..9b13bcb3e96dfd8d21359d32ff850df0
        };
      }
    }
-@@ -1435,7 +1495,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1435,7 +1605,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
      length: 0,
      node: null,
      nodeIndex: 0,
@@ -525,7 +859,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..9b13bcb3e96dfd8d21359d32ff850df0
    };
  }
  function doesSelectionNeedRecovering(selection) {
-@@ -1463,32 +1524,30 @@ function syncWithTransaction(binding, fn) {
+@@ -1463,32 +1634,30 @@ function syncWithTransaction(binding, fn) {
    binding.doc.transact(fn, binding);
  }
  function $moveSelectionToPreviousNode(anchorNodeKey, currentEditorState) {
