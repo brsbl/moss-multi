@@ -100,6 +100,11 @@ export default {
       const structs = await (await getServerByName(env.DocDO, docId)).holdCopy(url.searchParams.get('on') === '1', url.searchParams.has('intern'));
       return Response.json({ structs });
     }
+    if (url.pathname === '/wake') {
+      // Addressing the DocDO starts it, which loads its stored note (onLoad): the wake alone.
+      await getServerByName(env.DocDO, docId);
+      return new Response('ok');
+    }
     if (url.pathname === '/state-bytes') {
       return Response.json({ stateBytes: await (await getServerByName(env.DocDO, docId)).stateBytes() });
     }
