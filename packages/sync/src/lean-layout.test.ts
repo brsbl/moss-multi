@@ -3,6 +3,8 @@
 // costs five structs instead of fifteen, every fixture exports as it did, a doc written in the earlier layout (v1)
 // reads the same, and peers converge.
 import { readdirSync, readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { registerList } from '@lexical/list';
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
@@ -18,8 +20,8 @@ import { exportDocMarkdown, importBody } from './server-doc.ts';
 type Layout = 'v1' | 'lean';
 
 /** The converter's family corpus, read as search-core.golden.test.ts reads it. */
-const FIXTURES_DIR = new URL('./converter/fixtures/', import.meta.url);
-const FIXTURES = readdirSync(FIXTURES_DIR).filter((file) => file.endsWith('.md')).sort().map((file) => [file, readFileSync(new URL(file, FIXTURES_DIR), 'utf8')] as const);
+const FIXTURES_DIR = `${dirname(fileURLToPath(import.meta.url))}/converter/fixtures/`;
+const FIXTURES = readdirSync(FIXTURES_DIR).filter((file) => file.endsWith('.md')).sort().map((file) => [file, readFileSync(`${FIXTURES_DIR}${file}`, 'utf8')] as const);
 const layoutGlobal = globalThis as { __MOSS_YJS_LAYOUT?: string };
 
 /** Runs `run` with every binding it creates on `layout`. */
