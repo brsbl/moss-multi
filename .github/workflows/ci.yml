@@ -170,11 +170,16 @@ jobs:
 
   # T3.B31: each near-cap note's create, save and export fit the DocDO's heap budget in workerd (V8 heap capped,
   # GC traced); the table lands in the job summary.
+  # One note per job: each note's phases are bisected over the heap cap, which takes minutes per note.
   memory:
     needs: plan
     if: needs.plan.outputs.checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        note: ['j01-large', 'paste-blocks', 'paste-list', 'paste-race', 'paste-table', '2 MB of mixed', '200k of mixed']
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -185,6 +190,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: DocDO memory in workerd
         run: node scripts/measure-memory.mjs
+        env:
+          MEASURE_MEMORY_CASES: ${{ matrix.note }}
         timeout-minutes: 25
 
   build:

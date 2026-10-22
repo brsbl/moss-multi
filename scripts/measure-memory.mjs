@@ -185,7 +185,7 @@ async function settle(server, count) {
  * One note in a fresh workerd, phase by phase. Returns each phase's figures and the base heap, or where it failed:
  * under a heap cap, V8 aborts the isolate's process once a phase cannot fit.
  */
-async function measureNote(markdown, port, flags, { trace = false } = {}) {
+async function measureNote(markdown, port, flags, { trace = false, wake = false } = {}) {
   const server = await startWorkerd(port, ['--expose-gc', '--trace-gc', ...flags]);
   const doc = `memory-${port}`;
   const result = { phases: {} };
@@ -244,6 +244,24 @@ async function measureNote(markdown, port, flags, { trace = false } = {}) {
   } finally {
     await stopWorkerd(server.child);
   }
+  if (wake && !result.failed) {
+    // A fresh workerd on the same storage: the DocDO wakes and loads the saved note, as after an eviction.
+    phase = 'wake';
+    const again = await startWorkerd(port, ['--expose-gc', '--trace-gc', ...flags], join(OUT, 'state', `memory-${port}`));
+    try {
+      await call(again.origin, '/gc');
+      const start = await settle(again, 2);
+      await call(again.origin, `/wake?doc=${doc}`);
+      await call(again.origin, '/gc');
+      const end = await settle(again, 4);
+      result.phases.wake = phaseFigures(gcEvents(again.logs.value.slice(start, end)));
+    } catch (error) {
+      result.failed = { phase, message: String(error.message).split('\n')[0] };
+      result.logs = again.logs.value.slice(-3_000);
+    } finally {
+      await stopWorkerd(again.child);
+    }
+  }
   return result;
 }
 
@@ -278,19 +296,25 @@ export async function smallestCap(fits, low, high) {
 }
 
 /** Runs `request` against a workerd capped at `cap` MB; whether it answered (V8 aborts the process past the cap). */
+const OUT_OF_HEAP = /heap limit|out of memory/i;
+
 async function fitsUnder(cap, port, storage, request) {
   let server;
   try {
     server = await startWorkerd(port, [`--max-heap-size=${cap}`], storage);
-  } catch {
-    // Too small a heap for the Worker itself.
-    return false;
+  } catch (error) {
+    // Too small a heap for the Worker itself; anything else is not an answer.
+    if (OUT_OF_HEAP.test(error.message)) return false;
+    throw error;
   }
   try {
     await request(server.origin);
     return server.child.exitCode === null;
-  } catch {
-    return false;
+  } catch (error) {
+    // Only V8 giving up on the heap counts as not fitting.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (OUT_OF_HEAP.test(server.logs.value)) return false;
+    throw new Error(`under ${cap} MB the request failed without running out of heap: ${error.message}\n${server.logs.value.slice(-1_000)}`);
   } finally {
     await stopWorkerd(server.child);
   }
@@ -324,10 +348,17 @@ async function measureNeeds(markdown, port, guess) {
     cpSync(saved, copy, { recursive: true });
     return copy;
   };
+  // Each probe is logged, so a run cut short still shows how far each search got.
+  const logged = (phase, fits) => async (cap) => {
+    const started = Date.now();
+    const ok = await fits(cap);
+    console.error(`measure-memory:   ${phase} under ${cap} MB: ${ok ? 'fits' : 'fails'} (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    return ok;
+  };
   const needs = {};
-  needs.create = await smallestCap((cap) => fitsUnder(cap, port, fresh('probe'), create), guess.low, guess.create);
-  needs.wake = await smallestCap((cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/wake?doc=${NEED_DOC}`)), guess.low, guess.wake);
-  needs.export = await smallestCap((cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/export?lean&doc=${NEED_DOC}`)), guess.low, guess.export);
+  needs.create = await smallestCap(logged('create', (cap) => fitsUnder(cap, port, fresh('probe'), create)), guess.low, guess.create);
+  needs.wake = await smallestCap(logged('wake', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/wake?doc=${NEED_DOC}`))), guess.low, guess.wake);
+  needs.export = await smallestCap(logged('export', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/export?lean&doc=${NEED_DOC}`))), guess.low, guess.export);
   rmSync(storage('saved'), { recursive: true, force: true });
   rmSync(storage('probe'), { recursive: true, force: true });
   return needs;
@@ -357,14 +388,16 @@ async function main() {
   const bisect = process.env.MEASURE_MEMORY_NEEDS !== '0';
   for (const [name, markdown] of (await cases()).filter(([name]) => !only || only.test(name))) {
     const measured = await measureNote(markdown, port, (process.env.MEASURE_MEMORY_V8_FLAGS ?? '').split(' ').filter(Boolean), { trace: true });
-    const plain = await measureNote(markdown, port + 1, []);
+    const plain = await measureNote(markdown, port + 1, [], { wake: true });
     const capped = await measureNote(markdown, port + 2, [`--max-heap-size=${PEAK_BUDGET_MB}`]);
     const rest = plain.phases.save?.restMb ?? measured.phases.save?.restMb ?? 8;
     const high = (phase) => Math.max(plain.phases[phase]?.highMb ?? 0, measured.phases[phase]?.liveMb ?? 0, rest) + 8;
-    const needs = bisect ? await measureNeeds(markdown, port + 3, { low: rest - 4, create: high('create'), wake: rest + 16, export: high('export') }) : null;
+    // Every phase so far has needed more than 1.2x the note at rest, which bounds each search from below.
+    const needs = bisect ? await measureNeeds(markdown, port + 3, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, export: high('export') }) : null;
     port += 4;
     notes.push({ name, markdownBytes: Buffer.byteLength(markdown), measured, plain, capped, needs });
-    console.error(`measure-memory: ${name} done`);
+    const at = (run, phase) => `${run.phases[phase]?.highMb ?? '?'}/${run.phases[phase]?.liveMb ?? '?'}`;
+    console.error(`measure-memory: ${name} done: at rest ${rest} MB; untraced high/live create ${at(plain, 'create')}, export ${at(plain, 'export')}, wake ${at(plain, 'wake')}; needs ${JSON.stringify(needs)}`);
   }
   const mb = (value) => (typeof value === 'number' ? `${value.toFixed(1)} MB` : '?');
   const figures = (phase) => (phase ? `${mb(phase.highMb)} / ${mb(phase.liveMb)}` : '');
@@ -374,9 +407,9 @@ async function main() {
     '',
     `Isolate JS heap from V8's GC trace, untraced run: per phase, the highest in use before a GC / the highest left after a full GC. Budget: every phase fits a ${PEAK_BUDGET_MB} MB heap cap (V8 collecting as hard as it can), and the note at rest holds under ${REST_BUDGET_MB} MB; the isolate limit is ${ISOLATE_LIMIT_MB} MB. Array buffers (the stored state) are outside these figures.`,
     '',
-    '| Note | Markdown | State | Base | Create | Save | Export | At rest | Under the cap |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    ...notes.map(({ name, markdownBytes, measured: m, plain: p, capped: c }) => `| ${name} | ${mb(markdownBytes / 2 ** 20)} | ${m.stateBytes ? mb(m.stateBytes / 2 ** 20) : '?'} | ${mb(p.baseMb)} | ${figures(p.phases.create)} | ${figures(p.phases.save)} | ${figures(p.phases.export)} | ${mb(p.phases.export?.restMb)} | ${c.failed ? `FAILED in ${c.failed.phase}` : 'yes'} |`),
+    '| Note | Markdown | State | Base | Create | Save | Export | At rest | Wake | Woken at rest | Under the cap |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...notes.map(({ name, markdownBytes, measured: m, plain: p, capped: c }) => `| ${name} | ${mb(markdownBytes / 2 ** 20)} | ${m.stateBytes ? mb(m.stateBytes / 2 ** 20) : '?'} | ${mb(p.baseMb)} | ${figures(p.phases.create)} | ${figures(p.phases.save)} | ${figures(p.phases.export)} | ${mb(p.phases.export?.restMb)} | ${figures(p.phases.wake)} | ${mb(p.phases.wake?.restMb)} | ${c.failed ? `FAILED in ${c.failed.phase}` : 'yes'} |`),
   ];
   if (bisect) {
     lines.push(
