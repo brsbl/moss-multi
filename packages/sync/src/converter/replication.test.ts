@@ -9,7 +9,7 @@ import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './index.ts';
 import { FIXTURES, stringify } from './fixtures.ts';
 import { EXCLUDED_FIELDS, excludedPropertiesFor } from '../excluded-properties.ts';
-import { payloadDocsFor } from '../payload-docs.ts';
+import { attachPayloadDocs, payloadDocsFor } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
 import { exportDocMarkdown, importBody } from '../server-doc.ts';
 
@@ -90,6 +90,17 @@ describe('L4 every family replicates through the binding @p:tech-1 @p:col-1 @p:n
       expect(exportMarkdown(b.editor), `${name}: B's export`).toBe(exportMarkdown(a.editor));
       // The DocDO recomputes executable formulas on export; elsewhere its export is the editors'.
       if (!markdown.includes('{{')) expect(exportDocMarkdown(a.doc), `${name}: the server's export`).toBe(exportMarkdown(a.editor));
+      // A doc no binding reads (the DocDO's) is exported in place, without a copy: the same export, formulas
+      // recomputed included, the doc left as it was, and a second export alike (its types untagged).
+      const unbound = new Y.Doc();
+      Y.applyUpdate(unbound, Y.encodeStateAsUpdate(a.doc));
+      attachPayloadDocs(unbound, payloadDocsFor(a.doc));
+      const state = Y.encodeStateAsUpdate(unbound);
+      const copied = exportDocMarkdown(a.doc, 'note');
+      expect(exportDocMarkdown(unbound, 'note'), `${name}: the export read in place`).toBe(copied);
+      expect(Y.encodeStateAsUpdate(unbound), `${name}: reading in place writes nothing`).toEqual(state);
+      expect(exportDocMarkdown(unbound, 'note'), `${name}: a second export read in place`).toBe(copied);
+      unbound.destroy();
       const keys = wireKeys(a.doc.get('root', Y.XmlText));
       for (const [type, fields] of Object.entries(EXCLUDED_FIELDS)) {
         for (const field of fields) expect(keys.get(type)?.has(field) ?? false, `${name}: ${type}.${field} stays off the wire`).toBe(false);

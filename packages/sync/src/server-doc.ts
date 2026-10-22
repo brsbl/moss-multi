@@ -1,11 +1,11 @@
 // The DocDO's headless side (A§5.1, A§12): moss's converter editor bound (V1) to a mirror Y.Doc, serverWrite for
 // every server-side content write, the seed, and markdown export. Typechecks reach the vendored converter modules
 // through src/moss-modules.d.ts.
-import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
+import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { refusingSpentImports } from '@moss-desktop/renderer/editor/markdown/linear-import';
-import { $createParagraphNode, $getRoot, TextNode, type LexicalEditor } from 'lexical';
+import { $addUpdateTag, $createParagraphNode, $getRoot, COLLABORATION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, TextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
 import { readField } from '@moss-multi/core/doc-fields';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
@@ -66,6 +66,19 @@ const provider = {
   off: noop,
 } as unknown as Provider;
 
+/**
+ * A V1 binding of `editor` to `doc`, with the client's exclusions, so the server writes and reads the same fields the
+ * browser does (A§10.9). The binding reads each node type's defaults in an update of its own, committed here: left to
+ * commit in a microtask, it held the editor, and everything bound to it, until the caller returned.
+ */
+function bindingOf(editor: LexicalEditor, doc: Y.Doc): Binding {
+  let binding!: Binding;
+  editor.update(() => {
+    binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
+  }, { discrete: true });
+  return binding;
+}
+
 interface Mirror {
   doc: Y.Doc;
   editor: LexicalEditor;
@@ -94,8 +107,7 @@ function mirrorOf(live: Y.Doc): Mirror {
   // Moss's live editor runs these transforms on imports before its binding writes them.
   const stopLists = registerList(editor);
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
-  // The client's exclusions, so the mirror writes and reads the same fields the browser does (A§10.9).
-  const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
+  const binding = bindingOf(editor, doc);
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
@@ -105,9 +117,10 @@ function mirrorOf(live: Y.Doc): Mirror {
     if (transaction.origin !== binding) syncYjsChangesToLexical(binding, provider, events as never, false, noop);
   };
   root.observeDeep(observer);
-  Y.applyUpdate(doc, Y.encodeStateAsUpdate(live), HYDRATE);
-  // The hydration commits on its own, under the collaboration tag, before any mutation runs.
-  editor.update(noop, { discrete: true, skipTransforms: true });
+  // The hydration commits on its own, under the collaboration tag, before any mutation runs. The observer's update
+  // nests in this discrete one: on its own it would also queue a commit in a microtask, which held the whole mirror
+  // until the caller returned.
+  editor.update(() => Y.applyUpdate(doc, Y.encodeStateAsUpdate(live), HYDRATE), { discrete: true, skipTransforms: true });
   return {
     doc,
     editor,
@@ -193,16 +206,109 @@ export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontma
   }, admit);
 }
 
+interface View {
+  editor: LexicalEditor;
+  dispose: () => void;
+}
+
+/** Whether a binding already reads `doc` (a client's own doc): its types carry that binding's collab nodes. */
+const isBound = (doc: Y.Doc): boolean => (doc.get('root', Y.XmlText) as Y.XmlText & { _collabNode?: unknown })._collabNode !== undefined;
+
+/**
+ * A headless editor that reads `live` itself, for an export: bound to `live`'s own types, with no copy of its state, so
+ * the export holds the note once plus its Lexical tree. Nothing writes Lexical's changes back (no update listener), so
+ * the formula recompute stays in the editor, as it stayed in the disposable mirror; payloads load from the named ones
+ * into docs of the view's own. Hydrates as the mirror's binding hears a whole state applied: one event on the root.
+ * Disposing untags every type the binding tagged, so `live` is left as it was.
+ */
+function viewOf(live: Y.Doc): View {
+  const source = sourceOf(live);
+  const payloads = new PayloadDocs((id) => source.read(id), (id) => source.has(id));
+  const editor = createConverterEditor();
+  const stopLists = registerList(editor);
+  const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
+  const binding = bindingOf(editor, live);
+  const stopRegisters = bindRegisters(editor, live, { serializedImports: true, payloads });
+  // A read-only view: any transaction on `live` while it is bound is a bug, refused once it is released.
+  let wrote = 0;
+  const onTransaction = () => {
+    wrote += 1;
+  };
+  live.on('beforeTransaction', onTransaction);
+  const dispose = () => {
+    live.off('beforeTransaction', onTransaction);
+    stopRegisters();
+    stopWhitespace();
+    stopLists();
+    untag(live);
+    payloads.destroy();
+    if (wrote > 0) throw new Error('an export view wrote to the doc it reads');
+  };
+  try {
+    const root = binding.root;
+    const keys = new Set(Object.keys(root._xmlText.getAttributes()));
+    if (root._xmlText.length > 0 || keys.size > 0) {
+      editor.update(() => {
+        if (keys.size > 0) root.syncPropertiesFromYjs(binding, keys);
+        if (root._xmlText.length > 0) {
+          root.applyChildrenYjsDelta(binding, root._xmlText.toDelta());
+          root.syncChildrenFromYjs(binding);
+        }
+        $addUpdateTag(SKIP_SCROLL_INTO_VIEW_TAG);
+      }, { discrete: true, skipTransforms: true, tag: COLLABORATION_TAG });
+      // As the binding's own commit callback does for a root left empty.
+      if (root.isEmpty()) {
+        editor.update(() => {
+          if ($getRoot().getChildrenSize() === 0) $getRoot().append($createParagraphNode());
+        }, { discrete: true });
+      }
+    }
+  } catch (error) {
+    dispose();
+    throw error;
+  }
+  return { editor, dispose };
+}
+
+type Tagged = { _collabNode?: unknown };
+
+/**
+ * Clears the collab node a binding set on each of `doc`'s types (every root type, and every type an item holds), so the
+ * view's tree is unreachable once released. Cleared, not deleted: deleting the property left each type a dictionary of
+ * its properties, about 390 B more per type for as long as the note stays loaded.
+ */
+function untag(doc: Y.Doc): void {
+  const clear = (type: Tagged) => {
+    if (type._collabNode !== undefined) type._collabNode = undefined;
+  };
+  for (const type of doc.share.values()) clear(type as Tagged);
+  for (const structs of doc.store.clients.values()) {
+    for (const struct of structs) {
+      if (struct instanceof Y.Item && struct.content instanceof Y.ContentType) clear(struct.content.type as Tagged);
+    }
+  }
+}
+
+/** Whether the editor's committed tree holds a formula node. */
+function hasFormulas(editor: LexicalEditor): boolean {
+  for (const node of editor.getEditorState()._nodeMap.values()) if (node.__type === 'formula') return true;
+  return false;
+}
+
 /** The `.md` file (A§12): the frontmatter block in its fences, then the body through the one converter. */
 export function exportDocMarkdown(live: Y.Doc, noteId = live.guid): string {
-  const mirror = mirrorOf(live);
+  // Read first: its first read of the frontmatter type opens an (empty) transaction, which the view would refuse.
+  const frontmatter = readField(live, 'frontmatter');
+  // A doc a client binding already reads (tests' client docs) is exported from a copy, as before.
+  const view = isBound(live) ? mirrorOf(live) : viewOf(live);
   try {
-    mark('export: mirror hydrated');
-    mirror.editor.update(() => $recomputeExportFormulas(noteId), { discrete: true });
-    const markdown = composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(mirror.editor));
+    mark('export: hydrated');
+    // An update clones the editor state's node map; a note without formulas has nothing to recompute.
+    if (hasFormulas(view.editor)) view.editor.update(() => $recomputeExportFormulas(noteId), { discrete: true });
+    const markdown = composeFrontmatter(frontmatter, exportMarkdown(view.editor));
     mark('export: exported');
     return markdown;
   } finally {
-    mirror.dispose();
+    view.dispose();
   }
 }
