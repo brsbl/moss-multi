@@ -7,7 +7,9 @@ import * as Y from 'yjs';
 /** Each Lexical node type's default property values, as @lexical/yjs computes them (`binding.nodeProperties`). */
 export type Defaults = ReadonlyMap<string, Readonly<Record<string, unknown>>>;
 
-type Type = Y.AbstractType<unknown>;
+// Any shared type: Y.Map, Y.XmlText and Y.XmlElement differ in their event type parameter.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Type = Y.AbstractType<any>;
 
 export function typeKind(type: Type): string {
   if (type instanceof Y.XmlText) return 'XmlText';

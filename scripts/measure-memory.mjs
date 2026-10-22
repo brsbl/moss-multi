@@ -168,7 +168,7 @@ async function call(origin, path, init, { retries = 0 } = {}) {
         console.error(`measure-memory: ${path}: ${error.message}${cause}; sending it again`);
         continue;
       }
-      throw new Error(`${path}: ${error.message}${cause}`);
+      throw new Error(`${path}: ${error.message}${cause}`, { cause: error });
     }
     const body = await response.text();
     if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${body.slice(0, 200)}`);
