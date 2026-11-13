@@ -35,30 +35,36 @@ describe('memoryProblems: absolute budgets at the caps', () => {
 
   it('holds every phase to 96 MB less 10% and the note at rest to 64 MB less 10%', () => {
     expect([PHASE_LIMIT_MB, REST_LIMIT_MB]).toEqual([96 * 0.9, 64 * 0.9]);
-    expect(memoryProblems([note('a', { create: 86, wake: 70, export: 86 })])).toEqual([]);
+    expect(memoryProblems([note('a', { create: 86, wake: 70, save: 72, export: 86 })])).toEqual([]);
   });
 
   it('fails a phase over its budget, a need never found, and a note at rest over its own', () => {
     const problems = memoryProblems([
-      note('create', { create: 88, wake: 60, export: 60 }),
-      note('export', { create: 60, wake: 60, export: 92 }),
-      note('lost', { create: null, wake: 60, export: 60 }),
-      note('rest', { create: 60, wake: 60, export: 60 }, { plain: { phases: { save: { restMb: 58 } } } }),
+      note('create', { create: 88, wake: 60, save: 60, export: 60 }),
+      note('export', { create: 60, wake: 60, save: 60, export: 92 }),
+      note('save', { create: 60, wake: 60, save: 90, export: 60 }),
+      note('lost', { create: null, wake: 60, save: 60, export: 60 }),
+      note('unsaved', { create: 60, wake: 60, export: 60 }),
+      note('rest', { create: 60, wake: 60, save: 60, export: 60 }, { plain: { phases: { save: { restMb: 58 } } } }),
     ]);
     expect(problems).toEqual([
       'create: the create needs 88 MB, over 86.4 MB',
       'export: the export needs 92 MB, over 86.4 MB',
+      'save: the save needs 90 MB, over 86.4 MB',
       "lost: the create's need is unknown",
+      "unsaved: the save's need is unknown",
       'rest: at rest it takes 58 MB, over 57.6 MB',
     ]);
   });
 
-  it('skips a grown table\'s create, which no create makes at once', () => {
-    expect(memoryProblems([note('table', { create: null, wake: 60, export: 60 }, { grow: true })])).toEqual([]);
+  it('holds a grown table\'s create (the largest table an import takes) and its save like any note\'s', () => {
+    expect(memoryProblems([note('table', { create: 70, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual([]);
+    expect(memoryProblems([note('table', { create: null, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual(["table: the create's need is unknown"]);
+    expect(memoryProblems([note('table', { create: 90, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual(['table: the create needs 90 MB, over 86.4 MB']);
   });
 
   it('holds a note at a cap to within 2% under it, and its state to what its text and structs allow', () => {
-    const sized = (name, size, extra) => note(name, { create: 60, wake: 60, export: 60 }, {
+    const sized = (name, size, extra) => note(name, { create: 60, wake: 60, save: 60, export: 60 }, {
       plain: { phases: { save: { restMb: 40 } }, size, stateBytes: 1_000 },
       ...extra,
     });
@@ -91,7 +97,7 @@ describe('memoryProblems: absolute budgets at the caps', () => {
 
   it('holds only budgeted notes to the budgets, and fails any note whose run failed', () => {
     expect(memoryProblems([note('small', { create: 300, export: 300 }, { budget: false })])).toEqual([]);
-    const failed = note('failed', { create: 60, wake: 60, export: 60 }, { budget: false, plain: { failed: { phase: 'create', message: 'workerd exited' } } });
+    const failed = note('failed', { create: 60, wake: 60, save: 60, export: 60 }, { budget: false, plain: { failed: { phase: 'create', message: 'workerd exited' } } });
     expect(memoryProblems([failed])).toEqual(['failed: the untraced run failed (create: workerd exited)']);
   });
 });

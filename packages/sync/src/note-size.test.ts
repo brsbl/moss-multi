@@ -2,6 +2,7 @@
 // update would bring, read from the update before it applies: its text exactly, its structs never under what lands.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
+import { withDeletes } from '../test/harness/crafted.ts';
 import { countChars, growthOf, payloadSize, structCount, TextCount } from './note-size.ts';
 
 /** A seeded random source, so a failure replays. */
@@ -130,5 +131,87 @@ describe('growthOf and TextCount', () => {
     const chart = new Y.Doc();
     chart.getMap('payload-map').set('/type', 'bar');
     expect(payloadSize(chart)).toEqual({ chars: 0, structs: 1 });
+  });
+});
+
+describe('growthOf against crafted and compound updates (T3.B31c)', () => {
+  /** A doc whose body holds one paragraph of `text`, and the paragraph's text struct. */
+  function holding(text: string): { doc: Y.Doc; counted: TextCount; run: Y.Item; paragraph: Y.XmlText } {
+    const doc = new Y.Doc();
+    const counted = new TextCount(doc);
+    const paragraph = new Y.XmlText();
+    doc.get('root', Y.XmlText).insertEmbed(0, paragraph);
+    paragraph.insert(0, text);
+    const run = [...doc.store.clients.values()].flat().find((struct) => struct instanceof Y.Item && struct.content instanceof Y.ContentString) as Y.Item;
+    return { doc, counted, run, paragraph };
+  }
+
+  it.each([
+    ['repeated', (clock: number) => [[clock, 100], [clock, 100]]],
+    ['overlapping', (clock: number) => [[clock, 100], [clock + 50, 100], [clock + 20, 30]]],
+    ['out of order', (clock: number) => [[clock + 100, 50], [clock, 100], [clock + 40, 80]]],
+  ] as const)('counts a %s delete range\'s text once, as applying it deletes it once', (_kind, ranges) => {
+    const { doc, counted, run } = holding('a'.repeat(1_000));
+    const writer = new Y.Doc();
+    Y.applyUpdate(writer, Y.encodeStateAsUpdate(doc));
+    const before = Y.encodeStateVector(writer);
+    (writer.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlText).insert(1_000, 'b'.repeat(200));
+    const update = withDeletes(Y.encodeStateAsUpdate(writer, before), ranges(run.id.clock).map(([clock, len]) => [run.id.client, clock, len]));
+    const growth = growthOf(doc, update);
+    const chars = counted.chars;
+    Y.applyUpdate(doc, update);
+    expect(counted.chars, 'the kept count is the walked one').toBe(countChars(doc));
+    expect(growth.chars, 'the text it adds').toBe(counted.chars - chars);
+  });
+
+  it('names the payload an element already holding a `__regId` comes to name when its `__type` becomes a payload\'s', () => {
+    const doc = new Y.Doc();
+    const element = new Y.XmlElement('horizontalrule');
+    element.setAttribute('__type', 'horizontalrule');
+    element.setAttribute('__regId', 'withheld-1');
+    doc.get('root', Y.XmlText).insertEmbed(0, element);
+    const writer = new Y.Doc();
+    Y.applyUpdate(writer, Y.encodeStateAsUpdate(doc));
+    const before = Y.encodeStateVector(writer);
+    (writer.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlElement).setAttribute('__type', 'code-block');
+    expect([...growthOf(doc, Y.encodeStateAsUpdate(writer, before)).named]).toEqual(['withheld-1']);
+  });
+
+  it('gives the elements an update deletes or unnames, so a payload losing its last name stops counting', () => {
+    const doc = new Y.Doc();
+    const root = doc.get('root', Y.XmlText);
+    for (const id of ['gone', 'retyped', 'kept']) {
+      const element = new Y.XmlElement('code-block');
+      element.setAttribute('__type', 'code-block');
+      element.setAttribute('__regId', id);
+      root.insertEmbed(root.length, element);
+    }
+    const writer = new Y.Doc();
+    Y.applyUpdate(writer, Y.encodeStateAsUpdate(doc));
+    const before = Y.encodeStateVector(writer);
+    const [, retyped] = writer.get('root', Y.XmlText).toDelta().map((op: { insert: unknown }) => op.insert as Y.XmlElement);
+    writer.transact(() => {
+      retyped.setAttribute('__type', 'horizontalrule');
+      writer.get('root', Y.XmlText).delete(0, 1);
+    });
+    const dropped = [...growthOf(doc, Y.encodeStateAsUpdate(writer, before)).dropped].map((element) => element.getAttribute('__regId')).sort();
+    expect(dropped).toEqual(['gone', 'retyped']);
+  });
+
+  it('tells a write of only properties and formats from one that adds content', () => {
+    const { doc, paragraph } = holding('hello world');
+    paragraph.setAttribute('__type', 'paragraph');
+    const writer = new Y.Doc();
+    Y.applyUpdate(writer, Y.encodeStateAsUpdate(doc));
+    const text = writer.get('root', Y.XmlText).toDelta()[0].insert as Y.XmlText;
+    let before = Y.encodeStateVector(writer);
+    writer.transact(() => {
+      text.format(0, 5, { __format: 0 });
+      text.setAttribute('__format', 2);
+    });
+    expect(growthOf(doc, Y.encodeStateAsUpdate(writer, before))).toMatchObject({ inserts: true, content: false });
+    before = Y.encodeStateVector(writer);
+    text.insert(0, 'x');
+    expect(growthOf(doc, Y.encodeStateAsUpdate(writer, before))).toMatchObject({ inserts: true, content: true });
   });
 });

@@ -562,3 +562,18 @@ it('a paste is refused whole before it applies when it would take the note past 
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 165_000 - structs - 256 }), 'up to the structure cap fits').toBe(true);
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 165_000 - structs - 255 }), 'past it is refused').toBe(false);
 });
+it('a code block deleted in this tab stops counting toward the paste check at once, as the server stops counting it (T3.B31c)', async () => {
+  const { pasteFits } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  session.doc.get('root', Y.XmlText).insert(0, 'a'.repeat(900_000));
+  nameInTree('code');
+  session.payloads.hold('code', true).getText('payload').insert(0, 'c'.repeat(100_000));
+  // A payload the tab holds but its tree does not name (one minted, then its block deleted) counts nothing either.
+  session.payloads.hold('stray', true).getText('payload').insert(0, 's'.repeat(50_000));
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 100_000, structs: 10 }), 'with the block named, the paste does not fit').toBe(false);
+  // The block is deleted (the root holds it first), its payload doc still held.
+  session.doc.get('root', Y.XmlText).delete(0, 1);
+  expect(session.payloads.get('code'), 'the tab still holds its doc').toBeDefined();
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_000, structs: 10 }), 'its text no longer counts').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_001, structs: 10 }), 'up to the limit, and no further').toBe(false);
+});

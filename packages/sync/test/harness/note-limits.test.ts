@@ -9,7 +9,8 @@ import * as Y from 'yjs';
 import { STRUCT_CAP, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import { CLOSE } from '@moss-multi/protocol/sync';
 import { DocDO, type DocLimits } from '../../src/doc-do.ts';
-import { blockTypes, Backing, openDoc, start, type Opened } from './do-harness.ts';
+import { withDeletes } from './crafted.ts';
+import { blockTypes, Backing, connect, openDoc, start, syncFrame, type Opened } from './do-harness.ts';
 import { LiveClient, syncAll } from './live-client.ts';
 
 beforeEach(() => {
@@ -159,6 +160,143 @@ describe('socket frames', () => {
       await syncAll(ada, ben);
       expect(ada.socket.closed, 'so does removing a block').toBeNull();
       expect(await doc.dobj.exportMarkdown()).not.toContain('aaa');
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('a crafted frame listing one delete range twice is counted as it applies: past the text limit it is refused whole', async () => {
+    const doc = await opened(capped({ textCharCap: 1_000 }).Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    try {
+      ada.insertParagraph(`Full ${'a'.repeat(995)}`);
+      await ada.sync();
+      const exported = await doc.dobj.exportMarkdown();
+      const copy = new Y.Doc();
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc.dobj.document));
+      const run = [...copy.store.clients.values()].flat()
+        .find((struct) => struct instanceof Y.Item && !struct.deleted && struct.content instanceof Y.ContentString && struct.length >= 995) as Y.Item;
+      const before = Y.encodeStateVector(copy);
+      const paragraph = run.parent as Y.XmlText;
+      paragraph.insert(paragraph.length, 'b'.repeat(200));
+      // 200 characters in, and the same 100 out twice: 100 more in all, which the estimate must see.
+      const frame = withDeletes(Y.encodeStateAsUpdate(copy, before), [[run.id.client, run.id.clock + 10, 100], [run.id.client, run.id.clock + 10, 100]]);
+      const eve = await connect(doc, { id: 'eve' });
+      await eve.deliver(syncFrame(2, frame));
+      await eve.pump();
+      expect(eve.events, 'refused with the text limit').toContainEqual({ t: 'write-refused', reason: 'doc-cap', limit: 'text' });
+      expect(await doc.dobj.exportMarkdown(), 'the server keeps what it had').toBe(exported);
+      expect((await doc.dobj.noteSize()).chars).toBe(1_000);
+    } finally { ada.dispose(); }
+  });
+
+  it('a frame that turns an element already naming a stored payload into a payload\'s counts that payload: past the text limit it is refused whole', async () => {
+    const doc = await opened(capped({ textCharCap: 1_000 }).Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      ben.insertParagraph(`Body ${'p'.repeat(495)}`);
+      await syncAll(ben, ada);
+      ada.insert('code-block', 'x'.repeat(450));
+      await syncAll(ada, ben);
+      const [id] = ada.ids();
+      ada.remove(0);
+      await syncAll(ada, ben);
+      // Ada's own payload, unnamed now: an element of another type names its id, which counts nothing.
+      const copy = new Y.Doc();
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc.dobj.document));
+      const element = new Y.XmlElement('horizontalrule');
+      let before = Y.encodeStateVector(copy);
+      copy.transact(() => {
+        element.setAttribute('__type', 'horizontalrule');
+        element.setAttribute('__regId', id);
+        const root = copy.get('root', Y.XmlText);
+        root.insertEmbed(root.length, element);
+      });
+      const raw = await connect(doc, { id: 'ada' });
+      await raw.deliver(syncFrame(2, Y.encodeStateAsUpdate(copy, before)));
+      await raw.pump();
+      expect(raw.closed, 'an element of another type lands').toBeNull();
+      ben.appendToParagraph('Body', 'q'.repeat(100));
+      await syncAll(ben, ada);
+      expect(ben.socket.closed, 'the payload it names does not count').toBeNull();
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc.dobj.document, Y.encodeStateVector(copy)));
+      before = Y.encodeStateVector(copy);
+      element.setAttribute('__type', 'code-block');
+      const exported = await doc.dobj.exportMarkdown();
+      await raw.deliver(syncFrame(2, Y.encodeStateAsUpdate(copy, before)));
+      await raw.pump();
+      expect(raw.events, 'naming the payload counts its 450 characters').toContainEqual({ t: 'write-refused', reason: 'doc-cap', limit: 'text' });
+      expect(await doc.dobj.exportMarkdown(), 'the server keeps what it had').toBe(exported);
+      expect((await doc.dobj.noteSize()).chars).toBe(600);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('one update that deletes a code block and types elsewhere is counted without the block: at the text limit it lands', async () => {
+    const doc = await opened(capped({ textCharCap: 1_000 }).Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      ada.insert('code-block', 'x'.repeat(800));
+      await syncAll(ada, ben);
+      ada.insertParagraph(`Ada ${'p'.repeat(196)}`);
+      await syncAll(ada, ben);
+      expect((await doc.dobj.noteSize()).chars).toBe(1_000);
+      ada.editor.update(() => {
+        for (const node of $getRoot().getChildren()) if (node.getType() === 'code-block') node.remove();
+        const paragraph = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent().startsWith('Ada'));
+        const text = $isParagraphNode(paragraph) ? paragraph.getFirstChild() : null;
+        if ($isTextNode(text)) text.setTextContent(`${text.getTextContent()}q`);
+      }, { discrete: true });
+      await syncAll(ada, ben);
+      expect(refusals(ada), 'the block\'s text leaves with it').toEqual([]);
+      expect(ben.texts()).toEqual([]);
+      expect(ben.paragraphs()).toContain(`Ada ${'p'.repeat(196)}q`);
+      expect((await doc.dobj.noteSize()).chars).toBe(201);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('a format removal at the structure limit lands; adding a line there is still refused', async () => {
+    const { Doc, limits } = capped({});
+    const doc = await opened(Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    const format = (value: number) => ada.editor.update(() => {
+      const paragraph = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent().startsWith('Bold'));
+      const text = $isParagraphNode(paragraph) ? paragraph.getFirstChild() : null;
+      if (!$isTextNode(text)) throw new Error('no paragraph Bold');
+      text.setFormat(value);
+    }, { discrete: true });
+    try {
+      ada.insertParagraph('Bold words');
+      format(1);
+      await syncAll(ada, ben);
+      limits.structCap = (await doc.dobj.noteSize()).structs;
+      format(0);
+      await syncAll(ada, ben);
+      expect(refusals(ada), 'the removal lands at the limit').toEqual([]);
+      expect(await doc.dobj.exportMarkdown()).not.toContain('**Bold words**');
+      await expectRefused(doc, ada, ben, 'structure', () => ada.insertParagraph('More'));
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+});
+
+describe('payload frames', () => {
+  it('a deletion inside a code block lands in a note stored past the byte cap; typing there is refused', async () => {
+    const { Doc, limits } = capped({});
+    const doc = await opened(Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      ada.insert('code-block', 'x'.repeat(600));
+      await syncAll(ada, ben);
+      limits.stateCapBytes = 100;
+      ada.erase(0, 0, 100);
+      await syncAll(ada, ben);
+      expect(refusals(ada), 'the deletion lands').toEqual([]);
+      expect(ben.texts()).toEqual(['x'.repeat(500)]);
+      ada.type(0, 0, 'z');
+      await ada.up();
+      await ada.socket.pump();
+      expect(refusals(ada), 'typing is refused').toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
     } finally { ada.dispose(); ben.dispose(); }
   });
 });
