@@ -5,7 +5,7 @@
 import { formatRelativeTime } from '@moss-desktop/renderer/panels/notesPanelUtils';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { clearTerminal, setTerminal } from '../collab/terminal.ts';
-import { createBridge } from './index.ts';
+import { createBridge, WORKSPACE } from './index.ts';
 
 interface Call { method: string; path: string }
 const DAY = 86_400_000;
@@ -138,6 +138,35 @@ it('restores through REST and gives moss the record back where it now lives', as
   await bridge.notes.getAll();
   const record = await bridge.notes.restore('old');
   expect(server.calls).toContainEqual({ method: 'POST', path: '/api/docs/old/restore' });
+  expect(record).toMatchObject({ id: 'old', trashedAt: null, folderPath: 'Notes' });
+});
+
+it('a restore that brought the note’s vault back switches the window to that vault', async () => {
+  const server = fakeServer();
+  const listed: string[] = [];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://localhost');
+    if (url.pathname === '/api/workspace') {
+      listed.push(url.searchParams.get('vault') ?? '');
+      if (url.searchParams.get('vault') === 'trip') {
+        return Response.json({ vault: { id: 'trip', name: 'Trip', role: 'owner', owned: true },
+          vaults: [{ id: 'home', name: 'Home', role: 'owner', owned: true }, { id: 'trip', name: 'Trip', role: 'owner', owned: true }],
+          docs: [{ ...server.state.docs[2], trashedAt: null, folderPath: 'Notes' }], folders: [] });
+      }
+    }
+    if ((init?.method ?? 'GET') === 'POST' && url.pathname === '/api/docs/old/restore') {
+      return Response.json({ doc: { id: 'old', folderId: 'trip' }, vaultId: 'trip', role: 'owner' });
+    }
+    return server.fetch(input, init);
+  };
+  const bridge = createBridge({ pathname: () => '/', fetch });
+  await bridge.notes.getAll();
+  const disk = vi.fn();
+  onTestFinished(bridge.notes.onDiskChange(disk));
+  const record = await bridge.notes.restore('old');
+  expect(listed.at(-1), 'the listing read after the restore is the returned vault’s').toBe('trip');
+  expect(bridge[WORKSPACE].getSnapshot()?.vault.id).toBe('trip');
+  expect(disk, 'moss re-reads its notes, as on a vault switch').toHaveBeenCalled();
   expect(record).toMatchObject({ id: 'old', trashedAt: null, folderPath: 'Notes' });
 });
 

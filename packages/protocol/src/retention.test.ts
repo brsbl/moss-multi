@@ -17,7 +17,8 @@ const R = 'vendor/moss/packages/desktop/src/renderer';
 /** Each place that trashes something, and the files whose copy speaks for it. */
 const SURFACES: Record<string, string[]> = {
   'apps/web/src/api/trash.ts': ['apps/web/src/api/trash.ts'],
-  'apps/web/src/api/folders.ts': ['apps/web/src/api/folders.ts'],
+  // A vault's trash goes through the folder trash; the vault switcher confirms it.
+  'apps/web/src/api/folders.ts': ['apps/web/src/api/folders.ts', 'apps/web/src/host/surfaces/VaultSwitcher.tsx'],
   'packages/cli/src/api.ts': ['packages/cli/src/program.ts'],
   'apps/web/src/host/bridge/index.ts': ['apps/web/src/host/surfaces/TrashConfirmation.tsx', 'apps/web/src/host/collab/ConnectionNotice.tsx'],
   [`${R}/App.tsx`]: [`${R}/panels/CanvasAreaContent.tsx`, `${R}/editor/MarkdownEditor.tsx`, `${R}/panels/TrashedNotesPanelContent.tsx`],
@@ -90,8 +91,8 @@ describe('retention copy', () => {
 
   it('states the period once, as a minimum the copy promises', () => {
     expect(TRASHED_ACTION).toEqual({ action: 'trashed', restorable: true, retentionDays: 30 });
-    for (const text of [TRASH_COPY.emptyTrash, TRASH_COPY.trashedNote, TRASH_COPY.trashFolder('Plans', 'Home')]) {
-      expect(text).toMatch(/restored? (it |them |the notes )?for 30 days/);
+    for (const text of [TRASH_COPY.emptyTrash, TRASH_COPY.trashedNote, TRASH_COPY.trashFolder('Plans', 'Home'), TRASH_COPY.trashVault('Trip')]) {
+      expect(text).toMatch(/restored? (it |them |the notes |its notes one at a time )?for 30 days/);
       expect(copyProblems('elsewhere.ts', `const copy = ${JSON.stringify(text)};`), 'outside the module the same words would fail').not.toEqual([]);
     }
   });
@@ -99,6 +100,11 @@ describe('retention copy', () => {
   it('says where a trashed folder’s notes come back, which is true: the top of its vault', () => {
     expect(TRASH_COPY.trashFolder('Plans', 'Home')).toBe(
       'Move “Plans” and all its notes to Trash? You can restore the notes for 30 days. They go back to “Home”, not into this folder.');
+  });
+
+  it('says what a vault’s trash takes and what restoring one of its notes brings back', () => {
+    expect(TRASH_COPY.trashVault('Trip')).toBe('Every note and folder in this vault moves to Trash with it, and everyone it’s shared with loses access. '
+      + 'You can restore its notes one at a time for 30 days. Restoring one brings “Trip” back without its folders.');
   });
 
   describe('each check can fail', () => {
