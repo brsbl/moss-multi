@@ -452,9 +452,7 @@ async function park(actor: Actor, id: string, text: string, back: number, to = b
   }, [back, to]);
   await expect.poll(() => actor.page.evaluate(() => window.getSelection()?.toString().length ?? -1), { message: `${actor.label}: the selection is set` })
     .toBe(Math.abs(back - to));
-  await actor.page.waitForTimeout(150); // the editor reads the DOM selection on selectionchange
-  await actor.page.mouse.move(0, 0); // no hover control (a table's resize handle) stays up
-}
+  await actor.page.waitForTimeout(150); // the editor reads the DOM selection on selectionchange}
 
 async function converged(ada: Actor, ben: Actor, id: string) {
   await expect.poll(async () => (await ui.fieldText(ada, id, 'body')) === (await ui.fieldText(ben, id, 'body')),
@@ -531,6 +529,8 @@ for (const c of CARET_CASES) {
     await expect(ui.body(ben, id).locator('p').first(), 'the paragraph above is untouched').toHaveText(PREVIOUS);
     await converged(ada, ben, id);
     await expect(c.landed(ui.body(ada, id)), 'Ada sees it there too').toHaveText(c.expected);
+    // A caret in a table shows its column handles; leave it, as the editing journeys do.
+    for (const actor of [ada, ben]) await ui.title(actor, id).click();
   });
 }
 
