@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 83% done** (237 of 285 planned tasks verified)
+**Overall: 84% done** (238 of 285 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 10 / 25 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 11 / 25 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -260,6 +260,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T9.4 verified: restoring a version names who restored it in every open window of the note, with an Undo pill for the restorer, and Cmd+Z no longer undoes past the restore.
 - 2026-11-13 — T9.5 verified: Reject and Withdraw ask first in Moss's danger confirmation, focused on Cancel, so a stray second click on a marker can no longer discard someone's suggestion; Accept stays one click.
 - 2026-11-13 — T9.10 verified: a viewer or commenter sees their access named in the note's bottom band, and typing into a note they cannot edit says why instead of doing nothing.
+- 2026-11-13 — T9.8 verified: inviting someone to a note says plainly that no email is sent and offers the invite link to copy, Copy confirms on its own button, and a bare name without an email is not sent.
 
 ## T1.1s identity audit
 
@@ -299,6 +300,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.8's checker (6805432, 2026-11-13)
+
+- T9.8 (An invite says no email is sent and offers its link) checker P2: a stale clipboard error stays after a later copy succeeds; copyFailed sets a dialog-level error, and a later successful copy on the invite row or share link only changes that CopyButton's own state, so the old 'Couldn't copy' alert stays beside 'Copied' (before this change each copy went through run(), which cleared the status). Copying still works.
+- T9.8 (An invite says no email is sent and offers its link) checker P2: re-inviting the same email at a lower role returns the server message 'To lower it, change it under People with access.', but the invite's controls now sit under 'Pending invites', so the message names the wrong section (the server string predates this change).
 
 ### From T9.10's checker (f5f6248, 2026-11-13)
 
