@@ -236,7 +236,7 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
     scoped.set(struct, true);
     let result: boolean;
     const parent = struct.parent as unknown;
-    if (typeof parent === 'string') result = scope === 'all' || parent === 'root';
+    if (typeof parent === 'string') result = parent === 'root';
     else if (parent instanceof Y.ID) result = containerInScope(parent, depth);
     else {
       const neighbour = struct.origin ?? struct.rightOrigin;

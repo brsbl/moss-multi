@@ -10,11 +10,11 @@ export const TEXT_CHAR_CAP = 1_020_000;
 /**
  * The structure guard: the Yjs structs a note's doc and its named payload docs hold, live, deleted and collected alike,
  * so edit history counts too. Each struct costs the DocDO about 250 bytes of heap; at this cap a note in any shape
- * creates, wakes, saves and exports under a 96 MB heap with 10% to spare (the `memory` CI job; at 180,000 a grown table's
- * export needed 91 MB). About 34,000 one-line paragraphs (5 structs each, A§10.11), 28,000 list items (6) or 10,600
- * two-column table rows (16).
+ * creates, wakes, saves and exports under a 96 MB heap with 10% to spare (the `memory` CI job; a grown table's export needed
+ * 91 MB at 180,000 and 88 MB at 170,000). About 33,000 one-line paragraphs (5 structs each, A§10.11), 27,500 list
+ * items (6) or 10,300 two-column table rows (16).
  */
-export const STRUCT_CAP = 170_000;
+export const STRUCT_CAP = 165_000;
 
 /** The most a UTF-16 code unit encodes to in UTF-8 (a surrogate pair is 4 bytes for 2 units). */
 const UTF8_BYTES_PER_CHAR = 3;

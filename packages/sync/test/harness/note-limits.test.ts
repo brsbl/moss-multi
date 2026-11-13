@@ -69,10 +69,10 @@ async function expectRefused(doc: Opened, writer: LiveClient, peer: LiveClient, 
 }
 
 describe('the limits', () => {
-  it('are 1,020,000 characters of text and 170,000 structs (owner ruling 2026-10-28; coordinator ruling 2026-11-13)', () => {
+  it('are 1,020,000 characters of text and 165,000 structs (owner ruling 2026-10-28; coordinator ruling 2026-11-13)', () => {
     expect(TEXT_CHAR_CAP).toBe(1_020_000);
-    expect(STRUCT_CAP).toBe(170_000);
-    expect(DocDO.limits).toMatchObject({ textCharCap: 1_020_000, structCap: 170_000 });
+    expect(STRUCT_CAP).toBe(165_000);
+    expect(DocDO.limits).toMatchObject({ textCharCap: 1_020_000, structCap: 165_000 });
   });
 });
 
