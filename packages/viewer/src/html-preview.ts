@@ -1,4 +1,4 @@
-// HTML block previews before T3.8's sandboxed HTML: moss's view shows the screenshot moss desktop cached in the
+// HTML block previews where the host serves no frame document (services.htmlFrameUrl): moss's view shows the screenshot moss desktop cached in the
 // note's folder, named by moss's own hash (describeMossHtmlPreview, at the pin's cacheVersion), and asks
 // htmlPreview.ensure when it fails to load. Here ensure reads what moss's ensure reads, the cache file and then the
 // legacy asset, through the owning viewer's assetUrl; it never generates, copies or runs anything, so a block with
@@ -37,7 +37,9 @@ export async function ensureHtmlPreview(
   rawHtml: string,
   loads: (url: string) => Promise<boolean> = loadsAsImage,
 ): Promise<HtmlPreviewCandidate | null> {
-  if (!viewerFor(noteId) || !rawHtml.trim()) return null;
+  const viewer = viewerFor(noteId);
+  // A viewer with a frame document runs its HTML live and looks up no screenshot.
+  if (!viewer || viewer.services.htmlFrameUrl || !rawHtml.trim()) return null;
   for (const candidate of htmlPreviewCandidates(rawHtml)) {
     const url = viewerAssetUrl(candidate.relativePath, noteId);
     if (url && url !== NO_MEDIA && (await loads(url))) return candidate;

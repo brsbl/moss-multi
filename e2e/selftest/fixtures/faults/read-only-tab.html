@@ -1,0 +1,12 @@
+<!-- Not a fault: invariant 9's one exemption (T3.B17). A read-only body's tab, a direct child of its tablist, stays
+     focusable, since switching tabs writes nothing. The selftest focuses it and expects no finding. -->
+<script>
+  document.querySelector('aside').insertAdjacentHTML('beforeend', `
+    <div data-body-binding="readonly" contenteditable="false">
+      <div role="tablist">
+        <div role="tab" aria-selected="true" tabindex="0">First</div>
+        <div role="tab" aria-selected="false" tabindex="-1">Second</div>
+      </div>
+      <p>Read-only text.</p>
+    </div>`);
+</script>

@@ -16,6 +16,11 @@ export function isLoopbackUrl(url: string | undefined): boolean {
   }
 }
 
+/** better-auth's minimum password length: 8 on a loopback dev stack, 12 on every deployment. */
+export function minPasswordLength(url: string | undefined): number {
+  return isLoopbackUrl(url) ? 8 : 12;
+}
+
 export type ConfigEnv = Pick<AppEnv, 'BETTER_AUTH_SECRET' | 'BETTER_AUTH_URL' | 'MOSS_TEST_HOOKS'>;
 
 /** Why this env must not serve, or null. Never echoes the secret. */

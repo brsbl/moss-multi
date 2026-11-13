@@ -21,6 +21,7 @@ import {
   BlockNodeShell,
   MediaHeaderButton,
   MediaNodeHeader,
+  useIsEditorEditable,
   useMediaFullscreen,
   useMediaNodeActions
 } from '../components/media-primitives';
@@ -52,6 +53,7 @@ export type { HtmlBlockSource, SerializedHtmlBlockquoteNode } from './HtmlBlockq
 const LIVE_PREVIEW_SCROLL_CSS = `html,body{overflow:auto !important}
 ${MOSS_HIDE_SCROLLBARS_CSS}`;
 const CANVAS_PREVIEW_SHRINK_WRAP_CSS = 'html,body{min-height:0 !important}';
+const LIVE_BADGE_RESERVE_PX = 36; // moss-multi seam: content-height (T3.B13)
 const HTML_PREVIEW_SKELETON_WIDTHS = ['80%', '100%', '60%', '90%', '45%'] as const;
 const HTML_BLOCKQUOTE_LINK_CLASSNAME =
   'font-medium text-ink-accent underline decoration-border-default underline-offset-2 transition-colors hover:text-accent-brand hover:decoration-accent-brand';
@@ -203,7 +205,10 @@ function RawHtmlBlockquoteComponent({
   const canEdit = useBlockCanEdit(); // moss-multi seam: capabilities (T2.6)
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
+  // moss-multi seam: read-only-decorators (T3.8): a read-only HTML block opens no source editor and offers no Edit,
+  // Delete or Fullscreen.
+  const [isEditing, setEditing] = useState(() => resumeField(editor, nodeKey) && editor.isEditable());
+  const setIsEditing = useCallback((next: boolean) => setEditing(next && editor.isEditable()), [editor]);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [localRawHtml, setLocalRawHtml, writable] = useRegisterDraft(editor, nodeKey, rawHtml, textareaRef, isEditing);
@@ -509,7 +514,11 @@ function MossHtmlPreviewComponent({
   const noteId = useCurrentNoteId();
   const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
   const { handleDelete, handleGapClick } = useMediaNodeActions(nodeKey);
-  const [isEditing, setIsEditing] = useState(() => resumeField(editor, nodeKey));
+  // moss-multi seam: read-only-decorators (T3.8): a read-only HTML block opens no source editor and offers no Edit,
+  // Delete or Fullscreen.
+  const [isEditing, setEditing] = useState(() => resumeField(editor, nodeKey) && editor.isEditable());
+  const editable = useIsEditorEditable();
+  const setIsEditing = useCallback((next: boolean) => setEditing(next && editor.isEditable()), [editor]);
   const [hasTextSelection, setHasTextSelection] = useState(false);
   const [isInteractive, setIsInteractive] = useState(false);
   const { isFullscreen, enterFullscreen, exitFullscreen } = useMediaFullscreen();
@@ -548,6 +557,7 @@ function MossHtmlPreviewComponent({
     [availableNoteWidth, previewImageIntrinsicSize, previewRawHtml, renderedContentSize, viewportSize]
   );
   const {
+    livePreview,
     previewImageUrl,
     preloadImageUrl,
     previewImageFailed,
@@ -627,6 +637,19 @@ function MossHtmlPreviewComponent({
   const noteDisplayScale = Math.max(
     0.001,
     (notePreviewViewportWidth ?? noteFrameSize.width) / htmlDisplayIntrinsicSize.width
+  );
+  // moss-multi seam: content-height (T3.B13): a default-height live preview's viewport is its content's size, and its
+  // frame keeps room below that for the Live badge, which would otherwise sit over a short block's text. The room is
+  // outside the viewport, so content as tall as the viewport (100vh) settles instead of growing by it on every report.
+  const handleStaticRenderedSize = useCallback((size: HtmlPreviewRenderedSize) => {
+    setPreviewImageIntrinsicSize((current) =>
+      current?.width === size.width && current.height === size.height ? current : size
+    );
+  }, []);
+  const reservesLiveBadge = livePreview && htmlIntrinsicSize.heightSource === 'default' && previewImageIntrinsicSize !== null;
+  const noteFrameSizeWithBadge = useMemo(
+    () => reservesLiveBadge ? { ...noteFrameSize, height: noteFrameSize.height + LIVE_BADGE_RESERVE_PX } : noteFrameSize,
+    [noteFrameSize, reservesLiveBadge]
   );
   const handleRenderedContentSize = useCallback((size: HtmlPreviewRenderedSize) => {
     setRenderedContentSize((current) =>
@@ -882,6 +905,25 @@ function MossHtmlPreviewComponent({
     <div
       className={`moss-html-preview-scroll absolute inset-0 overflow-auto bg-ink-inverse ${stablePreviewLayerVisibilityClass}`}
     >
+      {/* moss-multi seam: html-preview (A§16): no screenshot on the web; the static preview is the live sandboxed
+          frame, inert until the block is activated, sized as moss sizes its screenshot: the default viewport grown to
+          what renders. */}
+      {livePreview ? (
+        <div className="pointer-events-none absolute inset-0" data-moss-html-live-preview="static">
+          <HtmlPreviewIframe
+            srcDoc={previewSrcDoc}
+            title="HTML preview"
+            viewportWidth={htmlDisplayIntrinsicSize.width}
+            viewportHeight={htmlDisplayIntrinsicSize.height}
+            displayScale={noteDisplayScale}
+            dimensionReportId={nodeKey}
+            className="h-full w-full"
+            mode={noteIframeMode}
+            onRenderedSize={htmlIntrinsicSize.heightSource === 'default' ? handleStaticRenderedSize : undefined}
+          />
+        </div>
+      ) : null}
+
       {shouldRenderPreviewImage ? (
         <img
           src={previewImageUrl}
@@ -979,7 +1021,7 @@ function MossHtmlPreviewComponent({
 
   const previewOverlay = (
     <>
-      {isInteractive ? (
+      {isInteractive && editable ? (
         <div
           className="pointer-events-none absolute left-0 right-0 top-0 z-20 flex items-center justify-end px-2 py-1.5 opacity-0 transition-opacity group-hover/decorator:pointer-events-auto group-hover/decorator:opacity-100 group-focus-within/decorator:pointer-events-auto group-focus-within/decorator:opacity-100"
           onClick={(e) => e.stopPropagation()}
@@ -1020,7 +1062,7 @@ function MossHtmlPreviewComponent({
     <SharedPreviewFrame
       nodeKey={nodeKey}
       selected={isSelected}
-      frameSize={noteFrameSize}
+      frameSize={noteFrameSizeWithBadge /* moss-multi seam: content-height (T3.B13) */}
       beforeLabel="Insert paragraph before HTML block"
       afterLabel="Insert paragraph after HTML block"
       onGapClick={handleGapClick}

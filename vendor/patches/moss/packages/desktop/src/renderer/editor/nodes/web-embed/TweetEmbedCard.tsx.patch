@@ -1,0 +1,87 @@
+diff --git a/packages/desktop/src/renderer/editor/nodes/web-embed/TweetEmbedCard.tsx b/packages/desktop/src/renderer/editor/nodes/web-embed/TweetEmbedCard.tsx
+--- a/packages/desktop/src/renderer/editor/nodes/web-embed/TweetEmbedCard.tsx
++++ b/packages/desktop/src/renderer/editor/nodes/web-embed/TweetEmbedCard.tsx
+@@ -21,6 +21,8 @@ import { IframeFrame } from '../../iframe/IframeFrame';
+ import { createRemoteSocialEmbedIframeModel } from '../../iframe/iframe-model';
+ import { parseTweetUrlParts } from './tweet-preview';
+ import xLogoBlackUrl from '../../../assets/x-logo-black.png';
++// moss-multi seam: embed-theme (T3.8): a post loads in its host's theme (the viewer's), light by default as at the pin.
++import { useEmbedTheme, type EmbedTheme } from '@moss-multi/host/embed-theme';
+ 
+ export interface TweetEmbedCardProps {
+   nodeKey: NodeKey;
+@@ -31,7 +33,8 @@ export interface TweetEmbedCardProps {
+   /** False in read-only renders — withholds mutating controls + gap cursors. */
+   editable: boolean;
+   onDelete: () => void;
+-  onGapClick: (position: 'before' | 'after') => (e: React.MouseEvent) => void;
++  // moss-multi seam: read-only-media (A§19 invariant 9): absent in a read-only render
++  onGapClick?: (position: 'before' | 'after') => (e: React.MouseEvent) => void;
+   onOpenInBrowser: () => void;
+   onContainerClick: (e: React.MouseEvent) => void;
+   hostRef: Ref<HTMLDivElement>;
+@@ -50,11 +53,11 @@ const metadataNumber = (
+   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+ };
+ 
+-const getTwitterEmbedUrl = (statusId: string): string => {
++const getTwitterEmbedUrl = (statusId: string, theme: EmbedTheme): string => {
+   const params = new URLSearchParams({
+     dnt: 'true',
+     id: statusId,
+-    theme: 'light'
++    theme
+   });
+   return `https://platform.twitter.com/embed/Tweet.html?${params.toString()}`;
+ };
+@@ -92,21 +95,23 @@ const getTwitterEmbedResizeHeight = (data: unknown, statusId: string): number |
+ function TwitterOEmbedFrame({
+   statusId,
+   title,
+-  preferredHeight
++  preferredHeight,
++  theme
+ }: {
+   statusId: string;
+   title: string;
+   preferredHeight: number | null;
++  theme: EmbedTheme;
+ }): JSX.Element {
+   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+   const [measuredHeight, setMeasuredHeight] = useState<number | null>(preferredHeight);
+   const model = useMemo(
+     () =>
+       createRemoteSocialEmbedIframeModel({
+-        src: getTwitterEmbedUrl(statusId),
++        src: getTwitterEmbedUrl(statusId, theme),
+         title
+       }),
+-    [statusId, title]
++    [statusId, theme, title]
+   );
+ 
+   useEffect(() => {
+@@ -205,6 +210,7 @@ function TweetUnavailable(): JSX.Element {
+ export function TweetEmbedCard({
+   nodeKey,
+   url,
++  noteId,
+   result,
+   isSelected,
+   editable,
+@@ -220,6 +226,7 @@ export function TweetEmbedCard({
+   const preferredHeight = metadataNumber(result?.metadata, 'height');
+   const isUnavailable = result?.status === 'failed';
+   const canRenderWidget = tweetStatusId.length > 0 && !isUnavailable;
++  const embedTheme = useEmbedTheme(noteId);
+ 
+   return (
+     <div
+@@ -247,6 +254,7 @@ export function TweetEmbedCard({
+               <TweetUnavailable />
+             ) : canRenderWidget ? (
+               <TwitterOEmbedFrame
++                theme={embedTheme}
+                 statusId={tweetStatusId}
+                 title={`Tweet embed: ${sourceLabel}`}
+                 preferredHeight={preferredHeight}

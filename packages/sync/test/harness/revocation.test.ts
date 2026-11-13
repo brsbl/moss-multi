@@ -326,6 +326,8 @@ describe('frames waiting for a validation are bounded, and the validation has a 
   /** How the stamp answers: at once, never, or when the test releases it. */
   let mode: 'live' | 'hang' | 'hold' = 'live';
   let release: (() => void) | null = null;
+  /** Every held stamp's release, in order. */
+  let held: (() => void)[] = [];
   const limits = { ...DocDO.limits, inboxFramesPerConnection: 8, inboxBytesPerConnection: 64 * 1024, inboxBytes: 128 * 1024, accessDeadlineMs: 2_000 };
   class GatedDocDO extends DocDO {
     static override limits = limits;
@@ -333,7 +335,12 @@ describe('frames waiting for a validation are bounded, and the validation has a 
       stamp: (_docId: string, sessions: string[], agents: string[]) => {
         const stamp = { key: 'owner:1', sessions: new Set(sessions), agents: new Set(agents) };
         if (mode === 'hang') return new Promise<never>(() => undefined);
-        if (mode === 'hold') return new Promise<typeof stamp>((resolve) => { release = () => resolve(stamp); });
+        if (mode === 'hold') {
+          return new Promise<typeof stamp>((resolve) => {
+            release = () => resolve(stamp);
+            held.push(release);
+          });
+        }
         return Promise.resolve(stamp);
       },
       resolve: () => Promise.reject(new Error('every socket here is admitted under the current epoch')),
@@ -361,6 +368,7 @@ describe('frames waiting for a validation are bounded, and the validation has a 
   beforeEach(() => {
     mode = 'live';
     release = null;
+    held = [];
   });
 
   it('a validation D1 never answers closes the waiting sockets 1013 at the deadline, and nothing they sent applies', async () => {
@@ -378,6 +386,36 @@ describe('frames waiting for a validation are bounded, and the validation has a 
     const ben = await connect(opened, who('ben', 'editor'));
     for (const frame of titleFrames(ben, 'after-deadline')) await ben.deliver(frame);
     expect(title(opened)).toContain('after-deadline');
+  });
+
+  it('a frame queued behind a hung validation closes 1013 within one deadline of its own arrival, and no expired frame applies', async () => {
+    const opened = await start(openDoc(new Backing(), GatedDocDO as never));
+    const ada = await connect(opened, who('ada', 'editor'));
+    const ben = await connect(opened, who('ben', 'editor'));
+    mode = 'hold';
+    for (const frame of titleFrames(ada, 'ada-expired')) void ada.deliver(frame);
+    await drainTasks();
+    await vi.advanceTimersByTimeAsync(500);
+    const arrived = Date.now();
+    for (const frame of titleFrames(ben, 'ben-expired')) void ben.deliver(frame);
+    await drainTasks();
+    await vi.advanceTimersByTimeAsync(limits.accessDeadlineMs - 500);
+    expect(ada.closed?.code, 'the hung validation passed its deadline').toBe(1013);
+    expect(ben.closed, 'Ben has waited less than a deadline').toBeNull();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(Date.now() - arrived).toBe(limits.accessDeadlineMs);
+    expect(ben.closed?.code, 'queued behind Ada, Ben still closes one deadline after his frame arrived').toBe(1013);
+    // D1 answers late: neither expired frame applies, and a fresh socket validates and writes.
+    mode = 'live';
+    for (const resolve of held.splice(0)) resolve();
+    await drainTasks();
+    await vi.advanceTimersByTimeAsync(limits.accessDeadlineMs);
+    expect(title(opened)).not.toContain('ada-expired');
+    expect(title(opened)).not.toContain('ben-expired');
+    const cy = await connect(opened, who('cy', 'editor'));
+    for (const frame of titleFrames(cy, 'fresh')) await cy.deliver(frame);
+    expect(cy.closed).toBeNull();
+    expect(title(opened)).toContain('fresh');
   });
 
   it('a socket queuing past its bound while D1 is slow closes 1013 at once, and the honest writer still applies', async () => {

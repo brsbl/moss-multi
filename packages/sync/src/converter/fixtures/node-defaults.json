@@ -1,0 +1,328 @@
+{
+  "artificial": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "artificial"
+  },
+  "autolink": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__isUnlinked": false,
+    "__rel": null,
+    "__style": "",
+    "__target": null,
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__title": null,
+    "__type": "autolink",
+    "__url": ""
+  },
+  "callout": {
+    "__calloutType": {
+      "$": "undefined"
+    },
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__level": {
+      "$": "undefined"
+    },
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "callout"
+  },
+  "chart": {
+    "__commentIds": [],
+    "__regId": "",
+    "__type": "chart"
+  },
+  "code": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__isSyntaxHighlightSupported": false,
+    "__language": {
+      "$": "undefined"
+    },
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__theme": {
+      "$": "undefined"
+    },
+    "__type": "code"
+  },
+  "code-block": {
+    "__commentIds": [],
+    "__language": "plaintext",
+    "__regId": "",
+    "__theme": "one-light",
+    "__type": "code-block"
+  },
+  "code-highlight": {
+    "__detail": 0,
+    "__format": 0,
+    "__highlightType": {
+      "$": "undefined"
+    },
+    "__mode": 0,
+    "__style": "",
+    "__type": "code-highlight"
+  },
+  "color-code": {
+    "__type": "color-code",
+    "__value": {
+      "$": "undefined"
+    }
+  },
+  "embed-pill": {
+    "__commentIds": [],
+    "__displayText": "",
+    "__textFormat": 0,
+    "__type": "embed-pill",
+    "__url": {
+      "$": "undefined"
+    }
+  },
+  "file-link": {
+    "__commentIds": [],
+    "__displayText": null,
+    "__headingText": null,
+    "__isResolved": {
+      "$": "undefined"
+    },
+    "__noteId": {
+      "$": "undefined"
+    },
+    "__noteTitle": {
+      "$": "undefined"
+    },
+    "__type": "file-link"
+  },
+  "formula": {
+    "__commentIds": [],
+    "__formulaId": {
+      "$": "varies"
+    },
+    "__name": null,
+    "__regId": "",
+    "__result": {
+      "$": "undefined"
+    },
+    "__stale": false,
+    "__type": "formula"
+  },
+  "heading": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__style": "",
+    "__tag": "h1",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "heading"
+  },
+  "horizontalrule": {
+    "__type": "horizontalrule"
+  },
+  "html-block": {
+    "__commentIds": [],
+    "__regId": "",
+    "__source": "fenced",
+    "__type": "html-block"
+  },
+  "image": {
+    "__altText": {
+      "$": "undefined"
+    },
+    "__commentIds": [],
+    "__obsidianRef": null,
+    "__src": {
+      "$": "undefined"
+    },
+    "__type": "image"
+  },
+  "linebreak": {
+    "__type": "linebreak"
+  },
+  "link": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__rel": null,
+    "__style": "",
+    "__target": null,
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__title": null,
+    "__type": "link",
+    "__url": ""
+  },
+  "list": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__listType": "number",
+    "__start": 1,
+    "__style": "",
+    "__tag": "ol",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "list"
+  },
+  "listitem": {
+    "__checked": {
+      "$": "undefined"
+    },
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "listitem",
+    "__value": 1
+  },
+  "mark": {
+    "__dir": null,
+    "__format": 0,
+    "__ids": [],
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "mark"
+  },
+  "paragraph": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "paragraph"
+  },
+  "quote": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "quote"
+  },
+  "root": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "root"
+  },
+  "sketch": {
+    "__commentIds": [],
+    "__regId": "",
+    "__type": "sketch"
+  },
+  "tab": {
+    "__detail": 2,
+    "__format": 0,
+    "__mode": 0,
+    "__style": "",
+    "__type": "tab"
+  },
+  "tab-group": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "tab-group"
+  },
+  "tab-panel": {
+    "__dir": null,
+    "__format": 0,
+    "__indent": 0,
+    "__label": {
+      "$": "undefined"
+    },
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "tab-panel"
+  },
+  "table": {
+    "__dir": null,
+    "__format": 0,
+    "__frozenColumnCount": 0,
+    "__frozenRowCount": 0,
+    "__indent": 0,
+    "__rowStriping": false,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "table"
+  },
+  "tablecell": {
+    "__backgroundColor": null,
+    "__colSpan": 1,
+    "__dir": null,
+    "__format": 0,
+    "__headerState": 0,
+    "__indent": 0,
+    "__rowSpan": 1,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "tablecell",
+    "__verticalAlign": {
+      "$": "undefined"
+    },
+    "__width": {
+      "$": "undefined"
+    }
+  },
+  "tablerow": {
+    "__dir": null,
+    "__format": 0,
+    "__height": {
+      "$": "undefined"
+    },
+    "__indent": 0,
+    "__style": "",
+    "__textFormat": 0,
+    "__textStyle": "",
+    "__type": "tablerow"
+  },
+  "text": {
+    "__detail": 0,
+    "__format": 0,
+    "__mode": 0,
+    "__style": "",
+    "__type": "text"
+  },
+  "video": {
+    "__altText": "",
+    "__commentIds": [],
+    "__src": {
+      "$": "undefined"
+    },
+    "__type": "video"
+  },
+  "web-embed": {
+    "__altText": "",
+    "__commentIds": [],
+    "__type": "web-embed",
+    "__url": {
+      "$": "undefined"
+    }
+  }
+}

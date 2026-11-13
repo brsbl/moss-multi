@@ -15,6 +15,8 @@ const alias = [
   { find: /^@moss-desktop\/(.*)$/, replacement: `${vendor}/desktop/src/$1` },
   // moss-multi seams in vendored files call host hooks and slots (A§2.2).
   { find: /^@moss-multi\/host\/(.*)$/, replacement: `${repo}apps/web/src/host/$1` },
+  // A substitute's import of the module it replaces (A§2.1); tests load the vendored bytes directly.
+  { find: /^@moss-pristine\/(.*)$/, replacement: `${vendor}/desktop/src/renderer/editor/utils/$1.ts` },
 ];
 
 // In Node, partyserver's `cloudflare:workers` is a stub; partyserver must be inlined for the alias to reach it.
@@ -34,6 +36,9 @@ export default defineConfig({
           include: ['scripts/**/*.test.mjs', 'apps/*/src/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
           exclude: ['**/node_modules/**', '**/fixtures/**', '**/*.harness.test.ts'],
           server: { deps: { inline: ['partyserver'] } },
+          // A hang guard, not a speed claim (a test that bounds time asserts it): REST tests over D1 take 2-3 s each,
+          // and a loaded runner took them past vitest's default 5 s (assets, sharing, revocation; T3.B27).
+          testTimeout: 30_000,
         },
       },
       {

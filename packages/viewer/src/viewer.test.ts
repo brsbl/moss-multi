@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createViewerElectronApi } from './electron-api.ts';
 import { readLayout, readMossNote } from './moss-file.ts';
 import { NO_MEDIA, registerViewer, viewerAssetUrl } from './registry.ts';
+import { ensureHtmlPreview } from './html-preview.ts';
+import { installViewerHooks } from './hooks.ts';
+import { embedThemeFor, setEmbedTheme } from '@moss-multi/host/embed-theme.ts';
+import { htmlFrameSrc } from '@moss-multi/host/html-frame.ts';
 
 describe('readMossNote', () => {
   it('takes the title from the leading H1 and leaves the body without it', () => {
@@ -77,5 +81,35 @@ describe('media and the electronAPI stand-in', () => {
     expect(await api.images.save('x')).toBeUndefined();
     const unsubscribe = api.htmlPreview.onMaterialized(() => undefined);
     expect(typeof unsubscribe).toBe('function');
+  });
+});
+
+describe('per-viewer hooks: the HTML frame document and the embed theme', () => {
+  const stops: (() => void)[] = [];
+  afterEach(() => stops.splice(0).forEach((stop) => stop()));
+
+  it("routes each viewer's HTML blocks to its own frame document, and leaves a viewer without one on screenshots", async () => {
+    installViewerHooks();
+    stops.push(registerViewer('moss-viewer-live', { notes: [], services: { htmlFrameUrl: '/viewer/moss-viewer-frame.html', assetUrl: (ref) => `/a/${ref}` } }));
+    stops.push(registerViewer('moss-viewer-still', { notes: [], services: {} }));
+    expect(htmlFrameSrc('moss-viewer-live')).toBe('/viewer/moss-viewer-frame.html');
+    expect(htmlFrameSrc('moss-viewer-still')).toBeNull();
+    // A live viewer never looks up a screenshot.
+    const loaded: string[] = [];
+    expect(await ensureHtmlPreview('moss-viewer-live', '<p>hi</p>', async (url) => (loaded.push(url), true))).toBeNull();
+    expect(loaded).toEqual([]);
+  });
+
+  it("gives an X post its viewer's theme, light by default and for any other note", () => {
+    expect(embedThemeFor('moss-viewer-dark')).toBe('light');
+    setEmbedTheme('moss-viewer-dark', 'dark');
+    expect(embedThemeFor('moss-viewer-dark')).toBe('dark');
+    expect(embedThemeFor('another-note')).toBe('light');
+    setEmbedTheme('moss-viewer-dark', 'light');
+    expect(embedThemeFor('moss-viewer-dark')).toBe('light');
+    setEmbedTheme('moss-viewer-dark', 'dark');
+    setEmbedTheme('moss-viewer-dark', null);
+    expect(embedThemeFor('moss-viewer-dark')).toBe('light');
+    expect(embedThemeFor(null)).toBe('light');
   });
 });

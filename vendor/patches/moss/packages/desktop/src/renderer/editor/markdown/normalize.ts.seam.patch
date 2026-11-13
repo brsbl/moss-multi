@@ -1,0 +1,233 @@
+diff --git a/packages/desktop/src/renderer/editor/markdown/normalize.ts b/packages/desktop/src/renderer/editor/markdown/normalize.ts
+--- a/packages/desktop/src/renderer/editor/markdown/normalize.ts
++++ b/packages/desktop/src/renderer/editor/markdown/normalize.ts
+@@ -15,6 +15,8 @@ import { normalizeEmbeddableWebUrl } from '../utils/web-embed-classify';
+ import { $createCodeBlockNode, markCodeBlockForAutoEdit } from '../nodes/CodeBlockNode';
+ import { $createCalloutNode, CalloutNode, parseCalloutContent } from '../nodes/CalloutNode';
+ import { $applyTabGroupLayoutMetadata, $applyTableLayoutMetadata, CALLOUT_NESTED_CONTENT_OPTIONS, getCalloutContentTransformers, trimRawWebEmbedUrl } from './transformers';
++// moss-multi seam: linear-match (A§12; SP2)
++import { escapedBlockquoteSearchEnd, formattedPillTargets, replaceFormattedTargets, stripWikiLinkDelimiters } from './linear-match';
+ 
+ type PostImportNormalizeOptions = Pick<NestedContentOptions, 'excludedDependencies'> & {
+   layoutMetadata?: NoteLayoutMetadata;
+@@ -252,8 +254,9 @@ const escapeHtmlEntitiesOutsideEscapedBlockquotes = (md: string): string => {
+   let cursor = 0;
+   let escaped = '';
+   let match: RegExpExecArray | null;
++  const searchable = md.slice(0, escapedBlockquoteSearchEnd(md)); // moss-multi seam: linear-match (A§12; SP2)
+ 
+-  while ((match = ESCAPED_BLOCKQUOTE_BLOCK_RE.exec(md)) !== null) {
++  while ((match = ESCAPED_BLOCKQUOTE_BLOCK_RE.exec(searchable)) !== null) { // moss-multi seam: linear-match (A§12; SP2)
+     const matchStart = match.index;
+     const matchEnd = matchStart + match[0].length;
+ 
+@@ -365,7 +368,9 @@ export const mapOutsideFencedCodeBlocksOnly = (
+  * valid markdown shape after export.
+  */
+ export const normalizeHighlightFormattingBoundaries = (md: string): string => {
++  if (!HIGHLIGHT_BOUNDARY_NEEDS.test(md)) return md; // moss-multi seam: linear-import (SP2): no regex below can match
+   return mapOutsideFencedCodeBlocks(md, (segment) => {
++    if (!HIGHLIGHT_BOUNDARY_NEEDS.test(segment)) return segment; // moss-multi seam: linear-import (SP2)
+     const decodeGeneratedSpaces = (value: string): string => value.replace(/&#32;/g, ' ');
+     let normalized = segment;
+ 
+@@ -438,6 +443,16 @@ export const normalizeHighlightFormattingBoundaries = (md: string): string => {
+   });
+ };
+ 
++// moss-multi seam: highlight-split budget (SP2): each run repeats the whole wrapper, whose style attribute is
++// unbounded, so the split may add at most HIGHLIGHT_SPLIT_GROWTH characters per character of its highlight (plus
++// HIGHLIGHT_SPLIT_BASE), and one normalization at most HIGHLIGHT_SPLIT_TOTAL in all: the import's line and note budgets
++// (linear-import.ts: perChar and base, perNote, over NORMALIZED and NORMALIZED_NOTE) leave lines past these literal
++// anyway. Past a bound the highlight stays as written.
++const HIGHLIGHT_SPLIT_GROWTH = 8;
++const HIGHLIGHT_SPLIT_BASE = 512;
++const HIGHLIGHT_SPLIT_TOTAL = 1 << 22;
++let highlightSplitLeft = HIGHLIGHT_SPLIT_TOTAL;
++
+ /**
+  * Find formatting delimiter pairs inside highlight content and rebuild the
+  * string with delimiters moved outside their highlight wrappers.
+@@ -450,13 +465,17 @@ export const normalizeHighlightFormattingBoundaries = (md: string): string => {
+  */
+ const splitFormattingFromHighlightContent = (
+   content: string,
+-  wrapSegment: (text: string) => string
++  wrapSegment: (text: string) => string,
++  span: number // moss-multi seam: highlight-split budget: the highlight's length as written
+ ): string | null => {
+   // Longest-first alternation so `**` is tried before `*`
+   const delimRe = /(\*\*|~~|\*)((?:(?!\1)[^\n])+?)\1/g;
+   if (!delimRe.test(content)) return null;
+   delimRe.lastIndex = 0;
+ 
++  // moss-multi seam: highlight-split budget: each wrapper is checked against the bound before it is built
++  const wrapper = wrapSegment('').length;
++  const limit = span + Math.min(HIGHLIGHT_SPLIT_GROWTH * span + HIGHLIGHT_SPLIT_BASE, highlightSplitLeft);
+   let result = '';
+   let lastIndex = 0;
+   let match;
+@@ -464,19 +483,25 @@ const splitFormattingFromHighlightContent = (
+   while ((match = delimRe.exec(content)) !== null) {
+     const [full, delimiter, innerText] = match;
+     const before = content.slice(lastIndex, match.index);
++    if (result.length + (before ? 2 * wrapper + before.length : wrapper) + full.length > limit) return null; // moss-multi seam: highlight-split budget
+     if (before) result += wrapSegment(before);
+     result += wrapSegment(`${delimiter}${innerText}${delimiter}`);
+     lastIndex = match.index + full.length;
+   }
+ 
+   const after = content.slice(lastIndex);
++  if (after && result.length + wrapper + after.length > limit) return null; // moss-multi seam: highlight-split budget
+   if (after) result += wrapSegment(after);
+ 
++  highlightSplitLeft -= Math.max(0, result.length - span); // moss-multi seam: highlight-split budget
+   return result;
+ };
+ 
+ export const normalizeRichTextInsideHighlightsForImport = (md: string): string => {
++  highlightSplitLeft = HIGHLIGHT_SPLIT_TOTAL; // moss-multi seam: highlight-split budget: one total per normalization
++  if (!md.includes('<mark') && !md.includes('==')) return md; // moss-multi seam: linear-import (SP2): no regex below can match
+   return mapOutsideFencedCodeBlocks(md, (segment) => {
++    if (!segment.includes('<mark') && !segment.includes('==')) return segment; // moss-multi seam: linear-import (SP2)
+     let normalized = segment;
+ 
+     // Import-only canonicalization: move rich-text delimiters outside highlight
+@@ -488,7 +513,8 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
+       (fullMatch, colorName: string, styleAttribute: string, content: string) =>
+         splitFormattingFromHighlightContent(
+           content,
+-          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`
++          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`,
++          fullMatch.length // moss-multi seam: highlight-split budget
+         ) ?? fullMatch
+     );
+ 
+@@ -497,15 +523,17 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
+       (fullMatch, openComment: string, colorName: string, styleAttribute: string, content: string, closeComment: string) => {
+         const split = splitFormattingFromHighlightContent(
+           content,
+-          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`
++          (t) => `<mark data-color="${colorName}"${styleAttribute}>${t}</mark>`,
++          fullMatch.length - openComment.length - closeComment.length // moss-multi seam: highlight-split budget
+         );
+         if (!split) return fullMatch;
++        // moss-multi seam: highlight-split budget: markers go in as written (a `$&` or `$`` in a replacement string copied the opener or the split)
+         return split.replace(
+           /(<mark data-color="\w+"(?:\s+style="[^"]*")?>)/,
+-          `${openComment}$1`
++          (opener) => `${openComment}${opener}`
+         ).replace(
+           /(<\/mark>)(?!.*<\/mark>)/,
+-          `$1${closeComment}`
++          (closer) => `${closer}${closeComment}`
+         );
+       }
+     );
+@@ -513,20 +541,21 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
+     normalized = normalized.replace(
+       /==([^=\n]+)==/g,
+       (fullMatch, content: string) =>
+-        splitFormattingFromHighlightContent(content, (t) => `==${t}==`) ?? fullMatch
++        splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length) ?? fullMatch // moss-multi seam: highlight-split budget
+     );
+ 
+     normalized = normalized.replace(
+       /(\{%c:[^%]+%\}|%%m:[^%]+:start%%)==([^=\n]+)==(\{%\/c%\}|%%m:[^%]+:end%%)/g,
+       (fullMatch, openComment: string, content: string, closeComment: string) => {
+-        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`);
++        const split = splitFormattingFromHighlightContent(content, (t) => `==${t}==`, fullMatch.length - openComment.length - closeComment.length); // moss-multi seam: highlight-split budget
+         if (!split) return fullMatch;
++        // moss-multi seam: highlight-split budget: markers go in as written
+         return split.replace(
+           /(==)/,
+-          `${openComment}$1`
++          (opener) => `${openComment}${opener}`
+         ).replace(
+           /(==)(?!.*==)/,
+-          `$1${closeComment}`
++          (closer) => `${closer}${closeComment}`
+         );
+       }
+     );
+@@ -547,7 +576,9 @@ export const normalizeRichTextInsideHighlightsForImport = (md: string): string =
+  * Runs inside mapOutsideFencedCodeBlocks (which also excludes inline code spans).
+  */
+ export const recoverEscapedEmphasis = (md: string): string => {
++  if (!md.includes('\\*')) return md; // moss-multi seam: linear-import (SP2): every regex below needs an escaped asterisk
+   return mapOutsideFencedCodeBlocks(md, (segment) => {
++    if (!segment.includes('\\*')) return segment; // moss-multi seam: linear-import (SP2)
+     let result = segment;
+     // Link labels can pick up an extra real bold pair around escaped bold
+     // delimiters after repeated comment/edit round-trips:
+@@ -568,16 +599,20 @@ export const recoverEscapedEmphasis = (md: string): string => {
+ // (/[ \t\n\r\f]/) does not recognize. These break emphasis flanking-delimiter
+ // checks when adjacent to punctuation. CommonMark treats all Zs as whitespace.
+ const UNICODE_SPACE_SEPARATOR_RE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
++// moss-multi seam: linear-import (SP2): the same class, to test for (no lastIndex)
++const UNICODE_SPACE_SEPARATOR_PRESENT_RE = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/;
++// moss-multi seam: linear-import (SP2): what one of normalizeHighlightFormattingBoundaries's regexes needs (a highlight, or a delimiter run and a space)
++const HIGHLIGHT_BOUNDARY_NEEDS = /<mark|<\/mark>|==|\*[ \t]|~~[ \t]/;
++// moss-multi seam: linear-import (SP2): every normalizeDelimiter match holds one of these
++const hasEmbedPillTarget = (value: string): boolean => value.includes('http://') || value.includes('https://') || value.includes('?[');
+ 
+ /** Strip bold/italic/strikethrough delimiters that solely wrap a wiki-link.
+  *  DecoratorNodes can't carry text format, so these delimiters would become
+  *  literal text after import. E.g. **[[My Note]]** → [[My Note]]. */
+ export const stripFormattingAroundIsolatedWikiLinks = (md: string): string => {
+   return mapOutsideFencedCodeBlocks(md, (segment) => {
+-    return segment.replace(
+-      /(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g,
+-      '[[$2]]'
+-    );
++    // moss-multi seam: linear-match (A§12; SP2): segment.replace(/(\*{1,2}|~~)\[\[((?:[^\]]|\](?!\]))+)\]\]\1/g, '[[$2]]')
++    return stripWikiLinkDelimiters(segment);
+   });
+ };
+ 
+@@ -598,13 +633,12 @@ const normalizeFormattedEmbedPillTargetsInContent = (
+   content: string,
+   delimiter: string
+ ): string | null => {
+-  FORMATTED_EMBED_PILL_TARGET_RE.lastIndex = 0;
+   let cursor = 0;
+   let normalized = '';
+   let converted = false;
+-  let match: RegExpExecArray | null;
+ 
+-  while ((match = FORMATTED_EMBED_PILL_TARGET_RE.exec(content)) !== null) {
++  // moss-multi seam: linear-match (A§12; SP2): while ((match = FORMATTED_EMBED_PILL_TARGET_RE.exec(content)) !== null), from lastIndex 0
++  for (const match of formattedPillTargets(content, FORMATTED_EMBED_PILL_TARGET_RE)) {
+     const [rawMatch, _legacyText, legacyUrl] = match;
+     const start = match.index;
+     const isLegacyPill = rawMatch.startsWith('?[');
+@@ -634,7 +668,9 @@ const normalizeFormattedEmbedPillTargetsInContent = (
+ };
+ 
+ export const normalizeFormattingAroundEmbedPillTargets = (md: string): string => {
++  if (!hasEmbedPillTarget(md)) return md; // moss-multi seam: linear-import (SP2): every match holds a URL scheme or a pill opener
+   return mapOutsideFencedCodeBlocks(md, (segment) => {
++    if (!hasEmbedPillTarget(segment)) return segment; // moss-multi seam: linear-import (SP2)
+     const normalizeDelimiter = (value: string, delimiter: string): string => {
+       const escapedDelimiter =
+         delimiter === '*'
+@@ -646,7 +682,8 @@ export const normalizeFormattingAroundEmbedPillTargets = (md: string): string =>
+         `${escapedDelimiter}([^\\n]*?(?:https?:\\/\\/|\\?\\[)[^\\n]*?)${escapedDelimiter}`,
+         'g'
+       );
+-      return value.replace(regExp, (fullMatch, content: string) => {
++      // moss-multi seam: linear-match (A§12; SP2): value.replace(regExp, ...), line by line up to the last match
++      return replaceFormattedTargets(value, delimiter, regExp, (fullMatch, content: string) => {
+         const normalized = normalizeFormattedEmbedPillTargetsInContent(content, delimiter);
+         return normalized ?? fullMatch;
+       });
+@@ -667,7 +704,8 @@ export const normalizeMarkdownForImport = (md: string): string => {
+   // spaces outside code blocks and inline code spans. Without this, Lexical's
+   // emphasis parser rejects closing delimiters preceded by punctuation (e.g.
+   // `)**`) when followed by NBSP, because NBSP fails the flanking check.
+-  const normalized = mapOutsideFencedCodeBlocks(md, (s) =>
++  // moss-multi seam: linear-import (SP2): with none, nothing to replace
++  const normalized = !UNICODE_SPACE_SEPARATOR_PRESENT_RE.test(md) ? md : mapOutsideFencedCodeBlocks(md, (s) =>
+     s.replace(UNICODE_SPACE_SEPARATOR_RE, ' ')
+   );
+   // Merge adjacent inline code spans before the main pipeline

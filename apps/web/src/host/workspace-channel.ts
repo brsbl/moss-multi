@@ -9,21 +9,30 @@ export interface WorkspaceChannelDeps {
   onVisible: (callback: () => void) => () => void;
 }
 
-/** Reconnect catches up through REST; no document watch sockets and no metadata poll. */
+/** A socket that has not answered a visibility probe in this long is replaced. */
+export const PROBE_MS = 10_000;
+/** A healthy, visible channel still asks for a full refresh this often, so one lost event cannot leave metadata stale. */
+export const RECONCILE_MS = 120_000;
+
+/** Reconnect catches up through REST; no document watch sockets. A visible channel reconciles every RECONCILE_MS. */
 export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: WorkspaceEvent) => void): () => void {
   let disposed = false;
   let terminal = false;
   let socket: WebSocket | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let probe: ReturnType<typeof setTimeout> | null = null;
   let attempts = 0;
   let lastPong = 0;
+  let lastReconcile = 0;
   const allowed = () => !disposed && !terminal && deps.auth.get().status === 'signed-in';
   const stop = () => {
     if (retry) clearTimeout(retry);
     if (heartbeat) clearInterval(heartbeat);
+    if (probe) clearTimeout(probe);
     retry = null;
     heartbeat = null;
+    probe = null;
     const old = socket;
     socket = null;
     if (old) {
@@ -46,11 +55,12 @@ export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: 
       attempts = 0;
       lastPong = Date.now();
       // Includes the initial connection, covering changes between the boot read and this handshake.
-      receive({ type: 'vaults' });
+      reconcile();
       heartbeat = setInterval(() => {
         if (!deps.visible()) return;
         if (Date.now() - lastPong > 60_000) { reconnect(); return; }
         current.send('ping');
+        if (Date.now() - lastReconcile >= RECONCILE_MS) reconcile();
       }, 25_000);
     };
     current.onmessage = (message) => {
@@ -69,10 +79,26 @@ export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: 
     current.onerror = () => { if (socket === current) reconnect(); };
   }
   const offAuth = deps.auth.subscribe(() => { if (allowed()) connect(); else { stop(); deps.onPause?.(); } });
+  const reconcile = () => {
+    lastReconcile = Date.now();
+    receive({ type: 'vaults' });
+  };
+  // Only a pong proves the socket alive: a probe unanswered within PROBE_MS replaces it. Returning to the tab never
+  // postpones the heartbeat's own check.
   const offVisible = deps.onVisible(() => {
     if (!allowed()) return;
-    if (socket?.readyState === 1) { lastPong = Date.now(); socket.send('ping'); }
-    else if (!socket) { if (retry) clearTimeout(retry); connect(); }
+    if (socket?.readyState === 1) {
+      const probed = socket;
+      const sentAt = Date.now();
+      probed.send('ping');
+      if (!probe) {
+        probe = setTimeout(() => {
+          probe = null;
+          if (socket === probed && lastPong < sentAt) reconnect();
+        }, PROBE_MS);
+      }
+      if (Date.now() - lastReconcile >= RECONCILE_MS) reconcile();
+    } else if (!socket) { if (retry) clearTimeout(retry); connect(); }
   });
   connect();
   return () => { disposed = true; stop(); offAuth(); offVisible(); };

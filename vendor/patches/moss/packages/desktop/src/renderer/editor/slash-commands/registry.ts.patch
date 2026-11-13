@@ -16,7 +16,7 @@ diff --git a/packages/desktop/src/renderer/editor/slash-commands/registry.ts b/p
    }
 -];
 +  // moss-multi seam: hide-registry (A§9)
-+].filter((command) => !(command.id === 'emoji' && hidden('emoji-panel')) && !(command.id === 'media' && hidden('media-upload')));
++].filter((command) => !(command.id === 'emoji' && hidden('emoji-panel')));
  
  /**
   * Filter commands based on search query

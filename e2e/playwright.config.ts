@@ -52,5 +52,8 @@ export default defineConfig({
     // The read-only viewer bundle's acceptance fixture (T0.13): the viewer job only, against packages/viewer/dist.
     { name: 'viewer-chromium', testDir: './viewer', use: { browserName: 'chromium' } },
     { name: 'viewer-webkit', testDir: './viewer', use: { browserName: 'webkit' } },
+    // The embeddable editor bundle's acceptance fixture (T3.9): the editor job only, against packages/editor/dist.
+    { name: 'editor-chromium', testDir: './editor', use: { browserName: 'chromium' } },
+    { name: 'editor-webkit', testDir: './editor', use: { browserName: 'webkit' } },
   ],
 });

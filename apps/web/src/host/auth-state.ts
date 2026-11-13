@@ -19,6 +19,16 @@ export type AuthState =
 
 export type SocialProviderId = 'github' | 'google';
 
+/** What /login knows about this deployment; a minimum of null (the lookup failed) is left unsaid. */
+export interface LoginOptions {
+  providers: SocialProviderId[];
+  minPasswordLength: number | null;
+}
+
+export interface PasswordPolicy {
+  minPasswordLength?: number | null;
+}
+
 export type AuthOutcome = { ok: true; user: SessionUser } | { ok: false; message: string };
 export type SignOutOutcome = { ok: true } | { ok: false; message: string };
 
@@ -107,13 +117,15 @@ const BY_CODE: Record<string, string> = {
   PASSWORD_TOO_SHORT: 'That password is too short. Choose a longer one.',
   PASSWORD_TOO_LONG: 'That password is too long. Choose a shorter one.',
   INVALID_EMAIL: 'That doesn’t look like an email address.',
+  TOO_MANY_SIGN_UPS: 'Too many sign-ups from this network today. Try again tomorrow.',
 };
 
 const BY_STATUS: Record<number, string> = { 401: MISMATCH, 422: EXISTS, 429: TOO_MANY };
 
 /** better-auth's refusal as a sentence a person can act on; never empty, never a raw code. */
-export function refusalMessage(body: unknown, status: number): string {
+export function refusalMessage(body: unknown, status: number, { minPasswordLength }: PasswordPolicy = {}): string {
   const code = (body as { code?: unknown } | null)?.code;
+  if (code === 'PASSWORD_TOO_SHORT' && minPasswordLength) return `That password is too short. Use at least ${minPasswordLength} characters.`;
   return (typeof code === 'string' && BY_CODE[code]) || BY_STATUS[status] || GENERIC;
 }
 
@@ -200,7 +212,7 @@ export function createAuthStore(deps: AuthDeps) {
     return answer.user;
   }
 
-  async function credentialRequest(path: string, body: Record<string, string>): Promise<AuthOutcome & { session?: boolean }> {
+  async function credentialRequest(path: string, body: Record<string, string>, policy?: PasswordPolicy): Promise<AuthOutcome & { session?: boolean }> {
     let response: Response;
     try {
       response = await deps.fetch(path, {
@@ -213,15 +225,15 @@ export function createAuthStore(deps: AuthDeps) {
       return { ok: false, message: UNREACHABLE };
     }
     const payload = await readJson(response);
-    if (!response.ok) return { ok: false, message: refusalMessage(payload, response.status) };
+    if (!response.ok) return { ok: false, message: refusalMessage(payload, response.status, policy) };
     const { user, token } = (payload ?? {}) as { user?: unknown; token?: unknown };
     if (!isUser(user)) return { ok: false, message: GENERIC };
     return { ok: true, user: { id: user.id, name: user.name, email: user.email }, session: token !== null };
   }
 
-  function signedOut(): SignOutOutcome {
+  function signedOut(destination: string): SignOutOutcome {
     write({ status: 'signed-out' });
-    deps.leave(LOGIN_PATH);
+    deps.leave(destination);
     return { ok: true };
   }
 
@@ -260,9 +272,9 @@ export function createAuthStore(deps: AuthDeps) {
     signIn,
 
     /** Open sign-up (P:People); better-auth signs the new account in. A blank name becomes the email's local part. */
-    async signUp({ email, password, name }: Credentials): Promise<AuthOutcome> {
+    async signUp({ email, password, name }: Credentials, policy?: PasswordPolicy): Promise<AuthOutcome> {
       const display = name?.trim() || email.split('@')[0] || email;
-      const created = await credentialRequest(SIGN_UP_PATH, { email, password, name: display });
+      const created = await credentialRequest(SIGN_UP_PATH, { email, password, name: display }, policy);
       if (!created.ok) return created;
       // A sign-up that set no session (auto sign-in off) still has to end signed in.
       if (!created.session) return signIn({ email, password });
@@ -270,8 +282,8 @@ export function createAuthStore(deps: AuthDeps) {
       return { ok: true, user: created.user };
     },
 
-    /** Posts JSON `{}` (better-auth 415s without it), then leaves for the login card. A refusal changes nothing. */
-    async signOut(): Promise<SignOutOutcome> {
+    /** Posts JSON `{}` (better-auth 415s without it), then leaves for `destination`. A refusal changes nothing. */
+    async signOut(destination: string = LOGIN_PATH): Promise<SignOutOutcome> {
       if (state.status !== 'signed-in') return { ok: false, message: GENERIC };
       const { user } = state;
       write({ status: 'signing-out', user });
@@ -291,7 +303,7 @@ export function createAuthStore(deps: AuthDeps) {
         // A lost response may hide a sign-out that happened: ask the server before keeping the session.
         const never = new Promise<void>(() => undefined);
         const answer = await Promise.race([ask(), sleep(LOOKUP_TIMEOUT_MS, never).then(() => UNAVAILABLE)]);
-        if (answer.kind === 'signed-out') return signedOut();
+        if (answer.kind === 'signed-out') return signedOut(destination);
         write({ status: 'signed-in', user });
         return { ok: false, message: UNREACHABLE };
       }
@@ -299,7 +311,7 @@ export function createAuthStore(deps: AuthDeps) {
         write({ status: 'signed-in', user });
         return { ok: false, message: 'Couldn’t sign you out. Try again.' };
       }
-      return signedOut();
+      return signedOut(destination);
     },
   };
 }

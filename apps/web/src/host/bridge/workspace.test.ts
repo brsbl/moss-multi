@@ -143,3 +143,33 @@ it('reopens nothing for a push that announces a trash, or a restore of a note th
     expect(reopenDocs).not.toHaveBeenCalled();
   } finally { off(); }
 });
+
+it('gives up on a workspace refresh whose answer never arrives, headers or body, and asks again within the deadline', async () => {
+  vi.useFakeTimers();
+  const home = (docs: { id: string; title: string; createdAt: number; updatedAt: number }[]) => Response.json({ vault: { id: 'home', name: 'Home' }, docs });
+  let calls = 0;
+  // Neither hung answer honors the abort: the deadline alone must end them.
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+    calls += 1;
+    if (calls === 1) return home([]);
+    if (calls === 2) return new Promise<Response>(() => undefined);
+    if (calls === 3) return new Response(new ReadableStream({ start() { /* the body never arrives */ } }), { headers: { 'content-type': 'application/json' } });
+    return home([{ id: 'new', title: 'Created', createdAt: 2000, updatedAt: 2000 }]);
+  });
+  let receive!: (event: Event) => void;
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const changed = vi.fn();
+  const off = bridge.notes.onDiskChange(changed);
+  try {
+    await bridge.notes.getAll();
+    receive({ type: 'meta', docIds: ['new'], folderIds: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls, 'the refresh is in flight').toBe(2);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls, 'a request with no answer is given up and asked again').toBe(3);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls, 'a body that never finishes is given up too').toBe(4);
+    expect((await bridge.notes.getAll()).map((note) => note.id), 'the sidebar converges').toEqual(['new']);
+    expect(changed).toHaveBeenCalled();
+  } finally { off(); }
+});

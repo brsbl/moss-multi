@@ -1,5 +1,6 @@
-// Share, v2 (T1.1, T2.4): one dialog for a note, a folder or a vault. An owner adds a person by email at view,
-// comment, edit or owner access, sees who has access (and emails waiting on an invite), and creates, copies and
+// Share, v2 (T1.1, T2.4, T3.6): one dialog for a note, a folder or a vault. An owner adds a person by email at view,
+// comment, edit or owner access, or one of their own agents by the id copied from Settings → Agents (at most edit;
+// PRODUCT ruling 20), sees who has access (and emails waiting on an invite), and creates, copies and
 // revokes links. Moss has no sharing, so the layout follows glyphdown's ShareDialog
 // (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
 // its segmented choice for access levels, and the DS Input and Button. The note's top bar (ShareControl), a folder's
@@ -14,6 +15,7 @@ import { UserPlus, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { useTerminal } from '../collab/terminal.ts';
+import { heldRead, isLeaveCancelled, leaveAwareSend } from '../leave.ts';
 
 export type ShareTarget =
   | { type: 'doc'; id: string }
@@ -99,8 +101,8 @@ function StatusLine({ status, where }: { status: Status; where: Where }): ReactN
  * One person's or invite's access, as glyphdown's ShareDialog offers it: a select of the share roles and a Remove
  * button. A native select, because moss's dropdown menu renders beneath a modal (its positioner is z-50, the dialog 130).
  */
-function AccessControls({ who, role, disabled, onChoose }: {
-  who: string; role: Role; disabled: boolean; onChoose: (choice: ShareRole | 'remove') => void;
+function AccessControls({ who, role, roles = SHARE_ROLES, disabled, onChoose }: {
+  who: string; role: Role; roles?: readonly ShareRole[]; disabled: boolean; onChoose: (choice: ShareRole | 'remove') => void;
 }): ReactNode {
   return (
     <div className="flex shrink-0 items-center gap-1">
@@ -111,8 +113,8 @@ function AccessControls({ who, role, disabled, onChoose }: {
         onChange={(event) => onChoose(event.target.value as ShareRole)}
         className="h-7 rounded-md border border-border-default bg-surface-raised-card px-1.5 text-xs text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60"
       >
-        {(SHARE_ROLES as readonly Role[]).includes(role) ? null : <option value={role}>{ACCESS_LABEL[role]}</option>}
-        {SHARE_ROLES.map((choice) => <option key={choice} value={choice}>{ACCESS_LABEL[choice]}</option>)}
+        {(roles as readonly Role[]).includes(role) ? null : <option value={role}>{ACCESS_LABEL[role]}</option>}
+        {roles.map((choice) => <option key={choice} value={choice}>{ACCESS_LABEL[choice]}</option>)}
       </select>
       <button
         type="button"
@@ -128,27 +130,45 @@ function AccessControls({ who, role, disabled, onChoose }: {
   );
 }
 
+/** An agent acts at most as an editor (A§8), so its row offers no owner. */
+const AGENT_ROLES = SHARE_ROLES.filter((role) => role !== 'owner');
+
 const apiBase = (target: ShareTarget) => `/api/${target.type === 'doc' ? 'docs' : 'folders'}/${encodeURIComponent(target.id)}`;
 
 /** The URL a link opens: the note itself, or the folder landing (A§4.2). */
 const linkUrl = (target: ShareTarget, token: string) =>
   new URL(`/${target.type === 'doc' ? 'd' : 'f'}/${encodeURIComponent(target.id)}?share=${token}`, window.location.origin).href;
 
-async function call<T>(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; body: (T & { message?: string }) | null }> {
-  const response = await fetch(path, {
+/** A read is held while the page leaves and sent again if it stays; a change is sent at most once, and one a leave cut
+ * off rejects with `LeaveCancelled` once the page stays, for the caller to read the lists again (leave.ts). */
+export async function call<T>(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; body: (T & { message?: string }) | null }> {
+  const send = (signal: AbortSignal | undefined) => fetch(path, {
     credentials: 'same-origin',
     ...init,
     headers: { accept: 'application/json', ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
+    ...(signal ? { signal } : {}),
   });
-  return { ok: response.ok, status: response.status, body: (await response.json().catch(() => null)) as (T & { message?: string }) | null };
+  // The body is read whole first, so a leave that cuts it off is seen, never taken for a body that is not JSON.
+  const read = async (response: Response) => {
+    const text = await response.text();
+    let body: (T & { message?: string }) | null = null;
+    try { body = JSON.parse(text) as T & { message?: string }; } catch { /* not JSON */ }
+    return { ok: response.ok, status: response.status, body };
+  };
+  return (init.method ?? 'GET').toUpperCase() === 'GET' ? heldRead(send, read) : leaveAwareSend(send, read);
 }
+
+/** A failed request is the unreachable sentence, unless a leave cut it off (handled: the lists are read again). */
+const unreachable = (error: unknown): never => {
+  throw isLeaveCancelled(error) ? error : new Error(UNREACHABLE);
+};
 
 function copy(text: string): Promise<void> {
   return navigator.clipboard.writeText(text);
 }
 
 function titles(target: ShareTarget): { title: string; description: string } {
-  if (target.type === 'doc') return { title: 'Share', description: 'Share this note with people by email, or with anyone who has a link.' };
+  if (target.type === 'doc') return { title: 'Share', description: 'Share this note with people by email, with one of your agents by its ID, or with anyone who has a link.' };
   if (target.vault) return { title: 'Share vault', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
   return { title: 'Share folder', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
 }
@@ -205,7 +225,9 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       took = true;
       if (done) setStatus({ tone: 'done', text: done, where });
     } catch (error) {
-      setStatus({ tone: 'error', text: error instanceof Error && error.message ? error.message : UNREACHABLE, where });
+      // A change the page's leave cut off may have landed: the lists say whether it did.
+      if (isLeaveCancelled(error)) took = true;
+      else setStatus({ tone: 'error', text: error instanceof Error && error.message ? error.message : UNREACHABLE, where });
     } finally {
       setPending(false);
     }
@@ -219,12 +241,27 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     event.preventDefault();
     const address = email.trim();
     if (!address) {
-      setStatus({ tone: 'error', text: 'Enter an email address.', where: 'people' });
+      setStatus({ tone: 'error', text: 'Enter an email address or an agent ID.', where: 'people' });
+      return;
+    }
+    // An email has an @; anything else is the id of one of the caller's agents, copied from Settings → Agents.
+    if (!address.includes('@')) {
+      if (access === 'owner') {
+        setStatus({ tone: 'error', text: 'An agent can have at most edit access.', where: 'people' });
+        return;
+      }
+      void run('people', async () => {
+        const answer = await call<{ shared?: { name: string } }>(`${base}/members`, { method: 'POST', body: JSON.stringify({ agentId: address, role: access }) })
+          .catch(unreachable);
+        if (!answer.ok || !answer.body?.shared) throw refused(answer.body, 'Sharing didn’t work. Try again.');
+        setEmail('');
+        return `Shared with ${answer.body.shared.name}.`;
+      });
       return;
     }
     void run('people', async () => {
       const answer = await call<{ shared?: { email: string } }>(`${base}/members`, { method: 'POST', body: JSON.stringify({ email: address, role: access }) })
-        .catch(() => { throw new Error(UNREACHABLE); });
+        .catch(unreachable);
       if (!answer.ok || !answer.body?.shared) throw refused(answer.body, 'Sharing didn’t work. Try again.');
       setEmail('');
       return `Shared with ${answer.body.shared.email}.`;
@@ -237,7 +274,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       const answer = await call(`${base}/members`, {
         method: choice === 'remove' ? 'DELETE' : 'PATCH',
         body: JSON.stringify(choice === 'remove' ? who : { ...who, role: choice }),
-      }).catch(() => { throw new Error(UNREACHABLE); });
+      }).catch(unreachable);
       if (!answer.ok) throw refused(answer.body, 'That change didn’t save. Try again.');
       return choice === 'remove' ? `Removed ${label}.` : `${label} now has “${ACCESS_LABEL[choice]}” access.`;
     });
@@ -246,7 +283,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   function createLink(): void {
     void run('links', async () => {
       const answer = await call<{ link?: ShareLink }>(`${base}/links`, { method: 'POST', body: JSON.stringify({ role: linkAccess }) })
-        .catch(() => { throw new Error(UNREACHABLE); });
+        .catch(unreachable);
       if (!answer.ok || !answer.body?.link) throw refused(answer.body, 'The link wasn’t created. Try again.');
       return 'Link created. Anyone who has it can open this.';
     });
@@ -254,7 +291,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
 
   function revoke(link: ShareLink): void {
     void run('links', async () => {
-      const answer = await call(`${base}/links/${link.token}`, { method: 'DELETE' }).catch(() => { throw new Error(UNREACHABLE); });
+      const answer = await call(`${base}/links/${link.token}`, { method: 'DELETE' }).catch(unreachable);
       if (!answer.ok) throw refused(answer.body, 'The link wasn’t revoked. Try again.');
       return 'Link revoked. It no longer opens anything.';
     });
@@ -288,9 +325,9 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
         <span className={SECTION_LABEL}>Invite people</span>
         <form aria-label="Share with a person" onSubmit={share} className={`${CARD} space-y-3`}>
           <Input
-            type="email"
-            aria-label="Email"
-            placeholder="name@example.com"
+            type="text"
+            aria-label="Email or agent ID"
+            placeholder="name@example.com or your agent’s ID"
             autoComplete="off"
             value={email}
             readOnly={pending}
@@ -320,7 +357,10 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
               {members.map((member, index) => (
                 <li key={member.principalId} className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm text-ink-default">{member.name}</p>
+                    <p className="truncate text-sm text-ink-default">
+                      {member.name}
+                      {member.principalType === 'agent' ? <span className="ml-1.5 text-xs text-ink-faint">agent</span> : null}
+                    </p>
                     {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
                   </div>
                   {/* The API lists the vault's owner first; they hold no grant, so their access cannot change. */}
@@ -328,6 +368,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                     <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
                   ) : (
                     <AccessControls who={member.name} role={member.role} disabled={pending}
+                      roles={member.principalType === 'agent' ? AGENT_ROLES : SHARE_ROLES}
                       onChoose={(choice) => changeAccess({ principalId: member.principalId }, member.name, choice)} />
                   )}
                 </li>

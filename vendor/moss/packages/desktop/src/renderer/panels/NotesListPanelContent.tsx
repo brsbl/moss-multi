@@ -54,7 +54,9 @@ import { hidden } from '@moss-multi/host/affordances';
 import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 // moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
-import { canCreateFolder, canCreateNote, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
+import {
+  canCreateFolder, canCreateNote, canDropInto, canEditFolder, canMoveFolder, canMoveNote, canTrashFolder, folderRefusal, noteTargetFolder
+} from '@moss-multi/host/folders';
 // moss-multi seam: capabilities (T2.6): every note action follows the caller's role; an unknown role gets none.
 import { noteCan } from '@moss-multi/host/capabilities';
 // moss-multi seam: trash (T2.3): only the owner trashes a note; trash copy comes from the one module
@@ -266,8 +268,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
 }: NoteListItemWithMenuProps) {
   const isActive = useIsActiveNote(note.id);
   const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
-  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); only the vault's owner moves (A§8)
-  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveItems(note.id);
+  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); whoever manages the note moves it (A§8)
+  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveNote(note.id);
   const showActiveState = options?.showActiveState ?? true;
   const isVisuallyActive = showActiveState && isActive;
   const cardRef = options?.isSelected
@@ -443,6 +445,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
     const [expandedFolders, setExpandedFolders] = useAtom(expandedFoldersAtom);
     const store = useStore();
     const setActiveFolderPath = useSetAtom(activeFolderPathAtom);
+    // moss-multi seam: capabilities (T3.B17): "+ Note" asks the folder the note would land in.
+    const activeFolderPath = useAtomValue(activeFolderPathAtom);
+    const backendFolders = useAtomValue(backendFoldersAtom);
     const [sortMode, setSortMode] = useAtom(notesSortModeAtom);
     const [sortDirection, setSortDirection] = useAtom(notesSortDirectionAtom);
     const pinnedNotes = useAtomValue(pinnedNotesAtom);
@@ -993,8 +998,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
               updates: { folderPath: snap.folderPath }
             });
           }
+          // moss-multi seam: folders (T3.B17): the move is undone above, and the refusal says why, once.
+          refuseInput(folderRefusal(err));
           await fetchBackendFolders();
-          console.error('[DragDrop] Failed to move folder:', err);
         }
       },
       [fetchBackendFolders, noteList, store, setExpandedFolders, setActiveFolderPath]
@@ -1010,11 +1016,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           setDragOverTarget(null);
           setDraggingFolderPath(null);
           if (!isFolderDropValid(folderPath, targetPath)) return;
-          try {
-            await moveFolderToParent(folderPath, targetPath);
-          } catch (err) {
-            console.error('[DragDrop] Failed to move folder:', err);
-          }
+          // moss-multi seam: folders (T3.B17): the server's move rule, the folder's manage and the target's edit.
+          if (!canMoveFolder(folderPath) || !canDropInto(targetPath)) return;
+          await moveFolderToParent(folderPath, targetPath); // moss-multi seam: folders (T3.B17): it announces its own refusal
           return;
         }
 
@@ -1033,17 +1037,20 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
 
         setDragOverTarget(null);
         setDraggingNoteId(null);
+        // moss-multi seam: folders (T3.B17): the server's move rule, the note's manage and the target's edit.
+        if (!canMoveNote(noteId) || !canDropInto(targetPath)) return;
 
         try {
           await moveNoteToFolder(noteId, targetPath);
         } catch (err) {
-          console.error('[DragDrop] Failed to move note:', err);
+          refuseInput(folderRefusal(err)); // moss-multi seam: folders (T3.B17): the move is undone; say why
         }
       },
       [moveNoteToFolder, moveFolderToParent, isFolderDropValid, noteList]
     );
 
     const handleRootDragOver = useCallback((e: React.DragEvent) => {
+      if (!canDropInto(NOTES_FOLDER_NAME)) return; // moss-multi seam: folders (T3.B17): no drop where the caller can't add
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       // Show drop feedback for notes inside a folder or folders not already at root
@@ -1083,11 +1090,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           const segments = folderPath.split('/');
           if (segments.length <= 2) return; // already at root
           if (!isFolderDropValid(folderPath, NOTES_FOLDER_NAME)) return;
-          try {
-            await moveFolderToParent(folderPath, NOTES_FOLDER_NAME);
-          } catch (err) {
-            console.error('[DragDrop] Failed to move folder to root:', err);
-          }
+          // moss-multi seam: folders (T3.B17): the server's move rule, the folder's manage and the root's edit.
+          if (!canMoveFolder(folderPath) || !canDropInto(NOTES_FOLDER_NAME)) return;
+          await moveFolderToParent(folderPath, NOTES_FOLDER_NAME); // moss-multi seam: folders (T3.B17): it announces its own refusal
           return;
         }
 
@@ -1104,11 +1109,13 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
 
         setDragOverTarget(null);
         setDraggingNoteId(null);
+        // moss-multi seam: folders (T3.B17): the server's move rule, the note's manage and the root's edit.
+        if (!canMoveNote(noteId) || !canDropInto(NOTES_FOLDER_NAME)) return;
 
         try {
           await moveNoteToFolder(noteId, NOTES_FOLDER_NAME);
         } catch (err) {
-          console.error('[DragDrop] Failed to move note to root:', err);
+          refuseInput(folderRefusal(err)); // moss-multi seam: folders (T3.B17): the move is undone; say why
         }
       },
       [moveNoteToFolder, moveFolderToParent, isFolderDropValid, noteList]
@@ -1247,8 +1254,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
         // moss-multi seam: surfaced shares never offer folder mutations, and only editors change folders (T2.2).
         const mutable = !surfacedFolder(folder.path) && canEditFolder(folder.path);
-        // moss-multi seam: folders: a move changes who can open the subtree, so only the vault's owner drags (A§8).
-        const isFolderDraggable = mutable && canMoveItems() && folder.type !== 'system';
+        // moss-multi seam: folders: a move changes who can open the subtree, so whoever manages the folder drags (A§8).
+        const isFolderDraggable = canMoveFolder(folder.path) && folder.type !== 'system';
 
         return (
           <ContextMenu key={folder.path}>
@@ -1695,7 +1702,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         <NotesListPanel
           ref={panelRef}
           className="flex h-full min-w-0 w-full"
-          onCreateNote={canCreateNote() ? onCreateNote : undefined /* moss-multi seam: capabilities (T2.6) */}
+          onCreateNote={canCreateNote(noteTargetFolder(activeFolderPath, backendFolders)) ? onCreateNote : undefined /* moss-multi seam: capabilities (T2.6, T3.B17) */}
           onCollapse={onCollapse}
           showTitle={false}
           sortContent={sortDropdown}

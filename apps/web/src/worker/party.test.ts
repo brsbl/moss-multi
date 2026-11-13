@@ -78,7 +78,8 @@ describe('authenticateParty', () => {
   it('admits a live link at its ceiling: viewer with the token alone, the link role signed in', async () => {
     const docId = await insertDoc(d1.db, ada);
     const token = await insertLink(d1.db, { docId }, 'editor');
-    const alone = await authenticateParty(upgrade(docId, {}, `?share=${token}`), docId, env);
+    const alone = await authenticateParty(upgrade(docId, { 'cf-connecting-ip': '2001:db8:1:2:3:4:5:6' }, `?share=${token}`), docId, env);
+    expect(alone.ok && alone.headers[TRUSTED.address], 'an anonymous socket carries its address bucket (T3.B25)').toBe('2001:db8:1:2::/64');
     expect(alone.ok && decodePartyPrincipal(alone.headers[TRUSTED.principal])?.kind).toBe('anonymous');
     expect(alone.ok && alone.headers[TRUSTED.role]).toBe('viewer');
     expect(alone.ok && alone.headers[TRUSTED.share]).toBe(token);

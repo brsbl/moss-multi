@@ -102,3 +102,10 @@ export async function insertLink(db: D1Database, target: GrantTarget, role: stri
     .run();
   return token;
 }
+
+/** A PrincipalDO namespace that grants every note creation and drops every workspace event, for tests that mint notes
+ * but are not about the budget (the real window is create-budget.harness.test.ts). */
+export const unmeteredPrincipals = {
+  idFromName: (name: string) => ({ name, toString: () => name }),
+  get: () => ({ setName: async () => undefined, publish: async () => undefined, takeCreateToken: async () => true }),
+};

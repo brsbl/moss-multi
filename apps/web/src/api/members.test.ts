@@ -4,7 +4,7 @@
 // 404s on every doc route (A§8 non-disclosure).
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { countingBinds, D1_MAX_PARAMS, migratedD1, type TestD1 } from '../test/d1.ts';
-import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser, unmeteredPrincipals } from '../test/principals.ts';
 import { redeem } from '../test/invites.ts';
 import { handleApi } from './router.ts';
 
@@ -30,7 +30,7 @@ let cy: TestUser;
 
 beforeAll(async () => {
   d1 = await migratedD1();
-  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: {} as never };
+  env = { DB: d1.db, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, DocDO: DocDO as never, PrincipalDO: unmeteredPrincipals as never };
   ada = await signedUpUser(env, 'members-ada', 'Ada');
   ben = await signedUpUser(env, 'members-ben', 'Ben');
   cy = await signedUpUser(env, 'members-cy', 'Cy');

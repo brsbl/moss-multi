@@ -279,7 +279,7 @@ test('j03-connection: a healthy socket idle for 20 s shows no banner and opens n
 const OPENING_4 = 'Waiting on a slow first sync';
 const FIRST_SYNC_HOLD_MS = 10_000;
 
-test('j03-connection: a first sync held back 10 s shows retrying and still connecting, then binds in place with no remount @p:R10', async ({ actors }) => {
+test('j03-connection: a first sync held back 10 s shows retrying and still connecting, then binds in place with no remount @p:R10@1', async ({ actors }) => {
   const shared = await sharedNote(actors, OPENING_4);
   const { docId } = shared;
   const bea = await windowFor(actors, shared.peer, { label: 'ben', severable: true });
@@ -354,12 +354,14 @@ test('j03-connection: a refused write rebinds fresh and a deleted doc locks in p
   await bea.observeEditor(docId);
   const sever = bea.sever;
   if (!sever) throw new Error('missing sever');
-  sever.blackhole();
-  // Intentionally rejected text is not registered as a durability promise.
+  // Intentionally rejected text is not registered as a durability promise. The caret is placed first and the text is
+  // one input event: 12 s after its last frame the page closes a silent socket 4408 and reconnects, the likely third
+  // socket open when a loaded WebKit runner clicked and typed key by key into the black hole (run 38041880099).
   const body = ui.body(bea, docId);
   await body.click();
   await body.press('End');
-  await body.pressSequentially(' rejected change');
+  sever.blackhole();
+  await bea.page.keyboard.insertText(' rejected change');
   await expect(body).toContainText('rejected change');
   bea.expectReconnects(1, docId);
   sever.reset(4409);
@@ -460,7 +462,7 @@ test('j03-connection: failed sign-out preserves offline edits and cancelling uns
   await ui.expectNoRemount(bea, docId, 'failed sign-out');
 });
 
-test('j03-connection: a real Settings chunk load failure preserves the shell and offline edits @p:R10', async ({ actors }) => {
+test('j03-connection: a real Settings chunk load failure preserves the shell and offline edits @p:R10@1', async ({ actors }) => {
   const shared = await sharedNote(actors, 'A failed import leaves the editor here');
   const { ada, docId } = shared;
   const bea = await peerWindow(actors, shared, true);

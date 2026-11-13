@@ -23,6 +23,6 @@
     }
   },
   "include": ["src/converter/**/*.ts", "test/*.ts", "test/parity/**/*.ts", "test/views/**/*.ts", "test/workerd/**/*.ts", "measure/**/*.ts"],
-  // The DocDO's measurement Worker needs the Workers types: tsconfig.json checks it.
-  "exclude": ["measure/doc-worker.ts"]
+  // The DO measurement Workers need the Workers types: tsconfig.json checks them.
+  "exclude": ["measure/doc-worker.ts", "measure/search-worker.ts"]
 }

@@ -36,7 +36,7 @@ async function note(actors: Actors, owner: Principal, peer: Principal, label: st
   return { actor, docId, frames };
 }
 
-test('j04-hibernation: a UI-authored note reopens non-empty after a process restart @p:col-6 @p:tech-6', async ({ actors, stack }, info) => {
+test('j04-hibernation: a UI-authored note reopens non-empty after a process restart @p:col-6@1 @p:tech-6', async ({ actors, stack }, info) => {
   const owner = await actors.principal('ada');
   const peer = await actors.principal('ben');
   const { actor, docId } = await note(actors, owner, peer, 'creator');
@@ -52,7 +52,7 @@ test('j04-hibernation: a UI-authored note reopens non-empty after a process rest
   await live(reader, docId);
 });
 
-test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @p:col-6 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
+test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @p:col-6@1 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
   test.setTimeout(240_000);
   info.annotations.push({ type: 'quiescence', description: 'simulated document visibility; real surviving WebSocket' });
   const owner = await actors.principal('ada');

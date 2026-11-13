@@ -6,6 +6,8 @@
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import type { Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { acceptInvite, grant, grantDoc } from '../lib/grants.ts';
@@ -40,7 +42,7 @@ async function fingerprint(actor: Actor, path: string) {
   };
 }
 
-test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'s sidebar @p:ppl-2 @evidence', async ({ actors, stack }) => {
+test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'s sidebar @p:ppl-2@2 @evidence', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
   await ada.goto('/');
@@ -111,7 +113,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await actors.checkpoint('folder-link-landing');
 });
 
-test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2 @p:note-4 @evidence', async ({ actors }) => {
+test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2@2 @p:note-4 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
@@ -150,7 +152,41 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   await actors.checkpoint('vault-shared');
 });
 
-test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2 @evidence', async ({ actors, browserName }) => {
+test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no create, rename or trash @p:ppl-2@2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const cyPrincipal = await actors.principal('cy');
+  const cy = await actors.session(cyPrincipal);
+  await cy.goto('/');
+  await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+
+  await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
+  const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
+  await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
+  await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is a co-owner of the vault').toContainText('Owner');
+  await ada.page.keyboard.press('Escape');
+  // The share is an invite (T2.8): Cy follows it before the vault is his.
+  const vaultId = ((await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } }).vault.id;
+  await acceptInvite(ada, { folderId: vaultId }, cyPrincipal);
+  // Redeemed in another session, as a followed link would be; Cy's open tab reads the listing again.
+  await cy.page.reload();
+  await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+
+  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  const shared = cy.page.getByRole('menuitem', { name: 'Home owner', exact: true });
+  await expect(shared, "Ada's vault reaches Cy's switcher as owner").toBeVisible({ timeout: LIVE_TIMEOUT });
+  await shared.click();
+  await expect(cy.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeEnabled({ timeout: LIVE_TIMEOUT });
+  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
+  const menu = cy.page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: 'Home owner', exact: true }), 'the switcher is open').toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a co-owner may share the vault').toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'New vault', exact: true }), 'New vault belongs to the owned section').toHaveCount(0);
+  await cy.page.keyboard.press('Escape');
+  await expect(cy.page.getByRole('button', { name: 'Vault actions', exact: true }), "only the vault's owner renames or trashes it").toHaveCount(0);
+});
+
+test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2@2 @evidence', async ({ actors, browserName }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const dialog = await ui.openShare(ada, docId);
@@ -187,7 +223,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   expect(await ui.fieldText(stranger, docId, 'body')).toBe(TEXT);
 });
 
-test('j08 link: an editor link is viewer signed out, editor signed in without a grant, and the max with a grant @p:ppl-2', async ({ actors }) => {
+test('j08 link: an editor link is viewer signed out, editor signed in without a grant, and the max with a grant @p:ppl-2@2', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const cyPrincipal = await actors.principal('cy');
@@ -216,7 +252,7 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   await actors.requireDistinct(3);
 });
 
-test('j08 link: an editor folder link lifts a viewer grant to editor, and lands a signed-in visitor without a grant on the folder @p:ppl-2', async ({ actors, stack }) => {
+test('j08 link: an editor folder link lifts a viewer grant to editor, and lands a signed-in visitor without a grant on the folder @p:ppl-2@2', async ({ actors, stack }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.session(adaPrincipal);
   const headers = { origin: stack.baseUrl };
@@ -251,7 +287,7 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   await actors.requireDistinct(3);
 });
 
-test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2 @evidence', async ({ actors }) => {
+test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s and the denial page @p:ppl-2@2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const otherId = await ui.createNote(ada);
@@ -297,7 +333,7 @@ test('j08 denial: revoked, forged and inaccessible links get byte-identical 404s
   await actors.requireDistinct(2);
 });
 
-test('j08 privacy: an email with no account answers like one with an account, and non-owners see no emails @p:ppl-2', async ({ actors, stack }) => {
+test('j08 privacy: an email with no account answers like one with an account, and non-owners see no emails @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
@@ -317,7 +353,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
     const response = await posted;
     answers.push({ status: response.status(), body: await response.json() });
     await expect(dialog.getByRole('status'), 'the same confirmation either way').toHaveText(`Shared with ${email}.`);
-    await expect(dialog.getByLabel('Email', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
+    await expect(dialog.getByLabel('Email or agent ID', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
   }
   await ada.page.unroute(members);
   expect(answers[0].status).toBe(201);
@@ -389,7 +425,7 @@ async function offered(actor: Actor, docId: string): Promise<string[]> {
   return [...row, ...more, ...share].sort();
 }
 
-test('j08 ranks: menus grow with rank from viewer to owner, and only the owner trashes or shares @p:ppl-2', async ({ actors, stack }) => {
+test('j08 ranks: menus grow with rank from viewer to owner, and only the owner trashes or shares @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const ranks = [['ben', 'viewer'], ['cy', 'commenter'], ['dee', 'editor']] as const;
@@ -432,7 +468,7 @@ function writeFrames(actor: Actor): { count: () => number } {
   return { count: () => writes };
 }
 
-test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block controls are inert and send no frame @p:ppl-2', async ({ actors, stack }) => {
+test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block controls are inert and send no frame @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const box = (actor: Actor) => ui.body(actor, docId).locator('li[role="checkbox"]').filter({ hasText: 'ranked task' });
@@ -502,17 +538,25 @@ test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block co
   await actors.requireDistinct(4);
 });
 
-test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2', async ({ actors, stack }) => {
+test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await actors.session(await actors.principal('ada'));
   const docId = await rankedNote(ada, stack.baseUrl);
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, docId, benPrincipal, 'editor');
   const ben = await actors.session(benPrincipal);
-  // Every role the workspace listing names becomes one this client has never heard of.
-  await ben.page.route('**/api/workspace**', async (route) => {
-    const response = await route.fetch();
-    await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
-  });
+  // Every role the server names becomes one this client has never heard of: the listing's, and the note's own read
+  // (GET /api/docs/:id), which the tab also remembers: its real role, answered after the listing, is the likely way
+  // the row menu offered an editor's actions in WebKit (runs 38060395030, 38278446839, 38283893079).
+  const unknownRole = async (route: Route) => {
+    try {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: (await response.text()).replace(/"role":"[a-z]+"/g, '"role":"superuser"') });
+    } catch {
+      // The page gave up on the request (a superseded read); nothing reaches it to rewrite.
+    }
+  };
+  await ben.page.route('**/api/workspace**', unknownRole);
+  await ben.page.route(`**/api/docs/${docId}`, unknownRole);
   await ben.goto('/');
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
@@ -523,4 +567,97 @@ test('j08 unknown role: a role the client does not know gets no actions @p:ppl-2
   await ben.page.keyboard.press('Escape');
   await expect(ben.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" in a vault at an unknown role').toHaveCount(0);
   await actors.requireDistinct(2);
+});
+
+// T3.B17: a read-only body's tabs and callouts. No gap or tab-resize control takes focus, by Tab, click or script, and
+// nothing a reader does writes; switching tabs, by click or by the tablist's keys, is navigation and still works, also
+// for an editor demoted live. Suggester is not grantable until M5 (SHARE_ROLES), so viewer and commenter stand in.
+const BLOCKS_FIXTURE = readFileSync(new URL('../fixtures/read-only-blocks.md', import.meta.url), 'utf8');
+const CONTROLS = '[data-block-gap-cursor], [data-tab-resize-handle]';
+
+async function probeReadOnlyBlocks(actors: Actors, reader: Actor, docId: string, frames: { count: () => number }, ada: Actor): Promise<void> {
+  const label = reader.label;
+  const body = ui.body(reader, docId);
+  const tab = (name: string) => body.locator('[role="tab"]', { hasText: name });
+  await expect(body.locator('[role="tab"]'), `${label}: the tab bar shows`).toHaveText(['First tab', 'Second tab', 'Third tab']);
+  await expect(body.getByText('A callout to read.'), `${label}: the callout shows`).toBeVisible();
+  expect(await body.locator('[data-block-gap-cursor]').count(), `${label}: the tabs and the callout carry gap controls (positive control)`).toBeGreaterThan(0);
+  await expect(body.locator('[data-tab-resize-handle]'), `${label}: and resize handles`).toHaveCount(2);
+  const settled = await ui.fieldText(ada, docId, 'body');
+  const before = frames.count();
+
+  // Script focus, a click and Tab never land on a gap or resize control.
+  const focused = await body.evaluate((root, selector) => [...root.querySelectorAll<HTMLElement>(selector)].flatMap((el) => {
+    el.focus();
+    return document.activeElement === el ? [el.getAttribute('aria-label') ?? el.tagName] : [];
+  }), CONTROLS);
+  expect(focused, `${label}: no gap or resize control takes focus from script`).toEqual([]);
+  const handles = await body.locator('[data-tab-resize-handle]').evaluateAll((els) => els.map((el) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }));
+  await reader.page.mouse.click(handles[0].x, handles[0].y);
+  const onControl = () => reader.page.evaluate((selector) => (document.activeElement?.closest(selector) ? document.activeElement.outerHTML.slice(0, 80) : null), CONTROLS);
+  expect(await onControl(), `${label}: a click on a resize handle focuses nothing`).toBeNull();
+
+  // Tabs switch by click and by the tablist's keys, and focus follows the tab.
+  // Forced: a read-only body is aria-disabled, which Playwright reads as a disabled tab; a person's click works.
+  await tab('Second tab').click({ force: true });
+  await expect(tab('Second tab'), `${label}: a click switches tabs`).toHaveAttribute('aria-selected', 'true');
+  await expect(body.getByText('Second panel text.')).toBeVisible();
+  await tab('Second tab').focus();
+  await reader.page.keyboard.press('ArrowRight');
+  await expect(tab('Third tab'), `${label}: ArrowRight switches to the next tab`).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('Third tab'), `${label}: and focus follows`).toBeFocused();
+  await expect(body.getByText('Third panel text.')).toBeVisible();
+  await reader.page.keyboard.press('ArrowLeft');
+  await expect(tab('Second tab'), `${label}: ArrowLeft switches back`).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('Second tab')).toBeFocused();
+  // Invariant 9 with focus on a tab: the one control a read-only body keeps.
+  await actors.checkpoint(`read-only-tabs-${label}`);
+  await reader.page.keyboard.press('Tab');
+  expect(await onControl(), `${label}: Tab from the tab skips every gap and resize control`).toBeNull();
+  await reader.page.keyboard.press('Shift+Tab');
+  expect(await onControl(), `${label}: and so does Shift+Tab`).toBeNull();
+
+  await reader.page.waitForTimeout(1_000);
+  expect(frames.count() - before, `${label}: no write frame leaves the page`).toBe(0);
+  expect(await ui.fieldText(ada, docId, 'body'), `${label}: the owner's note is unchanged`).toBe(settled);
+}
+
+test('j08 read-only: tabs and callouts offer a reader no focusable control and no write, and tabs still switch by click and keys, also after a live demotion @p:ppl-2@2', async ({ actors, stack }) => {
+  const ada = await actors.session(await actors.principal('ada'));
+  const made = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Blocks', markdown: BLOCKS_FIXTURE } });
+  expect(made.status(), 'declared setup: a note with tabs and a callout').toBe(201);
+  const docId = ((await made.json()) as { doc: { id: string } }).doc.id;
+  await ada.goto(`/d/${docId}`);
+  await ui.waitOpen(ada, docId, 'live');
+
+  for (const [label, role] of [['ben', 'viewer'], ['cy', 'commenter']] as const) {
+    const principal = await actors.principal(label);
+    await grantDoc(ada, docId, principal, role);
+    const reader = await actors.session(principal);
+    const frames = writeFrames(reader);
+    await reader.goto(`/d/${docId}`);
+    await ui.waitOpen(reader, docId, 'readonly');
+    await expect(ui.pane(reader, docId)).toHaveAttribute(ROLE_ATTR, role);
+    await probeReadOnlyBlocks(actors, reader, docId, frames, ada);
+  }
+
+  // Dee edits live, then Ada lowers her to view: the same body turns read-only in place.
+  const deePrincipal = await actors.principal('dee');
+  await grantDoc(ada, docId, deePrincipal, 'editor');
+  const dee = await actors.session(deePrincipal);
+  const frames = writeFrames(dee);
+  await dee.goto(`/d/${docId}`);
+  await ui.waitOpen(dee, docId, 'live');
+  await expect(ui.body(dee, docId).locator('[data-tab-resize-handle][tabindex="0"]'), 'an editor resizes tabs (positive control)').toHaveCount(2);
+  dee.expectReconnects(1, docId);
+  const lowered = await ada.context.request.patch(`/api/docs/${docId}/members`,
+    { headers: { origin: stack.baseUrl }, data: { principalId: dee.principal!.id, role: 'viewer' } });
+  expect(lowered.status(), 'the demotion is saved').toBe(200);
+  await ui.waitOpen(dee, docId, 'readonly');
+  await expect(ui.pane(dee, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
+  await probeReadOnlyBlocks(actors, dee, docId, frames, ada);
+  await actors.requireDistinct(4);
 });

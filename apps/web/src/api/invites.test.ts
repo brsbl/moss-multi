@@ -5,7 +5,7 @@
 // Trash, also when that lands while a share is in flight. The bell tells an inviter their invite was accepted, pushed
 // to their tabs and re-checked against the live grant whenever it is read.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { migratedD1, type TestD1 } from '../test/d1.ts';
+import { countingBinds, migratedD1, type TestD1 } from '../test/d1.ts';
 import { redeem } from '../test/invites.ts';
 import { BASE, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { INVITE_CLOSED, INVITE_OTHER_EMAIL } from './invites.ts';
@@ -493,5 +493,84 @@ describe('the bell', { timeout: 30_000 }, () => {
     expect(await bell(joe), 'nor a trashed one').toEqual([]);
     await d1.db.prepare('UPDATE docs SET deleted_at = NULL WHERE id = ?').bind(docId).run();
     expect((await bell(joe)).map((n) => n.target.title)).toEqual(['Revocable']);
+  });
+});
+
+describe('the bell’s access re-check', { timeout: 60_000 }, () => {
+  /** A notice to `reader` that Ada acted on a target, as the invite-accepted path writes one. */
+  async function notice(reader: TestUser, target: { type: 'doc' | 'folder'; id: string }, at: number): Promise<void> {
+    await d1.db.prepare("INSERT INTO notifications (id, user_id, type, payload_json, created_at) VALUES (?, ?, 'invite-accepted', ?, ?)")
+      .bind(crypto.randomUUID(), reader.id, JSON.stringify({ targetType: target.type, targetId: target.id, by: ada.id }), at).run();
+  }
+
+  /** The D1 statements one bell read prepares, and the targets it shows. */
+  async function countedBell(reader: TestUser): Promise<{ statements: number; targets: string[] }> {
+    const counted = countingBinds(d1.db);
+    const response = await handleApi(new Request(`${BASE}/api/notifications`, { headers: { cookie: reader.cookie } }), { ...env, DB: counted.db });
+    expect(response.status).toBe(200);
+    const { notifications } = (await response.json()) as { notifications: Notice[] };
+    return { statements: counted.prepared(), targets: notifications.map((n) => n.target.id) };
+  }
+
+  it('re-checks 1 and 50 notice targets in the same D1 statements, still omitting revoked, trashed and link-only ones', async () => {
+    const one = await signedUpUser(env, 't3s15-one', 'One');
+    const solo = await titled(ada, 'Solo');
+    await insertGrant(d1.db, { docId: solo }, one, 'viewer');
+    await notice(one, { type: 'doc', id: solo }, 1);
+    const single = await countedBell(one);
+    expect(single.targets).toEqual([solo]);
+
+    const kim = await signedUpUser(env, 't3s15-kim', 'Kim');
+    const shared = await insertFolder(d1.db, ada, ada.homeId);
+    await insertGrant(d1.db, { folderId: shared }, kim, 'commenter');
+    const targets: { type: 'doc' | 'folder'; id: string }[] = [];
+    const live: string[] = [];
+    for (let i = 0; i < 15; i += 1) {
+      const docId = await titled(ada, `Direct ${i}`);
+      await insertGrant(d1.db, { docId }, kim, 'editor');
+      targets.push({ type: 'doc', id: docId });
+      live.push(docId);
+    }
+    for (let i = 0; i < 10; i += 1) {
+      const docId = await titled(ada, `Below ${i}`, { folderId: shared });
+      targets.push({ type: 'doc', id: docId });
+      live.push(docId);
+    }
+    for (let i = 0; i < 8; i += 1) {
+      const folderId = await insertFolder(d1.db, ada, ada.homeId);
+      await insertGrant(d1.db, { folderId }, kim, 'viewer');
+      targets.push({ type: 'folder', id: folderId });
+      live.push(folderId);
+    }
+    targets.push({ type: 'folder', id: shared });
+    live.push(shared);
+    const revoked = await titled(ada, 'Revoked');
+    await insertGrant(d1.db, { docId: revoked }, kim, 'editor');
+    await d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(revoked, kim.id).run();
+    const trashed = await titled(ada, 'Trashed');
+    await insertGrant(d1.db, { docId: trashed }, kim, 'editor');
+    await d1.db.prepare('UPDATE docs SET deleted_at = ? WHERE id = ?').bind(Date.now(), trashed).run();
+    const linkOnly = await titled(ada, 'Link only');
+    await insertLink(d1.db, { docId: linkOnly }, 'editor');
+    const trashedFolder = await insertFolder(d1.db, ada, ada.homeId);
+    await insertGrant(d1.db, { folderId: trashedFolder }, kim, 'editor');
+    await d1.db.prepare('UPDATE folders SET deleted_at = ? WHERE id = ?').bind(Date.now(), trashedFolder).run();
+    const elsewhere = await titled(ben, 'Not shared');
+    targets.push({ type: 'doc', id: revoked }, { type: 'doc', id: trashed }, { type: 'doc', id: linkOnly }, { type: 'folder', id: trashedFolder },
+      { type: 'doc', id: elsewhere }, { type: 'folder', id: crypto.randomUUID() });
+    // Repeats of live targets fill the bell to 50 notices.
+    for (let i = 0; targets.length < 50; i += 1) targets.push(targets[i]);
+    for (const [i, target] of targets.entries()) await notice(kim, target, i + 1);
+
+    const many = await countedBell(kim);
+    const expected = [...targets].reverse().map((t) => t.id).filter((id) => live.includes(id));
+    expect(many.targets).toEqual(expected);
+    expect(many.statements, 'the same statements for 50 targets as for 1').toBe(single.statements);
+
+    // Revocation stays live: the next read leaves the target out.
+    await d1.db.prepare('DELETE FROM doc_members WHERE doc_id = ? AND principal_id = ?').bind(live[0], kim.id).run();
+    const after = await countedBell(kim);
+    expect(after.targets).toEqual(expected.filter((id) => id !== live[0]));
+    expect(after.statements).toBe(single.statements);
   });
 });

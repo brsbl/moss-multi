@@ -39,7 +39,7 @@ export const pathMatches = (url: string, path: string | RegExp): boolean => {
 
 const LOAD_FAILURE = /Failed to load resource: the server responded with a status of (\d{3})/;
 
-const declares = (declared: DeclaredHttp[], status: number, url: string) =>
+export const declares = (declared: DeclaredHttp[], status: number, url: string) =>
   declared.some((d) => d.status === status && pathMatches(url, d.path));
 
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
@@ -78,6 +78,9 @@ export function stampProblems(stamps: StampEntry[], version: Provenance | null):
   ]);
 }
 
+/** The longest a socket the page never saw close may have lived and still be a browser artifact (invariant 3). */
+const ARTIFACT_MS = 50;
+
 /** Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. */
 export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>): string[] {
   const groups = new Map<string, SocketEntry[]>();
@@ -86,10 +89,18 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
     groups.set(key, [...(groups.get(key) ?? []), socket]);
   }
   const problems: string[] = [];
-  for (const group of groups.values()) {
-    const { docId } = group[0];
+  for (const all of groups.values()) {
+    const { docId } = all[0];
+    // A socket the browser reported closed within ARTIFACT_MS of opening, that the page never closed nor heard close, is
+    // not one the page opened: a WebKit census once listed such a socket, closed 1 ms after it opened, beside the page's
+    // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
+    const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
+    if (group.length === 0) continue;
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
-    if (group.length > allowed) problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed`);
+    if (group.length > allowed) {
+      const closes = group.map((s, i) => `#${i + 1} ${s.closedAt === null ? 'open' : `closed after ${s.closedAt - s.openedAt} ms: ${s.close ?? 'no close event'}`}`);
+      problems.push(`${docId}: ${group.length} socket opens in one document, ${allowed} allowed (${closes.join('; ')})`);
+    }
     const events = group.flatMap((s) => [[s.openedAt, 1], [s.closedAt ?? Number.POSITIVE_INFINITY, -1]] as const);
     events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     let open = 0;

@@ -13,6 +13,7 @@ interface Created {
 
 const created: Created[] = [];
 const probed: string[] = [];
+const exported: string[] = [];
 const renamed: { docId: string; title: string }[] = [];
 let renameFails = false;
 let notificationFails = false;
@@ -38,6 +39,10 @@ const DocDO = {
       created.push({ docId: id.name, input });
       await d1Projections(d1.db, publish).title(id.name, (input as { title?: string }).title ?? '');
     },
+    exportMarkdown: async () => {
+      exported.push(id.name);
+      return `Exported ${id.name} {{2+2|4}}\n`;
+    },
     probeInstance: async () => {
       probed.push(id.name);
       return { instanceId: `instance-${id.name}`, constructedAt: 1 };
@@ -52,6 +57,7 @@ const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
+    takeCreateToken: async () => true,
     takeWriteToken: async () => {
       tokenAsks.push(id.name);
       writeTokens -= 1;
@@ -75,6 +81,7 @@ afterAll(() => d1?.dispose());
 beforeEach(() => {
   created.length = 0;
   probed.length = 0;
+  exported.length = 0;
   renamed.length = 0;
   renameFails = false;
   notificationFails = false;
@@ -307,5 +314,36 @@ describe('GET /api/docs/:id/access', () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ role: 'viewer' });
     }
+  });
+});
+
+describe('GET /api/docs/:id/content (T3.7 Save as Markdown)', () => {
+  const content = (docId: string, cookie: string | null, init: RequestInit = {}, query = '') =>
+    handleApi(new Request(`${BASE}/api/docs/${docId}/content${query}`, { ...init, headers: { ...(cookie ? { cookie } : {}), ...init.headers } }), env);
+
+  it("answers any reader with the DocDO's export as text/markdown, uncached", async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const response = await content(docId, ada.cookie);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.text()).toBe(`Exported ${docId} {{2+2|4}}\n`);
+    const share = await insertLink(d1.db, { docId }, 'viewer');
+    const viaLink = await content(docId, null, {}, `?share=${share}`);
+    expect(viaLink.status, 'an anonymous link reader').toBe(200);
+    expect(exported).toEqual([docId, docId]);
+  });
+
+  it('gives a caller who cannot read the doc the same 404 as a missing doc, without waking the DO', async () => {
+    const docId = await insertDoc(d1.db, ada);
+    const trashed = await insertDoc(d1.db, ada, { deleted: true });
+    const denied = await content(docId, ben.cookie);
+    const missing = await content(crypto.randomUUID(), ben.cookie);
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).toBe(await missing.text());
+    expect((await content(trashed, ada.cookie)).status).toBe(404);
+    expect((await content(docId, null)).status).toBe(401);
+    expect((await content(docId, ada.cookie, { method: 'POST', headers: { origin: BASE } })).status).toBe(405);
+    expect(exported).toEqual([]);
   });
 });

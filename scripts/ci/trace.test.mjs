@@ -52,6 +52,27 @@ describe('collectTags', () => {
     expect(tags.get('R1')).toEqual(['a.spec.ts']);
     expect(tags.get('col-6')).toEqual(['a.spec.ts']);
   });
+
+  it('reads a milestone tag apart from the plain one', () => {
+    const tags = collectTags([{ path: 'a.spec.ts', text: `test('x ${P}col-6@1 ${P}col-1')` }]);
+    expect([...tags.keys()]).toEqual(['col-6@1', 'col-1']);
+  });
+
+  it('ignores tags that appear only in comments', () => {
+    const text = [
+      `// ${P}col-1 in a line comment`,
+      `/* ${P}col-6 in a block`,
+      ` * comment ${P}R1 */`,
+      `const url = 'http://example.invalid/x'; // ${P}note-4`,
+      `test('leg ${P}col-6@1 // not a comment', () => {});`,
+      'const s = "/* not a comment either";',
+      `test(\`templated ${P}R1\`);`,
+    ].join('\n');
+    expect([...collectTags([{ path: 'a.spec.ts', text }]).keys()]).toEqual(['col-6@1', 'R1']);
+    const commentOnly = collectTags([{ path: 'b.spec.ts', text: `// ${P}col-6@1\ntest('leg', () => {});` }]);
+    const rows = fixtureRows().filter((row) => row.id === 'col-6');
+    expect(checkTrace({ rows, tags: new Map([...tagsFor('col-6'), ...commentOnly]), milestone: 1 }).problems).toEqual([`col-6 (due M1) has no leg tagged ${P}col-6@1`]);
+  });
 });
 
 describe('checkTrace', () => {
@@ -65,8 +86,21 @@ describe('checkTrace', () => {
   });
 
   it('gates later rows only when their milestone is reached', () => {
-    const { problems } = checkTrace({ rows: fixtureRows(), tags: tagsFor('col-6', 'R1'), milestone: 1 });
+    const { problems } = checkTrace({ rows: fixtureRows(), tags: tagsFor('col-6', 'col-6@1', 'R1'), milestone: 1 });
     expect(problems).toEqual(['col-1 (due M1) has no tagged leg', 'note-4 (due M1) has no tagged leg']);
+  });
+
+  it('gates every milestone a row lists, each by its own tag', () => {
+    const rows = fixtureRows().filter((row) => row.id === 'col-6');
+    expect(checkTrace({ rows, tags: tagsFor('col-6'), milestone: 0 }).problems).toEqual([]);
+    expect(checkTrace({ rows, tags: tagsFor('col-6'), milestone: 1 }).problems).toEqual([`col-6 (due M1) has no leg tagged ${P}col-6@1`]);
+    expect(checkTrace({ rows, tags: tagsFor('col-6', 'col-6@1'), milestone: 1 }).problems).toEqual([]);
+    expect(checkTrace({ rows, tags: tagsFor('col-6@0', 'col-6@1'), milestone: 1 }).problems).toEqual([]);
+  });
+
+  it('fails a milestone tag the row does not list', () => {
+    const { problems } = checkTrace({ rows: fixtureRows(), tags: tagsFor('col-6@2'), milestone: null });
+    expect(problems).toEqual([`col-6@2 is tagged in leg0.spec.ts but col-6 is not due at M2`]);
   });
 
   it('reports without failing when no gate is set', () => {
