@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (231 of 285 planned tasks verified)
+**Overall: 81% done** (232 of 285 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 4 / 25 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 5 / 25 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -254,6 +254,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T9.2 verified: arrowing down past a note's last block (callout, table, tab group, code block, chart or image) selects that block, so typing goes into a new paragraph directly below it instead of being dropped.
 - 2026-11-13 — T9.25 verified: the staging and pilot deploys read a CI run's jobs in pages of 50 with bounded retries, so a large run no longer fails the deploy with GitHub's 502, and a listing short of the run's job count fails the step; the CI duration and minutes scripts page the same way.
 - 2026-11-13 — T9.7 verified: a note's Share dialog lists everyone who can open the note, including people who reach it from its folder or vault, each marked as coming from a place above the note.
+- 2026-11-13 — T9.6 verified: the vault's owner can restore a note from a trashed vault, from the row menu or More actions; the vault comes back to the switcher with the note at its top, and the note never moves to another vault.
 
 ## T1.1s identity audit
 
@@ -293,6 +294,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.6's checker (164d0a8, 2026-11-13)
+
+- T9.6 (Notes in a trashed vault can be restored) checker P2: after the D1 batch commits the note and vault restore, restoreDoc awaits principalsWithFolderAccess outside any catch, so a transient D1 error fails a restore that succeeded and the client never switches vaults; collect the recipients inside the same best-effort guard notify() uses.
+- T9.6 (Notes in a trashed vault can be restored) checker P2: a co-owner who doesn't own the vault still sees 'You can restore it for 30 days.' on a note in a trashed vault, then gets the 'vault is in Trash' refusal (banner text predates this task).
 
 ### From T9.7's checker (de3a1ac, 2026-11-13)
 

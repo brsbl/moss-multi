@@ -18,13 +18,13 @@ vi.mock('./bridge/index.ts', () => {
       folderRole: (path: string) => listing.roles.get(path) ?? null,
       surfacedShared: (id: string) => listing.surfacedDocs.has(id),
       surfacedFolder: (path: string) => [...listing.surfacedFolders].some((p) => path === p || path.startsWith(`${p}/`)),
-      getSnapshot: () => ({ docs: listing.docs }),
+      getSnapshot: () => ({ docs: listing.docs, vault: { name: 'Trip notes' } }),
     },
   };
   return { WORKSPACE, getBridge: () => bridge };
 });
 
-const { canCreateNote, canDropInto, canMoveFolder, canMoveNote, noteTargetFolder } = await import('./folders.ts');
+const { canCreateNote, canDropInto, canMoveFolder, canMoveNote, noteTargetFolder, trashFolderVault } = await import('./folders.ts');
 
 beforeEach(() => {
   listing.roles.clear();
@@ -135,4 +135,11 @@ it('never moves across vaults: a surfaced row neither drags nor takes a drop', (
   expect(canMoveFolder('Notes/From Ada/Inner')).toBe(false);
   expect(canDropInto('Notes/From Ada')).toBe(false);
   expect(canDropInto('Notes/From Ada/Inner')).toBe(false);
+});
+
+it('names the vault a trashed folder’s notes go back to only for a folder of the vault on screen', () => {
+  listing.surfacedFolders.add('Notes/From Ada');
+  expect(trashFolderVault('Notes/Bookings')).toBe('Trip notes');
+  expect(trashFolderVault('Notes/From Ada'), 'a folder from another vault goes back there, not here').toBeNull();
+  expect(trashFolderVault('Notes/From Ada/Inner')).toBeNull();
 });
