@@ -9,7 +9,7 @@ import * as Y from 'yjs';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './index.ts';
 import { FIXTURES, stringify } from './fixtures.ts';
 import { EXCLUDED_FIELDS, excludedPropertiesFor } from '../excluded-properties.ts';
-import { payloadDocsFor } from '../payload-docs.ts';
+import { attachPayloadDocs, payloadDocsFor } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
 import { exportDocMarkdown, importBody } from '../server-doc.ts';
 
@@ -67,6 +67,15 @@ function normalize(value: unknown): unknown {
 const tree = (peer: Peer) => stringify(normalize(peer.editor.getEditorState().toJSON()));
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
+/** How many of `doc`'s types carry a property a binding set on them. */
+function tagged(doc: Y.Doc): number {
+  const types: unknown[] = [...doc.share.values()];
+  for (const structs of doc.store.clients.values()) {
+    for (const struct of structs) if (struct instanceof Y.Item && struct.content instanceof Y.ContentType) types.push(struct.content.type);
+  }
+  return types.filter((type) => Object.hasOwn(type as object, '_collabNode')).length;
+}
+
 /** Every attribute key on every element of the shared tree, depth first. */
 function wireKeys(type: Y.XmlText | Y.XmlElement, found = new Map<string, Set<string>>()): Map<string, Set<string>> {
   const attributes = type.getAttributes() as Record<string, unknown>;
@@ -90,6 +99,22 @@ describe('L4 every family replicates through the binding @p:tech-1 @p:col-1 @p:n
       expect(exportMarkdown(b.editor), `${name}: B's export`).toBe(exportMarkdown(a.editor));
       // The DocDO recomputes executable formulas on export; elsewhere its export is the editors'.
       if (!markdown.includes('{{')) expect(exportDocMarkdown(a.doc), `${name}: the server's export`).toBe(exportMarkdown(a.editor));
+      // A doc no client editor reads (the DocDO's) is exported in place: the export of a.doc, which a client reads and
+      // so is exported from a copy, formulas recomputed included; the doc left byte for byte as it was; a second alike.
+      const unbound = new Y.Doc();
+      Y.applyUpdate(unbound, Y.encodeStateAsUpdate(a.doc));
+      attachPayloadDocs(unbound, payloadDocsFor(a.doc));
+      const vector = Y.encodeStateVector(unbound);
+      const state = Y.encodeStateAsUpdate(unbound);
+      const copied = exportDocMarkdown(a.doc, 'note');
+      expect(exportDocMarkdown(unbound, 'note'), `${name}: the export read in place`).toBe(copied);
+      expect(Y.encodeStateVector(unbound), `${name}: an export leaves the state vector`).toEqual(vector);
+      expect(Y.encodeStateAsUpdate(unbound), `${name}: an export leaves the encoded state`).toEqual(state);
+      expect(exportDocMarkdown(unbound, 'note'), `${name}: a second export read in place`).toBe(copied);
+      expect(Y.encodeStateAsUpdate(unbound), `${name}: a second export leaves the encoded state`).toEqual(state);
+      expect(tagged(unbound), `${name}: the binding keeps its own map, never tagging the doc's types`).toBe(0);
+      expect(tagged(a.doc), `${name}: a client's binding tags none either`).toBe(0);
+      unbound.destroy();
       const keys = wireKeys(a.doc.get('root', Y.XmlText));
       for (const [type, fields] of Object.entries(EXCLUDED_FIELDS)) {
         for (const field of fields) expect(keys.get(type)?.has(field) ?? false, `${name}: ${type}.${field} stays off the wire`).toBe(false);

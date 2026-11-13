@@ -168,6 +168,32 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  # T3.B31a: the heap each near-cap note's create, wake and export needs in workerd (V8's heap cap bisected, 3 of 3
+  # fresh runs), against relative budgets over the note at rest; the tables land in the job summary. One note per job:
+  # each note's bisection takes minutes.
+  memory:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        note: ['j01-large', 'paste-blocks', 'paste-list', 'paste-race', 'paste-table', '2 MB of mixed', '200k of mixed']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: DocDO memory in workerd
+        run: node scripts/measure-memory.mjs
+        env:
+          MEASURE_MEMORY_CASES: ${{ matrix.note }}
+        timeout-minutes: 25
+
   build:
     needs: plan
     if: needs.plan.outputs.build == 'true'
@@ -570,7 +596,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, memory]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
