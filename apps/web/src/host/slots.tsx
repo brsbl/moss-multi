@@ -4,6 +4,7 @@ import { FacePile } from '../../../../packages/ui/src/FacePile.tsx';
 import { usePeers } from './collab/presence.ts';
 import type { ReactNode } from 'react';
 import { ConnectionIndicator } from './collab/ConnectionNotice.tsx';
+import { useRoleBand } from './collab/RoleBand.tsx';
 import { AccountSection } from './surfaces/AccountSection.tsx';
 import { AgentsSection } from './surfaces/AgentsSection.tsx';
 import { NotificationsBell } from './surfaces/NotificationsBell.tsx';
@@ -24,5 +25,5 @@ export const SettingsSections: () => ReactNode = () => <><AccountSection /><Agen
 /** Web chrome at the start of an open note's top-bar right group: the face pile, Share (or, for a link visitor, Sign
  * in to do more), the connection indicator and the bell (T1.1, T1.3, T1.5, T2.4, T2.8). */
 export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => (
-  <><FacePile peers={usePeers(docId)} /><SignInToDoMore /><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /><NotificationsBell /></>
+  <><FacePile peers={usePeers(docId)} /><SignInToDoMore inBand={useRoleBand(docId) !== null} /><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /><NotificationsBell /></>
 );

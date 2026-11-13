@@ -9,7 +9,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
-import { APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
+import {
+  APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, ROLE_ATTR, ROLE_BAND_ATTR, SYNC_UNACKED_ATTR,
+} from '../lib/contract.ts';
 import { acceptInvite, grant, grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -209,6 +211,8 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   await expect(stranger.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" for a viewer link (T2.6)').toHaveCount(0);
   const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
   await expect(signIn, 'the stranger is offered sign-in').toBeVisible();
+  await expect(signIn, 'exactly once (T9.10)').toHaveCount(1);
+  await expect(ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`), 'the band says the link is view only').toContainText('View only.');
   await actors.checkpoint('read-signed-out');
 
   const benPrincipal = await actors.principal('ben');
@@ -755,5 +759,53 @@ test('j08 read-only: tabs and callouts offer a reader no focusable control and n
   await ui.waitOpen(dee, docId, 'readonly');
   await expect(ui.pane(dee, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
   await probeReadOnlyBlocks(actors, dee, docId, frames, ada);
+  await actors.requireDistinct(4);
+});
+
+// T9.10: a reader sees their access in Moss's bottom band, and a key typed into a note they cannot edit says why, once
+// per notice. Space, the arrows and Cmd/Ctrl+C are a reader's own keys and say nothing.
+test('j08 access band: a viewer and a commenter see their access, refused typing says why, and a suggester is told who renames @p:ppl-2@2 @evidence', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const readers = [
+    ['ben', 'viewer', "View only. You can't edit this note.", "You can view this note, but you can't edit it."],
+    ['cy', 'commenter', "Comment only. You can't edit this note.", "You can comment on this note, but you can't edit it."],
+  ] as const;
+  for (const [label, role, band, refused] of readers) {
+    const principal = await actors.principal(label);
+    await grantDoc(ada, docId, principal, role);
+    const reader = await actors.open(principal, { path: `/d/${docId}` });
+    await ui.waitOpen(reader, docId, 'readonly');
+    await expect(ui.pane(reader, docId)).toHaveAttribute(ROLE_ATTR, role);
+    const roleBand = ui.pane(reader, docId).locator(`[${ROLE_BAND_ATTR}]`);
+    await expect(roleBand, `${role}: the band says so when the note opens`).toHaveText(band, { timeout: LIVE_TIMEOUT });
+    await expect(roleBand).toBeVisible();
+    const refusal = ui.pane(reader, docId).locator(`[${INPUT_REFUSAL_ATTR}]`);
+    await ui.body(reader, docId).locator('p').filter({ hasText: TEXT }).click({ force: true });
+    for (const key of ['Space', 'ArrowDown', 'ArrowUp', 'ControlOrMeta+c', 'Tab']) await reader.page.keyboard.press(key);
+    await ui.body(reader, docId).locator('p').filter({ hasText: TEXT }).click({ force: true });
+    await reader.page.waitForTimeout(500);
+    await expect(refusal, `${role}: Space, arrows and Cmd+C say nothing`).toHaveText('');
+    await reader.page.keyboard.type('x');
+    await expect(refusal, `${role}: the first key typed says why`).toHaveText(refused);
+    await reader.page.keyboard.press('Enter');
+    await expect(refusal, `${role}: once while it shows`).toHaveText(refused);
+    await expect(refusal, `${role}: the notice clears`).toHaveText('', { timeout: 6_000 });
+    await ui.title(reader, docId).click({ force: true });
+    await reader.page.keyboard.press('Backspace');
+    await expect(refusal, `${role}: a key aimed at the title says why too`).toHaveText(refused);
+    await expect(roleBand, `${role}: the band stays`).toHaveText(band);
+    await actors.checkpoint(`access-band-${role}`);
+    expect(await ui.fieldText(ada, docId, 'body'), `${role}: the owner's note is unchanged`).toBe(TEXT);
+  }
+
+  const deePrincipal = await actors.principal('dee');
+  await grantDoc(ada, docId, deePrincipal, 'suggester');
+  const dee = await actors.open(deePrincipal, { path: `/d/${docId}` });
+  await ui.waitOpen(dee, docId, 'live');
+  await expect(ui.pane(dee, docId).locator(`[${ROLE_BAND_ATTR}]`), 'a suggester gets no band').toHaveCount(0);
+  await ui.title(dee, docId).click({ force: true });
+  await dee.page.keyboard.type('x');
+  await expect(ui.pane(dee, docId).locator(`[${INPUT_REFUSAL_ATTR}]`), 'a suggester typing in the title is told who renames').toHaveText('Only an editor can rename this note.');
   await actors.requireDistinct(4);
 });
