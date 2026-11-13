@@ -273,10 +273,10 @@ const MIN_TARGET_SHARE = 1 / 32;
 const SLOW_FRAME_MS = 1_000;
 
 /**
- * How far past the structure guard a write of only formats and properties may take a note, as a share of STRUCT_CAP:
+ * How many structs past the structure guard a write of only formats and properties may take a note: 1% of STRUCT_CAP,
  * hundreds of format removals, inside the guard's memory margin.
  */
-const PROPERTY_HEADROOM = 0.01;
+const PROPERTY_HEADROOM = Math.ceil(STRUCT_CAP / 100);
 
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
@@ -1161,7 +1161,8 @@ export class DocDO extends YServer<SyncEnv> {
     if (store.meta('created') !== null) return;
     const bytes = payloads.reduce((sum, [, payload]) => sum + payload.byteLength, state.byteLength);
     // The copy is held to the limits as any write is: a source over one (a note from before them) is not copied.
-    const limit = this.#serverWriteLimit(state, payloads);
+    const before = this.#size();
+    const limit = this.#serverWriteLimit(before, this.#sizeAfter(before, state)?.size ?? { ...before }, payloads);
     if (limit) throw new DocCapError(limit);
     if (bytes > this.#limits.stateCapBytes) throw new DocCapError();
     for (const [id, payload] of payloads) this.#payloads?.write(id, payload, SERVER_IMPORT);
@@ -1470,9 +1471,11 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** `extra`: bytes a write still to come adds (create's title, admitted with its body). */
   #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][], extra = 0): void {
+    const before = this.#size();
+    const after = this.#sizeAfter(before, diff);
     // A write that only deletes (a shortened title) adds nothing: a note at a limit, or stored past one, can shrink.
-    if (!payloads.length && !growthOf(this.document, diff).inserts) return;
-    const limit = this.#serverWriteLimit(diff, payloads);
+    if (!after && !payloads.length) return;
+    const limit = this.#serverWriteLimit(before, after?.size ?? { ...before }, payloads);
     if (limit) throw new DocCapError(limit);
     if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, extra))) throw new DocCapError();
   }
@@ -1490,7 +1493,7 @@ export class DocDO extends YServer<SyncEnv> {
    */
   #limitMet(before: NoteSize, after: NoteSize, properties = false): DocLimit | null {
     if (after.chars > this.#limits.textCharCap && after.chars > before.chars) return 'text';
-    const guard = properties ? this.#limits.structCap * (1 + PROPERTY_HEADROOM) : this.#limits.structCap;
+    const guard = this.#limits.structCap + (properties ? PROPERTY_HEADROOM : 0);
     if (after.structs > guard && after.structs > before.structs) return 'structure';
     return null;
   }
@@ -1534,9 +1537,7 @@ export class DocDO extends YServer<SyncEnv> {
    * Which limit a server write (an import's diff, a copy's state) would pass, with the payloads it writes, each new and
    * named by the write, or null.
    */
-  #serverWriteLimit(update: Uint8Array, payloads: [string, Uint8Array][]): DocLimit | null {
-    const before = this.#size();
-    const after = this.#sizeAfter(before, update)?.size ?? { ...before };
+  #serverWriteLimit(before: NoteSize, after: NoteSize, payloads: [string, Uint8Array][]): DocLimit | null {
     for (const [id, payload] of payloads) {
       const doc = new Y.Doc();
       try {

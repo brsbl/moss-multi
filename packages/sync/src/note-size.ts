@@ -290,40 +290,50 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
   };
   interface Key {
     sub: string | null;
-    /** The stored element it is set on, or else the new type's id. */
-    element: Y.XmlElement | null;
-    parent: string | null;
+    /** The stored element it is set on, else the new struct of the new type it is set on, else null (unknown). */
+    on: Y.XmlElement | Struct | null;
     /** Whether it takes the place of the stored element's value (one set later than it, or a key it lacks). */
     replaces: boolean;
   }
   const keyed = (sub: string, parent: Y.ID | null): Key => {
     const element = parent ? elementAt(parent) : null;
-    const current = element?._map.get(sub);
-    return {
-      sub, element, replaces: !current || current.deleted,
-      parent: parent && !element && !storedAt(parent.client, parent.clock) ? `${parent.client}:${parent.clock}` : null,
-    };
+    if (element) {
+      const current = element._map.get(sub);
+      return { sub, on: element, replaces: !current || current.deleted };
+    }
+    const entry = parent && !storedAt(parent.client, parent.clock) ? freshAt(parent.client, parent.clock) : null;
+    return { sub, on: entry?.struct ?? null, replaces: true };
   };
+  const UNKEYED: Key = { sub: null, on: null, replaces: false };
   /**
    * A new item's map key and the element it is set on. An update omits both for a key it sets again (its origin is the
    * value it replaces), so they are read from the origin. Null when they cannot be known.
    */
   const keyOf = (item: Y.Item, depth = 0): Key | null => {
     if (item.parentSub !== null) return keyed(item.parentSub, item.parent instanceof Y.ID ? item.parent : null);
-    if (item.parent !== null || !item.origin) return { sub: null, element: null, parent: null, replaces: false };
+    if (item.parent !== null || !item.origin) return UNKEYED;
     if (depth > 1_000) return null;
     const stored = storedAt(item.origin.client, item.origin.clock);
     if (stored) {
       if (!(stored instanceof Y.Item)) return null;
+      if (stored.parentSub === null) return UNKEYED;
       const element = stored.parent instanceof Y.XmlElement && !stored.parent._item?.deleted ? stored.parent : null;
-      return { sub: stored.parentSub, element, parent: null, replaces: !stored.deleted };
+      return { sub: stored.parentSub, on: element, replaces: !stored.deleted };
     }
     const entry = freshAt(item.origin.client, item.origin.clock);
     return entry?.struct instanceof Y.Item ? keyOf(entry.struct, depth + 1) : null;
   };
 
   /** Per element whose `__regId` or `__type` the update sets: the values it sets, and whether one replaces the stored. */
-  const naming = new Map<Y.XmlElement | string | null, { regIds: string[]; types: unknown[]; newId: boolean; newType: boolean }>();
+  interface Naming { regIds: string[]; types: unknown[]; newId: boolean; newType: boolean }
+  const naming = new Map<Y.XmlElement | Struct | null, Naming>();
+  const entryOf = (on: Y.XmlElement | Struct | null): Naming => {
+    let entry = naming.get(on);
+    if (!entry) naming.set(on, (entry = { regIds: [], types: [], newId: false, newType: false }));
+    return entry;
+  };
+  /** `__type` values set on new elements, read only for those the update also gives an id (a note's every block has one). */
+  const newTypes: Y.Item[] = [];
   for (const [client, list] of fresh) {
     for (const { struct, start, end } of list) {
       if (!(struct instanceof Y.Item)) {
@@ -343,10 +353,12 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
         continue;
       }
       if (key.sub !== '__regId' && key.sub !== '__type') continue;
-      const at = key.element ?? key.parent;
-      let entry = naming.get(at);
-      if (!entry) naming.set(at, (entry = { regIds: [], types: [], newId: false, newType: false }));
       const value = struct.content instanceof Y.ContentAny ? struct.content.arr[0] : undefined;
+      if (key.sub === '__type' && key.on !== null && !(key.on instanceof Y.XmlElement)) {
+        newTypes.push(struct);
+        continue;
+      }
+      const entry = entryOf(key.on);
       if (key.sub === '__regId') {
         if (typeof value === 'string') entry.regIds.push(value);
         entry.newId ||= key.replaces;
@@ -356,12 +368,20 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
       }
     }
   }
-  for (const [at, { regIds, types, newId, newType }] of naming) {
-    const element = at instanceof Y.XmlElement ? at : null;
+  if ([...naming.keys()].some((on) => on !== null && !(on instanceof Y.XmlElement))) {
+    for (const item of newTypes) {
+      const entry = naming.get(keyOf(item)!.on);
+      if (!entry) continue;
+      entry.types.push(item.content instanceof Y.ContentAny ? item.content.arr[0] : undefined);
+      entry.newType = true;
+    }
+  }
+  for (const [on, { regIds, types, newId, newType }] of naming) {
+    const element = on instanceof Y.XmlElement ? on : null;
     // Of the values one update sets, any may win; an element it is not known to set on, or a new one it gives no type
     // (a later update may), may be a payload's.
     const after = newType ? types : [...types, element?.getAttribute('__type')];
-    const payload = at === null || (!element && !types.length) || after.some((type) => typeof type === 'string' && isPayloadType(type));
+    const payload = on === null || (!element && !types.length) || after.some((type) => typeof type === 'string' && isPayloadType(type));
     if (payload) {
       for (const id of regIds) growth.named.add(id);
       const stored: unknown = element?.getAttribute('__regId');
