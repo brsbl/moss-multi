@@ -7,10 +7,10 @@ import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  BODY_BINDING_ATTR, DOC_STATE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, LEXICAL_EDITOR_SELECTOR, paneSelector, VERSION_CONTENT_ATTR,
-  VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
+  ACTION_FEEDBACK_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, LEXICAL_EDITOR_SELECTOR, paneSelector,
+  RESTORE_NOTICE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
 } from '../lib/contract.ts';
-import { grantDoc } from '../lib/grants.ts';
+import { grantDoc, linkDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const SEED = 'The quick brown fox jumps over the lazy dog.\n\nA second line for the peer.';
@@ -539,4 +539,146 @@ test('j17-history: View shows a property-less note that starts with a rule whole
   await expect(shown, 'the properties are not shown as body text').not.toContainText('status: draft');
   await expect(shown.locator('hr'), 'nor as rules').toHaveCount(0);
   await closeHistory(again, withProperties);
+});
+
+const UNDO_KEY = 'ControlOrMeta+z';
+const feedback = (actor: Actor, id: string): Locator => ui.pane(actor, id).locator(`[${ACTION_FEEDBACK_ATTR}]`);
+const restoreNotice = (actor: Actor, id: string): Locator => ui.pane(actor, id).locator(`[${RESTORE_NOTICE_ATTR}]`);
+
+/** Ada restores the version named `name` from History and confirms. */
+async function restoreNamed(ada: Actor, id: string, name: string): Promise<void> {
+  const view = await openHistory(ada, id);
+  await row(ada, id, name).click();
+  await view.getByRole('button', { name: 'Restore', exact: true }).click();
+  const dialog = ada.page.locator('[data-remote-web-surface-blocking-dialog]');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(historyView(ada, id), 'the restored note is shown').toHaveCount(0, { timeout: BIND_TIMEOUT });
+}
+
+/** The note is back to SEED in this window. */
+async function expectSeed(actor: Actor, id: string): Promise<void> {
+  await expect.poll(async () => {
+    const text = await bodyText(actor, id);
+    return text.includes('The quick brown fox jumps over the lazy dog.') && text.includes('A second line for the peer.') && !text.includes('added this');
+  }, { message: `${actor.label}: the restore lands`, timeout: PEER_TIMEOUT }).toBe(true);
+}
+
+test('j17-history: after a restore, Cmd+Z twice leaves the restored text untouched for the restorer and a peer, and "Restored version" confirms it @p:mean-3 @evidence', async ({ actors, stack }) => {
+  const { id, ada, ben } = await sharedNote(actors, stack.baseUrl);
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'Before the change');
+  await closeHistory(ada, id);
+
+  // After the version both change the note in steps of their own: a typed line and a deleted word each. The restore
+  // takes all of it back; an undo step replayed afterwards would write text that was in no version.
+  await ui.body(ada, id).getByText('A second line for the peer.').click();
+  await caretAfter(ada, id, 'for the peer.');
+  await ada.page.keyboard.type(' Ada added this.');
+  await ada.page.waitForTimeout(1_200);
+  await select(ada, id, 'second ');
+  await ada.page.keyboard.press('Backspace');
+  await ui.body(ben, id).getByText('lazy dog.').click();
+  await caretAfter(ben, id, 'lazy dog.');
+  await ben.page.keyboard.type(' Ben added this.');
+  await ben.page.waitForTimeout(1_200);
+  await select(ben, id, 'brown ');
+  await ben.page.keyboard.press('Backspace');
+  await ui.waitAcked(ada, id);
+  await ui.waitAcked(ben, id);
+  for (const actor of [ada, ben]) {
+    await expect.poll(() => bodyText(actor, id), { timeout: PEER_TIMEOUT }).toContain('Ada added this.');
+    await expect.poll(() => bodyText(actor, id), { timeout: PEER_TIMEOUT }).toContain('Ben added this.');
+  }
+
+  await restoreNamed(ada, id, 'Before the change');
+  const pill = feedback(ada, id);
+  await expect(pill, "the restore is confirmed in moss's feedback pill").toContainText('Restored version', { timeout: 2_000 });
+  await expect(pill.getByRole('button', { name: 'Undo', exact: true }), 'with its Undo').toBeVisible();
+  await actors.checkpoint('history-restored-pill');
+  for (const actor of [ada, ben]) await expectSeed(actor, id);
+  await expect(restoreNotice(ada, id), 'the restorer is not told of her own restore').toHaveCount(0);
+  await expect(pill, "the pill clears as moss's does").toHaveCount(0, { timeout: 4_000 });
+  const restored = await bodyText(ada, id);
+  const served = await serverText(ada, id);
+
+  for (const actor of [ada, ben]) {
+    await ui.body(actor, id).getByText('The quick').click();
+    await actor.page.keyboard.press(UNDO_KEY);
+    await actor.page.waitForTimeout(300);
+    await actor.page.keyboard.press(UNDO_KEY);
+  }
+  await ada.page.waitForTimeout(1_500);
+  for (const actor of [ada, ben]) {
+    expect(await bodyText(actor, id), `${actor.label}: Cmd+Z twice after the restore changes nothing`).toBe(restored);
+  }
+  await ui.waitAcked(ada, id);
+  await ui.waitAcked(ben, id);
+  expect(await serverText(ada, id), 'and nothing reaches the server').toBe(served);
+  await actors.checkpoint('history-restored-after-undo-keys');
+});
+
+test('j17-history: Undo in the "Restored version" pill brings back the note as it was before the restore, in every window @p:mean-3 @evidence', async ({ actors, stack }) => {
+  const { id, ada, ben } = await sharedNote(actors, stack.baseUrl);
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'Before the change');
+  await closeHistory(ada, id);
+  await ui.typeBody(ada, id, ' Ada added this.');
+  await ui.waitAcked(ada, id);
+  await expect.poll(() => bodyText(ben, id), { timeout: PEER_TIMEOUT }).toContain('Ada added this.');
+
+  await restoreNamed(ada, id, 'Before the change');
+  const pill = feedback(ada, id);
+  await expect(pill).toContainText('Restored version', { timeout: 2_000 });
+  await pill.getByRole('button', { name: 'Undo', exact: true }).click();
+  for (const actor of [ada, ben]) {
+    await expect.poll(() => bodyText(actor, id), { message: `${actor.label}: Undo brings back the note before the restore`, timeout: PEER_TIMEOUT })
+      .toContain('Ada added this.');
+  }
+  await ui.waitAcked(ada, id);
+  expect(await serverText(ada, id), 'the server holds it again').toContain('Ada added this.');
+  await expect(restoreNotice(ada, id), 'no band for her own restores').toHaveCount(0);
+  await actors.checkpoint('history-restore-undone');
+});
+
+test("j17-history: someone else's restore is named in a band in every open window; History opens on its restore point; a link visitor sees the sentence and Dismiss @p:mean-3 @evidence", async ({ actors, stack }) => {
+  const { id, ada, ben, adaPrincipal } = await sharedNote(actors, stack.baseUrl);
+  const token = await linkDoc(ada, id, 'viewer');
+  const visitor = await actors.anonymous(`/d/${id}?share=${token}`, { label: 'visitor', viewport: { width: 390, height: 844 } });
+  await ui.waitOpen(visitor, id, 'readonly');
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'Before the change');
+  await closeHistory(ada, id);
+  await ui.typeBody(ada, id, ' Ada added this.');
+  actors.typed.splice(actors.typed.findIndex((entry) => entry.text === ' Ada added this.'), 1);
+  await ui.waitAcked(ada, id);
+  for (const actor of [ben, visitor]) await expect.poll(() => bodyText(actor, id), { timeout: PEER_TIMEOUT }).toContain('Ada added this.');
+
+  await restoreNamed(ada, id, 'Before the change');
+  for (const actor of [ben, visitor]) await expectSeed(actor, id);
+  const sentence = `${adaPrincipal.name} restored an earlier version of this note.`;
+  for (const actor of [ben, visitor]) {
+    await expect(restoreNotice(actor, id), `${actor.label}: the restore is named`).toContainText(sentence, { timeout: 2_000 });
+    await expect(restoreNotice(actor, id).getByRole('button', { name: 'Dismiss', exact: true })).toBeVisible();
+  }
+  await expect(restoreNotice(visitor, id).getByRole('button', { name: 'See the note before the restore', exact: true }), 'a link visitor cannot open History')
+    .toHaveCount(0);
+  await expect(restoreNotice(ada, id)).toHaveCount(0);
+  await actors.checkpoint('history-peer-restore-band');
+
+  const point = (await listed(ada, id)).find((v) => v.kind === 'restore-point');
+  expect(point, 'the restore stored a restore point').toBeDefined();
+  await restoreNotice(ben, id).getByRole('button', { name: 'See the note before the restore', exact: true }).click();
+  const view = historyView(ben, id);
+  await expect(view).toBeVisible();
+  await expect(view.locator(`[${VERSION_ROW_ATTR}][${VERSION_ID_ATTR}="${point!.id}"]`), 'History opens on the restore point')
+    .toHaveAttribute('aria-pressed', 'true', { timeout: BIND_TIMEOUT });
+  await view.getByRole('button', { name: 'View', exact: true }).click();
+  await expect(content(ben, id), 'the note before the restore').toContainText('Ada added this.', { timeout: BIND_TIMEOUT });
+  await closeHistory(ben, id);
+
+  await restoreNotice(visitor, id).getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(restoreNotice(visitor, id), 'Dismiss clears the band').toHaveCount(0);
+  await restoreNotice(ben, id).getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(restoreNotice(ben, id)).toHaveCount(0);
 });

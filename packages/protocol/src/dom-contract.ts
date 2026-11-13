@@ -148,3 +148,7 @@ export const VERSION_ID_ATTR = 'data-version-id';
 export const VERSION_CONTENT_ATTR = 'data-version-content';
 export const VERSION_TITLE_ATTR = 'data-version-title';
 export const VERSION_BADGE_ATTR = 'data-version-badge';
+/** The band naming who restored an earlier version of the note while it was open here (T9.4). */
+export const RESTORE_NOTICE_ATTR = 'data-restore-notice';
+/** Moss's floating feedback pill in a note pane, e.g. "Restored version" with Undo (T9.4). */
+export const ACTION_FEEDBACK_ATTR = 'data-action-feedback';
