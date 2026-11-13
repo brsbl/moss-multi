@@ -269,7 +269,7 @@ function viewOf(live: Y.Doc): View {
   const editor = createConverterEditor();
   const stopLists = registerList(editor);
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
-  const binding = bindingOf(editor, live, true);
+  const binding = bindingOf(editor, live, false);
   const stopRegisters = bindRegisters(editor, live, { serializedImports: true, payloads });
   const dispose = () => {
     stopRegisters();
