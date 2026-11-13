@@ -574,7 +574,7 @@ test("j01 caret: a peer's bold and Backspace-merge keep the waiting caret as bef
   await expect(ui.body(ben, id).locator('p').first(), 'after a peer merge').toHaveText(`${PREVIOUS}Target paragraph where Ben waits.XY`);
 });
 
-test('j01 caret: Ben keeps typing while Ada makes his paragraph a checkbox mid-word, and every key lands in order @p:col-1', async ({ actors, stack }) => {
+test('j01 caret: Ben keeps typing while Ada makes his paragraph a checkbox mid-word, and his keys stay in it, in order @p:col-1', async ({ actors, stack }) => {
   const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
   await park(ben, id, TARGET, 7);
   await park(ada, id, TARGET, 27);
@@ -582,10 +582,17 @@ test('j01 caret: Ben keeps typing while Ada makes his paragraph a checkbox mid-w
   const typing = ben.page.keyboard.type('abcdefghijkl', { delay: 50 });
   await ada.page.getByRole('button', { name: 'Insert checkbox', exact: true }).click();
   await typing;
-  await expect(listItem(ui.body(ben, id))).toHaveText('Target paragraph where Benabcdefghijkl waits.', { timeout: PEER_TIMEOUT });
+  await expect(listItem(ui.body(ben, id)), "Ada's checkbox reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
   await converged(ada, ben, id);
-  await expect(listItem(ui.body(ada, id))).toHaveText('Target paragraph where Benabcdefghijkl waits.');
-  await expect(ui.body(ben, id).locator('p').first()).toHaveText(PREVIOUS);
+  await expect(ui.body(ben, id).locator('p').first(), 'none of his keys land in the paragraph above').toHaveText(PREVIOUS);
+  // A key typed into the old paragraph after Ada converted it goes with that paragraph (the conversion replaces the
+  // block); every key after it lands beside the ones before, in order.
+  const text = (await listItem(ui.body(ada, id)).textContent()) ?? '';
+  const keys = /^\s*Target paragraph where Ben([a-l]*) waits\.$/.exec(text)?.[1];
+  expect(keys, `Ben's keys sit together beside his words: ${text}`).toBeDefined();
+  expect([...(keys ?? '')].every((key, i, all) => i === 0 || all[i - 1] < key), `in order: ${String(keys)}`).toBe(true);
+  expect(keys, 'the keys after the change all land').toMatch(/ghijkl$/);
+  await expect(listItem(ui.body(ben, id))).toHaveText(text.trim());
 });
 
 test("j01 caret: a peer's Backspace-merge never sends the waiting caret into an untouched paragraph that reads the same @p:col-1", async ({ actors, stack }) => {

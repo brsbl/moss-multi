@@ -146,14 +146,35 @@ function $restore(editor: LexicalEditor, held: HeldCaret): void {
   if (!block) return;
   // Only a block the transaction inserted can stand in for the caret's: a neighbour that moved up (after a merge) never does.
   const inserted = (node: ElementNode) => !held.state._nodeMap.has(node.getKey());
+  const text = block.getTextContent();
   // Replaced (a heading, list item or checkbox now reads the same): the same offset in it.
-  if (inserted(block) && block.getTextContent() === before.text) {
+  if (inserted(block) && text === before.text) {
     $placeAt(block, before.offset);
     return;
   }
   // Split before the caret: the rest of the offset in the second half.
-  const head = block.getTextContent();
-  if (before.offset <= head.length) return;
-  const next = $blockAt(before.index + 1);
-  if (next && inserted(next) && head + next.getTextContent() === before.text) $placeAt(next, before.offset - head.length);
+  const next = before.offset > text.length ? $blockAt(before.index + 1) : null;
+  if (next && inserted(next) && text + next.getTextContent() === before.text) {
+    $placeAt(next, before.offset - text.length);
+    return;
+  }
+  // Replaced while a few of your keys were still on their way: they went with the old block, so map the offset
+  // through the difference.
+  const mapped = inserted(block) ? mapOffset(before.text, text, before.offset) : null;
+  if (mapped !== null) $placeAt(block, mapped);
+}
+
+/** Keys typed locally between a peer's change and its arrival that a replaced block can be missing. */
+const IN_FLIGHT = 8;
+
+/** `offset` in `was` mapped into `now`, when the two differ in one short run; null when they read differently. */
+function mapOffset(was: string, now: string, offset: number): number | null {
+  const shorter = Math.min(was.length, now.length);
+  let prefix = 0;
+  while (prefix < shorter && was[prefix] === now[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < shorter - prefix && was[was.length - 1 - suffix] === now[now.length - 1 - suffix]) suffix += 1;
+  if (prefix + suffix < Math.max(was.length, now.length) - IN_FLIGHT) return null;
+  if (offset <= prefix) return offset;
+  return now.length - Math.min(suffix, was.length - offset);
 }
