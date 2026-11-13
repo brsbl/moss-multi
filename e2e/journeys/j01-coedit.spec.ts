@@ -4,12 +4,13 @@
 // socket opens and closes 4404, the page never reconnects, and the API's 404 for that note is byte-identical to the
 // 404 for a note that never existed.
 import { createHash, randomUUID } from 'node:crypto';
+import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, NAMES, ROLE_ATTR, SYNC_UNACKED_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { cookieHeader, openDocClient, PROTOCOL_QUERY } from '../lib/doc-client.ts';
-import { acceptInvite, grant } from '../lib/grants.ts';
+import { acceptInvite, grant, grantDoc } from '../lib/grants.ts';
 import { signIn } from '../lib/principals.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -393,4 +394,159 @@ test('j01 workspace: sign-out closes the channel while the auth request is still
   } finally { release(); }
   await ada.page.waitForURL('**/login', { waitUntil: 'domcontentloaded' });
   await ui.waitForLoginCard(ada);
+});
+
+// A peer's block change under a waiting caret: Ada turns the paragraph Ben's caret sits in into a heading, a bullet or
+// a checkbox, or presses Enter before his caret, and his next key lands beside the words it was on.
+const CARET_NOTE = [
+  'Previous paragraph stays put.',
+  '',
+  'Target paragraph where Ben waits.',
+  '',
+  '- First item',
+  '- Item where Ben waits too',
+  '',
+  '| Head | More |',
+  '| --- | --- |',
+  '| Cell where Ben waits | x |',
+].join('\n');
+const TARGET = 'Target paragraph where Ben waits.';
+const PREVIOUS = 'Previous paragraph stays put.';
+
+async function caretNote(actors: Actors, baseUrl: string) {
+  const ada = await actors.session(await actors.principal('ada'));
+  const created = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Caret', markdown: CARET_NOTE } });
+  expect(created.status(), 'declared setup: Ada has the note').toBe(201);
+  const { doc: { id } } = await created.json() as { doc: { id: string } };
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, id, benPrincipal);
+  await ada.goto(`/d/${id}`);
+  const ben = await actors.open(benPrincipal, { path: `/d/${id}` });
+  for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await actor.observeEditor(id); }
+  return { ada, ben, id };
+}
+
+/** Puts the caret `back` characters before the end of the block that reads `text`. */
+async function park(actor: Actor, id: string, text: string, back: number) {
+  await ui.body(actor, id).getByText(text, { exact: true }).first().click();
+  await actor.page.keyboard.press('End');
+  for (let i = 0; i < back; i += 1) await actor.page.keyboard.press('ArrowLeft');
+}
+
+async function converged(ada: Actor, ben: Actor, id: string) {
+  await expect.poll(async () => (await ui.fieldText(ada, id, 'body')) === (await ui.fieldText(ben, id, 'body')),
+    { message: 'both windows converge', timeout: PEER_TIMEOUT }).toBe(true);
+}
+
+/** A toolbar dropdown's item, as a person picks it. */
+async function pick(actor: Actor, name: string, item: string) {
+  await actor.page.getByRole('button', { name, exact: true }).click();
+  await actor.page.getByRole('menuitem').filter({ hasText: item }).click();
+}
+
+interface CaretCase {
+  name: string;
+  /** The block both carets start in, and how many characters before its end Ben's and Ada's sit. */
+  block: string;
+  ben: number;
+  ada: number;
+  act: (ada: Actor) => Promise<void>;
+  /** Ada's change as Ben's window shows it. */
+  seen: (body: Locator) => Locator;
+  /** The block Ben's key must land in, and its text after the key. */
+  landed: (body: Locator) => Locator;
+  expected: string;
+}
+
+const listItem = (body: Locator) => body.locator('li').filter({ hasText: 'Target paragraph' });
+const CARET_CASES: CaretCase[] = [
+  {
+    name: 'Heading 2', block: TARGET, ben: 7, ada: 27,
+    act: (ada) => pick(ada, 'Heading level', 'Heading 2'),
+    seen: (body) => body.locator('h2').filter({ hasText: 'Target paragraph' }),
+    landed: (body) => body.locator('h2'), expected: 'Target paragraph where BenX waits.',
+  },
+  {
+    name: 'Bullet', block: TARGET, ben: 7, ada: 27,
+    act: (ada) => pick(ada, 'List type', 'Bullet'),
+    seen: listItem, landed: listItem, expected: 'Target paragraph where BenX waits.',
+  },
+  {
+    name: 'checkbox', block: TARGET, ben: 7, ada: 27,
+    act: (ada) => ada.page.getByRole('button', { name: 'Insert checkbox', exact: true }).click(),
+    seen: listItem, landed: listItem, expected: 'Target paragraph where BenX waits.',
+  },
+  {
+    name: 'Enter in the middle', block: TARGET, ben: 7, ada: 27,
+    act: (ada) => ada.page.keyboard.press('Enter'),
+    seen: (body) => body.locator('p').filter({ hasText: /^\s*paragraph where Ben waits\.$/ }),
+    landed: (body) => body.locator('p').filter({ hasText: 'paragraph where Ben' }), expected: 'paragraph where BenX waits.',
+  },
+  {
+    name: 'Enter in the middle of a list item', block: 'Item where Ben waits too', ben: 10, ada: 20,
+    act: (ada) => ada.page.keyboard.press('Enter'),
+    seen: (body) => body.locator('li').filter({ hasText: /^\s*where Ben waits too$/ }),
+    landed: (body) => body.locator('li').filter({ hasText: 'where Ben' }), expected: 'where BenX waits too',
+  },
+  {
+    name: 'Enter in the middle of a table cell', block: 'Cell where Ben waits', ben: 6, ada: 16,
+    act: (ada) => ada.page.keyboard.press('Enter'),
+    seen: (body) => body.locator('td p').filter({ hasText: /^\s*where Ben waits$/ }),
+    landed: (body) => body.locator('td p').filter({ hasText: 'where Ben' }), expected: 'where BenX waits',
+  },
+];
+
+for (const c of CARET_CASES) {
+  test(`j01 caret: Ada's ${c.name} keeps Ben's waiting caret beside its words @p:col-1`, async ({ actors, stack }) => {
+    const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
+    await park(ben, id, c.block, c.ben);
+    await park(ada, id, c.block, c.ada);
+    await c.act(ada);
+    await expect(c.seen(ui.body(ben, id)), "Ada's change reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
+    await ben.page.keyboard.type('X');
+    await expect(c.landed(ui.body(ben, id)), "Ben's key lands beside the words his caret was on").toHaveText(c.expected);
+    await expect(ui.body(ben, id).locator('p').first(), 'the paragraph above is untouched').toHaveText(PREVIOUS);
+    await converged(ada, ben, id);
+    await expect(c.landed(ui.body(ada, id)), 'Ada sees it there too').toHaveText(c.expected);
+  });
+}
+
+test('j01 caret: Ben types on, a key at a time, while Ada makes his paragraph a bullet, and nothing moves or goes @p:col-1', async ({ actors, stack }) => {
+  const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
+  await park(ben, id, TARGET, 7);
+  await park(ada, id, TARGET, 27);
+  await ben.page.keyboard.type('a');
+  await expect(ui.body(ada, id)).toContainText('Bena waits', { timeout: PEER_TIMEOUT });
+  await ben.page.keyboard.type('b');
+  await expect(ui.body(ada, id)).toContainText('Benab waits', { timeout: PEER_TIMEOUT });
+  await pick(ada, 'List type', 'Bullet');
+  await expect(listItem(ui.body(ben, id)), "Ada's bullet reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
+  await ben.page.keyboard.type('c');
+  await ben.page.keyboard.type('d');
+  await expect(listItem(ui.body(ben, id))).toHaveText('Target paragraph where Benabcd waits.');
+  await converged(ada, ben, id);
+  await expect(listItem(ui.body(ada, id))).toHaveText('Target paragraph where Benabcd waits.');
+  await expect(ui.body(ben, id).locator('p').first()).toHaveText(PREVIOUS);
+});
+
+test("j01 caret: a peer's bold and Backspace-merge keep the waiting caret as before @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
+  await park(ben, id, TARGET, 7);
+  // Ada bolds "paragraph", before Ben's caret in the same text.
+  await park(ada, id, TARGET, 17);
+  for (let i = 0; i < 'paragraph'.length; i += 1) await ada.page.keyboard.press('Shift+ArrowLeft');
+  await ada.page.keyboard.press('ControlOrMeta+b');
+  await expect(ui.body(ben, id).getByText('paragraph', { exact: true }), "Ada's bold reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
+  await ben.page.keyboard.type('X');
+  await converged(ada, ben, id);
+  expect(await ui.fieldText(ben, id, 'body'), "after a peer's bold").toContain('Target paragraph where BenX waits.');
+
+  // Ada presses Backspace at the start of Ben's paragraph, merging it into the one above.
+  await ui.body(ada, id).getByText('Target', { exact: false }).first().click();
+  await ada.page.keyboard.press('Home');
+  await ada.page.keyboard.press('Backspace');
+  await expect(ui.body(ben, id).locator('p').first(), "Ada's merge reaches Ben").toContainText('stays put.Target', { timeout: PEER_TIMEOUT });
+  await ben.page.keyboard.type('Y');
+  await converged(ada, ben, id);
+  await expect(ui.body(ben, id).locator('p').first(), 'after a peer merge').toHaveText(`${PREVIOUS}Target paragraph where BenXY waits.`);
 });
