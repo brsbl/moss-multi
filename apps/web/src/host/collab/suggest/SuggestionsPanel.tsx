@@ -3,22 +3,25 @@
 // suggestion, an accept, a reject and a withdraw show in every window as the doc syncs; each open card's hunks come
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { Button } from '@moss/shared/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { Check, GitPullRequestArrow, X } from 'lucide-react';
+import { Check, PencilLine, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
+import { requestMode, useShownMode } from './mode.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
+import { leaveReview } from './SuggestChrome.tsx';
 import { usePreviewRows } from './rows.ts';
 
 /** Reviewed cards listed under the open ones (glyphdown's cap). */
@@ -264,7 +267,7 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
   // The scroll box the cards' visibility is measured in.
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   return (
-    <div ref={setRoot} className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto p-2">
+    <div ref={setRoot} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
       {open.length === 0 && reviewed.length === 0 ? (
         <div className="px-3 py-6 text-center">
           <p className="text-xs text-ink-default">No suggestions</p>
@@ -289,6 +292,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
   const records = useRecords(source);
   const body = useSyncExternalStore(source.subscribeMount, () => source.body, () => null);
   const role = useDocRole(docId);
+  const mode = useShownMode(docId);
   const auth = useAuthState();
   useSyncExternalStore(subscribePanels, () => panelVersion, () => 0);
   const me = auth.status === 'signed-in' ? auth.user.id : null;
@@ -301,29 +305,66 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
     .filter((record) => record.meta.status !== 'open')
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
-  if (role === null) return null;
+  // Shown once the note has any suggestion, open or reviewed, as Moss shows its Comments button (comment-entry-point).
+  if (role === null || records.length === 0) return null;
+  const reviewing = mode === 'review';
   return (
-    <DropdownMenu open={isOpen} onOpenChange={(next) => (next ? openSuggestion(docId, null) : closePanel(docId))}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          data-collab-chrome=""
-          {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}
-          aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
-          title="Suggestions"
-          className={`relative ${open.length ? 'flex' : 'hidden sm:flex'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
-        >
-          <GitPullRequestArrow aria-hidden className="h-3.5 w-3.5" />
-          {open.length ? <span className="text-micro tabular-nums text-ink-muted">{open.length}</span> : null}
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-80 max-w-[calc(100vw-2rem)] p-0" {...{ [SUGGESTIONS_PANEL_ATTR]: '' }}>
-        <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2">
-          <span className="text-xs font-medium text-ink-default">Suggestions</span>
-          {open.length ? <span className="text-micro text-ink-faint">{open.length} open</span> : null}
-        </div>
-        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <TooltipProvider>
+      <Popover.Root open={isOpen} onOpenChange={(next) => (next ? openSuggestion(docId, null) : closePanel(docId))}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Popover.Trigger asChild>
+              <button
+                type="button"
+                data-collab-chrome=""
+                {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}
+                aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
+                aria-haspopup="dialog"
+                aria-expanded={isOpen}
+                className={`relative ${open.length ? 'flex' : 'hidden sm:flex'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
+              >
+                <PencilLine aria-hidden className="h-3.5 w-3.5" />
+                {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
+              </button>
+            </Popover.Trigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Suggestions</TooltipContent>
+        </Tooltip>
+        <Popover.Portal>
+          <Popover.Content
+            align="end"
+            side="bottom"
+            sideOffset={6}
+            collisionPadding={16}
+            className="z-50 flex max-h-comment-list-popover w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-floating shadow-surface outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            {...{ [SUGGESTIONS_PANEL_ATTR]: '' }}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
+              <Popover.Title className="sr-only">Suggestions</Popover.Title>
+              <div className="flex min-w-0 items-center gap-1">
+                <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-muted" strokeWidth={1.5} />
+                {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
+              </div>
+              {open.length ? (
+                <button
+                  type="button"
+                  aria-pressed={reviewing}
+                  className={`flex h-6 items-center gap-1 rounded px-1.5 text-micro transition-colors focus:outline-none focus-visible:ring-0 ${reviewing ? 'bg-surface-panel text-ink-default' : 'text-ink-faint hover:bg-surface-panel hover:text-ink-muted'}`}
+                  onClick={() => {
+                    if (reviewing) leaveReview(docId, role);
+                    else requestMode(docId, 'review');
+                    closePanel(docId);
+                  }}
+                >
+                  Review
+                </button>
+              ) : null}
+            </div>
+            <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+    </TooltipProvider>
   );
 }

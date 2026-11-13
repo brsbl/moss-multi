@@ -290,3 +290,29 @@ declare module '@moss/shared/components/notes/VersionHistoryEmptyState' {
   import type { ReactNode } from 'react';
   export function VersionHistoryEmptyState(props: { className?: string; heading?: string; description?: string }): ReactNode;
 }
+
+// moss's Tooltip and Popover, which the Review switch and the Suggestions list are built from (T9.1).
+declare module '@moss/shared/components/ui/tooltip' {
+  import type { ComponentType, ReactNode } from 'react';
+  export const TooltipProvider: ComponentType<{ children: ReactNode; delayDuration?: number }>;
+  export const Tooltip: ComponentType<{ children: ReactNode }>;
+  export const TooltipTrigger: ComponentType<{ children: ReactNode; asChild?: boolean }>;
+  export const TooltipContent: ComponentType<{ children: ReactNode; side?: 'top' | 'bottom' | 'left' | 'right'; sideOffset?: number; className?: string }>;
+}
+
+declare module '@moss/shared/primitives' {
+  import type { ComponentType, HTMLAttributes, ReactNode } from 'react';
+  export const Popover: {
+    Root: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
+    Trigger: ComponentType<{ children: ReactNode; asChild?: boolean }>;
+    Portal: ComponentType<{ children: ReactNode }>;
+    Content: ComponentType<HTMLAttributes<HTMLDivElement> & {
+      align?: 'start' | 'center' | 'end';
+      side?: 'top' | 'bottom' | 'left' | 'right';
+      sideOffset?: number;
+      collisionPadding?: number;
+      onOpenAutoFocus?: (event: Event) => void;
+    }>;
+    Title: ComponentType<HTMLAttributes<HTMLHeadingElement>>;
+  };
+}

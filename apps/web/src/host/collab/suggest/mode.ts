@@ -1,6 +1,6 @@
 // Each doc's editing mode in this tab (docs/design/suggestions.md §5): Edit binds the body, Suggest a private fork,
 // Review the composite read-only. A suggester is locked to Suggest (or Review by choice); an editor or owner toggles
-// Suggest; any role may choose Review. The pane switches once its edits are acknowledged; the chrome reads the mode
+// Suggest; any role may choose Review while the note has an open suggestion. The pane switches once its edits are acknowledged; the chrome reads the mode
 // the pane shows and asks for another.
 import type { EditMode } from '@moss-multi/protocol/dom-contract';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
@@ -8,6 +8,7 @@ import { useSyncExternalStore } from 'react';
 
 const chosen = new Map<string, EditMode>();
 const shown = new Map<string, EditMode>();
+const openCounts = new Map<string, number>();
 const unsaved = new Map<string, string[]>();
 const noRoom = new Set<string>();
 const listeners = new Set<() => void>();
@@ -37,10 +38,28 @@ export function modeFor(docId: string, role: Role | null): EditMode {
   return choice === 'edit' ? 'edit' : 'review';
 }
 
+/** Review is entered only while the note has an open suggestion (T9.1). */
 export function requestMode(docId: string, mode: EditMode): void {
   if (chosen.get(docId) === mode) return;
+  if (mode === 'review' && !openCounts.get(docId)) return;
   chosen.set(docId, mode);
   notify();
+}
+
+/**
+ * The note's open suggestions, as a synced pane last read them. When the last one is decided, a stored choice of
+ * Review is dropped: an owner, editor or suggester goes back to their own mode, and a colleague's next suggestion
+ * does not put them back in Review. A viewer's or commenter's default is Review either way.
+ */
+export function setOpenSuggestions(docId: string, count: number): void {
+  if (openCounts.get(docId) === count) return;
+  openCounts.set(docId, count);
+  if (count === 0 && chosen.get(docId) === 'review') chosen.delete(docId);
+  notify();
+}
+
+export function useOpenSuggestions(docId: string | null): number {
+  return useSyncExternalStore(subscribeModes, () => (docId ? (openCounts.get(docId) ?? 0) : 0), () => 0);
 }
 
 /** The pane reports the mode it shows. */

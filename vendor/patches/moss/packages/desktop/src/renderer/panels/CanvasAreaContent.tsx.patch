@@ -576,7 +576,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <div className="agent-skeleton agent-skeleton--content pt-4">
                    {[100, 94, 88, 72, 96, 64].map((width, i) => (
                      <div
-@@ -5037,7 +5127,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -5037,12 +5127,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              className="pointer-events-none absolute bottom-8 left-1/2 z-40 -translate-x-1/2"
              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
            >
@@ -585,3 +585,9 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-accent-terracotta/80" />
                <span className="text-xs text-ink-muted">{trashCountdownMessage}</span>
              </div>
+           </div>
+-        ) : null}
++        ) : mossMultiPane.bottomBand /* moss-multi seam: review-band (T9.1): one band in this slot, the Trash notice first */}
+         {statusLabel ? (
+           <div
+             className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2"
