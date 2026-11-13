@@ -413,9 +413,9 @@ const CARET_NOTE = [
 const TARGET = 'Target paragraph where Ben waits.';
 const PREVIOUS = 'Previous paragraph stays put.';
 
-async function caretNote(actors: Actors, baseUrl: string) {
+async function caretNote(actors: Actors, baseUrl: string, markdown = CARET_NOTE) {
   const ada = await actors.session(await actors.principal('ada'));
-  const created = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Caret', markdown: CARET_NOTE } });
+  const created = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Caret', markdown } });
   expect(created.status(), 'declared setup: Ada has the note').toBe(201);
   const { doc: { id } } = await created.json() as { doc: { id: string } };
   const benPrincipal = await actors.principal('ben');
@@ -430,8 +430,8 @@ async function caretNote(actors: Actors, baseUrl: string) {
  * Selects from `back` characters before the end of the block that reads `text` to `to` characters before it (a caret
  * when `to` is omitted), as a click and arrow keys would, through the DOM selection the editor follows.
  */
-async function park(actor: Actor, id: string, text: string, back: number, to = back) {
-  const block = ui.body(actor, id).locator('p, li, h1, h2, h3, h4').filter({ hasText: text }).last();
+async function park(actor: Actor, id: string, text: string, back: number, to = back, nth = -1) {
+  const block = ui.body(actor, id).locator('p, li, h1, h2, h3, h4').filter({ hasText: text }).nth(nth);
   await block.click();
   await block.evaluate((element, [from, end]) => {
     const texts: Text[] = [];
@@ -572,4 +572,33 @@ test("j01 caret: a peer's bold and Backspace-merge keep the waiting caret as bef
   await ben.page.keyboard.type('Y');
   await converged(ada, ben, id);
   await expect(ui.body(ben, id).locator('p').first(), 'after a peer merge').toHaveText(`${PREVIOUS}Target paragraph where Ben waits.XY`);
+});
+
+test('j01 caret: Ben keeps typing while Ada makes his paragraph a bullet mid-word, and every key lands in order @p:col-1', async ({ actors, stack }) => {
+  const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
+  await park(ben, id, TARGET, 7);
+  await park(ada, id, TARGET, 27);
+  // Ben's keys are still arriving when Ada's bullet does.
+  const typing = ben.page.keyboard.type('abcdefghijkl', { delay: 50 });
+  await pick(ada, 'List type', 'Bullet');
+  await typing;
+  await expect(listItem(ui.body(ben, id))).toHaveText('Target paragraph where Benabcdefghijkl waits.', { timeout: PEER_TIMEOUT });
+  await converged(ada, ben, id);
+  await expect(listItem(ui.body(ada, id))).toHaveText('Target paragraph where Benabcdefghijkl waits.');
+  await expect(ui.body(ben, id).locator('p').first()).toHaveText(PREVIOUS);
+});
+
+test("j01 caret: a peer's Backspace-merge never sends the waiting caret into an untouched paragraph that reads the same @p:col-1", async ({ actors, stack }) => {
+  const SAME = 'Same words here.';
+  const { ada, ben, id } = await caretNote(actors, stack.baseUrl, [PREVIOUS, '', SAME, '', SAME].join('\n'));
+  await park(ben, id, SAME, 5, 5, 0);
+  // Ada presses Backspace at the start of Ben's paragraph; the next one, which nobody touches, reads the same.
+  await park(ada, id, SAME, SAME.length, SAME.length, 0);
+  await ada.page.keyboard.press('Backspace');
+  await expect(ui.body(ben, id).locator('p').first(), "Ada's merge reaches Ben").toHaveText(`${PREVIOUS}${SAME}`, { timeout: PEER_TIMEOUT });
+  await ben.page.keyboard.type('X');
+  await converged(ada, ben, id);
+  const paragraphs = ui.body(ben, id).locator('p');
+  await expect(paragraphs.first(), 'the merge keeps the caret where it was before').toHaveText(`${PREVIOUS}${SAME}X`);
+  await expect(paragraphs.nth(1), 'the untouched paragraph stays untouched').toHaveText(SAME);
 });
