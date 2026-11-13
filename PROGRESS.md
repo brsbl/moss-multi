@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (229 of 284 planned tasks verified)
+**Overall: 81% done** (230 of 285 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 2 / 24 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 3 / 25 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -252,6 +252,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-20 — T7.U verified: agent sync, Bot presence and the watch daemon now run on m6's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with T7.P1-P3 and T7.S9's folder taint store unchanged.
 - 2026-11-13 — T9.1 verified: Review is offered only while a suggestion is open and says what it does; while reviewing, a band names the mode, and Done or Escape returns the note to editing, so a note is never left silently read-only.
 - 2026-11-13 — T9.2 verified: arrowing down past a note's last block (callout, table, tab group, code block, chart or image) selects that block, so typing goes into a new paragraph directly below it instead of being dropped.
+- 2026-11-13 — T9.25 verified: the staging and pilot deploys read a CI run's jobs in pages of 50 with bounded retries, so a large run no longer fails the deploy with GitHub's 502, and a listing short of the run's job count fails the step; the CI duration and minutes scripts page the same way.
 
 ## T1.1s identity audit
 
@@ -291,6 +292,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.25's checker (049c6a3, 2026-11-13)
+
+- T9.25 (The deploy reads a CI run's jobs reliably) checker P2: two red-run failures (the 40-job one-page cases, 'Unexpected end of JSON input') came from the first fake gh sharing its run.json with RUNNER_TEMP, not from the old step; the final test keeps them in separate directories, the other red failures (502 on multipage, retry and short-listing cases) are real, and no assertion was weakened. Informational, no fix needed.
 
 ### From T9.2's checker (68f5927, 2026-11-13)
 
