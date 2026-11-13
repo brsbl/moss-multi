@@ -1,5 +1,8 @@
 // What pristine moss does when the caret leaves a note's last block by ArrowDown (T9.2): the oracle's TrailingBlock
-// stories, the same keys as the j01 leg. Outputs: test-results/parity/arrow-below.json.
+// stories, the same keys as the j01 leg. Outputs: test-results/parity/arrow-below.json. Pinned to what moss at the pin
+// does, so a re-pin that changes it fails here: past a callout the second ArrowDown takes the selection out of the
+// editor and the typing is dropped (ours selects the callout instead; DEVIATIONS); past a table the selection stays in
+// the editor and the typing lands in a paragraph below it.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -10,8 +13,8 @@ import { STORY_NOW } from './targets.ts';
 
 const OUT = join(import.meta.dirname, '../test-results/parity');
 const CASES = [
-  { story: 'trailing-block--callout', block: '.moss-callout', start: '.moss-callout p' },
-  { story: 'trailing-block--table', block: 'table', start: 'table tr:last-child td:last-child' },
+  { story: 'trailing-block--callout', block: '.moss-callout', start: '.moss-callout p', drops: true },
+  { story: 'trailing-block--table', block: 'table', start: 'table tr:last-child td:last-child', drops: false },
 ] as const;
 
 let oracle: StaticServer;
@@ -31,7 +34,7 @@ test.afterAll(async () => {
   writeFileSync(join(OUT, 'arrow-below.json'), `${JSON.stringify(results, null, 2)}\n`);
 });
 
-for (const { story, block, start } of CASES) {
+for (const { story, block, start, drops } of CASES) {
   test(`arrow below ${story}: what pristine moss does with two ArrowDowns past the last block, then typing`, async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
     try {
@@ -44,7 +47,13 @@ for (const { story, block, start } of CASES) {
       results[story] = result;
       console.log(`pristine moss, ${story}: ${JSON.stringify(result)}`);
       test.info().annotations.push({ type: 'pristine moss', description: JSON.stringify(result) });
-      expect(result.after, 'the probe ran both keys').toHaveLength(2);
+      if (drops) {
+        expect(result.after, 'pristine moss: the second ArrowDown leaves the editor').toEqual(['inside', 'outside']);
+        expect(result.text, 'pristine moss: the typing is dropped').not.toContain('hello');
+      } else {
+        expect(result.after, 'pristine moss: the selection stays in the editor').toEqual(['inside', 'inside']);
+        expect(result.last, 'pristine moss: the typing is a paragraph at the end').toEqual({ tag: 'P', text: 'hello' });
+      }
     } finally {
       await context.close();
     }
