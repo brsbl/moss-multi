@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { withDeletes } from '../test/harness/crafted.ts';
-import { countChars, growthOf, payloadSize, structCount, TextCount } from './note-size.ts';
+import { countChars, deletedWithin, growthOf, payloadSize, structCount, TextCount } from './note-size.ts';
 
 /** A seeded random source, so a failure replays. */
 function random(seed: number): () => number {
@@ -213,5 +213,30 @@ describe('growthOf against crafted and compound updates (T3.B31c)', () => {
     before = Y.encodeStateVector(writer);
     text.insert(0, 'x');
     expect(growthOf(doc, Y.encodeStateAsUpdate(writer, before))).toMatchObject({ inserts: true, content: true });
+  });
+});
+
+describe('deletedWithin', () => {
+  const RANGES = Array.from({ length: 10_000 }, (_, i) => ({ clock: i * 10, len: 4 }));
+  const linear = (start: number, end: number) =>
+    RANGES.reduce((sum, { clock, len }) => sum + Math.max(0, Math.min(end, clock + len) - Math.max(start, clock)), 0);
+
+  it('counts the clocks the ranges delete inside a span', () => {
+    for (const [start, end] of [[0, 1], [0, 10], [3, 12], [55, 56], [99_990, 100_100], [5, 5], [-10, 3], [12_345, 54_321]]) {
+      expect(deletedWithin(RANGES, start, end), `${start}-${end}`).toBe(linear(start, end));
+    }
+    expect(deletedWithin([], 0, 10)).toBe(0);
+  });
+
+  it('reads only the ranges near the span, so a frame of many strings and ranges costs no more than their sum (T3.B31c)', () => {
+    let reads = 0;
+    const counted = new Proxy(RANGES, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) reads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    expect(deletedWithin(counted, 50_000, 50_010)).toBe(4);
+    expect(reads).toBeLessThan(40);
   });
 });

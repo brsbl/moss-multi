@@ -161,6 +161,17 @@ const stateOf = (doc: Y.Doc, client: number): number => {
   return last.id.clock + last.length;
 };
 
+/** How many clocks in [start, end) the ranges delete. `ranges` is sorted and merged (Y.mergeDeleteSets). */
+export function deletedWithin(ranges: readonly { clock: number; len: number }[], start: number, end: number): number {
+  let deleted = 0;
+  for (const { clock, len } of ranges) {
+    const from = Math.max(start, clock);
+    const to = Math.min(end, clock + len);
+    if (to > from) deleted += to - from;
+  }
+  return deleted;
+}
+
 /**
  * What applying `update` to `doc` would add, read from the update alone: its new structs, the splits it causes in
  * structs the doc holds (each origin, right origin and deleted range's edge inside one), and the text it inserts in
@@ -272,16 +283,6 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
     return entry ? freshInScope(entry.struct, depth + 1) : true;
   };
 
-  const deletedWithin = (client: number, start: number, end: number): number => {
-    let deleted = 0;
-    for (const { clock, len } of ds.clients.get(client) ?? []) {
-      const from = Math.max(start, clock);
-      const to = Math.min(end, clock + len);
-      if (to > from) deleted += to - from;
-    }
-    return deleted;
-  };
-
   /** The live element a stored item is, if it is one. */
   const elementAt = (id: Y.ID): Y.XmlElement | null => {
     const stored = storedAt(id.client, id.clock);
@@ -342,7 +343,7 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
       }
       if (struct.content instanceof Y.ContentString) {
         growth.content = true;
-        const kept = end - start - deletedWithin(client, start, end);
+        const kept = end - start - deletedWithin(ds.clients.get(client) ?? [], start, end);
         if (kept > 0 && freshInScope(struct)) growth.chars += kept;
         continue;
       }

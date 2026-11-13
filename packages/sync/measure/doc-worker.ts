@@ -16,6 +16,30 @@ import { IMPORT_BUDGET_SPENT, linearImportStats } from '@moss-desktop/renderer/e
 const collect = (globalThis as { gc?: () => void }).gc;
 const tracedPhases: string[] = [];
 
+/** The characters a save probe writes into the note's body (the one the first character is not), which the search entry it feeds must hold. */
+const SAVE_MARKS = ['\u2042', '\u2051'];
+
+/** What a save fed search: the entry's doc, body length, and which SAVE_MARKS its body holds. */
+interface Fed {
+  docId: string;
+  bodyChars: number;
+  marks: string[];
+}
+const fedTo = new Map<string, Fed>();
+
+/** The first run of the body's text, inside nested elements (a table's cells), never in a payload. */
+function firstRun(type: Y.AbstractType<unknown>, depth = 0): Y.Item | null {
+  for (let item = type._start; item; item = item.right) {
+    if (item.deleted) continue;
+    if (item.content instanceof Y.ContentString && item.length > 0) return item;
+    if (depth < 8 && item.content instanceof Y.ContentType && item.content.type instanceof Y.XmlText) {
+      const run = firstRun(item.content.type, depth + 1);
+      if (run) return run;
+    }
+  }
+  return null;
+}
+
 /** The DocDO, plus a method that reports its payload work (a getter is not an RPC method). */
 export class MeasuredDocDO extends DocDO {
   work(): PayloadWork {
@@ -52,11 +76,32 @@ export class MeasuredDocDO extends DocDO {
     return structsPerBlock(this.document);
   }
 
-  /** A save of the whole note, as the debounced save runs it after an edit: one small write, then the compaction and search feed. */
+  /** What the note's last save fed search (`fed`), for the harness to check. */
+  fed(): Fed | null {
+    return fedTo.get(this.name) ?? null;
+  }
+
+  /**
+   * A save of the whole note, as the debounced save runs it after an edit: one edit of the body's first character to a
+   * SAVE_MARKS character it is not (the text keeps its length), then the compaction and the search feed of the edited
+   * note. Throws unless search received it.
+   */
   async saveNow(): Promise<number> {
     await this.noteSize();
-    this.document.getMap('measure-save').set('at', Date.now());
+    fedTo.delete(this.name);
+    const run = firstRun(this.document.get('root', Y.XmlText));
+    if (!run) throw new Error('the note holds no text to edit');
+    const mark = (run.content as Y.ContentString).str.startsWith(SAVE_MARKS[0]) ? SAVE_MARKS[1] : SAVE_MARKS[0];
+    const parent = run.parent as Y.XmlText;
+    let offset = 0;
+    for (let item = parent._start; item && item !== run; item = item.right) if (!item.deleted && item.countable) offset += item.length;
+    this.document.transact(() => {
+      parent.delete(offset, 1);
+      parent.insert(offset, mark);
+    }, 'measure-save');
     await this.onSave();
+    const fed = fedTo.get(this.name);
+    if (!fed?.marks.includes(mark)) throw new Error(`the save fed search ${fed ? 'the note without its edit' : 'nothing'}`);
     return structCount(this.document);
   }
 
@@ -132,7 +177,8 @@ export class MeasuredDocDO extends DocDO {
       let run = runs[Math.floor(random() * runs.length)];
       for (let tries = 0; run.deleted && tries < 20; tries += 1) run = runs[Math.floor(random() * runs.length)];
       if (run.deleted) continue;
-      const parent = run.parent as Y.XmlText;
+      const mark = (run.content as Y.ContentString).str.startsWith(SAVE_MARKS[0]) ? SAVE_MARKS[1] : SAVE_MARKS[0];
+    const parent = run.parent as Y.XmlText;
       let offset = 0;
       for (let item = parent._start; item && item !== run; item = item.right) if (!item.deleted && item.countable) offset += item.length;
       const at = Math.floor(random() * (run.length + 1));
@@ -186,6 +232,9 @@ export default {
       // Addressing the DocDO starts it, which loads its stored note (onLoad): the wake alone.
       await getServerByName(env.DocDO, docId);
       return new Response('ok');
+    }
+    if (url.pathname === '/fed') {
+      return Response.json(await (await getServerByName(env.DocDO, docId)).fed());
     }
     if (url.pathname === '/save') {
       return Response.json({ structs: await (await getServerByName(env.DocDO, docId)).saveNow() });

@@ -283,6 +283,8 @@ async function measureNote(markdown, port, flags, { trace = false, wake = false,
     }
     if (process.env.MEASURE_MEMORY_DUMP && trace) writeFileSync(process.env.MEASURE_MEMORY_DUMP, server.logs.value);
     phase = 'state';
+    // What the save after the create fed search (packages/sync/measure/doc-worker.ts records it as SearchDO receives it).
+    result.fed = JSON.parse(await call(server.origin, `/fed?doc=${doc}`));
     result.stateBytes = JSON.parse(await call(server.origin, `/state-bytes?doc=${doc}`)).stateBytes;
     result.size = JSON.parse(await call(server.origin, `/size?doc=${doc}`));
     if (!trace) result.blocks = JSON.parse(await call(server.origin, `/structs?doc=${doc}`));
@@ -442,6 +444,8 @@ async function measureNeeds(markdown, port, guess, { grow = false } = {}) {
   try {
     await create(writer.origin);
     if (grow) await call(writer.origin, `/grow-table?doc=${NEED_DOC}&structs=${STRUCT_CAP}`);
+    // A save in the request, so the note is compacted and fed before workerd stops; then the debounced one it causes.
+    await call(writer.origin, `/save?doc=${NEED_DOC}`);
     await new Promise((resolve) => setTimeout(resolve, SAVE_WAIT_MS));
   } finally {
     await stopWorkerd(writer.child);
@@ -566,7 +570,7 @@ async function main() {
     const high = (phase) => Math.max(plain.phases[phase]?.highMb ?? 0, measured.phases[phase]?.liveMb ?? 0, rest) + 8;
     // Every phase so far has needed more than 1.2x the note at rest, which bounds each search from below.
     const needs = bisect && budget && !plain.failed
-      ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, save: high('export'), export: high('export') }, { grow })
+      ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, save: Math.max(high('save'), high('export')), export: high('export') }, { grow })
       : null;
     port += 3;
     notes.push({ ...note, make: undefined, markdown: undefined, budget, block, markdownBytes: Buffer.byteLength(markdown), measured, plain, needs });

@@ -24,11 +24,13 @@ describe('gcEvents and phaseFigures', () => {
 });
 
 describe('memoryProblems: absolute budgets at the caps', () => {
+  /** What the save fed search: the note's whole body, as SearchDO receives it. */
+  const FED = { docId: 'measure', bodyChars: 1_000 };
   const note = (name, needs, extra = {}) => ({
     name,
     budget: true,
     needs,
-    plain: { phases: { save: { restMb: 40 } } },
+    plain: { phases: { save: { restMb: 40 } }, fed: FED },
     measured: { phases: {} },
     ...extra,
   });
@@ -45,7 +47,7 @@ describe('memoryProblems: absolute budgets at the caps', () => {
       note('save', { create: 60, wake: 60, save: 90, export: 60 }),
       note('lost', { create: null, wake: 60, save: 60, export: 60 }),
       note('unsaved', { create: 60, wake: 60, export: 60 }),
-      note('rest', { create: 60, wake: 60, save: 60, export: 60 }, { plain: { phases: { save: { restMb: 58 } } } }),
+      note('rest', { create: 60, wake: 60, save: 60, export: 60 }, { plain: { phases: { save: { restMb: 58 } }, fed: FED } }),
     ]);
     expect(problems).toEqual([
       'create: the create needs 88 MB, over 86.4 MB',
@@ -57,6 +59,15 @@ describe('memoryProblems: absolute budgets at the caps', () => {
     ]);
   });
 
+  it('fails a note at a cap whose save fed search nothing, since its save then left out the export and the feed', () => {
+    const unfed = (name, fed) => note(name, { create: 60, wake: 60, save: 60, export: 60 }, { plain: { phases: { save: { restMb: 40 } }, fed } });
+    expect(memoryProblems([unfed('fed', FED)])).toEqual([]);
+    expect(memoryProblems([unfed('none', null), unfed('empty', { docId: 'measure', bodyChars: 0 })])).toEqual([
+      'none: its save fed search no entry of the note',
+      'empty: its save fed search no entry of the note',
+    ]);
+  });
+
   it('holds a grown table\'s create (the largest table an import takes) and its save like any note\'s', () => {
     expect(memoryProblems([note('table', { create: 70, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual([]);
     expect(memoryProblems([note('table', { create: null, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual(["table: the create's need is unknown"]);
@@ -65,7 +76,7 @@ describe('memoryProblems: absolute budgets at the caps', () => {
 
   it('holds a note at a cap to within 2% under it, and its state to what its text and structs allow', () => {
     const sized = (name, size, extra) => note(name, { create: 60, wake: 60, save: 60, export: 60 }, {
-      plain: { phases: { save: { restMb: 40 } }, size, stateBytes: 1_000 },
+      plain: { phases: { save: { restMb: 40 } }, fed: FED, size, stateBytes: 1_000 },
       ...extra,
     });
     expect(memoryProblems([
