@@ -28,7 +28,7 @@ interface Fed {
 const fedTo = new Map<string, Fed>();
 
 /** The first run of the body's text, inside nested elements (a table's cells), never in a payload. */
-function firstRun(type: Y.AbstractType<unknown>, depth = 0): Y.Item | null {
+function firstRun(type: Y.XmlText, depth = 0): Y.Item | null {
   for (let item = type._start; item; item = item.right) {
     if (item.deleted) continue;
     if (item.content instanceof Y.ContentString && item.length > 0) return item;
@@ -189,8 +189,7 @@ export class MeasuredDocDO extends DocDO {
       let run = runs[Math.floor(random() * runs.length)];
       for (let tries = 0; run.deleted && tries < 20; tries += 1) run = runs[Math.floor(random() * runs.length)];
       if (run.deleted) continue;
-      const mark = (run.content as Y.ContentString).str.startsWith(SAVE_MARKS[0]) ? SAVE_MARKS[1] : SAVE_MARKS[0];
-    const parent = run.parent as Y.XmlText;
+      const parent = run.parent as Y.XmlText;
       let offset = 0;
       for (let item = parent._start; item && item !== run; item = item.right) if (!item.deleted && item.countable) offset += item.length;
       const at = Math.floor(random() * (run.length + 1));
