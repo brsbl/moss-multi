@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CREATE_BUDGET, EXPORT_BUDGET, gcEvents, memoryProblems, NEED_RUNS, phaseFigures, ratio, reliableCap, smallestCap } from './measure-memory.mjs';
+import { CREATE_BUDGET, EXPORT_BUDGET, gcEvents, memoryProblems, NEED_RUNS, phaseFigures, ratio, reliableCap, smallestCap, STRUCT_BOUNDS } from './measure-memory.mjs';
 
 const LOG = [
   '[123:0x7f00]     1200 ms: Scavenge 30.5 (40.0) -> 22.1 (41.0) MB, pooled: 0 MB, 3.10 / 0.00 ms  (average mu = 1.000, current mu = 1.000) allocation failure;',
@@ -65,6 +65,27 @@ describe('memoryProblems: relative budgets', () => {
     expect(ratio(150, 100)).toBe(1.5);
     expect(ratio(null, 100)).toBeNull();
     expect(ratio(150, undefined)).toBeNull();
+  });
+});
+
+describe('memoryProblems: structs per block', () => {
+  const note = (name, block, blocks) => ({ name, budget: false, block, plain: { phases: {}, blocks }, measured: { phases: {} } });
+
+  it('holds a paragraph to 5 structs, a list item to 6 and a two-cell table row to 16', () => {
+    expect(STRUCT_BOUNDS).toEqual({ paragraph: 5, 'list item': 6, 'table row': 16 });
+    expect(memoryProblems([
+      note('p', 'paragraph', { median: 5, mean: 5, blocks: 10 }),
+      note('l', 'list item', { median: 6, mean: 6, blocks: 10 }),
+      note('t', 'table row', { median: 16, mean: 16, blocks: 10 }),
+      note('mixed', null, { median: 40, mean: 40, blocks: 10 }),
+    ])).toEqual([]);
+  });
+
+  it('fails a note whose blocks cost more, or whose count is missing', () => {
+    expect(memoryProblems([note('p', 'paragraph', { median: 15, mean: 15, blocks: 10 }), note('lost', 'table row', undefined)])).toEqual([
+      'p: a paragraph costs 15 structs, over 5',
+      'lost: its structs per block are unknown',
+    ]);
   });
 });
 
