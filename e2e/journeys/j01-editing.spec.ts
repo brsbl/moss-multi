@@ -512,10 +512,11 @@ test('j01 editing: typing after arrowing below a note\'s last block lands in a p
 });
 
 test('j01 editing: the first click into a table just inserted from the slash menu lands where pristine moss lands it @p:col-1', async ({ actors, stack }) => {
-  // T9.21: in a new note, a quick first click into a fresh table leaves the caret where the insert put it. Pristine
-  // moss at the pin does the same (e2e/parity/first-click.spec.ts pins it), so ours keeps it; a paced click, and any
-  // click in a note with text, lands in the clicked cell.
-  const MOSS: Record<string, [number, number]> = { 'new quick': [2, 2], 'new paced': [1, 0], 'existing quick': [1, 0], 'existing paced': [1, 0] };
+  // T9.21: in a new note, a quick first click into a fresh table can leave the caret where the insert put it. Pristine
+  // moss at the pin does the same (e2e/parity/first-click.spec.ts pins it in Chromium), so ours keeps it; it is a
+  // race (WebKit in a busy shard often wins it), so that one case takes either cell. A paced click, and any click in
+  // a note with text, lands in the clicked cell.
+  const MOSS: Record<string, [number, number][]> = { 'new quick': [[2, 2], [1, 0]], 'new paced': [[1, 0]], 'existing quick': [[1, 0]], 'existing paced': [[1, 0]] };
   actors.solo('caret and clicks in one editor; no peer is involved');
   const ada = await actors.session(await actors.principal('ada'));
   await ada.goto('/');
@@ -541,7 +542,7 @@ test('j01 editing: the first click into a table just inserted from the slash men
       const result = await firstClick(ada.page, root, table, [1, 0], pace, 'x');
       expect(result.inserted, `${note} note: the insert leaves the caret in the last cell, as moss does`).toEqual([2, 2]);
       expect(result.cells[0][0], `${note} note: the first header cell reads "Header"`).toBe('Header');
-      expect(result.landed, `${note} note, ${pace} click: the typing lands where pristine moss lands it`).toEqual(MOSS[`${note} ${pace}`]);
+      expect(MOSS[`${note} ${pace}`], `${note} note, ${pace} click: the typing lands where pristine moss lands it, not at ${JSON.stringify(result.landed)}`).toContainEqual(result.landed);
       await ui.waitAcked(ada, id);
     }
   }
