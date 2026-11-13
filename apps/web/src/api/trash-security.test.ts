@@ -365,3 +365,79 @@ describe('a restore lands only on the trash it read', () => {
     expect(await deletedAt(doc)).toBeNull();
   });
 });
+
+// A trashed vault row keeps its grants (folder_members on it and its folders, doc_members on its notes) and its share
+// links, unrevoked; its open invites die with the trash (reapDeadInvites). Restoring one of its notes brings back the
+// vault row alone, so exactly the vault's own grants and links apply again, as they did before the trash.
+describe('a restore that brings a trashed vault back admits nobody the vault did not admit before', () => {
+  const folderDeleted = async (id: string) =>
+    (await d1.db.prepare('SELECT deleted_at FROM folders WHERE id = ?').bind(id).first<{ deleted_at: number | null }>())?.deleted_at ?? null;
+
+  it('the readers of the restored note and of the vault are the same people and links as before the trash, or fewer', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    const doc = await insertDoc(d1.db, ada, { folderId: folder });
+    const sibling = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { folderId: vault }, ben, 'editor');
+    await insertGrant(d1.db, { folderId: folder }, cy, 'viewer');
+    const vaultLink = await insertLink(d1.db, { folderId: vault }, 'viewer');
+    const revokedLink = await insertLink(d1.db, { folderId: vault }, 'viewer', { revoked: true });
+    const folderLink = await insertLink(d1.db, { folderId: folder }, 'viewer');
+    const invite = crypto.randomUUID();
+    await d1.db.prepare(`INSERT INTO invites (token, email, target_type, target_id, role, invited_by, created_at)
+      VALUES (?1, 'invitee@example.invalid', 'folder', ?2, 'editor', ?3, ?4)`).bind(invite, vault, ada.id, Date.now()).run();
+    const people = [ada, ben, cy, dee];
+    const links = [vaultLink, revokedLink, folderLink];
+    const readers = async (id: string) => [
+      ...(await Promise.all(people.map(async (who) => ((await canRead(who, id)) ? who.id : null)))),
+      ...(await Promise.all(links.map(async (share) => ((await call({ share }, 'GET', `/api/docs/${id}`)).status === 200 ? share : null)))),
+    ].filter(Boolean);
+    const vaultReaders = async () => (await Promise.all(people.map(async (who) =>
+      ((await call(who, 'GET', `/api/folders/${vault}`)).status === 200 ? who.id : null)))).filter(Boolean);
+    const docBefore = await readers(doc);
+    const vaultBefore = await vaultReaders();
+    expect(docBefore).toEqual([ada.id, ben.id, cy.id, vaultLink, folderLink]);
+
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    const restored = await call(ada, 'POST', `/api/docs/${doc}/restore`);
+    expect(restored.status, await restored.clone().text()).toBe(200);
+    expect(await folderDeleted(vault), 'the vault is back').toBeNull();
+    expect(await folderDeleted(folder), 'its folder is not').not.toBeNull();
+
+    const docAfter = await readers(doc);
+    expect(docAfter, 'the folder’s grantee and link lose the note, as a relocating restore narrows; nobody gains it').toEqual([ada.id, ben.id, vaultLink]);
+    for (const reader of docAfter) expect(docBefore).toContain(reader);
+    const vaultAfter = await vaultReaders();
+    for (const reader of vaultAfter) expect(vaultBefore).toContain(reader);
+    expect(vaultAfter).not.toContain(dee.id);
+    expect(await readers(sibling), 'the note still in Trash reads as missing to everyone').toEqual([]);
+    const reaped = await d1.db.prepare('SELECT revoked_at FROM invites WHERE token = ?').bind(invite).first<{ revoked_at: number | null }>();
+    expect(reaped?.revoked_at, 'the invite the trash withdrew stays withdrawn').not.toBeNull();
+  });
+
+  it('nobody but the vault’s owner brings it back: the owner’s agent, a stranger and a link holder get the one 404', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const doc = await insertDoc(d1.db, ada, { folderId: vault });
+    const link = await insertLink(d1.db, { docId: doc }, 'editor');
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    const missing = await bytes(await call(dee, 'POST', `/api/docs/${crypto.randomUUID()}/restore`));
+    expect(await bytes(await call({ key: await agentKey(d1.db, ada) }, 'POST', `/api/docs/${doc}/restore`))).toEqual(missing);
+    expect(await bytes(await call(dee, 'POST', `/api/docs/${doc}/restore`))).toEqual(missing);
+    expect((await call({ share: link }, 'POST', `/api/docs/${doc}/restore`)).status).toBeGreaterThanOrEqual(400);
+    expect(await folderDeleted(vault), 'the vault stays in Trash').not.toBeNull();
+    expect(await deletedAt(doc)).not.toBeNull();
+  });
+
+  it('a vault of the same name made while the restore is under way gives the returning vault the next free name', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const { name } = (await d1.db.prepare('SELECT name FROM folders WHERE id = ?').bind(vault).first<{ name: string }>())!;
+    const doc = await insertDoc(d1.db, ada, { folderId: vault });
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    before = { sql: /^UPDATE folders SET deleted_at = NULL/i, run: async () => {
+      expect((await call(ada, 'POST', '/api/vaults', { name })).status, 'the other tab’s new vault').toBe(201);
+    } };
+    expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
+    expect(await d1.db.prepare('SELECT name, deleted_at FROM folders WHERE id = ?').bind(vault).first()).toEqual({ name: `${name} (1)`, deleted_at: null });
+    expect(await deletedAt(doc)).toBeNull();
+  });
+});

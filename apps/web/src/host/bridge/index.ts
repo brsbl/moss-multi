@@ -825,7 +825,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
           return known.get(id);
         };
         restored();
-        await load(workspaceSnapshot?.vault.id ?? storedVault()).catch(() => undefined);
+        // A note whose vault came back with it opens in that vault, as a switch to it would (T9.6).
+        const answer = await response.json().catch(() => ({})) as { vaultId?: unknown; vaultRestored?: unknown };
+        const current = workspaceSnapshot?.vault.id ?? storedVault();
+        const into = typeof answer.vaultId === 'string' && answer.vaultId !== current
+          && (answer.vaultRestored === true || workspaceSnapshot?.vaults?.some((vault) => vault.id === answer.vaultId)) ? answer.vaultId : null;
+        await load(into ?? current).catch(() => undefined);
+        if (into) diskListeners.forEach((listener) => listener([], []));
         const note = restored();
         return note ? record(withLocal(note)) : undefined;
       },

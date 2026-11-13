@@ -9,6 +9,7 @@ import { Button } from '@moss/shared/components/ui/button';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
+import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
 import { openShare } from './ShareDialog.tsx';
 
@@ -179,7 +180,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
       )}
       <ConfirmationDialog open={trashing} onOpenChange={setTrashing} variant="danger" cancelAutoFocus
         title={`Move “${active.name}” to Trash?`}
-        description="Every note and folder in this vault moves to Trash with it, and everyone it’s shared with loses access."
+        description={TRASH_COPY.trashVault(active.name)}
         confirmLabel="Move to Trash" cancelLabel="Cancel" onConfirm={() => { void trash(); }} />
       {error && <p role="alert" className="absolute left-1 top-full z-10 mt-0.5 text-caption text-accent-terracotta">{error}</p>}
     </div>
