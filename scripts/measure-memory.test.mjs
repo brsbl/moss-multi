@@ -34,19 +34,19 @@ describe('memoryProblems: relative budgets', () => {
   });
 
   it('passes notes whose create and export stay within their multiples of the note at rest', () => {
-    expect([CREATE_BUDGET, EXPORT_BUDGET]).toEqual([1.45, 1.6]);
-    expect(memoryProblems([note('a', { create: 145, wake: 500, export: 160 })])).toEqual([]);
+    expect([CREATE_BUDGET, EXPORT_BUDGET]).toEqual([1.75, 1.95]);
+    expect(memoryProblems([note('a', { create: 175, wake: 500, export: 195 })])).toEqual([]);
   });
 
   it('fails a create or an export over its multiple, and a need never found', () => {
     const problems = memoryProblems([
-      note('create', { create: 147, export: REST }),
-      note('export', { create: REST, export: 162 }),
+      note('create', { create: 177, export: REST }),
+      note('export', { create: REST, export: 197 }),
       note('lost', { create: null, export: REST }),
     ]);
     expect(problems).toHaveLength(3);
-    expect(problems[0]).toMatch(/^create: the create needs 147 MB, 1\.47x the note at rest \(100 MB\), over 1\.45x/);
-    expect(problems[1]).toMatch(/^export: the export needs 162 MB, 1\.62x .* over 1\.6x/);
+    expect(problems[0]).toMatch(/^create: the create needs 177 MB, 1\.77x the note at rest \(100 MB\), over 1\.75x/);
+    expect(problems[1]).toMatch(/^export: the export needs 197 MB, 1\.97x .* over 1\.95x/);
     expect(problems[2]).toMatch(/^lost: the create's need is unknown/);
   });
 
@@ -58,7 +58,7 @@ describe('memoryProblems: relative budgets', () => {
 
   it('reads the note at rest from the untraced run, whose figures no in-phase gc() inflates', () => {
     const traced = { phases: { save: { restMb: REST * 2 } } };
-    expect(memoryProblems([note('n', { create: REST * 1.5, export: REST }, { measured: traced })])).toHaveLength(1);
+    expect(memoryProblems([note('n', { create: REST * 1.8, export: REST }, { measured: traced })])).toHaveLength(1);
   });
 
   it('gives the ratio only when both figures are known', () => {

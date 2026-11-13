@@ -259,8 +259,8 @@ describe('T3.B31b back to a default @p:col-1', () => {
       undo.undo();
       await check(1, 1, 'undo: bold');
       undo.undo();
-      expect(exportMarkdown(a.editor)).toBe('Plain words.');
       await check(0, undefined, 'undo: plain, the key gone with the write that made it');
+      expect(exportMarkdown(a.editor)).toBe('Plain words.');
       undo.redo();
       await check(1, 1, 'redo: bold');
       undo.redo();

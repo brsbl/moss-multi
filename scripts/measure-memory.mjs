@@ -29,10 +29,12 @@ const REPO = fileURLToPath(new URL('..', import.meta.url));
 const OUT = join(REPO, '.cache/measure');
 const NAME = 'docdo-memory';
 export const ISOLATE_LIMIT_MB = 128;
+// The lean layout (T3.B31b) cut the note at rest to about two fifths and every phase's need by about half; the Lexical
+// tree a create or an export builds did not shrink, so the multiples rose from 1.45x and 1.6x.
 /** The heap a create (an import) may need, as a multiple of the note at rest. */
-export const CREATE_BUDGET = 1.45;
+export const CREATE_BUDGET = 1.75;
 /** The heap an export may need, as a multiple of the note at rest. */
-export const EXPORT_BUDGET = 1.6;
+export const EXPORT_BUDGET = 1.95;
 const REQUEST_TIMEOUT_MS = 300_000;
 /** y-partyserver saves 2 s after the last update; the save compacts the note's rows. */
 const SAVE_WAIT_MS = 4_000;
@@ -332,8 +334,9 @@ async function fitsUnder(cap, port, storage, request) {
   try {
     server = await startWorkerd(port, [`--max-heap-size=${cap}`], storage);
   } catch (error) {
-    // Too small a heap for the Worker itself; anything else is not an answer.
-    if (OUT_OF_HEAP.test(error.message)) return false;
+    // Too small a heap for the Worker itself (it may die before its heap message reaches the log); anything else is
+    // not an answer.
+    if (OUT_OF_HEAP.test(error.message) || /exited before it served/.test(error.message)) return false;
     throw error;
   }
   try {
