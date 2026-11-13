@@ -51,7 +51,44 @@ const stored = (type: AbstractType<unknown>, key: string) => {
  * the class's lean default is written back under `origin`, so every reader, earlier or lean, holds the default.
  * Returns the detach.
  */
-export function keepLeanKeys(_doc: Doc, _defaults: LeanDefaults, _origin: unknown, _from: (origin: unknown) => boolean): () => void {
-  void stored; void isNodeType; void (null as Transaction | null);
-  return () => {};
+export function keepLeanKeys(doc: Doc, defaults: LeanDefaults, origin: unknown, from: (origin: unknown) => boolean): () => void {
+  const root = doc.get('root', XmlText) as AbstractType<unknown>;
+  let emptied: [AbstractType<unknown>, string][] = [];
+  /** In the body and not deleted, nor inside a deleted node. */
+  const live = (type: AbstractType<unknown>) => {
+    let at = type;
+    while (at._item) {
+      if (at._item.deleted) return false;
+      at = at._item.parent as AbstractType<unknown>;
+    }
+    return at === root;
+  };
+  const collect = (transaction: Transaction) => {
+    if (transaction.origin === origin || !from(transaction.origin)) return;
+    for (const [type, keys] of transaction.changed) {
+      if (!isNodeType(type)) continue;
+      for (const key of keys) if (key !== null && !stored(type, key)) emptied.push([type, key]);
+    }
+  };
+  const restore = () => {
+    if (!emptied.length) return;
+    const due = emptied;
+    emptied = [];
+    const writes: [AbstractType<unknown>, string, unknown][] = [];
+    for (const [type, key] of due) {
+      if (stored(type, key) || !live(type)) continue;
+      const value = defaultFor(defaults, type, key);
+      if (value !== undefined) writes.push([type, key, value]);
+    }
+    if (!writes.length) return;
+    doc.transact(() => {
+      for (const [type, key, value] of writes) if (!stored(type, key)) write(type, key, value);
+    }, origin);
+  };
+  doc.on('afterTransaction', collect);
+  doc.on('afterAllTransactions', restore);
+  return () => {
+    doc.off('afterTransaction', collect);
+    doc.off('afterAllTransactions', restore);
+  };
 }
