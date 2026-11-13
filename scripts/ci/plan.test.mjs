@@ -335,6 +335,7 @@ describe('ciOk', () => {
       viewer: { result: results.viewer ?? 'skipped' },
       editor: { result: results.editor ?? results.viewer ?? 'skipped' },
       'editor-host': { result: results['editor-host'] ?? results.checks ?? 'skipped' },
+      memory: { result: results.memory ?? results.checks ?? 'skipped' },
     };
   }
 
@@ -344,6 +345,11 @@ describe('ciOk', () => {
   it('fails when the editor-host artifact job failed or was skipped beside the checks', () => {
     expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'failure' })).problems).toEqual(['editor-host: failure (planned to run)']);
     expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'skipped' })).problems).toEqual(['editor-host: skipped (planned to run)']);
+  });
+
+  it('fails when the DocDO memory job failed or was skipped beside the checks', () => {
+    expect(ciOk(needs(checksOnly, { checks: 'success', memory: 'failure' })).problems).toEqual(['memory: failure (planned to run)']);
+    expect(ciOk(needs(checksOnly, { checks: 'success', memory: 'skipped' })).problems).toEqual(['memory: skipped (planned to run)']);
   });
 
   it('fails when the editor bundle job failed beside the viewer lane', () => {

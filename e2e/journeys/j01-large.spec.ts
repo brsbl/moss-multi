@@ -11,6 +11,7 @@
 // The notes are created through POST /api/docs as declared setup.
 import type { Actor } from '../lib/actors.ts';
 import { grantDoc } from '../lib/grants.ts';
+import { numberedLines as lines } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const LINES = 40_000;
@@ -28,8 +29,6 @@ const INPUT_TO_PAINT_MS = 240;
 const BUSY_PER_KEY_MS = 260;
 const LONGEST_TASK_MS = 1_000;
 const CONTROL_INPUT_TO_PAINT_MS = 64;
-
-const lines = (count: number) => Array.from({ length: count }, (_, i) => `Line ${i} of the note.`).join('\n\n');
 
 // Playwright's trace snapshots the whole DOM on every action: 40,000 paragraphs per keystroke, which is not the editor's
 // cost.

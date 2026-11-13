@@ -73,6 +73,25 @@ export function payloadTextOf(editor: LexicalEditor, key: NodeKey): Y.Text | und
   return payloadText(registry.host.hold(id, registry.pending.has(id)));
 }
 
+/** How many client editors (bindings without `serializedImports`) have their registers bound to each note doc. */
+const clientEditors = new WeakMap<Y.Doc, number>();
+
+/** Whether a client editor reads `doc`, so a server-side reader must leave it to that editor and read a copy. */
+export const clientEditorReads = (doc: Y.Doc): boolean => (clientEditors.get(doc) ?? 0) > 0;
+
+/** A microtask's work, which a stopped binding clears. */
+interface Later {
+  run: (() => void) | null;
+}
+
+/**
+ * Runs `later.run` in a microtask. The queued callback holds only `later`, not the binding's scope: a server mirror is
+ * stopped synchronously, before its queued microtasks run, and clearing `run` lets go of its editor and Y.Doc at once.
+ */
+function soon(later: Later): void {
+  queueMicrotask(() => later.run?.());
+}
+
 function currentRegistry(): Registry | undefined {
   if (!bindingCount) return undefined;
   // SerializedEditorState.toJSON() has no active editor; cached fields cover that read.
@@ -331,10 +350,13 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   };
   let stopped = false;
   let queued = false;
+  const refreshing: Later = { run: null };
   const refresh = () => {
     if (queued || stopped || (!dirtyKeys.size && !dirtyIds.size)) return;
     queued = true;
-    queueMicrotask(() => {
+    soon(refreshing);
+    refreshing.run = () => {
+      refreshing.run = null;
       queued = false;
       // The commit listener retries after pending edits; tagging them would drop their Yjs writes.
       if (stopped || editor._pendingEditorState !== null) return;
@@ -346,7 +368,7 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
         dirtyIds.clear();
         for (const key of keys) $refreshNode(registry, $getNodeByKey(key));
       }, { tag: [COLLABORATION_TAG, REFRESH_TAG], skipTransforms: true, discrete: true });
-    });
+    };
   };
   // Each payload's own observer marks only its id (rule 9); the V1 observer is untouched.
   const watch = (id: string, held: Y.Doc) => {
@@ -370,6 +392,7 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
    * them after the commit's own note frame, so a payload's first frame names an id the server already knows.
    */
   let firstTextsQueued = false;
+  const firstTexts: Later = { run: null };
   const writeFirstTexts = (state: EditorState) => {
     if (stopped) return;
     state.read(() => {
@@ -389,10 +412,12 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
     if (registry.minted.size && registry.mirror) writeFirstTexts(editorState);
     else if (registry.minted.size && !firstTextsQueued) {
       firstTextsQueued = true;
-      queueMicrotask(() => {
+      soon(firstTexts);
+      firstTexts.run = () => {
+        firstTexts.run = null;
         firstTextsQueued = false;
         writeFirstTexts(editor.getEditorState());
-      });
+      };
     }
     if (!tags.has(REFRESH_TAG)) {
       if (dirtyLeaves.size === 0 && dirtyElements.size === 1 && dirtyElements.get('root') === false && editorState !== prevEditorState) {
@@ -410,10 +435,14 @@ export function bindRegisters(editor: LexicalEditor, doc: Y.Doc, { serializedImp
   }));
   for (const key of editor.getEditorState()._nodeMap.keys()) index(key, editor.getEditorState());
   refresh();
+  if (!serializedImports) clientEditors.set(doc, (clientEditors.get(doc) ?? 0) + 1);
   return () => {
     // A paste landing as its pane closes commits in the task that unbinds: its first texts are written now.
     if (registry.minted.size && editor._pendingEditorState === null) writeFirstTexts(editor.getEditorState());
+    if (!serializedImports && !stopped) clientEditors.set(doc, (clientEditors.get(doc) ?? 1) - 1);
     stopped = true;
+    refreshing.run = null;
+    firstTexts.run = null;
     stops.forEach((stop) => stop());
     registries.delete(editor);
     bindingCount--;

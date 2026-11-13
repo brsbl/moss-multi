@@ -7,14 +7,8 @@
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
+import { flatList } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
-
-/** `count` bullet items. */
-function flatList(count: number): string {
-  const lines: string[] = [];
-  for (let i = 0; i < count; i += 1) lines.push(`- item ${i}`);
-  return lines.join('\n');
-}
 
 /** `count` bullet items, each with six points of two details each: 19 items per top-level item. */
 function nestedList(count: number): string {

@@ -28,7 +28,7 @@ import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { seedPayload } from './payload-docs.ts';
 import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
-import { attachPayloadSource, exportDocMarkdown, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { attachPayloadSource, exportDocMarkdown, ExportWroteError, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
 import { titleDiff } from './server-title.ts';
 import { splitAnswer } from './update-pieces.ts';
 
@@ -1135,8 +1135,24 @@ export class DocDO extends YServer<SyncEnv> {
   /** The doc as a `.md` file, memoized until the next update. */
   async exportMarkdown(): Promise<string> {
     await this.#ready();
-    this.#exported ??= exportDocMarkdown(this.document, this.name);
+    this.#exported ??= this.#export();
     return this.#exported;
+  }
+
+  /**
+   * The export, read from the live doc in place. An update emitted on the doc meanwhile reached neither storage nor any
+   * socket; the instance holding it is dropped, so the next one wakes from what was stored.
+   */
+  #export(): string {
+    try {
+      return exportDocMarkdown(this.document, this.name);
+    } catch (error) {
+      if (error instanceof ExportWroteError) {
+        console.error(`export of ${this.name} wrote to the doc it read; dropping the instance`);
+        this.ctx.abort(error.message);
+      }
+      throw error;
+    }
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
@@ -1324,7 +1340,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (!feed) return;
     try {
       // Never through ready(): called from onLoad's timer and onSave, the doc is already loaded.
-      this.#exported ??= exportDocMarkdown(this.document, this.name);
+      this.#exported ??= this.#export();
       const markdown = this.#exported;
       const entry: IndexEntry = { docId: this.name, title: this.document.getText('title').toString(), body: splitFrontmatter(markdown).body };
       const signature = `${entry.title}\u0000${entry.body}`;
