@@ -266,7 +266,19 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                await foldersApi.rename.invoke({
                  currentPath: folder.path,
                  newName
-@@ -1253,7 +1302,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1241,6 +1290,11 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+               await fetchBackendFolders();
+               const parentSegments = folder.path.split('/').slice(0, -1);
+               const newPath = [...parentSegments, newName].join('/');
++              // moss-multi seam: folders (T9.15): the active folder follows the rename, as moveFolderToParent remaps it.
++              const activeFolderSnapshot = store.get(activeFolderPathAtom);
++              if (activeFolderSnapshot === folder.path || activeFolderSnapshot.startsWith(folder.path + '/')) {
++                setActiveFolderPath(newPath + activeFolderSnapshot.slice(folder.path.length));
++              }
+               const notesInFolder = noteList.filter((n) =>
+                 n.folderPath === folder.path || n.folderPath.startsWith(folder.path + '/')
+               );
+@@ -1253,7 +1307,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                    updates: { folderPath: updatedFolderPath }
                  });
                }
@@ -275,7 +287,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            >
              {/* Subfolder creation input */}
              {isExpanded && showSubfolderInput && (
-@@ -1306,15 +1355,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1306,15 +1360,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            </div>
            </ContextMenuTrigger>
            <ContextMenuContent>
@@ -300,7 +312,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            </ContextMenuContent>
            </ContextMenu>
          );
-@@ -1323,7 +1380,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1323,7 +1385,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
      );
  
      const renderedNotes = useMemo(() => {
@@ -310,7 +322,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          return (
            <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
              Notes you create will appear here.
-@@ -1643,11 +1701,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1643,11 +1706,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          <NotesListPanel
            ref={panelRef}
            className="flex h-full min-w-0 w-full"
@@ -325,7 +337,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
                <TooltipProvider>
                  <Tooltip>
-@@ -1666,14 +1725,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1666,14 +1730,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                  </Tooltip>
                </TooltipProvider>
                <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">
@@ -344,7 +356,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                </DropdownMenuContent>
              </DropdownMenu>
            ) : undefined}
-@@ -1693,7 +1756,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1693,7 +1761,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            open={trashFolderTarget !== null}
            onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
            title="Trash folder?"
