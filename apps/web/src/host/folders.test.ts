@@ -56,6 +56,8 @@ it('gives an unknown or unlisted folder no "+ Note"', () => {
 
 it('falls back from a system folder to the vault root, the one target "+ Note" and Cmd/Ctrl+N share', () => {
   const folders = [{ path: 'Notes/Inbox', type: 'system' as const }, { path: 'Notes/Plans' }];
+  listing.roles.set('Notes/Inbox', 'owner');
+  listing.roles.set('Notes/Plans', 'editor');
   expect(noteTargetFolder('Notes/Inbox', folders)).toBe('Notes');
   expect(noteTargetFolder('Notes/Plans', folders)).toBe('Notes/Plans');
   expect(noteTargetFolder('Notes', folders)).toBe('Notes');
