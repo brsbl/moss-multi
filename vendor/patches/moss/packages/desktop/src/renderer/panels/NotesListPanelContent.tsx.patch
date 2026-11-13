@@ -349,7 +349,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
            title="Trash folder?"
 -          description={`Move "${trashFolderTarget?.split('/').pop() ?? ''}" and all its notes to Trash?`}
-+          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '', trashFolderVault()) /* moss-multi seam: trash-copy (T2.3, T9.6) */}
++          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '', trashFolderVault(trashFolderTarget ?? '')) /* moss-multi seam: trash-copy (T2.3, T9.6) */}
            confirmLabel="Trash"
            variant="danger"
            onConfirm={handleTrashFolderConfirm}

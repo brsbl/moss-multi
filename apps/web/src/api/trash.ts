@@ -133,16 +133,17 @@ async function homeFor(db: Db, folderId: string): Promise<Home | null> {
   return { folderId: chain.every((id) => byId.get(id)?.deletedAt === null) ? folderId : vault.id, vaultId: vault.id, trashedVault: null };
 }
 
-/** `name`, or Moss's next free folder name, "name (1)", "name (2)"…, among the owner's live vaults (case-insensitive). */
+/**
+ * `name`, or Moss's next free folder name, "name (1)", "name (2)"…, among the owner's live vaults. SQLite compares
+ * each candidate with lower(), as folders_vault_name_unique does, so a name the index refuses is never chosen.
+ */
 async function freeVaultName(db: D1Database, ownerUserId: string, name: string): Promise<string> {
-  const live = await db.prepare("SELECT lower(name) AS name FROM folders WHERE owner_user_id = ?1 AND kind = 'vault' AND deleted_at IS NULL")
-    .bind(ownerUserId).all<{ name: string }>();
-  const taken = new Set(live.results.map((row) => row.name));
-  if (!taken.has(name.toLowerCase())) return name;
-  for (let n = 1; ; n += 1) {
-    const suffix = ` (${n})`;
-    const candidate = `${name.slice(0, FOLDER_NAME_MAX - suffix.length)}${suffix}`;
-    if (!taken.has(candidate.toLowerCase())) return candidate;
+  const taken = db.prepare(`SELECT EXISTS (SELECT 1 FROM folders WHERE owner_user_id = ?1 AND kind = 'vault' AND deleted_at IS NULL
+    AND lower(name) = lower(?2)) AS taken`);
+  for (let n = 0; ; n += 1) {
+    const suffix = n === 0 ? '' : ` (${n})`;
+    const candidate = n === 0 ? name : `${name.slice(0, FOLDER_NAME_MAX - suffix.length)}${suffix}`;
+    if (!(await taken.bind(ownerUserId, candidate).first<{ taken: number }>())?.taken) return candidate;
   }
 }
 

@@ -1757,7 +1757,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           open={trashFolderTarget !== null}
           onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
           title="Trash folder?"
-          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '', trashFolderVault()) /* moss-multi seam: trash-copy (T2.3, T9.6) */}
+          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '', trashFolderVault(trashFolderTarget ?? '')) /* moss-multi seam: trash-copy (T2.3, T9.6) */}
           confirmLabel="Trash"
           variant="danger"
           onConfirm={handleTrashFolderConfirm}

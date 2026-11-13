@@ -14,8 +14,8 @@ export const TRASH_COPY = {
   /** A collaborator's open copy of a note its owner moved to Trash. */
   peerTrashed: 'This note was moved to Trash.',
   /** Confirming a folder's trash: its notes come back to the top of its vault, never into the trashed folder. */
-  trashFolder: (name: string, vault: string) =>
-    `Move “${name}” and all its notes to Trash? You can restore the notes ${restorable}. They go back to “${vault}”, not into this folder.`,
+  trashFolder: (name: string, vault: string | null) => `Move “${name}” and all its notes to Trash? You can restore the notes ${restorable}. `
+    + `They go back to ${vault === null ? 'the top of their vault' : `“${vault}”`}, not into this folder.`,
   /** Confirming a vault's trash: each of its notes restores alone, and the first brings the vault row back. */
   trashVault: (vault: string) => 'Every note and folder in this vault moves to Trash with it, and everyone it’s shared with loses access. '
     + `You can restore its notes one at a time ${restorable}. Restoring one brings “${vault}” back without its folders.`,
