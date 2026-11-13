@@ -1,13 +1,15 @@
 // j01-paste (T3.S6): a large markdown paste lands whole. Moss's plain-text paste split anything from 40,000 characters
 // (or 800 lines) into chunks and dropped every chunk after the first, because the selection it inserted at was gone by
-// the second. Pasting 40k, 200k and 2 MB of mixed markdown, into an empty note and between two paragraphs, must land
-// every character (the doc's export equals the server's import of the same text, moss's normalization), leave the
-// caret after the paste, make one undo step that redoes whole, and reach a collaborator in full. A second paste or a
-// note switch while one lands, typing or an undo right after it, and a paste ending in a list lose nothing either.
+// the second. Pasting 40k, 200k and, just under the note's text limit (A§5.1), 1,019,000 characters of mixed markdown,
+// into an empty note and between two paragraphs, must land every character (the doc's export equals the server's import
+// of the same text, moss's normalization), leave the caret after the paste, make one undo step that redoes whole, and
+// reach a collaborator in full; 1,021,000 characters, just past it, are refused whole with the text notice. A second
+// paste or a note switch while one lands, typing or an undo right after it, and a paste ending in a list lose nothing
+// either.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { exported, fingerprint, MAX_STALL_MS, NEW_STEP_MS, normalized, pasteAndCheck, pastePlain, setup, UNDO } from '../lib/paste.ts';
-import { mixedMarkdown, prose } from '../lib/large-notes.ts';
+import { expectRefusedPaste, exported, fingerprint, MAX_STALL_MS, NEW_STEP_MS, normalized, pasteAndCheck, pastePlain, setup, TEXT_NOTICE, UNDO } from '../lib/paste.ts';
+import { mixedMarkdown, mixedMarkdownOfText, prose } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /** Bullet and numbered lists, alternating, of at least `size` characters, ending with a list of kind `last`. */
@@ -24,22 +26,31 @@ function listMarkdown(size: number, last: 'bullet' | 'numbered'): string {
 }
 
 
-const SIZES: [string, number, number][] = [
-  ['40k', 40_000, 60_000],
-  ['200k', 200_000, 90_000],
-  ['2 MB', 2_000_000, 240_000],
+// The largest leg is just under the note's text limit (1,020,000 characters, A§5.1), with room for the typed Z.
+const SIZES: [string, () => string, number, number][] = [
+  ['40k', () => mixedMarkdown(40_000), 40_000, 60_000],
+  ['200k', () => mixedMarkdown(200_000), 200_000, 90_000],
+  ['1,019,000 characters', () => mixedMarkdownOfText(1_019_000).markdown, 1_019_000, 240_000],
 ];
 
-for (const [label, size, timeout] of SIZES) {
+for (const [label, make, size, timeout] of SIZES) {
   test(`j01-paste: ${label} of mixed markdown pasted into an empty note lands whole, caret after it, one undo step, on both screens @p:col-1 @p:col-3`, async ({ actors, stack }) => {
     test.setTimeout(timeout * 3);
-    const markdown = mixedMarkdown(size);
+    const markdown = make();
     const { ada, ben, docId, wire, want } = await setup(actors, stack, undefined, { references: { whole: markdown, typed: `${markdown}Z` } });
     expect(want.whole.length, 'the reference export holds the paste').toBeGreaterThan(size * 0.8);
     await ui.body(ada, docId).click();
     await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, timeout, { maxStallMs: MAX_STALL_MS });
   });
 }
+
+test('j01-paste: 1,021,000 characters of mixed markdown, just past the text limit, are refused whole and visibly with the text notice @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, mixedMarkdownOfText(1_021_000).markdown, {
+    notice: TEXT_NOTICE,
+    admission: ({ met }) => expect(met, 'the paste meets the text limit').toBe('text'),
+  });
+});
 
 test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whole, caret after it, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(300_000);

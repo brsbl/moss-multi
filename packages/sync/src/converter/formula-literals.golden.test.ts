@@ -2,7 +2,7 @@
 // follows, quadratic in the run. replaceNumericLiterals (the formula-runtime `linear-numeric-literals` seam) scans
 // once; here it must give the regex's exact matches and groups over the corpus, hand cases and generated formulas.
 import { describe, expect, it } from 'vitest';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { MARKDOWN_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { LINEAR_IMPORT_LIMITS } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import { replaceNumericLiterals } from '@moss-desktop/renderer/editor/utils/formula-runtime';
 import { FIXTURES } from './fixtures.ts';
@@ -72,7 +72,7 @@ describe('replaceNumericLiterals matches moss\'s numeric-literal regex exactly',
   });
 });
 
-it('the harness\'s doubling legs (4 KB to the 2 MB cap) run formulas on both sides of lineChars', () => {
+it('the harness\'s doubling legs (4 KB to 2 MB, the converter's scale note) run formulas on both sides of lineChars', () => {
   expect(LINEAR_IMPORT_LIMITS.lineChars).toBeGreaterThan(4096);
-  expect(LINEAR_IMPORT_LIMITS.lineChars).toBeLessThan(MARKDOWN_CAP_BYTES);
+  expect(LINEAR_IMPORT_LIMITS.lineChars).toBeLessThan(MARKDOWN_MAX_BYTES);
 });

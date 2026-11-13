@@ -4,7 +4,6 @@
 // converter/formula-literals.golden.test.ts holds the doubling range around it) the formula is a node; above it the
 // line stays literal text but its payload is still read. Each path must grow linearly as the run doubles to 2 MB.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { markdownToState } from '../../src/converter/index.ts';
 import { DocDO, type SearchFeed } from '../../src/doc-do.ts';
 import type { IndexEntry } from '../../src/search-do.ts';
@@ -15,6 +14,9 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
 });
+
+/** The doubling legs' top size: SP2's scale note. */
+const SCALE_NOTE_CHARS = 2 * 1024 * 1024;
 
 /** One line of `chars` characters: a formula whose expression is mostly one blank run. */
 const note = (chars: number): string => {
@@ -33,7 +35,7 @@ async function expectLinear<T>(prepare: (markdown: string) => Promise<T>, run: (
   };
   await time(1024); // warm up
   let previous = await time(2048);
-  for (let chars = 4096; chars <= MARKDOWN_CAP_BYTES; chars *= 2) {
+  for (let chars = 4096; chars <= SCALE_NOTE_CHARS; chars *= 2) {
     const took = await time(chars);
     expect(took, `${chars} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 250);
     previous = took;

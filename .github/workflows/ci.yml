@@ -168,9 +168,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  # T3.B31a: the heap each near-cap note's create, wake and export needs in workerd (V8's heap cap bisected, 3 of 3
-  # fresh runs), against relative budgets over the note at rest; the tables land in the job summary. One note per job:
-  # each note's bisection takes minutes.
+  # T3.B31a, T3.B31c: the heap each note at the caps needs to create, wake and export in workerd (V8's heap cap
+  # bisected, 3 of 3 fresh runs), against absolute budgets; notes past each cap are refused with that limit; the tables
+  # land in the job summary. One note per job: each note's bisection takes minutes.
   memory:
     needs: plan
     if: needs.plan.outputs.checks == 'true'
@@ -179,7 +179,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        note: ['j01-large', 'paste-blocks', 'paste-list', 'paste-race', 'paste-table', '2 MB of mixed', '200k of mixed']
+        note: ['^text cap', '^structure cap: .* one-line', '^structure cap: .* list items', '^structure cap: the largest table', '^past the', '^200k of mixed', '^scattered edits']
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

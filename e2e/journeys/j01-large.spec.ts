@@ -1,9 +1,9 @@
-// j01-large (T3.B13, backlog B346): typing in a note of 40,000 lines, one paragraph each. @lexical/yjs synced every
-// keystroke by visiting each of the 40,000 blocks to find the one that changed; it now syncs only the blocks an update
+// j01-large (T3.B13, backlog B346): typing in a note of 35,000 lines, one paragraph each. @lexical/yjs synced every
+// keystroke by visiting each of the 35,000 blocks to find the one that changed; it now syncs only the blocks an update
 // touched (patches/@lexical__yjs@0.48.0.patch). The journey opens that note and a 400-line control, types into the
 // middle of each, and measures each keystroke's sync to the note's Y.Doc (the binding's local transaction), its
 // input-to-paint (Event Timing) and the long tasks while typing (Chromium only). The sync budget is the before/after
-// gate. The rest of a keystroke is Chromium's own editing over one editable of 40,000 blocks: layout and the
+// gate. The rest of a keystroke is Chromium's own editing over one editable of 35,000 blocks: layout and the
 // platform's text sync walk the whole editable, wherever the caret is, so the input-to-paint and long-task budgets
 // guard against regressions only; making those fast needs viewport-bounded rendering. Scrolling, caret movement to the
 // note's start and the peer stay correct.
@@ -14,7 +14,8 @@ import { grantDoc } from '../lib/grants.ts';
 import { numberedLines as lines } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
-const LINES = 40_000;
+// Just under the structure guard, which holds a note to about 36,000 one-line paragraphs (A§5.1).
+const LINES = 35_000;
 const CONTROL_LINES = 400;
 const TYPED = 'abcdefghijklmnopqrst';
 /**
@@ -30,7 +31,7 @@ const BUSY_PER_KEY_MS = 260;
 const LONGEST_TASK_MS = 1_000;
 const CONTROL_INPUT_TO_PAINT_MS = 64;
 
-// Playwright's trace snapshots the whole DOM on every action: 40,000 paragraphs per keystroke, which is not the editor's
+// Playwright's trace snapshots the whole DOM on every action: 35,000 paragraphs per keystroke, which is not the editor's
 // cost.
 test.use({ trace: 'off' });
 
@@ -112,7 +113,7 @@ async function typeTimed(actor: Actor, id: string, line: number) {
   };
 }
 
-test('j01-large: each keystroke in the middle of a 40,000-line note syncs only its block and stays within budget; scrolling, the caret and the peer stay correct @p:col-1 @p:tech-8', async ({ actors, stack, browserName }, testInfo) => {
+test('j01-large: each keystroke in the middle of a 35,000-line note syncs only its block and stays within budget; scrolling, the caret and the peer stay correct @p:col-1 @p:tech-8', async ({ actors, stack, browserName }, testInfo) => {
   test.setTimeout(600_000);
   const ada = await actors.session(await actors.principal('ada'));
   const large = await create(ada, stack.baseUrl, 'Large', lines(LINES));

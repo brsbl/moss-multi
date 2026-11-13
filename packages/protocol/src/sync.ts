@@ -57,8 +57,31 @@ export const CUSTOM_PREFIX = '__YPS:';
 
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved';
 
-/** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
-export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);
+/**
+ * Which of a note's limits a `doc-cap` refusal met (A§5.1): its text (TEXT_CHAR_CAP), its structure (STRUCT_CAP), or its
+ * stored bytes (STATE_CAP_BYTES, which a note within the other two never meets first). Absent means bytes, as before.
+ */
+export type DocLimit = 'text' | 'structure' | 'state';
+
+/** What the refusal band, REST and the CLI say when a write meets the text or structure limit (A§5.1). */
+export const DOC_LIMIT_NOTICE: Record<Exclude<DocLimit, 'state'>, string> = {
+  text: 'This note has reached its size limit (1.02 million characters).',
+  structure: 'This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.',
+};
+
+const DOC_CAP = /^(?:DocCapError: )?doc-cap(?::(text|structure))?$/;
+
+/**
+ * The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`,
+ * or `doc-cap:text` and `doc-cap:structure` for those limits.
+ */
+export const isDocCapError = (error: unknown): boolean => error instanceof Error && DOC_CAP.test(error.message);
+
+/** The limit a DocCapError met; null for any other error. */
+export const docLimitOf = (error: unknown): DocLimit | null => {
+  const match = error instanceof Error ? DOC_CAP.exec(error.message) : null;
+  return match ? ((match[1] as DocLimit | undefined) ?? 'state') : null;
+};
 
 /**
  * Why the DocDO refused a REST rename in its own serialized turn: the doc is in Trash or held closed (`deleted`), or the
@@ -74,7 +97,7 @@ export const renameRefusalOf = (error: unknown): RenameRefusal | null => {
 
 export type ServerEvent =
   /** A write that did not land; the close follows. */
-  | { t: 'write-refused'; reason: WriteRefusalReason }
+  | { t: 'write-refused'; reason: WriteRefusalReason; limit?: DocLimit }
   /**
    * The server state vector (base64) after persisting this connection's writes, and the deletes those frames
    * carried (base64 `Y.encodeSnapshot` of a snapshot with an empty state vector): a delete never moves a state

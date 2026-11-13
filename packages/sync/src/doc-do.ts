@@ -8,12 +8,13 @@ import { writeSyncStep1 } from 'y-protocols/sync';
 import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, STRUCT_CAP,
+  TEXT_CHAR_CAP, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
-  type RenameRefusal, type ServerEvent, type WriteRefusalReason,
+  type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
@@ -26,10 +27,13 @@ import { publishMeta, publishReopened, type FanoutEnv, type Holder } from './fan
 import type { SyncEnv } from './env.ts';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { seedPayload } from './payload-docs.ts';
-import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
+import { growthOf, structCount, TextCount } from './note-size.ts';
+import { JANITOR, migratePayloads, payloadSize, PayloadStore, type PayloadWork } from './payloads.ts';
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
 import { keepLeanKeys } from './lean-defaults.ts';
-import { attachPayloadSource, exportDocMarkdown, ExportWroteError, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph, serverLeanDefaults } from './server-doc.ts';
+import {
+  attachPayloadSource, exportDocMarkdown, ExportWroteError, IMPORT_STRUCTS_PAST, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph, serverLeanDefaults,
+} from './server-doc.ts';
 import { titleDiff } from './server-title.ts';
 import { splitAnswer } from './update-pieces.ts';
 
@@ -50,6 +54,10 @@ const LEAN_KEYS = 'lean-keys';
 
 export interface DocLimits {
   stateCapBytes: number;
+  /** The note's text, in characters (TEXT_CHAR_CAP). */
+  textCharCap: number;
+  /** The note's structs (STRUCT_CAP). */
+  structCap: number;
   maxConnections: number;
   writeRate: { max: number; windowMs: number };
   awarenessMaxBytes: number;
@@ -142,12 +150,18 @@ const serializer = () => {
   };
 };
 
-/** A server write that would pass the state cap (A§5.1 Limits). */
+/** A server write that would pass one of the note's limits (A§5.1 Limits): `doc-cap`, `doc-cap:text` or `doc-cap:structure`. */
 export class DocCapError extends Error {
-  constructor() {
-    super('doc-cap');
+  constructor(readonly limit: DocLimit = 'state') {
+    super(limit === 'state' ? 'doc-cap' : `doc-cap:${limit}`);
     this.name = 'DocCapError';
   }
+}
+
+/** A note's size as its limits count it (A§5.1): its body's text and named payloads' text, its and their structs. */
+export interface NoteSize {
+  chars: number;
+  structs: number;
 }
 
 /** A REST rename the DocDO refused in its serialized turn, writing nothing (A§8). */
@@ -264,6 +278,8 @@ export class DocDO extends YServer<SyncEnv> {
   /** Static so the Node harness can shrink them. */
   static limits: DocLimits = {
     stateCapBytes: STATE_CAP_BYTES,
+    textCharCap: TEXT_CHAR_CAP,
+    structCap: STRUCT_CAP,
     maxConnections: MAX_CONNECTIONS,
     writeRate: WRITE_RATE,
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
@@ -312,8 +328,16 @@ export class DocDO extends YServer<SyncEnv> {
   }
   readonly constructedAt = Date.now();
 
+  /** The note's text and structs as its limits count them (A§5.1 Limits). */
+  async noteSize(): Promise<NoteSize> {
+    await this.#ready();
+    return this.#size();
+  }
+
   #store: DocStore | null = null;
   #payloads: PayloadStore | null = null;
+  /** The note's body text, exact (A§5.1 Limits). */
+  #text: TextCount | null = null;
   #exported: string | null = null;
   #projections: Projections | null = null;
   /** The title and body this instance last fed to search. */
@@ -385,6 +409,10 @@ export class DocDO extends YServer<SyncEnv> {
       principalOf: (origin) => (isConnection(origin) ? (attachmentOf(origin)?.principalId ?? '') : null),
     });
     store.load(this.document);
+    // The note's text is counted once the replay is in, then kept exact per transaction and re-counted per compaction.
+    const text = new TextCount(this.document);
+    store.compacted = () => text.recount();
+    this.#text = text;
     this.#store = store;
     this.#payloads = payloads;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
@@ -683,7 +711,7 @@ export class DocDO extends YServer<SyncEnv> {
     if (frame.kind === 'sync') {
       const { changes, missing, deletes } = classifySync(this.document, frame.update);
       if (changes) {
-        if (this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing)) return;
+        if (this.#refused(connection, attachment, () => this.#noteLimit(store, frame.update), missing)) return;
       } else if (roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
@@ -893,10 +921,15 @@ export class DocDO extends YServer<SyncEnv> {
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
       try {
-        importBody(this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads, titleBytes), frontmatter);
+        importBody(
+          this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads, titleBytes), frontmatter,
+          this.#limits.structCap - this.#size().structs,
+        );
       } catch (error) {
-        // Markdown that spends the converter's whole work budget is refused whole too.
-        if (error instanceof Error && (error.message === IMPORT_BUDGET_SPENT || error.message === FRONTMATTER_EXPANSION_ERROR)) throw new DocCapError();
+        // Markdown of more lines or cells than the converter's work budget or the structure guard holds is refused whole
+        // too, as structure; frontmatter past its expansion budget, as bytes.
+        if (error instanceof Error && (error.message === IMPORT_BUDGET_SPENT || error.message === IMPORT_STRUCTS_PAST)) throw new DocCapError('structure');
+        if (error instanceof Error && error.message === FRONTMATTER_EXPANSION_ERROR) throw new DocCapError();
         throw error;
       }
     }
@@ -1120,6 +1153,9 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     if (store.meta('created') !== null) return;
     const bytes = payloads.reduce((sum, [, payload]) => sum + payload.byteLength, state.byteLength);
+    // The copy is held to the limits as any write is: a source over one (a note from before them) is not copied.
+    const limit = this.#serverWriteLimit(state, payloads);
+    if (limit) throw new DocCapError(limit);
     if (bytes > this.#limits.stateCapBytes) throw new DocCapError();
     for (const [id, payload] of payloads) this.#payloads?.write(id, payload, SERVER_IMPORT);
     this.document.transact(() => {
@@ -1427,7 +1463,69 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** `extra`: bytes a write still to come adds (create's title, admitted with its body). */
   #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][], extra = 0): void {
+    const limit = this.#serverWriteLimit(diff, payloads);
+    if (limit) throw new DocCapError(limit);
     if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, extra))) throw new DocCapError();
+  }
+
+  /** The note's size now (A§5.1 Limits). */
+  #size(): NoteSize {
+    const named = this.#payloads?.namedSize() ?? { chars: 0, structs: 0 };
+    return { chars: (this.#text?.chars ?? 0) + named.chars, structs: structCount(this.document) + named.structs };
+  }
+
+  /** The limit a write from `before` to `after` passes while growing past it, or null: shrinking is always admitted. */
+  #limitMet(before: NoteSize, after: NoteSize): DocLimit | null {
+    if (after.chars > this.#limits.textCharCap && after.chars > before.chars) return 'text';
+    if (after.structs > this.#limits.structCap && after.structs > before.structs) return 'structure';
+    return null;
+  }
+
+  /** The note's size after `update`, read from the update itself, with every stored payload it names anew. */
+  #sizeAfter(before: NoteSize, update: Uint8Array): NoteSize | null {
+    const growth = growthOf(this.document, update);
+    // A write that only deletes adds nothing, whatever it splits: a note at a limit can always be shrunk.
+    if (!growth.inserts) return null;
+    const after = { chars: before.chars + growth.chars, structs: before.structs + growth.structs };
+    const payloads = this.#payloads;
+    for (const id of growth.named) {
+      if (!payloads?.has(id) || payloads.named(id)) continue;
+      const size = payloads.sizeOf(id);
+      after.chars += size.chars;
+      after.structs += size.structs;
+    }
+    return after;
+  }
+
+  /** Which limit a client's note frame would pass (text, structure, then the stored bytes), or null. */
+  #noteLimit(store: DocStore, update: Uint8Array): DocLimit | null {
+    const before = this.#size();
+    const after = this.#sizeAfter(before, update);
+    if (!after) return null;
+    return this.#limitMet(before, after) ?? (this.#overCap(store, update) ? 'state' : null);
+  }
+
+  /**
+   * Which limit a server write (an import's diff, a copy's state) would pass, with the payloads it writes, each new and
+   * named by the write, or null.
+   */
+  #serverWriteLimit(update: Uint8Array, payloads: [string, Uint8Array][]): DocLimit | null {
+    const before = this.#size();
+    const after = this.#sizeAfter(before, update) ?? before;
+    for (const [id, payload] of payloads) {
+      const doc = new Y.Doc();
+      try {
+        Y.applyUpdate(doc, payload);
+        const size = payloadSize(doc);
+        // A payload the note already names is replaced by what the write leaves in it.
+        const old = this.#payloads?.has(id) && this.#payloads.named(id) ? this.#payloads.sizeOf(id) : { chars: 0, structs: 0 };
+        after.chars += Math.max(0, size.chars - old.chars);
+        after.structs += size.structs;
+      } finally {
+        doc.destroy();
+      }
+    }
+    return this.#limitMet(before, after);
   }
 
   #connected(): boolean {
@@ -1457,7 +1555,7 @@ export class DocDO extends YServer<SyncEnv> {
       // Every write to a withheld payload by someone who cannot read it is refused, whatever it carries, so neither an
       // ack nor a refusal tells them which of its clocks the server holds.
       if (known && withheld && !payloads.isReader(id, attachment.principalId)) {
-        this.#refused(connection, attachment, () => true);
+        this.#refused(connection, attachment, () => 'state');
         return;
       }
       const target = known ? payloads.doc(id) : (unknownPayload ??= new Y.Doc());
@@ -1467,12 +1565,21 @@ export class DocDO extends YServer<SyncEnv> {
         if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id, coverage(target, data));
         return;
       }
-      const overCap = () => {
+      const overCap = (): DocLimit | null => {
         if (withheld) {
-          if (!this.#mayWriteWithheld(connection, payloads, id)) return true;
-          if (payloads.withheldBy(attachment.principalId) + data.byteLength > this.#limits.withheldBytesPerIdentity) return true;
+          if (!this.#mayWriteWithheld(connection, payloads, id)) return 'state';
+          if (payloads.withheldBy(attachment.principalId) + data.byteLength > this.#limits.withheldBytesPerIdentity) return 'state';
         }
-        return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data);
+        // A payload the note names counts toward its text and structure; a withheld one only once something names it.
+        if (payloads.named(id)) {
+          const growth = growthOf(payloads.doc(id), data, 'all');
+          if (growth.inserts) {
+            const before = this.#size();
+            const limit = this.#limitMet(before, { chars: before.chars + growth.chars, structs: before.structs + growth.structs });
+            if (limit) return limit;
+          }
+        }
+        return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data) ? 'state' : null;
       };
       if (this.#refused(connection, attachment, overCap, missing)) return;
       payloads.addReaders(id, [attachment.principalId]);
@@ -1537,7 +1644,7 @@ export class DocDO extends YServer<SyncEnv> {
    * True when the write was refused and the socket closed; a refusal is never silent. `missing`: the frame needs a
    * clock the doc lacks, which Yjs would hold pending, uncounted, and integrate under a later sender's transaction.
    */
-  #refused(connection: Connection, attachment: Attachment, overCap: () => boolean, missing = false): boolean {
+  #refused(connection: Connection, attachment: Attachment, overCap: () => DocLimit | null, missing = false): boolean {
     if (!roleAtLeast(attachment.role, 'suggester')) return this.#refuse(connection, 'role', CLOSE.revoked);
     // A suggester's writes are vetted on a mirror (M5); until then they are refused, never applied unvetted.
     if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'suggest', CLOSE.writeRefused);
@@ -1551,12 +1658,14 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.writeRate, 'missing dependency');
       return true;
     }
-    if (overCap()) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);
+    const limit = overCap();
+    if (limit) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused, limit);
     return false;
   }
 
-  #refuse(connection: Connection, reason: WriteRefusalReason, code: number): true {
-    const event: ServerEvent = { t: 'write-refused', reason };
+  #refuse(connection: Connection, reason: WriteRefusalReason, code: number, limit: DocLimit = 'state'): true {
+    // `limit` is additive: a client from before it reads the bytes notice.
+    const event: ServerEvent = limit === 'state' ? { t: 'write-refused', reason } : { t: 'write-refused', reason, limit };
     this.sendCustomMessage(connection, JSON.stringify(event));
     connection.close(code, `write-refused: ${reason}`);
     return true;

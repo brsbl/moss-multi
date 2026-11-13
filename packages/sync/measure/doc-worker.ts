@@ -1,14 +1,16 @@
 // T1.F2 bounded-work measurement Worker (A§10.10): the real DocDO in workerd, driven by scripts/measure-converter.mjs
 // over real sockets. Test-only: it sets the trusted principal headers itself from the query string.
+import { $getRoot, $isElementNode, $parseSerializedNode, type LexicalNode, type SerializedLexicalNode } from 'lexical';
 import { getServerByName, routePartykitRequest } from 'partyserver';
 import * as Y from 'yjs';
-import { encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protocol/sync';
+import { docLimitOf, encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protocol/sync';
 import { DocDO } from '../src/doc-do.ts';
+import { structCount } from '../src/note-size.ts';
 import type { PayloadWork } from '../src/payloads.ts';
-import { phases } from '../src/server-doc.ts';
+import { importBody, phases, serverWrite } from '../src/server-doc.ts';
 import { structsPerBlock, type StructsPerBlock } from './structs-per-block.ts';
 import { textHash } from './text-hash.ts';
-import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
+import { IMPORT_BUDGET_SPENT, linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 
 /** A full GC, when workerd runs with `--expose-gc` (scripts/measure-memory.mjs); `--trace-gc` prints it as `testing`. */
 const collect = (globalThis as { gc?: () => void }).gc;
@@ -53,6 +55,87 @@ export class MeasuredDocDO extends DocDO {
   /** The note's encoded state size. */
   stateBytes(): number {
     return Y.encodeStateAsUpdate(this.document).byteLength;
+  }
+
+  /**
+   * Appends rows to the note's last table, copying its last row with fresh text, until the next batch would
+   * take the note's structs past `target`: a table grown by edits past what an import accepts. Each batch is a server
+   * write through the same binding as an editor's. Returns the structs at the end.
+   */
+  async growTable(target: number): Promise<number> {
+    await this.noteSize();
+    const serialize = (node: LexicalNode): SerializedLexicalNode => {
+      const json = node.exportJSON() as SerializedLexicalNode & { children?: SerializedLexicalNode[]; text?: string };
+      if ($isElementNode(node)) json.children = node.getChildren().map(serialize);
+      return json;
+    };
+    const retext = (json: SerializedLexicalNode & { children?: SerializedLexicalNode[]; text?: string }, row: number, cell = { at: 0 }): void => {
+      if (typeof json.text === 'string') json.text = cell.at++ === 0 ? `row ${row}` : `value ${row}`;
+      for (const child of json.children ?? []) retext(child, row, cell);
+    };
+    let rows = 0;
+    for (let perRow = 16; ; ) {
+      const before = (await this.noteSize()).structs;
+      const batch = Math.min(1_000, Math.floor((target - before) / perRow) - 1);
+      if (batch < 1) return before;
+      serverWrite(this.document, 'measure-grow', () => {
+        let table = $getRoot().getLastChild();
+        while (table && table.getType() !== 'table') table = table.getPreviousSibling();
+        if (!$isElementNode(table)) throw new Error('the note holds no table');
+        const last = table.getLastChild();
+        if (!last) throw new Error('the table has no rows');
+        const json = serialize(last);
+        for (let i = 0; i < batch; i += 1) {
+          const copy = structuredClone(json);
+          retext(copy, 100_000 + rows + i);
+          table.append($parseSerializedNode(copy));
+        }
+      });
+      rows += batch;
+      perRow = Math.max(1, ((await this.noteSize()).structs - before) / batch);
+    }
+  }
+
+  /**
+   * `total` small edits at random places in the body's text, as typing corrections are: an insert or a delete of one to
+   * three characters, each its own transaction, a new session (client id) every 50. Returns the note's structs after
+   * every `every` edits.
+   */
+  async scatterEdits(total: number, every: number): Promise<number[]> {
+    await this.noteSize();
+    const doc = this.document;
+    const root = doc.get('root', Y.XmlText);
+    let seed = 12_345;
+    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648) / 2_147_483_648;
+    const inBody = (type: unknown): boolean => {
+      for (let at = type as Y.AbstractType<unknown> | null; at; at = (at._item?.parent as Y.AbstractType<unknown> | undefined) ?? null) if (at === (root as unknown)) return true;
+      return false;
+    };
+    let runs: Y.Item[] = [];
+    const counts: number[] = [];
+    for (let edit = 0; edit < total; edit += 1) {
+      if (edit % 500 === 0) {
+        runs = [];
+        for (const structs of doc.store.clients.values()) {
+          for (const struct of structs) if (struct instanceof Y.Item && !struct.deleted && struct.content instanceof Y.ContentString && inBody(struct.parent)) runs.push(struct);
+        }
+      }
+      if (edit % 50 === 0) doc.clientID = 1 + Math.floor(random() * 2_000_000_000);
+      let run = runs[Math.floor(random() * runs.length)];
+      for (let tries = 0; run.deleted && tries < 20; tries += 1) run = runs[Math.floor(random() * runs.length)];
+      if (run.deleted) continue;
+      const parent = run.parent as Y.XmlText;
+      let offset = 0;
+      for (let item = parent._start; item && item !== run; item = item.right) if (!item.deleted && item.countable) offset += item.length;
+      const at = Math.floor(random() * (run.length + 1));
+      const length = 1 + Math.floor(random() * 3);
+      doc.transact(() => {
+        if (random() < 0.6 || run.length - at < length) parent.insert(offset + at, 'xyz'.slice(0, length));
+        else parent.delete(offset + at, length);
+      }, 'measure-edits');
+      if ((edit + 1) % every === 0) counts.push(structCount(doc));
+    }
+    return counts;
   }
 }
 
@@ -110,7 +193,7 @@ export default {
         try {
           await stub.create({ folderId: 'measure', ownerId: 'measure-owner', markdown: await request.text() });
         } catch (error) {
-          if (isDocCapError(error)) return Response.json({ error: 'doc-cap' }, { status: 413 });
+          if (isDocCapError(error)) return Response.json({ error: 'doc-cap', limit: docLimitOf(error) }, { status: 413 });
           throw error;
         }
         return new Response('ok');
@@ -129,6 +212,30 @@ export default {
       const markdown = await (await getServerByName(env.DocDO, docId)).exportMarkdown();
       if (url.searchParams.has('lean')) return Response.json({ length: markdown.length });
       return Response.json({ bytes: new TextEncoder().encode(markdown).byteLength, hash: textHash(markdown) });
+    }
+    if (url.pathname === '/size') {
+      return Response.json(await (await getServerByName(env.DocDO, docId)).noteSize());
+    }
+    if (url.pathname === '/grow-table') {
+      const structs = await (await getServerByName(env.DocDO, docId)).growTable(Number(url.searchParams.get('structs')));
+      return Response.json({ structs });
+    }
+    if (url.pathname === '/scatter') {
+      const stub = await getServerByName(env.DocDO, docId);
+      return Response.json(await stub.scatterEdits(Number(url.searchParams.get('edits')), Number(url.searchParams.get('every'))));
+    }
+    if (url.pathname === '/import-fits') {
+      // Whether the converter's work budget takes the markdown, on a throwaway doc outside any DocDO.
+      const doc = new Y.Doc();
+      try {
+        importBody(doc, await request.text());
+        return Response.json({ fits: true });
+      } catch (error) {
+        if (error instanceof Error && error.message === IMPORT_BUDGET_SPENT) return Response.json({ fits: false });
+        throw error;
+      } finally {
+        doc.destroy();
+      }
     }
     if (url.pathname === '/work') {
       const stub = await getServerByName(env.DocDO, docId);

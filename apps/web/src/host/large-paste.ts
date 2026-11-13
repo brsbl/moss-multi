@@ -6,8 +6,9 @@
 // it lands in batches of units, the main thread free between them, all one undo step. Any input in the meantime (a
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
-import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
+import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES, STRUCT_CAP, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
+import { DOC_LIMIT_NOTICE, encodePayloadFrame, PAYLOAD_UPDATE, type DocLimit } from '@moss-multi/protocol/sync';
+import { countChars, payloadSize, structCount, type PayloadSize } from '@moss-multi/sync/note-size';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
@@ -60,6 +61,8 @@ export class Measure {
   readonly #stop: () => void;
 
   constructor(editor: LexicalEditor, readonly doc = new Y.Doc()) {
+    // A scratch doc's one struct standing for the live client's clock (scratchDoc) is not the paste's.
+    this.#base = structCount(doc);
     const binding = createBinding(editor, quiet, 'root', this.doc, new Map([['root', this.doc]]), excludedPropertiesFor(editor));
     const stopSync = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
       syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
@@ -74,10 +77,16 @@ export class Measure {
     };
   }
 
+  /** What the measured writes added to the note's limits (A§5.1), as `end` read them. */
+  readonly added: PayloadSize = { chars: 0, structs: 0 };
+  readonly #base: number;
+
   /** The bytes the doc holds; the measure ends. */
   end(): number {
     this.#stop();
     const bytes = Y.encodeStateAsUpdate(this.doc).byteLength;
+    this.added.chars = countChars(this.doc);
+    this.added.structs = structCount(this.doc) - this.#base;
     this.doc.destroy();
     return bytes;
   }
@@ -145,18 +154,48 @@ function heldBytes(doc: Y.Doc): { local: number; server: number } {
 const FRAME_SLACK = 64;
 
 /**
- * Below the cap with a little headroom for what the estimate leaves out (PASTE_LIMIT_BYTES); every frame within the
- * frame cap. The figures are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart from a bug.
+ * Structs a paste's own batches may split beyond its scratch replay (the caret's text run, each batch's edges), so a
+ * paste admitted here is never refused part way by the DocDO's guard.
  */
-export function pasteFits(doc: Y.Doc | undefined, bytes: number, largestFrame: number): boolean {
+export const PASTE_STRUCT_SLACK = 256;
+
+/** The note's text and structs as the DocDO counts them (A§5.1): the note's doc and the payload docs its tree names. */
+export function heldSize(doc: Y.Doc): PayloadSize {
+  const held = { chars: countChars(doc), structs: structCount(doc) };
+  for (const payload of payloadDocsFor(doc).docs.values()) {
+    const size = payloadSize(payload);
+    held.chars += size.chars;
+    held.structs += size.structs;
+  }
+  return held;
+}
+
+/**
+ * The limit a paste adding `bytes` and `adds` would pass, or null: the text and structure caps (A§5.1), the state cap
+ * with a little headroom for what the estimate leaves out (PASTE_LIMIT_BYTES), and the frame cap for every frame
+ * (reported as `state`). The figures are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart
+ * from a bug.
+ */
+export function pasteLimit(doc: Y.Doc | undefined, bytes: number, largestFrame: number, adds: PayloadSize = { chars: 0, structs: 0 }): DocLimit | null {
   const figures = doc ? heldBytes(doc) : null;
   const held = figures ? Math.max(figures.local, figures.server) : null;
-  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= PASTE_LIMIT_BYTES);
+  const size = doc ? heldSize(doc) : null;
+  let limit: DocLimit | null = null;
+  if (size && adds.chars > 0 && size.chars + adds.chars > TEXT_CHAR_CAP) limit = 'text';
+  else if (size && adds.structs > 0 && size.structs + adds.structs + PASTE_STRUCT_SLACK > STRUCT_CAP) limit = 'structure';
+  else if (largestFrame > CLIENT_FRAME_MAX_BYTES - FRAME_SLACK || (held !== null && held + bytes > PASTE_LIMIT_BYTES)) limit = 'state';
   performance.mark('moss-paste-admission', {
-    detail: { adds: bytes, held, heldLocal: figures?.local ?? null, heldServer: figures?.server ?? null, limit: PASTE_LIMIT_BYTES, largestFrame, fit },
+    detail: {
+      adds: bytes, held, heldLocal: figures?.local ?? null, heldServer: figures?.server ?? null, limit: PASTE_LIMIT_BYTES, largestFrame, fit: limit === null,
+      chars: adds.chars, heldChars: size?.chars ?? null, structs: adds.structs, heldStructs: size?.structs ?? null, met: limit,
+    },
   });
-  return fit;
+  return limit;
 }
+
+/** Whether the paste fits every limit (pasteLimit). */
+export const pasteFits = (doc: Y.Doc | undefined, bytes: number, largestFrame: number, adds?: PayloadSize): boolean =>
+  pasteLimit(doc, bytes, largestFrame, adds) === null;
 
 /** A payload's value as its first frame carries it (registers.ts seedOf): text, or a chart's or sketch's keys. */
 export type PayloadSeed = string | ReadonlyMap<string, unknown>;
@@ -173,9 +212,11 @@ const payloadFrameBytes = (update: Uint8Array): number => encodePayloadFrame(PRO
  * Encoded for real, since a chart's keys encode several times larger than its JSON. Returns their bytes summed and the
  * largest, a step at a time; stops at the first one past `frameCap`, which refuses the paste anyway.
  */
-export function* measurePayloads(seeds: readonly PayloadSeed[], frameCap = CLIENT_FRAME_MAX_BYTES): Generator<void, { bytes: number; largest: number }> {
+export function* measurePayloads(seeds: readonly PayloadSeed[], frameCap = CLIENT_FRAME_MAX_BYTES): Generator<void, { bytes: number; largest: number } & PayloadSize> {
   let bytes = 0;
   let largest = 0;
+  let chars = 0;
+  let structs = 0;
   for (const seed of seeds) {
     const doc = new Y.Doc();
     let size = 0;
@@ -201,13 +242,16 @@ export function* measurePayloads(seeds: readonly PayloadSeed[], frameCap = CLIEN
       }
       if (step.length > 0 && size <= frameCap) write();
     }
+    const added = payloadSize(doc);
+    chars += added.chars;
+    structs += added.structs;
     doc.destroy();
     bytes += size;
     largest = Math.max(largest, size);
     if (largest > frameCap) break;
     yield;
   }
-  return { bytes, largest };
+  return { bytes, largest, chars, structs };
 }
 
 /** The payload seeds of `nodes` and everything in them, in document order. */
@@ -772,7 +816,7 @@ function $selectLive(selection: BaseSelection | null): boolean {
  * The scratch replay: the bytes the paste adds to the note and its payload docs, and its largest frame. Its own
  * function, so the scratch editor and doc are garbage once it returns, not held while the paste lands.
  */
-function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined): Generator<void, { bytes: number; largestFrame: number }> {
+function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined): Generator<void, { bytes: number; largestFrame: number; adds: PayloadSize }> {
   const { plan } = request;
   const pacer = new Pacer('moss-paste-rehearsal', max);
   const scratch = scratchEditor(request.nodes);
@@ -787,7 +831,8 @@ function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined):
   }
   const noteBytes = measure.end();
   const payloads = yield* measurePayloads(plan.payloads);
-  return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
+  const adds = { chars: measure.added.chars + payloads.chars, structs: measure.added.structs + payloads.structs };
+  return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest), adds };
 }
 
 /** Lands `request`: its scratch replay, then its batches or its refusal. */
@@ -797,9 +842,10 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
 
   // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
-  const { bytes, largestFrame } = yield* rehearse(request, max, noteDoc(editor));
-  if (!pasteFits(noteDoc(editor), bytes, largestFrame)) {
-    refuseInput(WRITE_REFUSED['doc-cap']);
+  const { bytes, largestFrame, adds } = yield* rehearse(request, max, noteDoc(editor));
+  const limit = pasteLimit(noteDoc(editor), bytes, largestFrame, adds);
+  if (limit) {
+    refuseInput(limit === 'state' ? WRITE_REFUSED['doc-cap'] : DOC_LIMIT_NOTICE[limit]);
     return;
   }
   yield;

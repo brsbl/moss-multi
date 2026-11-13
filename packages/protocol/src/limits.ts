@@ -1,16 +1,41 @@
-// Per-doc limits (A§5.1, A§18; P:Tech "2 MB/doc, 50 connections").
-
-/** PRODUCT's 2 MB is the markdown a doc can hold. */
-export const MARKDOWN_CAP_BYTES = 2 * 1024 * 1024;
+// Per-doc limits (A§5.1, A§18; P:Tech "1.02 million characters per note, 50 connections").
 
 /**
- * State-to-markdown ratio r (SP2). The scale note measures about 10.5; a canvas alone about 47. The value is
- * provisional until the SP2 ruling recorded in METHOD.md.
+ * The product limit (owner ruling 2026-10-28, Google Docs' "up to 1.02 million characters"): the characters of text a
+ * note holds, as JavaScript string length (UTF-16 code units), over every text run of its body and the text of every
+ * payload it names (code, HTML, formula). Not markdown bytes, not markup.
  */
-export const STATE_RATIO = 10.5;
+export const TEXT_CHAR_CAP = 1_020_000;
 
-/** Every entry point checks the encoded doc state against this, so a doc under 2 MB of markdown stays typeable. */
-export const STATE_CAP_BYTES = Math.round(MARKDOWN_CAP_BYTES * STATE_RATIO * 1.25);
+/**
+ * The structure guard: the Yjs structs a note's doc and its named payload docs hold, live, deleted and collected alike,
+ * so edit history counts too. Each struct costs the DocDO about 250 bytes of heap; at this cap a note in any shape
+ * creates, wakes, saves and exports under a 96 MB heap with 10% to spare (the `memory` CI job). About 36,000 one-line
+ * paragraphs (5 structs each, A§10.11), 30,000 list items (6) or 11,000 two-column table rows (16).
+ */
+export const STRUCT_CAP = 180_000;
+
+/** The most a UTF-16 code unit encodes to in UTF-8 (a surrogate pair is 4 bytes for 2 units). */
+const UTF8_BYTES_PER_CHAR = 3;
+
+/**
+ * Encoded state bytes per struct, beyond its text, that a note within the caps may need: ids, origins, parents and
+ * property keys and values (SP2 for the lean layout: the `memory` job's notes at the caps encode at about 20 bytes a
+ * struct and holds every shape under this).
+ */
+export const STATE_BYTES_PER_STRUCT = 64;
+
+/**
+ * The storage bound every entry point also checks: the encoded state of the note plus every stored payload. Derived from
+ * the two caps with a quarter to spare, so a note within them is always typeable and never meets this first.
+ */
+export const STATE_CAP_BYTES = Math.round((TEXT_CHAR_CAP * UTF8_BYTES_PER_CHAR + STRUCT_CAP * STATE_BYTES_PER_STRUCT) * 1.25);
+
+/**
+ * The longest markdown a create reads: room for TEXT_CHAR_CAP characters of any script and their markup. A transport
+ * bound only: the note's limits are counted on what the import makes.
+ */
+export const MARKDOWN_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * The largest frame a client sends on a doc socket (T3.S6). Larger updates go as pieces; a paste that would need a
@@ -65,8 +90,8 @@ export const DOC_CREATE_RATE = { max: 60, windowMs: 60_000 } as const;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const DOC_CREATE_DAILY = { max: 2_000, windowMs: DAY_MS } as const;
 
-/** The largest `POST /api/docs` body: 2 MB of markdown even if JSON escapes every byte (`\u00XX`), plus the fields. */
-export const CREATE_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
+/** The largest `POST /api/docs` body: MARKDOWN_MAX_BYTES even if JSON escapes every byte (`\u00XX`), plus the fields. */
+export const CREATE_BODY_MAX_BYTES = MARKDOWN_MAX_BYTES * 6 + 64 * 1024;
 
 /**
  * Live (untrashed) notes one acting user has created, wherever they are and their agents' included; a create or

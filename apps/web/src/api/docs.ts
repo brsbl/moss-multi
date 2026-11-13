@@ -6,10 +6,10 @@
 import { eq } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import {
-  CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_CAP_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
+  CREATE_BODY_MAX_BYTES, DOC_CREATE_RATE, MARKDOWN_MAX_BYTES, REST_WRITE_RATE, LIVE_NOTE_CAP,
 } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
-import { isDocCapError, renameRefusalOf } from '@moss-multi/protocol/sync';
+import { DOC_LIMIT_NOTICE, docLimitOf, renameRefusalOf, type DocLimit } from '@moss-multi/protocol/sync';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
@@ -82,7 +82,9 @@ async function refuseInsert(env: DocsEnv, db: Db, principal: Principal, actor: W
 const noteCap = () => refuse(409, 'note-cap',
   `You have ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, the limit. Move some to Trash to make new ones.`);
 
-const docCap = () => json({ error: 'doc-cap' }, 413, NO_STORE);
+/** 413 doc-cap; past the text or structure limit it names the limit and says so (A§5.1). */
+const docCap = (limit: DocLimit = 'state') =>
+  json(limit === 'state' ? { error: 'doc-cap' } : { error: 'doc-cap', limit, message: DOC_LIMIT_NOTICE[limit] }, 413, NO_STORE);
 
 /** Seeds the DocDO through `run`; a failed seed deletes the row (doc-cap is 413), a seeded doc is 201 {doc, role}. */
 async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<unknown>): Promise<Response> {
@@ -90,7 +92,8 @@ async function seeded(db: Db, doc: DocRecord, role: string, run: () => Promise<u
     await run();
   } catch (error) {
     await db.delete(docs).where(eq(docs.id, doc.id));
-    if (isDocCapError(error)) return docCap();
+    const limit = docLimitOf(error);
+    if (limit) return docCap(limit);
     if (error instanceof Error && error.message === 'media-refused') return notFound();
     throw error;
   }
@@ -126,7 +129,7 @@ async function createDoc(request: Request, env: DocsEnv): Promise<Response> {
   const body = text === null ? null : parseJsonObject(text);
   if (!body) return json({ error: 'bad-request' }, 400);
   if ('markdown' in body && typeof body.markdown !== 'string') return json({ error: 'bad-request' }, 400, NO_STORE);
-  if (typeof body.markdown === 'string' && new TextEncoder().encode(body.markdown).byteLength > MARKDOWN_CAP_BYTES) return docCap();
+  if (typeof body.markdown === 'string' && new TextEncoder().encode(body.markdown).byteLength > MARKDOWN_MAX_BYTES) return docCap();
   const db = createDb(env.DB);
   const folderId = typeof body.folderId === 'string' ? body.folderId : await ensureDefaultVault(db, userId);
   // Editors create in a shared folder or vault; the vault's owner owns the doc and created_by records who made it.
@@ -245,7 +248,8 @@ async function renameDoc(request: Request, env: DocsEnv, docId: string, body: Re
     await stub.renameTitle(body.title, renameCaller(principal, access.viaLink ? shareTokenOf(request) : null));
     return readDoc(request, env, docId);
   } catch (error) {
-    if (isDocCapError(error)) return docCap();
+    const limit = docLimitOf(error);
+    if (limit) return docCap(limit);
     if (renameRefusalOf(error)) return notFound();
     return json({ error: 'unavailable' }, 503, NO_STORE);
   }

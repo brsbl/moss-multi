@@ -1,22 +1,25 @@
 #!/usr/bin/env node
-// DocDO memory in workerd (T3.B31a). A Cloudflare isolate may use 128 MB. Each near-cap note the j01 journeys import
-// through POST /api/docs (e2e/lib/large-notes.ts) is created through the real DocDO (packages/sync/measure/doc-worker.ts)
-// in a fresh workerd that runs with V8's `--trace-gc` and `--expose-gc`, in phases: the create, its debounced save, an
-// export (what the search feed and a download read), each followed by a full GC. Every GC line gives the heap before
-// and after it, so a phase's figures are its highest heap in use before a GC (garbage included) and its highest heap
-// left after a full GC. Each note runs twice: untraced (the phase table, and the note at rest: the heap after the
-// save's full GC) and traced (the DocDO also collects garbage at each named step of a server write and an export, so
-// the heap at each step is known; those in-phase collections keep that phase's garbage from later gc() calls, so its
-// figures are detail only). Then each phase's need is bisected: the smallest `--max-heap-size` it completes under in
-// three of three fresh workerds (create, a wake of the saved note, and an export after a wake). The verdict is relative:
-// for every budgeted note, the create needs at most CREATE_BUDGET and the export at most EXPORT_BUDGET times the note at
-// rest. Each note's structs per block (packages/sync/measure/structs-per-block.ts) are held to its block's bound
-// (T3.B31b): a plain paragraph 5, a list item 6, a two-cell table row 16. Prints markdown tables (and appends them to $GITHUB_STEP_SUMMARY), writes the figures to
-// .cache/measure/memory.json, and exits non-zero when a note misses a budget. Linux needs `stdbuf` (coreutils; macOS
-// has its own) so workerd's GC lines arrive as they happen. Environment: MEASURE_MEMORY_CASES (a regular expression over
-// the notes' names), MEASURE_MEMORY_PORT (the first port, 9910), MEASURE_MEMORY_NEEDS=0 (skip the bisection, and the
-// verdict with it), MEASURE_MEMORY_V8_FLAGS (extra V8 flags for the traced run) and MEASURE_MEMORY_DUMP (a file for the
-// traced run's GC log).
+// DocDO memory in workerd (T3.B31a, T3.B31c). A Cloudflare isolate may use 128 MB. Each note at the caps (A§5.1: the
+// text cap in mixed markdown; the structure cap in one-line paragraphs, list items, and a table imported as large as
+// the converter takes it, then grown by appended rows) is created through the real DocDO
+// (packages/sync/measure/doc-worker.ts) in a fresh workerd that runs with V8's `--trace-gc` and `--expose-gc`, in
+// phases: the create, its debounced save, an export (what the search feed and a download read), each followed by a full
+// GC. Every GC line gives the heap before and after it, so a phase's figures are its highest heap in use before a GC
+// (garbage included) and its highest heap left after a full GC. Each note runs twice: untraced (the phase table, and the
+// note at rest: the heap after the save's full GC) and traced (the DocDO also collects garbage at each named step of a
+// server write and an export, so the heap at each step is known; those in-phase collections keep that phase's garbage
+// from later gc() calls, so its figures are detail only). Then each phase's need is bisected: the smallest
+// `--max-heap-size` it completes under in three of three fresh workerds (create, a wake of the saved note, and an export
+// after a wake). The verdict is absolute: every phase of a note at a cap needs at most PHASE_LIMIT_MB and the note at
+// rest takes at most REST_LIMIT_MB; each sits within 2% under its cap, encodes within what STATE_CAP_BYTES allows its
+// text and structs, and its structs per block (packages/sync/measure/structs-per-block.ts) are held to its block's bound
+// (T3.B31b): a plain paragraph 5, a list item 6, a two-cell table row 16. Notes just past each cap must be refused
+// with that limit, and a 200 KB note's structs are reported over 100,000 scattered edits. Prints markdown tables (and
+// appends them to $GITHUB_STEP_SUMMARY), writes the figures to .cache/measure/memory.json, and exits non-zero when a note
+// misses a budget. Linux needs `stdbuf` (coreutils; macOS has its own) so workerd's GC lines arrive as they happen.
+// Environment: MEASURE_MEMORY_CASES (a regular expression over the notes' names), MEASURE_MEMORY_PORT (the first port,
+// 9910), MEASURE_MEMORY_NEEDS=0 (skip the bisection, and the verdict with it), MEASURE_MEMORY_V8_FLAGS (extra V8 flags
+// for the traced run) and MEASURE_MEMORY_DUMP (a file for the traced run's GC log).
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -24,17 +27,23 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bundle } from './measure-converter.mjs';
+import { STATE_BYTES_PER_STRUCT, STRUCT_CAP, TEXT_CHAR_CAP } from '../packages/protocol/src/limits.ts';
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
 const OUT = join(REPO, '.cache/measure');
 const NAME = 'docdo-memory';
 export const ISOLATE_LIMIT_MB = 128;
-// The lean layout (T3.B31b) cut the note at rest to about two fifths and every phase's need by about half; the Lexical
-// tree a create or an export builds did not shrink, so the multiples rose from 1.45x and 1.6x.
-/** The heap a create (an import) may need, as a multiple of the note at rest. */
-export const CREATE_BUDGET = 1.75;
-/** The heap an export may need, as a multiple of the note at rest. */
-export const EXPORT_BUDGET = 1.95;
+/**
+ * The absolute budgets a note at the caps is held to (T3.B31c, A§5.1): every phase (create, wake, export) completes
+ * under a 96 MB V8 heap and the note at rest stays under 64 MB, each with 10% to spare.
+ */
+export const HEAP_BUDGET_MB = 96;
+export const REST_BUDGET_MB = 64;
+export const BUDGET_MARGIN = 0.1;
+export const PHASE_LIMIT_MB = HEAP_BUDGET_MB * (1 - BUDGET_MARGIN);
+export const REST_LIMIT_MB = REST_BUDGET_MB * (1 - BUDGET_MARGIN);
+/** How close to its cap a note at a cap must be: within 2% below it. */
+export const AT_CAP = 0.98;
 const REQUEST_TIMEOUT_MS = 300_000;
 /** y-partyserver saves 2 s after the last update; the save compacts the note's rows. */
 const SAVE_WAIT_MS = 4_000;
@@ -47,21 +56,49 @@ const WORKERD = createRequire(requireFromSync.resolve('wrangler'))('workerd').de
 export const STRUCT_BOUNDS = { paragraph: 5, 'list item': 6, 'table row': 16 };
 
 /**
- * The journeys' near-cap notes, as POST /api/docs receives them, whether the budgets hold them (every note of 20,000
- * blocks or more, the table's 5,000 rows holding 10,000 cells, and the 2 MB mixed note), and the kind of block whose
- * struct bound holds them.
+ * The notes measured, as POST /api/docs receives them (`markdown`, or `make` once the largest table an import accepts
+ * is known): the notes at the caps in each shape, which the absolute budgets hold (`budget`) and whose size is checked
+ * against the cap they sit at (`cap`: 'text' or 'structure'); the kind of block whose struct bound holds them (`block`);
+ * a table imported as large as the converter takes it, then grown by appended rows to the structure cap (`grow`); notes
+ * just past a cap, which the create must refuse with that limit (`refused`); and a 200 KB note given `edits` small
+ * scattered edits, whose structs are reported (information only).
  */
 async function cases() {
   const notes = await import('../e2e/lib/large-notes.ts');
+  const atText = notes.mixedMarkdownOfText(TEXT_CHAR_CAP);
+  const pastText = notes.mixedMarkdownOfText(TEXT_CHAR_CAP + 2_000);
+  // A one-line paragraph is 5 structs and a list item 6 (A§10.11), beside a few for the note itself.
+  const lines = Math.floor((STRUCT_CAP - 8) / 5);
+  const items = Math.floor((STRUCT_CAP - 24) / 6);
   return [
-    ['j01-large: 40,000 lines', notes.numberedLines(40_000), true, 'paragraph'],
-    ['j01-paste-blocks reference: 40,000 short paragraphs', `Before.\n\n${notes.shortParagraphs(40_000)}\n\nAfter.`, true, 'paragraph'],
-    ['j01-paste-list reference: 30,000 items', `Before.\n\n${notes.flatList(30_000)}\n\nAfter.`, true, 'list item'],
-    ['j01-paste-race reference: 20,000 paragraphs', `Top.\n\nXYHello world here.${notes.raceLines(20_000)}\n\nTail.`, true, 'paragraph'],
-    ['j01-paste-table reference: 5,000 rows', `Before.\n\n${notes.table(5_000)}\n\nAfter.`, true, 'table row'],
-    ['j01-paste reference: 2 MB of mixed markdown', notes.mixedMarkdown(2_000_000), true, null],
-    ['j01-paste reference: 200k of mixed markdown', notes.mixedMarkdown(200_000), false, null],
+    { name: `text cap: ${atText.chars.toLocaleString('en-US')} characters of mixed markdown`, markdown: atText.markdown, budget: true, cap: 'text', chars: atText.chars },
+    { name: `structure cap: ${lines.toLocaleString('en-US')} one-line paragraphs`, markdown: notes.numberedLines(lines), budget: true, cap: 'structure', block: 'paragraph' },
+    { name: `structure cap: ${items.toLocaleString('en-US')} list items`, markdown: notes.flatList(items), budget: true, cap: 'structure', block: 'list item' },
+    { name: 'structure cap: the largest table an import takes, grown to the cap', make: (rows) => notes.table(rows), budget: true, cap: 'structure', block: 'table row', grow: true },
+    { name: `past the text cap: ${pastText.chars.toLocaleString('en-US')} characters of mixed markdown`, markdown: pastText.markdown, refused: 'text' },
+    { name: `past the structure cap: ${(lines + 2).toLocaleString('en-US')} one-line paragraphs`, markdown: notes.numberedLines(lines + 2), refused: 'structure' },
+    { name: '200k of mixed markdown', markdown: notes.mixedMarkdown(200_000) },
+    { name: 'scattered edits: 100,000 on a 200k mixed note', markdown: notes.mixedMarkdown(200_000), edits: 100_000 },
   ];
+}
+
+/** The most rows `table(rows)` may have for the converter's work budget to take it, bisected in one workerd. */
+async function largestTable(make, port) {
+  const server = await startWorkerd(port, []);
+  try {
+    const fits = async (rows) => JSON.parse(await call(server.origin, '/import-fits', { method: 'POST', body: make(rows) })).fits;
+    let low = 1_000;
+    let high = 20_000;
+    if (!(await fits(low))) throw new Error(`a table of ${low} rows does not import`);
+    while (high - low > 50) {
+      const mid = Math.round((low + high) / 2);
+      if (await fits(mid)) low = mid;
+      else high = mid;
+    }
+    return low;
+  } finally {
+    await stopWorkerd(server.child);
+  }
 }
 
 /** workerd's config: the bundled measurement Worker, its SQLite-backed DocDO on disk, one HTTP socket. */
@@ -194,11 +231,26 @@ async function settle(server, count) {
  * One note in a fresh workerd, phase by phase. Returns each phase's figures and the base heap, or where it failed:
  * under a heap cap, V8 aborts the isolate's process once a phase cannot fit.
  */
-async function measureNote(markdown, port, flags, { trace = false, wake = false } = {}) {
+async function measureNote(markdown, port, flags, { trace = false, wake = false, grow = false, refused = null } = {}) {
   const server = await startWorkerd(port, ['--expose-gc', '--trace-gc', ...flags]);
   const doc = `memory-${port}`;
   const result = { phases: {} };
   let phase = 'start';
+  if (refused) {
+    // A note past a cap: the create is refused whole with that limit, and the DocDO keeps only its seed.
+    try {
+      const response = await fetch(`${server.origin}/create?lean&doc=${doc}`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      const body = await response.text();
+      result.refused = response.status === 413 ? JSON.parse(body).limit : `HTTP ${response.status} ${body.slice(0, 200)}`;
+      result.size = JSON.parse(await call(server.origin, `/size?doc=${doc}`));
+    } catch (error) {
+      const fatal = /Fatal[^\n]*|out of memory[^\n]*/i.exec(server.logs.value)?.[0];
+      result.failed = { phase: 'create', message: fatal ?? String(error.message).split('\n')[0] };
+    } finally {
+      await stopWorkerd(server.child);
+    }
+    return result;
+  }
   try {
     let gcs = 0;
     // With `trace`, the DocDO collects garbage twice at each server write's and export's phase, named in order.
@@ -212,7 +264,10 @@ async function measureNote(markdown, port, flags, { trace = false, wake = false 
     let mark = await collect();
     result.baseMb = phaseFigures(gcEvents(server.logs.value)).restMb;
     const steps = {
-      create: () => call(server.origin, `/create?lean&doc=${doc}`, { method: 'POST', body: markdown }),
+      create: async () => {
+        await call(server.origin, `/create?lean&doc=${doc}`, { method: 'POST', body: markdown });
+        if (grow) await call(server.origin, `/grow-table?doc=${doc}&structs=${STRUCT_CAP}`);
+      },
       save: () => new Promise((resolve) => setTimeout(resolve, SAVE_WAIT_MS)),
       export: () => call(server.origin, `/export?lean&doc=${doc}`),
     };
@@ -229,6 +284,7 @@ async function measureNote(markdown, port, flags, { trace = false, wake = false 
     if (process.env.MEASURE_MEMORY_DUMP && trace) writeFileSync(process.env.MEASURE_MEMORY_DUMP, server.logs.value);
     phase = 'state';
     result.stateBytes = JSON.parse(await call(server.origin, `/state-bytes?doc=${doc}`)).stateBytes;
+    result.size = JSON.parse(await call(server.origin, `/size?doc=${doc}`));
     if (!trace) result.blocks = JSON.parse(await call(server.origin, `/structs?doc=${doc}`));
     if (trace) {
       // A plain Y.Doc of the note's state, held beside it: what the note's Yjs structures alone take.
@@ -371,7 +427,7 @@ async function fitsUnder(cap, port, storage, request) {
  * copy of the storage an uncapped workerd left once the note was created and saved. `guess` gives each search's
  * starting bounds.
  */
-async function measureNeeds(markdown, port, guess) {
+async function measureNeeds(markdown, port, guess, { grow = false } = {}) {
   const storage = (name) => join(OUT, 'state', `needs-${port}-${name}`);
   const fresh = (name) => {
     rmSync(storage(name), { recursive: true, force: true });
@@ -384,6 +440,7 @@ async function measureNeeds(markdown, port, guess) {
   const writer = await startWorkerd(port, [], saved);
   try {
     await create(writer.origin);
+    if (grow) await call(writer.origin, `/grow-table?doc=${NEED_DOC}&structs=${STRUCT_CAP}`);
     await new Promise((resolve) => setTimeout(resolve, SAVE_WAIT_MS));
   } finally {
     await stopWorkerd(writer.child);
@@ -401,7 +458,9 @@ async function measureNeeds(markdown, port, guess) {
     return ok;
   };
   const needs = {};
-  needs.create = await reliableCap(logged('create', (cap) => fitsUnder(cap, port, fresh('probe'), create)), guess.low, guess.create);
+  // A grown table's create is its import and the rows added after it, which no create makes at once: only its wake and
+  // export are a note's phases.
+  needs.create = grow ? null : await reliableCap(logged('create', (cap) => fitsUnder(cap, port, fresh('probe'), create)), guess.low, guess.create);
   needs.wake = await reliableCap(logged('wake', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/wake?doc=${NEED_DOC}`))), guess.low, guess.wake);
   needs.export = await reliableCap(logged('export', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/export?lean&doc=${NEED_DOC}`))), guess.low, guess.export);
   rmSync(storage('saved'), { recursive: true, force: true });
@@ -409,8 +468,8 @@ async function measureNeeds(markdown, port, guess) {
   return needs;
 }
 
-/** A phase's need as a multiple of the note at rest, or null when either is unknown. */
-export const ratio = (need, rest) => (typeof need === 'number' && typeof rest === 'number' && rest > 0 ? need / rest : null);
+/** The state bytes a note's text and structs may encode to, as STATE_CAP_BYTES is derived (A§5.1): SP2 for the lean layout. */
+export const stateAllowance = ({ chars, structs }) => chars * 3 + structs * STATE_BYTES_PER_STRUCT;
 
 /**
  * Every way the measured notes miss a budget (empty when they meet them). The note at rest is the untraced run's: the
@@ -422,53 +481,101 @@ export function memoryProblems(notes) {
     for (const [run, result] of [['untraced', n.plain], ['traced', n.measured]]) {
       if (result?.failed) problems.push(`${n.name}: the ${run} run failed (${result.failed.phase}: ${result.failed.message})`);
     }
+    if (n.refused) {
+      if (n.plain?.refused !== n.refused) problems.push(`${n.name}: the create was not refused with the ${n.refused} limit (${n.plain?.refused ?? 'admitted'})`);
+      continue;
+    }
     const bound = n.block ? STRUCT_BOUNDS[n.block] : undefined;
     if (bound !== undefined) {
       const median = n.plain?.blocks?.median;
       if (typeof median !== 'number') problems.push(`${n.name}: its structs per block are unknown`);
       else if (median > bound) problems.push(`${n.name}: a ${n.block} costs ${median} structs, over ${bound}`);
     }
-    if (!n.budget || !n.needs) continue;
+    const size = n.plain?.size;
+    if (n.cap) {
+      const [value, cap] = n.cap === 'text' ? [size?.chars, TEXT_CHAR_CAP] : [size?.structs, STRUCT_CAP];
+      if (typeof value !== 'number') problems.push(`${n.name}: its size is unknown`);
+      else if (value > cap || value < cap * AT_CAP) problems.push(`${n.name}: it holds ${value} ${n.cap === 'text' ? 'characters' : 'structs'}, not at the cap of ${cap}`);
+      if (n.cap === 'text' && typeof size?.chars === 'number' && n.chars !== undefined && size.chars !== n.chars) {
+        problems.push(`${n.name}: it holds ${size.chars} characters where its markdown counts ${n.chars}`);
+      }
+    }
+    const state = n.plain?.stateBytes;
+    if (size && typeof state === 'number' && state > stateAllowance(size)) {
+      problems.push(`${n.name}: its state is ${state} bytes, over the ${stateAllowance(size)} its text and structs allow`);
+    }
+    if (!n.budget) continue;
     const rest = n.plain?.phases?.save?.restMb;
-    for (const [phase, budget] of [['create', CREATE_BUDGET], ['export', EXPORT_BUDGET]]) {
-      const times = ratio(n.needs[phase], rest);
-      if (times === null) problems.push(`${n.name}: the ${phase}'s need is unknown (${n.needs[phase]} MB, at rest ${rest} MB)`);
-      else if (times > budget) problems.push(`${n.name}: the ${phase} needs ${n.needs[phase]} MB, ${times.toFixed(2)}x the note at rest (${rest} MB), over ${budget}x`);
+    if (typeof rest !== 'number') problems.push(`${n.name}: the note at rest is unknown`);
+    else if (rest > REST_LIMIT_MB) problems.push(`${n.name}: at rest it takes ${rest} MB, over ${REST_LIMIT_MB.toFixed(1)} MB`);
+    if (!n.needs) continue;
+    for (const phase of ['create', 'wake', 'export']) {
+      const need = n.needs[phase];
+      if (phase === 'create' && n.grow) continue;
+      if (typeof need !== 'number') problems.push(`${n.name}: the ${phase}'s need is unknown`);
+      else if (need > PHASE_LIMIT_MB) problems.push(`${n.name}: the ${phase} needs ${need} MB, over ${PHASE_LIMIT_MB.toFixed(1)} MB`);
     }
   }
   return problems;
+}
+
+/** A 200 KB note given small scattered edits: its structs every `every` edits, in a fresh workerd. */
+async function measureEdits(markdown, port, edits, every = 10_000) {
+  const server = await startWorkerd(port, []);
+  const doc = `edits-${port}`;
+  try {
+    await call(server.origin, `/create?lean&doc=${doc}`, { method: 'POST', body: markdown });
+    const start = JSON.parse(await call(server.origin, `/size?doc=${doc}`));
+    const counts = JSON.parse(await call(server.origin, `/scatter?doc=${doc}&edits=${edits}&every=${every}`));
+    return { start, counts, every };
+  } finally {
+    await stopWorkerd(server.child);
+  }
 }
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
   await bundle(NAME, join(REPO, 'packages/sync/measure/doc-worker.ts'));
   const notes = [];
+  const edited = [];
   let port = Number(process.env.MEASURE_MEMORY_PORT ?? 9910);
   // MEASURE_MEMORY_CASES (a regular expression) measures only the notes it matches.
   const only = process.env.MEASURE_MEMORY_CASES ? new RegExp(process.env.MEASURE_MEMORY_CASES) : null;
   // MEASURE_MEMORY_NEEDS=0 skips the per-phase heap-cap bisection.
   const bisect = process.env.MEASURE_MEMORY_NEEDS !== '0';
-  for (const [name, markdown, budget, block] of (await cases()).filter(([name]) => !only || only.test(name))) {
+  for (const note of (await cases()).filter(({ name }) => !only || only.test(name))) {
+    const { name, budget = false, block = null, grow = false, refused = null, edits } = note;
+    if (edits) {
+      const figures = await measureEdits(note.markdown, port, edits);
+      port += 1;
+      edited.push({ name, ...figures });
+      console.error(`measure-memory: ${name} done: ${JSON.stringify(figures)}`);
+      continue;
+    }
+    if (note.make) {
+      note.rows = await largestTable(note.make, port);
+      port += 1;
+      note.markdown = note.make(note.rows);
+      console.error(`measure-memory: the largest table an import takes has ${note.rows} rows`);
+    }
+    const { markdown } = note;
     // Untraced first: its figures (the note at rest among them) bound the bisection's searches.
-    const plain = await measureNote(markdown, port, [], { wake: true });
-    const measured = await measureNote(markdown, port + 1, (process.env.MEASURE_MEMORY_V8_FLAGS ?? '').split(' ').filter(Boolean), { trace: true });
+    const plain = await measureNote(markdown, port, [], { wake: true, grow, refused });
+    const measured = refused ? { phases: {} } : await measureNote(markdown, port + 1, (process.env.MEASURE_MEMORY_V8_FLAGS ?? '').split(' ').filter(Boolean), { trace: true, grow });
     const rest = plain.phases.save?.restMb ?? measured.phases.save?.restMb ?? 8;
     const high = (phase) => Math.max(plain.phases[phase]?.highMb ?? 0, measured.phases[phase]?.liveMb ?? 0, rest) + 8;
     // Every phase so far has needed more than 1.2x the note at rest, which bounds each search from below.
-    const needs = bisect ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, export: high('export') }) : null;
+    const needs = bisect && budget && !plain.failed
+      ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, export: high('export') }, { grow })
+      : null;
     port += 3;
-    notes.push({ name, budget, block, markdownBytes: Buffer.byteLength(markdown), measured, plain, needs });
+    notes.push({ ...note, make: undefined, markdown: undefined, budget, block, markdownBytes: Buffer.byteLength(markdown), measured, plain, needs });
     const at = (run, phase) => `${run.phases[phase]?.highMb ?? '?'}/${run.phases[phase]?.liveMb ?? '?'}`;
-    console.error(`measure-memory: ${name} done: at rest ${rest} MB; untraced high/live create ${at(plain, 'create')}, export ${at(plain, 'export')}, wake ${at(plain, 'wake')}; needs ${JSON.stringify(needs)}`);
+    console.error(`measure-memory: ${name} done: ${refused ? `refused ${plain.refused}` : `at rest ${rest} MB; untraced high/live create ${at(plain, 'create')}, export ${at(plain, 'export')}, wake ${at(plain, 'wake')}`}; size ${JSON.stringify(plain.size)}; needs ${JSON.stringify(needs)}`);
   }
   const mb = (value) => (typeof value === 'number' ? `${value.toFixed(1)} MB` : '?');
   const figures = (phase) => (phase ? `${mb(phase.highMb)} / ${mb(phase.liveMb)}` : '');
-  const times = (need, rest, limit) => {
-    const value = ratio(need, rest);
-    if (value === null) return '?';
-    const verdict = limit === null ? '' : value <= limit ? `, within ${limit}x` : `, OVER ${limit}x`;
-    return `${need} MB (${value.toFixed(2)}x${verdict})`;
-  };
+  const within = (need, limit) => (typeof need === 'number' ? `${need} MB${limit === null ? '' : need <= limit ? '' : `, OVER ${limit.toFixed(1)}`}` : '–');
   const perBlock = ({ block, plain: p }) => {
     const b = p.blocks;
     if (!b) return '?';
@@ -476,46 +583,62 @@ async function main() {
     const verdict = bound === undefined ? '' : b.median <= bound ? `, within ${bound}` : `, OVER ${bound}`;
     return `${b.median} (mean ${b.mean.toFixed(2)} of ${b.blocks} blocks${verdict})`;
   };
+  const sized = ({ plain: p }) => (p.size ? `${p.size.chars.toLocaleString('en-US')} / ${p.size.structs.toLocaleString('en-US')}` : '?');
+  const kept = notes.filter((n) => !n.refused);
   const lines = [
-    '### DocDO memory in workerd (T3.B31a)',
+    '### DocDO memory in workerd (T3.B31c)',
     '',
-    `Isolate JS heap from V8's GC trace, untraced run: per phase, the highest in use before a GC / the highest left after a full GC. The isolate limit is ${ISOLATE_LIMIT_MB} MB. Array buffers (the stored state) are outside these figures.`,
+    `Notes at the caps (${TEXT_CHAR_CAP.toLocaleString('en-US')} characters of text; ${STRUCT_CAP.toLocaleString('en-US')} structs) in each shape. Isolate JS heap from V8's GC trace, untraced run: per phase, the highest in use before a GC / the highest left after a full GC. The isolate limit is ${ISOLATE_LIMIT_MB} MB. Array buffers (the stored state) are outside these figures.`,
     '',
     'Structs per block: the median block\'s Yjs structs (a list\'s blocks are its items, a table\'s its rows), held to its kind\'s bound (T3.B31b).',
     '',
-    '| Note | Markdown | State | Structs per block | Base | Create | Save | Export | At rest | Wake | Woken at rest |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    ...notes.map((n) => {
-      const { name, markdownBytes, measured: m, plain: p } = n;
-      return `| ${name} | ${mb(markdownBytes / 2 ** 20)} | ${m.stateBytes ? mb(m.stateBytes / 2 ** 20) : '?'} | ${perBlock(n)} | ${mb(p.baseMb)} | ${figures(p.phases.create)} | ${figures(p.phases.save)} | ${figures(p.phases.export)} | ${mb(p.phases.save?.restMb)} | ${figures(p.phases.wake)} | ${mb(p.phases.wake?.restMb)} |`;
+    '| Note | Markdown | Characters / structs | State | Structs per block | Base | Create | Save | Export | At rest | Wake | Woken at rest |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...kept.map((n) => {
+      const { name, markdownBytes, plain: p } = n;
+      return `| ${name}${n.rows ? ` (${n.rows} rows imported)` : ''} | ${mb(markdownBytes / 2 ** 20)} | ${sized(n)} | ${p.stateBytes ? mb(p.stateBytes / 2 ** 20) : '?'} | ${perBlock(n)} | ${mb(p.baseMb)} | ${figures(p.phases.create)} | ${figures(p.phases.save)} | ${figures(p.phases.export)} | ${mb(p.phases.save?.restMb)} | ${figures(p.phases.wake)} | ${mb(p.phases.wake?.restMb)} |`;
     }),
   ];
-  if (bisect) {
+  const refusals = notes.filter((n) => n.refused);
+  if (refusals.length) {
+    lines.push('', '| Past a cap | Characters | Refused with |', '| --- | --- | --- |', ...refusals.map((n) => `| ${n.name} | ${mb(n.markdownBytes / 2 ** 20)} | ${n.plain.refused ?? n.plain.failed?.message ?? '?'} (expected ${n.refused}) |`));
+  }
+  if (bisect && kept.some((n) => n.needs)) {
     lines.push(
       '',
-      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under in ${NEED_RUNS} of ${NEED_RUNS} fresh workerds, and that as a multiple of the note at rest (the untraced run's heap after the save's full GC, base included). Wake: a DocDO loading the saved note; export: a wake, then the export (what the search feed and a download run). Budgets, for notes of 20,000 blocks or more and the 2 MB mixed note: create at most ${CREATE_BUDGET}x, export at most ${EXPORT_BUDGET}x.`,
+      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under in ${NEED_RUNS} of ${NEED_RUNS} fresh workerds. Wake: a DocDO loading the saved note; export: a wake, then the export (what the search feed and a download run). Budgets for the notes at the caps: each phase at most ${PHASE_LIMIT_MB.toFixed(1)} MB (${HEAP_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%), at rest at most ${REST_LIMIT_MB.toFixed(1)} MB (${REST_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%). A grown table's create is not one phase.`,
       '',
       '| Note | At rest | Create needs | Wake needs | Export needs |',
       '| --- | --- | --- | --- | --- |',
-      ...notes.map(({ name, budget, plain: p, needs: n }) => {
-        const rest = p.phases.save?.restMb;
-        return `| ${name} | ${mb(rest)} | ${times(n?.create, rest, budget ? CREATE_BUDGET : null)} | ${times(n?.wake, rest, null)} | ${times(n?.export, rest, budget ? EXPORT_BUDGET : null)} |`;
+      ...kept.map(({ name, budget, plain: p, needs: n }) => {
+        const limit = budget ? PHASE_LIMIT_MB : null;
+        return `| ${name} | ${within(p.phases.save?.restMb, budget ? REST_LIMIT_MB : null)} | ${within(n?.create, limit)} | ${within(n?.wake, limit)} | ${within(n?.export, limit)} |`;
       }),
+    );
+  }
+  for (const e of edited) {
+    lines.push(
+      '',
+      `${e.name}: ${e.start.structs.toLocaleString('en-US')} structs (${e.start.chars.toLocaleString('en-US')} characters) before; structs every ${e.every.toLocaleString('en-US')} edits (information only; the guard is ${STRUCT_CAP.toLocaleString('en-US')}):`,
+      '',
+      `| Edits | ${e.counts.map((_, i) => ((i + 1) * e.every).toLocaleString('en-US')).join(' | ')} |`,
+      `| ${['---', ...e.counts.map(() => '---')].join(' | ')} |`,
+      `| Structs | ${e.counts.map((count) => count.toLocaleString('en-US')).join(' | ')} |`,
     );
   }
   const report = lines.join('\n');
   console.log(report);
   const bare = (run) => (run ? { ...run, logs: undefined } : run);
-  writeFileSync(join(OUT, 'memory.json'), `${JSON.stringify(notes.map((n) => ({ ...n, measured: bare(n.measured), plain: bare(n.plain) })), null, 2)}\n`);
+  writeFileSync(join(OUT, 'memory.json'), `${JSON.stringify({ notes: notes.map((n) => ({ ...n, measured: bare(n.measured), plain: bare(n.plain) })), edited }, null, 2)}\n`);
   for (const n of notes) {
     if (n.measured.failed) console.error(`${n.name} (traced):\n${n.measured.logs}`);
     if (n.plain.failed) console.error(`${n.name} (untraced):\n${n.plain.logs}`);
   }
-  const traces = notes.map(({ name, measured: m }) => [
+  const traces = kept.map(({ name, measured: m }) => [
     `- ${name}: a plain Y.Doc of the note ${mb(m.copyMb)} (${m.structs} structs, ${Math.round((m.copyMb * 2 ** 20) / m.structs)} B each);`,
     PHASES.flatMap((phase) => (m.phases[phase]?.marks ?? []).map(({ label, mb: at }) => `${label} ${mb(at)}`)).join(', '),
   ].join(' '));
-  const details = ['', 'Traced run: heap after a full GC at each phase of the server write and the export:', '', ...traces].join('\n');
+  const details = traces.length ? ['', 'Traced run: heap after a full GC at each phase of the server write and the export:', '', ...traces].join('\n') : '';
   console.log(details);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n${details}\n`);
   const problems = memoryProblems(notes);

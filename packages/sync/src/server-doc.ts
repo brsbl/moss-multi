@@ -5,7 +5,7 @@ import { createYjsBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { refusingSpentImports } from '@moss-desktop/renderer/editor/markdown/linear-import';
-import { $addUpdateTag, $createParagraphNode, $getRoot, COLLABORATION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, TextNode, type LexicalEditor } from 'lexical';
+import { $addUpdateTag, $createParagraphNode, $getRoot, $isElementNode, COLLABORATION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, TextNode, type LexicalEditor, type LexicalNode } from 'lexical';
 import * as Y from 'yjs';
 import { readField } from '@moss-multi/core/doc-fields';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
@@ -207,13 +207,30 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
   });
 }
 
+/** What importBody throws, writing nothing, for a body whose nodes alone would pass the structure guard. */
+export const IMPORT_STRUCTS_PAST = 'import-structs-past';
+
+/** Every node under the root. */
+function $nodesUnderRoot(): number {
+  let count = 0;
+  const stack: LexicalNode[] = [...$getRoot().getChildren()];
+  for (let node = stack.pop(); node; node = stack.pop()) {
+    count += 1;
+    if ($isElementNode(node)) for (const child of node.getChildren()) stack.push(child);
+  }
+  return count;
+}
+
 /**
  * Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). Throws
- * IMPORT_BUDGET_SPENT, writing nothing, for markdown that spends the converter's whole work budget.
+ * IMPORT_BUDGET_SPENT, writing nothing, for markdown that spends the converter's whole work budget, and
+ * IMPORT_STRUCTS_PAST for one whose nodes would pass `structs` (every node is at least two structs, its type and its
+ * `__type`, A§10.11), before the binding writes them: the mirror of a note far past the guard would not fit the heap.
  */
-export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontmatter?: string): boolean {
+export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontmatter?: string, structs = Infinity): boolean {
   return serverWrite(live, SERVER_IMPORT, (doc) => {
     refusingSpentImports(() => $importNoteBody(markdown, { comments: {} }));
+    if (2 * $nodesUnderRoot() > structs) throw new Error(IMPORT_STRUCTS_PAST);
     if (frontmatter !== undefined) {
       importFrontmatter(doc, frontmatter, SERVER_IMPORT);
     }

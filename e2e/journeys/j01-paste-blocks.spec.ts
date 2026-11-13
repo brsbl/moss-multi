@@ -1,32 +1,44 @@
 // j01-paste-blocks (T3.S6): a paste of very many short blocks lands whole, or is refused whole. Lexical's insert and
 // the Yjs binding each did work per block that grew with the blocks already placed, so 40,000 blank-line-separated
 // short paragraphs held the tab for a minute and 100,000 froze it. Plain text lands like markdown, in paced batches.
-// Pasted between two paragraphs, 40,000 must never hold the tab past MAX_STALL_MS until every piece is acked, land
-// every block, leave the caret after them, make one undo step that redoes whole, and reach a collaborator in full.
-// 250,000 short paragraphs encode past the note's state cap (A§5.1; about 143 bytes each in the lean layout, A§10.11):
-// that paste is refused visibly as a whole, never frozen on and never half applied.
+// Pasted between two paragraphs, short paragraphs must never hold the tab past MAX_STALL_MS until every piece is
+// acked, land every block, leave the caret after them and reach a collaborator in full. The note's structure guard
+// (A§5.1, T3.B31c) holds it to 180,000 structs, 5 for each short paragraph, and an undone paste's structs stay in its
+// history: 14,000 leave room for one undo step that redoes whole; 35,800 are just under the guard; 36,000 are just
+// past it, and that paste is refused visibly as a whole, with the structure notice, never half applied.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { expectRefusedPaste, MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
+import { expectRefusedPaste, MAX_STALL_MS, pasteAndCheck, setup, STRUCTURE_NOTICE } from '../lib/paste.ts';
 import { shortParagraphs } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
-test('j01-paste-blocks: 40,000 short paragraphs pasted between two paragraphs land whole without holding the tab, caret after them, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
-  test.setTimeout(600_000);
-  const markdown = shortParagraphs(40_000);
-  const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
-    references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${markdown}Z\n\nAfter.` },
-  });
-  expect(want.whole.split('\n\n').length, 'the reference export holds every paragraph').toBe(40_003);
-  await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
-  await ada.page.keyboard.press('End');
-  await ada.page.keyboard.press('Enter');
-  // About 6 MB of Yjs state: the doc socket sends it in acked 256 KiB pieces, about two minutes on a CI runner. The
-  // tab is never held past the bound, from the paste until every piece is acked.
-  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 240_000, { maxBusyMs: MAX_STALL_MS, maxStallMs: MAX_STALL_MS });
-});
+const LEGS: [string, number, boolean][] = [
+  ['14,000 short paragraphs pasted between two paragraphs land whole without holding the tab, caret after them, one undo step that redoes whole', 14_000, true],
+  ['35,800 short paragraphs, just under the structure limit, pasted between two paragraphs land whole without holding the tab, caret after them', 35_800, false],
+];
 
-test('j01-paste-blocks: 250,000 short paragraphs, past the note’s size cap, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
+for (const [label, count, history] of LEGS) {
+  test(`j01-paste-blocks: ${label} @p:col-1${history ? ' @p:col-3' : ''}`, async ({ actors, stack }) => {
+    test.setTimeout(600_000);
+    const markdown = shortParagraphs(count);
+    const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
+      references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${markdown}Z\n\nAfter.` },
+    });
+    expect(want.whole.split('\n\n').length, 'the reference export holds every paragraph').toBe(count + 3);
+    await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
+    await ada.page.keyboard.press('End');
+    await ada.page.keyboard.press('Enter');
+    // Up to about 5 MB of Yjs state: the doc socket sends it in acked 256 KiB pieces, about two minutes on a CI runner.
+    // The tab is never held past the bound, from the paste until every piece is acked.
+    await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 240_000, { maxBusyMs: MAX_STALL_MS, maxStallMs: MAX_STALL_MS, history });
+  });
+}
+
+test('j01-paste-blocks: 36,000 short paragraphs, just past the structure limit, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(240_000);
-  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, shortParagraphs(250_000), { checkWire: false });
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, shortParagraphs(36_000), {
+    checkWire: false,
+    notice: STRUCTURE_NOTICE,
+    admission: ({ met }) => expect(met, 'the paste meets the structure limit').toBe('structure'),
+  });
 });

@@ -8,6 +8,7 @@
     "./converter": "./src/converter/index.ts",
     "./excluded-properties": "./src/excluded-properties.ts",
     "./lean-defaults": "./src/lean-defaults.ts",
+    "./note-size": "./src/note-size.ts",
     "./payload-docs": "./src/payload-docs.ts",
     "./projections": "./src/doc/projections.ts",
     "./fanout": "./src/fanout.ts",
