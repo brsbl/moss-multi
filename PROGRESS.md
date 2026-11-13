@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (227 of 284 planned tasks verified)
+**Overall: 80% done** (228 of 285 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 0 / 24 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 1 / 24 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -250,6 +250,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-20 — T5.U verified: suggestions now run on m4's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads); a Suggest-mode paste is still judged by T5.S10's rule against the larger of the local and server note sizes, and the full lane is green on the m5 head.
 - 2026-10-20 — T6.U verified: history now runs on m5's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with the DocDO answering through splitAnswer beside the version imports and the full lane, j17 included, green on the m6 head.
 - 2026-10-20 — T7.U verified: agent sync, Bot presence and the watch daemon now run on m6's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with T7.P1-P3 and T7.S9's folder taint store unchanged.
+- 2026-11-13 — T9.1 verified: Review is offered only while a suggestion is open and says what it does; while reviewing, a band names the mode, and Done or Escape returns the note to editing, so a note is never left silently read-only.
 
 ## T1.1s identity audit
 
@@ -289,6 +290,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.1's checker (f83f271, 2026-11-13)
+
+- T9.1 (The Review button says what it does and never leaves a note silently read-only) checker P2: Escape leaves Review in every reviewing pane, not only the focused one — each visible ReviewBand adds its own window keydown listener and calls leaveReview for its own doc, so with two notes in split view both in Review one Escape takes both out and remounts both; Done acts on one pane only.
+- T9.1 (The Review button says what it does and never leaves a note silently read-only) checker P2: j16-review's typing probe blurs the active element before keyboard.type('zz'), so the keys never reach the note and the not-toContainText check would pass even if the body took typing (the readonly binding assertion still covers it).
+- T9.1 (The Review button says what it does and never leaves a note silently read-only) checker P2: the one-second check starts only after waiting for the accepted card and reads data-edit-mode, which is set when the remount starts; whether the body is live is checked later with a 15 s allowance.
 
 ### From T8.U's checker (19acaf6, 2026-10-20)
 
