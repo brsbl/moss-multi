@@ -129,7 +129,7 @@ export class TextCount {
 /** What an update would add to a doc: characters in scope (negative when it deletes more), structs, and ids it names. */
 export interface Growth {
   chars: number;
-  /** An upper bound: Yjs may merge some of them after applying. */
+  /** An upper bound: Yjs may merge some of them after applying. Negative when a write of only deletions merges more than it splits. */
   structs: number;
   /** Whether it makes any struct the doc lacks (a write of only deletions makes none). */
   inserts: boolean;
@@ -184,7 +184,9 @@ export function deletedWithin(ranges: readonly { clock: number; len: number }[],
 /**
  * What applying `update` to `doc` would add, read from the update alone: its new structs, the splits it causes in
  * structs the doc holds (each origin, right origin and deleted range's edge inside one), and the text it inserts in
- * scope less the text it deletes. A frame needing a clock the doc lacks is refused before this runs.
+ * scope less the text it deletes. For a write of only deletions, less the merges it certainly causes, so deleting next
+ * to deleted text (a run from its end) reads as adding nothing. A frame needing a clock the doc lacks is refused before
+ * this runs.
  */
 export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'): Growth {
   const decoded = Y.decodeUpdate(update);
@@ -257,6 +259,9 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
       if (entry && entry.start !== clock && entry.struct instanceof Y.Item) growth.structs += 1;
     }
   }
+
+  // A write of only deletions also merges what it leaves deleted beside a deleted neighbour (deleting a run from its end).
+  if (!growth.inserts) growth.structs -= mergesAfterDeleting(doc, ds);
 
   // Whether a new struct's parent is in scope: from its parent's name or item, else from its origin's parent.
   const scoped = new Map<Struct, boolean>();
@@ -418,6 +423,54 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
     }
   }
   return growth;
+}
+
+/** Whether `ranges` (sorted and merged) delete `clock`. */
+function deletes(ranges: readonly { clock: number; len: number }[], clock: number): boolean {
+  return deletedWithin(ranges, clock, clock + 1) > 0;
+}
+
+const sameId = (a: Y.ID | null, b: Y.ID | null): boolean => a === b || (a !== null && b !== null && a.client === b.client && a.clock === b.clock);
+
+/**
+ * How many pairs of neighbouring stored structs Yjs merges once a write of only deletions applies: both deleted after
+ * it, the right one inserted just after the left (so they were one run), and their content alike once collected. The
+ * pairs counted are those at or inside each deleted range's edges; any other merge it makes only lowers the count, so
+ * the prediction stays at or above what lands.
+ */
+function mergesAfterDeleting(doc: Y.Doc, ds: ReturnType<typeof Y.mergeDeleteSets>): number {
+  let merged = 0;
+  for (const [client, ranges] of ds.clients) {
+    const list = doc.store.clients.get(client);
+    if (!list?.length) continue;
+    const state = stateOf(doc, client);
+    // The content a struct holds once the write's deletions are collected (y-partyserver's docs collect them).
+    const contentAfter = (item: Y.Item): unknown => {
+      const newly = !item.deleted;
+      return newly && doc.gc && !item.keep && doc.gcFilter(item) ? Y.ContentDeleted : item.content.constructor;
+    };
+    let checked = -1;
+    for (const { clock, len } of ranges) {
+      if (clock >= state) break;
+      const end = Math.min(clock + len, state);
+      // Each stored struct starting in [clock, end] with the one before it: the pairs whose edge the range touches.
+      for (let i = Y.findIndexSS(list, clock); i < list.length && list[i].id.clock <= end; i += 1) {
+        const right = list[i];
+        if (i === 0 || i <= checked || right.id.clock < clock) continue;
+        checked = i;
+        const left = list[i - 1];
+        if (!(left instanceof Y.Item) || !(right instanceof Y.Item)) continue;
+        const leftEnd = left.id.clock + left.length;
+        if (!(left.deleted || deletes(ranges, leftEnd - 1)) || !(right.deleted || deletes(ranges, right.id.clock))) continue;
+        if (left.right !== right || !sameId(right.origin, Y.createID(client, leftEnd - 1)) || !sameId(left.rightOrigin, right.rightOrigin)) continue;
+        if (left.redone !== null || right.redone !== null) continue;
+        const kind = contentAfter(left);
+        if (kind !== contentAfter(right) || (kind !== Y.ContentDeleted && kind !== Y.ContentString)) continue;
+        merged += 1;
+      }
+    }
+  }
+  return merged;
 }
 
 /** `type` if it is an element, and every live element inside it. */

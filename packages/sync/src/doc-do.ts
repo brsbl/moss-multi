@@ -9,7 +9,7 @@ import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/com
 import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
   ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, STRUCT_CAP,
-  TEXT_CHAR_CAP, WRITE_RATE,
+  STRUCT_HEADROOM, TEXT_CHAR_CAP, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
@@ -58,6 +58,8 @@ export interface DocLimits {
   textCharCap: number;
   /** The note's structs (STRUCT_CAP). */
   structCap: number;
+  /** How far past it a write of only deletions, or only formats and properties, may take the note (STRUCT_HEADROOM). */
+  structHeadroom: number;
   maxConnections: number;
   writeRate: { max: number; windowMs: number };
   awarenessMaxBytes: number;
@@ -272,12 +274,6 @@ const MIN_TARGET_SHARE = 1 / 32;
 /** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
 
-/**
- * How many structs past the structure guard a write of only formats and properties may take a note: 1% of STRUCT_CAP,
- * hundreds of format removals, inside the guard's memory margin.
- */
-const PROPERTY_HEADROOM = Math.ceil(STRUCT_CAP / 100);
-
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
 export class DocDO extends YServer<SyncEnv> {
@@ -287,6 +283,7 @@ export class DocDO extends YServer<SyncEnv> {
     stateCapBytes: STATE_CAP_BYTES,
     textCharCap: TEXT_CHAR_CAP,
     structCap: STRUCT_CAP,
+    structHeadroom: STRUCT_HEADROOM,
     maxConnections: MAX_CONNECTIONS,
     writeRate: WRITE_RATE,
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
@@ -1162,7 +1159,7 @@ export class DocDO extends YServer<SyncEnv> {
     const bytes = payloads.reduce((sum, [, payload]) => sum + payload.byteLength, state.byteLength);
     // The copy is held to the limits as any write is: a source over one (a note from before them) is not copied.
     const before = this.#size();
-    const limit = this.#serverWriteLimit(before, this.#sizeAfter(before, state)?.size ?? { ...before }, payloads);
+    const limit = this.#serverWriteLimit(before, this.#sizeAfter(before, state).size, payloads);
     if (limit) throw new DocCapError(limit);
     if (bytes > this.#limits.stateCapBytes) throw new DocCapError();
     for (const [id, payload] of payloads) this.#payloads?.write(id, payload, SERVER_IMPORT);
@@ -1473,10 +1470,10 @@ export class DocDO extends YServer<SyncEnv> {
   #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][], extra = 0): void {
     const before = this.#size();
     const after = this.#sizeAfter(before, diff);
-    // A write that only deletes (a shortened title) adds nothing: a note at a limit, or stored past one, can shrink.
-    if (!after && !payloads.length) return;
-    const limit = this.#serverWriteLimit(before, after?.size ?? { ...before }, payloads);
+    const limit = this.#serverWriteLimit(before, after.size, payloads, after.headroom && !payloads.length);
     if (limit) throw new DocCapError(limit);
+    // A write that only deletes (a shortened title) adds no bytes to speak of: a note stored past the cap can shrink.
+    if (after.deletes && !payloads.length) return;
     if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, extra))) throw new DocCapError();
   }
 
@@ -1488,56 +1485,61 @@ export class DocDO extends YServer<SyncEnv> {
 
   /**
    * The limit a write from `before` to `after` passes while growing past it, or null: shrinking is always admitted.
-   * A write of only formats and properties (`properties`) passes the structure guard up to PROPERTY_HEADROOM past it,
-   * so a format can be removed in a full note; past that only deletions land.
+   * A write that adds no text or block (`headroom`: only deletions, or only formats and properties) passes the
+   * structure guard up to STRUCT_HEADROOM past it, so a full note can still be edited down; past that it lands only if
+   * it adds no struct (coordinator ruling 2).
    */
-  #limitMet(before: NoteSize, after: NoteSize, properties = false): DocLimit | null {
+  #limitMet(before: NoteSize, after: NoteSize, headroom = false): DocLimit | null {
     if (after.chars > this.#limits.textCharCap && after.chars > before.chars) return 'text';
-    const guard = this.#limits.structCap + (properties ? PROPERTY_HEADROOM : 0);
+    const guard = this.#limits.structCap + (headroom ? this.#limits.structHeadroom : 0);
     if (after.structs > guard && after.structs > before.structs) return 'structure';
     return null;
   }
 
   /**
    * The note's size after `update`, read from the update itself: with every stored payload it names anew, less every
-   * payload it leaves no element naming. `properties`: it adds only formats and properties, and names no payload anew.
+   * payload it leaves no element naming. `deletes`: it only deletes (its splits still count). `headroom`: it adds no
+   * text or block (only deletions, or only formats and properties) and names no payload anew.
    */
-  #sizeAfter(before: NoteSize, update: Uint8Array): { size: NoteSize; properties: boolean } | null {
+  #sizeAfter(before: NoteSize, update: Uint8Array): { size: NoteSize; deletes: boolean; headroom: boolean } {
     const growth = growthOf(this.document, update);
-    // A write that only deletes adds nothing, whatever it splits: a note at a limit can always be shrunk.
-    if (!growth.inserts) return null;
     const size = { chars: before.chars + growth.chars, structs: before.structs + growth.structs };
-    let properties = !growth.content;
+    const deletes = !growth.inserts;
+    let headroom = !growth.content;
     const payloads = this.#payloads;
-    if (!payloads) return { size, properties };
+    if (!payloads) return { size, deletes, headroom };
     for (const id of growth.named) {
       if (!payloads.has(id) || payloads.named(id)) continue;
       const named = payloads.sizeOf(id);
       size.chars += named.chars;
       size.structs += named.structs;
-      properties = false;
+      headroom = false;
     }
     for (const id of lostNames(payloads, growth.dropped, growth.named)) {
       const lost = payloads.sizeOf(id);
       size.chars -= lost.chars;
       size.structs -= lost.structs;
     }
-    return { size, properties };
+    return { size, deletes, headroom };
   }
 
-  /** Which limit a client's note frame would pass (text, structure, then the stored bytes), or null. */
+  /**
+   * Which limit a client's note frame would pass (text, structure, then the stored bytes), or null. A frame of only
+   * deletions is held to the structure guard and its headroom alone, so a note stored past the byte cap can shrink.
+   */
   #noteLimit(store: DocStore, update: Uint8Array): DocLimit | null {
     const before = this.#size();
     const after = this.#sizeAfter(before, update);
-    if (!after) return null;
-    return this.#limitMet(before, after.size, after.properties) ?? (this.#overCap(store, update) ? 'state' : null);
+    const limit = this.#limitMet(before, after.size, after.headroom);
+    if (limit || after.deletes) return limit;
+    return this.#overCap(store, update) ? 'state' : null;
   }
 
   /**
    * Which limit a server write (an import's diff, a copy's state) would pass, with the payloads it writes, each new and
    * named by the write, or null.
    */
-  #serverWriteLimit(before: NoteSize, after: NoteSize, payloads: [string, Uint8Array][]): DocLimit | null {
+  #serverWriteLimit(before: NoteSize, after: NoteSize, payloads: [string, Uint8Array][], headroom = false): DocLimit | null {
     for (const [id, payload] of payloads) {
       const doc = new Y.Doc();
       try {
@@ -1551,7 +1553,7 @@ export class DocDO extends YServer<SyncEnv> {
         doc.destroy();
       }
     }
-    return this.#limitMet(before, after);
+    return this.#limitMet(before, after, headroom);
   }
 
   #connected(): boolean {
@@ -1597,14 +1599,15 @@ export class DocDO extends YServer<SyncEnv> {
           if (payloads.withheldBy(attachment.principalId) + data.byteLength > this.#limits.withheldBytesPerIdentity) return 'state';
         }
         const growth = growthOf(target, data, 'all');
-        // A write that only deletes adds nothing, so a note at a limit or stored past one can always shrink.
-        if (!growth.inserts) return null;
         // A payload the note names counts toward its text and structure; a withheld one only once something names it.
+        // A write of only deletions has the structure headroom, as the note's does.
         if (payloads.named(id)) {
           const before = this.#size();
-          const limit = this.#limitMet(before, { chars: before.chars + growth.chars, structs: before.structs + growth.structs });
+          const limit = this.#limitMet(before, { chars: before.chars + growth.chars, structs: before.structs + growth.structs }, !growth.inserts);
           if (limit) return limit;
         }
+        // One that only deletes adds no bytes to speak of, so a note stored past the byte cap can shrink.
+        if (!growth.inserts) return null;
         return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data) ? 'state' : null;
       };
       if (this.#refused(connection, attachment, overCap, missing)) return;

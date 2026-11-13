@@ -400,10 +400,23 @@ async function deleteToCeiling(origin, doc) {
     return updates.pop();
   };
   const size = async () => JSON.parse(await call(origin, `/size?doc=${doc}`)).structs;
-  const ws = new WebSocket(`${origin.replace(/^http/, 'ws')}/parties/doc-d-o/${doc}?_pk=deleter&principal=deleter`);
-  ws.binaryType = 'arraybuffer';
   let refused = null;
   let closed = null;
+  /** The socket, retried: an upgrade that reaches the DocDO while its debounced save runs can fail. */
+  const open = async (tries = 5) => {
+    for (let attempt = 1; ; attempt += 1) {
+      const socket = new WebSocket(`${origin.replace(/^http/, 'ws')}/parties/doc-d-o/${doc}?_pk=deleter-${attempt}&principal=deleter`);
+      socket.binaryType = 'arraybuffer';
+      const opened = await new Promise((resolve) => {
+        socket.addEventListener('open', () => resolve(true), { once: true });
+        socket.addEventListener('error', () => resolve(false), { once: true });
+      });
+      if (opened) return socket;
+      if (attempt >= tries) throw new Error(`the deleting socket failed to open ${tries} times`);
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+  };
+  const ws = await open();
   ws.addEventListener('message', (event) => {
     if (typeof event.data !== 'string' || !event.data.startsWith(CUSTOM_PREFIX)) return;
     const message = JSON.parse(event.data.slice(CUSTOM_PREFIX.length));
@@ -411,10 +424,6 @@ async function deleteToCeiling(origin, doc) {
   });
   ws.addEventListener('close', (event) => {
     closed = event.code;
-  });
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true });
-    ws.addEventListener('error', () => reject(new Error('the deleting socket failed to open')), { once: true });
   });
   /** Sends `count` deletions; resolves with the structs after them once they land, or null once they are refused. */
   const send = async (count) => {
