@@ -10,7 +10,7 @@ import { deleteUpdate, previewHash, projectDoc, projectionDiff, recordDigest, ty
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { createRecord, opsOf, partsOf, readMeta, SUGGESTIONS_ORIGIN } from './records.ts';
-import { acceptRecord, lexicalBlocks, nodeRegistry, previewRecord } from './review.ts';
+import { acceptRecord, nodeRegistry, previewRecord } from './review.ts';
 import { bodyOf, deterministicIds, EDITOR, seededBody, SUGGESTER } from './test-support.ts';
 
 let restore: () => void = () => {};
@@ -186,7 +186,7 @@ function codeKey(live: Y.Doc): string {
 
 /** The note as a reviewer would be shown it, every held payload included. */
 const projected = (live: Y.Doc) =>
-  projectDoc(live, lexicalBlocks(live), (id) => payloadDocsFor(live).get(id), [...payloadDocsFor(live).docs.keys()]);
+  projectDoc(live, (id) => payloadDocsFor(live).get(id), [...payloadDocsFor(live).docs.keys()]);
 
 interface Outcome {
   ingest: { ok: boolean; reason?: string };
@@ -201,12 +201,15 @@ interface Outcome {
 /** Ingests `ops` from a fresh lease, then, separately, previews and accepts a forged record of the same ops. */
 function run(build: (live: Y.Doc, lease: number) => RecordOp[]): Outcome {
   const live = seededBody();
-  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry() });
-  const [lease] = ingest.lease(SUGGESTER.id);
+  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => 'r1' });
+  const who = { ...SUGGESTER, role: 'suggester', connection: 'census' };
+  const leased = ingest.lease(who, [], 1);
+  if (!leased.ok) throw new Error(leased.reason);
+  const [{ client: lease }] = leased.leases;
   const ops = build(live, lease);
   let ingested: Outcome['ingest'] = { ok: true };
   for (const op of ops) {
-    const result = ingest.ops(SUGGESTER, 'suggester', 'r1', op);
+    const result = ingest.ops(who, 'r1', op);
     if (!result.ok) {
       ingested = result;
       break;

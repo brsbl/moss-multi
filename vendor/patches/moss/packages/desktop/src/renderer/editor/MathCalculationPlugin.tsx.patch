@@ -7,7 +7,16 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
  import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
  import { useAtomValue } from 'jotai';
  import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-@@ -468,6 +470,10 @@ function applyWorkspaceResultsToEditor(
+@@ -87,6 +89,8 @@ import {
+ interface MathCalculationPluginProps {
+   noteId: string;
+   onDraftPillActiveChange?: (isActive: boolean) => void;
++  /** moss-multi seam: suggest-formulas (T5.B3): false keeps the commit handlers but never writes recalculated results. */
++  backgroundWrites?: boolean;
+ }
+ 
+ const FORMULA_REFERENCE_HOVER_HIDE_DELAY_MS = 80;
+@@ -468,6 +472,10 @@ function applyWorkspaceResultsToEditor(
        const key = createFormulaCompoundKey(noteId, node.getFormulaId());
        const record = evaluation.byKey.get(key);
        if (record) {
@@ -18,7 +27,17 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
          if (node.getFormula() !== record.expression) {
            node.setFormula(record.expression);
          }
-@@ -1145,6 +1151,7 @@ export function MathCalculationPlugin({
+@@ -768,7 +776,8 @@ function hasFormulaDraftStyle(style: string): boolean {
+ 
+ export function MathCalculationPlugin({
+   noteId,
+-  onDraftPillActiveChange
++  onDraftPillActiveChange,
++  backgroundWrites = true
+ }: MathCalculationPluginProps) {
+   const [editor] = useLexicalComposerContext();
+   const activeNotes = useAtomValue(activeNotesAtom);
+@@ -1145,6 +1154,7 @@ export function MathCalculationPlugin({
    );
  
    const clearAllDraftStyles = useCallback(() => {
@@ -26,7 +45,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
      const root = $getRoot();
  
      const visit = (node: LexicalNode) => {
-@@ -1170,6 +1177,21 @@ export function MathCalculationPlugin({
+@@ -1170,6 +1180,21 @@ export function MathCalculationPlugin({
    }, []);
  
    const applyDraftStylePlan = useCallback((plan: FormulaDraftStylePlan) => {
@@ -48,7 +67,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
      for (let index = plan.segments.length - 1; index >= 0; index -= 1) {
        const segment = plan.segments[index];
  
-@@ -1259,6 +1281,11 @@ export function MathCalculationPlugin({
+@@ -1259,10 +1284,15 @@ export function MathCalculationPlugin({
        return;
      }
  
@@ -56,11 +75,16 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
 +      editor.getEditorState().read(() => applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation), { editor });
 +      return;
 +    }
-+    if (!editor.isEditable()) return;
++    if (!editor.isEditable() || !backgroundWrites) return;
      runDerivedEditorUpdate(editor, () => {
        applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation);
      }, EDITOR_UPDATE_TAGS.derived.formulaWorkspaceRefresh);
-@@ -1615,7 +1642,7 @@ export function MathCalculationPlugin({
+-  }, [buildWorkspaceEvaluation, currentNoteTitle, editor, noteId]);
++  }, [backgroundWrites, buildWorkspaceEvaluation, currentNoteTitle, editor, noteId]);
+ 
+   useEffect(() => {
+     return editor.registerMutationListener(FormulaNode, (_mutations, { updateTags }) => {
+@@ -1615,7 +1645,7 @@ export function MathCalculationPlugin({
        };
  
        const referenceNode = new TextNode(referenceLabel);
@@ -69,7 +93,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
          buildReferenceMetadataStyle(reference.noteId, reference.formulaId)
        );
        segment.node.insertAfter(referenceNode);
-@@ -1729,13 +1756,6 @@ export function MathCalculationPlugin({
+@@ -1729,13 +1759,6 @@ export function MathCalculationPlugin({
      return 'committed';
    }, [applyPreparedCommit, prepareCommitFromSelection]);
  
@@ -83,7 +107,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
  
    useEffect(() => {
      const notesSnapshot = workspaceFormulaNotesRef.current;
-@@ -1951,6 +1971,7 @@ export function MathCalculationPlugin({
+@@ -1951,6 +1974,7 @@ export function MathCalculationPlugin({
    // Dirty-gated so it skips selection-only changes (click-to-focus, arrow keys).
    useEffect(() => {
      return editor.registerUpdateListener(({ editorState, tags, dirtyLeaves, dirtyElements }) => {
@@ -91,7 +115,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
        if (tags.has(EDITOR_UPDATE_TAGS.ignored.formulaDraftStyle)) return;
        if (dirtyLeaves.size === 0 && dirtyElements.size === 0) return;
  
-@@ -2001,7 +2022,8 @@ export function MathCalculationPlugin({
+@@ -2001,7 +2025,8 @@ export function MathCalculationPlugin({
        return;
      }
  
@@ -101,7 +125,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
        // Always keep selection ref current (cheap: one clone)
        editorState.read(() => {
          const selection = $getSelection();
-@@ -2248,7 +2270,7 @@ export function MathCalculationPlugin({
+@@ -2248,7 +2273,7 @@ export function MathCalculationPlugin({
            return false;
          }
  
@@ -110,7 +134,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
  
          if (outcome === 'cycle') {
            event.preventDefault();
-@@ -2280,7 +2302,9 @@ export function MathCalculationPlugin({
+@@ -2280,7 +2305,9 @@ export function MathCalculationPlugin({
            return true;
          }
  
@@ -121,7 +145,7 @@ diff --git a/packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx b/pa
  
          if (outcome === 'cycle') {
            event?.preventDefault();
-@@ -2306,7 +2330,7 @@ export function MathCalculationPlugin({
+@@ -2306,7 +2333,7 @@ export function MathCalculationPlugin({
    }, [
      closeTypeahead,
      editor,

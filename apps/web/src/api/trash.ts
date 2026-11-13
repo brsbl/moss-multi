@@ -214,7 +214,7 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
     }
     await notify(env, docId);
     // The row is live first, so the doc never admits a socket the row refuses; a settle that fails here leaves the
-    // doc closed until its next admission settles it from the row.
+    // doc closed until its next admission, comment write or suggestion review settles it from the row.
     await settleQuietly(await getServerByName(env.DocDO, docId));
   }
   const [doc] = await db

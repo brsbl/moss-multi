@@ -12,7 +12,8 @@
     "./comment-units": "./src/comment-units.ts",
     "./group-pending": "./src/group-pending.ts",
     "./tree-anchor": "./src/tree-anchor.ts",
-    "./suggest/apply": "./src/suggest/apply.ts"
+    "./suggest/apply": "./src/suggest/apply.ts",
+    "./suggest/describe": "./src/suggest/describe.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"

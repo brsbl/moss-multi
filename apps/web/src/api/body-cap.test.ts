@@ -23,6 +23,7 @@ const DocDO = {
     create: async (init: unknown) => { created.set(id.name, init); },
     createComment: async ({ id: commentId }: { id: string }) => ({ ok: true, id: commentId, quote: null }),
     editComment: async () => ({ ok: true }), resolveComment: async () => ({ ok: true }), reactComment: async () => ({ ok: true }),
+    acceptSuggestion: async () => ({ ok: true }), rejectSuggestion: async () => ({ ok: true }), withdrawSuggestion: async () => ({ ok: true }),
   }),
 };
 const PrincipalDO = {
@@ -30,7 +31,7 @@ const PrincipalDO = {
   get: () => ({
     setName: async () => undefined, publish: async () => undefined, takeCreateToken: async () => true,
     takeWriteToken: async () => true, takeUploadToken: async () => true, takeFetchToken: async () => true,
-    takeCommentToken: async () => true,
+    takeCommentToken: async () => true, takeReviewToken: async () => true,
   }),
 };
 
@@ -118,6 +119,9 @@ const ROUTES: Route[] = [
   { method: 'PATCH', path: () => `/api/docs/${docId}/comments/c-ok`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ text: 'Edited' }), status: 200 },
   { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/resolve`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ resolved: true }), status: 200 },
   { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/reactions`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ emoji: '👍', on: true }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/accept`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ previewHash: 'h'.repeat(64), digest: 'd'.repeat(64) }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/reject`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/suggestions/s-cap/withdraw`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({}), status: 200 },
   { method: 'POST', path: () => '/api/unfurl', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ noteId: docId, url: 'https://site.example/' }), status: 200 },
   { method: 'POST', path: () => '/api/feedback', cap: FEEDBACK_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ body: 'Lovely.' }), status: 201 },
 ];
@@ -201,6 +205,13 @@ describe('JSON bodies are capped on every route that reads one', () => {
     expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES);
     const response = await comment('POST', `/api/docs/${docId}/comments`, sent);
     expect(response.status, await response.clone().text()).toBe(201);
+  }, 30_000);
+
+  // T5.R2: an accept names the previewed hash and digest (each at most 128 characters), far under the default cap.
+  it('a suggestion accept takes the longest hash and digest it accepts', async () => {
+    const sent = JSON.stringify({ previewHash: 'h'.repeat(128), digest: 'd'.repeat(128) });
+    const response = await comment('POST', `/api/docs/${docId}/suggestions/s-cap/accept`, sent);
+    expect(response.status, await response.clone().text()).toBe(200);
   }, 30_000);
 });
 

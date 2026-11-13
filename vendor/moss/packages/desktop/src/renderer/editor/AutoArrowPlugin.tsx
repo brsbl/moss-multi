@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 
 import { CodeNode } from '@lexical/code';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { $getSelection, $isRangeSelection, TextNode } from 'lexical';
+import { $getSelection, $isRangeSelection, TextNode, type LexicalEditor } from 'lexical';
 
 const RIGHT_ARROW = '\u2192';
 const LEFT_ARROW = '\u2190';
@@ -57,10 +57,8 @@ function calculateAdjustedOffset(
   return Math.max(0, Math.min(offset, newContent.length));
 }
 
-export function AutoArrowPlugin() {
-  const [editor] = useLexicalComposerContext();
-
-  useEffect(() => {
+// moss-multi seam: suggest-paste (T5.S10): the transform on its own, so a Suggest-mode paste's copy runs it too
+export function registerAutoArrow(editor: LexicalEditor): () => void {
     return editor.registerNodeTransform(TextNode, (textNode) => {
       const parent = textNode.getParent();
       if (parent instanceof CodeNode) {
@@ -129,7 +127,12 @@ export function AutoArrowPlugin() {
         }
       }
     });
-  }, [editor]);
+}
+
+export function AutoArrowPlugin() {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => registerAutoArrow(editor), [editor]);
 
   return null;
 }
