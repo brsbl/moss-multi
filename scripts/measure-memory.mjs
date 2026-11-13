@@ -318,6 +318,9 @@ export async function reliableCap(fits, low, high) {
 /** Runs `request` against a workerd capped at `cap` MB; whether it answered (V8 aborts the process past the cap). */
 const OUT_OF_HEAP = /heap limit|out of memory/i;
 
+/** The signals a process aborting on its heap dies by. */
+const CRASH_SIGNALS = new Set(['SIGABRT', 'SIGTRAP', 'SIGILL', 'SIGSEGV', 'SIGBUS']);
+
 async function fitsUnder(cap, port, storage, request) {
   let server;
   try {
@@ -340,7 +343,14 @@ async function fitsUnder(cap, port, storage, request) {
       });
     });
     if (exited && OUT_OF_HEAP.test(server.logs.value)) return false;
-    throw new Error(`under ${cap} MB the request failed without running out of heap (exited: ${exited}): ${error.message}\n${server.logs.value.slice(-1_000)}`, { cause: error });
+    // V8 near its cap sometimes dies by a signal before its fatal message reaches the log; a crash that is not the cap
+    // recurs at every cap, so the search runs up to its ceiling and the need reads unknown.
+    const { exitCode, signalCode } = server.child;
+    if (exited && (CRASH_SIGNALS.has(signalCode) || exitCode >= 128)) {
+      console.error(`measure-memory:   under ${cap} MB workerd died (${signalCode ?? `exit ${exitCode}`}) with no heap message; counted as not fitting`);
+      return false;
+    }
+    throw new Error(`under ${cap} MB the request failed without running out of heap (exit ${exitCode}, signal ${signalCode}): ${error.message}\n${server.logs.value.slice(-1_000)}`, { cause: error });
   } finally {
     await stopWorkerd(server.child);
   }
