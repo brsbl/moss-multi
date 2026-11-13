@@ -245,7 +245,13 @@ export class ReviewMount {
     }
     const built = this.#composite.build();
     try {
-      const gone = this.#valid.some((id) => !built.valid.includes(id) && readMeta(this.session.doc, id)?.status !== 'accepted');
+      // An accept that kept the originals (T5.S14) removed the copies C shows while C's own removal of the originals
+      // stays: remount, as the fork rebuilds.
+      const gone = this.#valid.some((id) => {
+        if (built.valid.includes(id)) return false;
+        const meta = readMeta(this.session.doc, id);
+        return meta?.status !== 'accepted' || meta.kept === true;
+      });
       if (gone) {
         this.hooks.remount(false);
         return;

@@ -64,8 +64,9 @@ export const GROUPS = {
   suggest: ['j16'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
   suggestPaste: ['j16-paste'],
-  // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body.
-  suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo'],
+  // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body; a Review
+  // window left open across an accept that keeps the originals (review's WebKit shard is full).
+  suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo', 'j16-review-kept'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
   // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
