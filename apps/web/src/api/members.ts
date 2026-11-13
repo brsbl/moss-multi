@@ -92,34 +92,126 @@ async function effectiveGrantRows(db: D1Database, docId: string, ownerUserId: st
   return [...kept.values()];
 }
 
-/** The owner first, then each grant in the order it was made. A grant comes only from a redeemed invite. */
-async function listMembers(db: Db, grants: GrantRow[], ownerUserId: string, withEmails: boolean): Promise<Member[]> {
-  const userIds = [ownerUserId, ...grants.filter((g) => g.principalType === 'user').map((g) => g.principalId)];
-  const agentIds = grants.filter((g) => g.principalType === 'agent').map((g) => g.principalId);
+/** Each row's person or agent at its role, in the rows' order; a row whose account or agent is gone is left out. */
+async function named(db: Db, rows: GrantRow[], withEmails: boolean): Promise<Member[]> {
+  const userIds = rows.filter((row) => row.principalType === 'user').map((row) => row.principalId);
+  const agentIds = rows.filter((row) => row.principalType === 'agent').map((row) => row.principalId);
   const [users, agentRows] = await Promise.all([
-    db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inJson(user.id, userIds)),
+    userIds.length > 0 ? db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inJson(user.id, userIds)) : [],
     agentIds.length > 0 ? db.select({ id: agents.id, name: agents.name }).from(agents).where(inJson(agents.id, agentIds)) : [],
   ]);
   const people = new Map(users.map((u) => [u.id, u]));
   const bots = new Map(agentRows.map((a) => [a.id, a]));
-  const person = (id: string, role: Role): Member | null => {
-    const found = people.get(id);
-    if (!found) return null;
-    return { principalId: id, principalType: 'user', name: found.name, ...(withEmails ? { email: found.email } : {}), role };
-  };
-  const members: Member[] = [];
-  const owner = person(ownerUserId, 'owner');
-  if (owner) members.push(owner);
-  for (const grant of grants) {
-    if (grant.principalType === 'user') {
-      const member = person(grant.principalId, grant.role);
-      if (member) members.push(member);
-    } else {
-      const bot = bots.get(grant.principalId);
-      if (bot) members.push({ principalId: bot.id, principalType: 'agent', name: bot.name, role: grant.role });
+  return rows.flatMap((row): Member[] => {
+    if (row.principalType === 'user') {
+      const found = people.get(row.principalId);
+      return found ? [{ principalId: found.id, principalType: 'user', name: found.name, ...(withEmails ? { email: found.email } : {}), role: row.role }] : [];
     }
+    const bot = bots.get(row.principalId);
+    return bot ? [{ principalId: bot.id, principalType: 'agent', name: bot.name, role: row.role }] : [];
+  });
+}
+
+/** The owner first, then each grant in the order it was made. A grant comes only from a redeemed invite. */
+function listMembers(db: Db, grants: GrantRow[], ownerUserId: string, withEmails: boolean): Promise<Member[]> {
+  return named(db, [{ principalId: ownerUserId, principalType: 'user', role: 'owner' }, ...grants], withEmails);
+}
+
+/** A folder or vault above a doc or folder; its name and id are told only to someone who manages it. */
+export interface Place { id: string; name: string; kind: 'folder' | 'vault' }
+
+/**
+ * The folders above a doc (from its own folder) or a folder (from its parent) up to the vault, nearest first: the
+ * chain the resolver reads. Each says whether user `callerId` manages it (managesFolder): they own the vault, or hold
+ * an owner grant on it or a folder above it.
+ */
+export async function placesAbove(db: D1Database, target: MemberTarget, callerId: string, ownerUserId: string): Promise<(Place & { managed: boolean })[]> {
+  const start = target.type === 'doc' ? '(SELECT folder_id FROM docs WHERE id = ?1)' : '?1';
+  const { results } = await db.prepare(`WITH RECURSIVE chain(id, parent_id, name, kind, depth) AS (
+      SELECT id, parent_id, name, kind, 1 FROM folders WHERE id = ${start}
+      UNION ALL SELECT f.id, f.parent_id, f.name, f.kind, chain.depth + 1 FROM folders f JOIN chain ON f.id = chain.parent_id
+        WHERE chain.depth < ${MAX_FOLDER_DEPTH}
+    )
+    SELECT chain.id, chain.name, chain.kind, EXISTS (SELECT 1 FROM folder_members m
+      WHERE m.folder_id = chain.id AND m.principal_id = ?2 AND m.role = 'owner') AS owns FROM chain ORDER BY depth`)
+    .bind(target.id, callerId).all<Place & { owns: number }>();
+  const chain = target.type === 'doc' ? results : results.slice(1);
+  // An owner grant manages its folder and everything below it, so walk down from the vault.
+  let managed = callerId === ownerUserId;
+  const marked: (Place & { managed: boolean })[] = [];
+  for (const { id, name, kind, owns } of [...chain].reverse()) {
+    managed ||= owns === 1;
+    marked.unshift({ id, name, kind, managed });
   }
-  return members;
+  return marked;
+}
+
+/** People who reach the target through a place above it. `place` is null for the places the caller does not manage,
+ * told as one group, without a name or emails. */
+export interface InheritedGroup { place: Place | null; members: Member[] }
+/** A direct member's higher role through a place above. */
+export interface AlsoFrom { role: Role; place: Place | null }
+
+/**
+ * For an owner: who reaches the target through the folders and vault above it (A§8: the MAX over the chain), each in
+ * the group of the place giving their highest role (the nearest on a tie). A person with a grant here keeps that row,
+ * with `also` when a place above gives more. The vault's owner is listed first already. Read live, so a note moved
+ * out of a folder loses that folder's people.
+ */
+async function inheritedMembers(env: MembersEnv, db: Db, target: MemberTarget, direct: GrantRow[], ownerUserId: string, callerId: string) {
+  const places = await placesAbove(env.DB, target, callerId, ownerUserId);
+  const groups: InheritedGroup[] = [];
+  const also = new Map<string, AlsoFrom>();
+  if (places.length === 0) return { groups, also };
+  const depth = new Map(places.map((place, i) => [place.id, i]));
+  const grants = (await db
+    .select({ folderId: folderMembers.folderId, principalId: folderMembers.principalId, principalType: folderMembers.principalType, role: folderMembers.role })
+    .from(folderMembers)
+    .where(inJson(folderMembers.folderId, places.map((place) => place.id)))
+    .orderBy(sql`rowid`)).map((grant) => ({ ...grant, at: depth.get(grant.folderId) ?? 0 }));
+  grants.sort((a, b) => a.at - b.at);
+  const best = new Map<string, { row: GrantRow; at: number }>();
+  for (const { principalId, principalType, role, at } of grants) {
+    if (principalId === ownerUserId) continue;
+    const held = best.get(principalId);
+    if (!held || lower(held.row.role, role)) best.set(principalId, { row: { principalId, principalType, role }, at });
+  }
+  const told = (at: number): Place | null => {
+    const { id, name, kind, managed } = places[at];
+    return managed ? { id, name, kind } : null;
+  };
+  const own = new Map(direct.map((grant) => [grant.principalId, grant.role]));
+  // A group per managed place, nearest first, then every place the caller does not manage as one (they are above).
+  const hidden = places.length;
+  const rowsAt = new Map<number, GrantRow[]>();
+  for (const { row, at } of best.values()) {
+    const held = own.get(row.principalId);
+    if (held !== undefined) {
+      if (lower(held, row.role)) also.set(row.principalId, { role: row.role, place: told(at) });
+      continue;
+    }
+    const key = places[at].managed ? at : hidden;
+    rowsAt.set(key, [...(rowsAt.get(key) ?? []), row]);
+  }
+  const people = new Map((await named(db, [...rowsAt.values()].flat(), true)).map((member) => [member.principalId, member]));
+  for (const key of [...rowsAt.keys()].sort((a, b) => a - b)) {
+    const place = key === hidden ? null : told(key);
+    const members = (rowsAt.get(key) ?? []).flatMap((row) => {
+      const member = people.get(row.principalId);
+      if (!member) return [];
+      return [place ? member : { principalId: member.principalId, principalType: member.principalType, name: member.name, role: member.role }];
+    });
+    if (members.length > 0) groups.push({ place, members });
+  }
+  return { groups, also };
+}
+
+/** The doc's title or the folder's name, for the dialog's first line. */
+async function targetName(db: D1Database, target: MemberTarget): Promise<string> {
+  const row = target.type === 'doc'
+    ? await db.prepare('SELECT title AS name FROM docs WHERE id = ?1').bind(target.id).first<{ name: string }>()
+    : await db.prepare('SELECT name FROM folders WHERE id = ?1').bind(target.id).first<{ name: string }>();
+  return row?.name ?? '';
 }
 
 /**
@@ -384,10 +476,20 @@ export async function handleMembers(request: Request, env: MembersEnv, target: M
     if (target.type === 'doc' && new URL(request.url).searchParams.get('scope') === 'effective') {
       return json({ members: await listMembers(db, await effectiveGrantRows(env.DB, target.id, access.ownerUserId), access.ownerUserId, false) }, 200, NO_STORE);
     }
-    const members = await listMembers(db, await grantRows(db, target), access.ownerUserId, owner);
+    const grants = await grantRows(db, target);
+    const members = await listMembers(db, grants, access.ownerUserId, owner);
     if (!owner) return json({ members }, 200, NO_STORE);
-    const invites = (await liveInvites(env.DB, target)).map(({ email, role }) => ({ email, role }));
-    return json({ members, invites }, 200, NO_STORE);
+    // An owner also sees who reaches it from above, naming only the places they manage.
+    const [invites, inherited, name] = await Promise.all([
+      liveInvites(env.DB, target).then((rows) => rows.map(({ email, role }) => ({ email, role }))),
+      inheritedMembers(env, db, target, grants, access.ownerUserId, managerId(principal)),
+      targetName(env.DB, target),
+    ]);
+    const withAlso = members.map((member) => {
+      const also = inherited.also.get(member.principalId);
+      return also ? { ...member, also } : member;
+    });
+    return json({ name, members: withAlso, invites, inherited: inherited.groups }, 200, NO_STORE);
   }
   if (!owner) return refuse(403, 'forbidden', `Only the owner can share this ${noun(target)}.`);
   const body = await readJsonObject(request);

@@ -9,11 +9,11 @@ import { docsOf, kick, KickFailed } from '@moss-multi/sync/fanout';
 import type { AppEnv } from '../env.ts';
 import type { AuthEnv } from '../auth/auth.ts';
 import { resolvePrincipal } from '../auth/principal.ts';
-import { createDb, type Db } from '../db/client.ts';
+import { createDb, inJson, type Db } from '../db/client.ts';
 import { shareLinks } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { liveAndManaged } from './access.ts';
-import { accessTo, manages, randomToken, type MemberTarget } from './members.ts';
+import { accessTo, manages, placesAbove, randomToken, type MemberTarget, type Place } from './members.ts';
 import { changed, NO_STORE, notFound, overDailyBound, readJsonObject, unauthenticated } from './respond.ts';
 
 export interface ShareLink {
@@ -35,6 +35,25 @@ async function listLinks(db: Db, target: MemberTarget): Promise<ShareLink[]> {
   return rows.flatMap((row) => (isLinkRole(row.role) ? [{ ...row, role: row.role }] : []));
 }
 
+/**
+ * The places above the target that the caller manages and that have a live link, nearest first, each with its highest
+ * link role: who else can open the target by a link. A place the caller does not manage is never told (T9.7).
+ */
+async function linksAbove(db: D1Database, target: MemberTarget, callerId: string, ownerUserId: string): Promise<{ place: Place; role: LinkRole }[]> {
+  const managed = (await placesAbove(db, target, callerId, ownerUserId)).filter((place) => place.managed);
+  if (managed.length === 0) return [];
+  const rows = await createDb(db)
+    .select({ targetId: shareLinks.targetId, role: shareLinks.role })
+    .from(shareLinks)
+    .where(and(eq(shareLinks.targetType, 'folder'), inJson(shareLinks.targetId, managed.map((place) => place.id)), isNull(shareLinks.revokedAt)));
+  return managed.flatMap(({ id, name, kind }) => {
+    const roles = rows.filter((row) => row.targetId === id).map((row) => row.role).filter(isLinkRole);
+    if (roles.length === 0) return [];
+    const role = [...LINK_ROLES].reverse().find((choice) => roles.includes(choice)) ?? roles[0];
+    return [{ place: { id, name, kind }, role }];
+  });
+}
+
 /** `/api/{docs,folders}/:id/links` (GET, POST) and `/api/{docs,folders}/:id/links/:token` (DELETE). */
 export type LinksEnv = AuthEnv & Partial<Pick<AppEnv, 'DocDO'>>;
 
@@ -54,7 +73,10 @@ export async function handleLinks(request: Request, env: LinksEnv, target: Membe
   const access = await accessTo(db, principal, target);
   if (!access) return notFound();
   if (access.role !== 'owner') return forbidden(target);
-  if (request.method === 'GET') return json({ links: await listLinks(db, target) }, 200, NO_STORE);
+  if (request.method === 'GET') {
+    const [links, inherited] = await Promise.all([listLinks(db, target), linksAbove(env.DB, target, principal.id, access.ownerUserId)]);
+    return json({ links, inherited }, 200, NO_STORE);
+  }
   if (request.method === 'DELETE') {
     const tokenOf = and(eq(shareLinks.targetType, target.type), eq(shareLinks.targetId, target.id), eq(shareLinks.token, token ?? ''));
     // The caller must still manage the live target, so a demotion that commits first wins.
