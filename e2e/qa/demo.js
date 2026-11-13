@@ -788,10 +788,13 @@ export const STEPS = {
       prepare: async (attempt) => {
         // A retry reloads both windows: a frame that went blank is a dropped or rebinding socket.
         if (attempt > 1) await Promise.all([visit(ada, `/d/${docId}`), visit(ben, `/d/${docId}`)]);
+        // Calmed first: Escape leaves Review.
+        await calm(ada);
         await openNote(ada, docId, 'review');
         await openNote(ben, docId, 'suggest');
         await ada.bringToFront();
-        await calm(ada);
+        await ada.evaluate(() => document.activeElement?.blur?.());
+        await ada.mouse.move(2, 2);
         await center(ada, docId, { text: sentence });
         await center(ben, docId, { text: sentence });
         // His caret goes after his inserted words. A no-op update there every 400 ms marks him typing, so his label

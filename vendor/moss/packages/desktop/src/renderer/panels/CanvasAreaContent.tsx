@@ -5133,7 +5133,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               <span className="text-xs text-ink-muted">{trashCountdownMessage}</span>
             </div>
           </div>
-        ) : null}
+        ) : mossMultiPane.bottomBand /* moss-multi seam: review-band (T9.1): one band in this slot, the Trash notice first */}
         {statusLabel ? (
           <div
             className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2"

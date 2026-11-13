@@ -30,9 +30,10 @@ import {
 } from './doc-session.ts';
 import { auth } from '../auth.ts';
 import { captureCaret, type CaretMark } from './suggest/caret.ts';
-import { modeFor, offerUnsaved, showMode, subscribeModes } from './suggest/mode.ts';
+import { modeFor, offerUnsaved, setOpenSuggestions, showMode, subscribeModes } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
-import { SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
+import { readMeta, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
+import { ReviewBand, ReviewButton, SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
 import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
 import { HistoryButton, HistoryView, useHistoryOpen } from '../history/HistoryView.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
@@ -159,6 +160,7 @@ class PaneBinding implements SuggestPane {
   #switching = false;
   #target: EditMode;
   #caret: CaretMark | null = null;
+  #stopOpen: (() => void) | null = null;
   readonly #mountListeners = new Set<() => void>();
 
   #role: Role | null;
@@ -177,7 +179,30 @@ class PaneBinding implements SuggestPane {
     this.#retarget();
     return () => {
       stop();
+      this.#stopOpen?.();
+      this.#stopOpen = null;
       showMode(this.docId, null);
+    };
+  }
+
+  /** Reports the note's open suggestions once synced, so Review is offered, and left, as they come and go (T9.1). */
+  #watchOpen(session: DocSession): void {
+    this.#stopOpen?.();
+    const map = session.doc.getMap(SUGGESTIONS);
+    const report = () => {
+      if (this.#session !== session || !session.state.synced || session.state.resync) return;
+      const open = recordIds(session.doc).filter((id) => {
+        const meta = readMeta(session.doc, id);
+        return meta?.status === 'open' && !meta.mergedInto;
+      });
+      setOpenSuggestions(this.docId, open.length);
+    };
+    map.observeDeep(report);
+    const stop = session.subscribe(report);
+    queueMicrotask(report);
+    this.#stopOpen = () => {
+      map.unobserveDeep(report);
+      stop();
     };
   }
 
@@ -357,6 +382,7 @@ class PaneBinding implements SuggestPane {
     session.subscribe((state) => this.#apply(state));
     this.#apply(session.state);
     this.#mountChanged();
+    this.#watchOpen(session);
   }
 
   /** The gate's editor; the body opens once both it and the first sync are here. */
@@ -396,6 +422,8 @@ class PaneBinding implements SuggestPane {
       $getRoot().clear().append($createParagraphNode());
       $setSelection(null);
     }, { discrete: true });
+    this.#stopOpen?.();
+    this.#stopOpen = null;
     this.#session = null;
     this.#mount = null;
     this.#switching = false;
@@ -590,6 +618,8 @@ export interface MossMultiPane {
   /** The History view, which occupies the pane in place of the editor canvas while it is open (A§14). */
   history: ReactNode;
   noticeBand: ReactNode;
+  /** Moss's bottom band where the docked toolbar was (T9.1); the Trash notice takes the slot when it shows. */
+  bottomBand: ReactNode;
   readOnly: boolean;
 }
 
@@ -644,6 +674,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
       bound: false,
       readOnly: true,
       noticeBand: <ConnectionNotice docId={null} />,
+      bottomBand: null,
       collaboration: null,
       bodyLive: false,
       bodyVisible: true,
@@ -660,6 +691,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
     bound: true,
     readOnly: !live,
     noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} /></>,
+    bottomBand: docId && !historyOpen ? <ReviewBand docId={docId} /> : null,
     collaboration,
     bodyLive: live,
     bodyVisible: state.bodyVisible,
@@ -679,7 +711,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
         }
       : {},
     topBarCollab: docId
-      ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}{terminal ? null : <HistoryButton docId={docId} />}<TopBarCollab docId={docId} /></>
+      ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}<ReviewButton docId={docId} />{terminal ? null : <HistoryButton docId={docId} />}<TopBarCollab docId={docId} /></>
       : null,
     history: docId && historyOpen && !terminal ? <HistoryView key={docId} docId={docId} /> : null,
   };

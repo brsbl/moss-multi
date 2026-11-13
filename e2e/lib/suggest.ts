@@ -1,8 +1,12 @@
 // Suggest-mode journey helpers shared by j16-suggest, j16-review and the strike census (docs/design/suggestions.md §5).
 import type { Locator } from '@playwright/test';
 import type { Actor } from './actors.ts';
-import { APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGEST_REFUSED_ATTR, SYNC_UNACKED_ATTR } from './contract.ts';
-import { expect, ui } from './test.ts';
+import {
+  APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR,
+  SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
+} from './contract.ts';
+import { grantDoc } from './grants.ts';
+import { expect, test, ui } from './test.ts';
 
 export const BOOT_TIMEOUT = 30_000;
 export const BIND_TIMEOUT = 15_000;
@@ -56,4 +60,47 @@ export async function settled(actor: Actor, docId: string, what: string): Promis
   const pane = ui.pane(actor, docId);
   await expect(pane, `${what}: acknowledged`).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
   await expect(pane, `${what}: never refused`).toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+}
+
+// The Suggestions list, as j16-review and j16-review-strikes drive it.
+const NOTE = 'Keep every original word.\n\nSecond paragraph here.';
+
+type Actors = Parameters<Parameters<typeof test>[2]>[0]['actors'];
+
+/** A note owned by ada that ben can suggest on. */
+export async function sharedNote(actors: Actors, markdown = NOTE) {
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.open(adaPrincipal);
+  const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown } });
+  expect(response.status()).toBe(201);
+  const docId = ((await response.json()) as { doc: { id: string } }).doc.id;
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'suggester');
+  const ben = await actors.session(benPrincipal);
+  return { ada, ben, docId, adaPrincipal };
+}
+
+export const button = (actor: Actor): Locator => actor.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`);
+export const panel = (actor: Actor): Locator => actor.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
+export const cards = (actor: Actor, status?: string): Locator =>
+  panel(actor).locator(status ? `[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="${status}"]` : `[${SUGGESTION_CARD_ATTR}]`);
+
+export async function openPanel(actor: Actor): Promise<Locator> {
+  if (!(await panel(actor).isVisible())) await button(actor).click();
+  await expect(panel(actor)).toBeVisible();
+  return panel(actor);
+}
+
+export async function closePanel(actor: Actor): Promise<void> {
+  if (await panel(actor).isVisible()) await actor.page.keyboard.press('Escape');
+  await expect(panel(actor)).toBeHidden();
+}
+
+/** The open card's inserted and deleted row texts, once its preview has loaded. */
+export async function cardRows(actor: Actor): Promise<{ card: Locator; inserted: string[]; deleted: string[] }> {
+  const card = (await openPanel(actor)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(card).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  const texts = (kind: string) => card.locator(`[${SUGGESTION_ROW_ATTR}="${kind}"] > span.min-w-0 > span:first-child`).allInnerTexts();
+  return { card, inserted: await texts('insert'), deleted: await texts('delete') };
 }
