@@ -108,11 +108,11 @@ describe('L4 every family replicates through the binding @p:tech-1 @p:col-1 @p:n
       const state = Y.encodeStateAsUpdate(unbound);
       const copied = exportDocMarkdown(a.doc, 'note');
       expect(exportDocMarkdown(unbound, 'note'), `${name}: the export read in place`).toBe(copied);
+      expect(tagged(unbound), `${name}: the binding keeps its own map, never tagging the doc's types`).toBe(0);
       expect(Y.encodeStateVector(unbound), `${name}: an export leaves the state vector`).toEqual(vector);
       expect(Y.encodeStateAsUpdate(unbound), `${name}: an export leaves the encoded state`).toEqual(state);
       expect(exportDocMarkdown(unbound, 'note'), `${name}: a second export read in place`).toBe(copied);
       expect(Y.encodeStateAsUpdate(unbound), `${name}: a second export leaves the encoded state`).toEqual(state);
-      expect(tagged(unbound), `${name}: the binding keeps its own map, never tagging the doc's types`).toBe(0);
       expect(tagged(a.doc), `${name}: positive control: the scan sees a client binding's tags`).toBeGreaterThan(0);
       unbound.destroy();
       const keys = wireKeys(a.doc.get('root', Y.XmlText));
