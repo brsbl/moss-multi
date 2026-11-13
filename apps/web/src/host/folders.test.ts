@@ -64,6 +64,26 @@ it('falls back from a system folder to the vault root, the one target "+ Note" a
   expect(canCreateNote(noteTargetFolder('Notes/Inbox', folders)), 'a system folder creates at the root, so the root decides').toBe(false);
 });
 
+it('falls back to the vault root from a folder that is gone or not writable, so "+ Note" hides only where the root takes none', () => {
+  const folders = [{ path: 'Notes/Trips 2025' }, { path: 'Notes/Shelf' }, { path: 'Notes/Open' }];
+  listing.roles.set('Notes', 'owner');
+  listing.roles.set('Notes/Trips 2025', 'owner');
+  listing.roles.set('Notes/Shelf', 'viewer');
+  listing.roles.set('Notes/Open', 'editor');
+  expect(noteTargetFolder('Notes/Open', folders), 'a writable folder still takes the note').toBe('Notes/Open');
+  expect(noteTargetFolder('Notes/Trips 2025', folders)).toBe('Notes/Trips 2025');
+  expect(noteTargetFolder('Notes/Trips', folders), 'a renamed folder\'s old path').toBe('Notes');
+  expect(noteTargetFolder('Notes/Shelf', folders), 'a folder shared read-only').toBe('Notes');
+  expect(canCreateNote(noteTargetFolder('Notes/Shelf', folders))).toBe(true);
+  expect(canCreateNote(noteTargetFolder('Notes/Trips', folders))).toBe(true);
+  // A vault shared read-only, or an unknown one, takes no note at its root either.
+  listing.roles.set('Notes', 'viewer');
+  expect(canCreateNote(noteTargetFolder('Notes/Shelf', folders))).toBe(false);
+  expect(canCreateNote(noteTargetFolder('Notes/Open', folders)), 'though a folder in it they edit does').toBe(true);
+  listing.roles.delete('Notes');
+  expect(canCreateNote(noteTargetFolder('Notes/Trips', folders))).toBe(false);
+});
+
 it('drags what the caller manages, whatever their role on the vault root', () => {
   listing.roles.set('Notes', 'viewer');
   listing.roles.set('Notes/Owned', 'owner');
