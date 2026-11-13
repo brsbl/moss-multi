@@ -179,7 +179,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        note: ['^text cap', '^structure cap: .* one-line', '^structure cap: .* list items', '^structure cap: the largest table', '^past the', '^200k of mixed', '^scattered edits']
+        note: ['^text cap', '^structure cap: .* one-line', '^structure cap: .* list items', '^structure cap: the largest table', '^structure ceiling: .* one-line', '^structure ceiling: .* list items', '^structure ceiling: the largest table', '^past the', '^200k of mixed', '^scattered edits']
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

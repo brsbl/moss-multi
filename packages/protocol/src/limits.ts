@@ -16,6 +16,13 @@ export const TEXT_CHAR_CAP = 1_020_000;
  */
 export const STRUCT_CAP = 165_000;
 
+/**
+ * How far past STRUCT_CAP a write that adds no text or block may take a note: one of only deletions (each split of a
+ * run is a struct) or of only formats and properties. 5% of the cap, which the `memory` job holds at 96 MB a phase and
+ * 64 MB at rest, the budget's margin. A deletion that adds no struct is admitted past it too (A§5.1).
+ */
+export const STRUCT_HEADROOM = STRUCT_CAP / 20;
+
 /** The most a UTF-16 code unit encodes to in UTF-8 (a surrogate pair is 4 bytes for 2 units). */
 const UTF8_BYTES_PER_CHAR = 3;
 

@@ -253,6 +253,11 @@ export default {
     if (url.pathname === '/structs') {
       return Response.json(await (await getServerByName(env.DocDO, docId)).structsPerBlock());
     }
+    if (url.pathname === '/state') {
+      // The note's state, for a client's mirror (scripts/measure-memory.mjs deletes on one to reach the ceiling).
+      const { state } = await (await getServerByName(env.DocDO, docId)).snapshotForDuplicate();
+      return new Response(state);
+    }
     if (url.pathname === '/state-bytes') {
       return Response.json({ stateBytes: await (await getServerByName(env.DocDO, docId)).stateBytes() });
     }

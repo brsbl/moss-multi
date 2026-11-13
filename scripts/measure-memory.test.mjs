@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { STRUCT_CAP, TEXT_CHAR_CAP } from '../packages/protocol/src/limits.ts';
-import { gcEvents, memoryProblems, NEED_RUNS, PHASE_LIMIT_MB, phaseFigures, reliableCap, REST_LIMIT_MB, smallestCap, stateAllowance, STRUCT_BOUNDS } from './measure-memory.mjs';
+import { STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP } from '../packages/protocol/src/limits.ts';
+import { gcEvents, memoryProblems, NEED_RUNS, PHASE_LIMIT_MB, phaseFigures, reliableCap, REST_LIMIT_MB, smallestCap, stateAllowance, STRUCT_BOUNDS, STRUCT_CEILING } from './measure-memory.mjs';
 
 const LOG = [
   '[123:0x7f00]     1200 ms: Scavenge 30.5 (40.0) -> 22.1 (41.0) MB, pooled: 0 MB, 3.10 / 0.00 ms  (average mu = 1.000, current mu = 1.000) allocation failure;',
@@ -110,6 +110,44 @@ describe('memoryProblems: absolute budgets at the caps', () => {
     expect(memoryProblems([note('small', { create: 300, export: 300 }, { budget: false })])).toEqual([]);
     const failed = note('failed', { create: 60, wake: 60, save: 60, export: 60 }, { budget: false, plain: { failed: { phase: 'create', message: 'workerd exited' } } });
     expect(memoryProblems([failed])).toEqual(['failed: the untraced run failed (create: workerd exited)']);
+  });
+});
+
+describe('memoryProblems: notes at the structure ceiling (coordinator ruling 2)', () => {
+  const FED = { docId: 'measure', bodyChars: 1_000 };
+  const NEEDS = { create: 80, wake: 70, save: 90, export: 90 };
+  const at = (name, needs, { structs = STRUCT_CEILING, rest = 60, deletions = { landed: 4_000, structs: STRUCT_CEILING, refused: 'structure' } } = {}) => ({
+    name,
+    budget: true,
+    cap: 'ceiling',
+    needs,
+    plain: { phases: { save: { restMb: rest } }, fed: FED, size: { chars: 400_000, structs }, stateBytes: 1_000, deletions },
+    measured: { phases: {} },
+  });
+
+  it('is the structure cap and 5% of it', () => {
+    expect(STRUCT_CEILING).toBe(STRUCT_CAP + STRUCT_HEADROOM);
+    expect(STRUCT_CEILING).toBe(173_250);
+  });
+
+  it('holds a note there to 96 MB a phase and 64 MB at rest: the headroom spends the budgets\' margin', () => {
+    expect(memoryProblems([at('ceiling', { create: 80, wake: 70, save: 95, export: 96 }, { rest: 63 })])).toEqual([]);
+  });
+
+  it('fails one over those budgets, one short of the ceiling, and one whose deletions were not refused past it', () => {
+    expect(memoryProblems([
+      at('heavy', { create: 80, wake: 70, save: 98, export: 90 }, { rest: 65 }),
+      at('short', NEEDS, { structs: STRUCT_CAP }),
+      at('admitted', NEEDS, { deletions: { landed: 4_000, structs: STRUCT_CEILING, refused: null } }),
+      at('stopped', NEEDS, { deletions: { landed: 0, structs: STRUCT_CAP, refused: 'structure within the headroom' } }),
+    ])).toEqual([
+      'heavy: at rest it takes 65 MB, over 64.0 MB',
+      'heavy: the save needs 98 MB, over 96.0 MB',
+      `short: it holds ${STRUCT_CAP} structs, not at the ceiling of ${STRUCT_CEILING}`,
+      'admitted: the deletion past the ceiling was not refused with the structure limit (admitted)',
+      'stopped: no deletion landed in the headroom',
+      'stopped: the deletion past the ceiling was not refused with the structure limit (structure within the headroom)',
+    ]);
   });
 });
 

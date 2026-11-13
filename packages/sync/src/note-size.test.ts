@@ -216,6 +216,103 @@ describe('growthOf against crafted and compound updates (T3.B31c)', () => {
   });
 });
 
+describe('growthOf for an update of only deletions (coordinator ruling 2)', () => {
+  /** A server doc whose body holds one paragraph of `text`, a writer synced to it, and the writer's paragraph. */
+  function paragraphOf(text: string): { server: Y.Doc; writer: Y.Doc; paragraph: Y.XmlText } {
+    const writer = new Y.Doc();
+    const paragraph = new Y.XmlText();
+    writer.get('root', Y.XmlText).insertEmbed(0, paragraph);
+    paragraph.insert(0, text);
+    const server = new Y.Doc();
+    Y.applyUpdate(server, Y.encodeStateAsUpdate(writer));
+    return { server, writer, paragraph };
+  }
+
+  /** The update one transaction of `edit` makes on `writer`. */
+  function updateOf(writer: Y.Doc, edit: () => void): Uint8Array {
+    let update: Uint8Array | null = null;
+    const listen = (u: Uint8Array) => { update = u; };
+    writer.on('update', listen);
+    writer.transact(edit);
+    writer.off('update', listen);
+    if (!update) throw new Error('the edit made no update');
+    return update;
+  }
+
+  it('counts the splits a deletion inside a run makes: one character from its middle is two structs more', () => {
+    const { server, writer, paragraph } = paragraphOf('a'.repeat(100));
+    const update = updateOf(writer, () => paragraph.delete(50, 1));
+    const growth = growthOf(server, update);
+    const before = structCount(server);
+    Y.applyUpdate(server, update);
+    expect(growth).toMatchObject({ inserts: false, structs: 2 });
+    expect(structCount(server) - before).toBe(2);
+  });
+
+  it('counts the merge with a deleted neighbour: deleting a 10,000-character run from its end adds one struct, then none', () => {
+    const { server, writer, paragraph } = paragraphOf('a'.repeat(10_000));
+    const start = structCount(server);
+    for (let length = 10_000; length > 0; length -= 1) {
+      const update = updateOf(writer, () => paragraph.delete(length - 1, 1));
+      const growth = growthOf(server, update);
+      const before = structCount(server);
+      Y.applyUpdate(server, update);
+      expect(structCount(server) - before, `${length}: never more than predicted`).toBeLessThanOrEqual(growth.structs);
+      if (length < 10_000) expect(growth.structs, `${length}: a deletion beside the deleted end adds nothing`).toBe(0);
+    }
+    expect(structCount(server)).toBeLessThanOrEqual(start + 1);
+  });
+
+  it.each([1, 2, 3, 4])('never predicts fewer structs than land for scattered deletions from several writers (seed %i)', (seed) => {
+    const next = random(seed);
+    const server = new Y.Doc();
+    const writers = Array.from({ length: 3 }, () => new Y.Doc());
+    for (let round = 0; round < 200; round += 1) edit(writers[round % 3], next);
+    for (const writer of writers) Y.applyUpdate(server, Y.encodeStateAsUpdate(writer));
+    for (const writer of writers) Y.applyUpdate(writer, Y.encodeStateAsUpdate(server, Y.encodeStateVector(writer)));
+    for (let round = 0; round < 400; round += 1) {
+      const writer = writers[Math.floor(next() * writers.length)];
+      if (next() < 0.5) Y.applyUpdate(writer, Y.encodeStateAsUpdate(server, Y.encodeStateVector(writer)));
+      const targets = texts(writer).filter((type) => type.length > 0);
+      if (!targets.length) break;
+      const update = updateOf(writer, () => {
+        for (let n = 1 + Math.floor(next() * 4); n > 0; n -= 1) {
+          const target = targets[Math.floor(next() * targets.length)];
+          if (target.length === 0) continue;
+          const from = Math.floor(next() * target.length);
+          target.delete(from, 1 + Math.floor(next() * Math.min(3, target.length - from)));
+        }
+      });
+      const growth = growthOf(server, update);
+      expect(growth.inserts).toBe(false);
+      const before = structCount(server);
+      Y.applyUpdate(server, update);
+      expect(structCount(server) - before, `round ${round}: the structs it adds`).toBeLessThanOrEqual(growth.structs);
+    }
+  });
+
+  it('reads a whole block\'s deletion as adding no struct', () => {
+    const writer = new Y.Doc();
+    const root = writer.get('root', Y.XmlText);
+    for (let i = 0; i < 20; i += 1) {
+      const block = new Y.XmlText();
+      block.setAttribute('__type', 'paragraph');
+      root.insertEmbed(i, block);
+      block.insert(0, `Line ${i}`);
+    }
+    const server = new Y.Doc();
+    Y.applyUpdate(server, Y.encodeStateAsUpdate(writer));
+    for (const at of [10, 3, 0]) {
+      const update = updateOf(writer, () => root.delete(at, 1));
+      const growth = growthOf(server, update);
+      const before = structCount(server);
+      Y.applyUpdate(server, update);
+      expect(growth.structs).toBeLessThanOrEqual(0);
+      expect(structCount(server)).toBeLessThanOrEqual(before);
+    }
+  });
+});
+
 describe('deletedWithin', () => {
   const RANGES = Array.from({ length: 10_000 }, (_, i) => ({ clock: i * 10, len: 4 }));
   const linear = (start: number, end: number) =>

@@ -1,16 +1,17 @@
 // The note's limits at every DocDO entry point (A§5.1 Limits; T3.B31c): its text (TEXT_CHAR_CAP, counted over the
 // body's text runs and the text of every payload it names) and its structure (STRUCT_CAP, its structs and its named
 // payloads'). A write just under a limit lands; one just over is refused whole with that limit, both peers keeping what
-// they had; a write that only deletes is always admitted, so a note at a limit, or one stored over it, can be shrunk.
+// they had; a write that only deletes is admitted up to the structure headroom, or whenever it adds no struct, so a
+// note at a limit, or one stored over it, can be shrunk.
 // The caps are shrunk here so each case is small; the `memory` CI job and the API harness hold the real ones.
 import { $getRoot, $isParagraphNode, $isTextNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { STRUCT_CAP, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
+import { STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import { CLOSE } from '@moss-multi/protocol/sync';
 import { DocDO, type DocLimits } from '../../src/doc-do.ts';
 import { withDeletes } from './crafted.ts';
-import { blockTypes, Backing, connect, openDoc, start, syncFrame, type Opened } from './do-harness.ts';
+import { blockTypes, Backing, connect, openDoc, start, syncFrame, wake, type Opened } from './do-harness.ts';
 import { LiveClient, syncAll } from './live-client.ts';
 
 beforeEach(() => {
@@ -22,7 +23,7 @@ afterEach(() => {
 });
 
 /** A DocDO class whose limits are `caps` over the defaults; the returned object can be changed between writes. */
-function capped(caps: Record<string, number>): { Doc: typeof DocDO; limits: DocLimits } {
+function capped(caps: Record<string, unknown>): { Doc: typeof DocDO; limits: DocLimits } {
   const limits = { ...DocDO.limits, ...caps } as DocLimits;
   class Capped extends DocDO {
     static override limits = limits;
@@ -275,6 +276,163 @@ describe('socket frames', () => {
       expect(refusals(ada), 'the removal lands at the limit').toEqual([]);
       expect(await doc.dobj.exportMarkdown()).not.toContain('**Bold words**');
       await expectRefused(doc, ada, ben, 'structure', () => ada.insertParagraph('More'));
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+});
+
+/** Deletes the one character at `offset` of the paragraph that starts with `prefix`. */
+function eraseAt(client: LiveClient, prefix: string, offset: number): void {
+  client.editor.update(() => {
+    const paragraph = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent().startsWith(prefix));
+    const text = $isParagraphNode(paragraph) ? paragraph.getFirstChild() : null;
+    if (!$isTextNode(text)) throw new Error(`no paragraph ${prefix}`);
+    text.spliceText(offset, 1, '');
+  }, { discrete: true });
+}
+
+/**
+ * Sends `deletion(n)` for n = 0, 1, … one frame each, until the DocDO refuses one: each that lands keeps the note at or
+ * under `ceiling`, and the one refused is refused whole with the structure limit, past the ceiling, the server and the
+ * peer keeping what they had. Returns how many landed.
+ */
+async function deleteUntilRefused(doc: Opened, writer: LiveClient, peer: LiveClient, ceiling: number, deletion: (n: number) => void): Promise<number> {
+  for (let n = 0; n < 100; n += 1) {
+    const before = (await doc.dobj.noteSize()).structs;
+    const exported = await doc.dobj.exportMarkdown();
+    const [paragraphs, texts] = [peer.paragraphs(), peer.texts()];
+    deletion(n);
+    await writer.up();
+    await writer.socket.pump();
+    if (refusals(writer).length) {
+      expect(refusals(writer), 'refused with the structure limit').toEqual([{ t: 'write-refused', reason: 'doc-cap', limit: 'structure' }]);
+      expect(writer.socket.closed?.code).toBe(CLOSE.writeRefused);
+      expect(before + 2, 'refused only once it would pass the headroom').toBeGreaterThan(ceiling);
+      expect(await doc.dobj.exportMarkdown(), 'the server keeps what it had').toBe(exported);
+      expect((await doc.dobj.noteSize()).structs).toBe(before);
+      await peer.down();
+      expect(peer.paragraphs(), 'and so does the peer').toEqual(paragraphs);
+      expect(peer.texts()).toEqual(texts);
+      return n;
+    }
+    await syncAll(writer, peer);
+    expect((await doc.dobj.noteSize()).structs, `deletion ${n} keeps the note within the headroom`).toBeLessThanOrEqual(ceiling);
+  }
+  throw new Error('no deletion was refused');
+}
+
+describe('deletions (coordinator ruling 2)', () => {
+  it('the headroom is 5% of the structure limit, one constant for deletions and for formats and properties', () => {
+    expect(STRUCT_HEADROOM).toBe(8_250);
+    expect(DocDO.limits).toMatchObject({ structHeadroom: STRUCT_HEADROOM });
+  });
+
+  it('scattered one-character deletions in a note at the structure limit land up to the headroom, then are refused whole; the note still opens, saves and exports', async () => {
+    const { Doc, limits } = capped({ structHeadroom: 20 });
+    const doc = await opened(Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      ada.insertParagraph(`Long ${'abcdefghij'.repeat(40)}`);
+      await syncAll(ada, ben);
+      limits.structCap = (await doc.dobj.noteSize()).structs;
+      // Each deletion inside the run splits it twice: ten fit the headroom of 20.
+      const landed = await deleteUntilRefused(doc, ada, ben, limits.structCap + 20, (n) => eraseAt(ada, 'Long', 400 - n * 9));
+      expect(landed).toBe(10);
+    } finally { ada.dispose(); ben.dispose(); }
+    await doc.dobj.onSave();
+    const woken = await start(wake(doc));
+    expect((await woken.dobj.noteSize()).structs).toBeLessThanOrEqual(limits.structCap + 20);
+    expect(await woken.dobj.exportMarkdown()).toContain('Long abcdefghij');
+  });
+
+  it('the same holds for a payload\'s text: scattered deletions in a code block land up to the headroom, then are refused whole', async () => {
+    const { Doc, limits } = capped({ structHeadroom: 20 });
+    const doc = await opened(Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      ada.insert('code-block', 'abcdefghij'.repeat(40));
+      await syncAll(ada, ben);
+      limits.structCap = (await doc.dobj.noteSize()).structs;
+      const landed = await deleteUntilRefused(doc, ada, ben, limits.structCap + 20, (n) => ada.erase(0, 395 - n * 9, 1));
+      expect(landed).toBe(10);
+    } finally { ada.dispose(); ben.dispose(); }
+    await doc.dobj.onSave();
+    expect(await (await start(wake(doc))).dobj.exportMarkdown()).toContain('abcdefghij');
+  });
+
+  it('deleting a 10,000-character run one character at a time from its end never raises the count, and lands in a note at the ceiling', async () => {
+    const { Doc, limits } = capped({ structHeadroom: 20, writeRate: { max: 100_000, windowMs: 5_000 } });
+    const doc = await opened(Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    try {
+      ada.insertParagraph(`Run ${'r'.repeat(9_996)}`);
+      await ada.sync();
+      const copy = new Y.Doc();
+      Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc.dobj.document));
+      const run = [...copy.store.clients.values()].flat()
+        .find((struct) => struct instanceof Y.Item && !struct.deleted && struct.content instanceof Y.ContentString && struct.length === 10_000) as Y.Item;
+      const paragraph = run.parent as Y.XmlText;
+      const frames: Uint8Array[] = [];
+      copy.on('update', (update: Uint8Array) => frames.push(update));
+      const eve = await connect(doc, { id: 'eve' });
+      // The first deletion splits the run once; the note is then at the ceiling, and each deletion after it merges.
+      paragraph.delete(paragraph.length - 1, 1);
+      await eve.deliver(syncFrame(2, frames.shift()!));
+      await eve.pump();
+      const ceiling = (await doc.dobj.noteSize()).structs;
+      limits.structCap = ceiling - 20;
+      for (let left = 9_999; left > 0; left -= 1) {
+        paragraph.delete(paragraph.length - 1, 1);
+        await eve.deliver(syncFrame(2, frames.shift()!));
+        if (left % 500 === 0) await eve.pump();
+      }
+      await eve.pump();
+      expect(eve.events.filter((event) => event.t === 'write-refused'), 'every deletion lands').toEqual([]);
+      expect(eve.closed).toBeNull();
+      expect((await doc.dobj.noteSize()).structs, 'and the count never rose').toBeLessThanOrEqual(ceiling);
+      expect(await doc.dobj.exportMarkdown()).not.toContain('Run');
+    } finally { ada.dispose(); }
+  });
+
+  it('deleting whole paragraphs never raises the count, and lands in a note at the ceiling', async () => {
+    const { Doc, limits } = capped({ structHeadroom: 20 });
+    const doc = await opened(Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      for (let i = 0; i < 10; i += 1) ada.insertParagraph(`Para ${i} words`);
+      await syncAll(ada, ben);
+      const ceiling = (await doc.dobj.noteSize()).structs;
+      limits.structCap = ceiling - 20;
+      for (const i of [3, 7, 0]) {
+        const before = (await doc.dobj.noteSize()).structs;
+        removeParagraph(ada, `Para ${i} `);
+        await syncAll(ada, ben);
+        expect(refusals(ada), `removing paragraph ${i} lands`).toEqual([]);
+        expect((await doc.dobj.noteSize()).structs).toBeLessThanOrEqual(before);
+      }
+      expect(ben.paragraphs().filter((text) => text.startsWith('Para'))).toHaveLength(7);
+    } finally { ada.dispose(); ben.dispose(); }
+  });
+
+  it('a note stored over the ceiling accepts a whole-block deletion and refuses a scattered one', async () => {
+    const backing = new Backing();
+    const first = await opened(DocDO, backing);
+    await first.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown: Array.from({ length: 30 }, (_, i) => `Line ${i} ${'w'.repeat(40)}`).join('\n\n') });
+    const stored = (await first.dobj.noteSize()).structs;
+    first.state.alive = false;
+    vi.clearAllTimers();
+    const doc = await opened(capped({ structCap: stored - 40, structHeadroom: 20 }).Doc, backing);
+    expect(await doc.dobj.exportMarkdown()).toContain('Line 29');
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      removeParagraph(ada, 'Line 4 ');
+      await syncAll(ada, ben);
+      expect(refusals(ada), 'a whole-block deletion lands').toEqual([]);
+      expect(await doc.dobj.exportMarkdown()).not.toContain('Line 4 ');
+      await expectRefused(doc, ada, ben, 'structure', () => eraseAt(ada, 'Line 9 ', 20));
     } finally { ada.dispose(); ben.dispose(); }
   });
 });

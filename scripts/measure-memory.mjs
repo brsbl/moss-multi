@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // DocDO memory in workerd (T3.B31a, T3.B31c). A Cloudflare isolate may use 128 MB. Each note at the caps (A§5.1: the
 // text cap in mixed markdown; the structure cap in one-line paragraphs, list items, and a table imported as large as
-// the converter takes it, then grown by appended rows) is created through the real DocDO
+// the converter takes it, then grown by appended rows; and each structure shape taken on to the cap and its headroom by
+// one-character deletions over a socket, where the next deletion must be refused) is created through the real DocDO
 // (packages/sync/measure/doc-worker.ts) in a fresh workerd that runs with V8's `--trace-gc` and `--expose-gc`, in
 // phases: the create, its debounced save, an export (what the search feed and a download read), each followed by a full
 // GC. Every GC line gives the heap before and after it, so a phase's figures are its highest heap in use before a GC
@@ -11,7 +12,7 @@
 // from later gc() calls, so its figures are detail only). Then each phase's need is bisected: the smallest
 // `--max-heap-size` it completes under in three of three fresh workerds (create, a wake of the saved note, a save of the
 // whole note after a wake, and an export after a wake). The verdict is absolute: every phase of a note at a cap needs at most PHASE_LIMIT_MB and the note at
-// rest takes at most REST_LIMIT_MB; each sits within 2% under its cap, encodes within what STATE_CAP_BYTES allows its
+// rest takes at most REST_LIMIT_MB (at the ceiling, HEAP_BUDGET_MB and REST_BUDGET_MB); each sits within 2% under its cap, encodes within what STATE_CAP_BYTES allows its
 // text and structs, and its structs per block (packages/sync/measure/structs-per-block.ts) are held to its block's bound
 // (T3.B31b): a plain paragraph 5, a list item 6, a two-cell table row 16. Notes just past each cap must be refused
 // with that limit, and a 200 KB note's structs are reported over 100,000 scattered edits. Prints markdown tables (and
@@ -27,7 +28,7 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bundle } from './measure-converter.mjs';
-import { STATE_BYTES_PER_STRUCT, STRUCT_CAP, TEXT_CHAR_CAP } from '../packages/protocol/src/limits.ts';
+import { STATE_BYTES_PER_STRUCT, STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP } from '../packages/protocol/src/limits.ts';
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
 const OUT = join(REPO, '.cache/measure');
@@ -42,6 +43,11 @@ export const REST_BUDGET_MB = 64;
 export const BUDGET_MARGIN = 0.1;
 export const PHASE_LIMIT_MB = HEAP_BUDGET_MB * (1 - BUDGET_MARGIN);
 export const REST_LIMIT_MB = REST_BUDGET_MB * (1 - BUDGET_MARGIN);
+/**
+ * The most structs a note may reach by deletions (or by formats and properties) past the structure cap (coordinator
+ * ruling 2). A note there spends the budgets' margin, so it is held to HEAP_BUDGET_MB and REST_BUDGET_MB themselves.
+ */
+export const STRUCT_CEILING = STRUCT_CAP + STRUCT_HEADROOM;
 /** How close to its cap a note at a cap must be: within 2% below it. */
 export const AT_CAP = 0.98;
 const REQUEST_TIMEOUT_MS = 300_000;
@@ -70,11 +76,15 @@ async function cases() {
   // A one-line paragraph is 5 structs and a list item 6 (A§10.11), beside a few for the note itself.
   const lines = Math.floor((STRUCT_CAP - 8) / 5);
   const items = Math.floor((STRUCT_CAP - 24) / 6);
+  const deleted = 'then one-character deletions to the cap and its headroom';
   return [
     { name: `text cap: ${atText.chars.toLocaleString('en-US')} characters of mixed markdown`, markdown: atText.markdown, budget: true, cap: 'text', chars: atText.chars },
     { name: `structure cap: ${lines.toLocaleString('en-US')} one-line paragraphs`, markdown: notes.numberedLines(lines), budget: true, cap: 'structure', block: 'paragraph' },
     { name: `structure cap: ${items.toLocaleString('en-US')} list items`, markdown: notes.flatList(items), budget: true, cap: 'structure', block: 'list item' },
     { name: 'structure cap: the largest table an import takes, grown to the cap', make: (rows) => notes.table(rows), budget: true, cap: 'structure', block: 'table row', grow: true },
+    { name: `structure ceiling: ${lines.toLocaleString('en-US')} one-line paragraphs, ${deleted}`, markdown: notes.numberedLines(lines), budget: true, cap: 'ceiling', ceiling: true },
+    { name: `structure ceiling: ${items.toLocaleString('en-US')} list items, ${deleted}`, markdown: notes.flatList(items), budget: true, cap: 'ceiling', ceiling: true },
+    { name: `structure ceiling: the largest table an import takes, grown to the cap, ${deleted}`, make: (rows) => notes.table(rows), budget: true, cap: 'ceiling', grow: true, ceiling: true },
     { name: `past the text cap: ${pastText.chars.toLocaleString('en-US')} characters of mixed markdown`, markdown: pastText.markdown, refused: 'text' },
     { name: `past the structure cap: ${(lines + 2).toLocaleString('en-US')} one-line paragraphs`, markdown: notes.numberedLines(lines + 2), refused: 'structure' },
     { name: '200k of mixed markdown', markdown: notes.mixedMarkdown(200_000) },
@@ -231,7 +241,7 @@ async function settle(server, count) {
  * One note in a fresh workerd, phase by phase. Returns each phase's figures and the base heap, or where it failed:
  * under a heap cap, V8 aborts the isolate's process once a phase cannot fit.
  */
-async function measureNote(markdown, port, flags, { trace = false, wake = false, grow = false, refused = null } = {}) {
+async function measureNote(markdown, port, flags, { trace = false, wake = false, grow = false, ceiling = false, refused = null } = {}) {
   const server = await startWorkerd(port, ['--expose-gc', '--trace-gc', ...flags]);
   const doc = `memory-${port}`;
   const result = { phases: {} };
@@ -267,6 +277,7 @@ async function measureNote(markdown, port, flags, { trace = false, wake = false,
       create: async () => {
         await call(server.origin, `/create?lean&doc=${doc}`, { method: 'POST', body: markdown });
         if (grow) await call(server.origin, `/grow-table?doc=${doc}&structs=${STRUCT_CAP}`);
+        if (ceiling) result.deletions = await deleteToCeiling(server.origin, doc);
       },
       save: () => new Promise((resolve) => setTimeout(resolve, SAVE_WAIT_MS)),
       export: () => call(server.origin, `/export?lean&doc=${doc}`),
@@ -327,6 +338,114 @@ async function measureNote(markdown, port, flags, { trace = false, wake = false,
     }
   }
   return result;
+}
+
+/** A sync update frame (y-protocols: message sync, update), as a client sends one. */
+function updateFrame(update) {
+  const length = [];
+  for (let n = update.byteLength; ; n = Math.floor(n / 128)) {
+    if (n < 128) {
+      length.push(n);
+      break;
+    }
+    length.push(128 | (n & 127));
+  }
+  const frame = new Uint8Array(2 + length.length + update.byteLength);
+  frame.set([0, 2, ...length]);
+  frame.set(update, 2 + length.length);
+  return frame;
+}
+
+/** Deletions sent per frame on the way to the ceiling: each splits a run twice. */
+const DELETIONS_PER_FRAME = 500;
+
+/**
+ * Takes a note at the structure cap to STRUCT_CEILING as an editor's client would (coordinator ruling 2): frames of
+ * one-character deletions from the middle of separate text runs, over a real socket to the DocDO, each admitted while
+ * the note stays within the headroom; then one more such deletion, which must be refused with the structure limit.
+ * Returns how many deletions landed, the structs they left, and the last frame's refusal (null if it landed).
+ */
+async function deleteToCeiling(origin, doc) {
+  const Y = requireFromSync('yjs');
+  const { CUSTOM_PREFIX } = await import('../packages/protocol/src/sync.ts');
+  const mirror = new Y.Doc();
+  const state = await fetch(`${origin}/state?doc=${doc}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (!state.ok) throw new Error(`/state: HTTP ${state.status}`);
+  Y.applyUpdate(mirror, new Uint8Array(await state.arrayBuffer()));
+  const root = mirror.get('root', Y.XmlText);
+  const inBody = (type) => {
+    for (let at = type; at; at = at._item?.parent ?? null) if (at === root) return true;
+    return false;
+  };
+  const runs = [];
+  for (const structs of mirror.store.clients.values()) {
+    for (const struct of structs) {
+      if (struct instanceof Y.Item && !struct.deleted && struct.content instanceof Y.ContentString && struct.length >= 3 && inBody(struct.parent)) runs.push(struct);
+    }
+  }
+  const updates = [];
+  mirror.on('update', (update) => updates.push(update));
+  /** One update of `count` deletions, each the middle character of a run not yet cut. */
+  const deletions = (count) => {
+    mirror.transact(() => {
+      for (let i = 0; i < count; i += 1) {
+        const run = runs.pop();
+        if (!run) throw new Error('the note has too few text runs to delete from');
+        const parent = run.parent;
+        let offset = 0;
+        for (let item = parent._start; item && item !== run; item = item.right) if (!item.deleted && item.countable) offset += item.length;
+        parent.delete(offset + Math.floor(run.length / 2), 1);
+      }
+    });
+    return updates.pop();
+  };
+  const size = async () => JSON.parse(await call(origin, `/size?doc=${doc}`)).structs;
+  const ws = new WebSocket(`${origin.replace(/^http/, 'ws')}/parties/doc-d-o/${doc}?_pk=deleter&principal=deleter`);
+  ws.binaryType = 'arraybuffer';
+  let refused = null;
+  let closed = null;
+  ws.addEventListener('message', (event) => {
+    if (typeof event.data !== 'string' || !event.data.startsWith(CUSTOM_PREFIX)) return;
+    const message = JSON.parse(event.data.slice(CUSTOM_PREFIX.length));
+    if (message.t === 'write-refused') refused = message.limit ?? message.reason;
+  });
+  ws.addEventListener('close', (event) => {
+    closed = event.code;
+  });
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', () => reject(new Error('the deleting socket failed to open')), { once: true });
+  });
+  /** Sends `count` deletions; resolves with the structs after them once they land, or null once they are refused. */
+  const send = async (count) => {
+    const before = await size();
+    ws.send(updateFrame(deletions(count)));
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      if (refused !== null || closed !== null) return null;
+      const now = await size();
+      if (now !== before) return now;
+      if (Date.now() > deadline) throw new Error(`a frame of ${count} deletions neither landed nor was refused in 60 s`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  try {
+    let structs = await size();
+    let landed = 0;
+    while (STRUCT_CEILING - structs >= 2) {
+      const count = Math.min(DELETIONS_PER_FRAME, Math.floor((STRUCT_CEILING - structs) / 2));
+      const after = await send(count);
+      if (after === null) return { landed, structs, refused: `${refused ?? `closed ${closed}`} within the headroom` };
+      landed += count;
+      structs = after;
+    }
+    // One more, past the ceiling: refused whole, the note keeping its structs.
+    const last = await send(1);
+    return { landed, structs: await size(), refused: last === null ? refused : null };
+  } finally {
+    ws.close();
+    mirror.destroy();
+  }
 }
 
 /** The bisection's resolution, in MB of `--max-heap-size`. */
@@ -430,7 +549,7 @@ async function fitsUnder(cap, port, storage, request) {
  * storage an uncapped workerd left once the note was created and saved. `guess` gives each search's
  * starting bounds.
  */
-async function measureNeeds(markdown, port, guess, { grow = false } = {}) {
+async function measureNeeds(markdown, port, guess, { grow = false, ceiling = false } = {}) {
   const storage = (name) => join(OUT, 'state', `needs-${port}-${name}`);
   const fresh = (name) => {
     rmSync(storage(name), { recursive: true, force: true });
@@ -444,6 +563,10 @@ async function measureNeeds(markdown, port, guess, { grow = false } = {}) {
   try {
     await create(writer.origin);
     if (grow) await call(writer.origin, `/grow-table?doc=${NEED_DOC}&structs=${STRUCT_CAP}`);
+    if (ceiling) {
+      const deletions = await deleteToCeiling(writer.origin, NEED_DOC);
+      if (deletions.refused !== 'structure') throw new Error(`the deletions to the ceiling ended ${JSON.stringify(deletions)}`);
+    }
     // A save in the request, so the note is compacted and fed before workerd stops; then the debounced one it causes.
     await call(writer.origin, `/save?doc=${NEED_DOC}`);
     await new Promise((resolve) => setTimeout(resolve, SAVE_WAIT_MS));
@@ -476,6 +599,9 @@ async function measureNeeds(markdown, port, guess, { grow = false } = {}) {
 /** The state bytes a note's text and structs may encode to, as STATE_CAP_BYTES is derived (A§5.1): SP2 for the lean layout. */
 export const stateAllowance = ({ chars, structs }) => chars * 3 + structs * STATE_BYTES_PER_STRUCT;
 
+/** A budgeted note's limits per phase and at rest: the budgets less their margin, or the budgets at the ceiling. */
+const limitsFor = (n) => (n.cap === 'ceiling' ? [HEAP_BUDGET_MB, REST_BUDGET_MB] : [PHASE_LIMIT_MB, REST_LIMIT_MB]);
+
 /**
  * Every way the measured notes miss a budget (empty when they meet them). The note at rest is the untraced run's: the
  * traced run's gc() calls inside a phase keep that phase's garbage from later gc() calls.
@@ -497,13 +623,19 @@ export function memoryProblems(notes) {
       else if (median > bound) problems.push(`${n.name}: a ${n.block} costs ${median} structs, over ${bound}`);
     }
     const size = n.plain?.size;
+    const ceiling = n.cap === 'ceiling';
     if (n.cap) {
-      const [value, cap] = n.cap === 'text' ? [size?.chars, TEXT_CHAR_CAP] : [size?.structs, STRUCT_CAP];
+      const [value, cap] = n.cap === 'text' ? [size?.chars, TEXT_CHAR_CAP] : [size?.structs, ceiling ? STRUCT_CEILING : STRUCT_CAP];
       if (typeof value !== 'number') problems.push(`${n.name}: its size is unknown`);
-      else if (value > cap || value < cap * AT_CAP) problems.push(`${n.name}: it holds ${value} ${n.cap === 'text' ? 'characters' : 'structs'}, not at the cap of ${cap}`);
+      else if (value > cap || value < cap * AT_CAP) problems.push(`${n.name}: it holds ${value} ${n.cap === 'text' ? 'characters' : 'structs'}, not at the ${ceiling ? 'ceiling' : 'cap'} of ${cap}`);
       if (n.cap === 'text' && typeof size?.chars === 'number' && n.chars !== undefined && size.chars !== n.chars) {
         problems.push(`${n.name}: it holds ${size.chars} characters where its markdown counts ${n.chars}`);
       }
+    }
+    if (ceiling) {
+      const deletions = n.plain?.deletions;
+      if (!(deletions?.landed > 0)) problems.push(`${n.name}: no deletion landed in the headroom`);
+      if (deletions?.refused !== 'structure') problems.push(`${n.name}: the deletion past the ceiling was not refused with the structure limit (${deletions?.refused ?? 'admitted'})`);
     }
     const state = n.plain?.stateBytes;
     if (size && typeof state === 'number' && state > stateAllowance(size)) {
@@ -512,14 +644,15 @@ export function memoryProblems(notes) {
     if (!n.budget) continue;
     // Without an entry, the save left out the export and the feed a production save runs.
     if (!(n.plain?.fed?.bodyChars > 0)) problems.push(`${n.name}: its save fed search no entry of the note`);
+    const [phaseLimit, restLimit] = limitsFor(n);
     const rest = n.plain?.phases?.save?.restMb;
     if (typeof rest !== 'number') problems.push(`${n.name}: the note at rest is unknown`);
-    else if (rest > REST_LIMIT_MB) problems.push(`${n.name}: at rest it takes ${rest} MB, over ${REST_LIMIT_MB.toFixed(1)} MB`);
+    else if (rest > restLimit) problems.push(`${n.name}: at rest it takes ${rest} MB, over ${restLimit.toFixed(1)} MB`);
     if (!n.needs) continue;
     for (const phase of ['create', 'wake', 'save', 'export']) {
       const need = n.needs[phase];
       if (typeof need !== 'number') problems.push(`${n.name}: the ${phase}'s need is unknown`);
-      else if (need > PHASE_LIMIT_MB) problems.push(`${n.name}: the ${phase} needs ${need} MB, over ${PHASE_LIMIT_MB.toFixed(1)} MB`);
+      else if (need > phaseLimit) problems.push(`${n.name}: the ${phase} needs ${need} MB, over ${phaseLimit.toFixed(1)} MB`);
     }
   }
   return problems;
@@ -550,7 +683,7 @@ async function main() {
   // MEASURE_MEMORY_NEEDS=0 skips the per-phase heap-cap bisection.
   const bisect = process.env.MEASURE_MEMORY_NEEDS !== '0';
   for (const note of (await cases()).filter(({ name }) => !only || only.test(name))) {
-    const { name, budget = false, block = null, grow = false, refused = null, edits } = note;
+    const { name, budget = false, block = null, grow = false, ceiling = false, refused = null, edits } = note;
     if (edits) {
       const figures = await measureEdits(note.markdown, port, edits);
       port += 1;
@@ -566,18 +699,18 @@ async function main() {
     }
     const { markdown } = note;
     // Untraced first: its figures (the note at rest among them) bound the bisection's searches.
-    const plain = await measureNote(markdown, port, [], { wake: true, grow, refused });
-    const measured = refused ? { phases: {} } : await measureNote(markdown, port + 1, (process.env.MEASURE_MEMORY_V8_FLAGS ?? '').split(' ').filter(Boolean), { trace: true, grow });
+    const plain = await measureNote(markdown, port, [], { wake: true, grow, ceiling, refused });
+    const measured = refused ? { phases: {} } : await measureNote(markdown, port + 1, (process.env.MEASURE_MEMORY_V8_FLAGS ?? '').split(' ').filter(Boolean), { trace: true, grow, ceiling });
     const rest = plain.phases.save?.restMb ?? measured.phases.save?.restMb ?? 8;
     const high = (phase) => Math.max(plain.phases[phase]?.highMb ?? 0, measured.phases[phase]?.liveMb ?? 0, rest) + 8;
     // Every phase so far has needed more than 1.2x the note at rest, which bounds each search from below.
     const needs = bisect && budget && !plain.failed
-      ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, save: Math.max(high('save'), high('export')), export: high('export') }, { grow })
+      ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, save: Math.max(high('save'), high('export')), export: high('export') }, { grow, ceiling })
       : null;
     port += 3;
     notes.push({ ...note, make: undefined, markdown: undefined, budget, block, markdownBytes: Buffer.byteLength(markdown), measured, plain, needs });
     const at = (run, phase) => `${run.phases[phase]?.highMb ?? '?'}/${run.phases[phase]?.liveMb ?? '?'}`;
-    console.error(`measure-memory: ${name} done: ${refused ? `refused ${plain.refused}` : `at rest ${rest} MB; untraced high/live create ${at(plain, 'create')}, export ${at(plain, 'export')}, wake ${at(plain, 'wake')}`}; size ${JSON.stringify(plain.size)}; needs ${JSON.stringify(needs)}`);
+    console.error(`measure-memory: ${name} done: ${refused ? `refused ${plain.refused}` : `at rest ${rest} MB; untraced high/live create ${at(plain, 'create')}, export ${at(plain, 'export')}, wake ${at(plain, 'wake')}`}; size ${JSON.stringify(plain.size)}; deletions ${JSON.stringify(plain.deletions ?? null)}; needs ${JSON.stringify(needs)}`);
   }
   const mb = (value) => (typeof value === 'number' ? `${value.toFixed(1)} MB` : '?');
   const figures = (phase) => (phase ? `${mb(phase.highMb)} / ${mb(phase.liveMb)}` : '');
@@ -612,13 +745,14 @@ async function main() {
   if (bisect && kept.some((n) => n.needs)) {
     lines.push(
       '',
-      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under in ${NEED_RUNS} of ${NEED_RUNS} fresh workerds. Wake: a DocDO loading the saved note; save: a wake, one small write, then the save (compaction and search feed); export: a wake, then the export (what the search feed and a download run). Budgets for the notes at the caps: each phase at most ${PHASE_LIMIT_MB.toFixed(1)} MB (${HEAP_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%), at rest at most ${REST_LIMIT_MB.toFixed(1)} MB (${REST_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%). A grown table's create is the import of the largest table an import takes.`,
+      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under in ${NEED_RUNS} of ${NEED_RUNS} fresh workerds. Wake: a DocDO loading the saved note; save: a wake, one small write, then the save (compaction and search feed); export: a wake, then the export (what the search feed and a download run). Budgets for the notes at the caps: each phase at most ${PHASE_LIMIT_MB.toFixed(1)} MB (${HEAP_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%), at rest at most ${REST_LIMIT_MB.toFixed(1)} MB (${REST_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%). A grown table's create is the import of the largest table an import takes. Notes at the structure ceiling (${STRUCT_CEILING.toLocaleString('en-US')} structs: the cap and its headroom, reached by one-character deletions over a socket, the next one refused) are held to ${HEAP_BUDGET_MB} MB and ${REST_BUDGET_MB} MB, the margin the headroom spends.`,
       '',
       '| Note | At rest | Create needs | Wake needs | Save needs | Export needs |',
       '| --- | --- | --- | --- | --- | --- |',
-      ...kept.map(({ name, budget, plain: p, needs: n }) => {
-        const limit = budget ? PHASE_LIMIT_MB : null;
-        return `| ${name} | ${within(p.phases.save?.restMb, budget ? REST_LIMIT_MB : null)} | ${within(n?.create, limit)} | ${within(n?.wake, limit)} | ${within(n?.save, limit)} | ${within(n?.export, limit)} |`;
+      ...kept.map((note) => {
+        const { name, budget, plain: p, needs: n } = note;
+        const [limit, restLimit] = budget ? limitsFor(note) : [null, null];
+        return `| ${name} | ${within(p.phases.save?.restMb, restLimit)} | ${within(n?.create, limit)} | ${within(n?.wake, limit)} | ${within(n?.save, limit)} | ${within(n?.export, limit)} |`;
       }),
     );
   }
