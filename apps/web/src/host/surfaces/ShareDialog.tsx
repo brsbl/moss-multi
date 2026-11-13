@@ -6,7 +6,8 @@
 // its segmented choice for access levels, and the DS Input and Button. The note's top bar (ShareControl), a folder's
 // context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Each person's (and invite's)
 // access has glyphdown's role select and Remove button; lowering or removing someone closes their open windows through
-// the one kick path (T2.5).
+// the one kick path (T2.5). An owner also sees, read-only, who reaches the target from the folders and vault above it
+// and which of those places have links, each with a Manage button to that place's own dialog (T9.7).
 import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
 import { Button } from '@moss/shared/components/ui/button';
 import { Input } from '@moss/shared/components/ui/input';
@@ -31,12 +32,33 @@ const ACCESS_LABEL: Record<Role, string> = {
 
 const UNREACHABLE = 'Couldn’t reach the server. Check your connection and try again.';
 
+/** A folder or vault above the target; the server names only the places the caller manages. */
+interface Place {
+  id: string;
+  name: string;
+  kind: 'folder' | 'vault';
+}
+
 interface Member {
   principalId: string;
   principalType: 'user' | 'agent';
   name: string;
   email?: string;
   role: Role;
+  /** A higher role this member also has from a place above; `place` null for one the caller does not manage. */
+  also?: { role: Role; place: Place | null };
+}
+
+/** People who reach the target through a place above it (null: places the caller does not manage). */
+interface InheritedGroup {
+  place: Place | null;
+  members: Member[];
+}
+
+/** A place above with a live link, at its highest link role. */
+interface LinkAbove {
+  place: Place;
+  role: LinkRole;
 }
 
 interface PendingInvite {
@@ -167,10 +189,47 @@ function copy(text: string): Promise<void> {
   return navigator.clipboard.writeText(text);
 }
 
-function titles(target: ShareTarget): { title: string; description: string } {
-  if (target.type === 'doc') return { title: 'Share', description: 'Share this note with people by email, with one of your agents by its ID, or with anyone who has a link.' };
-  if (target.vault) return { title: 'Share vault', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
-  return { title: 'Share folder', description: `Share every note in “${target.name}” with people by email, or with anyone who has a link.` };
+/** The shell keeps a fixed title (Moss prints titles in faint capitals); the body's first line names the target. */
+function titles(target: ShareTarget, name: string | null): { title: string; description: string; lead: string; named: string | null; rest: string } {
+  if (target.type === 'doc') {
+    const rest = 'with people by email, with one of your agents by its ID, or with anyone who has a link.';
+    return { title: 'Share', description: name ? `Share “${name}” ${rest}` : `Share this note ${rest}`, lead: name ? 'Share' : 'Share this note', named: name || null, rest };
+  }
+  const rest = 'with people by email, or with anyone who has a link.';
+  return { title: target.vault ? 'Share vault' : 'Share folder', description: `Share every note in “${target.name}” ${rest}`, lead: 'Share every note in', named: target.name, rest };
+}
+
+const thisTarget = (target: ShareTarget) => (target.type === 'doc' ? 'this note' : target.vault ? 'this vault' : 'this folder');
+const placeName = (place: Place) => `${place.kind === 'vault' ? 'vault' : 'folder'} “${place.name}”`;
+/** A place by kind and name, or, for one the caller does not manage, only that it is above. */
+const placeRef = (place: Place | null, target: ShareTarget) => (place ? placeName(place) : `a folder above ${thisTarget(target)}`);
+const LINK_ALLOWS: Record<LinkRole, string> = { viewer: 'can view', commenter: 'can comment on', editor: 'can edit' };
+
+/** Opens the place's own Share dialog in this one's stead. */
+const manage = (place: Place) => openShare({ type: 'folder', id: place.id, name: place.name, vault: place.kind === 'vault' });
+
+/** The quiet ghost Button Moss's Properties uses for "Add field", here on a place's line. */
+function ManageButton({ place, disabled }: { place: Place; disabled: boolean }): ReactNode {
+  return (
+    <Button type="button" size="sm" variant="ghost" disabled={disabled} aria-label={`Manage ${placeName(place)}`} onClick={() => manage(place)}
+      className="-mr-1.5 h-6 shrink-0 px-1.5 text-micro font-normal text-ink-faint hover:bg-surface-transparent hover:text-ink-muted">
+      Manage
+    </Button>
+  );
+}
+
+/** A person's or agent's name, its agent tag and (for the owner's view) email, then any extra faint line. */
+function Identity({ member, children }: { member: Member; children?: ReactNode }): ReactNode {
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-sm text-ink-default">
+        {member.name}
+        {member.principalType === 'agent' ? <span className="ml-1.5 text-xs text-ink-faint">agent</span> : null}
+      </p>
+      {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
+      {children}
+    </div>
+  );
 }
 
 function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open: boolean; onOpenChange: (open: boolean) => void }): ReactNode {
@@ -183,8 +242,11 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const [linkAccess, setLinkAccess] = useState<LinkRole>('viewer');
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [name, setName] = useState<string | null>(null);
+  const [inherited, setInherited] = useState<InheritedGroup[]>([]);
+  const [linksAbove, setLinksAbove] = useState<LinkAbove[]>([]);
   const base = apiBase(target);
-  const { title, description } = titles(target);
+  const { title, description, lead, named, rest } = titles(target, name);
 
   // Reads overlap when shares follow each other quickly; only the newest may paint, or an older read would drop a row.
   const reads = useRef(0);
@@ -192,15 +254,18 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     const read = ++reads.current;
     try {
       const [people, live, pendingLinks] = await Promise.all([
-        call<{ members: Member[]; invites?: PendingInvite[] }>(`${base}/members`),
-        call<{ links: ShareLink[] }>(`${base}/links`),
+        call<{ name?: string; members: Member[]; invites?: PendingInvite[]; inherited?: InheritedGroup[] }>(`${base}/members`),
+        call<{ links: ShareLink[]; inherited?: LinkAbove[] }>(`${base}/links`),
         call<{ invites: PendingInvite[] }>(`${base}/invites`),
       ]);
       if (read !== reads.current) return;
       if (!people.ok || !people.body || !live.ok || !live.body || !pendingLinks.ok || !pendingLinks.body) throw new Error(String(people.status));
       setMembers(people.body.members);
+      setName(people.body.name ?? null);
+      setInherited(people.body.inherited ?? []);
       setInvites(pendingLinks.body.invites);
       setLinks(live.body.links);
+      setLinksAbove(live.body.inherited ?? []);
       setLoadError(null);
     } catch {
       if (read === reads.current) setLoadError('Couldn’t load who has access. Close and open Share to try again.');
@@ -321,6 +386,11 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
 
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} title={title} description={description}>
+      <p className="text-xs text-ink-muted">
+        {lead}
+        {named ? <>{' '}<span className="inline-block max-w-full truncate align-bottom text-ink-default">“{named}”</span></> : null}
+        {' '}{rest}
+      </p>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Invite people</span>
         <form aria-label="Share with a person" onSubmit={share} className={`${CARD} space-y-3`}>
@@ -356,13 +426,11 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
             <ul aria-label="People with access" className="space-y-2">
               {members.map((member, index) => (
                 <li key={member.principalId} className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm text-ink-default">
-                      {member.name}
-                      {member.principalType === 'agent' ? <span className="ml-1.5 text-xs text-ink-faint">agent</span> : null}
-                    </p>
-                    {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
-                  </div>
+                  <Identity member={member}>
+                    {member.also ? (
+                      <p className="text-micro text-ink-faint">Also “{ACCESS_LABEL[member.also.role]}” from {placeRef(member.also.place, target)}</p>
+                    ) : null}
+                  </Identity>
                   {/* The API lists the vault's owner first; they hold no grant, so their access cannot change. */}
                   {index === 0 ? (
                     <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
@@ -406,12 +474,38 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
               An invite link works only for someone signed in with the email it names. Copy it and send it to them.
             </p>
           ) : null}
+          {/* Who reaches it from above, read-only; their access changes in that place's own dialog. */}
+          {!loadError && members !== null ? inherited.map((group) => {
+            const heading = `From ${placeRef(group.place, target)}`;
+            return (
+              <div key={group.place?.id ?? 'above'} className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="truncate text-micro text-ink-faint">{heading}</p>
+                  {group.place ? <ManageButton place={group.place} disabled={pending} /> : null}
+                </div>
+                <ul aria-label={heading} className="space-y-2">
+                  {group.members.map((member) => (
+                    <li key={member.principalId} className="flex items-center justify-between gap-3">
+                      <Identity member={member} />
+                      <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          }) : null}
         </div>
         <StatusLine status={status} where="members" />
       </div>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Share links</span>
         <div className={`${CARD} space-y-3`}>
+          {linksAbove.map(({ place, role }) => (
+            <div key={place.id} className="flex items-center justify-between gap-3">
+              <p className="min-w-0 text-xs text-ink-muted">Anyone with the link to {placeName(place)} {LINK_ALLOWS[role]} {thisTarget(target)}.</p>
+              <ManageButton place={place} disabled={pending} />
+            </div>
+          ))}
           <p className="text-xs text-ink-muted">Anyone with a link can open this. Without signing in they can only view it.</p>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <AccessChoice label="Link access" roles={LINK_ROLES} value={linkAccess} onChange={setLinkAccess} disabled={pending} />
