@@ -4,8 +4,8 @@
 // than polled. A notice opens its item in place through navigation.ts and is marked read with keepalive.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Bell } from 'lucide-react';
-import { useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { InboxItem, UnreadBadge } from '../../../../../packages/ui/src/InboxItem.tsx';
+import { useEffect, useState, useRef, useSyncExternalStore, type ReactNode } from 'react';
+import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
@@ -43,7 +43,10 @@ export function noticeText(notice: Notice): string {
   return kind === 'doc' ? `${notice.by} shared “${title}” with you` : `${notice.by} shared the ${kind} “${title}” with you`;
 }
 
+export function openNotifications(): void { window.dispatchEvent(new Event('moss:open-notifications')); }
 export function NotificationsBell(): ReactNode {
+  const [shown, setShown] = useState(false);
+  useEffect(() => { const show = () => setShown(true); window.addEventListener('moss:open-notifications', show); return () => window.removeEventListener('moss:open-notifications', show); }, []);
   const auth = useAuthState();
   const notices = useSyncExternalStore(inbox.subscribe, inbox.get, () => EMPTY);
   // A notice that navigates keeps focus from returning to the bell, where a typed Space or Enter would reopen it.
@@ -59,16 +62,16 @@ export function NotificationsBell(): ReactNode {
   };
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={shown} onOpenChange={setShown}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           data-collab-chrome=""
           aria-label={unread.length ? `Notifications, ${unread.length} unread` : 'Notifications'}
-          className="relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+          className={unread.length || shown ? "relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none" : "hidden"}
         >
-          <Bell aria-hidden className="h-3.5 w-3.5" />
-          <UnreadBadge count={unread.length} />
+          <Bell aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+          
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -81,7 +84,7 @@ export function NotificationsBell(): ReactNode {
         }}
       >
         <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2">
-          <span className="text-xs font-medium text-ink-default">Notifications</span>
+          <span className="text-xs font-medium text-ink-default">Notifications{unread.length ? ` · ${unread.length} unread` : ''}</span>
           {unread.length > 0 ? (
             <button type="button" onClick={() => inbox.markRead(unread.map((n) => n.id))} className="text-xs text-ink-muted transition-colors hover:text-ink-default">
               Mark all read

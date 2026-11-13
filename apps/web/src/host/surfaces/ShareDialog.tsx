@@ -84,30 +84,10 @@ const CARD = 'rounded-lg border border-border-subtle bg-surface-raised-card p-3'
 function AccessChoice<R extends Role>({ label, roles, value, onChange, disabled }: {
   label: string; roles: readonly R[]; value: R; onChange: (role: R) => void; disabled: boolean;
 }): ReactNode {
-  return (
-    <div role="radiogroup" aria-label={label} className="inline-flex flex-wrap items-center gap-0.5 rounded-lg bg-surface-raised-control p-0.5">
-      {roles.map((role) => {
-        const selected = role === value;
-        return (
-          <button
-            key={role}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            disabled={disabled}
-            onClick={() => onChange(role)}
-            className={
-              selected
-                ? 'inline-flex h-6 items-center rounded-md bg-surface-raised-card px-3 text-xs font-medium leading-none text-ink-default shadow-sm ring-1 ring-border-strong/40 transition-colors focus-visible:outline-none focus-visible:ring-ink-default/15'
-                : 'inline-flex h-6 items-center rounded-md px-3 text-xs font-medium leading-none text-ink-faint transition-colors hover:bg-surface-raised-control/50 hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15'
-            }
-          >
-            {ACCESS_LABEL[role]}
-          </button>
-        );
-      })}
-    </div>
-  );
+  return <select aria-label={label} value={value} disabled={disabled} onChange={event => onChange(event.target.value as R)}
+    className="h-7 rounded-md border border-border-default bg-surface-raised-card px-1.5 text-xs text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60">
+    {roles.map(role => <option key={role} value={role}>{ACCESS_LABEL[role]}</option>)}
+  </select>;
 }
 
 function StatusLine({ status, where }: { status: Status; where: Where }): ReactNode {
@@ -226,7 +206,7 @@ function Identity({ member, children }: { member: Member; children?: ReactNode }
         {member.name}
         {member.principalType === 'agent' ? <span className="ml-1.5 text-xs text-ink-faint">agent</span> : null}
       </p>
-      {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
+      {member.email ? <p className="truncate text-xs text-ink-muted">{member.email}</p> : null}
       {children}
     </div>
   );
@@ -406,7 +386,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <AccessChoice label="Access" roles={SHARE_ROLES} value={access} onChange={setAccess} disabled={pending} />
-            <Button type="submit" size="sm" disabled={pending}>
+            <Button type="submit" size="sm" variant="secondary" disabled={pending}>
               Share
             </Button>
           </div>
@@ -445,7 +425,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                 <li key={`invite:${invite.email}`} className="space-y-1.5">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
+                      <p className="truncate text-xs text-ink-muted">{invite.email}</p>
                       <p className="text-micro text-ink-faint">Invited</p>
                     </div>
                     <AccessControls who={invite.email} role={invite.role} disabled={pending}

@@ -343,7 +343,7 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
   const [list, setList] = useState<Loaded<VersionMeta[]>>({ state: 'loading' });
   const [listRound, setListRound] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [mode, setMode] = useState<'diff' | 'view'>('diff');
+  const [mode, setMode] = useState<'diff' | 'view'>('view');
   const [texts, setTexts] = useState<Record<string, Loaded<VersionText>>>({});
   const [textRound, setTextRound] = useState(0);
   const [current, setCurrent] = useState<Loaded<string>>({ state: 'loading' });

@@ -1,3 +1,4 @@
+import { CloudOff, Loader2 } from 'lucide-react';
 import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
@@ -37,9 +38,8 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
   const connection = terminal ? 'offline' : (view?.connection ?? 'reconnecting');
   const label = terminal ? 'Disconnected' : connection === 'online' ? 'Connected' : connection === 'offline' ? 'Offline' : 'Connecting…';
   return <span data-collab-chrome="" {...{ [CONNECTION_ATTR]: connection }} title={label} aria-label={label}
-    className="flex shrink-0 items-center gap-1.5 rounded-full border border-border-subtle px-2 py-0.5 text-micro text-ink-muted">
-    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${connection === 'online' ? 'bg-highlight-chalk-green' : 'bg-accent-terracotta'}`} />
-    <span className="hidden sm:inline">{label}</span>
+    className={connection === 'online' ? 'sr-only' : 'flex h-7 w-7 shrink-0 items-center justify-center text-ink-faint'}>
+    {connection === 'online' ? label : connection === 'offline' ? <CloudOff className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden /> : <Loader2 className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />}
   </span>;
 }
 

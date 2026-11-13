@@ -30,11 +30,13 @@ export function SignInToDoMore(): ReactNode {
     <button
       type="button"
       data-collab-chrome=""
+      aria-label="Sign in"
+      title="Sign in"
       onClick={() => leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(here)}`)}
       className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs font-medium text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
     >
       <LogIn aria-hidden className="h-3.5 w-3.5" />
-      Sign in to do more
+      <span className="hidden sm:inline">Sign in</span>
     </button>
   );
 }

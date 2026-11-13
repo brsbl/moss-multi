@@ -129,7 +129,7 @@ async function call(url: string, body?: unknown): Promise<{ ok: boolean; status:
 // One loader for every panel: the preview budget is the reader's, across notes.
 const previews = createPreviewLoader((docId, id) => call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(id)}/preview`));
 
-const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
+const BADGE = 'inline-flex items-center rounded px-1.5 py-0.5 text-micro';
 
 function SuggestionCard({ docId, record, me, role, active, root, opened, body }: {
   docId: string;
@@ -359,7 +359,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
   // Shown once the note has any suggestion, open or reviewed, as Moss shows its Comments button (comment-entry-point).
-  if (role === null || records.length === 0) return null;
+  if (role === null) return null;
   const reviewing = mode === 'review';
   return (
     <TooltipProvider>
@@ -374,10 +374,10 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
                 aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
                 aria-haspopup="dialog"
                 aria-expanded={isOpen}
-                className={`relative ${open.length ? 'flex' : 'hidden sm:flex'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
+                className={`relative ${open.length || isOpen ? 'flex' : 'hidden'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
               >
-                <PencilLine aria-hidden className="h-3.5 w-3.5" />
-                {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
+                <PencilLine aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <span className="sr-only">{open.length} open</span>
               </button>
             </Popover.Trigger>
           </TooltipTrigger>
@@ -413,7 +413,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
                     closePanel(docId);
                   }}
                 >
-                  Review
+                  {reviewing ? 'Done reviewing' : 'Review changes…'}
                 </button>
               ) : null}
             </div>
