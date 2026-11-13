@@ -5,6 +5,7 @@ import { expect, test, ui } from '../lib/test.ts';
 import { grantDoc } from '../lib/grants.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { arrowBelow } from '../lib/arrow-below.ts';
+import { firstClick, slashTable, type ClickPace } from '../lib/first-click.ts';
 
 const fixture = 'Shared paragraph.\n\n| Original | Value |\n| --- | --- |\n| cell | 1 |\n\n:::tabs\n=== First\nFirst panel\n=== Second\nSecond panel\n:::\n\n## Fold me\n\nHidden paragraph.\n\n{{timeline|6 weeks}}';
 async function setup(actors: Actors, baseUrl: string, markdown = fixture) {
@@ -507,5 +508,38 @@ test('j01 editing: typing after arrowing below a note\'s last block lands in a p
     // The exporter spaces a tab group's closing fence from what follows with one more blank line.
     const after = await exported(ada, id);
     expect(after.startsWith(before.trimEnd()) && after.slice(before.trimEnd().length).trim(), `${name}: the note keeps the block and gains the paragraph`).toBe('hello');
+  }
+});
+
+test('j01 editing: the first click into a table just inserted from the slash menu puts the typing in the clicked cell @p:col-1', async ({ actors, stack }) => {
+  // T9.21: in a new note, the first click into a fresh table left the caret where the insert put it.
+  actors.solo('caret and clicks in one editor; no peer is involved');
+  const ada = await actors.session(await actors.principal('ada'));
+  await ada.goto('/');
+  for (const note of ['new', 'existing'] as const) {
+    for (const pace of ['quick', 'paced'] as ClickPace[]) {
+      let id: string;
+      if (note === 'new') {
+        id = await ui.newNote(ada, { onlyPane: true });
+        await ui.waitLive(ada, id);
+        await expect(ui.title(ada, id), '"+ Note" focuses the title').toBeFocused();
+      } else {
+        const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Budget', markdown: 'Budget notes.\n\nSecond line.' } });
+        expect(created.status()).toBe(201);
+        ({ doc: { id } } = await created.json() as { doc: { id: string } });
+        await ada.goto(`/d/${id}`);
+        await ui.waitLive(ada, id);
+        await ui.body(ada, id).locator('p').filter({ hasText: /^Budget notes/ }).click();
+      }
+      await ada.page.keyboard.press('End');
+      await ada.page.keyboard.press('Enter');
+      const root = ui.body(ada, id);
+      const table = await slashTable(ada.page, root);
+      const result = await firstClick(ada.page, root, table, [1, 0], pace, 'x');
+      expect(result.inserted, `${note} note: the insert leaves the caret in the last cell, as moss does`).toEqual([2, 2]);
+      expect(result.cells[0][0], `${note} note: the first header cell reads "Header"`).toBe('Header');
+      expect(result.landed, `${note} note, ${pace} click: the typing lands in the clicked cell`).toEqual([1, 0]);
+      await ui.waitAcked(ada, id);
+    }
   }
 });
