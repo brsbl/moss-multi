@@ -426,11 +426,33 @@ async function caretNote(actors: Actors, baseUrl: string) {
   return { ada, ben, id };
 }
 
-/** Puts the caret `back` characters before the end of the block that reads `text`. */
-async function park(actor: Actor, id: string, text: string, back: number) {
-  await ui.body(actor, id).getByText(text, { exact: true }).first().click();
-  await actor.page.keyboard.press('End');
-  for (let i = 0; i < back; i += 1) await actor.page.keyboard.press('ArrowLeft');
+/**
+ * Selects from `back` characters before the end of the block that reads `text` to `to` characters before it (a caret
+ * when `to` is omitted), as a click and arrow keys would, through the DOM selection the editor follows.
+ */
+async function park(actor: Actor, id: string, text: string, back: number, to = back) {
+  const block = ui.body(actor, id).locator('p, li, h1, h2, h3, h4').filter({ hasText: text }).last();
+  await block.click();
+  await block.evaluate((element, [from, end]) => {
+    const texts: Text[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node as Text);
+    const total = texts.reduce((sum, node) => sum + node.length, 0);
+    const at = (offset: number): [Text, number] => {
+      let rest = total - offset;
+      for (const node of texts) {
+        if (rest <= node.length) return [node, rest];
+        rest -= node.length;
+      }
+      return [texts[texts.length - 1], texts[texts.length - 1].length];
+    };
+    const [anchor, anchorOffset] = at(from);
+    const [focus, focusOffset] = at(end);
+    window.getSelection()?.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+  }, [back, to]);
+  await expect.poll(() => actor.page.evaluate(() => window.getSelection()?.toString().length ?? -1), { message: `${actor.label}: the selection is set` })
+    .toBe(Math.abs(back - to));
+  await actor.page.waitForTimeout(150); // the editor reads the DOM selection on selectionchange
 }
 
 async function converged(ada: Actor, ben: Actor, id: string) {
@@ -533,8 +555,7 @@ test("j01 caret: a peer's bold and Backspace-merge keep the waiting caret as bef
   const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
   await park(ben, id, TARGET, 7);
   // Ada bolds "paragraph", before Ben's caret in the same text.
-  await park(ada, id, TARGET, 17);
-  for (let i = 0; i < 'paragraph'.length; i += 1) await ada.page.keyboard.press('Shift+ArrowLeft');
+  await park(ada, id, TARGET, 26, 17);
   await ada.page.keyboard.press('ControlOrMeta+b');
   await expect(ui.body(ben, id).getByText('paragraph', { exact: true }), "Ada's bold reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
   await ben.page.keyboard.type('X');
@@ -542,8 +563,7 @@ test("j01 caret: a peer's bold and Backspace-merge keep the waiting caret as bef
   expect(await ui.fieldText(ben, id, 'body'), "after a peer's bold").toContain('Target paragraph where BenX waits.');
 
   // Ada presses Backspace at the start of Ben's paragraph, merging it into the one above.
-  await ui.body(ada, id).getByText('Target', { exact: false }).first().click();
-  await ada.page.keyboard.press('Home');
+  await park(ada, id, 'Target paragraph where BenX waits.', 34);
   await ada.page.keyboard.press('Backspace');
   await expect(ui.body(ben, id).locator('p').first(), "Ada's merge reaches Ben").toContainText('stays put.Target', { timeout: PEER_TIMEOUT });
   await ben.page.keyboard.type('Y');
