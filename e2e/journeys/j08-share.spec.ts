@@ -395,6 +395,88 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect((await stranger.context.request.get(`/api/docs/${docId}/links?share=${token}`)).status()).toBe(404);
 });
 
+test('j08 inherited: a note\'s Share dialog names it and lists who reaches it from its folder and vault, and a note-only co-owner learns no place @p:ppl-2@2 @evidence', async ({ actors, stack }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.session(adaPrincipal);
+  const headers = { origin: stack.baseUrl };
+  // Declared setup over the API: a folder in Ada's vault holding a note, Ben at comment on the folder, Cy co-owner of
+  // the vault, Dee owner of the note alone, and a view link to the folder.
+  const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  const folderName = `Trip docs ${randomBytes(2).toString('hex')}`;
+  const made = await ada.context.request.post('/api/folders', { headers, data: { name: folderName, parentId: vault.id } });
+  expect(made.status(), 'declared setup: a folder').toBe(201);
+  const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  const note = await ada.context.request.post('/api/docs', { headers, data: { folderId, title: 'Packing list' } });
+  expect(note.status(), 'declared setup: a note in the folder').toBe(201);
+  const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
+  const [benPrincipal, cyPrincipal, deePrincipal] = [await actors.principal('ben'), await actors.principal('cy'), await actors.principal('dee')];
+  await grant(ada, { folderId }, benPrincipal, 'commenter');
+  await grant(ada, { folderId: vault.id }, cyPrincipal, 'owner');
+  await grant(ada, { docId }, deePrincipal, 'owner');
+  const linked = await ada.context.request.post(`/api/folders/${folderId}/links`, { headers, data: { role: 'viewer' } });
+  expect(linked.status(), 'declared setup: a view link to the folder').toBe(201);
+  const { token } = ((await linked.json()) as { link: { token: string } }).link;
+
+  await ada.goto(`/d/${docId}`);
+  await ui.waitOpen(ada, docId, 'live');
+  const dialog = await ui.openShare(ada, docId);
+  const firstLine = 'Share “Packing list” with people by email, with one of your agents by its ID, or with anyone who has a link.';
+  await expect(dialog.getByText(firstLine, { exact: true }).filter({ visible: true }), 'the dialog names the note in its first line').toHaveCount(1);
+  const fromFolder = dialog.getByRole('list', { name: `From folder “${folderName}”`, exact: true });
+  await expect(fromFolder.getByRole('listitem').filter({ hasText: benPrincipal.name }), 'Ben, from the folder, at comment').toContainText('Can comment');
+  const fromVault = dialog.getByRole('list', { name: 'From vault “Home”', exact: true });
+  await expect(fromVault.getByRole('listitem').filter({ hasText: cyPrincipal.name }), 'Cy, from the vault, as owner').toContainText('Owner');
+  await expect(fromFolder.getByRole('combobox'), 'inherited rows are read-only').toHaveCount(0);
+  await expect(dialog.getByText(`Anyone with the link to folder “${folderName}” can view this note.`, { exact: true }), "the folder's link reaches the note")
+    .toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'Can view link', exact: true }), 'no folder link address is shown').toHaveCount(0);
+  await actors.checkpoint('inherited-listed');
+  await dialog.getByRole('button', { name: `Manage folder “${folderName}”`, exact: true }).first().click();
+  const folderDialog = ada.page.getByRole('dialog', { name: 'Share folder' });
+  await expect(folderDialog, "Manage opens the folder's dialog").toBeVisible();
+  await expect(folderDialog.getByRole('list', { name: 'From vault “Home”', exact: true }).getByRole('listitem').filter({ hasText: cyPrincipal.name }),
+    'the folder dialog lists who reaches it from the vault').toContainText('Owner');
+  await ada.page.keyboard.press('Escape');
+  await expect(folderDialog).toBeHidden();
+
+  // Dee owns the note but neither the folder nor the vault: people and roles, no place, no Manage, no link.
+  const dee = await actors.open(deePrincipal, { path: `/d/${docId}` });
+  await ui.waitOpen(dee, docId, 'live');
+  const deeDialog = await ui.openShare(dee, docId);
+  const above = deeDialog.getByRole('list', { name: 'From a folder above this note', exact: true });
+  await expect(above.getByRole('listitem').filter({ hasText: benPrincipal.name })).toContainText('Can comment');
+  await expect(above.getByRole('listitem').filter({ hasText: cyPrincipal.name })).toContainText('Owner');
+  await expect(deeDialog, 'no folder or vault name').not.toContainText(folderName);
+  await expect(deeDialog).not.toContainText('From vault');
+  await expect(deeDialog.getByRole('button', { name: /^Manage/ }), 'nothing to manage').toHaveCount(0);
+  await expect(deeDialog, 'no link line').not.toContainText('Anyone with the link to');
+  for (const path of [`/api/docs/${docId}/members`, `/api/docs/${docId}/links`]) {
+    const text = await (await dee.context.request.get(path)).text();
+    for (const secret of [folderId, vault.id, folderName, benPrincipal.email, cyPrincipal.email, token]) expect(text, `${path} names no place above`).not.toContain(secret);
+  }
+  await dee.page.keyboard.press('Escape');
+
+  // A viewer, a commenter or a link visitor learns nothing new.
+  const ben = await actors.session(benPrincipal);
+  const asMember = await ben.context.request.get(`/api/docs/${docId}/members`);
+  expect(asMember.status()).toBe(200);
+  expect(Object.keys((await asMember.json()) as object), 'a commenter gets the member list alone').toEqual(['members']);
+  expect((await ben.context.request.get(`/api/docs/${docId}/links`)).status()).toBe(403);
+  for (const path of [`/api/docs/${docId}/members?share=${token}`, `/api/docs/${docId}/links?share=${token}`]) {
+    const asLink = await fetch(`${stack.baseUrl}${path}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+    expect(asLink.status, `a link visitor gets nothing from ${path}`).toBe(404);
+  }
+
+  // Moved out of the folder, the folder's people and link no longer reach the note.
+  const moved = await ada.context.request.patch(`/api/docs/${docId}`, { headers: { ...headers, 'content-type': 'application/json' }, data: { folderId: vault.id } });
+  expect(moved.status(), 'the note moves to the top of the vault').toBe(200);
+  const after = await ui.openShare(ada, docId);
+  await expect(after.getByRole('list', { name: 'From vault “Home”', exact: true }).getByRole('listitem').filter({ hasText: cyPrincipal.name })).toContainText('Owner');
+  await expect(after.getByRole('list', { name: `From folder “${folderName}”`, exact: true })).toHaveCount(0);
+  await expect(after).not.toContainText(benPrincipal.name);
+  await expect(after).not.toContainText('Anyone with the link to');
+});
+
 // T2.6: one capability helper gates every moss menu and control on the caller's role (A§8 capabilities).
 const RANK_FIXTURE = 'Ranked paragraph.\n\n- [ ] ranked task\n\n```js\nconst ranked = 1;\n```\n\n<blockquote class="html-block">\n<p>ranked html</p>\n</blockquote>\n\nRanked end.';
 const MUTATING = ['Rename', 'Duplicate', 'Trash', 'Pin', 'Unpin'];
