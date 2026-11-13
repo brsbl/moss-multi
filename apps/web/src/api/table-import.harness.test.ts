@@ -77,7 +77,7 @@ describe('table imports', () => {
       const text = await response.clone().text();
       expect(response.status, `${Math.round(performance.now() - started)} ms: ${text.slice(0, 500)}`).toBe(413);
       expect(response.headers.get('content-type')).toContain('application/json');
-      expect(JSON.parse(text)).toEqual({ error: 'doc-cap' });
+      expect(JSON.parse(text)).toMatchObject({ error: 'doc-cap', limit: 'structure' });
       expect(await rows(), 'the provisional row is removed').toBe(before);
     });
 

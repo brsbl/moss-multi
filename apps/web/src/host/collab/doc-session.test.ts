@@ -537,3 +537,28 @@ it('counts payloads as the DocDO\'s total plus unacked local growth: a paste tha
   expect(countedPayloadBytes(session.doc), 'neither lost nor double-counted').toBe(acked);
   expect(pasteFits(session.doc, PASTE_LIMIT_BYTES - note - acked - 1_000, 1_000)).toBe(true);
 });
+it('a doc-cap refusal says which limit it met: the text limit, the structure limit, or the bytes notice as before (T3.B31c)', async () => {
+  const { refusalMessage } = await import('../refusal.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap', limit: 'text' });
+  expect(refusalMessage()).toBe('This note has reached its size limit (1.02 million characters).');
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+  expect(refusalMessage()).toBe('This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.');
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap' });
+  expect(refusalMessage()).toBe('This note is at its size limit, so your last change was not saved.');
+});
+it('a paste is refused whole before it applies when it would take the note past 1,020,000 characters or 180,000 structs, counting the payloads the tab holds; one just under lands (T3.B31c)', async () => {
+  const { pasteFits } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  // 900,000 characters in the body and 100,000 in a code block the tree names.
+  session.doc.get('root', Y.XmlText).insert(0, 'a'.repeat(900_000));
+  nameInTree('code');
+  session.payloads.hold('code', true).getText('payload').insert(0, 'c'.repeat(100_000));
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 20_000, structs: 10 }), 'up to the text cap fits').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 20_001, structs: 10 }), 'one character past it is refused').toBe(false);
+  const structs = [...session.doc.store.clients.values(), ...[...session.payloads.docs.values()].flatMap((doc) => [...doc.store.clients.values()])]
+    .reduce((sum, list) => sum + list.length, 0);
+  // A paste's own batches may split up to 256 structs its replay does not.
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 180_000 - structs - 256 }), 'up to the structure cap fits').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 180_000 - structs - 255 }), 'past it is refused').toBe(false);
+});
