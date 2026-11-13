@@ -189,6 +189,8 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   const cy = await actors.open(await actors.principal('cy'), { path: ui.pathOf(url) });
   cy.expectHttp(403, /^\/api\/invites\/[0-9a-f]+\/accept$/);
   await expect(cy.page.getByRole('heading', { name: 'This invite is for another email' })).toBeVisible();
+  await expect(cy.page.getByText('Sign in with the email it is for, or ask the person who shared it for a new link.'), 'nothing was sent').toBeVisible();
+  await expect(cy.page.locator('main'), 'so nothing says it was').not.toContainText('sent to');
   await actors.checkpoint('invite-other-email');
   // Switching accounts from there, in a second browser of Cy's, ends that session and comes back to this invite.
   const cy2 = await actors.sameAs(cy, { path: ui.pathOf(url) });
@@ -202,7 +204,11 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
 
   const visitor = await actors.anonymous(ui.pathOf(url), { label: 'guest' });
   await expect(visitor.page, 'signed out, the link asks for an account').toHaveURL(/\/login\?next=/);
-  await ui.waitForLoginCard(visitor);
+  await ui.waitForLoginCard(visitor); // on Sign in: an account holder is never sent into sign-up
+  const card = visitor.page.locator('[data-login-card]');
+  await expect(card.getByText(/^You.ve been invited\. Sign in or create an account with the email address this invite is for\./), 'the card says it is an invite').toBeVisible();
+  await expect(card, 'and never names the invited email').not.toContainText(guest.email);
+  await expect(card.getByRole('button', { name: /^Back to the/ }), 'an invite is not a share link').toHaveCount(0);
   await ui.signUpThroughCard(visitor, guest);
   await expect(visitor.page, 'after sign-up the guest lands on the note').toHaveURL(new RegExp(`/d/${target}$`), { timeout: 30_000 });
   const who = await visitor.context.request.get(new URL('/api/me', stack.baseUrl).href);

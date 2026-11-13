@@ -131,6 +131,13 @@ for (const size of TIER_A) {
     await stranger.page.waitForURL((at) => at.pathname === '/login' && at.searchParams.get('next') === link);
     await ui.waitForLoginCard(stranger);
     await expectReachable(stranger, 'the login card');
+    // The card offers the way back to the note, built from next.
+    await stranger.page.getByRole('button', { name: 'Back to the note', exact: true }).click();
+    await stranger.page.waitForURL((at) => `${at.pathname}${at.search}` === link, { timeout: BOOT_TIMEOUT });
+    await ui.waitOpen(stranger, docId, 'readonly');
+    await signIn.click();
+    await stranger.page.waitForURL((at) => at.pathname === '/login' && at.searchParams.get('next') === link);
+    await ui.waitForLoginCard(stranger);
     const newcomer: Principal = actors.credentials('dee');
     await ui.signUpThroughCard(stranger, newcomer);
     await stranger.page.waitForURL((at) => `${at.pathname}${at.search}` === link, { timeout: BOOT_TIMEOUT });

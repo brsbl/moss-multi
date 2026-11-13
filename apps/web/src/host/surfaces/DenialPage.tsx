@@ -73,7 +73,7 @@ export function InviteForAnotherEmail(): ReactNode {
     <main className="flex h-full min-h-screen w-full items-center justify-center bg-surface-panel px-6">
       <div className="flex max-w-sm flex-col items-center gap-1.5 text-center">
         <h1 className="text-sm font-medium text-ink-default">This invite is for another email</h1>
-        <p className="text-xs text-ink-muted">Sign in with the email it was sent to, or ask the person who shared it for a new link.</p>
+        <p className="text-xs text-ink-muted">Sign in with the email it is for, or ask the person who shared it for a new link.</p>
         <div className="flex items-center gap-2">
           <button type="button" className={ACTION} disabled={leaving} onClick={() => void switchAccount()}>
             Sign in with another email
