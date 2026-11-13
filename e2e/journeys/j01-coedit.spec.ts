@@ -453,6 +453,7 @@ async function park(actor: Actor, id: string, text: string, back: number, to = b
   await expect.poll(() => actor.page.evaluate(() => window.getSelection()?.toString().length ?? -1), { message: `${actor.label}: the selection is set` })
     .toBe(Math.abs(back - to));
   await actor.page.waitForTimeout(150); // the editor reads the DOM selection on selectionchange
+  await actor.page.mouse.move(0, 0); // no hover control (a table's resize handle) stays up
 }
 
 async function converged(ada: Actor, ben: Actor, id: string) {
@@ -552,21 +553,22 @@ test('j01 caret: Ben types on, a key at a time, while Ada makes his paragraph a 
 });
 
 test("j01 caret: a peer's bold and Backspace-merge keep the waiting caret as before @p:col-1", async ({ actors, stack }) => {
+  // The controls the defect was reported against: Ben's caret at the end of his paragraph.
   const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
-  await park(ben, id, TARGET, 7);
+  await park(ben, id, TARGET, 0);
   // Ada bolds "paragraph", before Ben's caret in the same text.
   await park(ada, id, TARGET, 26, 17);
   await ada.page.keyboard.press('ControlOrMeta+b');
   await expect(ui.body(ben, id).getByText('paragraph', { exact: true }), "Ada's bold reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
   await ben.page.keyboard.type('X');
   await converged(ada, ben, id);
-  expect(await ui.fieldText(ben, id, 'body'), "after a peer's bold").toContain('Target paragraph where BenX waits.');
+  expect(await ui.fieldText(ben, id, 'body'), "after a peer's bold").toContain('Target paragraph where Ben waits.X');
 
   // Ada presses Backspace at the start of Ben's paragraph, merging it into the one above.
-  await park(ada, id, 'Target paragraph where BenX waits.', 34);
+  await park(ada, id, 'Target paragraph where Ben waits.X', 34);
   await ada.page.keyboard.press('Backspace');
   await expect(ui.body(ben, id).locator('p').first(), "Ada's merge reaches Ben").toContainText('stays put.Target', { timeout: PEER_TIMEOUT });
   await ben.page.keyboard.type('Y');
   await converged(ada, ben, id);
-  await expect(ui.body(ben, id).locator('p').first(), 'after a peer merge').toHaveText(`${PREVIOUS}Target paragraph where BenXY waits.`);
+  await expect(ui.body(ben, id).locator('p').first(), 'after a peer merge').toHaveText(`${PREVIOUS}Target paragraph where Ben waits.XY`);
 });
