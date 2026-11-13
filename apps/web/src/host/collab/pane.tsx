@@ -49,6 +49,7 @@ import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
+import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
 
 interface PaneState {
   docState: DocState;
@@ -618,7 +619,8 @@ export interface MossMultiPane {
   /** The History view, which occupies the pane in place of the editor canvas while it is open (A§14). */
   history: ReactNode;
   noticeBand: ReactNode;
-  /** Moss's bottom band where the docked toolbar was (T9.1); the Trash notice takes the slot when it shows. */
+  /** Moss's bottom band where the docked toolbar was: the Trash notice, else a reader's role band (T9.10), else Review's
+   * band (T9.1). The last two never show together: Review's band is for those who can suggest. */
   bottomBand: ReactNode;
   readOnly: boolean;
 }
@@ -652,6 +654,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   useLayoutEffect(() => { binding?.trash(trashed); }, [binding, trashed]);
   useEffect(() => binding?.watchModes(), [binding]);
   useLayoutEffect(() => binding?.setRole(role), [binding, role]);
+  useEffect(() => watchRefusedTyping(), []);
   const state = usePaneState(binding);
   if (state.bodyVisible) synced.current.synced = true;
   const terminal = useTerminal(docId);
@@ -691,7 +694,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
     bound: true,
     readOnly: !live,
     noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
-    bottomBand: docId && !historyOpen ? <ReviewBand docId={docId} /> : null,
+    bottomBand: docId && !historyOpen ? <><RoleBand docId={docId} /><ReviewBand docId={docId} /></> : null,
     collaboration,
     bodyLive: live,
     bodyVisible: state.bodyVisible,

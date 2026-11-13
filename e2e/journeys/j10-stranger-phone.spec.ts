@@ -5,7 +5,7 @@
 // and every chrome menu at 390 px and finds every control reachable.
 import { randomBytes } from 'node:crypto';
 import type { Actor, Viewport } from '../lib/actors.ts';
-import { APP_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR } from '../lib/contract.ts';
+import { APP_STATE_ATTR, EDITOR_PANE_ATTR, ROLE_ATTR, ROLE_BAND_ATTR } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { layoutFit, unreachableControls } from '../lib/reach.js';
@@ -104,6 +104,16 @@ for (const size of TIER_A) {
     await expectReachable(stranger, 'alone');
     const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
     await expect(signIn, 'the stranger is offered sign-in, label and all').toBeVisible();
+    await expect(signIn, 'exactly once at this width (T9.10)').toHaveCount(1);
+    // T9.10: the band says the link is view only; below 640 px it holds the sign-in, which the top bar then drops.
+    const band = ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`);
+    await expect(band, 'the band shows when the note opens').toBeVisible();
+    await expect(band).toContainText('View only.');
+    if (size.width < 640) await expect(band.getByRole('button', { name: 'Sign in to do more', exact: true }), 'the band holds the sign-in').toBeVisible();
+    else {
+      await expect(band.getByText("You can't edit this note."), 'the band says why').toBeVisible();
+      await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in to do more', exact: true }), 'the top bar keeps the sign-in').toBeVisible();
+    }
     await actors.checkpoint(`${size.name}-stranger-alone`);
     await searchesTheNote(stranger, docId, size);
 

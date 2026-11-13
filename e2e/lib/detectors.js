@@ -23,8 +23,8 @@ export function floatingOverCanvas({ names }) {
   const describe = (el) =>
     `<${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${[...el.attributes].filter((a) => a.name !== 'style').map((a) => ` ${a.name}${a.value ? `="${a.value.slice(0, 40)}"` : ''}`).join('')}> "${(el.textContent ?? '').trim().slice(0, 40)}"`;
   // moss's own floating chrome: its selection and bottom toolbars, and its bottom band (the Trash view's retention
-  // notice, and the Review band in its place), and its feedback pill.
-  const allowed = [names.overlay, names.toolbar, names.retentionNotice, names.reviewBand, names.actionFeedback, ...names.remote].map((name) => `[${name}]`).join(', ');
+  // notice, and the role and Review bands in its place), and its feedback pill.
+  const allowed = [names.overlay, names.toolbar, names.retentionNotice, names.roleBand, names.reviewBand, names.actionFeedback, ...names.remote].map((name) => `[${name}]`).join(', ');
   const found = new Set();
   for (const canvas of document.querySelectorAll(`[${names.canvas}]`)) {
     const r = canvas.getBoundingClientRect();
