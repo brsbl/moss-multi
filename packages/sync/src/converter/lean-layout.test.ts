@@ -12,6 +12,7 @@ import { flatList, shortParagraphs, table } from '../../../../e2e/lib/large-note
 import { structsPerBlock } from '../../measure/structs-per-block.ts';
 import * as v1 from '../../test/fixtures/lexical-yjs-v1/index.mjs';
 import { excludedPropertiesFor } from '../excluded-properties.ts';
+import { keepLeanDefault } from '../lean-defaults.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
 import { exportDocMarkdown, importBody, seedEmptyParagraph } from '../server-doc.ts';
@@ -241,7 +242,11 @@ describe('T3.B31b back to a default @p:col-1', () => {
     const seed = serverWritten('Plain words.');
     const a = peer('lean', seed);
     const b = peer('v1', seed);
-    const undo = new Y.UndoManager(a.binding.root.getSharedType(), { trackedOrigins: new Set([a.binding as Binding]), captureTimeout: 0 });
+    const undo = new Y.UndoManager(a.binding.root.getSharedType(), {
+      trackedOrigins: new Set([a.binding as Binding]), captureTimeout: 0,
+      // As the body's undo does for a key's first write (apps/web undo.ts): the default stays stored in its place.
+      deleteFilter: item => { keepLeanDefault(a.binding, item); return true; },
+    });
     const check = async (format: number, stored: number | undefined, step: string) => {
       await sync(a, b);
       expect(textOf(a), `${step}: the run`).toEqual({ format, style: '' });

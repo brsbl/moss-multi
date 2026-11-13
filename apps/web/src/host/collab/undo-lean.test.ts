@@ -19,6 +19,7 @@ const provider = {
   connect: noop, disconnect: noop, on: noop, off: noop,
 } as unknown as Provider;
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+type Nodes = { paragraph: { format: number; indent: number }; text: { format: number; style: string; mode: number } };
 
 function peer(layout: keyof typeof LAYOUTS, seed?: Y.Doc) {
   const yjs = LAYOUTS[layout];
@@ -38,7 +39,7 @@ function peer(layout: keyof typeof LAYOUTS, seed?: Y.Doc) {
   const undo = createBindingUndoManager(binding);
   const step = (fn: () => void) => { editor.update(fn, { discrete: true }); undo.stopCapturing(); };
   /** The paragraph and its text run as the node holds them, not as an export would round them. */
-  const nodes = () => editor.read(() => {
+  const nodes = (): Nodes => editor.read(() => {
     const paragraph = $getRoot().getFirstChild() as ElementNode; const text = paragraph.getFirstChild() as TextNode;
     return { paragraph: { format: paragraph.__format, indent: paragraph.__indent }, text: { format: text.__format, style: text.__style, mode: text.__mode } };
   });
@@ -58,7 +59,7 @@ const run = (doc: Y.Doc) => {
 };
 const text = () => ($getRoot().getFirstChild() as ElementNode).getFirstChild() as TextNode;
 const paragraph = () => $getRoot().getFirstChild() as ElementNode;
-const PLAIN = { paragraph: { format: 0, indent: 0 }, text: { format: 0, style: '', mode: 0 } };
+const PLAIN: Nodes = { paragraph: { format: 0, indent: 0 }, text: { format: 0, style: '', mode: 0 } };
 
 /** Ada on the lean binding, Ben on the earlier one, on a plain paragraph a third lean client wrote. */
 async function mixed() {
@@ -69,7 +70,7 @@ async function mixed() {
   await settle();
   return { ada, ben, dispose: () => { ada.dispose(); ben.dispose(); seeder.dispose(); } };
 }
-async function expectBoth(ada: Peer, ben: Peer, expected: ReturnType<Peer['nodes']>, step: string) {
+async function expectBoth(ada: Peer, ben: Peer, expected: Nodes, step: string) {
   await exchange(ada, ben);
   expect(ada.nodes(), `${step}: Ada (lean)`).toEqual(expected);
   expect(ben.nodes(), `${step}: Ben (earlier binding) holds the same nodes`).toEqual(expected);

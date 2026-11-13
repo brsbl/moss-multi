@@ -318,8 +318,8 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..0b816e19769d43a6fc6e8cc376009f72
 +// is absent, and a missing key reads as that default. `__type` is always written and every property keeps its own
 +// entry, so concurrent changes to different properties of one node both survive. Once a key is stored it is written on
 +// every change, a return to the default included: the binding never deletes a key, so a reader of the earlier layout
-+// (which wrote every property) and this one agree, and last-writer-wins stays per property. A key still disappears when
-+// an undo removes the write that created it; it then reads as the default again.
++// (which wrote every property) and this one agree, and last-writer-wins stays per property. An undo of the write that
++// created a key leaves the default stored in its place (the body's undo, @moss-multi/sync/lean-defaults).
 +const hasOwnProperty = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 +const isPrimitiveValue = value => value === null || typeof value !== 'object' && typeof value !== 'function';
 +/** Whether `sharedType` stores `property` (a detached type stores nothing yet: its node is being created). */
@@ -964,8 +964,8 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..4d973ece154258e430fb402bc3f49077
 +// is absent, and a missing key reads as that default. `__type` is always written and every property keeps its own
 +// entry, so concurrent changes to different properties of one node both survive. Once a key is stored it is written on
 +// every change, a return to the default included: the binding never deletes a key, so a reader of the earlier layout
-+// (which wrote every property) and this one agree, and last-writer-wins stays per property. A key still disappears when
-+// an undo removes the write that created it; it then reads as the default again.
++// (which wrote every property) and this one agree, and last-writer-wins stays per property. An undo of the write that
++// created a key leaves the default stored in its place (the body's undo, @moss-multi/sync/lean-defaults).
 +const hasOwnProperty = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 +const isPrimitiveValue = value => value === null || typeof value !== 'object' && typeof value !== 'function';
 +/** Whether `sharedType` stores `property` (a detached type stores nothing yet: its node is being created). */
