@@ -16,11 +16,19 @@ export const canEditFolder = (path: string): boolean => can(roleOf(path), 'edit'
 /** Folder actions → New Folder at the active vault's root. */
 export const canCreateFolder = (): boolean => canEditFolder(ROOT);
 
-/** Where "+ Note" and Cmd/Ctrl+N create: the active folder, or the vault root when it is a system folder (moss's rule). */
+/**
+ * Where "+ Note" and Cmd/Ctrl+N create: the active folder, or the root of the vault on screen when it is a system
+ * folder (moss's rule), is not listed (renamed or gone) or the caller cannot add to it (shared to them read-only).
+ */
 export const noteTargetFolder = (activeFolderPath: string, folders: readonly { path: string; type?: string }[]): string =>
-  folders.some((folder) => folder.path === activeFolderPath && folder.type === 'system') ? ROOT : activeFolderPath;
+  folders.some((folder) => folder.path === activeFolderPath && folder.type === 'system') || !canEditFolder(activeFolderPath)
+    ? ROOT
+    : activeFolderPath;
 
-/** "+ Note" and Cmd/Ctrl+N: editors and above on the folder the note lands in, never a viewer link or an unknown role. */
+/**
+ * "+ Note" and Cmd/Ctrl+N: editors and above on the folder the note lands in, never a viewer link or an unknown role.
+ * Asked of noteTargetFolder's answer, it hides only where the vault root takes no note either.
+ */
 export const canCreateNote = (folderPath: string): boolean => canEditFolder(folderPath);
 
 /** The listed folder of a note, or null. */

@@ -5,8 +5,9 @@
 // go terminal in place. An editor on a shared vault creates a folder that the owner sees live but is offered no move
 // (a move is a sharing decision, the owner's); a viewer is offered none. A refused folder change always reads as a sentence: never "Unknown parent folder", never a bare "Failed".
 // Every control asks the folder or item it acts on, not the vault root (T3.B17): a vault viewer who owns one folder and
-// edits another creates and moves there, an owner gets no "+ Note" in a folder shared to her at view, and nothing
-// moves across vaults. A nested folder moves whole through a reload, and a refused move is undone and says why.
+// edits another creates and moves there, an owner with a folder shared to her at view creates at her own vault's top
+// level instead, and nothing moves across vaults. Renaming the open folder keeps "+ Note" (T9.15). A nested folder
+// moves whole through a reload, and a refused move is undone and says why.
 //
 // Vault grants are declared setup through the members API; sharing is not this journey's promise.
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -407,7 +408,7 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   await actors.requireDistinct(2);
 });
 
-test('j06-folders: in her own Home, a folder shared to Ada at view offers no "+ Note" and Cmd/Ctrl+N sends nothing; a folder she co-owns from another vault neither drags nor takes a drop @p:note-4@2', async ({ actors }) => {
+test('j06-folders: in her own Home, with a note shared to Ada at view open, "+ Note" creates at her Home\'s top level; a folder she co-owns from another vault neither drags nor takes a drop @p:note-4@2', async ({ actors }) => {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.open(adaPrincipal);
   await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
@@ -415,7 +416,7 @@ test('j06-folders: in her own Home, a folder shared to Ada at view offers no "+ 
   const benApi = setup(ben);
   const benHome = await benApi.home();
   const shelf = await benApi.folder('Ben shelf', benHome);
-  await benApi.note('Shelf note', shelf);
+  const shelfNote = await benApi.note('Shelf note', shelf);
   const coowned = await benApi.folder('Ben coowned', benHome);
   const benNote = await benApi.note('Coowned note', coowned);
   await grant(ben, { folderId: shelf }, adaPrincipal, 'viewer');
@@ -429,13 +430,18 @@ test('j06-folders: in her own Home, a folder shared to Ada at view offers no "+ 
   const creates = sent(ada, 'POST', /^\/api\/docs$/);
   const moves = sent(ada, 'PATCH', MOVES);
 
-  // She owns her Home, but the shelf is view-only to her: no "+ Note" there, and Cmd/Ctrl+N sends nothing.
+  // The shelf is view-only to her, but she owns her Home: with its note open, "+ Note" stays (T9.15) and the note lands
+  // at her Home's top level, never in the folder she only views.
   await expect(newNoteButton(ada), 'the owner is offered "+ Note" at her Home').toBeVisible();
   await expandFolder(ada, 'Ben shelf');
-  await expect(newNoteButton(ada), 'none in a folder she only views').toHaveCount(0);
-  await pressNewNote(ada);
-  await ada.page.waitForTimeout(1_000);
-  expect(creates, 'Cmd/Ctrl+N sends no create there').toEqual([]);
+  await ada.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${shelfNote}"]`).click();
+  await ui.waitOpen(ada, shelfNote, 'readonly');
+  await ada.declareRemount(shelfNote);
+  await expect(newNoteButton(ada), 'with a read-only shared note open, "+ Note" is still offered').toBeVisible();
+  const made = await ui.createNote(ada);
+  expect(creates, 'one create').toHaveLength(1);
+  expect((await adaApi.listing()).docs.find((d) => d.id === made)?.folderPath, "the note lands at her Home's top level").toBe('Notes');
+  await expect(inFolder(ada, 'Ben shelf').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${made}"]`), 'not in the shelf').toHaveCount(0);
 
   // Moves stay inside a vault: Ben's folder and its note neither drag nor take her note, though she co-owns them.
   await expandFolder(ada, 'Ben coowned');
@@ -507,4 +513,29 @@ test('j06-folders: a nested folder holding a note moves into another folder and 
   await expect(ui.folderRow(ada, 'Attic'), 'once caught up, Attic is gone').toHaveCount(0, { timeout: PEER_SIDEBAR_MS * 2 });
   expect(await paths(), 'and nothing moved').toEqual({ ...nested, folders: nested.folders.filter((p) => p !== 'Notes/Attic') });
   await expectNestedInSidebar('after the refusal');
+});
+
+test('j06-folders: renaming the folder of the open note keeps "+ Note", and a new note lands in the renamed folder @p:note-4@2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner renames her own folder');
+  const api = setup(ada);
+  const trips = await api.folder('Trips', await api.home());
+  const lisbon = await api.note('Lisbon', trips);
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expandFolder(ada, 'Trips');
+  await ui.openNote(ada, lisbon);
+  await expect(newNoteButton(ada), 'the positive control: "+ Note" in her own folder').toBeVisible();
+
+  await ui.folderRow(ada, 'Trips').getByRole('button', { name: 'Click to rename folder' }).click();
+  const rename = ui.folderRow(ada, 'Trips').getByRole('textbox');
+  await expect(rename).toBeFocused();
+  await rename.fill('Trips 2025');
+  await rename.press('Enter');
+  await expect(ui.folderRow(ada, 'Trips 2025'), 'the folder is renamed').toBeVisible();
+  await expect(newNoteButton(ada), '"+ Note" stays after the rename').toBeVisible();
+  const made = await ui.createNote(ada);
+  await expandFolder(ada, 'Trips 2025');
+  await expect(inFolder(ada, 'Trips 2025').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${made}"]`), 'the new note shows in the renamed folder').toBeVisible();
+  expect((await api.listing()).docs.find((d) => d.id === made)?.folderPath, 'and the server has it there').toBe('Notes/Trips 2025');
 });
