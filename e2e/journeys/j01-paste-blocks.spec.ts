@@ -3,8 +3,8 @@
 // short paragraphs held the tab for a minute and 100,000 froze it. Plain text lands like markdown, in paced batches.
 // Pasted between two paragraphs, 40,000 must never hold the tab past MAX_STALL_MS until every piece is acked, land
 // every block, leave the caret after them, make one undo step that redoes whole, and reach a collaborator in full.
-// 100,000 short paragraphs encode past the note's state cap (A§5.1): that paste is refused visibly as a whole, never
-// frozen on and never half applied.
+// 250,000 short paragraphs encode past the note's state cap (A§5.1; about 143 bytes each in the lean layout, A§10.11):
+// that paste is refused visibly as a whole, never frozen on and never half applied.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { expectRefusedPaste, MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
@@ -21,12 +21,12 @@ test('j01-paste-blocks: 40,000 short paragraphs pasted between two paragraphs la
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
-  // About 20 MB of Yjs state: the doc socket sends it in acked 256 KiB pieces, about two minutes on a CI runner. The
+  // About 6 MB of Yjs state: the doc socket sends it in acked 256 KiB pieces, about two minutes on a CI runner. The
   // tab is never held past the bound, from the paste until every piece is acked.
   await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 240_000, { maxBusyMs: MAX_STALL_MS, maxStallMs: MAX_STALL_MS });
 });
 
-test('j01-paste-blocks: 100,000 short paragraphs, past the note’s size cap, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
+test('j01-paste-blocks: 250,000 short paragraphs, past the note’s size cap, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(240_000);
-  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, shortParagraphs(100_000), { checkWire: false });
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, shortParagraphs(250_000), { checkWire: false });
 });
