@@ -3,9 +3,9 @@
 // short paragraphs held the tab for a minute and 100,000 froze it. Plain text lands like markdown, in paced batches.
 // Pasted between two paragraphs, short paragraphs must never hold the tab past MAX_STALL_MS until every piece is
 // acked, land every block, leave the caret after them and reach a collaborator in full. The note's structure guard
-// (A§5.1, T3.B31c) holds it to 165,000 structs, 5 for each short paragraph, and an undone paste's structs stay in its
-// history: 12,000 leave room for one undo step that redoes whole; 32,800 are just under the guard; 33,000 are just
-// past it, and that paste is refused visibly as a whole, with the structure notice, never half applied.
+// (A§5.1, T3.B31c) holds it to 165,000 structs, 7 for each short paragraph pasted as plain text with the empty line after
+// it, and an undone paste's structs stay in its history: 12,000 leave room for one undo step that redoes whole; 23,500
+// are just under the guard; 23,600 are just past it, and that paste is refused visibly as a whole, with the structure notice, never half applied.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { expectRefusedPaste, MAX_STALL_MS, pasteAndCheck, setup, STRUCTURE_NOTICE } from '../lib/paste.ts';
@@ -14,7 +14,7 @@ import { expect, test, ui } from '../lib/test.ts';
 
 const LEGS: [string, number, boolean][] = [
   ['12,000 short paragraphs pasted between two paragraphs land whole without holding the tab, caret after them, one undo step that redoes whole', 12_000, true],
-  ['32,800 short paragraphs, just under the structure limit, pasted between two paragraphs land whole without holding the tab, caret after them', 32_800, false],
+  ['23,500 short paragraphs, just under the structure limit, pasted between two paragraphs land whole without holding the tab, caret after them', 23_500, false],
 ];
 
 for (const [label, count, history] of LEGS) {
@@ -34,9 +34,9 @@ for (const [label, count, history] of LEGS) {
   });
 }
 
-test('j01-paste-blocks: 33,000 short paragraphs, just past the structure limit, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
+test('j01-paste-blocks: 23,600 short paragraphs, just past the structure limit, are refused as a whole and visibly @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(240_000);
-  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, shortParagraphs(33_000), {
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, shortParagraphs(23_600), {
     checkWire: false,
     notice: STRUCTURE_NOTICE,
     admission: ({ met }) => expect(met, 'the paste meets the structure limit').toBe('structure'),
