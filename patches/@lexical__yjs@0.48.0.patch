@@ -1,27 +1,44 @@
 diff --git a/dist/Bindings.d.ts b/dist/Bindings.d.ts
-index fec9618396d42209710d5badff31862a29d492ef..9271c25f7ead5a4421a157e76cce47ace19d6e43 100644
+index fec9618396d42209710d5badff31862a29d492ef..574105d3493a5e2a26b28c3555756a41de4e70b6 100644
 --- a/dist/Bindings.d.ts
 +++ b/dist/Bindings.d.ts
 @@ -35,6 +35,8 @@ export interface BaseBinding {
  }
  export interface Binding extends BaseBinding {
      collabNodeMap: Map<NodeKey, CollabElementNode | CollabTextNode | CollabDecoratorNode | CollabLineBreakNode>;
-+    /** moss-multi patch (T3.B31a): this binding's collab node for each Yjs type it has read or written. */
-+    collabNodesByType: WeakMap<object, CollabElementNode | CollabTextNode | CollabDecoratorNode | CollabLineBreakNode>;
++    /** moss-multi patch (T3.B31a): this binding's collab node for each Yjs type: its own map with `ownTypeMap`, else a tag on the type. */
++    collabNodesByType: Pick<WeakMap<object, CollabElementNode | CollabTextNode | CollabDecoratorNode | CollabLineBreakNode>, "get" | "set">;
      root: CollabElementNode;
  }
  export interface BindingV2 extends BaseBinding {
+@@ -53,6 +55,8 @@ export interface CreateYjsBindingOptions {
+     excludedProperties?: ExcludedProperties;
+     /** The key used to look up the root `XmlText` shared type on the Yjs `Doc`. Defaults to `'root'`. */
+     rootName?: string;
++    /** moss-multi patch (T3.B31a): keep a map of this binding's own from Yjs types to collab nodes, never tagging a type. */
++    ownTypeMap?: boolean;
+ }
+ /**
+  * Create a V1 Yjs {@link Binding} that connects a {@link LexicalEditor} to a
+@@ -60,7 +64,7 @@ export interface CreateYjsBindingOptions {
+  *
+  * For the legacy positional-argument API, see {@link createBinding}.
+  */
+-export declare function createYjsBinding({ editor, id, doc, docMap, excludedProperties, rootName, }: CreateYjsBindingOptions): Binding;
++export declare function createYjsBinding({ editor, id, doc, docMap, excludedProperties, rootName, ownTypeMap, }: CreateYjsBindingOptions): Binding;
+ export declare function createBinding(editor: LexicalEditor, provider: Provider, id: string, doc: Doc | null | undefined, docMap: Map<string, Doc>, excludedProperties?: ExcludedProperties): Binding;
+ export declare function createBindingV2__EXPERIMENTAL(editor: LexicalEditor, id: string, doc: Doc | null | undefined, docMap: Map<string, Doc>, options?: {
+     excludedProperties?: ExcludedProperties;
 diff --git a/dist/LexicalYjs.dev.js b/dist/LexicalYjs.dev.js
-index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac657fba2f7 100644
+index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..6e42253ea966a31dc72ca35e953be9c6ca7add43 100644
 --- a/dist/LexicalYjs.dev.js
 +++ b/dist/LexicalYjs.dev.js
-@@ -148,9 +148,11 @@ class CollabDecoratorNode {
+@@ -148,9 +148,10 @@ class CollabDecoratorNode {
      }
    }
  }
 -function $createCollabDecoratorNode(xmlElem, parent, type) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type
-+// (`_collabNode`): a second binding (a server export reading a live doc) leaves the doc and other bindings untouched.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabDecoratorNode(xmlElem, parent, type, collabNodesByType) {
    const collabNode = new CollabDecoratorNode(xmlElem, parent, type);
 -  xmlElem._collabNode = collabNode;
@@ -29,12 +46,12 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    return collabNode;
  }
  
-@@ -200,9 +202,10 @@ class CollabLineBreakNode {
+@@ -200,9 +201,10 @@ class CollabLineBreakNode {
      }
    }
  }
 -function $createCollabLineBreakNode(map, parent) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabLineBreakNode(map, parent, collabNodesByType) {
    const collabNode = new CollabLineBreakNode(map, parent);
 -  map._collabNode = collabNode;
@@ -42,12 +59,12 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    return collabNode;
  }
  
-@@ -311,9 +314,10 @@ class CollabTextNode {
+@@ -311,9 +313,10 @@ class CollabTextNode {
      }
    }
  }
 -function $createCollabTextNode(map, text, parent, type) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabTextNode(map, text, parent, type, collabNodesByType) {
    const collabNode = new CollabTextNode(map, text, parent, type);
 -  map._collabNode = collabNode;
@@ -55,7 +72,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    return collabNode;
  }
  
-@@ -380,6 +384,26 @@ class CollabElementNode {
+@@ -380,6 +383,26 @@ class CollabElementNode {
      const children = this._children;
      let currIndex = 0;
      let pendingSplitText = null;
@@ -82,7 +99,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      for (let i = 0; i < deltas.length; i++) {
        const delta = deltas[i];
        const insertDelta = delta.insert;
-@@ -394,10 +418,15 @@ class CollabElementNode {
+@@ -394,10 +417,15 @@ class CollabElementNode {
              nodeIndex,
              offset,
              length
@@ -101,7 +118,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
            } else if (node instanceof CollabTextNode) {
              const delCount = Math.min(deletionSize, length);
              const prevCollabNode = nodeIndex !== 0 ? children[nodeIndex - 1] : null;
-@@ -430,7 +459,7 @@ class CollabElementNode {
+@@ -430,7 +458,7 @@ class CollabElementNode {
            const {
              node,
              offset
@@ -110,7 +127,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
            if (node instanceof CollabTextNode) {
              node._text = spliceString(node._text, offset, 0, insertDelta);
            } else {
-@@ -458,7 +487,7 @@ class CollabElementNode {
+@@ -458,7 +486,7 @@ class CollabElementNode {
              node,
              nodeIndex,
              length
@@ -119,7 +136,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
            const collabNode = $getOrInitCollabNodeFromSharedType(binding, sharedType, this);
            if (node instanceof CollabTextNode && length > 0 && length < node._text.length) {
              // Trying to insert in the middle of a text node; split the text.
-@@ -653,12 +682,22 @@ class CollabElementNode {
+@@ -653,12 +681,22 @@ class CollabElementNode {
      let nextChildrenSet;
      let prevIndex = 0;
      let nextIndex = 0;
@@ -143,7 +160,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
          prevIndex++;
          nextIndex++;
        } else {
-@@ -672,7 +711,7 @@ class CollabElementNode {
+@@ -672,7 +710,7 @@ class CollabElementNode {
          const prevHasNextKey = prevChildrenSet.has(nextKey);
          if (!nextHasPrevKey) {
            // Remove
@@ -152,7 +169,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
            prevIndex++;
          } else {
            // Create or replace
-@@ -680,13 +719,14 @@ class CollabElementNode {
+@@ -680,13 +718,14 @@ class CollabElementNode {
            const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
            collabNodeMap.set(nextKey, collabNode);
            if (prevHasNextKey) {
@@ -169,7 +186,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
          }
        }
      }
-@@ -697,20 +737,36 @@ class CollabElementNode {
+@@ -697,20 +736,36 @@ class CollabElementNode {
          const key = nextChildren[nextIndex];
          const nextChildNode = lexical.$getNodeByKeyOrThrow(key);
          const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
@@ -209,7 +226,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      if (collabNode instanceof CollabElementNode) {
        xmlText.insertEmbed(offset, collabNode._xmlText);
      } else if (collabNode instanceof CollabTextNode) {
-@@ -724,9 +780,13 @@ class CollabElementNode {
+@@ -724,9 +779,13 @@ class CollabElementNode {
      } else if (collabNode instanceof CollabDecoratorNode) {
        xmlText.insertEmbed(offset, collabNode._xmlElem);
      }
@@ -224,7 +241,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      const children = this._children;
      const child = children[index];
      if (child === undefined) {
-@@ -735,7 +795,6 @@ class CollabElementNode {
+@@ -735,7 +794,6 @@ class CollabElementNode {
        }
        return;
      }
@@ -232,12 +249,12 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      if (!(offset !== -1)) {
        formatDevErrorMessage(`splice: expected offset to be greater than zero`);
      }
-@@ -803,9 +862,10 @@ class CollabElementNode {
+@@ -803,9 +861,10 @@ class CollabElementNode {
      }
    }
  }
 -function $createCollabElementNode(xmlText, parent, type) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabElementNode(xmlText, parent, type, collabNodesByType) {
    const collabNode = new CollabElementNode(xmlText, parent, type);
 -  xmlText._collabNode = collabNode;
@@ -245,13 +262,35 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    return collabNode;
  }
  
-@@ -934,11 +994,14 @@ function createYjsBinding({
-   rootName = 'root'
+@@ -917,6 +976,14 @@ function createBaseBinding(editor, id, doc, docMap, excludedProperties) {
+   return binding;
+ }
+ 
++// moss-multi patch (T3.B31a): upstream's record of a type's collab node, a property on the type.
++const TYPE_TAGS = {
++  get: sharedType => sharedType._collabNode,
++  set: (sharedType, collabNode) => {
++    sharedType._collabNode = collabNode;
++  }
++};
++
+ /** Options for {@link createYjsBinding}. */
+ 
+ /**
+@@ -931,14 +998,20 @@ function createYjsBinding({
+   doc,
+   docMap,
+   excludedProperties,
+-  rootName = 'root'
++  rootName = 'root',
++  ownTypeMap = false
  }) {
    const rootXmlText = doc.get(rootName, yjs.XmlText);
 -  const root = $createCollabElementNode(rootXmlText, null, 'root');
-+  // moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
-+  const collabNodesByType = new WeakMap();
++  // moss-multi patch (T3.B31a): with `ownTypeMap`, the binding keeps its own map from Yjs types to collab nodes and never
++  // tags a type (`_collabNode`), so a second binding (a server export reading a live doc in place) writes nothing to the
++  // doc or to another binding. Otherwise it tags the types, as upstream does, which costs no table per type.
++  const collabNodesByType = ownTypeMap ? new WeakMap() : TYPE_TAGS;
 +  const root = $createCollabElementNode(rootXmlText, null, 'root', collabNodesByType);
    root._key = 'root';
    return {
@@ -261,7 +300,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      root
    };
  }
-@@ -1126,7 +1189,7 @@ parent) {
+@@ -1126,7 +1199,7 @@ parent) {
    let collabNode;
    if (lexical.$isElementNode(lexicalNode)) {
      const xmlText = new yjs.XmlText();
@@ -270,7 +309,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      collabNode.syncPropertiesFromLexical(binding, lexicalNode, null);
      collabNode.syncChildrenFromLexical(binding, lexicalNode, null, null, null);
      $seedHostSlots(binding, lexicalNode, collabNode, xmlText);
-@@ -1137,7 +1200,7 @@ parent) {
+@@ -1137,7 +1210,7 @@ parent) {
        formatDevErrorMessage(`Expected parent of a text node to be a collab element node`);
      } // TODO create a token text node for token, segmented nodes.
      const map = new yjs.Map();
@@ -279,7 +318,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      collabNode.syncPropertiesAndTextFromLexical(binding, lexicalNode, null);
    } else if (lexical.$isLineBreakNode(lexicalNode)) {
      if (!(parent instanceof CollabElementNode)) {
-@@ -1145,10 +1208,10 @@ parent) {
+@@ -1145,10 +1218,10 @@ parent) {
      }
      const map = new yjs.Map();
      map.set('__type', 'linebreak');
@@ -292,7 +331,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      collabNode.syncPropertiesFromLexical(binding, lexicalNode, null);
      $seedHostSlots(binding, lexicalNode, collabNode, xmlElem);
    } else {
-@@ -1186,7 +1249,7 @@ function decoratorHostsSlotSharedType(parent, sharedType) {
+@@ -1186,7 +1259,7 @@ function decoratorHostsSlotSharedType(parent, sharedType) {
    return false;
  }
  function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
@@ -301,7 +340,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    if (collabNode === undefined) {
      const registeredNodes = binding.editor._nodes;
      const type = getNodeTypeFromSharedType(sharedType);
-@@ -1203,7 +1266,7 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
+@@ -1203,7 +1276,7 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
        formatDevErrorMessage(`Expected parent to be a collab element node, or a collab decorator node hosting this shared type as a named slot`);
      }
      if (sharedType instanceof yjs.XmlText) {
@@ -310,7 +349,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      } else if (sharedType instanceof yjs.Map) {
        // Text and linebreak nodes can never be named-slot values (setSlot only
        // accepts non-inline elements/decorators), so their parent is always a
-@@ -1212,11 +1275,11 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
+@@ -1212,11 +1285,11 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
          formatDevErrorMessage(`Expected parent of a text or linebreak node to be a collab element node`);
        }
        if (type === 'linebreak') {
@@ -325,7 +364,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      }
    }
    return collabNode;
-@@ -1393,9 +1456,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+@@ -1393,9 +1466,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
  function spliceString(str, index, delCount, newText) {
    return str.slice(0, index) + newText + str.slice(index + delCount);
  }
@@ -340,7 +379,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    const children = node._children;
    const childrenLength = children.length;
    for (; i < childrenLength; i++) {
-@@ -1414,7 +1479,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1414,7 +1489,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: diffLength,
          node: child,
          nodeIndex: i,
@@ -350,7 +389,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
        };
      }
      if (index > offset) {
-@@ -1422,14 +1488,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1422,14 +1498,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: 0,
          node: child,
          nodeIndex: i,
@@ -369,7 +408,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
        };
      }
    }
-@@ -1437,7 +1505,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1437,7 +1515,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
      length: 0,
      node: null,
      nodeIndex: 0,
@@ -379,7 +418,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    };
  }
  function doesSelectionNeedRecovering(selection) {
-@@ -1465,32 +1534,30 @@ function syncWithTransaction(binding, fn) {
+@@ -1465,32 +1544,30 @@ function syncWithTransaction(binding, fn) {
    binding.doc.transact(fn, binding);
  }
  function $moveSelectionToPreviousNode(anchorNodeKey, currentEditorState) {
@@ -436,7 +475,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    }
  }
  
-@@ -1548,7 +1615,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
+@@ -1548,7 +1625,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
      }
      // An uninitialized shared type can only be materialized with a string
      // `__type` ($getOrInitCollabNodeFromSharedType's invariant).
@@ -445,7 +484,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
        continue;
      }
      // A YMap value can only materialize a text/linebreak node — never a valid
-@@ -1561,7 +1628,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
+@@ -1561,7 +1638,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
      // already backs a slot (set under an earlier name in this very Y.Map) or
      // an attached node elsewhere; re-materializing it would repoint the collab
      // node away from that node. First name wins; later aliases are skipped.
@@ -454,7 +493,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      if (cachedCollab !== undefined) {
        const cachedNode = lexical.$getNodeByKey(cachedCollab._key);
        if (cachedNode !== null && (cachedNode.isAttached() || (lexical.$isElementNode(cachedNode) || lexical.$isDecoratorNode(cachedNode)) && cachedNode.getLatest().__slotHost !== null)) {
-@@ -1611,9 +1678,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
+@@ -1611,9 +1688,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
        // Mirror children removal (splice -> destroy): destroy the slot's collab
        // node before dropping it so its binding.collabNodeMap entry is cleared.
        // A value that was never materialized locally (e.g. skipped as invalid
@@ -466,7 +505,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
        if (removedCollab !== undefined) {
          removedCollab.destroy(binding);
        }
-@@ -1634,9 +1701,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
+@@ -1634,9 +1711,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
        // above never destroys the departing value. Mirror children removal
        // here too: destroy the previous slot's collab node before overwriting
        // its Y.Map entry so its binding.collabNodeMap entry doesn't dangle. A
@@ -478,7 +517,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
        if (prevCollab !== undefined) {
          prevCollab.destroy(binding);
        }
-@@ -1653,9 +1720,9 @@ function $destroySlotsShared(binding, slotsParent) {
+@@ -1653,9 +1730,9 @@ function $destroySlotsShared(binding, slotsParent) {
    if (slotsY instanceof yjs.Map) {
      for (const name of slotsY.keys()) {
        // A value never materialized locally (e.g. skipped as invalid remote
@@ -490,7 +529,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
        if (slotCollab !== undefined) {
          slotCollab.destroy(binding);
        }
-@@ -2972,8 +3039,8 @@ function getAnchorAndFocusCollabNodesForUserState(binding, userState) {
+@@ -2972,8 +3049,8 @@ function getAnchorAndFocusCollabNodesForUserState(binding, userState) {
      const anchorAbsPos = createAbsolutePosition(anchorPos, binding);
      const focusAbsPos = createAbsolutePosition(focusPos, binding);
      if (anchorAbsPos !== null && focusAbsPos !== null) {
@@ -501,7 +540,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      }
    }
    return {
-@@ -2999,8 +3066,8 @@ function $getAnchorAndFocusForUserState(binding, userState) {
+@@ -2999,8 +3076,8 @@ function $getAnchorAndFocusForUserState(binding, userState) {
      };
    }
    if (isBindingV1(binding)) {
@@ -512,7 +551,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
      return {
        anchorKey: anchorCollabNode !== null ? anchorCollabNode.getKey() : null,
        anchorOffset,
-@@ -3068,8 +3135,8 @@ function $setPoint(point, key, offset) {
+@@ -3068,8 +3145,8 @@ function $setPoint(point, key, offset) {
  }
  function getCollabNodeAndOffset(
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -523,7 +562,7 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
    if (collabNode === undefined) {
      return [null, 0];
    }
-@@ -3412,7 +3479,7 @@ function syncYjsChangesToLexical(binding, provider, events, isFromUndoManger, sy
+@@ -3412,7 +3489,7 @@ function syncYjsChangesToLexical(binding, provider, events, isFromUndoManger, sy
          const content = struct.content;
          const type = content.type;
          if (type) {
@@ -533,16 +572,15 @@ index b8902c4b270dd49ef9f0c330a9a20e64a233cd48..a8dbbeded41ab675d7e9c8304fc56ac6
              binding.collabNodeMap.delete(collabNode._key);
            }
 diff --git a/dist/LexicalYjs.dev.mjs b/dist/LexicalYjs.dev.mjs
-index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc8258123dbba 100644
+index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..88eac40203c70a96710c233ab3dba318274a1f55 100644
 --- a/dist/LexicalYjs.dev.mjs
 +++ b/dist/LexicalYjs.dev.mjs
-@@ -146,9 +146,11 @@ class CollabDecoratorNode {
+@@ -146,9 +146,10 @@ class CollabDecoratorNode {
      }
    }
  }
 -function $createCollabDecoratorNode(xmlElem, parent, type) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type
-+// (`_collabNode`): a second binding (a server export reading a live doc) leaves the doc and other bindings untouched.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabDecoratorNode(xmlElem, parent, type, collabNodesByType) {
    const collabNode = new CollabDecoratorNode(xmlElem, parent, type);
 -  xmlElem._collabNode = collabNode;
@@ -550,12 +588,12 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    return collabNode;
  }
  
-@@ -198,9 +200,10 @@ class CollabLineBreakNode {
+@@ -198,9 +199,10 @@ class CollabLineBreakNode {
      }
    }
  }
 -function $createCollabLineBreakNode(map, parent) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabLineBreakNode(map, parent, collabNodesByType) {
    const collabNode = new CollabLineBreakNode(map, parent);
 -  map._collabNode = collabNode;
@@ -563,12 +601,12 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    return collabNode;
  }
  
-@@ -309,9 +312,10 @@ class CollabTextNode {
+@@ -309,9 +311,10 @@ class CollabTextNode {
      }
    }
  }
 -function $createCollabTextNode(map, text, parent, type) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabTextNode(map, text, parent, type, collabNodesByType) {
    const collabNode = new CollabTextNode(map, text, parent, type);
 -  map._collabNode = collabNode;
@@ -576,7 +614,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    return collabNode;
  }
  
-@@ -378,6 +382,26 @@ class CollabElementNode {
+@@ -378,6 +381,26 @@ class CollabElementNode {
      const children = this._children;
      let currIndex = 0;
      let pendingSplitText = null;
@@ -603,7 +641,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      for (let i = 0; i < deltas.length; i++) {
        const delta = deltas[i];
        const insertDelta = delta.insert;
-@@ -392,10 +416,15 @@ class CollabElementNode {
+@@ -392,10 +415,15 @@ class CollabElementNode {
              nodeIndex,
              offset,
              length
@@ -622,7 +660,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
            } else if (node instanceof CollabTextNode) {
              const delCount = Math.min(deletionSize, length);
              const prevCollabNode = nodeIndex !== 0 ? children[nodeIndex - 1] : null;
-@@ -428,7 +457,7 @@ class CollabElementNode {
+@@ -428,7 +456,7 @@ class CollabElementNode {
            const {
              node,
              offset
@@ -631,7 +669,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
            if (node instanceof CollabTextNode) {
              node._text = spliceString(node._text, offset, 0, insertDelta);
            } else {
-@@ -456,7 +485,7 @@ class CollabElementNode {
+@@ -456,7 +484,7 @@ class CollabElementNode {
              node,
              nodeIndex,
              length
@@ -640,7 +678,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
            const collabNode = $getOrInitCollabNodeFromSharedType(binding, sharedType, this);
            if (node instanceof CollabTextNode && length > 0 && length < node._text.length) {
              // Trying to insert in the middle of a text node; split the text.
-@@ -651,12 +680,22 @@ class CollabElementNode {
+@@ -651,12 +679,22 @@ class CollabElementNode {
      let nextChildrenSet;
      let prevIndex = 0;
      let nextIndex = 0;
@@ -664,7 +702,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
          prevIndex++;
          nextIndex++;
        } else {
-@@ -670,7 +709,7 @@ class CollabElementNode {
+@@ -670,7 +708,7 @@ class CollabElementNode {
          const prevHasNextKey = prevChildrenSet.has(nextKey);
          if (!nextHasPrevKey) {
            // Remove
@@ -673,7 +711,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
            prevIndex++;
          } else {
            // Create or replace
-@@ -678,13 +717,14 @@ class CollabElementNode {
+@@ -678,13 +716,14 @@ class CollabElementNode {
            const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
            collabNodeMap.set(nextKey, collabNode);
            if (prevHasNextKey) {
@@ -690,7 +728,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
          }
        }
      }
-@@ -695,20 +735,36 @@ class CollabElementNode {
+@@ -695,20 +734,36 @@ class CollabElementNode {
          const key = nextChildren[nextIndex];
          const nextChildNode = $getNodeByKeyOrThrow(key);
          const collabNode = $createCollabNodeFromLexicalNode(binding, nextChildNode, this);
@@ -730,7 +768,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      if (collabNode instanceof CollabElementNode) {
        xmlText.insertEmbed(offset, collabNode._xmlText);
      } else if (collabNode instanceof CollabTextNode) {
-@@ -722,9 +778,13 @@ class CollabElementNode {
+@@ -722,9 +777,13 @@ class CollabElementNode {
      } else if (collabNode instanceof CollabDecoratorNode) {
        xmlText.insertEmbed(offset, collabNode._xmlElem);
      }
@@ -745,7 +783,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      const children = this._children;
      const child = children[index];
      if (child === undefined) {
-@@ -733,7 +793,6 @@ class CollabElementNode {
+@@ -733,7 +792,6 @@ class CollabElementNode {
        }
        return;
      }
@@ -753,12 +791,12 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      if (!(offset !== -1)) {
        formatDevErrorMessage(`splice: expected offset to be greater than zero`);
      }
-@@ -801,9 +860,10 @@ class CollabElementNode {
+@@ -801,9 +859,10 @@ class CollabElementNode {
      }
    }
  }
 -function $createCollabElementNode(xmlText, parent, type) {
-+// moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
++// moss-multi patch (T3.B31a): collab nodes are recorded through the binding's `collabNodesByType`.
 +function $createCollabElementNode(xmlText, parent, type, collabNodesByType) {
    const collabNode = new CollabElementNode(xmlText, parent, type);
 -  xmlText._collabNode = collabNode;
@@ -766,13 +804,35 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    return collabNode;
  }
  
-@@ -932,11 +992,14 @@ function createYjsBinding({
-   rootName = 'root'
+@@ -915,6 +974,14 @@ function createBaseBinding(editor, id, doc, docMap, excludedProperties) {
+   return binding;
+ }
+ 
++// moss-multi patch (T3.B31a): upstream's record of a type's collab node, a property on the type.
++const TYPE_TAGS = {
++  get: sharedType => sharedType._collabNode,
++  set: (sharedType, collabNode) => {
++    sharedType._collabNode = collabNode;
++  }
++};
++
+ /** Options for {@link createYjsBinding}. */
+ 
+ /**
+@@ -929,14 +996,20 @@ function createYjsBinding({
+   doc,
+   docMap,
+   excludedProperties,
+-  rootName = 'root'
++  rootName = 'root',
++  ownTypeMap = false
  }) {
    const rootXmlText = doc.get(rootName, XmlText);
 -  const root = $createCollabElementNode(rootXmlText, null, 'root');
-+  // moss-multi patch (T3.B31a): the binding keeps its own map from Yjs types to collab nodes, never tagging a type.
-+  const collabNodesByType = new WeakMap();
++  // moss-multi patch (T3.B31a): with `ownTypeMap`, the binding keeps its own map from Yjs types to collab nodes and never
++  // tags a type (`_collabNode`), so a second binding (a server export reading a live doc in place) writes nothing to the
++  // doc or to another binding. Otherwise it tags the types, as upstream does, which costs no table per type.
++  const collabNodesByType = ownTypeMap ? new WeakMap() : TYPE_TAGS;
 +  const root = $createCollabElementNode(rootXmlText, null, 'root', collabNodesByType);
    root._key = 'root';
    return {
@@ -782,7 +842,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      root
    };
  }
-@@ -1124,7 +1187,7 @@ parent) {
+@@ -1124,7 +1197,7 @@ parent) {
    let collabNode;
    if ($isElementNode(lexicalNode)) {
      const xmlText = new XmlText();
@@ -791,7 +851,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      collabNode.syncPropertiesFromLexical(binding, lexicalNode, null);
      collabNode.syncChildrenFromLexical(binding, lexicalNode, null, null, null);
      $seedHostSlots(binding, lexicalNode, collabNode, xmlText);
-@@ -1135,7 +1198,7 @@ parent) {
+@@ -1135,7 +1208,7 @@ parent) {
        formatDevErrorMessage(`Expected parent of a text node to be a collab element node`);
      } // TODO create a token text node for token, segmented nodes.
      const map = new Map$1();
@@ -800,7 +860,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      collabNode.syncPropertiesAndTextFromLexical(binding, lexicalNode, null);
    } else if ($isLineBreakNode(lexicalNode)) {
      if (!(parent instanceof CollabElementNode)) {
-@@ -1143,10 +1206,10 @@ parent) {
+@@ -1143,10 +1216,10 @@ parent) {
      }
      const map = new Map$1();
      map.set('__type', 'linebreak');
@@ -813,7 +873,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      collabNode.syncPropertiesFromLexical(binding, lexicalNode, null);
      $seedHostSlots(binding, lexicalNode, collabNode, xmlElem);
    } else {
-@@ -1184,7 +1247,7 @@ function decoratorHostsSlotSharedType(parent, sharedType) {
+@@ -1184,7 +1257,7 @@ function decoratorHostsSlotSharedType(parent, sharedType) {
    return false;
  }
  function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
@@ -822,7 +882,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    if (collabNode === undefined) {
      const registeredNodes = binding.editor._nodes;
      const type = getNodeTypeFromSharedType(sharedType);
-@@ -1201,7 +1264,7 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
+@@ -1201,7 +1274,7 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
        formatDevErrorMessage(`Expected parent to be a collab element node, or a collab decorator node hosting this shared type as a named slot`);
      }
      if (sharedType instanceof XmlText) {
@@ -831,7 +891,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      } else if (sharedType instanceof Map$1) {
        // Text and linebreak nodes can never be named-slot values (setSlot only
        // accepts non-inline elements/decorators), so their parent is always a
-@@ -1210,11 +1273,11 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
+@@ -1210,11 +1283,11 @@ function $getOrInitCollabNodeFromSharedType(binding, sharedType, parent) {
          formatDevErrorMessage(`Expected parent of a text or linebreak node to be a collab element node`);
        }
        if (type === 'linebreak') {
@@ -846,7 +906,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      }
    }
    return collabNode;
-@@ -1391,9 +1454,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
+@@ -1391,9 +1464,11 @@ function syncPropertiesFromLexical(binding, sharedType, prevLexicalNode, nextLex
  function spliceString(str, index, delCount, newText) {
    return str.slice(0, index) + newText + str.slice(index + delCount);
  }
@@ -861,7 +921,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    const children = node._children;
    const childrenLength = children.length;
    for (; i < childrenLength; i++) {
-@@ -1412,7 +1477,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1412,7 +1487,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: diffLength,
          node: child,
          nodeIndex: i,
@@ -871,7 +931,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
        };
      }
      if (index > offset) {
-@@ -1420,14 +1486,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1420,14 +1496,16 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
          length: 0,
          node: child,
          nodeIndex: i,
@@ -890,7 +950,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
        };
      }
    }
-@@ -1435,7 +1503,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
+@@ -1435,7 +1513,8 @@ function getPositionFromElementAndOffset(node, offset, boundaryIsEdge) {
      length: 0,
      node: null,
      nodeIndex: 0,
@@ -900,7 +960,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    };
  }
  function doesSelectionNeedRecovering(selection) {
-@@ -1463,32 +1532,30 @@ function syncWithTransaction(binding, fn) {
+@@ -1463,32 +1542,30 @@ function syncWithTransaction(binding, fn) {
    binding.doc.transact(fn, binding);
  }
  function $moveSelectionToPreviousNode(anchorNodeKey, currentEditorState) {
@@ -957,7 +1017,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    }
  }
  
-@@ -1546,7 +1613,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
+@@ -1546,7 +1623,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
      }
      // An uninitialized shared type can only be materialized with a string
      // `__type` ($getOrInitCollabNodeFromSharedType's invariant).
@@ -966,7 +1026,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
        continue;
      }
      // A YMap value can only materialize a text/linebreak node — never a valid
-@@ -1559,7 +1626,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
+@@ -1559,7 +1636,7 @@ function $syncSlotsFromYjsShared(binding, slotsParent, lexicalNode, ownerCollab)
      // already backs a slot (set under an earlier name in this very Y.Map) or
      // an attached node elsewhere; re-materializing it would repoint the collab
      // node away from that node. First name wins; later aliases are skipped.
@@ -975,7 +1035,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      if (cachedCollab !== undefined) {
        const cachedNode = $getNodeByKey(cachedCollab._key);
        if (cachedNode !== null && (cachedNode.isAttached() || ($isElementNode(cachedNode) || $isDecoratorNode(cachedNode)) && cachedNode.getLatest().__slotHost !== null)) {
-@@ -1609,9 +1676,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
+@@ -1609,9 +1686,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
        // Mirror children removal (splice -> destroy): destroy the slot's collab
        // node before dropping it so its binding.collabNodeMap entry is cleared.
        // A value that was never materialized locally (e.g. skipped as invalid
@@ -987,7 +1047,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
        if (removedCollab !== undefined) {
          removedCollab.destroy(binding);
        }
-@@ -1632,9 +1699,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
+@@ -1632,9 +1709,9 @@ function $syncSlotsFromLexicalShared(binding, slotsParent, nextLexicalNode, prev
        // above never destroys the departing value. Mirror children removal
        // here too: destroy the previous slot's collab node before overwriting
        // its Y.Map entry so its binding.collabNodeMap entry doesn't dangle. A
@@ -999,7 +1059,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
        if (prevCollab !== undefined) {
          prevCollab.destroy(binding);
        }
-@@ -1651,9 +1718,9 @@ function $destroySlotsShared(binding, slotsParent) {
+@@ -1651,9 +1728,9 @@ function $destroySlotsShared(binding, slotsParent) {
    if (slotsY instanceof Map$1) {
      for (const name of slotsY.keys()) {
        // A value never materialized locally (e.g. skipped as invalid remote
@@ -1011,7 +1071,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
        if (slotCollab !== undefined) {
          slotCollab.destroy(binding);
        }
-@@ -2970,8 +3037,8 @@ function getAnchorAndFocusCollabNodesForUserState(binding, userState) {
+@@ -2970,8 +3047,8 @@ function getAnchorAndFocusCollabNodesForUserState(binding, userState) {
      const anchorAbsPos = createAbsolutePosition(anchorPos, binding);
      const focusAbsPos = createAbsolutePosition(focusPos, binding);
      if (anchorAbsPos !== null && focusAbsPos !== null) {
@@ -1022,7 +1082,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      }
    }
    return {
-@@ -2997,8 +3064,8 @@ function $getAnchorAndFocusForUserState(binding, userState) {
+@@ -2997,8 +3074,8 @@ function $getAnchorAndFocusForUserState(binding, userState) {
      };
    }
    if (isBindingV1(binding)) {
@@ -1033,7 +1093,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
      return {
        anchorKey: anchorCollabNode !== null ? anchorCollabNode.getKey() : null,
        anchorOffset,
-@@ -3066,8 +3133,8 @@ function $setPoint(point, key, offset) {
+@@ -3066,8 +3143,8 @@ function $setPoint(point, key, offset) {
  }
  function getCollabNodeAndOffset(
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1044,7 +1104,7 @@ index 86bf4bbdf79c91883adf94de64ba3dd5146eea1d..a782b3be2fab6d14d0cf99635a0fc825
    if (collabNode === undefined) {
      return [null, 0];
    }
-@@ -3410,7 +3477,7 @@ function syncYjsChangesToLexical(binding, provider, events, isFromUndoManger, sy
+@@ -3410,7 +3487,7 @@ function syncYjsChangesToLexical(binding, provider, events, isFromUndoManger, sy
          const content = struct.content;
          const type = content.type;
          if (type) {

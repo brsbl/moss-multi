@@ -1,7 +1,7 @@
 // The DocDO's headless side (A§5.1, A§12): moss's converter editor bound (V1) to a mirror Y.Doc, serverWrite for
 // every server-side content write, the seed, and markdown export, which reads the live doc in place. Typechecks reach
 // the vendored converter modules through src/moss-modules.d.ts.
-import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
+import { createYjsBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding, type Provider } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { refusingSpentImports } from '@moss-desktop/renderer/editor/markdown/linear-import';
@@ -69,12 +69,14 @@ const provider = {
 /**
  * A V1 binding of `editor` to `doc`, with the client's exclusions, so the server writes and reads the same fields the
  * browser does (A§10.9). The binding reads each node type's defaults in an update of its own, committed here: left to
- * commit in a microtask, it held the editor, and everything bound to it, until the caller returned.
+ * commit in a microtask, it held the editor, and everything bound to it, until the caller returned. With `ownTypeMap`
+ * (the patched @lexical/yjs) it keeps its map from Yjs types to collab nodes to itself and writes nothing to `doc`;
+ * otherwise it tags `doc`'s types, which costs less, for a mirror whose doc it owns.
  */
-function bindingOf(editor: LexicalEditor, doc: Y.Doc): Binding {
+function bindingOf(editor: LexicalEditor, doc: Y.Doc, ownTypeMap = false): Binding {
   let binding!: Binding;
   editor.update(() => {
-    binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
+    binding = createYjsBinding({ editor, id: 'root', doc, docMap: new Map([['root', doc]]), excludedProperties: excludedPropertiesFor(editor), ownTypeMap });
   }, { discrete: true });
   return binding;
 }
@@ -267,7 +269,7 @@ function viewOf(live: Y.Doc): View {
   const editor = createConverterEditor();
   const stopLists = registerList(editor);
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
-  const binding = bindingOf(editor, live);
+  const binding = bindingOf(editor, live, true);
   const stopRegisters = bindRegisters(editor, live, { serializedImports: true, payloads });
   const dispose = () => {
     stopRegisters();
