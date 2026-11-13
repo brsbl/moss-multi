@@ -2,10 +2,12 @@
 // @lexical/yjs then falls back to the end of the block before it (or to the end of the first half of a split). Around
 // each remote transaction this keeps the caret's node key and offset, and only when the binding had to recover the
 // selection puts the caret back beside its words: in the block now at the same place when it reads the same, or in
-// the next block when the old one was split before the caret.
+// the next block when the old one was split before the caret. Local edits the peer's replacement block lacks (still on
+// their way when it converted) are made again there.
 import {
   $getNodeByKey,
   $getRoot,
+  $getSelection,
   $isElementNode,
   $isRangeSelection,
   $isTextNode,
@@ -158,14 +160,45 @@ function $restore(editor: LexicalEditor, held: HeldCaret): void {
     $placeAt(next, before.offset - text.length);
     return;
   }
-  // Replaced while a few of your keys were still on their way: they went with the old block, so map the offset
-  // through the difference.
-  const mapped = inserted(block) ? mapOffset(before.text, text, before.offset) : null;
+  if (!inserted(block)) return;
+  // Replaced while a few of your edits were still on their way: the peer converted the block without them, and they
+  // went with the old one. Put them back beside the caret, as you made them.
+  const replay = inFlight(before.text, text, before.offset);
+  if (replay) {
+    $placeAt(block, replay.at + replay.deleted);
+    const end = $getSelection();
+    $placeAt(block, replay.at);
+    const selection = $getSelection();
+    if (!$isRangeSelection(selection) || !$isRangeSelection(end)) return;
+    if (replay.deleted) {
+      selection.focus.set(end.anchor.key, end.anchor.offset, end.anchor.type);
+      selection.removeText();
+    } else {
+      selection.insertText(replay.inserted);
+    }
+    return;
+  }
+  const mapped = mapOffset(before.text, text, before.offset);
   if (mapped !== null) $placeAt(block, mapped);
 }
 
-/** Keys typed locally between a peer's change and its arrival that a replaced block can be missing. */
+/** Local edits typed between a peer's change and its arrival that a replaced block can be missing. */
 const IN_FLIGHT = 8;
+
+/**
+ * The caret's own edits the replaced block `now` lacks, when it reads as `was` without them: characters typed just
+ * before the caret at `offset` (to insert again at `at`), or characters deleted right at it (to delete again).
+ */
+function inFlight(was: string, now: string, offset: number): { at: number; inserted: string; deleted: number } | null {
+  const k = Math.abs(was.length - now.length);
+  if (k === 0 || k > IN_FLIGHT) return null;
+  if (was.length > now.length) {
+    if (offset < k || was.slice(0, offset - k) !== now.slice(0, offset - k) || was.slice(offset) !== now.slice(offset - k)) return null;
+    return { at: offset - k, inserted: was.slice(offset - k, offset), deleted: 0 };
+  }
+  if (was.slice(0, offset) !== now.slice(0, offset) || was.slice(offset) !== now.slice(offset + k)) return null;
+  return { at: offset, inserted: '', deleted: k };
+}
 
 /** `offset` in `was` mapped into `now`, when the two differ in one short run; null when they read differently. */
 function mapOffset(was: string, now: string, offset: number): number | null {
