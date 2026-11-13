@@ -139,13 +139,15 @@ function $restore(editor: LexicalEditor, held: HeldCaret): void {
     let block: LexicalNode | null = node;
     while (block && !isTextBlock(block)) block = block.getParent();
     if (!node || !isTextBlock(block)) return null;
-    return { key: block.getKey(), index: $indexOf(block), offset: $offsetIn(block, node, held.offset), text: block.getTextContent() };
+    return { index: $indexOf(block), offset: $offsetIn(block, node, held.offset), text: block.getTextContent() };
   }, { editor });
   if (!before || before.index < 0) return;
   const block = $blockAt(before.index);
   if (!block) return;
+  // Only a block the transaction inserted can stand in for the caret's: a neighbour that moved up (after a merge) never does.
+  const inserted = (node: ElementNode) => !held.state._nodeMap.has(node.getKey());
   // Replaced (a heading, list item or checkbox now reads the same): the same offset in it.
-  if (block.getKey() !== before.key && block.getTextContent() === before.text) {
+  if (inserted(block) && block.getTextContent() === before.text) {
     $placeAt(block, before.offset);
     return;
   }
@@ -153,5 +155,5 @@ function $restore(editor: LexicalEditor, held: HeldCaret): void {
   const head = block.getTextContent();
   if (before.offset <= head.length) return;
   const next = $blockAt(before.index + 1);
-  if (next && head + next.getTextContent() === before.text) $placeAt(next, before.offset - head.length);
+  if (next && inserted(next) && head + next.getTextContent() === before.text) $placeAt(next, before.offset - head.length);
 }
