@@ -46,7 +46,7 @@ export const INVITE_CLOSED = 'This invite link has already been used or is no lo
 const closed = () => json({ error: 'invite-unavailable', message: INVITE_CLOSED }, 404, NO_STORE);
 
 /** The answer to a signed-in account whose email is not the invite's; it says nothing about that email. */
-export const INVITE_OTHER_EMAIL = 'This invite is for another email. Sign in with the email it was sent to, or ask the person who shared it for a new link.';
+export const INVITE_OTHER_EMAIL = 'This invite is for another email. Sign in with the email it is for, or ask the person who shared it for a new link.';
 const otherEmail = () => json({ error: 'invite-for-another-email', message: INVITE_OTHER_EMAIL }, 403, NO_STORE);
 
 /** The live owner of an invite's target, or null when it is gone or trashed. */

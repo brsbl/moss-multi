@@ -159,8 +159,19 @@ test('the keyboard follows a mode switch, and a too-short password on sign-up na
     await keyboard.press('Enter');
     await expect(ui.loginForm(actor, 'Sign in').getByLabel('Email', { exact: true }), `${label}: Email takes focus on returning to sign-in`).toBeFocused();
 
-    // A three-character password is refused with the loopback minimum named.
+    // An email with no dot in its domain is named on the card, without asking the server.
     await actor.page.getByRole('button', { name: 'Create an account', exact: true }).click();
+    const signUps: string[] = [];
+    const count = (request: { url: () => string }) => void (new URL(request.url()).pathname === '/api/auth/sign-up/email' && signUps.push(request.url()));
+    actor.page.on('request', count);
+    await signUp.getByLabel('Email', { exact: true }).fill(person.email.replace(/\.invalid$/, ''));
+    await signUp.getByLabel('Password', { exact: true }).fill(person.password);
+    await signUp.getByRole('button', { name: 'Create account', exact: true }).click();
+    await expect(signUp.getByRole('alert'), `${label}: a malformed email is named`).toHaveText('That doesn’t look like an email address.');
+    actor.page.off('request', count);
+    expect(signUps, 'and no sign-up request went out').toEqual([]);
+
+    // A three-character password is refused with the loopback minimum named.
     actor.expectHttp(400, '/api/auth/sign-up/email');
     await signUp.getByLabel('Name', { exact: true }).fill(person.name);
     await signUp.getByLabel('Email', { exact: true }).fill(person.email);
@@ -266,6 +277,9 @@ test('the login card works at 390x844 and 1440x1000 @p:tech-9 @tierA @evidence',
     await actor.page.setViewportSize(size);
     await ui.waitForLoginCard(actor);
     await expectNoOAuth(actor);
+    // With no invite and no share link the card is unchanged: its own tagline, and no way back to anything.
+    await expect(actor.page.locator('[data-login-card]').getByText('Multiplayer moss: your notes, written together in real time.')).toBeVisible();
+    await expect(actor.page.getByRole('button', { name: /^Back to the/ })).toHaveCount(0);
 
     const fit = await actor.page.evaluate(() => {
       const form = document.querySelector('form[aria-label="Sign in"]');
