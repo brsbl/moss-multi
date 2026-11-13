@@ -124,7 +124,7 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   if (action === 'list') verdict = (await stub.listVersions(input)) as Verdict;
   else if (action === 'get') verdict = (await stub.getVersion({ ...input, id: vid })) as Verdict;
   else if (action === 'save') verdict = (await stub.saveVersion({ ...input, name, actingUserId: person })) as Verdict;
-  else verdict = (await stub.restoreVersion({ ...input, id: vid, base: base.ok ? base.base : undefined })) as Verdict;
+  else verdict = (await stub.restoreVersion({ ...input, id: vid, base: base.ok ? base.base : undefined, by: principal.name })) as Verdict;
   if (!verdict.ok) {
     const reason = verdict.reason ?? 'refused';
     return json({ error: reason, ...(REFUSAL[reason] ? { message: REFUSAL[reason] } : {}) }, verdict.status ?? 409, NO_STORE);

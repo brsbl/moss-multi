@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
 --- a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
 +++ b/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx
-@@ -162,6 +162,13 @@ import { NoteBreadcrumb } from '../components/NoteBreadcrumb';
+@@ -162,6 +162,15 @@ import { NoteBreadcrumb } from '../components/NoteBreadcrumb';
  import { useTitleEmojiTypeahead } from './useTitleEmojiTypeahead';
  import { TopNavBar, TopNavIconButton, TOP_NAV_ICON_SIZE_CLASSNAMES } from './TopNavControls';
  import { isQuitProfilingEnabled } from '../utils/renderer-env';
@@ -12,10 +12,12 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
 +// moss-multi seam: trash (T2.3): only the owner trashes or restores; trash copy comes from the one module
 +import { TRASH_COPY } from '@moss-multi/host/retention';
 +import { canTrashNote } from '@moss-multi/host/trash';
++// moss-multi seam: action-feedback (T9.4): host actions confirm themselves in this pane's feedback pill
++import { subscribeActionFeedback } from '@moss-multi/host/collab/feedback';
  
  const TRASH_RETENTION_DAYS = 30;
  const MS_IN_DAY = 24 * 60 * 60 * 1000;
-@@ -567,7 +574,7 @@ function CommentsMenuButton({
+@@ -567,7 +576,7 @@ function CommentsMenuButton({
                    </TooltipTrigger>
                    <TooltipContent side="bottom" sideOffset={6}>Search comments</TooltipContent>
                  </Tooltip>
@@ -24,7 +26,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                    <Tooltip>
                      <TooltipTrigger asChild>
                        <button
-@@ -630,6 +637,12 @@ function CommentsMenuButton({
+@@ -630,6 +639,12 @@ function CommentsMenuButton({
                              : <CommentTextContent text={item.text} mentionMaxLength={24} />
                            : 'No text'}
                        </p>
@@ -37,7 +39,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                      </div>
                    </button>
                  ))
-@@ -920,6 +933,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -920,6 +935,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    const overrideNote = useAtomValue(noteEntityAtom(noteIdOverride ?? NO_NOTE_SENTINEL));
    const note = noteIdOverride ? overrideNote : activeNote;
    const store = useStore();
@@ -45,7 +47,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const titleInputRef = useRef<HTMLDivElement>(null);
    const editorInstanceRef = useRef<LexicalEditor | null>(null);
    const markdownEditorRef = useRef<MarkdownEditorHandle>(null);
-@@ -940,7 +954,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -940,7 +956,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      hasElectronBridge &&
      !(typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent));
  
@@ -59,7 +61,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const titleValueRef = useRef(titleValue);
    titleValueRef.current = titleValue;
    const commitTitleChangeRef = useRef<() => void>(() => {});
-@@ -1170,6 +1189,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1170,6 +1191,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      latestOnBodyFocusCompleteRef.current = onBodyFocusComplete;
    }, [onBodyFocusComplete]);
  
@@ -68,7 +70,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const getLiveTitleText = useCallback((): string => {
      return titleInputRef.current?.textContent ?? titleValueRef.current;
    }, []);
-@@ -1183,7 +1204,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1183,7 +1206,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      }
  
      if (titleValueRef.current !== display) {
@@ -77,7 +79,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      }
    }, []);
  
-@@ -1326,7 +1347,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1326,7 +1349,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    }, [note?.id]);
  
    useLayoutEffect(() => {
@@ -86,7 +88,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        return;
      }
  
-@@ -1366,9 +1387,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1366,9 +1389,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    useLayoutEffect(() => {
      const el = titleInputRef.current;
@@ -98,7 +100,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      el.focus();
      const range = document.createRange();
-@@ -1380,14 +1402,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1380,14 +1404,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      titleFocusCompletedRef.current = true;
      latestOnTitleFocusCompleteRef.current?.();
      setPlaceholderIdx((i) => (i + 1) % PLACEHOLDER_PAIRS.length);
@@ -116,7 +118,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      ) {
        return;
      }
-@@ -1402,6 +1425,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1402,6 +1427,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      contentHydratedForNoteId,
      editorReadyForFocusNoteId,
      focusEditorStart,
@@ -124,7 +126,16 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      noteIdForAtoms,
      setPlaceholderIdx
    ]);
-@@ -1471,7 +1495,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1432,6 +1458,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+       actionFeedbackTimeoutRef.current = null;
+     }, duration);
+   }, []);
++  // moss-multi seam: action-feedback (T9.4)
++  useEffect(() => (note?.id ? subscribeActionFeedback(note.id, showActionFeedback) : undefined), [note?.id, showActionFeedback]);
+ 
+   // Show a copy toast when a note/anchor link is copied from inside the editor
+   // (e.g. the collapsible-heading context menu). The event bubbles from the
+@@ -1471,7 +1499,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      h1Title: string | null,
      opts?: { skipIfTitleFocused?: boolean }
    ): void => {
@@ -133,7 +144,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      if (opts?.skipIfTitleFocused && document.activeElement === titleInputRef.current) return;
      const currentTitle = store.get(noteEntityAtom(noteId))?.title;
      if (h1Title === currentTitle) return;
-@@ -1524,7 +1548,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1524,7 +1552,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        return true;
      }
  
@@ -144,7 +155,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      const diskCommentMetadata = result.commentMetadata ?? layers.comments;
      lastKnownDiskCommentMetadataRef.current[noteId] = diskCommentMetadata;
      lastKnownDiskCommentSignatureRef.current[noteId] = buildCommentMetadataSignature(diskCommentMetadata);
-@@ -1672,6 +1698,17 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -1672,6 +1702,17 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      const noteIdChanged = prevNoteId !== note.id;
      previousNoteIdRef.current = note.id;
  
@@ -162,7 +173,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      // Force a fresh hydration gate on note switches so the editor never mounts
      // with stale atom content from a previous visit while the new disk fetch is in flight.
      if (noteIdChanged) {
-@@ -2515,7 +2552,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -2515,7 +2556,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    // Save both markdown (for export) and JSON state (canonical format)
    const saveContent = useCallback((options?: { force?: boolean; updatedAt?: number }): Promise<void> => {
@@ -171,7 +182,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        return Promise.resolve();
      }
      const noteId = note.id;
-@@ -3202,7 +3239,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3202,7 +3243,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    // Autosave triggers: 30-min periodic safety net + comment dirty signal subscription
    useEffect(() => {
@@ -180,7 +191,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
        return;
      }
  
-@@ -3231,7 +3268,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3231,7 +3272,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // If the user has unsaved edits (dirty), skip — user wins.
    // =========================================================================
    useEffect(() => {
@@ -189,7 +200,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      const runPendingDiskRevalidation = () => {
        pendingDiskRevalidateOnFocusRef.current = false;
-@@ -3311,6 +3348,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3311,6 +3352,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    // Focus the title field and select all text
    const focusTitle = useCallback(() => {
@@ -197,7 +208,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      if (titleInputRef.current) {
        titleInputRef.current.focus();
        const range = document.createRange();
-@@ -3504,7 +3542,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3504,7 +3546,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    const forceReloadFromDisk = useCallback(async (): Promise<boolean> => {
      const noteId = note?.id;
@@ -206,7 +217,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      try {
        const result = await notesApi.getById.invoke(noteId, { skipAnalytics: true });
        if (!result) return false;
-@@ -3591,7 +3629,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3591,7 +3633,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // Sync title contentEditable with external title changes (agent rename, file watcher)
    useEffect(() => {
      const el = titleInputRef.current;
@@ -215,7 +226,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      if (shouldPreserveDirtyEditor(note.id)) return;
      // Don't overwrite while user is actively editing the title
      if (isTitleFocusedRef.current || document.activeElement === el) return;
-@@ -3600,7 +3638,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3600,7 +3642,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        el.textContent = display;
      }
      if (titleValueRef.current !== display) {
@@ -224,7 +235,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      }
    }, [note, note?.title, shouldPreserveDirtyEditor]);
  
-@@ -3610,7 +3648,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -3610,7 +3652,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // Agent writes go to disk via SDK tools; the disk watcher picks them up.
    // =========================================================================
    useEffect(() => {
@@ -233,7 +244,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      const unsub = agentApi.onStream((event) => {
        if (event.type === 'editor_update') {
-@@ -4088,6 +4126,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4088,6 +4130,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      let skippedBootstrapUpdate = false;
      editorUpdateUnregisterRef.current = editor.registerUpdateListener(
        ({ dirtyElements, dirtyLeaves, tags }) => {
@@ -246,7 +257,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          const hasDirtyMutations = dirtyElements.size > 0 || dirtyLeaves.size > 0;
          const hasContentUpdateTag = hasTrackedEditorUpdateTag(tags, DIRTY_TRACKER_CONTENT_TAGS);
  
-@@ -4116,7 +4160,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4116,7 +4164,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      // After post-mount transforms (AutoArrow, FormatWhitespaceBoundary) settle,
      // sync lastEditorOutputRef and clear false dirty. Double rAF ensures all
      // Lexical reconciliation is complete before capturing the baseline.
@@ -255,7 +266,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      // Restore scroll position if pending (from agent update)
      const pendingScrollTop = pendingScrollRestoreRef.current;
-@@ -4199,7 +4243,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4199,7 +4247,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    }, [bumpEditorContentRevision, isTrashed, markDirty, note?.id, scheduleDebouncedAutosave, scheduleEditorSettlingBaselineCapture]);
  
    const commitTitleChange = useCallback(() => {
@@ -264,7 +275,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
      const nextTitleRaw = getLiveTitleText();
      if (titleValueRef.current !== nextTitleRaw) {
-@@ -4315,16 +4359,21 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4315,16 +4363,21 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
      />
    );
  
@@ -291,7 +302,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
  
    const canvasMouseDownFocusedEditorRef = useRef(false);
  
-@@ -4421,8 +4470,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4421,8 +4474,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
    // Hooks must be called unconditionally in the same order every render.
    if (!note) {
      return (
@@ -302,7 +313,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          <CanvasArea className="min-w-0 flex-1" fullWidth innerClassName="flex h-full items-center justify-center">
            <p className="text-sm text-ink-muted">Create a new note to get started</p>
          </CanvasArea>
-@@ -4432,16 +4482,19 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4432,16 +4486,19 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
  
    // Static top bar: nav left, actions right — like Notion/Craft
  
@@ -324,7 +335,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {isNotesPanelHidden && paneId !== 'right' && onExpandNotesPanel ? (
            <>
              <TooltipProvider>
-@@ -4506,12 +4559,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4506,12 +4563,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
            </div>
          )}
        </div>
@@ -340,7 +351,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                )}
                onClick={isPaneFocused ? undefined : () => setFocusPane(paneId)}
                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-@@ -4543,7 +4597,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4543,7 +4601,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                )}
              </div>
            ) : (
@@ -349,7 +360,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                <NoteBreadcrumb note={note} onNavigate={isNotesPanelHidden ? onExpandNotesPanel : undefined} />
                {note.folderPath === 'Notes' && note.title !== 'Untitled' && (
                  <span className="cursor-default truncate text-xs text-ink-faint opacity-50">{note.title}</span>
-@@ -4551,11 +4605,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4551,11 +4609,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              </div>
            )}
  
@@ -364,7 +375,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {!showFocusedSearchBar && onOpenSearch ? (
            <TooltipProvider>
              <Tooltip>
-@@ -4563,7 +4618,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4563,7 +4622,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                  <button
                    type="button"
                    onClick={onOpenSearch}
@@ -373,7 +384,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                    aria-label="Search in note"
                  >
                    <Search aria-hidden className="h-3.5 w-3.5" />
-@@ -4577,13 +4632,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4577,13 +4636,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
          ) : null}
          {showFocusedSearchBar && onCloseSearch ? (
            <>
@@ -390,7 +401,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {/* Copy note link */}
          <TooltipProvider>
            <Tooltip>
-@@ -4592,7 +4647,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4592,7 +4651,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                  type="button"
                  onMouseDown={preserveEditorSelectionOnMouseDown}
                  onClick={() => { void handleCopyNoteLink(); }}
@@ -399,7 +410,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  aria-label="Copy note link"
                >
                  <Link aria-hidden className="h-3.5 w-3.5" />
-@@ -4601,6 +4656,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4601,6 +4660,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              <TooltipContent side="bottom">Copy note link</TooltipContent>
            </Tooltip>
          </TooltipProvider>
@@ -407,7 +418,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {/* Comments */}
          {note?.id && (
            <CommentsMenuButton
-@@ -4610,6 +4666,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4610,6 +4670,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
            />
          )}
          {/* Share with Agent */}
@@ -416,7 +427,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          <TooltipProvider>
            <Tooltip>
              <TooltipTrigger asChild>
-@@ -4633,6 +4691,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4633,6 +4695,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              )}
            </Tooltip>
          </TooltipProvider>
@@ -424,7 +435,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {/* Overflow menu */}
          <DropdownMenu open={moreActionsOpen} onOpenChange={setMoreActionsOpen}>
            <TooltipProvider>
-@@ -4656,6 +4715,18 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4656,6 +4719,18 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              </Tooltip>
            </TooltipProvider>
            <DropdownMenuContent align="end" side="bottom" sideOffset={6} className="min-w-0 w-max">
@@ -443,7 +454,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
              {/* Copy */}
              <DropdownMenuItem className="gap-2 text-xs" onSelect={handleCopyMarkdown}>
                <FileText aria-hidden className="h-3.5 w-3.5" />
-@@ -4685,6 +4756,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4685,6 +4760,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                <FileDigit aria-hidden className="h-3.5 w-3.5" />
                Note stats
              </DropdownMenuItem>
@@ -452,7 +463,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
              <DropdownMenuSeparator />
              {/* Danger group */}
              <DropdownMenuItem
-@@ -4699,8 +4772,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4699,8 +4776,10 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                  <><Trash2 aria-hidden className="h-3.5 w-3.5" />Trash</>
                )}
              </DropdownMenuItem>
@@ -463,7 +474,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          <CopyForAgentDialog
            open={showCopyForAgentDialog}
            onOpenChange={setShowCopyForAgentDialog}
-@@ -4778,14 +4853,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4778,14 +4857,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
          </Dialog.Root>
          {canShowActionsPanelToggle ? (
            <>
@@ -481,7 +492,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                      aria-label="Show actions panel"
                    >
                      <PanelRight className="h-4 w-4" strokeWidth={1.5} aria-hidden />
-@@ -4810,9 +4886,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4810,9 +4890,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        </TopNavBar>
    );
  
@@ -493,7 +504,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
    const showContentSkeleton = skeletonLines > 0 && hasBodyContent;
    const showEmptySkeleton = skeletonLines > 0 && !hasBodyContent;
    const emptySkeletonLines = Math.max(3, Math.min(24, skeletonLines));
-@@ -4826,10 +4901,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4826,10 +4905,13 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
        className="relative flex h-full min-w-0 flex-1 flex-col bg-surface-canvas"
        onMouseDown={handleCanvasAreaMouseDown}
        onClick={handleCanvasAreaClick}
@@ -508,7 +519,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          responsiveLayout
          wideContent={isFocusMode}
          innerClassName="flex w-full flex-col gap-1"
-@@ -4857,7 +4935,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4857,7 +4939,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                {/* Contenteditable H1 title field */}
                <div
                  ref={titleRefCallback}
@@ -519,7 +530,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  suppressContentEditableWarning
                  role="textbox"
                  aria-label="Note title"
-@@ -4882,6 +4962,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4882,6 +4966,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    void commitTitleChange();
                  }}
                  onKeyDown={(event) => {
@@ -528,7 +539,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                    if (handleTitleEmojiKeyDown(event)) {
                      return;
                    }
-@@ -4944,12 +5026,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4944,12 +5030,15 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    aria-hidden
                  >
                    <span className="min-w-0 truncate">{currentPlaceholder.title}</span>
@@ -544,7 +555,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  </div>
                ) : null}
                </div>
-@@ -4972,7 +5057,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4972,7 +5061,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    ))}
                  </div>
                ) : null}
@@ -554,7 +565,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <MarkdownEditor
                    ref={markdownEditorRef}
                    key={`${note.id}-${editorVersion}`}
-@@ -4980,7 +5067,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4980,7 +5071,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                    value={content}
                    layoutMetadata={lastKnownDiskLayoutMetadataRef.current[note.id]}
                    onChange={handleEditorChange}
@@ -563,7 +574,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                    placeholder={isAgentActive && content === '' ? '' : currentPlaceholder.body}
                    onReady={handleEditorReady}
                    onNavigateToNote={onNavigateToNote}
-@@ -4996,8 +5083,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -4996,8 +5087,11 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                        ? editorRemountReasonRef.current[note.id]?.reason
                        : null
                    }
@@ -576,7 +587,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
                  <div className="agent-skeleton agent-skeleton--content pt-4">
                    {[100, 94, 88, 72, 96, 64].map((width, i) => (
                      <div
-@@ -5037,12 +5127,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+@@ -5037,12 +5131,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
              className="pointer-events-none absolute bottom-8 left-1/2 z-40 -translate-x-1/2"
              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
            >
@@ -591,3 +602,11 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
          {statusLabel ? (
            <div
              className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2"
+@@ -5053,6 +5147,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
+         ) : null}
+         {actionFeedback ? (
+           <div
++            data-action-feedback="" // moss-multi seam: action-feedback (T9.4, the floating detector's allowlist)
+             className={cn(
+               'absolute left-1/2 -translate-x-1/2 z-50',
+               actionFeedback.position === 'bottom' ? 'bottom-8' : 'top-14',
