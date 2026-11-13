@@ -13,8 +13,9 @@ export const TRASH_COPY = {
   trashedNote: `This note is in Trash. You can restore it ${restorable}.`,
   /** A collaborator's open copy of a note its owner moved to Trash. */
   peerTrashed: 'This note was moved to Trash.',
-  /** Confirming a folder's trash. */
-  trashFolder: (name: string) => `Move "${name}" and all its notes to Trash? You can restore them ${restorable}.`,
+  /** Confirming a folder's trash: its notes come back to the top of its vault, never into the trashed folder. */
+  trashFolder: (name: string, vault: string) =>
+    `Move “${name}” and all its notes to Trash? You can restore the notes ${restorable}. They go back to “${vault}”, not into this folder.`,
   /** The bounded wait for acks ran out before a trash (A§10.6). */
   unsyncedTitle: 'Some edits haven’t synced',
   unsyncedBody: 'Moving to Trash now will discard edits in this window that haven’t reached the server. Cancel to keep editing and wait for the connection to return.',

@@ -90,10 +90,15 @@ describe('retention copy', () => {
 
   it('states the period once, as a minimum the copy promises', () => {
     expect(TRASHED_ACTION).toEqual({ action: 'trashed', restorable: true, retentionDays: 30 });
-    for (const text of [TRASH_COPY.emptyTrash, TRASH_COPY.trashedNote, TRASH_COPY.trashFolder('Plans')]) {
-      expect(text).toMatch(/restored? (it |them )?for 30 days/);
+    for (const text of [TRASH_COPY.emptyTrash, TRASH_COPY.trashedNote, TRASH_COPY.trashFolder('Plans', 'Home')]) {
+      expect(text).toMatch(/restored? (it |them |the notes )?for 30 days/);
       expect(copyProblems('elsewhere.ts', `const copy = ${JSON.stringify(text)};`), 'outside the module the same words would fail').not.toEqual([]);
     }
+  });
+
+  it('says where a trashed folder’s notes come back, which is true: the top of its vault', () => {
+    expect(TRASH_COPY.trashFolder('Plans', 'Home')).toBe(
+      'Move “Plans” and all its notes to Trash? You can restore the notes for 30 days. They go back to “Home”, not into this folder.');
   });
 
   describe('each check can fail', () => {

@@ -43,6 +43,9 @@ export const canMoveFolder = (path: string): boolean => path !== ROOT && !surfac
 /** A drop target: a folder of this vault the caller may add to. Moss's own rules still refuse cycles and no-op drops. */
 export const canDropInto = (path: string): boolean => !surfacedFolder(path) && canEditFolder(path);
 
+/** The vault a trashed folder's notes return to: the vault on screen. */
+export const trashFolderVault = (): string => workspace()?.getSnapshot()?.vault.name ?? ROOT;
+
 /** Trash Folder: the owner only. */
 export const canTrashFolder = (path: string): boolean => can(roleOf(path), 'manage');
 
