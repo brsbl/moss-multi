@@ -561,6 +561,7 @@ test('j16-review: a Review window left open across an accept that keeps the orig
   await pasteHtml(ben, docId, '<p>b</p><p>x</p>', 'b\n\nx');
   await acked(ben, docId, 'the paste');
   await expect.poll(() => blocks(review), { message: 'Review shows the suggestion', timeout: BIND_TIMEOUT }).toEqual(expected);
+  await expect.poll(() => painted(review, 'suggest-insert'), { message: 'Review paints it', timeout: BIND_TIMEOUT }).not.toEqual([]);
 
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
   const { card } = await cardRows(ada);
@@ -568,7 +569,8 @@ test('j16-review: a Review window left open across an accept that keeps the orig
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { message: 'the accepted note', timeout: BIND_TIMEOUT }).toContain(expected.join('\n\n'));
 
-  // The Review window, never reloaded, reads as the stored note.
+  // The Review window, never reloaded, takes the accept (nothing left to paint) and reads as the stored note.
+  await expect.poll(async () => [...await painted(review, 'suggest-insert'), ...await painted(review, 'suggest-delete')], { message: 'Review took the accept', timeout: BIND_TIMEOUT }).toEqual([]);
   await expect.poll(() => blocks(review), { message: 'Review shows the note as it now is', timeout: BIND_TIMEOUT }).toEqual(expected);
   await expect(ui.pane(review, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review');
   const stored = (await content(ada, docId)).trim();
