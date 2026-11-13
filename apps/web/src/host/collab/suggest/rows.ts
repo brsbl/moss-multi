@@ -12,3 +12,8 @@ export function usePreviewRows(ready: { hash: string; hunks: readonly Hunk[] } |
   // The hash covers the hunks, so it alone keys the rows.
   return useMemo(() => (hash !== null && hunks ? describePreview({ hash, hunks }) : NONE), [hash]);
 }
+
+/** The rows in plain words (T9.9). */
+export function plainRows(rows: readonly ReviewRow[]): ReviewRow[] {
+  return [...rows];
+}

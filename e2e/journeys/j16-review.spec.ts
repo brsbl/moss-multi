@@ -4,10 +4,11 @@
 // panel and it leaves both windows; and the author's withdraw removes the inserted text from every view, Review
 // included, while the server's note stays byte-identical. Reject and Withdraw ask first, so two clicks on a marker
 // never reject.
+import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import {
   BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, REVIEW_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
-  SUGGESTION_STATUS_ATTR, SYNC_UNACKED_ATTR,
+  SUGGESTION_STATUS_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import {
@@ -453,4 +454,137 @@ test('j16-review: a code-block edit reads as its changed line before and after, 
   await card.getByRole('button', { name: 'Accept' }).click();
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('console.debug(y)');
+});
+
+test('j16-review: a marker or a change in Review opens its own card beside it, in plain words; the card follows its change and closes when it is decided @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors, 'Opening line of the note.\n\n- First item\n- Second item\n\nKeep this word plain.');
+  const carlPrincipal = await actors.principal('carl');
+  await grantDoc(ada, docId, carlPrincipal, 'editor');
+  const carl = await actors.session(carlPrincipal);
+  await openIn(ben, docId, 'suggest');
+  await openIn(carl, docId, 'edit');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(3);
+  // Entering Review and the last decision leaving it remount the owner's body; the accept rebuilds the author's fork.
+  ada.expectReconnects(2, docId);
+  ben.expectReconnects(1, docId);
+
+  // Ben adds one list item.
+  await caret(ben, docId, 'First item', 'First item'.length);
+  await ben.page.keyboard.press('Enter');
+  await ben.page.keyboard.type('Added item');
+  await acked(ben, docId, 'the new list item');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  const single = ada.page.locator(`[${SUGGESTIONS_PANEL_ATTR}="card"]`);
+  const list = ada.page.locator(`[${SUGGESTIONS_PANEL_ATTR}=""]`);
+  const box = async (locator: Locator) => (await locator.boundingBox())!;
+  const wedge = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][aria-label*="Added item"]`);
+  await expect(wedge, 'a wedge marks the new item').toHaveCount(1, { timeout: BIND_TIMEOUT });
+  let point = { x: 0, y: 0 };
+  let mark = { x: 0, y: 0, width: 0, height: 0 };
+  await expect.poll(async () => {
+    mark = await wedge.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    });
+    point = { x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 };
+    return mark.width > 0;
+  }, { timeout: BIND_TIMEOUT }).toBe(true);
+
+  // The first click opens that suggestion's card at the marker, not the list under the top bar.
+  await ada.page.mouse.click(point.x, point.y);
+  await expect(single, 'the marker opens its own card').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(list, 'the list stays closed').toHaveCount(0);
+  await expect(single.locator(`[${SUGGESTION_CARD_ATTR}]`)).toHaveCount(1);
+  await expect(single, 'the card says what it is').toContainText(/Suggestion by Ben/);
+  const opened = await box(single);
+  expect(opened.y, 'the card opens below the marker').toBeGreaterThanOrEqual(mark.y + mark.height - 1);
+  expect(opened.y - (mark.y + mark.height), 'right beside it').toBeLessThanOrEqual(24);
+  expect(Math.abs(opened.x - mark.x), 'starting at it').toBeLessThanOrEqual(32);
+  const under = await ada.page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('[data-suggestions-panel]'), point);
+  expect(under, 'nothing of the card sits under the pointer').toBe(false);
+  const accept = single.getByRole('button', { name: 'Accept' });
+  await expect(accept).toBeEnabled({ timeout: BIND_TIMEOUT });
+  const rows = single.locator(`[${SUGGESTION_ROW_ATTR}]`);
+  await expect(rows, 'one added list item is one row').toHaveCount(1);
+  await expect(rows.first()).toContainText('new list item');
+  for (const text of await rows.allInnerTexts()) expect(text, 'plain words').not.toMatch(/listitem|textFormat|value:/);
+
+  // A second click in the same spot changes nothing.
+  await ada.page.mouse.click(point.x, point.y);
+  await ada.page.waitForTimeout(500);
+  await expect(single).toBeVisible();
+  await expect(single.locator(`[${SUGGESTION_CARD_ATTR}]`)).toHaveCount(1);
+  const again = await box(single);
+  expect(Math.abs(again.x - opened.x) + Math.abs(again.y - opened.y), 'the card did not move').toBeLessThanOrEqual(1);
+  await ada.page.keyboard.press('Escape');
+  await expect(single).toHaveCount(0);
+
+  // In Review, the clicked change stays visible beside its card, and the card follows it.
+  await ada.page.getByRole('button', { name: 'Review suggestions' }).click();
+  await expect(ui.pane(ada, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
+  const textBox = () => ui.body(ada, docId).evaluate((root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = (node.textContent ?? '').indexOf('Added item');
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + 'Added item'.length);
+      const rect = range.getBoundingClientRect();
+      return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    }
+    return null;
+  });
+  await expect(async () => {
+    const text = (await textBox())!;
+    await ada.page.mouse.click(text.x + text.width / 2, text.y + text.height / 2);
+    await expect(single).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: BIND_TIMEOUT });
+  const beside = async (what: string) => {
+    await expect.poll(async () => {
+      const text = await textBox();
+      const card = await single.boundingBox();
+      if (!text || !card) return `${what}: no text or card`;
+      const gap = card.y - (text.y + text.height);
+      const covered = await ada.page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('[data-suggestions-panel]'), { x: text.x + text.width / 2, y: text.y + text.height / 2 });
+      return gap >= -1 && gap <= 24 && !covered ? 'beside' : `${what}: gap ${Math.round(gap)}, covered ${covered}`;
+    }, { timeout: BIND_TIMEOUT }).toBe('beside');
+  };
+  await beside('opened in Review');
+  await expect(list).toHaveCount(0);
+
+  // A peer's edit above moves the change down; the card goes with it.
+  const before = (await textBox())!;
+  await caret(carl, docId, 'Opening line', 0);
+  await carl.page.keyboard.type('A new first line from Carl.');
+  await carl.page.keyboard.press('Enter');
+  await acked(carl, docId, "the peer's line");
+  await expect.poll(async () => (await textBox())?.y ?? 0, { timeout: BIND_TIMEOUT }).toBeGreaterThan(before.y + 8);
+  await beside("after a peer's edit");
+
+  // A narrower window moves it again.
+  await ada.page.setViewportSize({ width: 1000, height: 900 });
+  await beside('after a resize');
+
+  // Deciding it closes the card.
+  await expect(accept).toBeEnabled({ timeout: BIND_TIMEOUT });
+  await accept.click();
+  await expect(single, 'the card closes once the suggestion is decided').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await expect(ui.pane(ada, docId), 'the last decision leaves Review').toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
+  await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('Added item');
+
+  // A word made bold reads as such.
+  await caret(ben, docId, 'this word', 5, 4);
+  await ben.page.keyboard.press('ControlOrMeta+b');
+  await acked(ben, docId, 'the bold word');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const bold = (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(bold.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  const boldRows = await bold.locator(`[${SUGGESTION_ROW_ATTR}]`).allInnerTexts();
+  expect(boldRows.join('\n'), 'the row says what was done').toContain('made bold');
+  for (const text of boldRows) expect(text, 'plain words').not.toMatch(/listitem|textFormat|value:/);
+  await closePanel(ada);
 });
