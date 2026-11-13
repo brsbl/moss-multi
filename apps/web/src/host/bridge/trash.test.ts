@@ -155,7 +155,7 @@ it('a restore that brought the note’s vault back switches the window to that v
       }
     }
     if ((init?.method ?? 'GET') === 'POST' && url.pathname === '/api/docs/old/restore') {
-      return Response.json({ doc: { id: 'old', folderId: 'trip' }, vaultId: 'trip', role: 'owner' });
+      return Response.json({ doc: { id: 'old', folderId: 'trip' }, vaultId: 'trip', vaultRestored: true, role: 'owner' });
     }
     return server.fetch(input, init);
   };

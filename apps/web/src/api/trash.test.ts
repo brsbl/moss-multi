@@ -349,7 +349,7 @@ describe('POST /api/docs/:id/restore for a note whose vault is in Trash', () => 
 
     const response = await call(ada, 'POST', `/api/docs/${inFolder}/restore`);
     expect(response.status, await response.clone().text()).toBe(200);
-    expect(await response.json()).toMatchObject({ doc: { id: inFolder, folderId: vault }, vaultId: vault });
+    expect(await response.json()).toMatchObject({ doc: { id: inFolder, folderId: vault }, vaultId: vault, vaultRestored: true });
     expect(await folderRow(vault), 'the vault row is live again').toMatchObject({ deleted_at: null, trash_batch_id: null, name: 'Restore trip' });
     expect((await folderRow(folder))?.deleted_at, 'its folders stay in Trash').not.toBeNull();
     expect(await docRow(inFolder)).toMatchObject({ deleted_at: null, folder_id: vault, trash_batch_id: null });
@@ -408,6 +408,8 @@ describe('POST /api/docs/:id/restore for a note whose vault is in Trash', () => 
     }
     expect((await folderRow(vault))?.deleted_at, 'the vault stays in Trash').not.toBeNull();
     expect(restored).toEqual([]);
+    // The owner can; this also leaves nothing of theirs in Ben's and Cy's Trash for the tests after.
+    for (const doc of [byDoc, byVault]) expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
   });
 });
 

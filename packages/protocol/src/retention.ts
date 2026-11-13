@@ -16,6 +16,9 @@ export const TRASH_COPY = {
   /** Confirming a folder's trash: its notes come back to the top of its vault, never into the trashed folder. */
   trashFolder: (name: string, vault: string) =>
     `Move “${name}” and all its notes to Trash? You can restore the notes ${restorable}. They go back to “${vault}”, not into this folder.`,
+  /** Confirming a vault's trash: each of its notes restores alone, and the first brings the vault row back. */
+  trashVault: (vault: string) => 'Every note and folder in this vault moves to Trash with it, and everyone it’s shared with loses access. '
+    + `You can restore its notes one at a time ${restorable}. Restoring one brings “${vault}” back without its folders.`,
   /** The bounded wait for acks ran out before a trash (A§10.6). */
   unsyncedTitle: 'Some edits haven’t synced',
   unsyncedBody: 'Moving to Trash now will discard edits in this window that haven’t reached the server. Cancel to keep editing and wait for the connection to return.',

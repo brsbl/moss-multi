@@ -26,7 +26,7 @@ function vaultName(value: unknown): { name: string } | { problem: string } {
 const taken = (name: string) => refuse(409, 'vault-exists', `You already have a vault named “${name}”.`);
 
 /** Tells everyone who can see the vault to re-read their switcher; a committed change never fails on it. */
-async function announce(env: FoldersEnv, principalIds: Iterable<string>): Promise<void> {
+export async function announceVaults(env: FoldersEnv, principalIds: Iterable<string>): Promise<void> {
   if (!env.PrincipalDO) return;
   try {
     await Promise.all([...new Set(principalIds)].map((id) =>
@@ -58,7 +58,7 @@ async function createVault(request: Request, env: FoldersEnv): Promise<Response>
     if (isUnique(error)) return taken(named.name);
     throw error;
   }
-  await announce(env, [userId]);
+  await announceVaults(env, [userId]);
   return json({ vault: { id, name: named.name, role: 'owner', owned: true } }, 201, NO_STORE);
 }
 
@@ -91,7 +91,7 @@ async function renameVault(request: Request, env: FoldersEnv, id: string): Promi
     if (isUnique(error)) return taken(named.name);
     throw error;
   }
-  await announce(env, await principalsWithFolderAccess(env.DB, id));
+  await announceVaults(env, await principalsWithFolderAccess(env.DB, id));
   return json({ vault: { id, name: named.name, role: 'owner', owned: true } }, 200, NO_STORE);
 }
 
