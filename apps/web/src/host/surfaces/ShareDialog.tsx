@@ -7,12 +7,14 @@
 // context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Each person's (and invite's)
 // access has glyphdown's role select and Remove button; lowering or removing someone closes their open windows through
 // the one kick path (T2.5). An owner also sees, read-only, who reaches the target from the folders and vault above it
-// and which of those places have links, each with a Manage button to that place's own dialog (T9.7).
+// and which of those places have links, each with a Manage button to that place's own dialog (T9.7). Sharing by email
+// makes an invite link and says nothing is emailed; open invites have their own section, and each Copy confirms on
+// itself (T9.8).
 import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
 import { Button } from '@moss/shared/components/ui/button';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { UserPlus, X } from 'lucide-react';
+import { Check, UserPlus, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { useTerminal } from '../collab/terminal.ts';
@@ -74,8 +76,12 @@ interface ShareLink {
   createdAt: number;
 }
 
-type Where = 'people' | 'members' | 'links';
-type Status = { tone: 'error' | 'done'; text: string; where: Where } | null;
+type Where = 'people' | 'members' | 'invites' | 'links';
+/** `invite`: the email whose invite link the status offers to copy (T9.8). */
+type Status = { tone: 'error' | 'done'; text: string; where: Where; invite?: string } | null;
+
+/** An agent's id is a UUID, copied from Settings → Agents; anything else without an @ is not sent (T9.8). */
+const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const SECTION_LABEL = 'text-micro font-medium uppercase tracking-wider text-ink-faint';
 const CARD = 'rounded-lg border border-border-subtle bg-surface-raised-card p-3';
@@ -110,12 +116,43 @@ function AccessChoice<R extends Role>({ label, roles, value, onChange, disabled 
   );
 }
 
-function StatusLine({ status, where }: { status: Status; where: Where }): ReactNode {
+function StatusLine({ status, where, action }: { status: Status; where: Where; action?: ReactNode }): ReactNode {
   if (!status || status.where !== where) return null;
-  return (
+  const line = (
     <p role={status.tone === 'error' ? 'alert' : 'status'} className={status.tone === 'error' ? 'text-xs text-accent-terracotta' : 'text-xs text-ink-muted'}>
       {status.text}
     </p>
+  );
+  if (!action) return line;
+  return (
+    <div className="flex items-center justify-between gap-3">
+      {line}
+      {action}
+    </div>
+  );
+}
+
+/** A copy that confirms on the button itself with a check for 2 s, as Moss's Share with Agent does
+ * (CopyForAgentDialog); a refused clipboard says so through `onFail`. */
+function CopyButton({ text, label = 'Copy', onFail, className }: {
+  text: string | undefined; label?: string; onFail: () => void; className?: string;
+}): ReactNode {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const press = () => {
+    if (!text) return;
+    void copy(text).then(() => {
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 2000);
+    }, onFail);
+  };
+  return (
+    <Button type="button" size="sm" variant="ghost" disabled={!text} onClick={press} className={`shrink-0 gap-1.5 ${className ?? ''}`}>
+      {copied ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}
+      {copied ? 'Copied' : label}
+    </Button>
   );
 }
 
@@ -185,8 +222,9 @@ const unreachable = (error: unknown): never => {
   throw isLeaveCancelled(error) ? error : new Error(UNREACHABLE);
 };
 
-function copy(text: string): Promise<void> {
-  return navigator.clipboard.writeText(text);
+/** Async, so a page without a clipboard rejects rather than throws. */
+async function copy(text: string): Promise<void> {
+  await navigator.clipboard.writeText(text);
 }
 
 /** The shell keeps a fixed title (Moss prints titles in faint capitals); the body's first line names the target. */
@@ -245,6 +283,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const [name, setName] = useState<string | null>(null);
   const [inherited, setInherited] = useState<InheritedGroup[]>([]);
   const [linksAbove, setLinksAbove] = useState<LinkAbove[]>([]);
+  const [hasAgent, setHasAgent] = useState(false);
   const base = apiBase(target);
   const { title, description, lead, named, rest } = titles(target, name);
 
@@ -278,9 +317,19 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     void load();
   }, [open, load]);
 
+  // Someone with an agent is told, once, that its ID shares too; a failed read only leaves the hint out.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    call<{ agents: unknown[] }>('/api/agents').then((answer) => {
+      if (live) setHasAgent(answer.ok && (answer.body?.agents.length ?? 0) > 0);
+    }, () => undefined);
+    return () => { live = false; };
+  }, [open]);
+
   /** One request at a time; a failure says why, in the section that asked. A change is confirmed as soon as the
    * server takes it, and then the lists are read again. */
-  async function run(where: Where, work: () => Promise<string | null>, reload = true): Promise<void> {
+  async function run(where: Where, work: () => Promise<string | { text: string; invite: string } | null>, reload = true): Promise<void> {
     if (pending) return;
     setPending(true);
     setStatus(null);
@@ -288,7 +337,8 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     try {
       const done = await work();
       took = true;
-      if (done) setStatus({ tone: 'done', text: done, where });
+      if (typeof done === 'string') setStatus({ tone: 'done', text: done, where });
+      else if (done) setStatus({ tone: 'done', where, ...done });
     } catch (error) {
       // A change the page's leave cut off may have landed: the lists say whether it did.
       if (isLeaveCancelled(error)) took = true;
@@ -309,7 +359,11 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       setStatus({ tone: 'error', text: 'Enter an email address or an agent ID.', where: 'people' });
       return;
     }
-    // An email has an @; anything else is the id of one of the caller's agents, copied from Settings → Agents.
+    // An email has an @; an agent's id is a UUID, copied from Settings → Agents; anything else is not sent.
+    if (!address.includes('@') && !AGENT_ID.test(address)) {
+      setStatus({ tone: 'error', text: 'Enter a full email address, like name@example.com.', where: 'people' });
+      return;
+    }
     if (!address.includes('@')) {
       if (access === 'owner') {
         setStatus({ tone: 'error', text: 'An agent can have at most edit access.', where: 'people' });
@@ -329,13 +383,15 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
         .catch(unreachable);
       if (!answer.ok || !answer.body?.shared) throw refused(answer.body, 'Sharing didn’t work. Try again.');
       setEmail('');
-      return `Shared with ${answer.body.shared.email}.`;
+      // Invites are copy-link only (PRODUCT ruling 19): say so, and offer the link here.
+      const invited = answer.body.shared.email;
+      return { text: `Invite link created for ${invited}. No email is sent. Copy the link and send it to them.`, invite: invited };
     });
   }
 
   /** Changes or removes a member (by id) or an invite (by email); the server closes their windows on a lowering. */
   function changeAccess(who: { principalId: string } | { email: string }, label: string, choice: ShareRole | 'remove'): void {
-    void run('members', async () => {
+    void run('email' in who ? 'invites' : 'members', async () => {
       const answer = await call(`${base}/members`, {
         method: choice === 'remove' ? 'DELETE' : 'PATCH',
         body: JSON.stringify(choice === 'remove' ? who : { ...who, role: choice }),
@@ -362,27 +418,10 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
     });
   }
 
-  function copyLink(link: ShareLink): void {
-    void run('links', async () => {
-      try {
-        await copy(linkUrl(target, link.token));
-      } catch {
-        throw new Error('Couldn’t copy. Select the link and copy it instead.');
-      }
-      return 'Copied the link.';
-    }, false);
-  }
-
-  function copyInvite(invite: PendingInvite): void {
-    void run('people', async () => {
-      try {
-        await copy(invite.url ?? '');
-      } catch {
-        throw new Error('Couldn’t copy. Select the invite link and copy it instead.');
-      }
-      return `Copied the invite link for ${invite.email}. It works only when they sign in with that email.`;
-    }, false);
-  }
+  // A copy confirms on its own button; only a refused clipboard says anything, in the copy's section.
+  const copyFailed = (where: Where, what: string) => () =>
+    setStatus({ tone: 'error', text: `Couldn’t copy. Select the ${what} and copy it instead.`, where });
+  const statusInvite = status?.invite ? invites.find((invite) => invite.email === status.invite) : undefined;
 
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} title={title} description={description}>
@@ -397,7 +436,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
           <Input
             type="text"
             aria-label="Email or agent ID"
-            placeholder="name@example.com or your agent’s ID"
+            placeholder="Email address"
             autoComplete="off"
             value={email}
             readOnly={pending}
@@ -407,10 +446,12 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
           <div className="flex flex-wrap items-center justify-between gap-2">
             <AccessChoice label="Access" roles={SHARE_ROLES} value={access} onChange={setAccess} disabled={pending} />
             <Button type="submit" size="sm" disabled={pending}>
-              Share
+              {AGENT_ID.test(email.trim()) ? 'Share' : 'Create invite link'}
             </Button>
           </div>
-          <StatusLine status={status} where="people" />
+          {hasAgent ? <p className="text-xs text-ink-faint">To share with one of your agents, paste its ID from Settings → Agents.</p> : null}
+          <StatusLine status={status} where="people"
+            action={status?.invite ? <CopyButton label="Copy link" text={statusInvite?.url} onFail={copyFailed('people', 'invite link')} className="-my-2" /> : undefined} />
         </form>
       </div>
       <div className="space-y-2">
@@ -441,39 +482,8 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                   )}
                 </li>
               ))}
-              {invites.map((invite) => (
-                <li key={`invite:${invite.email}`} className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
-                      <p className="text-micro text-ink-faint">Invited</p>
-                    </div>
-                    <AccessControls who={invite.email} role={invite.role} disabled={pending}
-                      onChoose={(choice) => changeAccess({ email: invite.email }, invite.email, choice)} />
-                  </div>
-                  {invite.url ? (
-                    <div className="flex items-center gap-2">
-                      <Input
-                        readOnly
-                        aria-label={`Invite link for ${invite.email}`}
-                        value={invite.url}
-                        onFocus={(event) => event.currentTarget.select()}
-                        className="h-7 min-w-0 flex-1 border-border-default font-mono text-xs"
-                      />
-                      <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => copyInvite(invite)}>
-                        Copy
-                      </Button>
-                    </div>
-                  ) : null}
-                </li>
-              ))}
             </ul>
           )}
-          {invites.length > 0 ? (
-            <p className="mt-3 text-xs text-ink-muted">
-              An invite link works only for someone signed in with the email it names. Copy it and send it to them.
-            </p>
-          ) : null}
           {/* Who reaches it from above, read-only; their access changes in that place's own dialog. */}
           {!loadError && members !== null ? inherited.map((group) => {
             const heading = `From ${placeRef(group.place, target)}`;
@@ -497,6 +507,43 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
         </div>
         <StatusLine status={status} where="members" />
       </div>
+      {invites.length > 0 && !loadError ? (
+        <div className="space-y-2">
+          <span className={SECTION_LABEL}>Pending invites</span>
+          <div className={CARD}>
+            <ul aria-label="Pending invites" className="space-y-2">
+              {invites.map((invite) => (
+                <li key={`invite:${invite.email}`} className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
+                      <p className="text-micro text-ink-faint">Waiting for them to open the invite link</p>
+                    </div>
+                    <AccessControls who={invite.email} role={invite.role} disabled={pending}
+                      onChoose={(choice) => changeAccess({ email: invite.email }, invite.email, choice)} />
+                  </div>
+                  {invite.url ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        readOnly
+                        aria-label={`Invite link for ${invite.email}`}
+                        value={invite.url}
+                        onFocus={(event) => event.currentTarget.select()}
+                        className="h-7 min-w-0 flex-1 border-border-default font-mono text-xs"
+                      />
+                      <CopyButton text={invite.url} onFail={copyFailed('invites', 'invite link')} />
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs text-ink-muted">
+              An invite link works only for someone signed in with the email it names. Copy it and send it to them.
+            </p>
+          </div>
+          <StatusLine status={status} where="invites" />
+        </div>
+      ) : <StatusLine status={status} where="invites" />}
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Share links</span>
         <div className={`${CARD} space-y-3`}>
@@ -525,9 +572,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                     onFocus={(event) => event.currentTarget.select()}
                     className="h-7 min-w-0 flex-1 basis-40 border-border-default font-mono text-xs"
                   />
-                  <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => copyLink(link)}>
-                    Copy
-                  </Button>
+                  <CopyButton text={linkUrl(target, link.token)} onFail={copyFailed('links', 'link')} />
                   <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => revoke(link)}>
                     Revoke
                   </Button>
