@@ -452,7 +452,8 @@ async function park(actor: Actor, id: string, text: string, back: number, to = b
   }, [back, to]);
   await expect.poll(() => actor.page.evaluate(() => window.getSelection()?.toString().length ?? -1), { message: `${actor.label}: the selection is set` })
     .toBe(Math.abs(back - to));
-  await actor.page.waitForTimeout(150); // the editor reads the DOM selection on selectionchange}
+  await actor.page.waitForTimeout(150); // the editor reads the DOM selection on selectionchange
+}
 
 async function converged(ada: Actor, ben: Actor, id: string) {
   await expect.poll(async () => (await ui.fieldText(ada, id, 'body')) === (await ui.fieldText(ben, id, 'body')),
