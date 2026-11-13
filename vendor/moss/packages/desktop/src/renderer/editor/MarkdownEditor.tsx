@@ -1,6 +1,8 @@
 // ported-from: packages/desktop/src/renderer/editor/MarkdownEditor.tsx @ 762abb777
 // moss-multi seam: bound editors do not normalize hydration or expose an unfocused toolbar.
 import { isBoundEditor } from '@moss-multi/host/collab/view-state';
+// moss-multi seam: suggest-toggle (T5.1): the docked toolbar's Suggest toggle
+import { ToolbarCollab } from '@moss-multi/host/collab/suggest/SuggestChrome';
 import type { ReactNode } from 'react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -153,7 +155,7 @@ import { TRASH_COPY } from '@moss-multi/host/retention';
 import { findEmail, schemelessUrlMatches } from '@moss-multi/host/autolink';
 // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole in batches, or is refused whole
 import { createEditor } from 'lexical';
-import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, planPlainText, type PastePlan } from '@moss-multi/host/large-paste';
+import { $insertBlocks, $planPaste, $replaceEmptyNote, pasteLarge, pastesInBatches, planPlainText, type PastePlan } from '@moss-multi/host/large-paste';
 import { $withDocumentImport } from './markdown/fixes';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { $convertMossCustomCodeNodes, $postImportNormalize, unescapeHtmlEntities } from './markdown/normalize';
@@ -191,7 +193,7 @@ export interface MarkdownEditorProps {
   editorMountVersion?: number;
   editorRemountReason?: EditorRemountReason | null;
   /** moss-multi seam: collaboration (A§2.2, A§10.3): present when the note is bound to its doc; the plugin replaces the history plugin. */
-  collaboration?: { plugin: ReactNode } | null;
+  collaboration?: { plugin: ReactNode; backgroundWriters?: boolean } | null;
 }
 
 export type MarkdownEditorHandle = {
@@ -813,7 +815,9 @@ export const shouldDeferToRichClipboardPaste = (
 const captureSelectionForPaste = (editor: LexicalEditor): SavedPasteSelection | null => {
   let saved: SavedPasteSelection | null = null;
 
-  editor.getEditorState().read(() => {
+  // moss-multi seam: suggest-paste (T5.S10): the selection as the paste's own update leaves it (Suggest mode's routing
+  // struck the selection and put the caret at its end).
+  (editor._pendingEditorState ?? editor.getEditorState()).read(() => {
     const selection = $getSelection();
     if ($isRangeSelection(selection)) {
       saved = {
@@ -1244,12 +1248,13 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
       }
 
       // moss-multi seam: whole-paste (T3.S6): a large plain-text paste lands whole in batches, as Lexical's own paste
-      // would place it (forced: as insertRawText would), or is refused whole.
+      // would place it (forced: as insertRawText would), or is refused whole. Suggest mode (T5.S10) pastes it natively.
       const forcedPlainText = shouldForcePlainTextMarkdownPaste(pastedMarkdownCandidate);
       const plainText = forcedPlainText ? pastedMarkdownCandidate : plainTextPayload;
       if (
         (forcedPlainText || !(hasExplicitMarkdownPayload || shouldImportMarkdownFromPaste(pastedMarkdownCandidate))) &&
         shouldChunkMarkdownPaste(plainText) &&
+        pastesInBatches(editor) &&
         insertLargePaste(editor, () => planPlainText(MARKDOWN_EDITOR_NODES, normalizeClipboardLineEndings(plainText), forcedPlainText))
       ) {
         event.preventDefault();
@@ -1272,8 +1277,8 @@ export const registerPasteFormattingHandlers = (editor: LexicalEditor): (() => v
         event.preventDefault();
         event.stopPropagation();
         // moss-multi seam: whole-paste (T3.S6): a large paste is parsed whole and lands whole, in batches, never in
-        // text chunks, so nothing is dropped and one undo removes it.
-        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate)) {
+        // text chunks, so nothing is dropped and one undo removes it. Suggest mode (T5.S10) pastes it in one update.
+        if (shouldChunkMarkdownPaste(pastedMarkdownCandidate) && pastesInBatches(editor)) {
           return insertLargeMarkdownPaste(editor, pastedMarkdownCandidate);
         }
         return insertMarkdownFromPaste(editor, pastedMarkdownCandidate);
@@ -3764,6 +3769,7 @@ function FloatingSelectionTools({
             data-floating-selection-toolbar="true" // moss-multi seam: toolbar-contract (A§19): moss's own bottom toolbar
           >
             <div ref={portalRef} className="w-full max-w-lg empty:hidden" />
+            <ToolbarCollab noteId={noteId} />{/* moss-multi seam: suggest-toggle (T5.1): beside the docked bar, outside its layout */}
             <SelectionToolbarShell
               className="flex-col"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -4355,6 +4361,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       updateContentFromMarkdown
     ]
   );
+  // moss-multi seam: background-writers (A§10.10, T5.1): off outside Edit mode, so Suggest records only the author's edits.
+  const backgroundWriters = !readOnly && collaboration?.backgroundWriters !== false;
 
   return (
     <CurrentNoteIdContext.Provider value={noteId}>
@@ -4389,7 +4397,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         <ListPlugin hasStrictIndent />
         <CheckListPlugin />
         {!readOnly && <ChecklistPreservePlugin />}
-        {!readOnly && <ChecklistSortPlugin />}
+        {backgroundWriters && <ChecklistSortPlugin />}
         <HorizontalRulePlugin />
         <TablePlugin hasCellMerge={false} hasHorizontalScroll />
         <TableColumnLayoutPlugin />
@@ -4397,17 +4405,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         {!readOnly && <TableActionMenuPlugin noteId={noteId} />}
         {!readOnly && <TableExitPlugin />}
         <CodeHighlighterPlugin />
-        {!readOnly && <CodeNodeNormalizationPlugin />}
+        {backgroundWriters && <CodeNodeNormalizationPlugin />}
         {!readOnly && <AutoArrowPlugin />}
         {!readOnly && <AutoDividerPlugin />}
         <FormulaAwareMarkdownShortcutsPlugin enabled={!isFormulaDraftPillActive} />
         {!readOnly && <TabIndentPlugin />}
         {!readOnly && <ListHotkeyPlugin />}
         {!readOnly && <DoubleEmptyListExitPlugin />}
+        {/* moss-multi seam: suggest-formulas (T5.B3): mounted whenever editable, so Suggest commits a typed formula; only its background writes follow backgroundWriters. */}
         {!readOnly && (
           <MathCalculationPlugin
             noteId={noteId}
             onDraftPillActiveChange={setIsFormulaDraftPillActive}
+            backgroundWrites={backgroundWriters}
           />
         )}
         <FormulaPlugin noteId={noteId} />
@@ -4443,7 +4453,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         {!readOnly && <WebpageEmbedPastePlugin />}
         {!readOnly && <EditorInputSamplingPlugin />}
         {!readOnly && <FocusGuardPlugin />}
-        <ColorCodeConversionPlugin />
+        {backgroundWriters && <ColorCodeConversionPlugin />}
         {!readOnly && <ColorCodePlugin />}
         <EmbedPillPlugin readOnly={readOnly} />
         {!hasInitialSerializedStateProp && (

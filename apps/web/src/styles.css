@@ -42,3 +42,98 @@
 ::highlight(moss-comment-active-4) { text-decoration-color: var(--highlight-chalk-grey); }
 [data-theme="dark"] ::highlight(moss-comment-hover-0),
 [data-theme="dark"] ::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
+
+/* Suggestion paint (docs/design/suggestions.md §7): derived highlights and an overlay, never the tree. */
+::highlight(suggest-insert) {
+  background-color: var(--highlight-green);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-brand);
+}
+::highlight(suggest-delete) {
+  color: var(--accent-terracotta);
+  text-decoration: line-through;
+  text-decoration-color: var(--accent-terracotta);
+}
+/* Above moss's block gap cursors (z-20 hit areas at each block edge), so a wedge there takes the hover and click. */
+.moss-suggest-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 21;
+}
+.moss-suggest-wedge {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  pointer-events: auto;
+  cursor: pointer;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid var(--accent-brand);
+}
+.moss-suggest-preview {
+  display: none;
+  position: absolute;
+  top: 10px;
+  left: -8px;
+  /* Sized to its text, not to the 8px wedge that holds it, and never wider than the viewport; drawMarks shifts it
+     back inside the viewport when it opens near an edge. */
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--accent-brand);
+  background: var(--surface-floating, #fff);
+  color: var(--ink-default, inherit);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 2px 8px var(--ink-shadow-soft, transparent);
+}
+.moss-suggest-wedge:hover .moss-suggest-preview,
+.moss-suggest-wedge[data-open] .moss-suggest-preview {
+  display: block;
+}
+.moss-suggest-gutter {
+  position: absolute;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent-brand);
+  pointer-events: auto;
+  cursor: pointer;
+}
+/* Struck text a rewrite took out of the suggester's fork, drawn above the gap where it stood. */
+.moss-suggest-ghost {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid var(--accent-terracotta);
+  background: var(--surface-floating, #fff);
+  color: var(--accent-terracotta);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+  text-decoration: line-through;
+  text-decoration-color: var(--accent-terracotta);
+  pointer-events: none;
+}
+.moss-suggest-ghost::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 1px;
+  height: var(--ghost-line, 1em);
+  background: var(--accent-terracotta);
+}
+.moss-suggest-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-brand);
+  pointer-events: auto;
+  cursor: pointer;
+}

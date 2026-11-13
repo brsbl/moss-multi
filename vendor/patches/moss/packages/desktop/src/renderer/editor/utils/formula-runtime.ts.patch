@@ -74,7 +74,19 @@ diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/pac
    return /^[\s+\-*/()]*$/.test(remainder);
  }
  
-@@ -511,9 +560,8 @@ function normalizeFormulaExpression(
+@@ -132,7 +181,10 @@ export function classifyFormulaSource(
+     return 'invalid';
+   }
+ 
+-  const storedDisplay = options?.storedDisplay?.trim() ?? '';
++  // moss-multi seam: typed-stored-display (T5.P): a peer's or a suggestion's `__result` that is not a string reads as
++  // no stored display, so a forged value never throws in every reader's text walk.
++  const stored: unknown = options?.storedDisplay;
++  const storedDisplay = typeof stored === 'string' ? stored.trim() : '';
+   if (
+     storedDisplay.length > 0 &&
+     isValidFormulaName(trimmedSource) &&
+@@ -511,9 +563,8 @@ function normalizeFormulaExpression(
      }
    );
  
@@ -86,7 +98,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/pac
      (_full, _currency: string | undefined, rawNumber: string, unit: string, percent: string) => {
        const parsed = Number(rawNumber.replace(/,/g, ''));
        if (!Number.isFinite(parsed)) {
-@@ -602,6 +650,18 @@ const isEqualsInsideWebUrl = (
+@@ -602,6 +653,18 @@ const isEqualsInsideWebUrl = (
    return FORMULA_URL_PREFIX_RE.test(token) && normalizeWebBrowserUrl(token) !== null;
  };
  
@@ -105,7 +117,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/pac
  export function findFormulaPatternAtCursor(
    textContent: string,
    cursorOffset: number,
-@@ -615,11 +675,32 @@ export function findFormulaPatternAtCursor(
+@@ -615,11 +678,32 @@ export function findFormulaPatternAtCursor(
      return null;
    }
  
@@ -138,7 +150,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/pac
      if (codeRanges?.some(r => equalsIndex >= r.start && equalsIndex < r.end)) {
        continue;
      }
-@@ -634,6 +715,12 @@ export function findFormulaPatternAtCursor(
+@@ -634,6 +718,12 @@ export function findFormulaPatternAtCursor(
        continue;
      }
  
@@ -151,7 +163,7 @@ diff --git a/packages/desktop/src/renderer/editor/utils/formula-runtime.ts b/pac
      // Ignore whitespace-only tails like "= " so prose typing does not enter
      // formula-draft mode on space; keep true empty drafts ("=") allowed.
      if (allowEmptyExpression && expression.length > 0 && expression.trim().length === 0) {
-@@ -659,6 +746,9 @@ export function findFormulaPatternAtCursor(
+@@ -659,6 +749,9 @@ export function findFormulaPatternAtCursor(
        if (tokenStart > 0 && /[A-Za-z0-9_-]/.test(beforeName)) {
          continue;
        }

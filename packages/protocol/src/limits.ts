@@ -102,6 +102,18 @@ export const REMOTE_FETCH_RATE = { max: 30, windowMs: 60_000 } as const;
 /** Comment operations (create, reply, later edit, resolve, react) per principal per window, counted by its PrincipalDO; 429 past it. */
 export const COMMENT_OP_RATE = { max: 60, windowMs: 60_000 } as const;
 
+/** Suggestion accepts, rejects and withdraws per principal per window (an accept costs O(doc)); 429 past it. */
+export const SUGGEST_REVIEW_RATE = { max: 30, windowMs: 60_000 } as const;
+
+/** Suggestion previews per principal per window (O(doc) each; a panel previews each open card); 429 past it. */
+export const SUGGEST_PREVIEW_RATE = { max: 120, windowMs: 60_000 } as const;
+
+/**
+ * Working-view exports (the note with every open suggestion applied, O(doc) per record) one DocDO computes per window,
+ * whoever asks; a read the DocDO serves from its cache is not counted. Each caller is also charged SUGGEST_PREVIEW_RATE.
+ */
+export const WORKING_EXPORT_DOC_RATE = { max: 120, windowMs: 60_000 } as const;
+
 /** The longest comment text, in UTF-16 units; longer is 413 `text-too-long` (comments.md §4). */
 export const COMMENT_TEXT_MAX = 10_000;
 

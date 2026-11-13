@@ -8,20 +8,28 @@ import { writeSyncStep1 } from 'y-protocols/sync';
 import { FRONTMATTER_EXPANSION_ERROR, splitFrontmatter } from '@moss-desktop/common/markdown-layers';
 import { IMPORT_BUDGET_SPENT } from '@moss-desktop/renderer/editor/markdown/linear-import';
 import {
-  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES, DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WRITE_RATE,
+  ACCESS_DEADLINE_MS, ACCESS_TICK_MS, ANONYMOUS_SOCKETS_PER_ADDRESS, ACK_COALESCE_MS, ANSWER_BUDGET, ANSWER_PIECE_BYTES, AWARENESS_MAX_BYTES,
+  DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, STATE_CAP_BYTES, WORKING_EXPORT_DOC_RATE, WRITE_RATE,
 } from '@moss-multi/protocol/limits';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
+import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
   type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
-  attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
+  attachmentFrom, classifySync, connectCode, deletesCovered, EVERYONE, parseFrame, revocationCode, stateBytesAfter, windowed, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
+import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
+import { SuggestCooldowns } from './doc/suggest-cooldown.ts';
+import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
+import {
+  acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, IDLE_BATCH, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
+} from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta, publishReopened, type FanoutEnv, type Holder } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
@@ -57,6 +65,8 @@ export interface DocLimits {
   withheldIdsPerConnection: number;
   /** Bytes one principal may write into withheld payloads, so nobody crowds out another's (A§10.10). */
   withheldBytesPerIdentity: number;
+  /** Working-view exports this doc computes per window (I5); cached reads are free. */
+  workingRate: { max: number; windowMs: number };
   /** Frames and bytes one socket may have waiting for a validation, and all sockets together; past it the socket closes 1013. */
   inboxFramesPerConnection: number;
   inboxBytesPerConnection: number;
@@ -124,6 +134,12 @@ export type TrashedInD1 = (docId: string) => Promise<boolean>;
 
 /** How long a trash's hold waits for its settle before the alarm settles it from D1. */
 export const HOLD_MS = 60_000;
+/** Store items a sub-editor's delete set may make the classifier visit per frame byte (its frame never applies). */
+const CLASSIFY_BUDGET_PER_BYTE = 8;
+
+/** Suggest frames that can mint retained state: all of them short-circuit while a connection has no room. */
+const GROWTH: ReadonlySet<string> = new Set(['suggest-lease', 'suggest-ops', 'suggest-delete', 'suggest-undelete', 'suggest-merge']);
+
 /** How long after a failed recovery event the alarm publishes it again. */
 const RECOVER_RETRY_MS = 10_000;
 /** The signed-in sockets a hold closed that a recovery tells, at most. */
@@ -147,6 +163,13 @@ const serializer = () => {
 
 /** Who a REST comment write stands for, as the Worker resolved it: its principal, session or key, and share token. */
 export type CommentActor = SocketIdentity;
+
+/** A refused review action: the gate's reason, or the actor's (as for comments). */
+export type ReviewRefusal = { ok: false; status: number; reason: string };
+export type SuggestionPreview = Preview & { closed?: boolean };
+
+/** A new live suggestion, for the bell. */
+export type SuggestionNotifier = (notice: { docId: string; author: string; record: string }) => Promise<void>;
 
 /** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
 const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
@@ -177,9 +200,25 @@ export interface SearchFeed {
 const agesAt = (attachment: Attachment) => (attachment.admittedAt ?? 0) + DOC_SOCKET_MAX_MS;
 const aged = (attachment: Attachment, now: number) => agesAt(attachment) <= now;
 
+/**
+ * Until when the connection's last suggest refusal was for want of room (`doc-cap`, `ops-cap`); 0 when it is not. In
+ * the socket's attachment, so a wake keeps it; a grant, an ack or the end of one refusal window ends it.
+ */
+const noRoomUntil = (connection: Connection) => (connection.state as { noRoomUntil?: number } | null)?.noRoomUntil ?? 0;
+function noRoom(connection: Connection, until: number): void {
+  if (noRoomUntil(connection) === until) return;
+  // Functional setState only, as attach does: the object form would wipe the rest of the attachment.
+  (connection as unknown as Connection<Record<string, unknown>>).setState((previous) => ({ ...(previous ?? {}), noRoomUntil: until }));
+}
+
 /** The trashes holding the doc closed, each with when the alarm may settle it. */
 function holdsOf(store: DocStore): Map<string, number> {
   const raw = store.meta('holds');
+  return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, number>) : []);
+}
+
+/** The `updatedAt` each open record's idle check last ran at. */
+function readIdleChecked(raw: string | null): Map<string, number> {
   return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, number>) : []);
 }
 
@@ -269,6 +308,8 @@ const MIN_TARGET_SHARE = 1 / 32;
 const SLOW_FRAME_MS = 1_000;
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
+/** A suggester's new records notify the bell at most once per this long. */
+const NOTICE_COALESCE_MS = 10 * 60_000;
 export class DocDO extends YServer<SyncEnv> {
   static options = { hibernate: true };
   /** Static so the Node harness can shrink them. */
@@ -285,6 +326,7 @@ export class DocDO extends YServer<SyncEnv> {
     inboxBytesPerConnection: 2 * 1024 * 1024,
     inboxBytes: 8 * 1024 * 1024,
     accessDeadlineMs: ACCESS_DEADLINE_MS,
+    workingRate: WORKING_EXPORT_DOC_RATE,
     answerBudget: ANSWER_BUDGET,
     anonymousSocketsPerAddress: ANONYMOUS_SOCKETS_PER_ADDRESS,
     waitingAnswerBytesPerConnection: 128 * 1024,
@@ -307,6 +349,8 @@ export class DocDO extends YServer<SyncEnv> {
    * (apps/web/src/server.ts); with none, frames apply as they arrive (the Node harness).
    */
   static access: (env: SyncEnv) => AccessCheck | null = () => null;
+  /** Who hears of a new live suggestion (the bell); installed by the Worker. */
+  static suggestionNotices: (env: SyncEnv) => SuggestionNotifier | null = () => null;
 
   /** Where the alarm publishes a recovery once a hold no route let go ends with the doc live (A§8). */
   static fanout: (env: SyncEnv) => FanoutEnv | null = (env) => (env?.DB && env.PrincipalDO ? { DB: env.DB, PrincipalDO: env.PrincipalDO } : null);
@@ -327,6 +371,8 @@ export class DocDO extends YServer<SyncEnv> {
   #comments: DocComments | null = null;
   #payloads: PayloadStore | null = null;
   #exported: string | null = null;
+  /** The working view (§4.7), dropped with #exported by every note, record and payload update. */
+  #working: string | null = null;
   #projections: Projections | null = null;
   /** The title and body this instance last fed to search. */
   #fed: string | null = null;
@@ -345,6 +391,12 @@ export class DocDO extends YServer<SyncEnv> {
   #payloadFeed: ReturnType<typeof setTimeout> | null = null;
   readonly #limits = (this.constructor as typeof DocDO).limits;
   readonly #rate = new WriteRate(this.#limits.writeRate.max, this.#limits.writeRate.windowMs);
+  /** Working-export computations in the per-doc window; read from storage on first use, so a wake keeps them. */
+  #workingExports: number[] | null = null;
+  /** The doc's own deletes, merged, for proving a sub-editor's frame inert; dropped by every transaction that deletes. */
+  #deleted: DeleteSet | null = null;
+  /** Sub-editor sockets that had their one proof (in memory: a wake allows each another). */
+  readonly #proved = new WeakSet<Connection>();
   readonly #acks = new AckCoalescer<Connection>((connection, deletes, payloads) => this.#ack(connection, deletes, payloads), ACK_COALESCE_MS);
   /** The deletes of the sync frame being applied, which its ack names. */
   #frameDeletes: DeleteSet | undefined;
@@ -376,6 +428,17 @@ export class DocDO extends YServer<SyncEnv> {
   #answerTimer: ReturnType<typeof setTimeout> | undefined;
   /** When the next access tick is due; null when no frame came since the last one. In memory: a wake starts idle. */
   #tickAt: number | null = null;
+  /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
+  #suggestions: SuggestionsWriter | null = null;
+  #ingest: SuggestIngest | null = null;
+  /**
+   * When the next idle check of open records is due (§4.7: an idle record with nothing to show is rejected by the
+   * system), and the `updatedAt` each open record was last checked at, kept in storage (`idle-checked`) across wakes.
+   */
+  #idleAt: number | null = null;
+  #idleChecked = new Map<string, number>();
+  /** Suggest refusals per principal in the last window, and principals cooling down (until when). In storage. */
+  #cooldowns: SuggestCooldowns | null = null;
 
   /** Runs inside partyserver's blockConcurrencyWhile, so a woken DO replays before it sees any frame. */
   override async onLoad(): Promise<void> {
@@ -385,6 +448,7 @@ export class DocDO extends YServer<SyncEnv> {
       broadcast: (id, update, origin) => this.#broadcastPayload(id, update, origin),
       persisted: (_id, _update, origin) => {
         this.#exported = null;
+        this.#working = null;
         this.#edited(store);
         if (isConnection(origin)) {
           this.#projections?.touch();
@@ -400,6 +464,9 @@ export class DocDO extends YServer<SyncEnv> {
     this.#store = store;
     this.#payloads = payloads;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
+    this.document.on('afterTransaction', (txn: Y.Transaction) => {
+      if (txn.deleteSet.clients.size > 0) this.#deleted = null;
+    });
     // R from meta and the anchor indexes from the `a:` records (comments.md §3, I8).
     this.#comments = new DocComments(this.document, store);
     migrateFrontmatter(this.document, 'frontmatter-migration');
@@ -413,11 +480,46 @@ export class DocDO extends YServer<SyncEnv> {
       read: (id) => payloads.read(id),
       has: (id) => payloads.has(id),
       write: (id, update) => payloads.write(id, update, SERVER_IMPORT),
+      totalBytes: () => payloads.totalBytes,
+      bytesOf: (id) => payloads.bytesOf(id),
     });
     // After every note update (a frame, a server write, a restore, a push): reveal and keep one element per id.
     this.document.on('afterAllTransactions', () => payloads.settle(() => this.#connected()));
     this.#seed(store);
     this.#comments.flush();
+    let client = Number(store.meta('suggestions-client'));
+    if (!client) {
+      client = newSuggestionsClient(this.document);
+      store.setMeta('suggestions-client', String(client));
+    }
+    this.#suggestions = new SuggestionsWriter(this.document, client);
+    this.#cooldowns = new SuggestCooldowns(this.ctx.storage.sql);
+    this.#ingest = new SuggestIngest(this.document, {
+      stateCap: this.#limits.stateCapBytes,
+      registry: nodeRegistry(),
+      leases: new SqlLeases(this.ctx.storage.sql),
+      // The note plus every stored payload, withheld ones included, as #overCap counts (A§10).
+      stateBytes: () => store.stateBytes + payloads.totalBytes,
+      // Only a served payload places a payload op; a withheld one is accept's G4 to refuse, and reads as unknown here.
+      payloadDoc: (id) => (payloads.served(id) ? payloads.doc(id) : undefined),
+      onCreated: (record, author, continues) => {
+        if (!continues) this.#noticeSuggestion(record, author);
+      },
+    });
+    store.onCompacted = () => this.#ingest?.compacted();
+    this.document.getMap(SUGGESTIONS).observeDeep(() => {
+      if (this.#idleAt !== null) return;
+      this.#idleAt = Date.now() + EMPTY_IDLE_MS;
+      void this.#schedule(holdsOf(store)).catch((error: unknown) => console.error('DocDO could not schedule the idle check', error));
+    });
+    // A wake forgets when the idle check was due, so an open record not checked since its last change gets one at the
+    // next alarm.
+    this.#idleChecked = readIdleChecked(store.meta('idle-checked'));
+    const unchecked = (id: string) => {
+      const meta = readMeta(this.document, id);
+      return meta?.status === 'open' && this.#idleChecked.get(id) !== meta.updatedAt;
+    };
+    if (recordIds(this.document).some(unchecked)) this.#idleAt = Date.now();
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) {
       const projections = new Projections(this.name, target, store.meta('title-projected'), (title) => store.setMeta('title-projected', title));
@@ -451,18 +553,15 @@ export class DocDO extends YServer<SyncEnv> {
   override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
     const store = await this.#ready();
     const attachment = attachmentFrom(ctx.request.headers);
-    let deleted = store.meta('deleted') === '1' || holdsOf(store).size > 0;
-    // A doc closed without a hold may have missed the settle of a restore: D1 decides, and an unanswered read admits
-    // nobody (the 101 waits for this, so no frame arrives first).
-    if (deleted && holdsOf(store).size === 0 && this.#liveness()) {
-      try {
-        deleted = (await this.#queue(() => this.#settle([], connection))).deleted || holdsOf(store).size > 0;
-      } catch (error) {
-        console.error('DocDO admission could not confirm the doc is live', error);
-        connection.close(TRY_AGAIN, 'unconfirmed');
-        return;
-      }
+    // An unanswered liveness read admits nobody (the 101 waits for it, so no frame arrives first).
+    try {
+      await this.#healMissedSettle(store, connection);
+    } catch (error) {
+      console.error('DocDO admission could not confirm the doc is live', error);
+      connection.close(TRY_AGAIN, 'unconfirmed');
+      return;
     }
+    const deleted = store.meta('deleted') === '1' || holdsOf(store).size > 0;
     const code = connectCode(attachment, {
       revoked: store.revoked,
       deleted,
@@ -481,9 +580,13 @@ export class DocDO extends YServer<SyncEnv> {
       connection.close(CLOSE.connectionLimit, 'refused');
       return;
     }
+    if (this.#coolingDown(attachment.principalId)) {
+      connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+      return;
+    }
     const check = this.#accessCheck();
     // Pending until validated: no broadcast reaches it and none of its frames apply before then (A§8).
-    attach(connection, { ...attachment, admittedAt: Date.now(), pending: check !== null });
+    attach(connection, { ...attachment, nonce: crypto.randomUUID(), admittedAt: Date.now(), pending: check !== null });
     this.#register(connection, attachment, store);
     // Admission re-checks once the socket is registered, so a revocation that commits while the Worker resolved the
     // role, or after, is seen here or by the socket's first frame (A§8 pull validation).
@@ -703,9 +806,17 @@ export class DocDO extends YServer<SyncEnv> {
         this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
         return;
       }
-      const { changes, missing, deletes } = classifySync(this.document, frame.update, decoded);
+      const writer = roleAtLeast(attachment.role, 'editor');
+      // Below editor the frame never applies, so its classification is bounded by its own size (I5).
+      const budget = writer ? Infinity : frame.update.byteLength * CLASSIFY_BUDGET_PER_BYTE + 1024;
+      const classified = classifySync(this.document, frame.update, decoded, budget);
+      const { missing, deletes } = classified;
+      // A frame past its budget is a write unless proved inert, so its refusal is counted like any other.
+      const changes = classified.changes || (classified.exhausted && !this.#provedInert(connection, decoded.ds));
       const guarded = () => !!this.#comments?.check(decoded);
-      if (changes && this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing, guarded)) return;
+      // Only the DocDO writes `suggestions` (I2), and a leased client id only ever writes a record (A§5.1 step 4).
+      const leased = () => !!this.#suggestions?.touches(decoded) || !!this.#ingest?.namesLease(frame.update);
+      if (changes && this.#refused(connection, attachment, () => this.#overCap(store, frame.update), missing, guarded, leased)) return;
       // Gate 2b on every step 2 or update, inert or not, whatever the role: no client frame reaches `comments`
       // (comments.md §3, I1). O(frame · log); it follows no references.
       if (!changes && guarded()) {
@@ -765,7 +876,59 @@ export class DocDO extends YServer<SyncEnv> {
     return !roleAtLeast(attachmentOf(connection)?.role, 'editor');
   }
 
+  /** Suggest-mode frames (docs/design/suggestions.md §2): the live role on every frame, one reply each. */
+  override onCustomMessage(connection: Connection, message: string): void {
+    const attachment = attachmentOf(connection);
+    const ingest = this.#ingest;
+    if (!attachment || !ingest) return;
+    if (this.#coolingDown(attachment.principalId)) {
+      connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+      return;
+    }
+    let request: SuggestRequest | null = null;
+    if (message.length <= SUGGEST_LIMITS.frameChars) {
+      try {
+        request = JSON.parse(message) as SuggestRequest;
+      } catch {
+        request = null;
+      }
+    }
+    if (request !== null && (typeof request !== 'object' || typeof request.t !== 'string' || !request.t.startsWith('suggest-'))) return;
+    if (!this.#rate.allow(connection)) {
+      connection.close(CLOSE.writeRate, 'write rate');
+      return;
+    }
+    // After a refusal for want of room (`doc-cap`, `ops-cap`), every growth frame the client had in flight, and a
+    // rebuilt fork's lease, is refused alike in O(1) with no admission work and not counted, so a fast typist on a
+    // full note stays connected. Every refusal that does reach admission counts toward the cooldown, room or not.
+    if (request !== null && GROWTH.has(request.t) && this.#roomless(connection)) {
+      const record = request.t === 'suggest-merge' ? request.into : request.t === 'suggest-lease' ? null : request.record;
+      const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
+      this.sendCustomMessage(connection, JSON.stringify(reply));
+      return;
+    }
+    const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
+    const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
+    this.sendCustomMessage(connection, JSON.stringify(reply));
+    if (reply.t !== 'suggest-refused') {
+      noRoom(connection, 0);
+      return;
+    }
+    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') noRoom(connection, Date.now() + SUGGEST_LIMITS.refusals.windowMs);
+    this.#countRefusal(attachment.principalId);
+  }
+
+  /** Whether the connection is still in its no-room window: at most one counted room refusal per window. */
+  #roomless(connection: Connection): boolean {
+    const until = noRoomUntil(connection);
+    if (until > Date.now()) return true;
+    if (until) noRoom(connection, 0);
+    return false;
+  }
+
   override onClose(connection: Connection): void {
+    const nonce = attachmentOf(connection)?.nonce;
+    if (nonce) this.#ingest?.expireConnection(nonce);
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
@@ -1056,14 +1219,11 @@ export class DocDO extends YServer<SyncEnv> {
     const store = await this.#ready();
     const comments = this.#comments;
     if (!comments) throw new Error('DocDO started without comments');
-    // A doc closed without a hold may have missed a restore's settle: D1 decides, as at admission.
-    if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && this.#liveness()) {
-      try {
-        await this.#queue(() => this.#settle([]));
-      } catch (error) {
-        console.error('DocDO comment write could not confirm the doc is live', error);
-        return UNCONFIRMED;
-      }
+    try {
+      await this.#healMissedSettle(store);
+    } catch (error) {
+      console.error('DocDO comment write could not confirm the doc is live', error);
+      return UNCONFIRMED;
     }
     const check = this.#accessCheck();
     return this.#serial(async () => {
@@ -1098,21 +1258,32 @@ export class DocDO extends YServer<SyncEnv> {
    * cannot answer.
    */
   async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number): Promise<CommentResult | string> {
+    const resolved = await this.#resolveActor(check, store, actor, resolvedAt);
+    if ('ok' in resolved) return resolved;
+    return roleAtLeast(resolved.role, 'commenter') && resolved.epoch !== null ? resolved.epoch : FORBIDDEN;
+  }
+
+  /**
+   * The actor's live role now and the access epoch it was resolved at (null for a link holder, who has no credential to
+   * stamp), or the refusal (no live credential, no access, a revocation). `anonymous`: a share-link holder with no
+   * session may act, resolved through its link (a preview). Throws when D1 cannot answer.
+   */
+  async #resolveActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number, anonymous = false): Promise<CommentResult | { role: Role; epoch: string | null }> {
     const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
-    if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
+    const linkOnly = anonymous && actor?.kind === 'anonymous' && !!actor.shareToken;
+    if (!actor || (!linkOnly && actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
     const session = actor.kind === 'user' ? actor.sessionId : null;
     if (actor.kind === 'user' && !session) return unauthenticated;
     const { stamp, access } = await withDeadline(this.#limits.accessDeadlineMs, async (race) => {
-      const read = await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
+      const read = linkOnly ? null : await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
       return { stamp: read, access: await race(check.resolve(this.name, actor)) };
     });
-    if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
+    if (stamp && (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId))) return unauthenticated;
     if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
     if (access === null) return { ok: false, status: 404, error: 'not-found' };
-    if (!roleAtLeast(access.role, 'commenter')) return FORBIDDEN;
     // A kick persisted while D1 answered outdates what it said.
     if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return FORBIDDEN;
-    return stamp.key;
+    return { role: access.role as Role, epoch: stamp?.key ?? null };
   }
 
   /**
@@ -1179,6 +1350,14 @@ export class DocDO extends YServer<SyncEnv> {
     for (const connection of this.#all()) {
       const attachment = attachmentOf(connection);
       if (attachment && aged(attachment, now)) connection.close(TRY_AGAIN, 'aged');
+    }
+    if (this.#idleAt !== null && this.#idleAt <= now) {
+      this.#idleAt = null;
+      try {
+        await this.#serial(async () => this.#checkIdle(now));
+      } catch (error) {
+        console.error('DocDO idle check failed', error);
+      }
     }
     if (this.#feedRetryAt !== null && this.#feedRetryAt <= now) {
       this.#feedRetryAt = null;
@@ -1297,10 +1476,133 @@ export class DocDO extends YServer<SyncEnv> {
     }, SERVER_IMPORT);
     this.#comments?.dropCopied();
     this.#comments?.flush();
+    // A copy has no pending suggestions: the source's records were written under the source's reserved client (I2).
+    this.#suggestions?.write(() => this.document.getMap(SUGGESTIONS).clear());
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     await this.#projections?.flush();
     store.setMeta('created', '1');
+  }
+
+  /**
+   * The hunks a reviewer is shown and the hash and digest an accept must name (docs/design/suggestions.md §4.4), for
+   * any reader. An idle record with nothing to show is rejected by the system; an outdated or broken one is badged.
+   */
+  previewSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<SuggestionPreview | ReviewRefusal> {
+    return this.#review(input, 'viewer', () => reviewPreview(this.document, input.id));
+  }
+
+  /**
+   * Accept (§4.1–4.3): editor and above, in one synchronous turn after the actor is re-authorized. The record lands
+   * exactly as previewed or nothing does; its leases are spent in the same turn.
+   */
+  acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'editor', (reviewer) => {
+      const result = acceptRecord(this.document, input.id, { previewHash: input.previewHash, digest: input.digest }, reviewer, { stateCap: this.#limits.stateCapBytes });
+      if (result.ok) {
+        this.#comments?.flush();
+        this.#projections?.touch();
+      }
+      return result;
+    });
+  }
+
+  /** Reject (§4.5): editor and above; only the record changes. */
+  rejectSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'editor', (reviewer) => rejectRecord(this.document, input.id, reviewer));
+  }
+
+  /** Withdraw (§4.5): the author, at any role from suggester up; only the record changes. */
+  withdrawSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'suggester', (reviewer) => withdrawRecord(this.document, input.id, reviewer));
+  }
+
+  /**
+   * One review action in the doc's serialized write (A§8 pull validation): the actor is re-resolved and its live role,
+   * not the Worker's, is the reviewer's; the action runs right after with no await between. A trashed doc refuses.
+   */
+  async #review<T>(input: { reviewer: Reviewer; actor?: CommentActor }, floor: Role, run: (reviewer: Reviewer) => T): Promise<T | ReviewRefusal> {
+    const store = await this.#ready();
+    try {
+      await this.#healMissedSettle(store);
+    } catch (error) {
+      console.error('DocDO suggestion review could not confirm the doc is live', error);
+      return { ok: false, status: 503, reason: 'unconfirmed' };
+    }
+    const check = this.#accessCheck();
+    return this.#serial(async (): Promise<T | ReviewRefusal> => {
+      let reviewer = input.reviewer;
+      if (check) {
+        let resolved: CommentResult | { role: Role };
+        try {
+          await this.#validate(check);
+          // A link holder with no session may only read: a preview, whose floor is viewer.
+          resolved = await this.#resolveActor(check, store, input.actor, Date.now(), floor === 'viewer');
+        } catch (error) {
+          console.error('DocDO could not re-authorize a suggestion review; refusing it', error);
+          return { ok: false, status: 503, reason: 'unconfirmed' };
+        }
+        if ('ok' in resolved) return { ok: false, status: resolved.ok ? 500 : resolved.status, reason: resolved.ok ? 'unconfirmed' : resolved.error };
+        reviewer = { id: input.reviewer.id, role: resolved.role };
+      }
+      if (holdsOf(store).size > 0 || store.meta('deleted') === '1') return { ok: false, status: 404, reason: 'trashed' };
+      if (!roleAtLeast(reviewer.role, floor)) return { ok: false, status: 403, reason: 'role' };
+      return run(reviewer);
+    });
+  }
+
+  /**
+   * Each open record idle since its last check gets its preview, which rejects an empty one, at most IDLE_BATCH per
+   * alarm: past that the check re-arms at once, so frames run between batches. The rest come due later.
+   */
+  #checkIdle(now: number): void {
+    let next: number | null = null;
+    let previews = 0;
+    const open = new Set<string>();
+    for (const id of recordIds(this.document)) {
+      const meta = readMeta(this.document, id);
+      if (!meta || meta.status !== 'open') continue;
+      open.add(id);
+      if (this.#idleChecked.get(id) === meta.updatedAt) continue;
+      const due = meta.updatedAt + EMPTY_IDLE_MS;
+      if (due > now) {
+        next = Math.min(next ?? due, due);
+        continue;
+      }
+      if (previews === IDLE_BATCH) {
+        next = now;
+        continue;
+      }
+      previews += 1;
+      this.#idleChecked.set(id, meta.updatedAt);
+      reviewPreview(this.document, id, { now });
+    }
+    // Only open records keep an entry; a preview may have just closed one.
+    let pruned = false;
+    for (const id of this.#idleChecked.keys()) {
+      if (open.has(id) && readMeta(this.document, id)?.status === 'open') continue;
+      this.#idleChecked.delete(id);
+      pruned = true;
+    }
+    if (previews > 0 || pruned) this.#store?.setMeta('idle-checked', JSON.stringify(Object.fromEntries(this.#idleChecked)));
+    if (next !== null) this.#idleAt = Math.min(this.#idleAt ?? next, next);
+  }
+
+  /** One bell notice per author and note per window, kept across wakes; the D1 row coalesces too (notifySuggestion). */
+  #noticeSuggestion(record: string, author: string): void {
+    const notify = (this.constructor as typeof DocDO).suggestionNotices(this.env);
+    if (!notify) return;
+    const key = `suggest-noticed:${author}`;
+    const last = Number(this.#store?.meta(key));
+    const now = Date.now();
+    if (Number.isFinite(last) && last > 0 && now - last < NOTICE_COALESCE_MS) return;
+    this.#store?.setMeta(key, String(now));
+    const sent = notify({ docId: this.name, author, record }).catch((error: unknown) => console.error('suggestion notice failed', error));
+    try {
+      this.ctx.waitUntil(sent);
+    } catch {
+      // No request to extend (the Node harness): the notice still runs.
+    }
   }
 
   /** The doc as a `.md` file, memoized until the next update. */
@@ -1308,6 +1610,52 @@ export class DocDO extends YServer<SyncEnv> {
     await this.#ready();
     this.#exported ??= exportDocMarkdown(this.document, this.name);
     return this.#exported;
+  }
+
+  /**
+   * The working view (§4.7): the note with every valid open suggestion applied, memoized until the next note, record
+   * or payload update. Computing it runs the accept gates per open record, so it is bounded per doc (I5); null past it.
+   */
+  async exportWorking(): Promise<string | null> {
+    const store = await this.#ready();
+    if (this.#working !== null) return this.#working;
+    if (!this.#chargeWorking(store)) return null;
+    this.#working = exportWorkingMarkdown(this.document, this.name);
+    return this.#working;
+  }
+
+  /**
+   * Counts one working-export computation in the per-doc window (refused ones too); false past the bound. The window
+   * lives in storage (`working-exports`), so an evicted or hibernated DocDO wakes into it, never a fresh one.
+   */
+  #chargeWorking(store: DocStore): boolean {
+    const { max, windowMs } = this.#limits.workingRate;
+    if (this.#workingExports === null) {
+      let stored: unknown = [];
+      try {
+        stored = JSON.parse(store.meta('working-exports') ?? '[]');
+      } catch {
+        // An unreadable window starts empty.
+      }
+      this.#workingExports = Array.isArray(stored) ? stored.filter((at): at is number => typeof at === 'number') : [];
+    }
+    const recent = windowed(this.#workingExports, Date.now(), windowMs);
+    // The newest max + 1 decide the verdict.
+    this.#workingExports = recent.slice(-(max + 1));
+    store.setMeta('working-exports', JSON.stringify(this.#workingExports));
+    return recent.length <= max;
+  }
+
+  /**
+   * A sub-editor's frame whose delete scan ran past its budget is inert only if the doc already holds every delete it
+   * names. Each socket gets one such proof, O(doc) at most, like the step 2 that answered its step 1: a reconnect's
+   * step 2 over a long deleted history passes, and every later frame past the budget is a write.
+   */
+  #provedInert(connection: Connection, ds: DeleteSet): boolean {
+    if (this.#proved.has(connection)) return false;
+    this.#proved.add(connection);
+    this.#deleted ??= Y.createDeleteSetFromStructStore(this.document.store);
+    return deletesCovered(this.#deleted, ds);
   }
 
   /** Feeds search now, even with nothing changed: the Worker's backfill for a doc the index lacks. */
@@ -1432,6 +1780,15 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
+   * A doc closed without a hold may have missed the settle of a restore: D1 decides, before the hold and deleted
+   * guards read it. Throws, changing nothing, when D1 cannot answer.
+   */
+  async #healMissedSettle(store: DocStore, admitting?: Connection): Promise<void> {
+    if (store.meta('deleted') !== '1' || holdsOf(store).size > 0 || !this.#liveness()) return;
+    await this.#queue(() => this.#settle([], admitting));
+  }
+
+  /**
    * `admitting`, a socket still in onConnect, is left for its own refusal. A D1 read past the access deadline throws
    * before anything changes, freeing the queue; its late answer is ignored.
    */
@@ -1459,6 +1816,7 @@ export class DocDO extends YServer<SyncEnv> {
     const recover = this.#store?.meta('recover');
     if (recover && holds.size === 0) due.push(Number(recover));
     if (this.#tickAt !== null) due.push(this.#tickAt);
+    if (this.#idleAt !== null) due.push(this.#idleAt);
     if (this.#feedRetryAt !== null) due.push(this.#feedRetryAt);
     for (const connection of this.#all()) {
       const attachment = connection === closing ? null : attachmentOf(connection);
@@ -1545,6 +1903,7 @@ export class DocDO extends YServer<SyncEnv> {
 
   #persist(store: DocStore, update: Uint8Array, origin: unknown): void {
     this.#exported = null;
+    this.#working = null;
     if (origin === PERSISTENCE) return;
     store.record(update);
     this.#edited(store);
@@ -1633,9 +1992,13 @@ export class DocDO extends YServer<SyncEnv> {
         this.#refused(connection, attachment, () => true);
         return;
       }
+      // A leased client id writes a payload only inside a record (A§5.1 step 4), as in the body.
       const target = known ? payloads.doc(id) : (unknownPayload ??= new Y.Doc());
-      const { changes, missing, deletes } = classifySync(target, data);
-      if (!changes) {
+      const leased = () => !!this.#ingest?.namesLease(data, target);
+      const budget = roleAtLeast(attachment.role, 'editor') ? Infinity : data.byteLength * CLASSIFY_BUDGET_PER_BYTE + 1024;
+      const { changes, exhausted, missing, deletes } = classifySync(target, data, undefined, budget);
+      // Only an editor may write a payload, so a sub-editor's frame past its budget meets the role refusal.
+      if (!changes && !exhausted) {
         // An editor's resend of what is already stored: acked, since the ack that covered it may have been lost.
         if (roleAtLeast(attachment.role, 'editor')) this.#acks.schedule(connection, deletes, id, coverage(target, data));
         return;
@@ -1647,7 +2010,7 @@ export class DocDO extends YServer<SyncEnv> {
         }
         return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data);
       };
-      if (this.#refused(connection, attachment, overCap, missing)) return;
+      if (this.#refused(connection, attachment, overCap, missing, undefined, leased)) return;
       payloads.addReaders(id, [attachment.principalId]);
       if (!payloads.applyFrame(id, data, connection)) {
         this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
@@ -1710,10 +2073,16 @@ export class DocDO extends YServer<SyncEnv> {
    * True when the write was refused and the socket closed; a refusal is never silent. `missing`: the frame needs a
    * clock the doc lacks, which Yjs would hold pending, uncounted, and integrate under a later sender's transaction.
    */
-  #refused(connection: Connection, attachment: Attachment, overCap: () => boolean, missing = false, guarded?: () => boolean): boolean {
+  #refused(
+    connection: Connection, attachment: Attachment, overCap: () => boolean, missing = false, guarded?: () => boolean, leased?: () => boolean,
+  ): boolean {
     // Suggesters never write the body: their changes travel as suggestion records (docs/design/suggestions.md I1).
     // The role decides, never the frame's contents.
-    if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'role', CLOSE.revoked);
+    if (!roleAtLeast(attachment.role, 'editor')) {
+      this.#refuse(connection, 'role', CLOSE.revoked);
+      this.#countRefusal(attachment.principalId);
+      return true;
+    }
     if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
@@ -1721,6 +2090,11 @@ export class DocDO extends YServer<SyncEnv> {
     }
     // A guard violation is refused 4409 even when it also needs a clock the doc lacks (comments.md §3).
     if (guarded?.()) return this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
+    if (leased?.()) {
+      this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
+      this.#countRefusal(attachment.principalId);
+      return true;
+    }
     if (missing) {
       // Transient too: a reconnect's step 2 carries whatever the frame depended on.
       connection.close(CLOSE.writeRate, 'missing dependency');
@@ -1728,6 +2102,18 @@ export class DocDO extends YServer<SyncEnv> {
     }
     if (overCap()) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused);
     return false;
+  }
+
+  #coolingDown(principalId: string): boolean {
+    return this.#cooldowns?.coolingDown(principalId) ?? false;
+  }
+
+  /** `SUGGEST_LIMITS.refusals.max` refusals a window: every socket of the principal closes 4429 a while. */
+  #countRefusal(principalId: string): void {
+    if (!this.#cooldowns?.count(principalId)) return;
+    for (const connection of this.#all()) {
+      if (attachmentOf(connection)?.principalId === principalId) connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+    }
   }
 
   #refuse(connection: Connection, reason: WriteRefusalReason, code: number): true {
