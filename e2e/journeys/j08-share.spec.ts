@@ -72,7 +72,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await expect(dialog).toContainText(name);
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can view');
   await expect(ui.inviteRow(dialog, benPrincipal.email), 'Ben waits at view, by email, until he redeems it').toContainText('Can view');
-  await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText('Invited');
+  await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText(ui.INVITE_WAITING);
   const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await actors.checkpoint('folder-shared');
   await ada.page.keyboard.press('Escape');
@@ -195,7 +195,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   if (browserName === 'chromium') {
     await ada.context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await ui.linkRow(dialog, 'Can view').getByRole('button', { name: 'Copy', exact: true }).click();
-    await expect(dialog.getByRole('status')).toContainText('Copied');
+    await expect(ui.linkRow(dialog, 'Can view').getByRole('button', { name: 'Copied', exact: true }), 'Copy confirms on itself').toBeVisible();
     expect(await ada.page.evaluate(() => navigator.clipboard.readText()), 'Copy puts the link on the clipboard').toBe(url);
   }
   await actors.checkpoint('link-created');
@@ -352,7 +352,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
     await ui.shareInDialog(dialog, email, 'Can edit');
     const response = await posted;
     answers.push({ status: response.status(), body: await response.json() });
-    await expect(dialog.getByRole('status'), 'the same confirmation either way').toHaveText(`Shared with ${email}.`);
+    await expect(dialog.getByRole('status'), 'the same confirmation either way').toHaveText(ui.inviteCreated(email));
     await expect(dialog.getByLabel('Email or agent ID', { exact: true }), 'the next email can be typed at once').toBeEditable({ timeout: 1_000 });
   }
   await ada.page.unroute(members);
@@ -361,7 +361,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect(answers[1].body, 'and the same body, but for the email').toEqual(JSON.parse(JSON.stringify(answers[0].body).replaceAll(benPrincipal.email, ghost.email)));
   // Until Ben redeems his invite, an email with an account and one without look the same to the owner.
   for (const email of [benPrincipal.email, ghost.email]) {
-    await expect(ui.inviteRow(dialog, email), `${email} waits as a pending invite`).toContainText('Invited');
+    await expect(ui.inviteRow(dialog, email), `${email} waits as a pending invite`).toContainText(ui.INVITE_WAITING);
     await expect(ui.inviteRow(dialog, email)).toContainText('Can edit');
   }
   await expect(ui.accessRow(dialog, benPrincipal), "Ben's name is not shown before he redeems it").toHaveCount(0);
@@ -383,7 +383,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
   await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
   const reopened = await ui.openShare(ada, docId);
   await expect(ui.accessRow(reopened, benPrincipal), 'redeemed, Ben is listed by name').toContainText(benPrincipal.email);
-  await expect(ui.inviteRow(reopened, ghost.email)).toContainText('Invited');
+  await expect(ui.inviteRow(reopened, ghost.email)).toContainText(ui.INVITE_WAITING);
   await ada.page.keyboard.press('Escape');
 
   const token = new URL(url).searchParams.get('share') ?? '';
@@ -393,6 +393,69 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect(asLink.status(), 'a link holder gets no member list').toBe(404);
   expect(await asLink.text()).not.toContain('@');
   expect((await stranger.context.request.get(`/api/docs/${docId}/links?share=${token}`)).status()).toBe(404);
+});
+
+test('j08 invite: an invite says no email is sent and offers its link where the eye is; Copy confirms on itself; a bare name is not sent @p:ppl-2@2 @evidence', async ({ actors, stack, browserName }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const ben = actors.credentials('ben');
+  const posts: string[] = [];
+  ada.page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith(`/api/docs/${docId}/members`)) posts.push(request.postData() ?? '');
+  });
+  const dialog = await ui.openShare(ada, docId);
+  const field = dialog.getByLabel('Email or agent ID', { exact: true });
+  const form = dialog.getByRole('form', { name: 'Share with a person', exact: true });
+  await expect(field, 'the field asks for an email').toHaveAttribute('placeholder', 'Email address');
+  await expect(form.getByRole('button', { name: 'Create invite link', exact: true }), 'the submit says what it makes').toBeVisible();
+  await expect(dialog.getByText(/paste its ID/), 'no agent hint for someone with no agent').toHaveCount(0);
+
+  // A bare name is answered in the dialog and never sent.
+  await field.fill('ben');
+  await form.getByRole('button', { name: 'Create invite link', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('Enter a full email address, like name@example.com.');
+  expect(posts, 'no request for a bare name').toEqual([]);
+
+  await ui.shareInDialog(dialog, ben.email, 'Can view');
+  const copyLink = form.getByRole('button', { name: 'Copy link', exact: true });
+  await expect(copyLink, 'the status offers the invite link itself').toBeVisible();
+  await expect(ui.pendingInvites(dialog).filter({ hasText: ben.email }), 'the invite sits under "Pending invites"').toContainText(ui.INVITE_WAITING);
+  await expect(dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: ben.email }), 'and not among the people').toHaveCount(0);
+  const invite = await ui.inviteLink(dialog, ben.email);
+  await actors.checkpoint('invite-created');
+
+  if (browserName === 'chromium') {
+    await ada.context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    const clipboard = () => ada.page.evaluate(() => navigator.clipboard.readText());
+    await copyLink.click();
+    const copied = form.getByRole('button', { name: 'Copied', exact: true });
+    await expect(copied, 'Copy link confirms on itself').toBeVisible();
+    await expect(copied.locator('svg'), 'with a check').toHaveCount(1);
+    expect(await clipboard(), 'Copy link puts the invite link on the clipboard').toBe(invite);
+    await expect(form.getByRole('button', { name: 'Copy link', exact: true }), 'and reads Copy link again after 2 s').toBeVisible({ timeout: 4_000 });
+    await expect(dialog.getByRole('status'), 'the status stays as it was').toHaveText(ui.inviteCreated(ben.email));
+
+    await ada.page.evaluate(() => navigator.clipboard.writeText(''));
+    const row = ui.inviteRow(dialog, ben.email);
+    await row.getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(row.getByRole('button', { name: 'Copied', exact: true }), "the row's Copy confirms on itself").toBeVisible();
+    expect(await clipboard()).toBe(invite);
+    await expect(dialog.getByRole('status'), 'no sentence appears elsewhere').toHaveText(ui.inviteCreated(ben.email));
+    await expect(row.getByRole('button', { name: 'Copy', exact: true })).toBeVisible({ timeout: 4_000 });
+  }
+  await ada.page.keyboard.press('Escape');
+
+  // Someone with an agent gets one hint, and an agent's id still shares.
+  const minted = await ada.context.request.post('/api/agents', { headers: { origin: stack.baseUrl }, data: { name: 'Scout' } });
+  expect(minted.status(), 'declared setup: an agent').toBe(201);
+  const agentId = ((await minted.json()) as { agent: { id: string } }).agent.id;
+  const again = await ui.openShare(ada, docId);
+  await expect(again.getByText('To share with one of your agents, paste its ID from Settings → Agents.', { exact: true }), 'one hint about the agent').toHaveCount(1);
+  await again.getByLabel('Email or agent ID', { exact: true }).fill(agentId);
+  await expect(again.getByRole('button', { name: 'Create invite link', exact: true }), 'an agent id is shared, not invited').toHaveCount(0);
+  await ui.shareInDialog(again, agentId, 'Can comment', 'Shared with Scout.');
+  await expect(again.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Scout' })).toHaveCount(1);
+  expect(posts.length, 'one request per share').toBe(2);
 });
 
 test('j08 inherited: a note\'s Share dialog names it and lists who reaches it from its folder and vault, and a note-only co-owner learns no place @p:ppl-2@2 @evidence', async ({ actors, stack }) => {

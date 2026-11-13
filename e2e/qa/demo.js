@@ -612,7 +612,7 @@ export const STEPS = {
       const field = await dialog.waitForSelector(aria('textbox', 'Email or agent ID'), { visible: true });
       await field.type(email);
       await press(await dialog.waitForSelector(aria('radiogroup', 'Access')), 'radio', access);
-      await press(dialog, 'button', 'Share');
+      await press(dialog, 'button', 'Create invite link');
       await until(`${email} is listed`, listed);
       shared = true;
     }
