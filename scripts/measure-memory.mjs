@@ -9,8 +9,8 @@
 // note at rest: the heap after the save's full GC) and traced (the DocDO also collects garbage at each named step of a
 // server write and an export, so the heap at each step is known; those in-phase collections keep that phase's garbage
 // from later gc() calls, so its figures are detail only). Then each phase's need is bisected: the smallest
-// `--max-heap-size` it completes under in three of three fresh workerds (create, a wake of the saved note, and an export
-// after a wake). The verdict is absolute: every phase of a note at a cap needs at most PHASE_LIMIT_MB and the note at
+// `--max-heap-size` it completes under in three of three fresh workerds (create, a wake of the saved note, a save of the
+// whole note after a wake, and an export after a wake). The verdict is absolute: every phase of a note at a cap needs at most PHASE_LIMIT_MB and the note at
 // rest takes at most REST_LIMIT_MB; each sits within 2% under its cap, encodes within what STATE_CAP_BYTES allows its
 // text and structs, and its structs per block (packages/sync/measure/structs-per-block.ts) are held to its block's bound
 // (T3.B31b): a plain paragraph 5, a list item 6, a two-cell table row 16. Notes just past each cap must be refused
@@ -423,8 +423,9 @@ async function fitsUnder(cap, port, storage, request) {
 
 /**
  * The heap each phase needs (the smallest `--max-heap-size` it completes under, in MB), bisected in fresh workerds:
- * the create from empty storage; the wake (a DocDO loading the saved note) and the export (wake, then export) from a
- * copy of the storage an uncapped workerd left once the note was created and saved. `guess` gives each search's
+ * the create from empty storage (a grown table's: the import alone); the wake (a DocDO loading the saved note), the
+ * save (wake, one small write, then the save of the whole note) and the export (wake, then export) from a copy of the
+ * storage an uncapped workerd left once the note was created and saved. `guess` gives each search's
  * starting bounds.
  */
 async function measureNeeds(markdown, port, guess, { grow = false } = {}) {
@@ -458,10 +459,10 @@ async function measureNeeds(markdown, port, guess, { grow = false } = {}) {
     return ok;
   };
   const needs = {};
-  // A grown table's create is its import and the rows added after it, which no create makes at once: only its wake and
-  // export are a note's phases.
-  needs.create = grow ? null : await reliableCap(logged('create', (cap) => fitsUnder(cap, port, fresh('probe'), create)), guess.low, guess.create);
+  // A grown table's create is the import of the largest table an import takes; the rows added after it are edits.
+  needs.create = await reliableCap(logged('create', (cap) => fitsUnder(cap, port, fresh('probe'), create)), guess.low, guess.create);
   needs.wake = await reliableCap(logged('wake', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/wake?doc=${NEED_DOC}`))), guess.low, guess.wake);
+  needs.save = await reliableCap(logged('save', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/save?doc=${NEED_DOC}`))), guess.low, guess.save);
   needs.export = await reliableCap(logged('export', (cap) => fitsUnder(cap, port, fromSaved(), (origin) => call(origin, `/export?lean&doc=${NEED_DOC}`))), guess.low, guess.export);
   rmSync(storage('saved'), { recursive: true, force: true });
   rmSync(storage('probe'), { recursive: true, force: true });
@@ -509,9 +510,8 @@ export function memoryProblems(notes) {
     if (typeof rest !== 'number') problems.push(`${n.name}: the note at rest is unknown`);
     else if (rest > REST_LIMIT_MB) problems.push(`${n.name}: at rest it takes ${rest} MB, over ${REST_LIMIT_MB.toFixed(1)} MB`);
     if (!n.needs) continue;
-    for (const phase of ['create', 'wake', 'export']) {
+    for (const phase of ['create', 'wake', 'save', 'export']) {
       const need = n.needs[phase];
-      if (phase === 'create' && n.grow) continue;
       if (typeof need !== 'number') problems.push(`${n.name}: the ${phase}'s need is unknown`);
       else if (need > PHASE_LIMIT_MB) problems.push(`${n.name}: the ${phase} needs ${need} MB, over ${PHASE_LIMIT_MB.toFixed(1)} MB`);
     }
@@ -566,7 +566,7 @@ async function main() {
     const high = (phase) => Math.max(plain.phases[phase]?.highMb ?? 0, measured.phases[phase]?.liveMb ?? 0, rest) + 8;
     // Every phase so far has needed more than 1.2x the note at rest, which bounds each search from below.
     const needs = bisect && budget && !plain.failed
-      ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, export: high('export') }, { grow })
+      ? await measureNeeds(markdown, port + 2, { low: rest * 1.15, create: high('create'), wake: rest * 1.4, save: high('export'), export: high('export') }, { grow })
       : null;
     port += 3;
     notes.push({ ...note, make: undefined, markdown: undefined, budget, block, markdownBytes: Buffer.byteLength(markdown), measured, plain, needs });
@@ -606,13 +606,13 @@ async function main() {
   if (bisect && kept.some((n) => n.needs)) {
     lines.push(
       '',
-      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under in ${NEED_RUNS} of ${NEED_RUNS} fresh workerds. Wake: a DocDO loading the saved note; export: a wake, then the export (what the search feed and a download run). Budgets for the notes at the caps: each phase at most ${PHASE_LIMIT_MB.toFixed(1)} MB (${HEAP_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%), at rest at most ${REST_LIMIT_MB.toFixed(1)} MB (${REST_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%). A grown table's create is not one phase.`,
+      `Heap each phase needs: the smallest \`--max-heap-size\` (to ${NEED_STEP_MB} MB) it completes under in ${NEED_RUNS} of ${NEED_RUNS} fresh workerds. Wake: a DocDO loading the saved note; save: a wake, one small write, then the save (compaction and search feed); export: a wake, then the export (what the search feed and a download run). Budgets for the notes at the caps: each phase at most ${PHASE_LIMIT_MB.toFixed(1)} MB (${HEAP_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%), at rest at most ${REST_LIMIT_MB.toFixed(1)} MB (${REST_BUDGET_MB} MB less ${BUDGET_MARGIN * 100}%). A grown table's create is the import of the largest table an import takes.`,
       '',
-      '| Note | At rest | Create needs | Wake needs | Export needs |',
-      '| --- | --- | --- | --- | --- |',
+      '| Note | At rest | Create needs | Wake needs | Save needs | Export needs |',
+      '| --- | --- | --- | --- | --- | --- |',
       ...kept.map(({ name, budget, plain: p, needs: n }) => {
         const limit = budget ? PHASE_LIMIT_MB : null;
-        return `| ${name} | ${within(p.phases.save?.restMb, budget ? REST_LIMIT_MB : null)} | ${within(n?.create, limit)} | ${within(n?.wake, limit)} | ${within(n?.export, limit)} |`;
+        return `| ${name} | ${within(p.phases.save?.restMb, budget ? REST_LIMIT_MB : null)} | ${within(n?.create, limit)} | ${within(n?.wake, limit)} | ${within(n?.save, limit)} | ${within(n?.export, limit)} |`;
       }),
     );
   }

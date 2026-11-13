@@ -10,7 +10,7 @@ import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES, STRUCT_CAP, TEXT_CHAR_CAP } fr
 import { DOC_LIMIT_NOTICE, encodePayloadFrame, PAYLOAD_UPDATE, type DocLimit } from '@moss-multi/protocol/sync';
 import { countChars, payloadSize, structCount, type PayloadSize } from '@moss-multi/sync/note-size';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
-import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
+import { isPayloadType, namedPayloadIds, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
 import {
@@ -162,7 +162,11 @@ export const PASTE_STRUCT_SLACK = 256;
 /** The note's text and structs as the DocDO counts them (A§5.1): the note's doc and the payload docs its tree names. */
 export function heldSize(doc: Y.Doc): PayloadSize {
   const held = { chars: countChars(doc), structs: structCount(doc) };
-  for (const payload of payloadDocsFor(doc).docs.values()) {
+  // A payload doc this tab still holds for a deleted block counts nothing, as the DocDO stops counting it.
+  const docs = payloadDocsFor(doc);
+  for (const id of namedPayloadIds(doc)) {
+    const payload = docs.get(id);
+    if (!payload) continue;
     const size = payloadSize(payload);
     held.chars += size.chars;
     held.structs += size.structs;

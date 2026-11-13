@@ -45,6 +45,24 @@ export function seedPayload(doc: Y.Doc, value: string | ReadonlyMap<string, unkn
   }, origin);
 }
 
+/** The payload ids the live elements of a note's tree name, as NameIndex files them. */
+export function namedPayloadIds(doc: Y.Doc): Set<string> {
+  const ids = new Set<string>();
+  const visit = (type: Y.XmlText | Y.XmlElement): void => {
+    if (type instanceof Y.XmlElement) {
+      const id: unknown = type.getAttribute('__regId');
+      if (isPayloadType(String(type.getAttribute('__type'))) && typeof id === 'string' && id) ids.add(id);
+    }
+    for (let item = type._start; item; item = item.right) {
+      const child = item.deleted || !(item.content instanceof Y.ContentType) ? null : item.content.type;
+      if (child instanceof Y.XmlText || child instanceof Y.XmlElement) visit(child);
+    }
+  };
+  const root = doc.share.get('root');
+  if (root instanceof Y.XmlText) visit(root);
+  return ids;
+}
+
 /** A changed id: the elements naming it that the batch added, each with its transaction's origin. */
 interface Change {
   added: Map<Y.XmlElement, unknown>;

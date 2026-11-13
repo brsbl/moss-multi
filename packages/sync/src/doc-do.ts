@@ -271,6 +271,13 @@ const MIN_ANSWER_SHARE = 1 / 4096;
 const MIN_TARGET_SHARE = 1 / 32;
 /** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
+
+/**
+ * How far past the structure guard a write of only formats and properties may take a note, as a share of STRUCT_CAP:
+ * hundreds of format removals, inside the guard's memory margin.
+ */
+const PROPERTY_HEADROOM = 0.01;
+
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
 export class DocDO extends YServer<SyncEnv> {
@@ -1463,6 +1470,8 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** `extra`: bytes a write still to come adds (create's title, admitted with its body). */
   #admitServerWrite(store: DocStore, diff: Uint8Array, payloads: [string, Uint8Array][], extra = 0): void {
+    // A write that only deletes (a shortened title) adds nothing: a note at a limit, or stored past one, can shrink.
+    if (!payloads.length && !growthOf(this.document, diff).inserts) return;
     const limit = this.#serverWriteLimit(diff, payloads);
     if (limit) throw new DocCapError(limit);
     if (this.#overCap(store, diff, payloads.reduce((sum, [, update]) => sum + update.byteLength, extra))) throw new DocCapError();
@@ -1474,27 +1483,43 @@ export class DocDO extends YServer<SyncEnv> {
     return { chars: (this.#text?.chars ?? 0) + named.chars, structs: structCount(this.document) + named.structs };
   }
 
-  /** The limit a write from `before` to `after` passes while growing past it, or null: shrinking is always admitted. */
-  #limitMet(before: NoteSize, after: NoteSize): DocLimit | null {
+  /**
+   * The limit a write from `before` to `after` passes while growing past it, or null: shrinking is always admitted.
+   * A write of only formats and properties (`properties`) passes the structure guard up to PROPERTY_HEADROOM past it,
+   * so a format can be removed in a full note; past that only deletions land.
+   */
+  #limitMet(before: NoteSize, after: NoteSize, properties = false): DocLimit | null {
     if (after.chars > this.#limits.textCharCap && after.chars > before.chars) return 'text';
-    if (after.structs > this.#limits.structCap && after.structs > before.structs) return 'structure';
+    const guard = properties ? this.#limits.structCap * (1 + PROPERTY_HEADROOM) : this.#limits.structCap;
+    if (after.structs > guard && after.structs > before.structs) return 'structure';
     return null;
   }
 
-  /** The note's size after `update`, read from the update itself, with every stored payload it names anew. */
-  #sizeAfter(before: NoteSize, update: Uint8Array): NoteSize | null {
+  /**
+   * The note's size after `update`, read from the update itself: with every stored payload it names anew, less every
+   * payload it leaves no element naming. `properties`: it adds only formats and properties, and names no payload anew.
+   */
+  #sizeAfter(before: NoteSize, update: Uint8Array): { size: NoteSize; properties: boolean } | null {
     const growth = growthOf(this.document, update);
     // A write that only deletes adds nothing, whatever it splits: a note at a limit can always be shrunk.
     if (!growth.inserts) return null;
-    const after = { chars: before.chars + growth.chars, structs: before.structs + growth.structs };
+    const size = { chars: before.chars + growth.chars, structs: before.structs + growth.structs };
+    let properties = !growth.content;
     const payloads = this.#payloads;
+    if (!payloads) return { size, properties };
     for (const id of growth.named) {
-      if (!payloads?.has(id) || payloads.named(id)) continue;
-      const size = payloads.sizeOf(id);
-      after.chars += size.chars;
-      after.structs += size.structs;
+      if (!payloads.has(id) || payloads.named(id)) continue;
+      const named = payloads.sizeOf(id);
+      size.chars += named.chars;
+      size.structs += named.structs;
+      properties = false;
     }
-    return after;
+    for (const id of lostNames(payloads, growth.dropped, growth.named)) {
+      const lost = payloads.sizeOf(id);
+      size.chars -= lost.chars;
+      size.structs -= lost.structs;
+    }
+    return { size, properties };
   }
 
   /** Which limit a client's note frame would pass (text, structure, then the stored bytes), or null. */
@@ -1502,7 +1527,7 @@ export class DocDO extends YServer<SyncEnv> {
     const before = this.#size();
     const after = this.#sizeAfter(before, update);
     if (!after) return null;
-    return this.#limitMet(before, after) ?? (this.#overCap(store, update) ? 'state' : null);
+    return this.#limitMet(before, after.size, after.properties) ?? (this.#overCap(store, update) ? 'state' : null);
   }
 
   /**
@@ -1511,7 +1536,7 @@ export class DocDO extends YServer<SyncEnv> {
    */
   #serverWriteLimit(update: Uint8Array, payloads: [string, Uint8Array][]): DocLimit | null {
     const before = this.#size();
-    const after = this.#sizeAfter(before, update) ?? before;
+    const after = this.#sizeAfter(before, update)?.size ?? { ...before };
     for (const [id, payload] of payloads) {
       const doc = new Y.Doc();
       try {
@@ -1570,14 +1595,14 @@ export class DocDO extends YServer<SyncEnv> {
           if (!this.#mayWriteWithheld(connection, payloads, id)) return 'state';
           if (payloads.withheldBy(attachment.principalId) + data.byteLength > this.#limits.withheldBytesPerIdentity) return 'state';
         }
+        const growth = growthOf(target, data, 'all');
+        // A write that only deletes adds nothing, so a note at a limit or stored past one can always shrink.
+        if (!growth.inserts) return null;
         // A payload the note names counts toward its text and structure; a withheld one only once something names it.
         if (payloads.named(id)) {
-          const growth = growthOf(payloads.doc(id), data, 'all');
-          if (growth.inserts) {
-            const before = this.#size();
-            const limit = this.#limitMet(before, { chars: before.chars + growth.chars, structs: before.structs + growth.structs });
-            if (limit) return limit;
-          }
+          const before = this.#size();
+          const limit = this.#limitMet(before, { chars: before.chars + growth.chars, structs: before.structs + growth.structs });
+          if (limit) return limit;
         }
         return this.#payloadOverCap(store, payloads, id, payloads.doc(id), data) ? 'state' : null;
       };
@@ -1689,4 +1714,20 @@ export class DocDO extends YServer<SyncEnv> {
     // sendCustomMessage skips a socket that has closed.
     this.sendCustomMessage(connection, JSON.stringify(event));
   }
+}
+
+/**
+ * The payloads an update leaves no element naming: every live element naming one is among those it deletes or
+ * unnames (`dropped`), and it names none of them anew.
+ */
+function lostNames(payloads: PayloadStore, dropped: Set<Y.XmlElement>, named: Set<string>): string[] {
+  const ids = new Set<string>();
+  for (const element of dropped) {
+    const id: unknown = element.getAttribute('__regId');
+    if (typeof id === 'string' && !named.has(id)) ids.add(id);
+  }
+  return [...ids].filter((id) => {
+    const live = payloads.names.live.get(id);
+    return !!live?.size && [...live].every((element) => dropped.has(element));
+  });
 }

@@ -52,6 +52,14 @@ export class MeasuredDocDO extends DocDO {
     return structsPerBlock(this.document);
   }
 
+  /** A save of the whole note, as the debounced save runs it after an edit: one small write, then the compaction and search feed. */
+  async saveNow(): Promise<number> {
+    await this.noteSize();
+    this.document.getMap('measure-save').set('at', Date.now());
+    await this.onSave();
+    return structCount(this.document);
+  }
+
   /** The note's encoded state size. */
   stateBytes(): number {
     return Y.encodeStateAsUpdate(this.document).byteLength;
@@ -178,6 +186,9 @@ export default {
       // Addressing the DocDO starts it, which loads its stored note (onLoad): the wake alone.
       await getServerByName(env.DocDO, docId);
       return new Response('ok');
+    }
+    if (url.pathname === '/save') {
+      return Response.json({ structs: await (await getServerByName(env.DocDO, docId)).saveNow() });
     }
     if (url.pathname === '/structs') {
       return Response.json(await (await getServerByName(env.DocDO, docId)).structsPerBlock());

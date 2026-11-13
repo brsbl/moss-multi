@@ -3,6 +3,7 @@
 // alike, since edit history costs memory too). A payload doc counts its `payload` text and its structs the same way.
 // `growthOf` predicts what an update would add before it is applied, without copying the doc.
 import * as Y from 'yjs';
+import { isPayloadType } from './payload-docs.ts';
 
 type Type = Y.AbstractType<unknown>;
 type Struct = Y.Item | Y.GC;
@@ -132,8 +133,18 @@ export interface Growth {
   structs: number;
   /** Whether it makes any struct the doc lacks (a write of only deletions makes none). */
   inserts: boolean;
-  /** Payload ids (`__regId` values) the update's new elements name. */
+  /** Whether any new struct is more than a property or a format (text, an element, an embed, deleted content). */
+  content: boolean;
+  /**
+   * Payload ids the update may name: each new `__regId`, and the id of each element whose new `__type` is a payload's.
+   * A superset, so a payload brought into the note is never missed.
+   */
   named: Set<string>;
+  /**
+   * Stored elements the update deletes (with everything inside a deleted container) or may stop naming a payload
+   * (a new `__type` that is not a payload's, or a new `__regId`). A subset, so a payload is never dropped wrongly.
+   */
+  dropped: Set<Y.XmlElement>;
 }
 
 interface Fresh {
@@ -156,11 +167,14 @@ const stateOf = (doc: Y.Doc, client: number): number => {
  * scope less the text it deletes. A frame needing a clock the doc lacks is refused before this runs.
  */
 export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'): Growth {
-  const { structs, ds } = Y.decodeUpdate(update);
+  const decoded = Y.decodeUpdate(update);
+  const structs = decoded.structs;
+  // Sorted and merged as applying it does: a crafted update may list a range twice, overlapping or out of order.
+  const ds = Y.mergeDeleteSets([decoded.ds]);
   const store = doc.store;
   const inScope = scopeTest(doc, scope);
   const fresh = new Map<number, Fresh[]>();
-  const growth: Growth = { chars: 0, structs: 0, inserts: false, named: new Set() };
+  const growth: Growth = { chars: 0, structs: 0, inserts: false, content: false, named: new Set(), dropped: new Set() };
   /** Clocks a struct must start at; true when the split happens even in a deleted struct (an origin). */
   const cuts = new Map<number, Map<number, boolean>>();
   const cut = (client: number, clock: number, always: boolean) => {
@@ -268,17 +282,93 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
     return deleted;
   };
 
+  /** The live element a stored item is, if it is one. */
+  const elementAt = (id: Y.ID): Y.XmlElement | null => {
+    const stored = storedAt(id.client, id.clock);
+    return stored instanceof Y.Item && !stored.deleted && stored.content instanceof Y.ContentType && stored.content.type instanceof Y.XmlElement
+      ? stored.content.type : null;
+  };
+  interface Key {
+    sub: string | null;
+    /** The stored element it is set on, or else the new type's id. */
+    element: Y.XmlElement | null;
+    parent: string | null;
+    /** Whether it takes the place of the stored element's value (one set later than it, or a key it lacks). */
+    replaces: boolean;
+  }
+  const keyed = (sub: string, parent: Y.ID | null): Key => {
+    const element = parent ? elementAt(parent) : null;
+    const current = element?._map.get(sub);
+    return {
+      sub, element, replaces: !current || current.deleted,
+      parent: parent && !element && !storedAt(parent.client, parent.clock) ? `${parent.client}:${parent.clock}` : null,
+    };
+  };
+  /**
+   * A new item's map key and the element it is set on. An update omits both for a key it sets again (its origin is the
+   * value it replaces), so they are read from the origin. Null when they cannot be known.
+   */
+  const keyOf = (item: Y.Item, depth = 0): Key | null => {
+    if (item.parentSub !== null) return keyed(item.parentSub, item.parent instanceof Y.ID ? item.parent : null);
+    if (item.parent !== null || !item.origin) return { sub: null, element: null, parent: null, replaces: false };
+    if (depth > 1_000) return null;
+    const stored = storedAt(item.origin.client, item.origin.clock);
+    if (stored) {
+      if (!(stored instanceof Y.Item)) return null;
+      const element = stored.parent instanceof Y.XmlElement && !stored.parent._item?.deleted ? stored.parent : null;
+      return { sub: stored.parentSub, element, parent: null, replaces: !stored.deleted };
+    }
+    const entry = freshAt(item.origin.client, item.origin.clock);
+    return entry?.struct instanceof Y.Item ? keyOf(entry.struct, depth + 1) : null;
+  };
+
+  /** Per element whose `__regId` or `__type` the update sets: the values it sets, and whether one replaces the stored. */
+  const naming = new Map<Y.XmlElement | string | null, { regIds: string[]; types: unknown[]; newId: boolean; newType: boolean }>();
   for (const [client, list] of fresh) {
     for (const { struct, start, end } of list) {
-      if (!(struct instanceof Y.Item)) continue;
+      if (!(struct instanceof Y.Item)) {
+        growth.content = true;
+        continue;
+      }
       if (struct.content instanceof Y.ContentString) {
+        growth.content = true;
         const kept = end - start - deletedWithin(client, start, end);
         if (kept > 0 && freshInScope(struct)) growth.chars += kept;
-      } else if (struct.parentSub === '__regId' && struct.content instanceof Y.ContentAny) {
-        const value = struct.content.arr[0];
-        if (typeof value === 'string') growth.named.add(value);
+        continue;
+      }
+      if (struct.content instanceof Y.ContentFormat) continue;
+      const key = keyOf(struct);
+      if (!key?.sub) {
+        growth.content = true;
+        continue;
+      }
+      if (key.sub !== '__regId' && key.sub !== '__type') continue;
+      const at = key.element ?? key.parent;
+      let entry = naming.get(at);
+      if (!entry) naming.set(at, (entry = { regIds: [], types: [], newId: false, newType: false }));
+      const value = struct.content instanceof Y.ContentAny ? struct.content.arr[0] : undefined;
+      if (key.sub === '__regId') {
+        if (typeof value === 'string') entry.regIds.push(value);
+        entry.newId ||= key.replaces;
+      } else {
+        entry.types.push(value);
+        entry.newType ||= key.replaces;
       }
     }
+  }
+  for (const [at, { regIds, types, newId, newType }] of naming) {
+    const element = at instanceof Y.XmlElement ? at : null;
+    // Of the values one update sets, any may win; an element it is not known to set on, or a new one it gives no type
+    // (a later update may), may be a payload's.
+    const after = newType ? types : [...types, element?.getAttribute('__type')];
+    const payload = at === null || (!element && !types.length) || after.some((type) => typeof type === 'string' && isPayloadType(type));
+    if (payload) {
+      for (const id of regIds) growth.named.add(id);
+      const stored: unknown = element?.getAttribute('__regId');
+      if (!newId && typeof stored === 'string') growth.named.add(stored);
+    }
+    // A stored element stops naming its payload when a later value replaces its id, or its type with no payload's.
+    if (element && (newId || (newType && !payload))) growth.dropped.add(element);
   }
 
   // Text the doc holds that the update deletes.
@@ -290,6 +380,7 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
       const end = Math.min(clock + len, state);
       for (let i = clock < state ? Y.findIndexSS(list, clock) : list.length; i < list.length && list[i].id.clock < end; i += 1) {
         const struct = list[i];
+        if (struct instanceof Y.Item && !struct.deleted && struct.content instanceof Y.ContentType) elementsIn(struct.content.type as Type, growth.dropped);
         const length = textOf(struct);
         if (length === 0 || !inScope((struct as Y.Item).parent as Type)) continue;
         growth.chars -= Math.min(end, struct.id.clock + length) - Math.max(clock, struct.id.clock);
@@ -297,4 +388,12 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
     }
   }
   return growth;
+}
+
+/** `type` if it is an element, and every live element inside it. */
+function elementsIn(type: Type, into: Set<Y.XmlElement>): void {
+  if (type instanceof Y.XmlElement) into.add(type);
+  for (let item = type._start; item; item = item.right) {
+    if (!item.deleted && item.content instanceof Y.ContentType) elementsIn(item.content.type as Type, into);
+  }
 }
