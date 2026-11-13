@@ -19,6 +19,7 @@ export const NAMES = {
   commentEntry: dom.COMMENT_ENTRY_ATTR,
   retentionNotice: dom.RETENTION_NOTICE_ATTR,
   reviewBand: dom.REVIEW_BAND_ATTR,
+  roleBand: dom.ROLE_BAND_ATTR,
   remote: [dom.REMOTE_CARET_ATTR, dom.REMOTE_SELECTION_ATTR, dom.REMOTE_LABEL_ATTR],
   sidebarRow: dom.SIDEBAR_ROW_ATTR,
   lexical: dom.LEXICAL_EDITOR_SELECTOR,
