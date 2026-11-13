@@ -393,6 +393,20 @@ describe('POST /api/docs/:id/restore for a note whose vault is in Trash', () => 
     expect(await folderRow(again)).toMatchObject({ deleted_at: null, name: 'restore NAMED' });
   });
 
+  it('a returning vault with an accented name finds the next free name as the unique index compares names', async () => {
+    // SQLite's lower() folds ASCII only, which is how folders_vault_name_unique compares vault names.
+    const vault = await vaultNamed(ada, 'Été');
+    const doc = await insertDoc(d1.db, ada, { folderId: vault });
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    const again = await vaultNamed(ada, 'Été');
+    const next = await vaultNamed(ada, 'Été (1)');
+    const response = await call(ada, 'POST', `/api/docs/${doc}/restore`);
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await folderRow(vault)).toMatchObject({ deleted_at: null, name: 'Été (2)' });
+    expect(await folderRow(again)).toMatchObject({ deleted_at: null, name: 'Été' });
+    expect(await folderRow(next)).toMatchObject({ deleted_at: null, name: 'Été (1)' });
+  });
+
   it('a manager who is not the vault’s owner gets a sentence that names the cause, and nothing changes', async () => {
     const vault = await vaultNamed(ada, 'Restore refused');
     const byDoc = await insertDoc(d1.db, ada, { folderId: vault });

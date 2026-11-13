@@ -102,6 +102,11 @@ describe('retention copy', () => {
       'Move “Plans” and all its notes to Trash? You can restore the notes for 30 days. They go back to “Home”, not into this folder.');
   });
 
+  it('names no vault for a folder from another vault, whose notes go back to that vault', () => {
+    expect(TRASH_COPY.trashFolder('Plans', null)).toBe(
+      'Move “Plans” and all its notes to Trash? You can restore the notes for 30 days. They go back to the top of their vault, not into this folder.');
+  });
+
   it('says what a vault’s trash takes and what restoring one of its notes brings back', () => {
     expect(TRASH_COPY.trashVault('Trip')).toBe('Every note and folder in this vault moves to Trash with it, and everyone it’s shared with loses access. '
       + 'You can restore its notes one at a time for 30 days. Restoring one brings “Trip” back without its folders.');
