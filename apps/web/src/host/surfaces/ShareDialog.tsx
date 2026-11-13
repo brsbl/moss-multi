@@ -91,7 +91,7 @@ function AccessChoice<R extends Role>({ label, roles, value, onChange, disabled 
         className="flex h-7 items-center gap-2 rounded px-2 text-xs text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
         {ACCESS_LABEL[value]}<ChevronDown aria-hidden className="h-3 w-3" strokeWidth={1.5} />
       </button></DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-36">
+      <DropdownMenuContent data-collaboration-menu="" align="start" className="min-w-36">
         {roles.map(role => <DropdownMenuItem key={role} onSelect={() => onChange(role)} className="gap-2 text-xs">
           <span className="flex-1">{ACCESS_LABEL[role]}</span>{role === value && <Check aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />}
         </DropdownMenuItem>)}

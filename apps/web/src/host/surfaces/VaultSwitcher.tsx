@@ -120,7 +120,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
               </button>
             </DropdownMenuTrigger>
             {/* While the inline row is open, hovering an item must not move focus out of its field. */}
-            <MenuContent align="start" className="w-60 max-w-[calc(100vw-2rem)] [&_[role=menuitem]]:text-xs" {...(creating ? holdHover : {})}>
+            <MenuContent data-collaboration-menu="" align="start" className="w-60 max-w-[calc(100vw-2rem)] [&_[role=menuitem]]:text-xs" {...(creating ? holdHover : {})}>
               {vaults.map((vault) => (
                 <DropdownMenuItem key={vault.id} onSelect={() => { void switchTo(vault.id); }}>
                   <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
@@ -163,7 +163,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
             </button>
           </DropdownMenuTrigger>
           {/* The rename input takes focus, so the menu does not hand it back to its trigger. */}
-          <MenuContent align="start" className="w-48" onCloseAutoFocus={(event) => { if (renaming) event.preventDefault(); }}>
+          <MenuContent data-collaboration-menu="" align="start" className="w-48" onCloseAutoFocus={(event) => { if (renaming) event.preventDefault(); }}>
             <DropdownMenuItem onSelect={() => setRenaming(true)}>
               <Pencil className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
               <span className="min-w-0 flex-1 truncate">Rename…</span>

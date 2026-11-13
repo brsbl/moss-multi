@@ -137,3 +137,9 @@
   pointer-events: auto;
   cursor: pointer;
 }
+
+/* Moss menus are portalled below ModalShell by default. Host collaboration menus
+   also live in Share and Settings, so their positioner must clear that modal. */
+div:has(> [data-collaboration-menu]) {
+  z-index: 140;
+}
