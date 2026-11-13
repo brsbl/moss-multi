@@ -413,7 +413,7 @@ const CARET_NOTE = [
 const TARGET = 'Target paragraph where Ben waits.';
 const PREVIOUS = 'Previous paragraph stays put.';
 
-async function caretNote(actors: Actors, baseUrl: string, markdown = CARET_NOTE) {
+async function caretNote(actors: Actors, baseUrl: string, markdown = CARET_NOTE, severable = false) {
   const ada = await actors.session(await actors.principal('ada'));
   const created = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Caret', markdown } });
   expect(created.status(), 'declared setup: Ada has the note').toBe(201);
@@ -421,7 +421,7 @@ async function caretNote(actors: Actors, baseUrl: string, markdown = CARET_NOTE)
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, id, benPrincipal);
   await ada.goto(`/d/${id}`);
-  const ben = await actors.open(benPrincipal, { path: `/d/${id}` });
+  const ben = await actors.open(benPrincipal, { path: `/d/${id}`, severable });
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); await actor.observeEditor(id); }
   return { ada, ben, id };
 }
@@ -574,7 +574,7 @@ test("j01 caret: a peer's bold and Backspace-merge keep the waiting caret as bef
   await expect(ui.body(ben, id).locator('p').first(), 'after a peer merge').toHaveText(`${PREVIOUS}Target paragraph where Ben waits.XY`);
 });
 
-test('j01 caret: Ben keeps typing while Ada makes his paragraph a checkbox mid-word, and his keys stay in it, in order @p:col-1', async ({ actors, stack }) => {
+test('j01 caret: Ben keeps typing while Ada makes his paragraph a checkbox mid-word, and every key lands in order @p:col-1', async ({ actors, stack }) => {
   const { ada, ben, id } = await caretNote(actors, stack.baseUrl);
   await park(ben, id, TARGET, 7);
   await park(ada, id, TARGET, 27);
@@ -582,18 +582,37 @@ test('j01 caret: Ben keeps typing while Ada makes his paragraph a checkbox mid-w
   const typing = ben.page.keyboard.type('abcdefghijkl', { delay: 50 });
   await ada.page.getByRole('button', { name: 'Insert checkbox', exact: true }).click();
   await typing;
-  await expect(listItem(ui.body(ben, id)), "Ada's checkbox reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
+  await expect(listItem(ui.body(ben, id))).toHaveText('Target paragraph where Benabcdefghijkl waits.', { timeout: PEER_TIMEOUT });
   await converged(ada, ben, id);
-  await expect(ui.body(ben, id).locator('p').first(), 'none of his keys land in the paragraph above').toHaveText(PREVIOUS);
-  // A key typed into the old paragraph after Ada converted it goes with that paragraph (the conversion replaces the
-  // block); every key after it lands beside the ones before, in order.
-  const text = (await listItem(ui.body(ada, id)).textContent()) ?? '';
-  const keys = /^\s*Target paragraph where Ben([a-l]*) waits\.$/.exec(text)?.[1];
-  expect(keys, `Ben's keys sit together beside his words: ${text}`).toBeDefined();
-  expect([...(keys ?? '')].every((key, i, all) => i === 0 || all[i - 1] < key), `in order: ${String(keys)}`).toBe(true);
-  expect(keys, 'the keys after the change all land').toMatch(/ghijkl$/);
-  await expect(listItem(ui.body(ben, id))).toHaveText(text.trim());
+  await expect(listItem(ui.body(ada, id))).toHaveText('Target paragraph where Benabcdefghijkl waits.');
+  await expect(ui.body(ben, id).locator('p').first()).toHaveText(PREVIOUS);
 });
+
+// Ben's edits are still on their way to the server when Ada's checkbox reaches him: Ada converted the paragraph
+// without them, and none of them may be lost.
+const IN_FLIGHT_CASES = [
+  { name: 'keys', keys: ['a', 'b', 'c'], then: 'def', expected: 'Target paragraph where Benabcdef waits.' },
+  { name: 'Backspaces', keys: ['Backspace', 'Backspace'], then: 'ob', expected: 'Target paragraph where Bob waits.' },
+];
+for (const c of IN_FLIGHT_CASES) {
+  test(`j01 caret: ${c.name} Ben typed before Ada's checkbox reached him all stay, in both windows @p:col-1`, async ({ actors, stack }) => {
+    const { ada, ben, id } = await caretNote(actors, stack.baseUrl, CARET_NOTE, true);
+    const sever = ben.sever;
+    if (!sever) throw new Error('declared setup: Ben is severable');
+    await park(ben, id, TARGET, 7);
+    await park(ada, id, TARGET, 27);
+    sever.hold(id);
+    for (const key of c.keys) await ben.page.keyboard.press(key);
+    await ada.page.getByRole('button', { name: 'Insert checkbox', exact: true }).click();
+    await expect(listItem(ui.body(ben, id)), "Ada's checkbox reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
+    sever.deliverHeld();
+    await ben.page.keyboard.type(c.then);
+    await expect(listItem(ui.body(ben, id))).toHaveText(c.expected);
+    await converged(ada, ben, id);
+    await expect(listItem(ui.body(ada, id))).toHaveText(c.expected);
+    await expect(ui.body(ben, id).locator('p').first()).toHaveText(PREVIOUS);
+  });
+}
 
 test("j01 caret: a peer's Backspace-merge never sends the waiting caret into an untouched paragraph that reads the same @p:col-1", async ({ actors, stack }) => {
   const SAME = 'Same words here.';
