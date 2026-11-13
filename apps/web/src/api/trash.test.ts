@@ -327,6 +327,106 @@ describe('POST /api/docs/:id/restore', () => {
   });
 });
 
+const VAULT_TRASHED = 'This note’s vault is in Trash. Ask the vault’s owner to restore it.';
+const folderRow = (id: string) => d1.db.prepare('SELECT * FROM folders WHERE id = ?').bind(id).first<Record<string, unknown>>();
+
+/** One of `owner`'s vaults by name, through the vaults API. */
+async function vaultNamed(owner: TestUser, name: string): Promise<string> {
+  const response = await call(owner, 'POST', '/api/vaults', { name });
+  expect(response.status, await response.clone().text()).toBe(201);
+  return ((await response.json()) as { vault: { id: string } }).vault.id;
+}
+
+describe('POST /api/docs/:id/restore for a note whose vault is in Trash', () => {
+  it('the vault’s owner gets the note back at the top of its vault, which returns without its folders or other notes, and everyone who can see the vault hears', async () => {
+    const vault = await vaultNamed(ada, 'Restore trip');
+    const folder = await insertFolder(d1.db, ada, vault);
+    const inFolder = await insertDoc(d1.db, ada, { folderId: folder });
+    const atRoot = await insertDoc(d1.db, ada, { folderId: vault });
+    await insertGrant(d1.db, { folderId: vault }, ben, 'viewer');
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    published.clear();
+
+    const response = await call(ada, 'POST', `/api/docs/${inFolder}/restore`);
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({ doc: { id: inFolder, folderId: vault }, vaultId: vault, vaultRestored: true });
+    expect(await folderRow(vault), 'the vault row is live again').toMatchObject({ deleted_at: null, trash_batch_id: null, name: 'Restore trip' });
+    expect((await folderRow(folder))?.deleted_at, 'its folders stay in Trash').not.toBeNull();
+    expect(await docRow(inFolder)).toMatchObject({ deleted_at: null, folder_id: vault, trash_batch_id: null });
+    expect((await docRow(atRoot))?.deleted_at, 'its other notes stay in Trash').not.toBeNull();
+    expect(restored).toEqual([inFolder]);
+    for (const principal of [ada.id, ben.id]) expect(published.get(principal), `${principal} hears the vault return`).toContainEqual({ type: 'vaults' });
+    expect(published.has(cy.id)).toBe(false);
+
+    const listing = (await (await call(ada, 'GET', `/api/workspace?vault=${vault}`)).json()) as
+      { vault: { id: string }; vaults: { id: string }[]; folders: { id: string }[]; docs: { id: string; trashedAt?: number | null; folderPath: string }[] };
+    expect(listing.vault.id, 'the vault opens').toBe(vault);
+    expect(listing.vaults.map((row) => row.id)).toContain(vault);
+    expect(listing.folders.map((row) => row.id), 'without its trashed folder').not.toContain(folder);
+    expect(listing.docs.find((row) => row.id === inFolder)).toMatchObject({ folderPath: 'Notes' });
+    expect(listing.docs.find((row) => row.id === inFolder)?.trashedAt ?? null).toBeNull();
+    expect(listing.docs.find((row) => row.id === atRoot), 'the other note is in this vault’s Trash').toMatchObject({ trashedAt: expect.any(Number) });
+    expect((await call(ben, 'GET', `/api/docs/${inFolder}`)).status, 'the vault’s viewer reads it again').toBe(200);
+  });
+
+  it('a second note restores beside the first, and two same-titled notes restore to two rows', async () => {
+    const vault = await vaultNamed(ada, 'Restore twins');
+    const folder = await insertFolder(d1.db, ada, vault);
+    const first = await insertDoc(d1.db, ada, { folderId: vault });
+    const second = await insertDoc(d1.db, ada, { folderId: folder });
+    for (const doc of [first, second]) await d1.db.prepare('UPDATE docs SET filename = ? WHERE id = ?').bind('packing-list.md', doc).run();
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    expect((await call(ada, 'POST', `/api/docs/${second}/restore`)).status).toBe(200);
+    expect((await call(ada, 'POST', `/api/docs/${first}/restore`)).status).toBe(200);
+    const rows = [await docRow(first), await docRow(second)];
+    for (const row of rows) expect(row).toMatchObject({ folder_id: vault, deleted_at: null });
+    expect(new Set(rows.map((row) => row?.filename)).size, 'two rows, two filenames').toBe(2);
+  });
+
+  it('a returning vault whose name the owner has used since takes the next free name', async () => {
+    const vault = await vaultNamed(ada, 'Restore named');
+    const doc = await insertDoc(d1.db, ada, { folderId: vault });
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    const again = await vaultNamed(ada, 'restore NAMED');
+    expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
+    expect(await folderRow(vault)).toMatchObject({ deleted_at: null, name: 'Restore named (1)' });
+    expect(await folderRow(again)).toMatchObject({ deleted_at: null, name: 'restore NAMED' });
+  });
+
+  it('a returning vault with an accented name finds the next free name as the unique index compares names', async () => {
+    // SQLite's lower() folds ASCII only, which is how folders_vault_name_unique compares vault names.
+    const vault = await vaultNamed(ada, 'Été');
+    const doc = await insertDoc(d1.db, ada, { folderId: vault });
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    const again = await vaultNamed(ada, 'Été');
+    const next = await vaultNamed(ada, 'Été (1)');
+    const response = await call(ada, 'POST', `/api/docs/${doc}/restore`);
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await folderRow(vault)).toMatchObject({ deleted_at: null, name: 'Été (2)' });
+    expect(await folderRow(again)).toMatchObject({ deleted_at: null, name: 'Été' });
+    expect(await folderRow(next)).toMatchObject({ deleted_at: null, name: 'Été (1)' });
+  });
+
+  it('a manager who is not the vault’s owner gets a sentence that names the cause, and nothing changes', async () => {
+    const vault = await vaultNamed(ada, 'Restore refused');
+    const byDoc = await insertDoc(d1.db, ada, { folderId: vault });
+    const byVault = await insertDoc(d1.db, ada, { folderId: vault });
+    await insertGrant(d1.db, { docId: byDoc }, ben, 'owner');
+    await insertGrant(d1.db, { folderId: vault }, cy, 'owner');
+    expect((await call(ada, 'DELETE', `/api/vaults/${vault}`)).status).toBe(200);
+    for (const [user, doc] of [[ben, byDoc], [cy, byVault]] as const) {
+      const response = await call(user, 'POST', `/api/docs/${doc}/restore`);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error: 'vault-trashed', message: VAULT_TRASHED });
+      expect((await docRow(doc))?.deleted_at).not.toBeNull();
+    }
+    expect((await folderRow(vault))?.deleted_at, 'the vault stays in Trash').not.toBeNull();
+    expect(restored).toEqual([]);
+    // The owner can; this also leaves nothing of theirs in Ben's and Cy's Trash for the tests after.
+    for (const doc of [byDoc, byVault]) expect((await call(ada, 'POST', `/api/docs/${doc}/restore`)).status).toBe(200);
+  });
+});
+
 describe('the workspace listing', () => {
   it('lists the owner’s trashed notes in the active vault with when they were trashed, and nobody else’s', async () => {
     const doc = await insertDoc(d1.db, ada);

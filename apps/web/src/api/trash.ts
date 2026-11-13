@@ -13,13 +13,14 @@ import { availableFilename } from '@moss-multi/core/filenames';
 import { can, GRANT_ROLES, roleAtLeast } from '@moss-multi/protocol/roles';
 import { LIVE_NOTE_CAP } from '@moss-multi/protocol/limits';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
-import { collectRecipients, publishRecipients, type FanoutEnv } from '@moss-multi/sync/fanout';
+import { collectRecipients, principalsWithFolderAccess, publishRecipients, type FanoutEnv } from '@moss-multi/sync/fanout';
 import { shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
 import { folderChain, liveNotesBy, managesDoc, reapDeadInvites, resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
-import { liveIn, upFrom, type FoldersEnv } from './folders.ts';
+import { FOLDER_NAME_MAX, liveIn, upFrom, type FoldersEnv } from './folders.ts';
+import { announceVaults } from './vault-routes.ts';
 import { changed, NO_STORE, notFound, refuse, signedIn, unauthenticated } from './respond.ts';
 
 const ownerTrashes = () => refuse(403, 'forbidden', 'Only the note’s owner can move it to Trash.');
@@ -112,22 +113,46 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
   return json({ doc: { id: docId, trashedAt: row?.deletedAt ?? null }, ...TRASHED_ACTION }, 200, NO_STORE);
 }
 
-/** Where a restored note returns: its own folder when that is live in its vault, else the vault's root; null when
- * the vault itself is gone. */
-async function homeFor(db: Db, folderId: string): Promise<{ folderId: string; vaultId: string } | null> {
+interface Home {
+  folderId: string;
+  vaultId: string;
+  /** The vault is in Trash too: the note returns to its root, and the vault row comes back with it. */
+  trashedVault: { ownerUserId: string; name: string } | null;
+}
+
+/** Where a restored note returns: its own folder when that is live in its vault, else the vault's root (Moss's
+ * "original folder if available, otherwise root"), never another vault; null for a broken chain. */
+async function homeFor(db: Db, folderId: string): Promise<Home | null> {
   const chain = await folderChain(db, folderId);
-  const rows = await db.select({ id: folders.id, kind: folders.kind, deletedAt: folders.deletedAt }).from(folders)
-    .where(sql`${folders.id} IN (${sql.join(chain.map((id) => sql`${id}`), sql`, `)})`);
+  const rows = await db.select({ id: folders.id, kind: folders.kind, deletedAt: folders.deletedAt, ownerUserId: folders.ownerUserId, name: folders.name })
+    .from(folders).where(sql`${folders.id} IN (${sql.join(chain.map((id) => sql`${id}`), sql`, `)})`);
   const byId = new Map(rows.map((row) => [row.id, row]));
   const vault = byId.get(chain.at(-1) ?? '');
-  if (vault?.kind !== 'vault' || vault.deletedAt !== null) return null;
-  return { folderId: chain.every((id) => byId.get(id)?.deletedAt === null) ? folderId : vault.id, vaultId: vault.id };
+  if (vault?.kind !== 'vault') return null;
+  if (vault.deletedAt !== null) return { folderId: vault.id, vaultId: vault.id, trashedVault: { ownerUserId: vault.ownerUserId, name: vault.name } };
+  return { folderId: chain.every((id) => byId.get(id)?.deletedAt === null) ? folderId : vault.id, vaultId: vault.id, trashedVault: null };
+}
+
+/**
+ * `name`, or Moss's next free folder name, "name (1)", "name (2)"…, among the owner's live vaults. SQLite compares
+ * each candidate with lower(), as folders_vault_name_unique does, so a name the index refuses is never chosen.
+ */
+async function freeVaultName(db: D1Database, ownerUserId: string, name: string): Promise<string> {
+  const taken = db.prepare(`SELECT EXISTS (SELECT 1 FROM folders WHERE owner_user_id = ?1 AND kind = 'vault' AND deleted_at IS NULL
+    AND lower(name) = lower(?2)) AS taken`);
+  for (let n = 0; ; n += 1) {
+    const suffix = n === 0 ? '' : ` (${n})`;
+    const candidate = n === 0 ? name : `${name.slice(0, FOLDER_NAME_MAX - suffix.length)}${suffix}`;
+    if (!(await taken.bind(ownerUserId, candidate).first<{ taken: number }>())?.taken) return candidate;
+  }
 }
 
 const isUnique = (error: unknown) => /UNIQUE/i.test(`${error} ${(error as { cause?: unknown })?.cause ?? ''}`);
 
 const cannotReturn = () => refuse(403, 'forbidden',
   'This note’s folder is in Trash, so it would return to the top of its vault, where you can’t add notes. Ask the vault’s owner to restore it.');
+
+const vaultTrashed = () => refuse(403, 'vault-trashed', 'This note’s vault is in Trash. Ask the vault’s owner to restore it.');
 
 const EDIT_ROLES = GRANT_ROLES.filter((role) => roleAtLeast(role, 'editor')).map((role) => `'${role}'`).join(', ');
 
@@ -144,6 +169,27 @@ const RESTORE = `UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, fol
     AND EXISTS (WITH RECURSIVE ${upFrom(1)} SELECT 1 WHERE ${liveIn(5)}
       AND ("docs".folder_id = ?1 OR EXISTS (SELECT 1 FROM folders f WHERE f.id = ?1 AND f.owner_user_id = ?4)
         OR EXISTS (SELECT 1 FROM folder_members m JOIN up ON m.folder_id = up.id WHERE m.principal_id = ?4 AND m.role IN (${EDIT_ROLES}))))`;
+
+/**
+ * The restore write for a note whose vault is in Trash (?1 the vault, ?2 filename, ?3 doc, ?4 user, ?5 the creator's
+ * acting user, ?6-?8 the folder, batch and trash time it read): RESTORE's conditions on the note, the caller and the
+ * cap, with the vault's root as the destination and the caller its owner. RETURN_VAULT runs after it in the same batch.
+ */
+const RESTORE_TO_TRASHED_VAULT = `UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, folder_id = ?1, filename = ?2
+  WHERE id = ?3 AND deleted_at IS NOT NULL AND folder_id = ?6 AND trash_batch_id IS ?7 AND deleted_at = ?8
+    AND ${managesDoc(3, 4)} AND ${liveNotesBy(5)} < ${LIVE_NOTE_CAP}
+    AND EXISTS (SELECT 1 FROM folders v WHERE v.id = ?1 AND v.kind = 'vault' AND v.owner_user_id = ?4)
+    AND EXISTS (WITH RECURSIVE ${upFrom(6)} SELECT 1 FROM up WHERE id = ?1)`;
+
+/**
+ * The vault row alone comes back (?1 vault, ?2 its free name, ?3 its owner, ?4 the doc), only once the note is live at
+ * its root: its folders and other notes stay in Trash, and it keeps the grants and links it held, so nobody it did not
+ * admit before the trash is admitted after (its invites died with the trash). A same-named vault made meanwhile fails
+ * the batch on folders_vault_name_unique, and the restore chooses again.
+ */
+const RETURN_VAULT = `UPDATE folders SET deleted_at = NULL, trash_batch_id = NULL, name = ?2
+  WHERE id = ?1 AND kind = 'vault' AND deleted_at IS NOT NULL AND owner_user_id = ?3
+    AND EXISTS (SELECT 1 FROM docs WHERE id = ?4 AND folder_id = ?1 AND deleted_at IS NULL)`;
 
 const RESTORE_ATTEMPTS = 5;
 
@@ -162,6 +208,8 @@ const restoreCap = (own: boolean) => refuse(409, 'note-cap', own
  * POST /api/docs/:id/restore: a note its manager restores comes back where it can live, under a free filename. Its
  * own folder keeps it under that folder's sharing; a relocation to the vault's root only narrows who can read it, and
  * is a move, so it needs edit there as a move does. When the tree changes under the write, the home is chosen again.
+ * A note whose vault is in Trash returns to that vault's root, never to another vault, and only its owner may bring
+ * the vault back with it; any other manager is told why.
  */
 export async function restoreDoc(request: Request, env: FoldersEnv, docId: string): Promise<Response> {
   const principal = await signedIn(request, env);
@@ -169,6 +217,7 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
   const db = createDb(env.DB);
   const access = await resolveDocAccess(db, principal, docId);
   if (!access || !can(access.role, 'manage') || principal.type !== 'user') return notFound();
+  let returnedVault: string | null = null;
   if (access.deleted) {
     const creator = (await env.DB.prepare(CREATOR_OF).bind(docId).first<{ creator: string }>())?.creator ?? principal.id;
     // The trash this request restores: once another restore ends it, a later trash is not this request's to undo.
@@ -182,7 +231,8 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
       if (doc.batch !== episode.batch || doc.deletedAt !== episode.at) return trashedAgain();
       const home = await homeFor(db, doc.folderId);
       if (!home) return notFound();
-      if (home.folderId !== doc.folderId) {
+      if (home.trashedVault && home.trashedVault.ownerUserId !== principal.id) return vaultTrashed();
+      if (!home.trashedVault && home.folderId !== doc.folderId) {
         const destination = await resolveFolderAccess(db, principal, home.folderId);
         if (!destination || destination.deleted || !roleAtLeast(destination.role, 'editor')) return cannotReturn();
       }
@@ -192,8 +242,17 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
       const filename = occupied.has(doc.filename) ? availableFilename(doc.filename.replace(/\.md$/, ''), occupied) : doc.filename;
       let restored: D1Result | null = null;
       try {
-        restored = await env.DB.prepare(RESTORE)
-          .bind(home.folderId, filename, docId, principal.id, home.vaultId, creator, doc.folderId, doc.batch, doc.deletedAt).run();
+        if (home.trashedVault) {
+          const name = await freeVaultName(env.DB, principal.id, home.trashedVault.name);
+          [restored] = await env.DB.batch([
+            env.DB.prepare(RESTORE_TO_TRASHED_VAULT).bind(home.vaultId, filename, docId, principal.id, creator, doc.folderId, doc.batch, doc.deletedAt),
+            env.DB.prepare(RETURN_VAULT).bind(home.vaultId, name, principal.id, docId),
+          ]);
+          if (changed(restored)) returnedVault = home.vaultId;
+        } else {
+          restored = await env.DB.prepare(RESTORE)
+            .bind(home.folderId, filename, docId, principal.id, home.vaultId, creator, doc.folderId, doc.batch, doc.deletedAt).run();
+        }
       } catch (error) {
         if (!isUnique(error) || attempt >= RESTORE_ATTEMPTS) {
           console.error('restore write failed', error);
@@ -213,6 +272,8 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
       }
     }
     await notify(env, docId);
+    // Everyone who can see the returned vault re-reads their switcher.
+    if (returnedVault) await announceVaults(env, await principalsWithFolderAccess(env.DB, returnedVault));
     // The row is live first, so the doc never admits a socket the row refuses; a settle that fails here leaves the
     // doc closed until its next admission, comment write or suggestion review settles it from the row.
     await settleQuietly(await getServerByName(env.DocDO, docId));
@@ -221,7 +282,9 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
     .select({ id: docs.id, folderId: docs.folderId, title: docs.title, filename: docs.filename, createdAt: docs.createdAt, updatedAt: docs.updatedAt })
     .from(docs).where(eq(docs.id, docId));
   const now = await resolveDocAccess(db, principal, docId);
-  return json({ doc, role: now?.role ?? access.role }, 200, NO_STORE);
+  // The vault the note is in, so the window can open it there.
+  const vaultId = doc ? (await folderChain(db, doc.folderId)).at(-1) ?? null : null;
+  return json({ doc, role: now?.role ?? access.role, vaultId, vaultRestored: returnedVault !== null }, 200, NO_STORE);
 }
 
 /** GET /api/trash/:id: the owner's trashed note and its markdown, for the read-only Trash view. */

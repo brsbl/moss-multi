@@ -3,16 +3,19 @@
 // switch away and back. Ben, holding a root grant on it, finds it in his switcher with his role as a badge, opens it,
 // and is offered no vault actions; his raw rename and trash get 403. Ada renames the vault from its always-visible
 // actions button and Ben's switcher follows live; then she moves it to Trash through a confirmation, her open note
-// goes terminal in place, and the vault leaves both switchers. Her last vault is never offered to Trash.
+// goes terminal in place, and the vault leaves both switchers. Her last vault is never offered to Trash. A note of a
+// trashed vault restores from Trash: the vault row returns without its folders and the note opens at its top.
 //
 // The root grant is declared setup through the members API; sharing is not this journey's promise.
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, NAMES, ROLE_ATTR, SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR,
+  TRASH_ROW_ATTR,
 } from '../lib/contract.ts';
 import { grant } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
+import { TRASH_COPY } from '../../packages/protocol/src/retention.ts';
 
 const BOOT_TIMEOUT = 30_000;
 const BIND_TIMEOUT = 15_000;
@@ -33,6 +36,7 @@ async function openShell(actors: Actors, label: string): Promise<Actor> {
 const switcher = (actor: Actor, name: string) => actor.page.getByRole('button', { name: `Vault: ${name}`, exact: true });
 const actionsButton = (actor: Actor) => actor.page.getByRole('button', { name: 'Vault actions', exact: true });
 const noteRow = (actor: Actor, docId: string) => actor.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`);
+const trashRow = (actor: Actor, docId: string) => actor.page.locator(`[${TRASH_ROW_ATTR}][${NAMES.docId}="${docId}"]`);
 
 /** Opens the switcher on `current` and picks the vault whose menu item reads `item` (its name, then any badge). */
 async function switchTo(actor: Actor, current: string, item: string, next: string): Promise<void> {
@@ -193,4 +197,72 @@ test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and n
   await ada.page.keyboard.press('Escape');
   const home = (await listing(ada)).vault.id;
   expect((await ada.context.request.delete(`${origin}/api/vaults/${home}`, { headers })).status()).toBe(409);
+});
+
+test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault returns without its folders and each note opens live @p:note-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner trashes her own vault and restores its notes');
+  const TRIP = 'Trip notes';
+  await newVault(ada, 'Home', TRIP);
+  // Declared setup: a folder and two same-titled notes, one at the vault's top and one in the folder.
+  const origin = new URL(ada.page.url()).origin;
+  const send = (path: string, data: object) => ada.context.request.post(`${origin}${path}`, { headers: { origin }, data, timeout: 15_000 });
+  const vaultId = (await listing(ada)).vaults.find((vault) => vault.name === TRIP)?.id ?? '';
+  expect(vaultId, 'the new vault is listed').not.toBe('');
+  const made = await send('/api/folders', { parentId: vaultId, name: 'Bookings' });
+  expect(made.status(), 'declared setup: the folder').toBe(201);
+  const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  const ids: string[] = [];
+  for (const [folder, body] of [[vaultId, 'Passport, charger, boots.'], [folderId, 'Second copy, in Bookings.']]) {
+    const note = await send('/api/docs', { folderId: folder, title: 'Packing list', markdown: body });
+    expect(note.status(), 'declared setup: a note').toBe(201);
+    ids.push(((await note.json()) as { doc: { id: string } }).doc.id);
+  }
+  const [atTop, inFolder] = ids;
+  await expect(noteRow(ada, atTop)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+
+  // The folder's confirmation says where its notes come back.
+  await ui.folderRow(ada, 'Bookings').click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: /^Trash/ }).click();
+  const folderConfirm = ada.page.getByText(TRASH_COPY.trashFolder('Bookings', TRIP), { exact: true });
+  await expect(folderConfirm, 'the folder confirmation').toBeVisible();
+  await ada.page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(folderConfirm).toHaveCount(0);
+
+  // The vault's confirmation says what a restore brings back; confirming sends it to Trash.
+  await actionsButton(ada).click();
+  await ada.page.getByRole('menuitem', { name: 'Move to Trash…', exact: true }).click();
+  const confirm = ada.page.getByRole('alertdialog').filter({ hasText: TRIP });
+  await expect(confirm, 'the vault confirmation').toContainText(TRASH_COPY.trashVault(TRIP));
+  await confirm.getByRole('button', { name: 'Move to Trash', exact: true }).click();
+  await expect(switcher(ada, 'Home'), 'Ada lands in Home').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+
+  // Restore from the Trash row's menu: the vault is back in the switcher with the note at its top, open and live.
+  for (const docId of ids) ada.expectReconnects(1, docId);
+  const refused = ada.page.getByText(/no longer available|vault is in Trash/);
+  await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
+  await trashRow(ada, atTop).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(switcher(ada, TRIP), 'the vault is back and on screen').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, atTop), 'the note is at the top of its vault').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await ui.waitLive(ada, atTop);
+  await expect(refused, 'no refusal').toHaveCount(0);
+  await expect(ui.folderRow(ada, 'Bookings'), 'its folder stays in Trash').toHaveCount(0);
+
+  // The same-titled note from the folder restores beside it from More actions.
+  await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
+  await trashRow(ada, inFolder).click();
+  await ada.page.getByRole('button', { name: 'More actions', exact: true }).click();
+  await ada.page.getByRole('menuitem', { name: /^Restore/ }).click();
+  await expect(noteRow(ada, inFolder), 'the second note restores beside the first').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, atTop)).toBeVisible();
+  await ui.waitLive(ada, inFolder);
+  await expect(refused, 'no refusal').toHaveCount(0);
+  await expect(switcher(ada, TRIP)).toBeVisible();
+  const after = (await listing(ada, `?vault=${vaultId}`)) as unknown as { vaults: { name: string }[]; docs: { id: string; filename: string; trashedAt?: number | null }[] };
+  expect(after.vaults.map((vault) => vault.name)).toEqual(expect.arrayContaining(['Home', TRIP]));
+  const live = after.docs.filter((doc) => ids.includes(doc.id) && !doc.trashedAt);
+  expect(live, 'both notes are live').toHaveLength(2);
+  expect(new Set(live.map((doc) => doc.filename)).size, 'two rows, two filenames').toBe(2);
+  await actors.checkpoint('vault-restored');
 });

@@ -55,7 +55,7 @@ import { canDuplicateNote } from '@moss-multi/host/duplicate';
 import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 // moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
 import {
-  canCreateFolder, canCreateNote, canDropInto, canEditFolder, canMoveFolder, canMoveNote, canTrashFolder, folderRefusal, noteTargetFolder
+  canCreateFolder, canCreateNote, canDropInto, canEditFolder, canMoveFolder, canMoveNote, canTrashFolder, folderRefusal, noteTargetFolder, trashFolderVault
 } from '@moss-multi/host/folders';
 // moss-multi seam: capabilities (T2.6): every note action follows the caller's role; an unknown role gets none.
 import { noteCan } from '@moss-multi/host/capabilities';
@@ -1757,7 +1757,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           open={trashFolderTarget !== null}
           onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
           title="Trash folder?"
-          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '') /* moss-multi seam: trash-copy (T2.3) */}
+          description={TRASH_COPY.trashFolder(trashFolderTarget?.split('/').pop() ?? '', trashFolderVault(trashFolderTarget ?? '')) /* moss-multi seam: trash-copy (T2.3, T9.6) */}
           confirmLabel="Trash"
           variant="danger"
           onConfirm={handleTrashFolderConfirm}
