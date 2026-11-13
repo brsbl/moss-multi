@@ -64,10 +64,13 @@ const ELSEWHERE = 'input, textarea, select, [contenteditable="true"], [role="dia
 const OPEN_LAYERS = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]';
 const FIELD = `[${TITLE_BINDING_ATTR}], [${BODY_BINDING_ATTR}]`;
 
-/** The pane's title or body a key or paste is aimed at: its target, or the selection a click left in a closed field. */
+/** Where the last press landed: a closed field takes no focus, so a key after a click there targets the page. */
+let pressed: EventTarget | null = null;
+
+/** The pane's title or body a key or paste is aimed at: its target, else the last press, else the selection. */
 function aimedField(target: EventTarget | null): HTMLElement | null {
-  const anchor = document.getSelection()?.anchorNode ?? null;
-  for (const node of [target, anchor]) {
+  const last = pressed instanceof Node && pressed.isConnected ? pressed : null;
+  for (const node of [target, last ?? document.getSelection()?.anchorNode ?? null]) {
     if (!(node instanceof Node)) continue;
     const el = node instanceof Element ? node : node.parentElement;
     const field = el?.closest<HTMLElement>(FIELD);
@@ -121,11 +124,17 @@ export function watchRefusedTyping(): () => void {
       if (typesText(event)) refuseAimed(event.target);
     };
     const onPaste = (event: ClipboardEvent) => refuseAimed(event.target);
+    const onPress = (event: PointerEvent) => {
+      pressed = event.target;
+    };
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('paste', onPaste, true);
+    window.addEventListener('pointerdown', onPress, true);
     release = () => {
+      pressed = null;
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('paste', onPaste, true);
+      window.removeEventListener('pointerdown', onPress, true);
     };
   }
   return () => {
