@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  asSessionAnswer, createAuthStore, LOOKUP_TIMEOUT_MS, refusalMessage, RETRY_MS, safeNext, SIGN_OUT_PATH, UNREACHABLE, type AuthDeps,
-  type AuthState,
+  asSessionAnswer, backToLabel, createAuthStore, INVITED_TAGLINE, looksLikeEmail, LOOKUP_TIMEOUT_MS, refusalMessage, RETRY_MS, safeNext,
+  SIGN_OUT_PATH, UNREACHABLE, type AuthDeps, type AuthState,
 } from './auth-state.ts';
 
 const ADA = { id: 'u1', name: 'Ada', email: 'ada@example.invalid' };
@@ -157,6 +157,16 @@ describe('the auth store (the single auth-state writer)', () => {
     expect(refusalMessage({ code: 'TOO_MANY_SIGN_UPS' }, 429)).not.toMatch(/moment/);
     // The pilot's allowlist (T8.P1): say why, and who can fix it.
     expect(refusalMessage({ code: 'SIGN_UP_NOT_ALLOWED' }, 403)).toBe('Sign-up here is invite-only. Ask the owner to add your email address.');
+    // better-call's schema refusal names the field it rejected.
+    expect(refusalMessage({ code: 'VALIDATION_ERROR', message: '[body.email] Invalid email address' }, 400)).toBe('That doesn’t look like an email address.');
+    expect(refusalMessage({ code: 'VALIDATION_ERROR', message: '[body.name] Expected string' }, 400), 'another field stays generic').toBe('Something went wrong. Try again.');
+  });
+
+  it('checks an email’s shape before asking the server', () => {
+    for (const ok of ['ada@example.invalid', 'a.b+c@sub.example.org']) expect(looksLikeEmail(ok), ok).toBe(true);
+    for (const bad of ['ada@example', 'ada', 'ada@', '@example.invalid', 'a b@example.invalid', 'ada@@example.invalid', 'ada@example.']) {
+      expect(looksLikeEmail(bad), bad).toBe(false);
+    }
   });
 
   it('names the active password minimum when a password is too short', async () => {
@@ -193,6 +203,13 @@ describe('session answers and next paths', () => {
     for (const bad of [undefined, '', 'https://evil.example/', '//evil.example/x', '/\\evil.example', '/login?next=/', '/login', '/x/../login']) {
       expect(safeNext(bad), String(bad)).toBe('/');
     }
+  });
+
+  it('says an invite is for an email without naming it, and offers the way back to a share link', () => {
+    expect(INVITED_TAGLINE).toBe('You’ve been invited. Sign in or create an account with the email address this invite is for. If you’re not sure which, ask the person who invited you.');
+    expect(backToLabel('/d/abc?share=00ff')).toBe('Back to the note');
+    expect(backToLabel('/f/abc?share=00ff')).toBe('Back to the folder');
+    for (const none of ['/', '/d/abc', '/invite/abc', '/d/abc?x=1', '/d/abc?share=']) expect(backToLabel(none), none).toBeNull();
   });
 
   it('never returns a path that normalizes to a protocol-relative //host', () => {

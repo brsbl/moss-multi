@@ -206,6 +206,8 @@ describe('who an invite admits', { timeout: 30_000 }, () => {
     const other = await accept(cy.cookie, token);
     expect(other.status).toBe(403);
     expect(await other.json()).toEqual({ error: 'invite-for-another-email', message: INVITE_OTHER_EMAIL });
+    // Nothing is sent: the invite "is for" an email (PRODUCT ruling 19).
+    expect(INVITE_OTHER_EMAIL).toBe('This invite is for another email. Sign in with the email it is for, or ask the person who shared it for a new link.');
     expect(await roleOf(cy.cookie, docId)).toBeNull();
     expect((await membersOf(ada, path)).invites.map((i) => i.email), 'still open for Kim').toEqual([kim.email]);
     expect((await accept(kim.cookie, token)).status).toBe(200);
