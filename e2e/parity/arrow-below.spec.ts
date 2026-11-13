@@ -38,7 +38,7 @@ for (const { story, block, start } of CASES) {
       const page = await context.newPage();
       await page.clock.setFixedTime(new Date(STORY_NOW));
       await page.goto(`${oracle.url}/?story=${story}&mode=preview`);
-      const root = page.locator('[data-lexical-editor="true"]').filter({ has: page.locator(block) });
+      const root = page.locator('[data-moss-note-editor-root="true"]').filter({ has: page.locator(block) });
       await root.locator(start).waitFor({ timeout: 30_000 });
       const result = await arrowBelow(page, root, root.locator(start), 2, 'hello');
       results[story] = result;

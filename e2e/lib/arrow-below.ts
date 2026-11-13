@@ -27,6 +27,12 @@ export async function arrowBelow(page: Page, root: Locator, start: Locator, pres
   const box = await start.boundingBox();
   if (!box) throw new Error('the start line is not visible');
   await page.mouse.click(box.x + box.width - 4, box.y + box.height / 2);
+  // Lexical reads the first selectionchange after a pointerdown as the click's own and makes a range selection from
+  // the DOM; a key pressed before it lands (no person is that quick) would see its result replaced.
+  await page.evaluate(() => new Promise((done) => {
+    document.addEventListener('selectionchange', () => setTimeout(done, 50), { once: true });
+    setTimeout(done, 500);
+  }));
   await page.keyboard.press('End');
   const after: Where[] = [];
   for (let i = 0; i < presses; i++) {

@@ -476,6 +476,7 @@ test('j01 editing: a composition cancelled below a node-selected chart leaves th
 test('j01 editing: typing after arrowing below a note\'s last block lands in a paragraph directly below it @p:col-1', async ({ actors, stack }) => {
   // T9.2: two ArrowDowns past a trailing callout or table left the DOM selection outside the editor (at the root's
   // end, then in the bottom toolbar) while the editor kept focus, and every key typed after that was dropped.
+  actors.solo('caret keys in one editor; no peer is involved');
   const ada = await actors.session(await actors.principal('ada'));
   const blockKey = '[data-block-decorator-key]';
   const cases = [
