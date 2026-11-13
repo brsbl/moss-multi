@@ -268,7 +268,9 @@ describe.each(['query', 'header'] as const)('signed-in link-only member privacy 
     ] });
     const owner = await withLink('GET', path, ada.cookie);
     expect(owner.status).toBe(200);
-    expect(await owner.json()).toEqual({ members: [
+    // The owner's view also names the target and who reaches it from above (T9.7), covered below.
+    const { members: ownerMembers, invites } = (await owner.json()) as { members: unknown; invites: unknown };
+    expect({ members: ownerMembers, invites }).toEqual({ members: [
       { principalId: ada.id, principalType: 'user', name: 'Ada', email: ada.email, role: 'owner' },
       { principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'viewer' },
     ], invites: [] });
@@ -380,5 +382,115 @@ describe('the mention roster: GET /api/docs/:id/members?scope=effective @p:ppl-3
       expect(response.status).toBe(404);
       expect(await response.text()).not.toContain(ben.id);
     }
+  });
+});
+
+describe("the owner's dialog: who reaches a doc or folder from the places above it (T9.7) @p:ppl-2", () => {
+  let dee: TestUser;
+  beforeAll(async () => {
+    dee = await signedUpUser(env, 'members-dee', 'Dee');
+  }, 60_000);
+
+  interface Place { id: string; name: string; kind: string }
+  interface Owned {
+    name: string;
+    members: (Member & { also?: { role: string; place: Place | null } })[];
+    inherited: { place: Place | null; members: Member[] }[];
+  }
+  const owned = async (cookie: string, path: string): Promise<Owned> => {
+    const response = await call('GET', path, cookie);
+    expect(response.status, `GET ${path}`).toBe(200);
+    return (await response.json()) as Owned;
+  };
+  const linksAbove = async (cookie: string, path: string) => {
+    const response = await call('GET', path, cookie);
+    expect(response.status, `GET ${path}`).toBe(200);
+    return ((await response.json()) as { inherited: { place: Place; role: string }[] }).inherited;
+  };
+  const placeOf = async (id: string) => d1.db.prepare('SELECT id, name, kind FROM folders WHERE id = ?').bind(id).first<Place>();
+
+  it('groups people by the place they come from, names only managed places, and drops a place the note moves out of', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    const docId = await insertDoc(d1.db, ada, { folderId: folder });
+    await d1.db.prepare("UPDATE docs SET title = 'Packing list' WHERE id = ?").bind(docId).run();
+    const raised = crypto.randomUUID();
+    const now = Date.now();
+    await d1.db.prepare('INSERT INTO user (id, name, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(raised, 'Raised', `mm-t97-raised-${raised}@example.invalid`, now, now).run();
+    await insertGrant(d1.db, { docId }, { id: raised }, 'viewer');
+    await insertGrant(d1.db, { docId }, { id: dee.id }, 'owner');
+    await insertGrant(d1.db, { folderId: folder }, { id: ben.id }, 'commenter');
+    await insertGrant(d1.db, { folderId: folder }, { id: raised }, 'editor');
+    await insertGrant(d1.db, { folderId: vault }, { id: cy.id }, 'owner');
+    await insertGrant(d1.db, { folderId: vault }, { id: ada.id }, 'editor');
+    const token = await insertLink(d1.db, { folderId: folder }, 'viewer');
+    await insertLink(d1.db, { folderId: vault }, 'commenter', { revoked: true });
+    const [folderPlace, vaultPlace] = [await placeOf(folder), await placeOf(vault)];
+
+    const asOwner = await owned(ada.cookie, `/api/docs/${docId}/members`);
+    expect(asOwner.name, 'the dialog names the note').toBe('Packing list');
+    expect(asOwner.members.map((m) => [m.principalId, m.role, m.also ?? null])).toEqual([
+      [ada.id, 'owner', null],
+      [raised, 'viewer', { role: 'editor', place: folderPlace }],
+      [dee.id, 'owner', null],
+    ]);
+    expect(asOwner.inherited).toEqual([
+      { place: folderPlace, members: [{ principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'commenter' }] },
+      { place: vaultPlace, members: [{ principalId: cy.id, principalType: 'user', name: 'Cy', email: cy.email, role: 'owner' }] },
+    ]);
+    expect(await linksAbove(ada.cookie, `/api/docs/${docId}/links`), "a live folder link reaches the note; a revoked one doesn't").toEqual([
+      { place: folderPlace, role: 'viewer' },
+    ]);
+    // The folder's own dialog lists who reaches it from the vault.
+    expect((await owned(ada.cookie, `/api/folders/${folder}/members`)).inherited).toEqual([
+      { place: vaultPlace, members: [{ principalId: cy.id, principalType: 'user', name: 'Cy', email: cy.email, role: 'owner' }] },
+    ]);
+    // Cy co-owns the vault, so he manages every place above the note.
+    expect((await owned(cy.cookie, `/api/docs/${docId}/members`)).inherited.map((group) => group.place)).toEqual([folderPlace, vaultPlace]);
+
+    // Dee owns the note alone: people and roles, no place, no email, no link.
+    const asDee = await call('GET', `/api/docs/${docId}/members`, dee.cookie);
+    const deeText = await asDee.text();
+    for (const secret of [folder, vault, folderPlace!.name, vaultPlace!.name, ben.email, cy.email]) expect(deeText).not.toContain(secret);
+    const deeView = JSON.parse(deeText) as Owned;
+    expect(deeView.inherited).toEqual([{ place: null, members: [
+      { principalId: ben.id, principalType: 'user', name: 'Ben', role: 'commenter' },
+      { principalId: cy.id, principalType: 'user', name: 'Cy', role: 'owner' },
+    ] }]);
+    expect(deeView.members.find((m) => m.principalId === raised)?.also).toEqual({ role: 'editor', place: null });
+    const deeLinks = await call('GET', `/api/docs/${docId}/links`, dee.cookie);
+    expect(await deeLinks.json(), 'no link above is told').toEqual({ links: [], inherited: [] });
+
+    // A commenter and a link visitor learn nothing new.
+    const asBen = await call('GET', `/api/docs/${docId}/members`, ben.cookie);
+    expect(Object.keys((await asBen.json()) as object)).toEqual(['members']);
+    expect((await call('GET', `/api/docs/${docId}/links`, ben.cookie)).status).toBe(403);
+    for (const path of [`/api/docs/${docId}/members`, `/api/docs/${docId}/links`]) {
+      expect((await call('GET', path, null, undefined, { 'x-moss-share': token })).status).toBe(404);
+    }
+
+    // Moved to the top of the vault, the folder's people and link no longer reach it.
+    await d1.db.prepare('UPDATE docs SET folder_id = ? WHERE id = ?').bind(vault, docId).run();
+    const moved = await owned(ada.cookie, `/api/docs/${docId}/members`);
+    expect(moved.inherited.map((group) => [group.place?.id, group.members.map((m) => m.principalId)])).toEqual([[vault, [cy.id]]]);
+    expect(moved.members.find((m) => m.principalId === raised)?.also, 'no higher role above any more').toBeUndefined();
+    expect(await linksAbove(ada.cookie, `/api/docs/${docId}/links`)).toEqual([]);
+  });
+
+  it('tells a co-owner of a folder the places they manage and keeps the vault above it nameless', async () => {
+    const vault = await insertFolder(d1.db, ada, null);
+    const folder = await insertFolder(d1.db, ada, vault);
+    const docId = await insertDoc(d1.db, ada, { folderId: folder });
+    await insertGrant(d1.db, { folderId: folder }, { id: dee.id }, 'owner');
+    await insertGrant(d1.db, { folderId: vault }, { id: ben.id }, 'viewer');
+    await insertLink(d1.db, { folderId: vault }, 'editor');
+    await insertLink(d1.db, { folderId: folder }, 'commenter');
+    const folderPlace = await placeOf(folder);
+    expect((await owned(dee.cookie, `/api/docs/${docId}/members`)).inherited).toEqual([
+      { place: folderPlace, members: [{ principalId: dee.id, principalType: 'user', name: 'Dee', email: dee.email, role: 'owner' }] },
+      { place: null, members: [{ principalId: ben.id, principalType: 'user', name: 'Ben', role: 'viewer' }] },
+    ]);
+    expect(await linksAbove(dee.cookie, `/api/docs/${docId}/links`), "only the managed folder's link").toEqual([{ place: folderPlace, role: 'commenter' }]);
   });
 });
