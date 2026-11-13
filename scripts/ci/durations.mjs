@@ -101,13 +101,24 @@ function legsAt(sha, file) {
   }
 }
 
+// A run's first-attempt jobs by pages of 50: GitHub answers 502 to a larger page of a run with more than about 50 jobs.
+function attemptJobs(repo, id, gh) {
+  const jobs = [];
+  for (let page = 1; ; page += 1) {
+    const { total_count: total, jobs: listed } = JSON.parse(gh(['api', `repos/${repo}/actions/runs/${id}/attempts/1/jobs?per_page=50&page=${page}`]));
+    jobs.push(...listed);
+    if (listed.length === 0 || jobs.length >= total) break;
+  }
+  return jobs;
+}
+
 function collect(repo, runIds, { gh, legsAt }) {
   const samples = [];
   const shards = [];
   const failures = [];
   for (const id of runIds) {
     const run = JSON.parse(gh(['api', `repos/${repo}/actions/runs/${id}`]));
-    const jobs = JSON.parse(gh(['api', `repos/${repo}/actions/runs/${id}/attempts/1/jobs?per_page=100`])).jobs;
+    const jobs = attemptJobs(repo, id, gh);
     for (const job of jobs) {
       const match = /^e2e \((chromium|webkit), (\w+)\)$/.exec(job.name);
       if (!match || match[2] === 'all') continue;

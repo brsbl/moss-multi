@@ -98,9 +98,30 @@ jobs:
       - name: Read the CI run
         env:
           GH_TOKEN: ${{ github.token }}
+        # GitHub answers 502 to a jobs page of more than about 50 jobs: pages of 50, each call retried with a growing
+        # pause. A call that still fails, or a listing short of the run's total_count, fails the step.
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.ndjson"
+          api() {
+            for try in 1 2 3 4 5; do
+              if gh api "$2" > "$1"; then return 0; fi
+              if [ "$try" -lt 5 ]; then sleep $((5 * 2 ** (try - 1))); fi
+            done
+            echo "::error::gh api $2 failed 5 times"
+            return 1
+          }
+          api "$RUNNER_TEMP/run.json" "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
+          : > "$RUNNER_TEMP/jobs.ndjson"
+          page=1
+          while :; do
+            api "$RUNNER_TEMP/jobs-page.json" "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=50&page=$page"
+            total=$(jq -e '.total_count | numbers' "$RUNNER_TEMP/jobs-page.json")
+            count=$(jq -e '.jobs | length' "$RUNNER_TEMP/jobs-page.json")
+            jq -c '.jobs[]' "$RUNNER_TEMP/jobs-page.json" >> "$RUNNER_TEMP/jobs.ndjson"
+            listed=$(wc -l < "$RUNNER_TEMP/jobs.ndjson")
+            if [ "$count" -eq 0 ] || [ "$listed" -ge "$total" ]; then break; fi
+            page=$((page + 1))
+          done
+          if [ "$listed" -ne "$total" ]; then echo "::error::listed $listed of $total jobs of run $RUN_ID"; exit 1; fi
       # The gated commit: its migrations match the bytes, and its scripts judge them.
       - uses: actions/checkout@v6
         with:
