@@ -1,0 +1,157 @@
+// A peer's Enter, heading, list or checkbox change deletes and re-inserts the block under the local caret, and
+// @lexical/yjs then falls back to the end of the block before it (or to the end of the first half of a split). Around
+// each remote transaction this keeps the caret's node key and offset, and only when the binding had to recover the
+// selection puts the caret back beside its words: in the block now at the same place when it reads the same, or in
+// the next block when the old one was split before the caret.
+import {
+  $getNodeByKey,
+  $getRoot,
+  $isElementNode,
+  $isRangeSelection,
+  $isTextNode,
+  type EditorState,
+  type ElementNode,
+  type LexicalEditor,
+  type LexicalNode,
+  SKIP_SCROLL_INTO_VIEW_TAG,
+} from 'lexical';
+
+export interface HeldCaret {
+  state: EditorState;
+  key: string;
+  offset: number;
+}
+
+const focused = (editor: LexicalEditor): boolean => {
+  const root = editor.getRootElement();
+  const active = root?.ownerDocument.activeElement;
+  return !!root && !!active && root.contains(active);
+};
+
+/** The collapsed local caret before a remote transaction; null when there is nothing to keep. Runs per peer keystroke. */
+export function holdCaret(editor: LexicalEditor, fromUndo: boolean): HeldCaret | null {
+  if (fromUndo || editor._pendingEditorState !== null || editor.isComposing()) return null;
+  const state = editor.getEditorState();
+  const selection = state._selection;
+  if (!$isRangeSelection(selection) || !selection.isCollapsed() || !focused(editor)) return null;
+  return { state, key: selection.anchor.key, offset: selection.anchor.offset };
+}
+
+/** After the transaction's sync: when the held caret's node is gone (or too short for it), restores it once committed. */
+export function keepCaret(editor: LexicalEditor, held: HeldCaret): void {
+  const lost = editor.read('pending', () => {
+    const node = $getNodeByKey(held.key);
+    return !node || !node.isAttached() || ($isTextNode(node) && held.offset > node.getTextContentSize());
+  });
+  if (!lost) return;
+  queueMicrotask(() => {
+    if (!focused(editor) || editor.isComposing() || !editor.isEditable()) return;
+    // The sync's update commits on its own microtask, first; commit anything still pending so this one stays separate.
+    if (editor._pendingEditorState !== null) editor.read(() => undefined);
+    editor.update(() => $restore(editor, held), { discrete: true, tag: SKIP_SCROLL_INTO_VIEW_TAG });
+  });
+}
+
+/** A block that holds text: a paragraph, heading, list item or a table cell's paragraph; never a list or table. */
+const isTextBlock = (node: LexicalNode | null): node is ElementNode => {
+  if (!$isElementNode(node) || node.isInline() || node.getType() === 'root') return false;
+  const first = node.getFirstChild();
+  return !($isElementNode(first) && !first.isInline());
+};
+
+/** Visits the text blocks in document order until `visit` returns true. */
+function $walk(parent: ElementNode, visit: (block: ElementNode) => boolean): boolean {
+  for (let child = parent.getFirstChild(); child; child = child.getNextSibling()) {
+    if (!$isElementNode(child) || child.isInline()) continue;
+    if (isTextBlock(child) ? visit(child) : $walk(child, visit)) return true;
+  }
+  return false;
+}
+
+function $indexOf(block: ElementNode): number {
+  let index = -1;
+  let seen = 0;
+  $walk($getRoot(), (candidate) => {
+    if (candidate.is(block)) index = seen;
+    seen += 1;
+    return index >= 0;
+  });
+  return index;
+}
+
+function $blockAt(index: number): ElementNode | null {
+  let found: ElementNode | null = null;
+  let seen = 0;
+  $walk($getRoot(), (block) => {
+    if (seen === index) found = block;
+    seen += 1;
+    return found !== null;
+  });
+  return found;
+}
+
+/** The inline leaves of a block in order (text, line breaks, inline decorators), through links and other inline elements. */
+function $leaves(parent: ElementNode, out: LexicalNode[] = []): LexicalNode[] {
+  for (let child = parent.getFirstChild(); child; child = child.getNextSibling()) {
+    if ($isElementNode(child)) $leaves(child, out);
+    else out.push(child);
+  }
+  return out;
+}
+
+/** The caret's character offset in `block`, from a text point or an element point. */
+function $offsetIn(block: ElementNode, node: LexicalNode, offset: number): number {
+  const leaves = $leaves(block);
+  let before = 0;
+  if ($isTextNode(node)) {
+    for (const leaf of leaves) {
+      if (leaf.is(node)) return before + offset;
+      before += leaf.getTextContentSize();
+    }
+    return before;
+  }
+  const target = $isElementNode(node) ? node.getChildAtIndex(offset) : null;
+  const stop = target && $isElementNode(target) ? ($leaves(target)[0] ?? null) : target;
+  for (const leaf of leaves) {
+    if (stop && leaf.is(stop)) return before;
+    before += leaf.getTextContentSize();
+  }
+  return before;
+}
+
+function $placeAt(block: ElementNode, offset: number): void {
+  let rest = offset;
+  for (const leaf of $leaves(block)) {
+    const size = leaf.getTextContentSize();
+    if ($isTextNode(leaf) && rest <= size) {
+      leaf.select(rest, rest);
+      return;
+    }
+    rest -= size;
+  }
+  if (offset === 0) block.selectStart();
+  else block.selectEnd();
+}
+
+function $restore(editor: LexicalEditor, held: HeldCaret): void {
+  const before = held.state.read(() => {
+    const node = $getNodeByKey(held.key);
+    let block: LexicalNode | null = node;
+    while (block && !isTextBlock(block)) block = block.getParent();
+    if (!node || !isTextBlock(block)) return null;
+    return { key: block.getKey(), index: $indexOf(block), offset: $offsetIn(block, node, held.offset), text: block.getTextContent() };
+  }, { editor });
+  if (!before || before.index < 0) return;
+  const block = $blockAt(before.index);
+  if (!block) return;
+  // Replaced (a heading, list item or checkbox now reads the same): the same offset in it.
+  if (block.getKey() !== before.key && block.getTextContent() === before.text) {
+    $placeAt(block, before.offset);
+    return;
+  }
+  // Split before the caret: the rest of the offset in the second half.
+  const head = block.getTextContent();
+  if (before.offset <= head.length) return;
+  const next = $blockAt(before.index + 1);
+  if (next && head + next.getTextContent() === before.text) $placeAt(next, before.offset - head.length);
+}

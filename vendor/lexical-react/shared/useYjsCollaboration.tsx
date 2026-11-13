@@ -67,6 +67,7 @@ import {bindLocalLayout} from '@moss-multi/host/collab/layout-local';
 import {bindCommentPaint} from '@moss-multi/host/comments/paint';
 import {bindRegisters} from '@moss-multi/host/collab/registers';
 import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
+import {holdCaret, keepCaret} from '@moss-multi/host/collab/keep-caret'; // moss-multi seam: keep-caret (A§10.2)
 import {
   type Doc,
   type Snapshot,
@@ -128,6 +129,8 @@ export function useYjsCollaboration(
       // moss-multi seam: plugin-b (A§10.2 b): this binding's derived writes never fold back
       if (!isOwnOrigin(origin, binding)) {
         const isFromUndoManger = origin instanceof UndoManager;
+        // moss-multi seam: keep-caret (A§10.2): a peer's block replace or split keeps the local caret on its words
+        const held = holdCaret(editor, isFromUndoManger);
         syncYjsChangesToLexical(
           binding,
           provider,
@@ -135,6 +138,7 @@ export function useYjsCollaboration(
           isFromUndoManger,
           syncCursorPositionsFn,
         );
+        if (held) keepCaret(editor, held); // moss-multi seam: keep-caret (A§10.2)
       }
     };
 

@@ -1,7 +1,7 @@
 diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 --- a/shared/useYjsCollaboration.tsx
 +++ b/shared/useYjsCollaboration.tsx
-@@ -60,6 +60,12 @@ import {
+@@ -60,6 +60,13 @@ import {
    useState,
  } from 'react';
  import {createPortal} from 'react-dom';
@@ -11,10 +11,11 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 +import {bindCommentPaint} from '@moss-multi/host/comments/paint';
 +import {bindRegisters} from '@moss-multi/host/collab/registers';
 +import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
++import {holdCaret, keepCaret} from '@moss-multi/host/collab/keep-caret'; // moss-multi seam: keep-caret (A§10.2)
  import {
    type Doc,
    type Snapshot,
-@@ -114,10 +120,12 @@ export function useYjsCollaboration(
+@@ -114,11 +121,15 @@ export function useYjsCollaboration(
  
    useEffect(() => {
      const {root} = binding;
@@ -26,9 +27,20 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 +      // moss-multi seam: plugin-b (A§10.2 b): this binding's derived writes never fold back
 +      if (!isOwnOrigin(origin, binding)) {
          const isFromUndoManger = origin instanceof UndoManager;
++        // moss-multi seam: keep-caret (A§10.2): a peer's block replace or split keeps the local caret on its words
++        const held = holdCaret(editor, isFromUndoManger);
          syncYjsChangesToLexical(
            binding,
-@@ -141,21 +149,31 @@ export function useYjsCollaboration(
+           provider,
+@@ -126,6 +137,7 @@ export function useYjsCollaboration(
+           isFromUndoManger,
+           syncCursorPositionsFn,
+         );
++        if (held) keepCaret(editor, held); // moss-multi seam: keep-caret (A§10.2)
+       }
+     };
+ 
+@@ -141,21 +153,31 @@ export function useYjsCollaboration(
          tags,
        }) => {
          if (!tags.has(SKIP_COLLAB_TAG)) {
@@ -69,7 +81,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
        root.getSharedType().unobserveDeep(onYjsTreeChanges);
        removeListener();
      };
-@@ -193,7 +211,8 @@ export function useYjsCollaboration(
+@@ -193,7 +215,8 @@ export function useYjsCollaboration(
      onBootstrap,
    );
  
@@ -79,7 +91,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
  
    return useYjsCursors(binding, cursorsContainerRef);
  }
-@@ -478,18 +497,19 @@ function useAwareness(
+@@ -478,18 +501,19 @@ function useAwareness(
    binding: Binding | BindingV2,
    provider: Provider,
    selectionHighlight: boolean,
@@ -101,7 +113,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
  }
  
  export function useYjsCursors(
-@@ -543,10 +563,8 @@ export function useYjsHistory(
+@@ -543,10 +567,8 @@ export function useYjsHistory(
    editor: LexicalEditor,
    binding: Binding,
  ): () => void {
