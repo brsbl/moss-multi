@@ -208,47 +208,58 @@ export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontma
   }, admit);
 }
 
-/** An export that read a doc in place saw an update emitted on it; no update listener heard that update. */
+/** An export that read a doc in place changed it; no listener or observer of the doc heard the change. */
 export class ExportWroteError extends Error {
-  constructor() {
-    super('an export wrote to the doc it read in place');
+  constructor(options?: ErrorOptions) {
+    super('an export wrote to the doc it read in place', options);
     this.name = 'ExportWroteError';
   }
 }
 
 type Listeners = Map<string, Set<(...args: unknown[]) => void>>;
 
+/** Whether a transaction changed its doc: what Yjs would encode as an update. */
+const changes = (transaction: Y.Transaction) =>
+  transaction.deleteSet.clients.size > 0 || [...transaction.afterState].some(([client, clock]) => (transaction.beforeState.get(client) ?? 0) !== clock);
+
 /**
- * Runs `read` with `live`'s update listeners (the DocDO's persistence, y-partyserver's broadcast and save) set aside, so
- * an update emitted meanwhile reaches none of them; then fails if one was. The listeners are swapped on the doc's own
- * observer map: a listener can neither stop the others nor throw without leaving Yjs's transaction cleanup half done.
+ * Runs `read` with every listener of `live` set aside (the DocDO's persistence, y-partyserver's broadcast and save, the
+ * payload settle, the name index), so none acts on a write made meanwhile. Such a write throws as its transaction's
+ * observers are about to run, so no type observer runs either, and Yjs still finishes the transaction's cleanup. The
+ * read then fails with ExportWroteError on every exit, even one that swallowed the throw or failed for its own reason.
  */
 function refusingWrites<T>(live: Y.Doc, read: () => T): T {
-  const observers = (live as unknown as { _observers: Listeners })._observers;
+  const owner = live as unknown as { _observers: Listeners };
+  const held = owner._observers;
   let wrote = false;
-  const refuse = () => {
+  const refuse = (transaction: Y.Transaction) => {
+    if (!changes(transaction)) return;
     wrote = true;
+    throw new ExportWroteError();
   };
-  const held = new Map<string, Set<(...args: unknown[]) => void> | undefined>();
-  for (const name of ['update', 'updateV2']) {
-    held.set(name, observers.get(name));
-    observers.set(name, new Set([refuse]));
-  }
-  let result: T;
+  owner._observers = new Map([['beforeObserverCalls', new Set([refuse as (...args: unknown[]) => void])]]);
+  let result: { value: T } | null = null;
+  let failure: unknown = undefined;
   try {
-    result = read();
+    result = { value: read() };
+  } catch (error) {
+    failure = error;
   } finally {
-    for (const [name, listeners] of held) {
-      // A listener added meanwhile stays.
-      const added = [...(observers.get(name) ?? [])].filter((listener) => listener !== refuse);
-      const kept = listeners ?? new Set();
-      for (const listener of added) kept.add(listener);
-      if (kept.size > 0) observers.set(name, kept);
-      else observers.delete(name);
+    const during = owner._observers;
+    owner._observers = held;
+    // A listener added meanwhile stays.
+    for (const [name, listeners] of during) {
+      for (const listener of listeners) {
+        if (listener === refuse) continue;
+        if (!held.has(name)) held.set(name, new Set());
+        held.get(name)!.add(listener);
+      }
     }
   }
-  if (wrote) throw new ExportWroteError();
-  return result;
+  // The refusal wins over the read's own result or failure.
+  if (wrote) throw failure instanceof ExportWroteError ? failure : new ExportWroteError({ cause: failure });
+  if (!result) throw failure;
+  return result.value;
 }
 
 interface View {
@@ -269,7 +280,7 @@ function viewOf(live: Y.Doc): View {
   const editor = createConverterEditor();
   const stopLists = registerList(editor);
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
-  const binding = bindingOf(editor, live, false);
+  const binding = bindingOf(editor, live, true);
   const stopRegisters = bindRegisters(editor, live, { serializedImports: true, payloads });
   const dispose = () => {
     stopRegisters();
