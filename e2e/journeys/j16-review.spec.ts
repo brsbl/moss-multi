@@ -104,13 +104,14 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
 });
 
 test('j16-review: two clicks on a marker never reject; Reject asks first, Cancel and Escape keep the suggestion, and confirming closes it for everyone @p:mean-2 @p:R17', async ({ actors }) => {
-  const { ada, ben, docId } = await sharedNote(actors);
+  // At 1440 px this line puts the marker after "opening" where the list then shows Reject.
+  const { ada, ben, docId } = await sharedNote(actors, 'Keep every original word in this opening line of the note.\n\nSecond paragraph here.');
   await openIn(ben, docId, 'suggest');
   await openIn(ada, docId, 'edit');
   await actors.requireDistinct(2);
   // The confirmed reject closes the author's own record, which rebuilds his fork (§5).
   ben.expectReconnects(1, docId);
-  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await suggestText(ben, docId, 'this opening', 12, ' plus');
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
   const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
   await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
@@ -157,7 +158,7 @@ test('j16-review: two clicks on a marker never reject; Reject asks first, Cancel
     await expect(panel(ada), 'the list stays open under the dialog').toBeVisible();
     await expect(card, `${dismiss} keeps the suggestion`).toHaveCount(1);
   }
-  await expect(ui.body(ben, docId)).toContainText('Keep every original plus word.');
+  await expect(ui.body(ben, docId)).toContainText('this opening plus line');
 
   await confirmClose(ada, card, 'Reject');
   await expect(cards(ada, 'rejected')).toHaveCount(1, { timeout: BIND_TIMEOUT });
