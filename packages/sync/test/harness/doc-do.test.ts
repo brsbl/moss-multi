@@ -1118,3 +1118,27 @@ describe('answers', () => {
     });
   });
 });
+
+describe('lean layout (A§10.11)', () => {
+  const block = (doc: Y.Doc) => (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[])[0]!.insert as Y.XmlText;
+  const PLAIN = { __type: 'paragraph', __indent: 0, __format: 0 };
+
+  it("writes a node class's default back when a client on the earlier binding deletes a key, as its undo of a first write does", async () => {
+    const opened = await start(openDoc());
+    const ben = await editorOn(opened);
+    const ada = await editorOn(opened);
+    expect(block(ben.doc).getAttributes(), "the seed stores the paragraph's type alone").toEqual({ __type: 'paragraph' });
+    block(ben.doc).setAttribute('__indent', 1);
+    block(ben.doc).setAttribute('__format', 2);
+    await ben.flush();
+    block(ben.doc).removeAttribute('__indent');
+    block(ben.doc).removeAttribute('__format');
+    await ben.flush();
+    await ada.pump();
+    for (const [who, doc] of [['the server', opened.dobj.document], ['Ben', ben.doc], ['Ada', ada.doc]] as const) {
+      expect(block(doc).getAttributes(), `${who} holds the defaults, not empty keys`).toEqual(PLAIN);
+    }
+    const woken = await start(wake(opened));
+    expect(block(woken.dobj.document).getAttributes(), 'the defaults are persisted').toEqual(PLAIN);
+  });
+});

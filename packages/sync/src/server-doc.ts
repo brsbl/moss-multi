@@ -13,6 +13,7 @@ import { $importNoteBody, createConverterEditor, exportMarkdown } from './conver
 import { $recomputeExportFormulas } from './formula-export.ts';
 import { bindRegisters, clientEditorReads } from './registers.ts';
 import { excludedPropertiesFor } from './excluded-properties.ts';
+import { leanDefaultsOf, type LeanDefaults } from './lean-defaults.ts';
 import { PAYLOAD_LOADED, PayloadDocs, payloadDocsFor } from './payload-docs.ts';
 
 export const SERVER_SEED = 'server-seed';
@@ -79,6 +80,17 @@ function bindingOf(editor: LexicalEditor, doc: Y.Doc, ownTypeMap = false): Bindi
     binding = createYjsBinding({ editor, id: 'root', doc, docMap: new Map([['root', doc]]), excludedProperties: excludedPropertiesFor(editor), ownTypeMap });
   }, { discrete: true });
   return binding;
+}
+
+let leanDefaults: LeanDefaults | undefined;
+/** The lean defaults of every node class the converter registers (A§10.11), read once from a throwaway binding. */
+export function serverLeanDefaults(): LeanDefaults {
+  if (!leanDefaults) {
+    const doc = new Y.Doc();
+    leanDefaults = leanDefaultsOf(bindingOf(createConverterEditor(), doc)) ?? new Map();
+    doc.destroy();
+  }
+  return leanDefaults;
 }
 
 interface Mirror {

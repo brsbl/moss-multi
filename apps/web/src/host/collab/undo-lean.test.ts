@@ -1,5 +1,6 @@
 // Cmd+Z on a lean doc (A§10.11) with a peer still on the earlier binding: undoing the write that first stored a key
-// leaves the class default in it, so the older peer, which reads a changed key as is, holds the same node.
+// leaves the class default in it, so the older peer, which reads a changed key as is, holds the same node. The older
+// peer's own undo deletes such a key, and the server writes the default back. Peers sync through a server doc.
 import * as lean from '@lexical/yjs';
 import type { Provider } from '@lexical/yjs';
 import { $createParagraphNode, $createTextNode, $getRoot, type ElementNode, type TextNode } from 'lexical';
@@ -7,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createConverterEditor } from '@moss-multi/sync/converter';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
+import { keepLeanKeys, leanDefaultsOf } from '@moss-multi/sync/lean-defaults';
 import { bindRegisters } from '@moss-multi/sync/registers';
 import * as v1 from '../../../../../packages/sync/test/fixtures/lexical-yjs-v1/index.mjs';
 import { isOwnOrigin, syncUnderOrigin } from './origins.ts';
@@ -43,13 +45,16 @@ function peer(layout: keyof typeof LAYOUTS, seed?: Y.Doc) {
     const paragraph = $getRoot().getFirstChild() as ElementNode; const text = paragraph.getFirstChild() as TextNode;
     return { paragraph: { format: paragraph.__format, indent: paragraph.__indent }, text: { format: text.__format, style: text.__style, mode: text.__mode } };
   });
-  return { doc, undo, step, nodes, dispose: () => { undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
+  return { doc, binding, undo, step, nodes, dispose: () => { undo.destroy(); stop(); stopRegisters(); root.unobserveDeep(observer); doc.destroy(); } };
 }
 type Peer = ReturnType<typeof peer>;
 
+/** The server's doc, with the DocDO's write-back of a key a client left empty; every client syncs through it. */
+let server: Y.Doc;
 async function exchange(...peers: Peer[]) {
   for (let round = 0; round < 2; round++) {
-    for (const from of peers) for (const to of peers) if (from !== to) Y.applyUpdate(to.doc, Y.encodeStateAsUpdate(from.doc, Y.encodeStateVector(to.doc)));
+    for (const from of peers) Y.applyUpdate(server, Y.encodeStateAsUpdate(from.doc, Y.encodeStateVector(server)), from);
+    for (const to of peers) Y.applyUpdate(to.doc, Y.encodeStateAsUpdate(server, Y.encodeStateVector(to.doc)));
     await settle();
   }
 }
@@ -66,9 +71,12 @@ async function mixed() {
   const seeder = peer('lean');
   seeder.step(() => $getRoot().append($createParagraphNode().append($createTextNode('Plain words.'))));
   expect([...run(seeder.doc).keys()], 'the seed stores the run\'s type alone').toEqual(['__type']);
+  server = new Y.Doc();
+  Y.applyUpdate(server, Y.encodeStateAsUpdate(seeder.doc));
+  const detach = keepLeanKeys(server, leanDefaultsOf(seeder.binding)!, 'lean-keys', origin => origin !== null);
   const ada = peer('lean', seeder.doc); const ben = peer('v1', seeder.doc);
   await settle();
-  return { ada, ben, dispose: () => { ada.dispose(); ben.dispose(); seeder.dispose(); } };
+  return { ada, ben, dispose: () => { ada.dispose(); ben.dispose(); seeder.dispose(); detach(); server.destroy(); } };
 }
 async function expectBoth(ada: Peer, ben: Peer, expected: Nodes, step: string) {
   await exchange(ada, ben);
@@ -134,6 +142,36 @@ describe('T3.B31b undo across a key\'s first write keeps the default stored @p:c
       await expectBoth(ada, ben, both, 'Ben adds italic');
       ada.undo.undo();
       await expectBoth(ada, ben, both, 'Ada\'s undo cannot take back what Ben rewrote');
+    } finally { dispose(); }
+  });
+
+  // Ben's undo is the earlier build's: with no lean defaults on his binding it deletes a key it first wrote.
+  it('a peer on the earlier binding undoing its own first bold, color, alignment and indent: the server writes the defaults back', async () => {
+    const { ada, ben, dispose } = await mixed();
+    try {
+      ben.step(() => { text().toggleFormat('bold'); });
+      const bold = { ...PLAIN, text: { ...PLAIN.text, format: 1 } };
+      await expectBoth(ada, ben, bold, 'Ben bolds');
+      ben.step(() => { text().setStyle('color: red'); });
+      const red = { ...bold, text: { ...bold.text, style: 'color: red' } };
+      await expectBoth(ada, ben, red, 'Ben colors');
+      ben.step(() => { paragraph().setFormat('center'); });
+      const centered = { ...red, paragraph: { ...red.paragraph, format: 2 } };
+      await expectBoth(ada, ben, centered, 'Ben centers');
+      ben.step(() => { paragraph().setIndent(1); });
+      const indented = { ...centered, paragraph: { ...centered.paragraph, indent: 1 } };
+      await expectBoth(ada, ben, indented, 'Ben indents');
+      ben.undo.undo();
+      await expectBoth(ada, ben, centered, 'Ben undoes the indent');
+      ben.undo.undo();
+      await expectBoth(ada, ben, red, 'Ben undoes the alignment');
+      ben.undo.undo();
+      await expectBoth(ada, ben, bold, 'Ben undoes the color');
+      ben.undo.undo();
+      await expectBoth(ada, ben, PLAIN, 'Ben undoes the bold');
+      expect(Object.fromEntries(run(server).entries()), 'the run holds its defaults again').toEqual({ __type: 'text', __format: 0, __style: '' });
+      ben.step(() => { paragraph().setIndent(paragraph().getIndent() + 1); text().setStyle('color: blue'); });
+      await expectBoth(ada, ben, { paragraph: { format: 0, indent: 1 }, text: { ...PLAIN.text, style: 'color: blue' } }, 'Ben indents and colors again');
     } finally { dispose(); }
   });
 });

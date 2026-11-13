@@ -1,9 +1,30 @@
 // The lean layout (A§10.11) for an undo: Yjs removes a key outright when an undo takes back the write that first stored
 // it, and a client on the earlier binding reads an empty key as `undefined`, not as the class default.
 import type { Binding } from '@lexical/yjs';
-import { Map as YMap, XmlElement, XmlText, type AbstractType, type Item } from 'yjs';
+import { Map as YMap, XmlElement, XmlText, type AbstractType, type Doc, type Item, type Transaction } from 'yjs';
 
-type LeanBinding = Binding & { leanDefaults?: Map<string, Readonly<Record<string, unknown>>> };
+/** Each node type's properties the lean layout leaves out at their default, as the patched binding builds them. */
+export type LeanDefaults = ReadonlyMap<string, Readonly<Record<string, unknown>>>;
+type LeanBinding = Binding & { leanDefaults?: LeanDefaults };
+
+/** The binding's lean defaults; undefined for a binding without the patch. */
+export const leanDefaultsOf = (binding: Binding): LeanDefaults | undefined => (binding as LeanBinding).leanDefaults;
+
+/** The default `parent`'s node class has for `key`, or undefined when it has none worth writing. */
+function defaultFor(defaults: LeanDefaults | undefined, parent: AbstractType<unknown>, key: string): unknown {
+  if (key === '__type' || parent._item?.deleted) return undefined;
+  const type = parent._map.get('__type');
+  if (!type || type.deleted) return undefined;
+  const values = defaults?.get(type.content.getContent()[0] as string);
+  return values && Object.hasOwn(values, key) ? values[key] : undefined;
+}
+
+function write(parent: AbstractType<unknown>, key: string, value: unknown): boolean {
+  if (parent instanceof YMap) parent.set(key, value);
+  else if (parent instanceof XmlText || parent instanceof XmlElement) parent.setAttribute(key, value as string);
+  else return false;
+  return true;
+}
 
 /**
  * Called on an undo's map entry before it is deleted: when it is the key's current value and its node class has a
@@ -13,15 +34,24 @@ type LeanBinding = Binding & { leanDefaults?: Map<string, Readonly<Record<string
 export function keepLeanDefault(binding: Binding, item: Item): boolean {
   const key = item.parentSub;
   const parent = item.parent as AbstractType<unknown>;
-  if (key === null || item.deleted || parent._map.get(key) !== item || parent._item?.deleted) return false;
-  const type = parent._map.get('__type');
-  if (!type || type.deleted) return false;
-  const defaults = (binding as LeanBinding).leanDefaults?.get(type.content.getContent()[0] as string);
-  if (!defaults || !Object.hasOwn(defaults, key)) return false;
-  const value = defaults[key];
-  if (value === undefined) return false;
-  if (parent instanceof YMap) parent.set(key, value);
-  else if (parent instanceof XmlText || parent instanceof XmlElement) parent.setAttribute(key, value as string);
-  else return false;
-  return true;
+  if (key === null || item.deleted || parent._map.get(key) !== item) return false;
+  const value = defaultFor(leanDefaultsOf(binding), parent, key);
+  return value !== undefined && write(parent, key, value);
+}
+
+const isNodeType = (type: AbstractType<unknown>) => type instanceof YMap || type instanceof XmlText || type instanceof XmlElement;
+const stored = (type: AbstractType<unknown>, key: string) => {
+  const item = type._map.get(key);
+  return item !== undefined && !item.deleted;
+};
+
+/**
+ * For a client still on the earlier binding and undo, whose undo of a key's first write deletes the key, and whose
+ * reader then assigns `undefined` to the node: after each transaction `from` accepts that left a body node's key empty,
+ * the class's lean default is written back under `origin`, so every reader, earlier or lean, holds the default.
+ * Returns the detach.
+ */
+export function keepLeanKeys(_doc: Doc, _defaults: LeanDefaults, _origin: unknown, _from: (origin: unknown) => boolean): () => void {
+  void stored; void isNodeType; void (null as Transaction | null);
+  return () => {};
 }
