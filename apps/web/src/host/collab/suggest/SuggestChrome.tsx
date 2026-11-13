@@ -10,9 +10,9 @@ import { useDocRole } from '../../access.ts';
 import { useTerminal } from '../terminal.ts';
 import { dismissUnsaved, lockedToSuggest, requestMode, useNoSuggestionRoom, useOpenSuggestions, useShownMode, useUnsaved } from './mode.ts';
 
-const TOOL = 'flex h-8 cursor-pointer items-center justify-center gap-1 rounded-md border border-border-clear px-2 text-xs text-ink-default transition-all duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/15 active:scale-90';
+const TOOL = 'flex h-8 cursor-pointer items-center justify-center gap-1 rounded-md border border-border-clear text-xs text-ink-default transition-all duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/15 active:scale-90';
 const IDLE = 'hover:border-border-subtle hover:bg-surface-sidebar';
-const ACCENT = 'bg-surface-note-hover text-ink-default';
+const ACCENT = 'bg-surface-note-hover px-2 text-ink-default';
 
 /**
  * MarkdownEditor's suggest-toggle seam: a small shell docked at the right of moss's bottom toolbar, positioned out
@@ -34,7 +34,7 @@ export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
         onClick={() => requestMode(noteId, on ? 'edit' : 'suggest')}
         className={`${TOOL} ${on ? ACCENT : `${IDLE} w-8 px-0`}`}
       >
-        <PencilLine aria-hidden className="h-4 w-4" strokeWidth={1.5} />
+        <PencilLine aria-hidden className="h-4 w-4 shrink-0" strokeWidth={1.5} />
         {on && <span>Suggesting</span>}
       </button></TooltipTrigger>
     </div><TooltipContent side="top">{on ? 'Suggesting changes — click to edit directly' : 'Suggest changes instead of editing'}</TooltipContent></Tooltip></TooltipProvider>
