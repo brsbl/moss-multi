@@ -65,7 +65,8 @@ export function keepLeanKeys(doc: Doc, defaults: LeanDefaults, origin: unknown, 
   };
   const collect = (transaction: Transaction) => {
     if (transaction.origin === origin || !from(transaction.origin)) return;
-    for (const [type, keys] of transaction.changed) {
+    for (const [changed, keys] of transaction.changed) {
+      const type = changed as unknown as AbstractType<unknown>;
       if (!isNodeType(type)) continue;
       for (const key of keys) if (key !== null && !stored(type, key)) emptied.push([type, key]);
     }
