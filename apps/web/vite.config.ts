@@ -20,6 +20,22 @@ const SUBSTITUTES: Record<string, string> = {
   [`${vendor}/desktop/src/renderer/editor/preview/RemoteWebSurface.tsx`]: `${repoRoot}apps/web/src/host/browser/RemoteWebSurface.tsx`,
 };
 
+// Prototype-only chrome slot: keeps the vendored editor bytes untouched. The exact
+// marker deliberately fails closed on an upstream change instead of injecting elsewhere.
+function quietNoteMenu(): Plugin {
+  return {
+    name: 'moss-rest-note-menu', enforce: 'pre',
+    transform: {
+      filter: { id: /\/panels\/CanvasAreaContent\.tsx$/ },
+      handler(source) {
+        const marker = '<DropdownMenuContent align="end" side="bottom" sideOffset={6} className="min-w-0 w-max">';
+        if (!source.includes(marker)) throw new Error('Moss note menu slot changed');
+        return `import { NoteCollabMenuItems } from '@moss-multi/host/surfaces/NoteCollabMenu';\n${source.replace(marker, marker + '\n<NoteCollabMenuItems docId={note.id} />')}`;
+      },
+    },
+  };
+}
+
 function substitutes(): Plugin {
   return {
     name: 'moss-multi-substitutes',
@@ -36,7 +52,7 @@ function substitutes(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [substitutes(), cloudflare({ viteEnvironment: { name: 'ssr' } }), tanstackStart(), viteReact(), provenance(repoRoot), recoverableImports()],
+  plugins: [quietNoteMenu(), substitutes(), cloudflare({ viteEnvironment: { name: 'ssr' } }), tanstackStart(), viteReact(), provenance(repoRoot), recoverableImports()],
   resolve: {
     // moss's aliases in moss's order (A§2), for vendored code and for host code that imports it.
     alias: [

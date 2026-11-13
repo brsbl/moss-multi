@@ -1,0 +1,6 @@
+/* Moss ConnectedFoldersDropdown uses 140 above Settings (dialog-content: 130).
+   Its generic Menu positioner is fixed at 50; scope this lift to host menus
+   deliberately rendered from inside Settings, leaving all other menus alone. */
+div:has(> [data-rest-settings-menu]) {
+  z-index: 140;
+}

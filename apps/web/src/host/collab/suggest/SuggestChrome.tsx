@@ -12,7 +12,7 @@ import { dismissUnsaved, lockedToSuggest, requestMode, useNoSuggestionRoom, useO
 
 const TOOL = 'flex h-8 cursor-pointer items-center justify-center gap-1 rounded-md border border-border-clear px-2 text-xs text-ink-default transition-all duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/15 active:scale-90';
 const IDLE = 'hover:border-border-subtle hover:bg-surface-sidebar';
-const ACCENT = 'border-accent-brand bg-surface-note-selected/70 text-accent-brand-pressed shadow-[inset_0_1px_2px_var(--ink-shadow-soft)]';
+const ACCENT = 'text-ink-default';
 
 /**
  * MarkdownEditor's suggest-toggle seam: a small shell docked at the right of moss's bottom toolbar, positioned out
@@ -21,7 +21,7 @@ const ACCENT = 'border-accent-brand bg-surface-note-selected/70 text-accent-bran
 export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
   const role = useDocRole(noteId);
   const mode = useShownMode(noteId);
-  if (!can(role, 'edit') || mode === null || mode === 'review') return null;
+  if (!can(role, 'edit') || mode !== 'suggest') return null;
   const on = mode === 'suggest';
   return (
     <div data-suggest-dock="" className="pointer-events-auto absolute bottom-0 left-full -ml-2 inline-flex rounded-lg border border-border-subtle bg-surface-panel px-1.5 py-1 shadow-sm">
@@ -36,7 +36,7 @@ export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
         className={`${TOOL} ${on ? ACCENT : IDLE}`}
       >
         <PencilLine aria-hidden className="h-4 w-4" />
-        <span>Suggest</span>
+
       </button>
     </div>
   );
@@ -48,16 +48,14 @@ export function SuggestModeChip({ docId }: { docId: string }): ReactNode {
   const mode = useShownMode(docId);
   if (mode !== 'suggest' || role === null) return null;
   const locked = lockedToSuggest(role);
-  return (
-    <span
-      data-collab-chrome=""
-      {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }}
-      title={locked ? 'You can suggest changes to this note' : 'Your changes are proposed as suggestions'}
-      className="flex shrink-0 items-center rounded-full border border-accent-brand px-2 py-0.5 text-micro text-accent-brand-pressed"
-    >
-      Suggesting
-    </span>
-  );
+  return <TooltipProvider><Tooltip><TooltipTrigger asChild>
+    <button type="button" data-collab-chrome="" {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }}
+      aria-label={locked ? 'Suggesting changes (your role)' : 'Suggesting changes — stop suggesting'}
+      onClick={() => { if (!locked) requestMode(docId, 'edit'); }}
+      className="flex h-7 w-7 items-center justify-center rounded text-ink-faint hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
+      <PencilLine aria-hidden className="h-3.5 w-3.5" />
+    </button>
+  </TooltipTrigger><TooltipContent side="bottom">{locked ? 'Your role allows suggestions' : 'Suggesting changes · Click to return to editing'}</TooltipContent></Tooltip></TooltipProvider>;
 }
 
 /** Leaves Review for the role's own mode: Suggest for a suggester, otherwise the plain body. */
@@ -129,9 +127,9 @@ export function ReviewBand({ docId }: { docId: string }): ReactNode {
   if (!shown) return null;
   return (
     <div className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
-      <div {...{ [REVIEW_BAND_ATTR]: '' }} className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
+      <div {...{ [REVIEW_BAND_ATTR]: '' }} className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-panel px-3 py-2 shadow-sm">
         <span className="text-xs text-ink-muted">
-          {lockedToSuggest(role) ? 'Reviewing suggestions. Suggesting is paused.' : 'Reviewing suggestions. Click a change to accept or reject it. Editing is paused.'}{' '}
+          {lockedToSuggest(role) ? 'Reviewing · Suggesting paused' : 'Reviewing · Editing paused'}{' '}
           <button type="button" onClick={() => leaveReview(docId, role)} className="font-medium text-ink-default hover:text-ink-muted">
             Done
           </button>

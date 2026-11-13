@@ -254,20 +254,20 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
         <div className="mt-2 flex gap-2">
           {reviewer ? (
             <>
-              <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
+              <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs !text-ink-muted" disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
                 title={allShown ? undefined : 'Show every change before accepting'}
                 onClick={() => void act('accept')}>
                 <Check aria-hidden className="h-3 w-3" />
                 Accept
               </Button>
-              <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('reject')}>
+              <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs !text-ink-muted" disabled={busy} onClick={() => ask('reject')}>
                 <X aria-hidden className="h-3 w-3" />
                 Reject
               </Button>
             </>
           ) : null}
           {own && !reviewer ? (
-            <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('withdraw')}>
+            <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs !text-ink-muted" disabled={busy} onClick={() => ask('withdraw')}>
               <X aria-hidden className="h-3 w-3" />
               Withdraw
             </Button>
@@ -359,7 +359,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
   // Shown once the note has any suggestion, open or reviewed, as Moss shows its Comments button (comment-entry-point).
-  if (role === null || records.length === 0) return null;
+  if (role === null) return null;
   const reviewing = mode === 'review';
   return (
     <TooltipProvider>
@@ -372,16 +372,17 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
                 data-collab-chrome=""
                 {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}
                 aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
+                tabIndex={open.length || isOpen ? 0 : -1}
                 aria-haspopup="dialog"
                 aria-expanded={isOpen}
-                className={`relative ${open.length ? 'flex' : 'hidden sm:flex'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
+                className={`relative ${open.length || isOpen ? 'flex' : 'hidden'} h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
               >
                 <PencilLine aria-hidden className="h-3.5 w-3.5" />
-                {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
+
               </button>
             </Popover.Trigger>
           </TooltipTrigger>
-          <TooltipContent side="bottom">Suggestions</TooltipContent>
+          <TooltipContent side="bottom">{open.length ? `Suggestions · ${open.length} pending` : "Suggestions"}</TooltipContent>
         </Tooltip>
         <Popover.Portal>
           <Popover.Content
@@ -390,7 +391,12 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
             sideOffset={6}
             collisionPadding={16}
             className="z-50 flex max-h-comment-list-popover w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-floating shadow-surface outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
-            onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => {
+              if (!open.length) {
+                event.preventDefault();
+                document.querySelector<HTMLElement>(`[data-doc-id="${docId}"] [aria-label="More actions"]`)?.focus();
+              }
+            }}
             onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onFocusOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
@@ -413,7 +419,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
                     closePanel(docId);
                   }}
                 >
-                  Review
+                  {reviewing ? "Done reviewing" : "Show suggested changes"}
                 </button>
               ) : null}
             </div>

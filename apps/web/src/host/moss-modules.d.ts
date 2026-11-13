@@ -205,7 +205,7 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
   export const DropdownMenu: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void; modal?: boolean }>;
   export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
   export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; onCloseAutoFocus?: (event: Event) => void }>;
-  export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
+  export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { disabled?: boolean; onSelect?: () => void }>;
   export const DropdownMenuSeparator: ComponentType<HTMLAttributes<HTMLDivElement>>;
 }
 

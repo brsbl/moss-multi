@@ -1,6 +1,6 @@
-// Glyphdown's owned-first vault menu, composed from moss's DS in the notes-panel header (A§11). On a vault the caller
-// owns, the menu ends with "Share vault…" (T2.4) and an inline "New vault" row, and an always-visible actions button
-// beside it offers Rename and Move to Trash (T3.5); members get no vault actions.
+import './quiet-chrome.css';
+// The owned-first vault menu now lives in Settings. Its sharing, create, rename
+// and trash operations retain their existing role checks and request paths.
 import { useRef, useState, useSyncExternalStore, type ComponentProps, type ComponentType, type ReactNode } from 'react';
 import { getDefaultStore } from 'jotai';
 import { activeFolderPathAtom } from '@moss/shared/state/atoms';
@@ -40,9 +40,12 @@ async function vaultRequest(path: string, method: string, body?: unknown): Promi
   return answer;
 }
 
-export function VaultSwitcher() {
+/** The sidebar header stays empty; vaults live in the existing Settings destination. */
+export function VaultSwitcher() { return <div className="flex-1" />; }
+
+export function VaultSettings() {
   const bridge = getBridge();
-  return bridge ? <VaultMenu bridge={bridge} /> : null;
+  return bridge ? <section className="space-y-2"><span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Vaults</span><div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3"><VaultMenu bridge={bridge} /></div></section> : null;
 }
 
 function VaultMenu({ bridge }: { bridge: Bridge }) {
@@ -50,6 +53,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const renameTakesFocus = useRef(false);
   const [trashing, setTrashing] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,14 +118,14 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
         ) : (
           <Menu open={open} onOpenChange={(next) => { setOpen(next); if (!next) setCreating(false); }}>
             <DropdownMenuTrigger asChild>
-              <Button data-collab-chrome="" variant="ghost" size="sm" disabled={pending} aria-label={`Vault: ${active.name}`} className="max-w-full gap-1.5 px-1.5">
+              <Button data-collab-chrome="" variant="ghost" size="sm" disabled={pending} aria-label={`Vault: ${active.name}`} className="max-w-full gap-1.5 px-1.5 !h-7 !text-xs !text-ink-muted hover:!text-ink-default">
                 <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-muted" aria-hidden />
                 <span className="truncate">{active.name}</span>
                 <ChevronDown className="h-3 w-3 shrink-0 text-ink-faint" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
             {/* While the inline row is open, hovering an item must not move focus out of its field. */}
-            <MenuContent align="start" className="w-60 max-w-[calc(100vw-2rem)]" {...(creating ? holdHover : {})}>
+            <MenuContent data-rest-settings-menu="" align="start" className="w-60 max-w-[calc(100vw-2rem)]" {...(creating ? holdHover : {})}>
               {vaults.map((vault) => (
                 <DropdownMenuItem key={vault.id} onSelect={() => { void switchTo(vault.id); }}>
                   <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
@@ -164,8 +168,8 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
             </button>
           </DropdownMenuTrigger>
           {/* The rename input takes focus, so the menu does not hand it back to its trigger. */}
-          <MenuContent align="start" className="w-48" onCloseAutoFocus={(event) => { if (renaming) event.preventDefault(); }}>
-            <DropdownMenuItem onSelect={() => setRenaming(true)}>
+          <MenuContent data-rest-settings-menu="" align="start" className="w-48" onCloseAutoFocus={(event) => { if (renameTakesFocus.current) { event.preventDefault(); renameTakesFocus.current = false; } }}>
+            <DropdownMenuItem onSelect={() => { renameTakesFocus.current = true; setRenaming(true); }}>
               <Pencil className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
               <span className="min-w-0 flex-1 truncate">Rename…</span>
             </DropdownMenuItem>

@@ -3,9 +3,10 @@
 // first) built from moss's DS menu and the InboxItem primitive, and it is pushed through the workspace channel rather
 // than polled. A notice opens its item in place through navigation.ts and is marked read with keepalive.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { Bell } from 'lucide-react';
-import { useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { InboxItem, UnreadBadge } from '../../../../../packages/ui/src/InboxItem.tsx';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
@@ -43,7 +44,16 @@ export function noticeText(notice: Notice): string {
   return kind === 'doc' ? `${notice.by} shared “${title}” with you` : `${notice.by} shared the ${kind} “${title}” with you`;
 }
 
-export function NotificationsBell(): ReactNode {
+export function openNotifications(docId: string): void { window.dispatchEvent(new CustomEvent('moss-open-inbox', { detail: docId })); }
+
+export function NotificationsBell({ settings = false, docId }: { settings?: boolean; docId?: string } = {}): ReactNode {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (settings) return;
+    const show = (event: Event) => { if ((event as CustomEvent<string>).detail === docId) setShown(true); };
+    window.addEventListener('moss-open-inbox', show);
+    return () => window.removeEventListener('moss-open-inbox', show);
+  }, [settings, docId]);
   const auth = useAuthState();
   const notices = useSyncExternalStore(inbox.subscribe, inbox.get, () => EMPTY);
   // A notice that navigates keeps focus from returning to the bell, where a typed Space or Enter would reopen it.
@@ -59,29 +69,38 @@ export function NotificationsBell(): ReactNode {
   };
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+    <DropdownMenu open={shown} onOpenChange={setShown}>
+      <TooltipProvider><Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild>
         <button
           type="button"
           data-collab-chrome=""
           aria-label={unread.length ? `Notifications, ${unread.length} unread` : 'Notifications'}
-          className="relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+          className={settings ? "flex h-7 items-center gap-2 rounded px-2 text-xs text-ink-muted hover:bg-surface-note-hover/40" : `${unread.length || shown ? "flex" : "hidden"} h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
+          tabIndex={settings || unread.length || shown ? 0 : -1}
+          title={unread.length ? `Notifications — ${unread.length} unread` : "Notifications"}
         >
           <Bell aria-hidden className="h-3.5 w-3.5" />
-          <UnreadBadge count={unread.length} />
+          {settings ? <span>Notifications{unread.length ? ` · ${unread.length} unread` : ""}</span> : null}
         </button>
-      </DropdownMenuTrigger>
+      </DropdownMenuTrigger></TooltipTrigger><TooltipContent side="bottom">{unread.length ? `Notifications · ${unread.length} unread` : "Notifications"}</TooltipContent></Tooltip></TooltipProvider>
       <DropdownMenuContent
+        data-rest-settings-menu={settings ? "" : undefined}
         align="end"
         className="w-80 max-w-[calc(100vw-2rem)] p-0"
         onCloseAutoFocus={(event) => {
-          if (!opening.current) return;
+          if (!opening.current) {
+            if (!settings && !unread.length) {
+              event.preventDefault();
+              document.querySelector<HTMLElement>(`[data-doc-id="${docId}"] [aria-label="More actions"]`)?.focus();
+            }
+            return;
+          }
           opening.current = false;
           event.preventDefault();
         }}
       >
         <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2">
-          <span className="text-xs font-medium text-ink-default">Notifications</span>
+          <span className="text-xs font-medium text-ink-default">Notifications{unread.length ? ` · ${unread.length} unread` : ""}</span>
           {unread.length > 0 ? (
             <button type="button" onClick={() => inbox.markRead(unread.map((n) => n.id))} className="text-xs text-ink-muted transition-colors hover:text-ink-default">
               Mark all read

@@ -1,3 +1,5 @@
+import { LoaderCircle, WifiOff } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
@@ -36,11 +38,14 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
   const terminal = useTerminal(docId);
   const connection = terminal ? 'offline' : (view?.connection ?? 'reconnecting');
   const label = terminal ? 'Disconnected' : connection === 'online' ? 'Connected' : connection === 'offline' ? 'Offline' : 'Connecting…';
-  return <span data-collab-chrome="" {...{ [CONNECTION_ATTR]: connection }} title={label} aria-label={label}
-    className="flex shrink-0 items-center gap-1.5 rounded-full border border-border-subtle px-2 py-0.5 text-micro text-ink-muted">
-    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${connection === 'online' ? 'bg-highlight-chalk-green' : 'bg-accent-terracotta'}`} />
-    <span className="hidden sm:inline">{label}</span>
-  </span>;
+  if (connection === 'online') return <span {...{ [CONNECTION_ATTR]: connection }} className="sr-only" role="status">Connected</span>;
+  return <TooltipProvider><Tooltip><TooltipTrigger asChild>
+    <button type="button" data-collab-chrome="" {...{ [CONNECTION_ATTR]: connection }} aria-label={label}
+      onClick={() => retryDoc(docId)}
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-ink-faint hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
+      {connection === 'offline' ? <WifiOff aria-hidden className="h-3.5 w-3.5" /> : <LoaderCircle aria-hidden className="h-3.5 w-3.5" />}
+    </button>
+  </TooltipTrigger><TooltipContent side="bottom">{label} · Retry connection</TooltipContent></Tooltip></TooltipProvider>;
 }
 
 export function ConnectionNotice({ docId }: { docId: string | null }) {
