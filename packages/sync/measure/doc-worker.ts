@@ -6,6 +6,7 @@ import { encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protoc
 import { DocDO } from '../src/doc-do.ts';
 import type { PayloadWork } from '../src/payloads.ts';
 import { phases } from '../src/server-doc.ts';
+import { structsPerBlock, type StructsPerBlock } from './structs-per-block.ts';
 import { textHash } from './text-hash.ts';
 import { linearImportStats } from '@moss-desktop/renderer/editor/markdown/linear-import';
 
@@ -42,6 +43,11 @@ export class MeasuredDocDO extends DocDO {
     let count = 0;
     for (const structs of this.#held.store.clients.values()) count += structs.length;
     return count;
+  }
+
+  /** The note's structs per block, counted in place (T3.B31b). */
+  structsPerBlock(): StructsPerBlock {
+    return structsPerBlock(this.document);
   }
 
   /** The note's encoded state size. */
@@ -89,6 +95,9 @@ export default {
       // Addressing the DocDO starts it, which loads its stored note (onLoad): the wake alone.
       await getServerByName(env.DocDO, docId);
       return new Response('ok');
+    }
+    if (url.pathname === '/structs') {
+      return Response.json(await (await getServerByName(env.DocDO, docId)).structsPerBlock());
     }
     if (url.pathname === '/state-bytes') {
       return Response.json({ stateBytes: await (await getServerByName(env.DocDO, docId)).stateBytes() });

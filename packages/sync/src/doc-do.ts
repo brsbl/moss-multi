@@ -28,7 +28,8 @@ import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { seedPayload } from './payload-docs.ts';
 import { JANITOR, migratePayloads, PayloadStore, type PayloadWork } from './payloads.ts';
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
-import { attachPayloadSource, exportDocMarkdown, ExportWroteError, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph } from './server-doc.ts';
+import { keepLeanKeys } from './lean-defaults.ts';
+import { attachPayloadSource, exportDocMarkdown, ExportWroteError, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph, serverLeanDefaults } from './server-doc.ts';
 import { titleDiff } from './server-title.ts';
 import { splitAnswer } from './update-pieces.ts';
 
@@ -44,6 +45,8 @@ const SEARCH_FEED_VERSION = '2';
 
 /** A title written by create() or a REST rename; both project. */
 export const SERVER_TITLE = 'server-title';
+/** Origin of a default written back into a key a client left empty (A§10.11). */
+const LEAN_KEYS = 'lean-keys';
 
 export interface DocLimits {
   stateCapBytes: number;
@@ -399,6 +402,8 @@ export class DocDO extends YServer<SyncEnv> {
     });
     // After every note update (a frame, a server write, a restore, a push): reveal and keep one element per id.
     this.document.on('afterAllTransactions', () => payloads.settle(() => this.#connected()));
+    // A client on the earlier binding deletes a key its undo first wrote; its default goes back (A§10.11).
+    keepLeanKeys(this.document, serverLeanDefaults(), LEAN_KEYS, isConnection);
     this.#seed(store);
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) {

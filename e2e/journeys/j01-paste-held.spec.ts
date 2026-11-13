@@ -57,8 +57,8 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
   const { pb, limit } = usage!;
 
   // A paste of about the limit less half the server's payloads: under the limit beside the note Ada holds, past it
-  // with what the server keeps. A short paragraph's state names Ada's client id about 25 times, a varint of 1 to 5
-  // bytes: 52,001 paragraphs were 25,765,966 bytes with a 5-byte id, 24,466,033 with a 4-byte one.
+  // with what the server keeps. In the lean layout (A§10.11) a short paragraph's state is about 143 bytes with a 5-byte
+  // client id (100,000 paragraphs added 14,277,208 bytes), and names the id about 8 times, a varint of 1 to 5 bytes.
   const idBytes = await ui.body(ada, docId).evaluate((element) => {
     const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
     const undo = (editor as unknown as Record<symbol, { root?: { doc: Y.Doc }; doc?: Y.Doc }>)[Symbol.for('@lexical/yjs/UndoManager')];
@@ -67,7 +67,7 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
     for (; id > 0x7f; id = Math.floor(id / 0x80)) bytes += 1;
     return bytes;
   });
-  const count = Math.round((limit - pb / 2) / (495.5 - 25 * (5 - idBytes)));
+  const count = Math.round((limit - pb / 2) / (142.8 - 8 * (5 - idBytes)));
   const lines: string[] = [];
   for (let i = 0; i < count; i += 1) lines.push(`p${i}`);
   lines.push('Last line of the paste.');

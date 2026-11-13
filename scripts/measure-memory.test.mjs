@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CREATE_BUDGET, EXPORT_BUDGET, gcEvents, memoryProblems, NEED_RUNS, phaseFigures, ratio, reliableCap, smallestCap } from './measure-memory.mjs';
+import { CREATE_BUDGET, EXPORT_BUDGET, gcEvents, memoryProblems, NEED_RUNS, phaseFigures, ratio, reliableCap, smallestCap, STRUCT_BOUNDS } from './measure-memory.mjs';
 
 const LOG = [
   '[123:0x7f00]     1200 ms: Scavenge 30.5 (40.0) -> 22.1 (41.0) MB, pooled: 0 MB, 3.10 / 0.00 ms  (average mu = 1.000, current mu = 1.000) allocation failure;',
@@ -34,19 +34,19 @@ describe('memoryProblems: relative budgets', () => {
   });
 
   it('passes notes whose create and export stay within their multiples of the note at rest', () => {
-    expect([CREATE_BUDGET, EXPORT_BUDGET]).toEqual([1.45, 1.6]);
-    expect(memoryProblems([note('a', { create: 145, wake: 500, export: 160 })])).toEqual([]);
+    expect([CREATE_BUDGET, EXPORT_BUDGET]).toEqual([1.75, 1.95]);
+    expect(memoryProblems([note('a', { create: 175, wake: 500, export: 195 })])).toEqual([]);
   });
 
   it('fails a create or an export over its multiple, and a need never found', () => {
     const problems = memoryProblems([
-      note('create', { create: 147, export: REST }),
-      note('export', { create: REST, export: 162 }),
+      note('create', { create: 177, export: REST }),
+      note('export', { create: REST, export: 197 }),
       note('lost', { create: null, export: REST }),
     ]);
     expect(problems).toHaveLength(3);
-    expect(problems[0]).toMatch(/^create: the create needs 147 MB, 1\.47x the note at rest \(100 MB\), over 1\.45x/);
-    expect(problems[1]).toMatch(/^export: the export needs 162 MB, 1\.62x .* over 1\.6x/);
+    expect(problems[0]).toMatch(/^create: the create needs 177 MB, 1\.77x the note at rest \(100 MB\), over 1\.75x/);
+    expect(problems[1]).toMatch(/^export: the export needs 197 MB, 1\.97x .* over 1\.95x/);
     expect(problems[2]).toMatch(/^lost: the create's need is unknown/);
   });
 
@@ -58,13 +58,34 @@ describe('memoryProblems: relative budgets', () => {
 
   it('reads the note at rest from the untraced run, whose figures no in-phase gc() inflates', () => {
     const traced = { phases: { save: { restMb: REST * 2 } } };
-    expect(memoryProblems([note('n', { create: REST * 1.5, export: REST }, { measured: traced })])).toHaveLength(1);
+    expect(memoryProblems([note('n', { create: REST * 1.8, export: REST }, { measured: traced })])).toHaveLength(1);
   });
 
   it('gives the ratio only when both figures are known', () => {
     expect(ratio(150, 100)).toBe(1.5);
     expect(ratio(null, 100)).toBeNull();
     expect(ratio(150, undefined)).toBeNull();
+  });
+});
+
+describe('memoryProblems: structs per block', () => {
+  const note = (name, block, blocks) => ({ name, budget: false, block, plain: { phases: {}, blocks }, measured: { phases: {} } });
+
+  it('holds a paragraph to 5 structs, a list item to 6 and a two-cell table row to 16', () => {
+    expect(STRUCT_BOUNDS).toEqual({ paragraph: 5, 'list item': 6, 'table row': 16 });
+    expect(memoryProblems([
+      note('p', 'paragraph', { median: 5, mean: 5, blocks: 10 }),
+      note('l', 'list item', { median: 6, mean: 6, blocks: 10 }),
+      note('t', 'table row', { median: 16, mean: 16, blocks: 10 }),
+      note('mixed', null, { median: 40, mean: 40, blocks: 10 }),
+    ])).toEqual([]);
+  });
+
+  it('fails a note whose blocks cost more, or whose count is missing', () => {
+    expect(memoryProblems([note('p', 'paragraph', { median: 15, mean: 15, blocks: 10 }), note('lost', 'table row', undefined)])).toEqual([
+      'p: a paragraph costs 15 structs, over 5',
+      'lost: its structs per block are unknown',
+    ]);
   });
 });
 
