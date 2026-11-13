@@ -33,7 +33,7 @@ import { captureCaret, type CaretMark } from './suggest/caret.ts';
 import { modeFor, offerUnsaved, setOpenSuggestions, showMode, subscribeModes } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { readMeta, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { ReviewBand, ReviewButton, SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
+import { ReviewBand, SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
 import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
 import { HistoryButton, HistoryView, RestoreNoticeBand, useHistoryOpen } from '../history/HistoryView.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
@@ -711,7 +711,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
         }
       : {},
     topBarCollab: docId
-      ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}<ReviewButton docId={docId} />{terminal ? null : <HistoryButton docId={docId} />}<TopBarCollab docId={docId} /></>
+      ? <TopBarCollab docId={docId} suggestions={binding ? <SuggestionsButton docId={docId} source={binding} inline /> : null}><SuggestModeChip docId={docId} />{terminal ? null : <HistoryButton docId={docId} />}</TopBarCollab>
       : null,
     history: docId && historyOpen && !terminal ? <HistoryView key={docId} docId={docId} /> : null,
   };

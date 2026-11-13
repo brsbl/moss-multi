@@ -1,11 +1,10 @@
-// Glyphdown's owned-first vault menu, composed from moss's DS in the notes-panel header (A§11). On a vault the caller
-// owns, the menu ends with "Share vault…" (T2.4) and an inline "New vault" row, and an always-visible actions button
+// Owned-first vault menu, disclosed in Collaboration and Settings. The sidebar's legacy seam renders nothing. A caller
+// who owns the vault sees "Share vault…" (T2.4) and an inline "New vault" row, and an always-visible actions button
 // beside it offers Rename and Move to Trash (T3.5); members get no vault actions.
 import { useRef, useState, useSyncExternalStore, type ComponentProps, type ComponentType, type ReactNode } from 'react';
 import { getDefaultStore } from 'jotai';
 import { activeFolderPathAtom } from '@moss/shared/state/atoms';
 import { Check, ChevronDown, FolderRoot, MoreHorizontal, Pencil, Plus, Trash2, UserPlus } from 'lucide-react';
-import { Button } from '@moss/shared/components/ui/button';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
@@ -40,9 +39,9 @@ async function vaultRequest(path: string, method: string, body?: unknown): Promi
   return answer;
 }
 
-export function VaultSwitcher() {
+export function VaultSwitcher({ inCollaboration = false }: { inCollaboration?: boolean } = {}) {
   const bridge = getBridge();
-  return bridge ? <VaultMenu bridge={bridge} /> : null;
+  return inCollaboration && bridge ? <VaultMenu bridge={bridge} /> : null;
 }
 
 function VaultMenu({ bridge }: { bridge: Bridge }) {
@@ -114,14 +113,14 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
         ) : (
           <Menu open={open} onOpenChange={(next) => { setOpen(next); if (!next) setCreating(false); }}>
             <DropdownMenuTrigger asChild>
-              <Button data-collab-chrome="" variant="ghost" size="sm" disabled={pending} aria-label={`Vault: ${active.name}`} className="max-w-full gap-1.5 px-1.5">
+              <button type="button" data-collab-chrome="" disabled={pending} aria-label={`Vault: ${active.name}`} className="flex h-7 w-full items-center gap-2 rounded px-2 text-xs text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
                 <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-muted" aria-hidden />
-                <span className="truncate">{active.name}</span>
+                <span className="flex-1 truncate text-left">{vaults.length > 1 ? 'Vaults' : 'Vault'}<span className="ml-2 text-ink-faint">{active.name}</span></span>
                 <ChevronDown className="h-3 w-3 shrink-0 text-ink-faint" aria-hidden />
-              </Button>
+              </button>
             </DropdownMenuTrigger>
             {/* While the inline row is open, hovering an item must not move focus out of its field. */}
-            <MenuContent align="start" className="w-60 max-w-[calc(100vw-2rem)]" {...(creating ? holdHover : {})}>
+            <MenuContent align="start" className="w-60 max-w-[calc(100vw-2rem)] [&_[role=menuitem]]:text-xs" {...(creating ? holdHover : {})}>
               {vaults.map((vault) => (
                 <DropdownMenuItem key={vault.id} onSelect={() => { void switchTo(vault.id); }}>
                   <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />

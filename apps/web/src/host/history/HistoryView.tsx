@@ -182,7 +182,7 @@ function VersionBadge({ kind }: { kind: VersionKind }): ReactNode {
   return <span {...{ [VERSION_BADGE_ATTR]: '' }} className={`${BADGE} bg-surface-badge text-ink-muted`}>Auto</span>;
 }
 
-/** In the top bar: History, for a signed-in person who can open the note. */
+/** Version history inside Collaboration, for a signed-in person who can open the note. */
 export function HistoryButton({ docId }: { docId: string }): ReactNode {
   const role = useDocRole(docId);
   const auth = useAuthState();
@@ -191,15 +191,15 @@ export function HistoryButton({ docId }: { docId: string }): ReactNode {
   return (
     <button
       type="button"
-      data-collab-chrome=""
+      data-collab-chrome="" data-close-collaboration=""
       {...{ [HISTORY_BUTTON_ATTR]: '' }}
       aria-label="History"
       aria-pressed={isOpen}
       title="Version history"
       onClick={() => setHistoryOpen(docId, !isOpen)}
-      className={`flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded transition-colors hover:bg-surface-note-hover/40 focus-visible:outline-none ${isOpen ? 'text-ink-default' : 'text-ink-faint hover:text-ink-muted'}`}
+      className="flex h-7 w-full shrink-0 cursor-pointer items-center gap-2 rounded px-2 text-xs text-ink-muted transition-colors hover:bg-surface-note-hover/40 hover:text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15"
     >
-      <History aria-hidden className="h-3.5 w-3.5" />
+      <History aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} /><span>Version history</span>
     </button>
   );
 }

@@ -5,7 +5,7 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Bell } from 'lucide-react';
 import { useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { InboxItem, UnreadBadge } from '../../../../../packages/ui/src/InboxItem.tsx';
+import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
@@ -43,7 +43,7 @@ export function noticeText(notice: Notice): string {
   return kind === 'doc' ? `${notice.by} shared “${title}” with you` : `${notice.by} shared the ${kind} “${title}” with you`;
 }
 
-export function NotificationsBell(): ReactNode {
+export function NotificationsBell({ inline = false, onOpen }: { inline?: boolean; onOpen?: () => void } = {}): ReactNode {
   const auth = useAuthState();
   const notices = useSyncExternalStore(inbox.subscribe, inbox.get, () => EMPTY);
   // A notice that navigates keeps focus from returning to the bell, where a typed Space or Enter would reopen it.
@@ -58,28 +58,7 @@ export function NotificationsBell(): ReactNode {
     else void departTo(`/f/${encodeURIComponent(notice.target.id)}`);
   };
 
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          data-collab-chrome=""
-          aria-label={unread.length ? `Notifications, ${unread.length} unread` : 'Notifications'}
-          className="relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
-        >
-          <Bell aria-hidden className="h-3.5 w-3.5" />
-          <UnreadBadge count={unread.length} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="w-80 max-w-[calc(100vw-2rem)] p-0"
-        onCloseAutoFocus={(event) => {
-          if (!opening.current) return;
-          opening.current = false;
-          event.preventDefault();
-        }}
-      >
+  const content = <>
         <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2">
           <span className="text-xs font-medium text-ink-default">Notifications</span>
           {unread.length > 0 ? (
@@ -92,13 +71,47 @@ export function NotificationsBell(): ReactNode {
           {notices.length === 0 ? (
             <p className="px-3 py-6 text-center text-xs text-ink-faint">No notifications yet.</p>
           ) : (
-            notices.slice(0, SHOWN).map((notice) => (
+            notices.slice(0, SHOWN).map((notice) => inline ? (
+              <button type="button" key={notice.id} onClick={() => open(notice)} className="flex w-full items-start rounded px-2 py-1.5 text-left outline-none hover:bg-surface-panel focus-visible:bg-surface-panel">
+                <InboxItem unread={!notice.read} time={timeAgo(notice.createdAt)}>{noticeText(notice)}</InboxItem>
+              </button>
+            ) : (
               <DropdownMenuItem key={notice.id} onSelect={() => open(notice)} className="items-start">
                 <InboxItem unread={!notice.read} time={timeAgo(notice.createdAt)}>{noticeText(notice)}</InboxItem>
               </DropdownMenuItem>
             ))
           )}
         </div>
+  </>;
+  if (inline) return <div>{content}</div>;
+  if (onOpen) return <button type="button" onClick={onOpen} aria-label={unread.length ? `Notifications, ${unread.length} unread` : 'Notifications'}
+    className="flex h-7 w-full items-center gap-2 rounded px-2 text-xs text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
+    <Bell aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} /><span className="flex-1 text-left">Notifications</span>{unread.length > 0 && <span className="text-micro text-ink-faint">{unread.length} unread</span>}
+  </button>;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          data-collab-chrome=""
+          aria-label={unread.length ? `Notifications, ${unread.length} unread` : 'Notifications'}
+          className="flex h-7 w-full shrink-0 cursor-pointer items-center gap-2 rounded px-2 text-xs text-ink-muted transition-colors hover:bg-surface-note-hover/40 hover:text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15"
+        >
+          <Bell aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+          <span className="flex-1 text-left">Notifications</span>
+          {unread.length > 0 && <span className="text-micro tabular-nums text-ink-faint">{unread.length} unread</span>}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="w-80 max-w-[calc(100vw-2rem)] p-0"
+        onCloseAutoFocus={(event) => {
+          if (!opening.current) return;
+          opening.current = false;
+          event.preventDefault();
+        }}
+      >
+        {content}
       </DropdownMenuContent>
     </DropdownMenu>
   );

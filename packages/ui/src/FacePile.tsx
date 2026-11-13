@@ -18,13 +18,14 @@ export function AvatarChip({ avatar }: { avatar: Avatar }) {
     return () => observer.disconnect();
   }, [avatar.color]);
   return <span ref={ref} data-presence-client={avatar.clientId} data-presence-color={avatar.color} title={avatar.name + (avatar.isAgent ? ' (agent)' : '')} aria-label={avatar.name}
-    className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-surface-canvas text-[10px] font-semibold" style={{ backgroundColor: avatar.color }}>
+    className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-surface-canvas text-[10px] font-semibold" style={{ backgroundColor: avatar.color, filter: 'saturate(0.12)' }}>
     {avatar.name.trim().split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase()}
     {avatar.isAgent ? <Bot aria-label="Agent" className="absolute -bottom-1 -right-1 h-3 w-3 rounded bg-surface-canvas text-ink-primary" /> : null}
   </span>;
 }
-export function FacePile({ peers }: { peers: Avatar[] }) {
+export function FacePile({ peers, compact = false }: { peers: Avatar[]; compact?: boolean }) {
   if (!peers.length) return null;
+  if (compact) return <span aria-label="Other people in this note" className="flex -space-x-0.5">{peers.slice(0, 3).map(peer => <span key={peer.clientId} data-presence-client={peer.clientId} data-presence-color={peer.color} aria-label={peer.name} className="h-2 w-2 rounded-full border border-surface-canvas" style={{ backgroundColor: peer.color, filter: 'saturate(0.12)' }} />)}</span>;
   return <div aria-label="Other people in this note" className="flex shrink-0 items-center -space-x-1">
     {peers.slice(0, 3).map(avatar => <AvatarChip key={avatar.clientId} avatar={avatar} />)}
     {peers.length > 3 ? <span className="px-1 text-xs text-ink-muted" title={peers.slice(3).map(peer => peer.name).join(', ')}>+{peers.length - 3}</span> : null}

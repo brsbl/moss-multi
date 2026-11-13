@@ -10,9 +10,10 @@
 // and which of those places have links, each with a Manage button to that place's own dialog (T9.7).
 import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
 import { Button } from '@moss/shared/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { UserPlus, X } from 'lucide-react';
+import { Check, ChevronDown, UserPlus, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { useTerminal } from '../collab/terminal.ts';
@@ -80,33 +81,22 @@ type Status = { tone: 'error' | 'done'; text: string; where: Where } | null;
 const SECTION_LABEL = 'text-micro font-medium uppercase tracking-wider text-ink-faint';
 const CARD = 'rounded-lg border border-border-subtle bg-surface-raised-card p-3';
 
-/** Settings' segmented choice (AppearanceSection), here for the access a share or a link grants. */
+/** Moss's checked menu keeps all five access roles in one compact, keyboard-reachable choice. */
 function AccessChoice<R extends Role>({ label, roles, value, onChange, disabled }: {
   label: string; roles: readonly R[]; value: R; onChange: (role: R) => void; disabled: boolean;
 }): ReactNode {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex flex-wrap items-center gap-0.5 rounded-lg bg-surface-raised-control p-0.5">
-      {roles.map((role) => {
-        const selected = role === value;
-        return (
-          <button
-            key={role}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            disabled={disabled}
-            onClick={() => onChange(role)}
-            className={
-              selected
-                ? 'inline-flex h-6 items-center rounded-md bg-surface-raised-card px-3 text-xs font-medium leading-none text-ink-default shadow-sm ring-1 ring-border-strong/40 transition-colors focus-visible:outline-none focus-visible:ring-ink-default/15'
-                : 'inline-flex h-6 items-center rounded-md px-3 text-xs font-medium leading-none text-ink-faint transition-colors hover:bg-surface-raised-control/50 hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15'
-            }
-          >
-            {ACCESS_LABEL[role]}
-          </button>
-        );
-      })}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild><button type="button" disabled={disabled} aria-label={label}
+        className="flex h-7 items-center gap-2 rounded px-2 text-xs text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
+        {ACCESS_LABEL[value]}<ChevronDown aria-hidden className="h-3 w-3" strokeWidth={1.5} />
+      </button></DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-36">
+        {roles.map(role => <DropdownMenuItem key={role} onSelect={() => onChange(role)} className="gap-2 text-xs">
+          <span className="flex-1">{ACCESS_LABEL[role]}</span>{role === value && <Check aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />}
+        </DropdownMenuItem>)}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -406,7 +396,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <AccessChoice label="Access" roles={SHARE_ROLES} value={access} onChange={setAccess} disabled={pending} />
-            <Button type="submit" size="sm" disabled={pending}>
+            <Button type="submit" size="sm" variant="secondary" disabled={pending}>
               Share
             </Button>
           </div>
@@ -578,14 +568,14 @@ export function ShareControl({ docId }: { docId: string }): ReactNode {
   return (
     <button
       type="button"
-      data-collab-chrome=""
+      data-collab-chrome="" data-close-collaboration=""
       aria-haspopup="dialog"
       aria-label="Share"
       onClick={() => openShare({ type: 'doc', id: docId })}
-      className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs font-medium text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+      className="flex h-7 w-full shrink-0 cursor-pointer items-center gap-2 rounded px-2 text-xs text-ink-muted transition-colors hover:bg-surface-note-hover/40 hover:text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15"
     >
-      <UserPlus aria-hidden className="h-3.5 w-3.5" />
-      <span className="hidden sm:inline">Share</span>
+      <UserPlus aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+      <span>Share note…</span>
     </button>
   );
 }

@@ -37,9 +37,8 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
   const connection = terminal ? 'offline' : (view?.connection ?? 'reconnecting');
   const label = terminal ? 'Disconnected' : connection === 'online' ? 'Connected' : connection === 'offline' ? 'Offline' : 'Connecting…';
   return <span data-collab-chrome="" {...{ [CONNECTION_ATTR]: connection }} title={label} aria-label={label}
-    className="flex shrink-0 items-center gap-1.5 rounded-full border border-border-subtle px-2 py-0.5 text-micro text-ink-muted">
-    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${connection === 'online' ? 'bg-highlight-chalk-green' : 'bg-accent-terracotta'}`} />
-    <span className="hidden sm:inline">{label}</span>
+    className="flex shrink-0 items-center text-micro text-ink-muted">
+    <span>{label}</span>
   </span>;
 }
 

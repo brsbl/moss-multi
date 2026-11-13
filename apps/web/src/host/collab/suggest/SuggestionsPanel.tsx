@@ -52,7 +52,7 @@ export function openSuggestion(docId: string, record: string | null): void {
   panelChanged();
 }
 
-function closePanel(docId: string): void {
+export function closePanel(docId: string): void {
   if (openPanels.delete(docId)) panelChanged();
 }
 
@@ -82,6 +82,10 @@ const subscribePanels = (listener: () => void) => {
   panelListeners.add(listener);
   return () => panelListeners.delete(listener);
 };
+
+export function useSuggestionPanelOpen(docId: string): boolean {
+  return useSyncExternalStore(subscribePanels, () => openPanels.has(docId), () => false);
+}
 
 /** The note's records, re-read when the map changes. */
 function useRecords(source: SuggestionsSource): SuggestionRecord[] {
@@ -254,20 +258,20 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
         <div className="mt-2 flex gap-2">
           {reviewer ? (
             <>
-              <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
+              <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
                 title={allShown ? undefined : 'Show every change before accepting'}
                 onClick={() => void act('accept')}>
                 <Check aria-hidden className="h-3 w-3" />
                 Accept
               </Button>
-              <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('reject')}>
+              <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('reject')}>
                 <X aria-hidden className="h-3 w-3" />
                 Reject
               </Button>
             </>
           ) : null}
           {own && !reviewer ? (
-            <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('withdraw')}>
+            <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('withdraw')}>
               <X aria-hidden className="h-3 w-3" />
               Withdraw
             </Button>
@@ -341,7 +345,7 @@ function CloseConfirmation({ docId }: { docId: string }): ReactNode {
 }
 
 /** In the top bar: the count of open suggestions, opening the panel of cards. */
-export function SuggestionsButton({ docId, source }: { docId: string; source: SuggestionsSource }): ReactNode {
+export function SuggestionsButton({ docId, source, inline = false }: { docId: string; source: SuggestionsSource; inline?: boolean }): ReactNode {
   const records = useRecords(source);
   const body = useSyncExternalStore(source.subscribeMount, () => source.body, () => null);
   const role = useDocRole(docId);
@@ -358,9 +362,42 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
     .filter((record) => record.meta.status !== 'open')
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
-  // Shown once the note has any suggestion, open or reviewed, as Moss shows its Comments button (comment-entry-point).
-  if (role === null || records.length === 0) return null;
+  // Keep Suggestions discoverable inside Collaboration even before the first proposal.
+  if (role === null) return null;
   const reviewing = mode === 'review';
+  const content = <>
+            <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
+              <Popover.Title className="sr-only">Suggestions</Popover.Title>
+              <div className="flex min-w-0 items-center gap-1">
+                <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-muted" strokeWidth={1.5} />
+                {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
+              </div>
+              {open.length ? (
+                <button
+                  type="button"
+                  aria-pressed={reviewing}
+                  className={`flex h-6 items-center gap-1 rounded px-1.5 text-micro transition-colors focus:outline-none focus-visible:ring-0 ${reviewing ? 'bg-surface-panel text-ink-default' : 'text-ink-faint hover:bg-surface-panel hover:text-ink-muted'}`}
+                  onClick={() => {
+                    if (reviewing) leaveReview(docId, role);
+                    else requestMode(docId, 'review');
+                    closePanel(docId);
+                  }}
+                >
+                  {reviewing ? 'Done reviewing' : 'Show changes in note'}
+                </button>
+              ) : null}
+            </div>
+            <p className="px-3 py-2 text-micro text-ink-muted">{reviewing ? 'Previewing proposed changes · editing paused' : 'Proposed changes to this note'}</p>
+            <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
+  </>;
+  if (inline) return <>
+    {isOpen ? <div {...{ [SUGGESTIONS_PANEL_ATTR]: '' }} className="flex max-h-comment-list-popover flex-col overflow-hidden">{content}</div> :
+      <button type="button" {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }} aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
+        onClick={() => openSuggestion(docId, null)} className="flex h-7 w-full items-center gap-2 rounded px-2 text-xs text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
+        <PencilLine aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} /><span className="flex-1 text-left">Suggestions</span>{open.length > 0 && <span className="text-micro text-ink-faint">{open.length} open</span>}
+      </button>}
+    <CloseConfirmation docId={docId} />
+  </>;
   return (
     <TooltipProvider>
       <Popover.Root open={isOpen} onOpenChange={(next) => (next ? openSuggestion(docId, null) : closePanel(docId))}>
@@ -374,9 +411,10 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
                 aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
                 aria-haspopup="dialog"
                 aria-expanded={isOpen}
-                className={`relative ${open.length ? 'flex' : 'hidden sm:flex'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
+                className="flex h-7 w-full shrink-0 cursor-pointer items-center gap-2 rounded px-2 text-xs text-ink-muted transition-colors hover:bg-surface-note-hover/40 hover:text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15"
               >
-                <PencilLine aria-hidden className="h-3.5 w-3.5" />
+                <PencilLine aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <span className="flex-1 text-left">Suggestions</span>
                 {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
               </button>
             </Popover.Trigger>
@@ -396,28 +434,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
             onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             {...{ [SUGGESTIONS_PANEL_ATTR]: '' }}
           >
-            <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
-              <Popover.Title className="sr-only">Suggestions</Popover.Title>
-              <div className="flex min-w-0 items-center gap-1">
-                <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-muted" strokeWidth={1.5} />
-                {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
-              </div>
-              {open.length ? (
-                <button
-                  type="button"
-                  aria-pressed={reviewing}
-                  className={`flex h-6 items-center gap-1 rounded px-1.5 text-micro transition-colors focus:outline-none focus-visible:ring-0 ${reviewing ? 'bg-surface-panel text-ink-default' : 'text-ink-faint hover:bg-surface-panel hover:text-ink-muted'}`}
-                  onClick={() => {
-                    if (reviewing) leaveReview(docId, role);
-                    else requestMode(docId, 'review');
-                    closePanel(docId);
-                  }}
-                >
-                  Review
-                </button>
-              ) : null}
-            </div>
-            <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
+            {content}
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
