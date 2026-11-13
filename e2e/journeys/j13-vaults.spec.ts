@@ -224,9 +224,9 @@ test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault 
   // The folder's confirmation says where its notes come back.
   await ui.folderRow(ada, 'Bookings').click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: /^Trash/ }).click();
-  const folderConfirm = ada.page.getByRole('alertdialog');
-  await expect(folderConfirm, 'the folder confirmation').toContainText(TRASH_COPY.trashFolder('Bookings', TRIP));
-  await folderConfirm.getByRole('button', { name: 'Cancel', exact: true }).click();
+  const folderConfirm = ada.page.getByText(TRASH_COPY.trashFolder('Bookings', TRIP), { exact: true });
+  await expect(folderConfirm, 'the folder confirmation').toBeVisible();
+  await ada.page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(folderConfirm).toHaveCount(0);
 
   // The vault's confirmation says what a restore brings back; confirming sends it to Trash.
