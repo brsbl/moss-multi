@@ -49,6 +49,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const renamingFromMenu = useRef(false);
   const [trashing, setTrashing] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +78,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
     if (vault) await switchTo(vault.id);
   };
   const rename = async (name: string) => {
+    renamingFromMenu.current = false;
     setRenaming(false);
     if (name === active.name) return;
     setPending(true);
@@ -109,7 +111,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
     <div className="relative mr-auto flex min-w-0 flex-1 items-center gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <div className="min-w-0 flex-1">
         {renaming ? (
-          <NameInput label="Vault name" initial={active.name} commitOnBlur onCommit={(name) => { void rename(name); }} onCancel={() => setRenaming(false)} />
+          <NameInput label="Vault name" initial={active.name} commitOnBlur onCommit={(name) => { void rename(name); }} onCancel={() => { renamingFromMenu.current = false; setRenaming(false); }} />
         ) : (
           <Menu open={open} onOpenChange={(next) => { setOpen(next); if (!next) setCreating(false); }}>
             <DropdownMenuTrigger asChild>
@@ -163,8 +165,8 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
             </button>
           </DropdownMenuTrigger>
           {/* The rename input takes focus, so the menu does not hand it back to its trigger. */}
-          <MenuContent data-collaboration-menu="" align="start" className="w-48" onCloseAutoFocus={(event) => { if (renaming) event.preventDefault(); }}>
-            <DropdownMenuItem onSelect={() => setRenaming(true)}>
+          <MenuContent data-collaboration-menu="" align="start" className="w-48" onCloseAutoFocus={(event) => { if (renamingFromMenu.current) event.preventDefault(); }}>
+            <DropdownMenuItem onSelect={() => { renamingFromMenu.current = true; setRenaming(true); }}>
               <Pencil className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
               <span className="min-w-0 flex-1 truncate">Rename…</span>
             </DropdownMenuItem>
