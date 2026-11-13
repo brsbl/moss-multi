@@ -2,7 +2,7 @@
 // more than about 50 jobs, so the step reads pages of 50 with bounded retries; the listing it writes must judge exactly as
 // one complete page would, and a failed or short listing must fail the step.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,18 +62,23 @@ afterEach(() => {
 
 /** Runs the step in bash as Actions does (bash -e, pipefail), with the fake gh and a sleep that returns at once. */
 function readRun(file, jobs, { failures = 0, served } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'read-run-'));
-  dirs.push(dir);
-  writeFileSync(join(dir, 'gh'), FAKE_GH);
-  writeFileSync(join(dir, 'sleep'), '#!/bin/sh\necho "$1" >> "$FAKE_DIR/slept"\n');
-  for (const name of ['gh', 'sleep']) chmodSync(join(dir, name), 0o755);
-  writeFileSync(join(dir, 'calls'), '0');
-  writeFileSync(join(dir, 'run.json'), JSON.stringify(RUN));
-  writeFileSync(join(dir, 'jobs.json'), JSON.stringify(jobs));
+  const root = mkdtempSync(join(tmpdir(), 'read-run-'));
+  dirs.push(root);
+  // The fake's own files apart from RUNNER_TEMP, where the step writes run.json and jobs.ndjson.
+  const fake = join(root, 'fake');
+  const dir = join(root, 'temp');
+  mkdirSync(fake);
+  mkdirSync(dir);
+  writeFileSync(join(fake, 'gh'), FAKE_GH);
+  writeFileSync(join(fake, 'sleep'), '#!/bin/sh\necho "$1" >> "$FAKE_DIR/slept"\n');
+  for (const name of ['gh', 'sleep']) chmodSync(join(fake, name), 0o755);
+  writeFileSync(join(fake, 'calls'), '0');
+  writeFileSync(join(fake, 'run.json'), JSON.stringify(RUN));
+  writeFileSync(join(fake, 'jobs.json'), JSON.stringify(jobs));
   const env = {
     ...process.env,
-    PATH: `${dir}:${process.env.PATH}`,
-    FAKE_DIR: dir,
+    PATH: `${fake}:${process.env.PATH}`,
+    FAKE_DIR: fake,
     FAKE_FAILURES: String(failures),
     ...(served === undefined ? {} : { FAKE_SERVED: String(served) }),
     GITHUB_REPOSITORY: REPO,
@@ -81,14 +86,23 @@ function readRun(file, jobs, { failures = 0, served } = {}) {
     RUNNER_TEMP: dir,
   };
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', readStep(file)], { env, encoding: 'utf8', timeout: 30_000 });
-  const read = (name) => {
+  const read = (path) => {
     try {
-      return readFileSync(join(dir, name), 'utf8');
+      return readFileSync(path, 'utf8');
     } catch {
       return null;
     }
   };
-  return { dir, status: result.status, stderr: result.stderr, stdout: result.stdout, run: read('run.json'), jobs: read('jobs.ndjson'), calls: Number(read('calls')), slept: read('slept') };
+  return {
+    dir,
+    status: result.status,
+    stderr: result.stderr,
+    stdout: result.stdout,
+    run: read(join(dir, 'run.json')),
+    jobs: read(join(dir, 'jobs.ndjson')),
+    calls: Number(read(join(fake, 'calls'))),
+    slept: read(join(fake, 'slept')),
+  };
 }
 
 // The step's files judged by tested-run.mjs as the deploy runs it, to compare with the judgement of one complete page.

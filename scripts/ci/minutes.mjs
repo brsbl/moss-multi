@@ -42,7 +42,8 @@ async function monthJobs(repo, month) {
   const worker = async () => {
     while (queue.length > 0) {
       const id = queue.shift();
-      const lines = await ghLines(`repos/${repo}/actions/runs/${id}/jobs?filter=all&per_page=100`, '.jobs[] | {started_at, completed_at, labels}');
+      // Pages of 50: GitHub answers 502 to a larger jobs page of a run with more than about 50 jobs.
+      const lines = await ghLines(`repos/${repo}/actions/runs/${id}/jobs?filter=all&per_page=50`, '.jobs[] | {started_at, completed_at, labels}');
       jobs.push(...lines.map((line) => JSON.parse(line)));
     }
   };
