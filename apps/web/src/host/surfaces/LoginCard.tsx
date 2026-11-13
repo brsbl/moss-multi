@@ -5,6 +5,7 @@
 // pre-hydration submit, and `/login` publishes data-app-state=ready when they open. While a request is out they are
 // read-only rather than disabled, so the field being typed in keeps focus, and a refusal leaves the caret in the
 // password field for the fix. Switching between sign-in and sign-up puts the caret in the first field of the new form.
+// An invite's card says so without naming its email and still opens on Sign in; a share link's offers the way back.
 import { Button } from '@moss/shared/components/ui/button';
 import { Card } from '@moss/shared/components/ui/card';
 import { Input } from '@moss/shared/components/ui/input';
@@ -14,7 +15,7 @@ import { Sprout } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type ComponentProps, type FormEvent, type ReactNode } from 'react';
 import { setAppState } from '../app-state.ts';
 import { auth } from '../auth.ts';
-import { refusalMessage, UNREACHABLE, type SocialProviderId } from '../auth-state.ts';
+import { backToLabel, INVITED_TAGLINE, looksLikeEmail, NOT_AN_EMAIL, refusalMessage, UNREACHABLE, type SocialProviderId } from '../auth-state.ts';
 import { leaveTo } from '../navigation.ts';
 
 const TAGLINE = 'Multiplayer moss: your notes, written together in real time.';
@@ -68,6 +69,8 @@ export function LoginCard({ next, providers, minPasswordLength = null }: LoginCa
   }, [mode]);
 
   const signingUp = mode === 'sign-up';
+  const tagline = next.startsWith('/invite/') ? INVITED_TAGLINE : TAGLINE;
+  const backTo = backToLabel(next);
   const action = signingUp ? 'Create account' : 'Sign in';
   const disabled = !hydrated || pending;
   // A disabled input drops focus to <body>, so keys typed to fix a refused password would go nowhere.
@@ -84,6 +87,11 @@ export function LoginCard({ next, providers, minPasswordLength = null }: LoginCa
     if (pending) return;
     if (!email.trim() || !password) {
       setError('Enter your email and password.');
+      return;
+    }
+    if (!looksLikeEmail(email.trim())) {
+      setError(NOT_AN_EMAIL);
+      emailRef.current?.focus();
       return;
     }
     setError(null);
@@ -129,7 +137,7 @@ export function LoginCard({ next, providers, minPasswordLength = null }: LoginCa
             <Sprout className="h-5 w-5" strokeWidth={1.75} />
           </span>
           <h1 className="m-0 mb-2 text-h1 font-semibold tracking-title text-ink-default">moss</h1>
-          <p className="m-0 text-balance text-sm text-ink-muted">{TAGLINE}</p>
+          <p className="m-0 text-balance text-sm text-ink-muted">{tagline}</p>
         </div>
 
         <form aria-label={action} method="post" noValidate onSubmit={submit} className="mt-8 flex flex-col gap-3">
@@ -172,6 +180,13 @@ export function LoginCard({ next, providers, minPasswordLength = null }: LoginCa
             {signingUp ? 'Sign in' : 'Create an account'}
           </Button>
         </p>
+        {backTo !== null && (
+          <p className="m-0 mt-3 text-center text-xs">
+            <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs" disabled={!hydrated} onClick={() => leaveTo(next)}>
+              {backTo}
+            </Button>
+          </p>
+        )}
       </Card>
     </main>
   );

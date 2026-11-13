@@ -102,11 +102,30 @@ export function safeNext(value: unknown): string {
   }
 }
 
+/** The login card's tagline when next is an invite (PRODUCT ruling 19): it never names the email the invite is for. */
+export const INVITED_TAGLINE =
+  'You’ve been invited. Sign in or create an account with the email address this invite is for. If you’re not sure which, ask the person who invited you.';
+
+/** "Back to the note" (or folder) when `next`, already checked by safeNext, is a share link; otherwise null. */
+export function backToLabel(next: string): string | null {
+  const url = new URL(next, 'https://moss.invalid');
+  if (!url.searchParams.get('share')) return null;
+  if (url.pathname.startsWith('/d/')) return 'Back to the note';
+  if (url.pathname.startsWith('/f/')) return 'Back to the folder';
+  return null;
+}
+
+/** The shape the card asks for before calling the server: one @, no spaces, a dot inside the domain. */
+export function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(value);
+}
+
 const MISMATCH = 'That email and password don’t match an account.';
 const EXISTS = 'An account with that email already exists. Sign in instead.';
 const TOO_MANY = 'Too many attempts just now. Wait a moment and try again.';
 export const UNREACHABLE = 'Couldn’t reach the server. Check your connection and try again.';
 const GENERIC = 'Something went wrong. Try again.';
+export const NOT_AN_EMAIL = 'That doesn’t look like an email address.';
 
 const BY_CODE: Record<string, string> = {
   INVALID_EMAIL_OR_PASSWORD: MISMATCH,
@@ -116,7 +135,7 @@ const BY_CODE: Record<string, string> = {
   USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: EXISTS,
   PASSWORD_TOO_SHORT: 'That password is too short. Choose a longer one.',
   PASSWORD_TOO_LONG: 'That password is too long. Choose a shorter one.',
-  INVALID_EMAIL: 'That doesn’t look like an email address.',
+  INVALID_EMAIL: NOT_AN_EMAIL,
   TOO_MANY_SIGN_UPS: 'Too many sign-ups from this network today. Try again tomorrow.',
   SIGN_UP_NOT_ALLOWED: 'Sign-up here is invite-only. Ask the owner to add your email address.',
 };
@@ -127,6 +146,9 @@ const BY_STATUS: Record<number, string> = { 401: MISMATCH, 422: EXISTS, 429: TOO
 export function refusalMessage(body: unknown, status: number, { minPasswordLength }: PasswordPolicy = {}): string {
   const code = (body as { code?: unknown } | null)?.code;
   if (code === 'PASSWORD_TOO_SHORT' && minPasswordLength) return `That password is too short. Use at least ${minPasswordLength} characters.`;
+  // better-call's schema refusal names each rejected field as `[body.<field>]`.
+  const detail = (body as { message?: unknown } | null)?.message;
+  if (code === 'VALIDATION_ERROR' && typeof detail === 'string' && detail.includes('[body.email]')) return NOT_AN_EMAIL;
   return (typeof code === 'string' && BY_CODE[code]) || BY_STATUS[status] || GENERIC;
 }
 
