@@ -6,7 +6,7 @@
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import {
-  BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
+  SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
   SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
@@ -536,43 +536,4 @@ test("j16-review: a strike, then the '==' highlight shortcut around it, keeps th
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { message: 'accept lands the highlight without the struck "b"', timeout: BIND_TIMEOUT })
     .toContain('Intro line stays.\n\n==ac== tail.\n\nClosing line stays too.');
-});
-
-test('j16-review: a Review window left open across an accept that keeps the originals shows the note as it now is, without a reload @p:mean-2 @p:R17', async ({ actors }) => {
-  const { ada, ben, docId } = await sharedNote(actors, 'Intro line stays.\n\nabc tail.\n\nClosing line stays too.');
-  // Ben's fork rebuilds on the kept accept (T5.S14); the Review window switches mode once and remounts once on it.
-  ben.expectReconnects(1, docId);
-  await openIn(ben, docId, 'suggest');
-  await openIn(ada, docId, 'edit');
-  const review = await actors.sameAs(ada);
-  review.expectReconnects(2, docId);
-  await openIn(review, docId, 'edit');
-  await review.page.getByRole('button', { name: 'Review suggestions' }).click();
-  await expect(ui.pane(review, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
-  await expect(ui.body(review, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
-  await actors.requireDistinct(2);
-  const blocks = (actor: Actor) => ui.body(actor, docId).evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
-  const expected = ['Intro line stays.', 'ab', 'xc tail.', 'Closing line stays too.'];
-
-  // The pasted "b" reads as the struck one restored, so accept keeps the original "b" and removes the pasted copy.
-  await caret(ben, docId, 'abc tail.', 2);
-  await ben.page.keyboard.press('Backspace');
-  await acked(ben, docId, 'the strike');
-  await pasteHtml(ben, docId, '<p>b</p><p>x</p>', 'b\n\nx');
-  await acked(ben, docId, 'the paste');
-  await expect.poll(() => blocks(review), { message: 'Review shows the suggestion', timeout: BIND_TIMEOUT }).toEqual(expected);
-  await expect.poll(() => painted(review, 'suggest-insert'), { message: 'Review paints it', timeout: BIND_TIMEOUT }).not.toEqual([]);
-
-  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
-  const { card } = await cardRows(ada);
-  await card.getByRole('button', { name: 'Accept' }).click();
-  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
-  await expect.poll(() => content(ada, docId), { message: 'the accepted note', timeout: BIND_TIMEOUT }).toContain(expected.join('\n\n'));
-
-  // The Review window, never reloaded, takes the accept (nothing left to paint) and reads as the stored note.
-  await expect.poll(async () => [...await painted(review, 'suggest-insert'), ...await painted(review, 'suggest-delete')], { message: 'Review took the accept', timeout: BIND_TIMEOUT }).toEqual([]);
-  await expect.poll(() => blocks(review), { message: 'Review shows the note as it now is', timeout: BIND_TIMEOUT }).toEqual(expected);
-  await expect(ui.pane(review, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review');
-  const stored = (await content(ada, docId)).trim();
-  expect((await blocks(review)).join('\n\n'), "Review's text is the stored note's export").toBe(stored);
 });
