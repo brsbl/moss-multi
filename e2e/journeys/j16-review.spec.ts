@@ -120,8 +120,15 @@ test('j16-review: two clicks on a marker never reject; Reject asks first, Cancel
   // A double click on the marker, fast and slow: the second click at worst opens the confirmation, on Cancel.
   for (const gap of [250, 700]) {
     await closePanel(ada);
-    const box = (await mark.boundingBox())!;
-    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    // A repaint replaces the wedge, so its centre is read in one step, once it is laid out.
+    let point = { x: 0, y: 0 };
+    await expect.poll(async () => {
+      point = await ada.page.evaluate((selector) => {
+        const rect = document.querySelector(selector)?.getBoundingClientRect();
+        return rect && rect.width > 0 ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : { x: 0, y: 0 };
+      }, `[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`);
+      return point.x > 0;
+    }, { timeout: BIND_TIMEOUT }).toBe(true);
     const first = Date.now();
     await ada.page.mouse.click(point.x, point.y);
     await expect(panel(ada)).toBeVisible();
