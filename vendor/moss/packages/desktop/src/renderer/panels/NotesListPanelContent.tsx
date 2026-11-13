@@ -1291,6 +1291,11 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
               await fetchBackendFolders();
               const parentSegments = folder.path.split('/').slice(0, -1);
               const newPath = [...parentSegments, newName].join('/');
+              // moss-multi seam: folders (T9.15): the active folder follows the rename, as moveFolderToParent remaps it.
+              const activeFolderSnapshot = store.get(activeFolderPathAtom);
+              if (activeFolderSnapshot === folder.path || activeFolderSnapshot.startsWith(folder.path + '/')) {
+                setActiveFolderPath(newPath + activeFolderSnapshot.slice(folder.path.length));
+              }
               const notesInFolder = noteList.filter((n) =>
                 n.folderPath === folder.path || n.folderPath.startsWith(folder.path + '/')
               );
