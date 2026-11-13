@@ -129,7 +129,7 @@ export class TextCount {
 /** What an update would add to a doc: characters in scope (negative when it deletes more), structs, and ids it names. */
 export interface Growth {
   chars: number;
-  /** An upper bound: Yjs may merge some of them after applying. Negative when a write of only deletions merges more than it splits. */
+  /** An upper bound: Yjs may merge some of them after applying. Negative when what it deletes merges more than it adds. */
   structs: number;
   /** Whether it makes any struct the doc lacks (a write of only deletions makes none). */
   inserts: boolean;
@@ -184,8 +184,8 @@ export function deletedWithin(ranges: readonly { clock: number; len: number }[],
 /**
  * What applying `update` to `doc` would add, read from the update alone: its new structs, the splits it causes in
  * structs the doc holds (each origin, right origin and deleted range's edge inside one), and the text it inserts in
- * scope less the text it deletes. For a write of only deletions, less the merges it certainly causes, so deleting next
- * to deleted text (a run from its end) reads as adding nothing. A frame needing a clock the doc lacks is refused before
+ * scope less the text it deletes; less the merges it certainly causes (mergesAfterDeleting), so deleting whole blocks,
+ * or a run from its end, reads as adding nothing. A frame needing a clock the doc lacks is refused before
  * this runs.
  */
 export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'): Growth {
@@ -260,8 +260,9 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
     }
   }
 
-  // A write of only deletions also merges what it leaves deleted beside a deleted neighbour (deleting a run from its end).
-  if (!growth.inserts) growth.structs -= mergesAfterDeleting(doc, ds);
+  // What it deletes may merge: a deleted block's insides once collected, and, in a write of only deletions, deleted text
+  // beside a deleted neighbour (a run deleted from its end).
+  growth.structs -= mergesAfterDeleting(doc, ds, growth.inserts);
 
   // Whether a new struct's parent is in scope: from its parent's name or item, else from its origin's parent.
   const scoped = new Map<Struct, boolean>();
@@ -433,18 +434,35 @@ function deletes(ranges: readonly { clock: number; len: number }[], clock: numbe
 const sameId = (a: Y.ID | null, b: Y.ID | null): boolean => a === b || (a !== null && b !== null && a.client === b.client && a.clock === b.clock);
 
 /**
- * How many pairs of neighbouring stored structs Yjs merges once a write of only deletions applies: both deleted after
- * it, the right one inserted just after the left (so they were one run), and their content alike once collected. The
- * pairs counted are those at or inside each deleted range's edges; any other merge it makes only lowers the count, so
- * the prediction stays at or above what lands.
+ * How many pairs of neighbouring stored structs Yjs merges once `update` applies, of those at or inside each deleted
+ * range's edges: two it collects into GC structs (everything inside a block the write deletes, in a doc that collects,
+ * as y-partyserver's do), and, for a write of only deletions, two items both deleted after it, the right one inserted
+ * just after the left (so they were one run) with content alike once collected. Any other merge only lowers the count,
+ * so the prediction stays at or above what lands. Item merges are left out of a write that also inserts: a new item
+ * may land between the two.
  */
-function mergesAfterDeleting(doc: Y.Doc, ds: ReturnType<typeof Y.mergeDeleteSets>): number {
+function mergesAfterDeleting(doc: Y.Doc, ds: ReturnType<typeof Y.mergeDeleteSets>, inserts: boolean): number {
   let merged = 0;
+  const deletedNow = (item: Y.Item): boolean => !item.deleted && deletes(ds.clients.get(item.id.client) ?? [], item.id.clock);
+  // Whether a type's content is collected by this write: an ancestor's item it deletes and Yjs collects.
+  const collected = new Map<Type, boolean>();
+  const collectedIn = (type: Type | null): boolean => {
+    if (!doc.gc || !type?._item) return false;
+    const known = collected.get(type);
+    if (known !== undefined) return known;
+    const item = type._item;
+    const parent = item.parent instanceof Y.AbstractType ? (item.parent as Type) : null;
+    const result = !item.deleted && ((deletedNow(item) && !item.keep && doc.gcFilter(item)) || collectedIn(parent));
+    collected.set(type, result);
+    return result;
+  };
+  const becomesGc = (struct: Struct): boolean =>
+    struct instanceof Y.GC || (struct instanceof Y.Item && struct.parent instanceof Y.AbstractType && collectedIn(struct.parent as Type));
   for (const [client, ranges] of ds.clients) {
     const list = doc.store.clients.get(client);
     if (!list?.length) continue;
     const state = stateOf(doc, client);
-    // The content a struct holds once the write's deletions are collected (y-partyserver's docs collect them).
+    // The content a struct holds once the write's deletions are collected.
     const contentAfter = (item: Y.Item): unknown => {
       const newly = !item.deleted;
       return newly && doc.gc && !item.keep && doc.gcFilter(item) ? Y.ContentDeleted : item.content.constructor;
@@ -459,7 +477,11 @@ function mergesAfterDeleting(doc: Y.Doc, ds: ReturnType<typeof Y.mergeDeleteSets
         if (i === 0 || i <= checked || right.id.clock < clock) continue;
         checked = i;
         const left = list[i - 1];
-        if (!(left instanceof Y.Item) || !(right instanceof Y.Item)) continue;
+        if (becomesGc(left) && becomesGc(right) && !(left instanceof Y.GC && right instanceof Y.GC)) {
+          merged += 1;
+          continue;
+        }
+        if (inserts || !(left instanceof Y.Item) || !(right instanceof Y.Item)) continue;
         const leftEnd = left.id.clock + left.length;
         if (!(left.deleted || deletes(ranges, leftEnd - 1)) || !(right.deleted || deletes(ranges, right.id.clock))) continue;
         if (left.right !== right || !sameId(right.origin, Y.createID(client, leftEnd - 1)) || !sameId(left.rightOrigin, right.rightOrigin)) continue;
