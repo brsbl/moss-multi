@@ -244,9 +244,10 @@ describe('T3.B31b back to a default @p:col-1', () => {
     const undo = new Y.UndoManager(a.binding.root.getSharedType(), { trackedOrigins: new Set([a.binding as Binding]), captureTimeout: 0 });
     const check = async (format: number, stored: number | undefined, step: string) => {
       await sync(a, b);
-      expect(textOf(a).format, `${step}: the format`).toBe(format);
+      expect(textOf(a), `${step}: the run`).toEqual({ format, style: '' });
       expect(firstRun(a.doc).get('__format'), `${step}: the stored format`).toBe(stored);
       expect(firstRun(a.doc).has('__format'), `${step}: whether the key is stored`).toBe(stored !== undefined);
+      expect(textOf(b), `${step}: an older peer holds the same run`).toEqual(textOf(a));
       expect(exportMarkdown(b.editor), `${step}: an older peer's export`).toBe(exportMarkdown(a.editor));
     };
     try {
@@ -259,7 +260,7 @@ describe('T3.B31b back to a default @p:col-1', () => {
       undo.undo();
       await check(1, 1, 'undo: bold');
       undo.undo();
-      await check(0, undefined, 'undo: plain, the key gone with the write that made it');
+      await check(0, 0, 'undo: plain, the default written in place of the write that made the key');
       expect(exportMarkdown(a.editor)).toBe('Plain words.');
       undo.redo();
       await check(1, 1, 'redo: bold');
