@@ -43,6 +43,9 @@ export function requestMode(docId: string, mode: EditMode): void {
   notify();
 }
 
+/** The note's open suggestions, as the pane last read them. */
+export function setOpenSuggestions(_docId: string, _count: number): void {}
+
 /** The pane reports the mode it shows. */
 export function showMode(docId: string, mode: EditMode | null): void {
   if (mode === null ? !shown.has(docId) : shown.get(docId) === mode) return;

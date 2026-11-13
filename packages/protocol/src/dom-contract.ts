@@ -113,6 +113,8 @@ export const SUGGEST_CHIP_ATTR = 'data-suggest-chip';
 export const SUGGEST_TOGGLE_ATTR = 'data-suggest-toggle';
 export const SUGGEST_UNSAVED_ATTR = 'data-suggest-unsaved';
 export const SUGGEST_MARK_ATTR = 'data-suggest-mark';
+/** The band at the canvas's bottom while someone who can edit or suggest is in Review. */
+export const REVIEW_BAND_ATTR = 'data-review-band';
 /** On the pane: suggest frames sent and refused by this pane's fork (test readouts). */
 export const SUGGEST_SENT_ATTR = 'data-suggest-sent';
 export const SUGGEST_REFUSED_ATTR = 'data-suggest-refused';

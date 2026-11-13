@@ -6,7 +6,7 @@
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import {
-  SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
+  BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, REVIEW_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
   SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
@@ -132,6 +132,99 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   const exported = await content(ada, docId);
   expect(exported).toContain('Second paragraph here.');
   expect(exported).not.toContain('extra');
+});
+
+test('j16-review: Review is offered only while a suggestion is open; Done and Escape leave it, and deciding the last one returns the owner to editing @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  const carlPrincipal = await actors.principal('carl');
+  await grantDoc(ada, docId, carlPrincipal, 'viewer');
+  const carl = await actors.session(carlPrincipal);
+  const pane = ui.pane(ada, docId);
+  await openIn(ada, docId, 'edit');
+  await openIn(carl, docId, 'review');
+  const review = (actor: Actor) => actor.page.getByRole('button', { name: 'Review suggestions' });
+  const band = ada.page.locator(`[${REVIEW_BAND_ATTR}]`);
+  const blur = () => ada.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  // No suggestion yet: no Suggestions button and no Review control for anyone, and Escape changes nothing.
+  await expect(button(ada), 'no Suggestions button on a note without suggestions').toHaveCount(0);
+  await expect(review(ada), 'no Review control without an open suggestion').toHaveCount(0);
+  await expect(button(carl)).toHaveCount(0);
+  await expect(review(carl), "a viewer's top bar has no Review button").toHaveCount(0);
+  await ada.page.keyboard.press('Escape');
+  await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'edit');
+  await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live');
+
+  await openIn(ben, docId, 'suggest');
+  await actors.requireDistinct(3);
+  // Entering and leaving Review remounts the owner's body on a fresh socket each time (§5): three entries, three exits.
+  ada.expectReconnects(6, docId);
+  // The accept closes the author's own record, which rebuilds his fork.
+  ben.expectReconnects(1, docId);
+  carl.expectReconnects(1, docId);
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  await expect(review(ada), 'one open suggestion offers Review').toBeVisible();
+  await expect(review(ada)).toHaveAttribute('aria-pressed', 'false');
+  for (const control of [review(ada), button(ada)]) expect(await control.getAttribute('title'), 'a Moss tooltip, not a title').toBeNull();
+  await review(ada).hover();
+  await expect(ada.page.getByRole('tooltip').filter({ hasText: /^Review suggestions$/ }), "Moss's tooltip names it").toBeVisible();
+  await button(ada).hover();
+  await expect(ada.page.getByRole('tooltip').filter({ hasText: /^Suggestions$/ })).toBeVisible();
+
+  // The viewer stays in Review; only the list's header switch is theirs.
+  await expect(ui.pane(carl, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review');
+  await expect(review(carl)).toHaveCount(0);
+  const header = (await openPanel(carl)).getByRole('button', { name: 'Review', exact: true });
+  await expect(header, "the viewer's list offers the switch, pressed").toHaveAttribute('aria-pressed', 'true');
+  await closePanel(carl);
+
+  const enter = async () => {
+    await review(ada).click();
+    await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+    await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
+    await expect(band, 'the band says why typing does nothing').toHaveText('Reviewing suggestions. Click a change to accept or reject it. Editing is paused. Done');
+    await expect(review(ada)).toHaveAttribute('aria-pressed', 'true');
+  };
+  const left = async (how: string) => {
+    await expect(pane, how).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
+    await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+    await expect(band).toHaveCount(0);
+  };
+
+  await enter();
+  await ada.page.mouse.move(0, 0);
+  await blur();
+  await ada.page.keyboard.type('zz');
+  await expect(ui.body(ada, docId), 'typing in Review changes nothing').not.toContainText('zz');
+  expect(await content(ada, docId)).not.toContain('zz');
+  await ada.page.keyboard.press('Escape');
+  await left('Escape leaves Review');
+  await caret(ada, docId, 'Second paragraph', 0);
+  await expect(ada.page.locator(`[${FLOATING_TOOLBAR_ATTR}]`), 'the toolbar is back').toBeVisible({ timeout: BIND_TIMEOUT });
+
+  await enter();
+  await band.getByRole('button', { name: 'Done' }).click();
+  await left('Done leaves Review');
+
+  // Accepting the last open suggestion in Review returns the owner to editing, and the next one does not bring it back.
+  await enter();
+  const card = (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  await card.getByRole('button', { name: 'Accept' }).click();
+  await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(pane, 'back to editing within a second').toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: 1_000 });
+  await closePanel(ada);
+  await left('the last decision leaves Review');
+  await expect(review(ada), 'nothing left to review').toHaveCount(0);
+  await expect(button(ada), 'the reviewed suggestion keeps the list').toBeVisible();
+
+  await suggestText(ben, docId, 'Second paragraph', 6, ' extra');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  await expect(review(ada)).toHaveAttribute('aria-pressed', 'false');
+  await ada.page.waitForTimeout(500);
+  await expect(pane, "a colleague's next suggestion leaves the owner editing").toHaveAttribute(EDIT_MODE_ATTR, 'edit');
+  await expect(ui.pane(carl, docId), "the viewer's mode never moved").toHaveAttribute(EDIT_MODE_ATTR, 'review');
 });
 
 test('j16-review: withdraw removes the inserted text from every view while the note stays byte-identical @p:mean-2 @p:R16 @p:R17', async ({ actors }) => {
