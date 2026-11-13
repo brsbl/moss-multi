@@ -1,5 +1,6 @@
 // The linear scans in search-core give what moss's regexes give, byte for byte: over the real notes of the converter
 // corpus and over random strings of the delimiters they scan. scripts/measure-converter.mjs holds them to linear cost.
+/* eslint-disable regexp/no-super-linear-backtracking, regexp/no-super-linear-move, regexp/optimal-quantifier-concatenation -- the old patterns are the golden references */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -1,16 +1,17 @@
 // The suggestion review REST API (docs/design/suggestions.md §4, §8): GET .../suggestions/:sid/preview for any reader,
 // POST .../accept {previewHash, digest} and .../reject for an editor or above, POST .../withdraw for a suggester or
-// above (the DocDO checks that the caller is the author). Each is counted per principal (a share link for an anonymous
-// reader, who may only preview) by its PrincipalDO, and the
-// DocDO re-authorizes the actor in the same serialized turn as the action (A§8), so the Worker's role is never the
-// last word. A new live suggestion writes the bell's rows for the people who can review it.
+// above (the DocDO checks that the caller is the author). Each is counted per acting person (an agent by its owner, a
+// share link for an anonymous reader, who may only preview) by a PrincipalDO, and the DocDO re-authorizes the actor in
+// the same serialized turn as the action (A§8), so the Worker's role is never the last word. A new live suggestion
+// writes the bell's rows for the people who can review it.
 import { getServerByName } from 'partyserver';
+import type { SuggestionListing } from '@moss-multi/sync';
 import { SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, sha256Hex, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
-import { MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
+import { actingUserId, MAX_FOLDER_DEPTH, resolveDocAccess } from './access.ts';
 import type { DocsEnv } from './docs.ts';
 import { notify, type InvitesEnv } from './invites.ts';
 import { NO_STORE, notFound, readJsonObject } from './respond.ts';
@@ -63,8 +64,9 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   if (action === 'accept' && (typeof previewHash !== 'string' || !HASH.test(previewHash) || typeof digest !== 'string' || !HASH.test(digest))) {
     return json({ error: 'bad-request' }, 400, NO_STORE);
   }
-  // Every anonymous principal shares one id, so a link holder's budget is its link's, never one global bucket.
-  const budget = principal.type === 'anonymous' ? `anon:${await sha256Hex(principal.shareToken)}` : principal.id;
+  // Charged to the acting person (an agent spends its owner's; the agent stays the reviewer and actor). Every anonymous
+  // principal shares one id, so a link holder's budget is its link's, never one global bucket.
+  const budget = principal.type === 'anonymous' ? `anon:${await sha256Hex(principal.shareToken)}` : actingUserId(principal) ?? principal.id;
   const principalDO = await getServerByName(env.PrincipalDO, budget);
   const allowed = action === 'preview' ? await principalDO.takePreviewToken() : await principalDO.takeReviewToken();
   if (!allowed) {
@@ -98,14 +100,39 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   return json({ suggestion: { id: sid, status } }, 200, NO_STORE);
 }
 
+export const SUGGESTIONS_ROUTE = /^\/api\/docs\/([^/]+)\/suggestions$/;
+
+/**
+ * GET /api/docs/:id/suggestions (A§17 `suggestions`): the doc's open suggestions for any reader, oldest first, each
+ * with its author's name as the record holds it; the DocDO re-authorizes the reader in its serialized turn (A§8).
+ */
+export async function listSuggestions(request: Request, env: DocsEnv, docId: string): Promise<Response> {
+  if (request.method !== 'GET') return json({ error: 'method-not-allowed' }, 405, { allow: 'GET' });
+  const principal = await resolvePrincipal(request, env);
+  if (!principal) return json({ error: 'unauthenticated' }, 401, NO_STORE);
+  const access = await resolveDocAccess(createDb(env.DB), principal, docId, shareTokenOf(request));
+  if (!access || access.deleted) return notFound();
+  if (principal.type === 'anonymous') return json({ error: 'unauthenticated', message: 'Sign in to review suggestions' }, 401, NO_STORE);
+  const stub = await getServerByName(env.DocDO, docId);
+  const result = (await stub.listSuggestions({
+    reviewer: { id: principal.id, role: access.role },
+    actor: { kind: principal.type, principalId: principal.id, sessionId: principal.type === 'user' ? principal.sessionId : null, shareToken: shareTokenOf(request) },
+  })) as { ok: true; suggestions: SuggestionListing[] } | { ok: false; status: number; reason: string };
+  if (!result.ok) return result.status === 404 ? notFound() : json({ error: result.reason }, result.status, NO_STORE);
+  const suggestions = result.suggestions.map(({ author, authorName, ...rest }) => ({ ...rest, author: { id: author, name: authorName } }));
+  return json({ suggestions }, 200, NO_STORE);
+}
+
 /**
  * The working export's admission (docs/design/suggestions.md I5): computing it runs the accept gates per open record,
- * so it spends the preview budget before the DocDO is reached. A signed-in user or an agent is charged as itself; an
- * anonymous share-link reader per link and client address (an IPv6 /64), so a reader past the budget blocks no account
- * and no other address. The DocDO bounds what one doc computes, and serves repeats from its cache.
+ * so it spends the preview budget before the DocDO is reached. A signed-in user is charged as themself and an agent as
+ * its owner, so keys add no rate; an anonymous share-link reader per link and client address (an IPv6 /64), so a
+ * reader past the budget blocks no account and no other address. The DocDO bounds what one doc computes, and serves repeats from its cache.
  */
 export async function admitWorkingExport(request: Request, env: DocsEnv, principal: Principal): Promise<Response | null> {
-  const name = principal.type === 'anonymous' ? `link:${await sha256Hex(principal.shareToken)}:${clientAddress(request)}` : principal.id;
+  const name = principal.type === 'anonymous'
+    ? `link:${await sha256Hex(principal.shareToken)}:${clientAddress(request)}`
+    : actingUserId(principal) ?? principal.id;
   return (await (await getServerByName(env.PrincipalDO, name)).takePreviewToken()) ? null : workingRateLimited();
 }
 

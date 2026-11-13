@@ -65,7 +65,7 @@ const truncateToByteLimit = (value, maxBytes) => {
     sliced += lone ? '\uFFFD' : char;
     used += size;
   }
-  return sliced.replace(/\uFFFD+$/, '').trimEnd();
+  return sliced.replace(/(?<!\uFFFD)\uFFFD+$/, '').trimEnd();
 };
 
 /**

@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 74% done** (186 of 250 planned tasks verified)
+**Overall: 84% done** (211 of 250 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 17 / 17 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 28 / 28 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -127,9 +127,19 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-07 — T6.2 verified: each note now keeps automatic versions (on last disconnect and on activity, deduplicated, large ones spilled to R2) and rate-limited named versions over REST, its history bounded by pruning rather than charging anyone, and a restore whose result fails verification is refused with 409.
 - 2026-10-07 — T6.3 verified: a person can open a note's History, browse automatic and named versions, save a named checkpoint, view any version or diff it against the current note, and restore it in place with a confirmation.
 - 2026-10-07 — T6.S2 verified: named versions saved through an agent key now count against the agent's owner for the per-person cap and the save rate, so an editor can no longer bypass their own limits with an agent key.
+- 2026-10-07 — T7.1 verified: a person or agent can use the `moss-multi` CLI to sign in by device login or API key, list notes, `cat`, `pull` and `add` notes byte-exact by id, URL or title prefix, read history and snapshots, comment, and share, with JSON output and defined exit codes.
 - 2026-10-07 — T6.S3 verified: restoring a version whose code, HTML or formula payload changed at both ends now keeps the unchanged middle's identity, so a peer's concurrent insert there survives the restore.
 - 2026-10-07 — T6.S1 verified: restoring a version now reconciles three-way from the base the restorer opened Restore on, so words a peer or agent typed after that base survive the restore, and a stale base or a dropped block someone typed into is refused with 409.
 - 2026-10-08 — T6.S4 verified: restoring a version on a large note now succeeds while a peer types, because its restore point is staged in DocDO SQLite in the restore's turn and moved to R2 afterwards, and a crash before the move recovers on wake.
+- 2026-10-08 — T7.1s verified: the CLI now keeps every local read and write inside the workspace (real paths, no links out), opens device sign-in only on the server's own origin, follows no redirects, never prints the key, and escapes server text before it reaches the terminal.
+- 2026-10-08 — T7.2 verified: an agent can `push` an edited local note and it lands through a three-way structural merge against the base it pulled, so concurrent human edits survive and a push that would delete most of the note is refused unless forced.
+- 2026-10-08 — T7.3 verified: an agent's push shows a Bot-badged presence chip, `push --suggest` lands as a pending suggestion, an agent granted commenter by its owner can pull and comment but is refused on push and disconnected on revoke, a revoked key closes the agent's socket and 401s the CLI, and `comments` and `suggestions` list a note's threads and open suggestions.
+- 2026-10-08 — T7.4 verified: `moss-multi sync` keeps a local folder in step with the web: local edits appear on the web, web edits update the file, untracked files become docs titled from their stem, local deletes stay local, and moss vault notes keep their `# Title` line and comment markers.
+- 2026-10-08 — T7.L verified: CI's lint now fails any regex that can backtrack super-linearly, and every flagged one, including the CLI title-line parse and moss's note-type classifier, is a linear scan with the same results, so a hostile note or title can no longer stall the editor or server on a regex.
+- 2026-10-08 — T7.S1 verified: pushing a note with `%%m:` comment markers, images or trailing whitespace now converts in linear-time scans with the same output as moss, so a hostile 2 MB push can no longer stall the server.
+- 2026-10-08 — T7.S2 verified: a push merge now runs on one counted step budget instead of a clock, so a costly or hostile push can no longer stall the server; a drifted push past the budget is refused 409 `push-unverified` with nothing landed, and a degenerate push is refused before the doc's own edits are diffed.
+- 2026-10-08 — T7.S3 verified: search snippets and heading text now strip comment markers, code fences and wiki-links in linear-time scans, so a hostile note can no longer stall search indexing.
+- 2026-10-08 — T7.S4 verified: `moss-multi sync` adopting a moss note now records the created revision as its base right after create, so a peer edit made before the first read survives a later local edit, and a retry after a failed create resumes the tracked doc instead of making a second one.
 - 2026-10-09 — T5.S7 verified: a reviewer's suggestion card now shows a code block edit as its changed line before and after, keeps re-added text at a stretch's end as unchanged, and builds its rows quickly on large suggestions.
 - 2026-10-09 — T5.S4 verified: suggestions and leases now fit inside a bounded share of a note's room, so a busy suggester can no longer fill a note and lock editors out of body and payload edits.
 - 2026-10-09 — T3.S9 verified: a formula with a long run of blank space before a number now imports, saves and feeds search in linear time, matching the same numbers moss does.
@@ -174,6 +184,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-12 — T3.B13 verified: cancelling an empty IME composition below a selected block no longer leaves a stray empty paragraph, typing ==marked== highlights the word without turning a later `=` into a formula, a default-height HTML block's live preview is as tall as its content, and each keystroke in a 40,000-line note syncs to Yjs in a fraction of the old time.
 - 2026-10-12 — T3.B7 verified: a note server now gives a newly admitted socket the presence its own check installed, closes a sender whose frame waits past the access deadline without applying any of its frames, and after a trash or restore hold ends with the note live it tells the signed-in people the hold shut out (including folder-link holders whose link still reaches the note) to reopen it, retrying until that lands.
 - 2026-10-12 — T6.S8 verified: Diff vs current on a heavily rewritten note now stays fast, because the line diff and its word refinements share one work budget and regions past it show as coarse changed spans.
+- 2026-10-12 — T7.R verified: agent sync now sits on the final M6, and a push carrying a maximal 2 MB note lands while an oversized push body is refused 413 before it is read, after the pusher's rate token is charged.
+- 2026-10-12 — T7.S5 verified: an agent key now spends its owner's allowance for renames, comments, suggestion previews and reviews, working exports, remote fetches and media uploads, so a person with a session and two keys gets 429 on the third key instead of a fresh window per key.
+- 2026-10-12 — T7.S7 verified: sync, watch and `add` in one workspace now take turns behind a lock, so two overlapping passes adopt a new file into exactly one doc and one record instead of two.
+- 2026-10-12 — T7.B1 verified: an agent push that would empty a note or delete most of it is refused even when the note drifted, thousands of slightly changed lines merge as edits rather than a deletion, a person's trailing empty paragraph stays hers to type into, and a `--suggest` push notifies once, only after every op lands.
+- 2026-10-12 — T7.S8 verified: pressing Ctrl+C during `watch` now stops the pass promptly, aborting a read in flight and starting no further create, rename or push, while every write the server already confirmed is kept in the local records.
+- 2026-10-12 — T7.B2 verified: the push helper now fails a push that never converted, legacy-opener, image and formatted-whitespace notes are pinned through push and --suggest up to the 2 MB cap, a budget refusal leaves the note byte-identical, and a reader revoked while an agent is present hears no further agent presence frames.
 - 2026-10-12 — T6.S5 verified: restoring a version now puts a detached comment back on the exact text or block the restore wrote, even after a peer inserted before it or retyped it, and it survives a DocDO restart; otherwise the comment stays detached.
 - 2026-10-12 — T6.B3 verified: saving a named version or diffing against current now waits until this tab's edits are acknowledged (and refuses as unsynced after 5 s without sending anything), View strips only real frontmatter, and the History view has a parity gate in both themes.
 - 2026-10-12 — T6.B2 verified: a restore or reconcile that would move an unchanged block across another (recreating it) is now refused 409 with nothing written, and the formula reconcile tests prove the inline formula's own Yjs item survives.
@@ -189,6 +205,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-13 — T5.P verified: suggestions now run on the fixed m4, so comments and every m3 fix hold with Suggest mode in place, and a formula with a non-text stored result no longer breaks the suggestion text walk.
 - 2026-10-13 — T6.B1 verified: saved versions keep their stored bodies, because the cleanup sweep now skips anything a version row or a pending move still needs, moves run one at a time, and a named save revoked mid-save leaves nothing behind.
 - 2026-10-13 — T6.P verified: history now runs on the current m5, so versions, view, diff and restore hold with suggestions, comments and every m3 fix in place.
+- 2026-10-14 — T7.P verified: agent sync, Bot presence and the watch daemon now run on the current m6, so versions, suggestions, comments and every m3 fix hold with agents in place, and a 2 MB heading stays inside search's budget.
 - 2026-10-14 — T4.B3 verified: a comment, reply or edit that fails to send keeps its text as a retryable draft (a failed reply returns to its thread's reply box), a commenter can add comments on code, chart, canvas and image blocks from the block header, block highlights clear when their comments leave, and hovering checks comment ranges once per frame.
 - 2026-10-14 — T3.B10 verified: copying or duplicating a note's media now requires live read access to the source, an upload whose bytes do not match its declared image or video type is refused 415 before anything is stored, and a private image one account loaded is never served from the browser's cache to the next account signed in to the same browser.
 - 2026-10-14 — T3.B15 verified: two people editing the same formula or variable name now merge each other's changes at the right place without moving a caret inside a reference, a formula so crowded no reference marker is free resolves whole to the stored one with a notice, an IME preedit survives a peer moving its block, and an empty chart or sketch accepts its first edit.
@@ -196,12 +213,19 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-14 — T4.Q verified: comments now run on m3's media-access, upload-quota and formula-merge fixes, with both sides kept and the full lane green on the m4 head.
 - 2026-10-14 — T5.Q verified: suggestions now run on m4's comment-draft, media and formula fixes, and an IME preedit flushed when its editor unmounts is merged and written under the note's own client, as compositionend writes it.
 - 2026-10-15 — T6.Q verified: history now runs on m5's comment-draft, media, quota and formula fixes, and e2e setup resends a sign-up or sign-in that wrangler's proxy dropped while a large note's auto version was being written.
+- 2026-10-15 — T7.Q verified: agent sync, Bot presence and the watch daemon now run on m6's comment-draft, media, quota and formula fixes, with both sides kept and the full lane green on the m7 head.
+- 2026-10-18 — T7.B3 verified: the CLI pins the workspace root before requests and lock waits and re-checks it on every write, logout sends the session only over https or loopback, server text prints on one escaped line, email shares print the invite link and an empty `--suggest` push says nothing was suggested.
+- 2026-10-18 — T7.P1 verified: a `.moss-multi/scope.json` (allow, follow with depth, deny always winning) now limits sync, pull, push and add to in-scope notes, so an agent on a host only uploads allowlisted notes, notes reached by links stay download only until `scope confirm` adds them, and a folder without a scope file syncs as before.
 - 2026-10-18 — T4.B3 re-verified: a reply box that grows or shrinks no longer raises a WebKit ResizeObserver loop, comment drafts stay in their own note, and a composer dismissed and reopened on its target closes once its sent comment lands instead of sending it twice (already counted on 2026-10-14).
 - 2026-10-18 — T3.B11 re-verified: a large upload's chunks are now freed as they are copied, because the upload deadline cancels the reader instead of racing every read, so a big body is not held in memory twice.
 - 2026-10-18 — T3.B17 verified: + Note, Cmd/Ctrl+N and folder drag-and-drop now follow the role on the folder involved rather than the vault root, a refused move is undone and shows the server's reason once, a reader no longer sees Remove on a missing image or reaches hidden gap and resize controls, read-only tabs still switch by keyboard, and a refused restore's notice no longer covers the Trash banner.
 - 2026-10-18 — T4.Q second pass verified: comments now run on m3's later fixes (upload reader deadline, the j09 pass-through route, read-only controls and folder permissions), with a reader's tabs and Add comment control both exempt in invariant 9 and the full lane green on the m4 head (already counted on 2026-10-14).
 - 2026-10-18 — T5.Q second pass verified: suggestions now run on m4's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m5 head (already counted on 2026-10-14).
 - 2026-10-18 — T6.Q second pass verified: history now runs on m5's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), with the full lane green on the m6 head (already counted on 2026-10-15).
+- 2026-10-19 — T7.P2 verified: when Moss re-saves a note it held open while sync pulled an edit into it, sync keeps the pulled edit and lands only the new typing, sending anything it cannot place to `<file>.rej` instead of pushing a revert.
+- 2026-10-19 — T7.Q second pass verified: agent sync, Bot presence and the watch daemon now run on m6's later fixes (reply box, read-only controls, folder permissions and the upload reader deadline), and a large note opened in a fresh session no longer gains an empty paragraph ahead of its first line, because the first sync's answer pieces are held and applied with its step 2 (already counted on 2026-10-15).
+- 2026-10-19 — T7.P3 verified: a scope's `follow` now pulls the server notes its links reach, so an empty Linux replica starts from its scope while the Mac is offline and a note an agent makes and links comes down on the Mac; `watch` runs as a launchd agent or systemd user unit, `scope replica` prints the replica's scope, and CI packs the bundled CLI whose `--version` names its commit.
+- 2026-10-19 — T7.S9 verified: sync, pull and push now record every media name the server's text could name in a folder before writing that text, so a collaborator's reference can no longer make the CLI upload a private file from the owner's disk; only images the owner adds upload.
 - 2026-10-19 — T5.S10 verified: in Suggest mode a paste is Lexical's own paste, admitted whole or refused whole against every suggest limit by what it actually writes, pastes over table cells are refused, undo and redo are admitted the same way, and an undone paste or Enter no longer shows its restored rest as a suggestion.
 - 2026-10-19 — T5.S14 verified: accepting a suggestion no longer applies an identity-only change, so an item replaced by an identical copy keeps its original, its comment anchors and its authorship; accept refuses writes beneath a restored copy with 409, and input a kept accept would bury is offered back first.
 - 2026-10-19 — T5.B2 verified: in Suggest mode, deleting text a continuation's accepted prefix holds strikes it and keeps the caret, a replayed undo or redo no longer wipes the strikes' redo, a struck character or long struck run survives a rewrite of its node, and struck text a rewrite removed is still drawn struck where it stood.
@@ -213,6 +237,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-20 — T4.U verified: comments now run on m3's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads), with both sides kept and the full lane green on the m4 head.
 - 2026-10-20 — T5.U verified: suggestions now run on m4's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads); a Suggest-mode paste is still judged by T5.S10's rule against the larger of the local and server note sizes, and the full lane is green on the m5 head.
 - 2026-10-20 — T6.U verified: history now runs on m5's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with the DocDO answering through splitAnswer beside the version imports and the full lane, j17 included, green on the m6 head.
+- 2026-10-20 — T7.U verified: agent sync, Bot presence and the watch daemon now run on m6's sync and upload fixes (T3.B4's reconnect and paste admission without paste reservations, T3.B28's linear sync answers, T3.B30's streamed uploads, and T5's later suggest fixes), with T7.P1-P3 and T7.S9's folder taint store unchanged.
 
 ## T1.1s identity audit
 
@@ -240,11 +265,94 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 - The [tests-first export run](https://github.com/brsbl/moss-multi/actions/runs/37164692835) reproduced a dependent formula exporting frozen `4` instead of recomputed `6`. Export now carries the real doc identity into evaluation; the regression also covers a foreign-note fallback, an unchanged live Y.Doc, export-cache invalidation and wake.
 - The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
+- 2026-10-14 — T7.S6 verified: a note's `assets/` images and videos now travel with `add`, `pull`, `push` and `sync`: a file missing on either side is copied over, neither side is overwritten, a name the server stores differently moves the note's reference with it, and a failed transfer is reported as failed.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.U's checker (5d942c8, 2026-10-20)
+
+- T7.U checker P1, owned by m5 (inherited, not caused by the merge): an open Review view keeps stale tombstones after a T5.S14 kept accept — ReviewMount.#refresh (apps/web/src/host/collab/suggest/mounts.ts:248-254) applies the new composite in place instead of remounting for accepted records, so a peer keeping Review open may miss original text until reload; persisted body correct; SuggestFork already checks meta.kept and remounts (packages/sync/src/suggest/client.ts:1455-1461).
+- T7.U integration: j01-paste-check (chromium) stall flake recurred on the m7 merge head b6ccc7b (5302 > 5075 ms during moss-paste-batch layout, full run 39535137027 attempt 1), the same pre-existing m6 flake logged under T6.U.
+
+### From T7.S9's checker (4922516, 2026-10-19)
+
+- T7.S9 checker P2 (Directory flush failures are swallowed before server text is written): syncDir catches every error from opening or flushing the state directory, including a real EIO, so after a storage error and a crash an older valid served-names.json can survive and loadTaint trusts it without a rebuild; storage-failure only, not an exfiltration path in normal operation.
+- T7.S9 checker P2 (Folder keys alone can push the taint store past its 4 MB cap): serializeTaint reduces a folder's names to ['*'], but when the folder keys alone exceed STORE_BYTES it returns the oversized buffer; still fail-closed, a workspace-wide taint fallback would restore the bound.
+- T7.S9 checker P2 (The push-event run at the head is red on two packages/sync timing assertions): push run 39369113727 on 4922516 failed only checks, on suggest-ingest 'costs the same on a small doc and the 1.69 MB doc' (21.09 ms vs 20.08 ms) and push-markers.linear 'landPush: a marker opener and blank lines'; the dispatched full lane on the same SHA (39369113607) passed; code untouched by T7.S9.
+- T7.S9 checker P2 (The implementer edited its own brief's form cap from 64 to 128, and the brief has no COORDINATOR RULE): commit 4922516 rewrote the T7.S9 BUILDPLAN line to '128 decoded forms'; Codex found 128 still bounded and fail-closed (a 129th form taints the folder); coordinator to confirm the 128 cap.
+
+### From T7.P3's checker (071fb18, 2026-10-19)
+
+- T7.P3 checker P2 (Replica deny list misses a private title that gets linked after `scope replica` was exported; Codex P1, downgraded): scope replica exports `**/<Title>` only for denied titles the followed notes link to at export time (program.ts:565-567, scope.ts:490-493), so a later [[Taxes 2026]] on L with exactly one readable server doc of that title pulls it (sync.ts:697-710); the Mac's private note never reaches the server.
+- T7.P3 checker P2 (A tracked note keeps syncing after its server doc is renamed to a denied title): deniesTitle guards only the first fetch; tracked notes sync under their old path after a rename (sync.ts:633-646, 230-242, 284-305).
+- T7.P3 checker P2 (Notes that follow reaches can be written into folders that normal sync skips): a relative link such as ../repo/AGENTS.md can create and track a file inside a nested .git repo or node_modules; fetchReached checks only confinement and scopedNest, not sync discovery's skipped folders (sync.ts:165-193 vs 697-710).
+- T7.P3 checker P2 (A missing [[X.md]] wiki link does not fall back to the title without .md): locally [[Alpha.md]] resolves to the note titled Alpha, but on an empty replica the missing-note check keeps 'Alpha.md' and never finds server doc 'Alpha' (scope.ts:411-415 vs 460-464; sync.ts:698).
+- T7.P3 checker P2 (First replication on an empty replica slows down quadratically): fetchReached calls workspaceScope after every download, rescanning the workspace, so a hub note linking N notes costs O(N^2) scans (sync.ts:693-722).
+
+### From T7.P1's checker (172529d, 2026-10-18)
+
+- T7.P1 checker P2 (Media under an assets folder that is itself a scoped nested workspace bypasses the nested boundary; Codex P1, downgraded): noteMedia in packages/cli/src/media.ts does not call scopedNest on asset paths; only reachable when a nested workspace's root is exactly a note's assets/ folder; add a scopedNest check per asset.
+- T7.P1 checker P2 (An exact allow entry also covers an NFC/NFD twin name on a volume that keeps them apart; Codex P1, downgraded): covers() in packages/cli/src/scope.ts compares names in NFC while workspace sameFile keeps NFC and NFD distinct, so on Linux allow ['café.md'] also uploads an NFD twin; match on the filesystem's own name identity.
+- T7.P1 checker P2 (withoutSpans backtick pre-pass can still go superlinear): for each unmatched backtick run scope.ts rescans every later run, so backtick runs of increasing length cost Theta(k^3).
+- T7.P1 checker P2 (Outer scope evaluation can still read a tracked note owned by a nested scoped vault): workspaceScope in sync.ts receives all trackedMetas before pass() drops nested notes, so an outer follow can read its links and scope confirm can print its path; nothing is uploaded or written.
+- T7.P1 checker P2 (scope confirm re-reads and re-parses a source note's base once per followed target): syncedLink runs per (target, source) pair, so a hub note linking many unconfirmed notes costs quadratic work.
+- T7.P1 checker P2 (Conflict .rej sidecars ignore deny rules): setAside writes <file>.rej without consulting the scope; local only, never uploaded.
+
+### From T7.Q second pass's checker (f779816, 2026-10-19)
+
+- T7.Q second pass checker P2 (Held first-sync pieces from interrupted connections are never discarded): doc-session.ts pushes every pre-sync type-2 frame into #firstSync and clears it only on step 2, so each connection dropped mid-answer leaves its prefix held and the next attempt adds another copy; correct (Yjs updates are idempotent) but memory grows per interrupted attempt; clear the buffer on disconnect.
+
+### From T7.P2's checker (2f710e5, 2026-10-19)
+
+- T7.P2 checker P2 (Plain-file adoption overwrites the file without keeping its prior text; Codex P1, downgraded): createFrom's plain path calls recordPull with no {prior: bytes}, so a peer edit between POST /api/docs and adoption's content GET followed by a stale save within the minute is pushed as a revert; plain path only, sub-second window on a doc whose id nobody else knows yet.
+- T7.P2 checker P2 (The explicit `push` command overwrites the file with merged text and keeps no prior): after a clean push program.ts writes the merged doc without a prior, so a stale Moss re-save can be pushed by the next sync as a revert of the pulled lines.
+- T7.P2 checker P2 (MTIME_SLACK_MS lets a save up to 2 s before the write count as stale): readPriors accepts savedAt >= prior.at - 2000 on every filesystem, so a precisely timestamped save made just before the pull can be treated as stale.
+- T7.P2 checker P2 (The prior record is written after the note is replaced): recordPull and recordSynced overwrite the file before recordBase writes prior-<hex>.md and meta.json, so a crash in between leaves no prior and a later stale save is treated as fresh.
+
+### From T7.S6's checker (210bbd2, 2026-10-14)
+
+- T7.S6 checker P2 (A media 429 on a tracked note does not stop the pass): noteMedia rethrows CliError(429), but the tracked-note loop in packages/cli/src/sync.ts only rethrows RateLimited, so the 429 becomes a 'failed' result, the pass moves on and watch never backs off; untracked adopt handles it; the note's text is retried next pass.
+- T7.S6 checker P2 (Media refs stop at spaces and parentheses, and code fences are scanned): mediaRefs ends a name at a space, ')' or a quote even inside <...>, and scans raw text, so an example inside a code fence is uploaded and can be rewritten after a collision; percent-encoded names work.
+- T7.S6 checker P2 (Collision renames are not saved before an interrupted pass): the original-to-stored rename map lives only in memory, so a 429 or abort before the note is rewritten makes the next pass upload those collision files again.
+- T7.S6 checker P2 (The refused-upload test fails before the request reaches the server): the 11 MB PNG is rejected by the CLI's own size check before any POST, so no server-refused upload (403 or 429) is exercised; a failed transfer is still reported failed with exit 1.
+- T7.S6 checker P2 (Duplicate and misleading media messages): a local media file that differs from the server's copy is reported failed twice per sync (before and after reconcile), and a server rename that only cleaned up the name ('my photo.png' to 'my-photo.png') is reported as the server 'already holds another my photo.png'.
+
+### From T7.B2's checker (2103d86, 2026-10-12)
+
+- T7.B2 checker P2 (A stalled access check delays the agent's expiry by up to the 5 s access deadline): #sayAgentLater in packages/sync/src/doc-do.ts waits for the serialized access check before #sayAgent removes the server-side bot entry, so a hung D1 read at the 15 s removal delays local cleanup by up to accessDeadlineMs (5000 ms) or longer behind queued jobs; no access leaks, and the new failure test rejects immediately so it cannot catch the delay.
+
+### From T7.S8's checker (0b872ef, 2026-10-12)
+
+- T7.S8 checker P2 (Check the signal again before the base-missing retry push): if Ctrl+C lands while the first push is in flight and the server answers base-missing, pushWithBase still sends the retry with the base attached.
+- T7.S8 checker P2 (A confirmed title rename is not saved to meta before the stop check on the body push): a note whose title and body both changed, stopped during the rename PATCH, keeps the old title in meta.json, so a later web rename could be overwritten when sync resumes.
+- T7.S8 checker P2 (stopped() also hides real errors from checkpoint steps after a stop): once the signal is aborted any error counts as a stop, so a failed content read or filesystem error while saving a confirmed write is dropped silently and watch exits 0.
+- T7.S8 checker P2 (The automated tests use a fake server, not the real stack): the three new tests drive runCli against a fake fetch with process.emit('SIGINT'); a CI end-to-end leg on the real Worker stack with an OS SIGINT is still missing.
+
+### From T7.B1's checker (e3ac7c6, 2026-10-12)
+
+- T7.B1 checker P2 (B354 owner-confirmation gate was not obtained): drifted pushes that would empty the doc or delete over 60% now refuse 409 (CLI exit 3) unless --force, where they used to land 200; matches A§17 step 3 and nothing has shipped, but the owner never confirmed the rule as the brief asked.
+- T7.B1 checker P2 (B344 only covers trailing empty paragraphs, not interior ones): push.ts keeps only end-of-note empty paragraphs out of reconciliation, so an interior empty paragraph at the insert point can be paired with the pushed paragraph by reconcile tier 2 and a person's in-flight typing can land inside the agent's paragraph.
+- T7.B1 checker P2 (coarseRuns can hide a strict-budget overrun): coarseRuns runs tokenRuns with strict=false on its own capped budget and charges the outer budget a clamped had - own.work, so on the forced strict path a merge can spend its whole aggregate budget without the strict exhaustion check firing; CPU stays bounded by the cap.
+
+### From T7.S7's checker (2f26c71, 2026-10-12)
+
+- T7.S7 checker P2 (stale-lock takeover has a narrow three-way race): in packages/cli/src/workspace.ts breakStale renames the stale lock aside and links it back ignoring failure, so if A takes a fresh lock, B renames A's live lock aside and C creates .lock before B links back, A and C both hold it and A's touch() silently no-ops; needs a crashed holder plus three racers.
+- T7.S7 checker P2 (overlap test runs in one process against a fake server): cli.test.ts overlaps two runCli calls with Promise.all against the in-memory server, exercising the filesystem lock across interleaved async passes but not separate OS processes; a cross-process real-stack journey would be stronger.
+- T7.S7 checker P2 (a watch waiting for the lock ignores shutdown): syncOnce waits in lockWorkspace up to 5 minutes with no AbortSignal, so SIGINT/SIGTERM during the wait is ignored and the watcher runs one full pass after the other holder releases; make the wait abortable and recheck abort before the pass.
+
+### From T7.S5's checker (fc7d6d4, 2026-10-12)
+
+- T7.S5 checker P2 (the new acceptance test stubs the Durable Objects instead of running the real Worker): agent-rate-buckets.test.ts calls handleApi with a Map-backed PrincipalDO (allowance 3) and canned DocDO answers, so it proves which window each route draws from but not the built Worker with real persisted windows; the checker's real-stack run covered renames and comments.
+- T7.S5 checker P2 (the upload case had no valid red-first run): in red run 38295114055 the upload case failed 411 for a missing Content-Length rather than on the third-key assertion; the old admitMedia keyed on principal.id so the corrected test would fail on it, but no CI run shows that failure.
+
+### From T7.R's checker (5561ce4, 2026-10-12)
+
+- T7.R checker P2 (the streamed-oversize test does not check that the push token is taken before the body is read): push.harness.test.ts checks the final charge count, status and unchanged content but not step order, so moving takePushToken after readCapped would still pass and let a rate-limited caller make the Worker read about 25 MB; push.ts:54-62 orders it correctly today.
+- T7.R checker P2 (the long-line landPush timing legs ignore the result and catch every exception): the spaces, image-run and bold-around-spaces legs reuse T7.S1's helper, so an early unrelated failure would also pass; inherited from T7.S1 (see its entry below).
+- T7.R checker P2 (origin/m6 moved after the restack): t/T7.R merged m6 at 6d52c7f8, not T6.S8's 83d08b25; merged into m7 at integration (PROGRESS.md was the only conflict).
 
 ### From T6.S9's checker (7b03b34, 2026-10-10)
 
@@ -255,6 +363,62 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 - T6.R checker P2 (a restore-sized body is parsed by unrestricted JSON.parse before its shape is checked; Codex P1, downgraded): apps/web/src/api/versions.ts reads up to RESTORE_BODY_MAX_BYTES (about 37.5 MB) and parseJsonObject runs plain JSON.parse before access and restoreBase validation, so about 30 MB of nested empty arrays could exceed the Worker isolate's 128 MB; POST /api/docs already does the same at CREATE_BODY_MAX_BYTES (about 25.2 MB).
 - T6.R checker P2 (the maximal-restore leg is checked at the route against a stubbed DocDO): body-cap.test's 37.38 MB base never crosses the Worker-to-DocDO RPC, whose serialized-argument limit is 32 MiB, so a base between about 32 and 37.5 MB passes the 413 check and fails at versions.ts restoreVersion; either lower the cap under the RPC limit or add a workerd leg.
+
+### From T7.S4's checker (5e4f773, 2026-10-08)
+
+- T7.S4 checker P2 (the fallback for an older server keeps the original race; Codex P1, downgraded): if POST /api/docs omits `content`, adopt in packages/cli/src/sync.ts still records a later GET /content as base before checkpointing, so the lost-edit race and duplicate-on-failure remain on that path; dead code against the server shipped with this CLI (never published, never deployed).
+- T7.S4 checker P2 (the two adoption fault scenarios are not covered by a real-stack journey): the new CLI tests use fakeServer and the DocDO test the Node harness; add the peer-edit-after-create and rename-failure cases to j18-sync.
+- T7.S4 integration P2 (SP2 payload-frame RSS budget is flaky): run 37834993962 first failed 'Converter in workerd (SP2)' with RSS growth 69.1 MB over the 64 MB budget on the T7.S4 merge, then passed on rerun with no code change; the measurement is noisy near its budget.
+
+### From T7.S2's checker (7b539b3, 2026-10-08)
+
+- T7.S2 checker P2 (a coarse diff fallback can wrongly refuse a large undrifted push as degenerate): merge.ts counts pushed.deleted exactly, but past DIFF_WORK/DENSE_WORK tokenRuns replaces the whole span, so a large doc with >~1000 consecutive changed lines that keeps nearly all its text can exceed the 60% guard and get 409 degenerate (CLI exit 3) unless --force; safe, nothing lost.
+- T7.S2 checker P2 (the `applied` count in the push response now counts something different): merge.ts counts accepted line-grouped pushed edits instead of non-equal diff ops, so PushResponse.applied and the CLI's 'N change(s) applied' change (e.g. 2 to 1 for 'abc' to 'aBc'); same name and type, informational only.
+- T7.S2 checker P2 (the budget refusal tests compare plain exported text, not payloads byte for byte): the refusal tests compare exported Markdown and an empty fork.ops rather than live body and payload bytes; the code throws before any write, but there is no regression test for decorator payloads.
+
+### From T7.S1's checker (7470712, 2026-10-08)
+
+- T7.S1 checker P2 (not every case named in the review's done criterion is tested through landPush; Codex FAIL, downgraded): push-markers.linear.test.ts drives only the modern `%%m:` opener plus blank lines through landPush, with no fork/suggest leg; the legacy opener, single-line space, image and format-whitespace shapes are tested only at function level.
+- T7.S1 checker P2 (the push timing test swallows every exception): push() ignores landPush's outcome and catches everything, so a regression that throws or returns before markdownToState would pass faster; assert the expected outcome or the specific refusal.
+- T7.S1 checker P2 (the image candidate scan is O(n log n), not strictly linear): nextOf binary-searches the positions array per candidate (12-16 comparisons per candidate at 4k-64k); passes the doubling bound but is not O(n).
+- T7.S1 checker P2 (characters typed during a concurrent push can land in the wrong paragraph; pre-existing M7 merge behavior): while an agent pushed a plain paragraph into a fresh doc, two of Ada's typed characters (' b') ended up after the agent's paragraph; belongs to the three-way merge (keepUntouched/spliceByBlock), not T7.S1.
+- T7.S1 checker P2 (long single-line pushes are still superlinear in landPush outside the marker scans; owned by T3.S4): `%%m:` + 4,000 spaces + `!` landed in 61 ms and 16,000 spaces in 506 ms, in the non-marker converter paths T3.S4 makes linear (Lexical export split, tabs, inline import); T3.S4 is on m3, not yet in m7.
+
+### From T7.L's checker (adf7ead, 2026-10-08)
+
+- T7.L checker P2 (editing a very large note causes long main-thread tasks from note size, not from a regex): on a 40,000-line note editing took 150-490 ms long tasks and a same-size harmless control note 1.75-2.75 s (about 4.3 s to open), while classifyNoteContentType itself takes 2-20 ms; the implementer's 55 ms figure did not reproduce. Not ReDoS and not caused by T7.L; large-note editor and render cost needs its own task.
+
+### From T7.4's checker (d34777d, 2026-10-08)
+
+- T7.4 checker P2 (moss adoption records a base fetched after create; Codex P1, downgraded): adopt() (packages/cli/src/sync.ts) records base = content fetched after POST /docs with localHash of the original file, so a peer edit between create and that GET, followed by a local edit, can be lost; base the record on the create response's own export.
+- T7.4 checker P2 (marker remap guesses between identical paragraphs; Codex P1, downgraded): remapMarkers (packages/cli/src/moss-format.ts) is a text diff, so local `%%m:` markers can land on the surviving one of two identical paragraphs; server anchors are unaffected. Carry anchors from the M4 state once web comments are written into comments.json.
+- T7.4 checker P2 (`add --moss --title X` on a file whose title line differs; Codex P1, downgraded): the next local edit renames the doc to the line and lifts the H1; refuse --moss when --title differs from the file's title line, or normalize the file at adoption.
+- T7.4 checker P2 (a plain file whose H1 equals its stem shows the title twice on the web): 'Garden plan.md' starting with '# Garden plan' becomes doc 'Garden plan' with a body H1 'Garden plan'; intended (a plain file's H1 is content), only `add --title` lifts it, but a person may read it as a duplicate.
+
+### From T7.3's checker (436984d, 2026-10-08)
+
+- T7.3 checker P2 (agent presence timer broadcasts are not re-validated per recipient): the 8 s refresh and 15 s removal call sendPresence from a timer, skipping the serialized access re-validation and trusting the cached presenceAllowed flag, so a recipient whose revocation kick was missed can keep getting the bot's awareness frames for up to 15 s; no body data or writes.
+- T7.3 checker P2 (a refused multi-op --suggest push can still notify reviewers): the ingest's onCreated sends the new-suggestion notice when the first op is admitted, so if a later op is refused (e.g. over the record cap) the record is withdrawn and the push 409s but the bell notice was already sent; the body is unaffected.
+- T7.3 checker P2 (a --suggest push that yields no ops is answered as an edit push): #suggestPush returns ok with no suggestionId and the route answers mode 'edit', so when every hunk failed the CLI prints 'push partly applied: N hunk(s) failed' though nothing was applied or suggested; no data is lost.
+
+### From T7.2's checker (5e89406, 2026-10-08)
+
+- T7.2 checker P2 (degenerate guard measures deletion against the base, not the merged result on a drifted doc; Codex P1, downgraded): landPush (packages/sync/src/push.ts) checks isDegenerate on base->newText (packages/core/src/merge.ts), so an agent deletion adjacent to a concurrent human deletion can merge to a much smaller or empty doc without --force; glyphdown also measures against the base.
+- T7.2 checker P2 (the 'drifted or not' degenerate test never drifts the doc): packages/sync/src/push.test.ts, the push harness test and the j18 degenerate leg cover only the undrifted case; add a drifted case if the guard semantics change.
+
+### From T7.1s's checker (43529ee, 2026-10-08)
+
+- T7.1s checker P2 (confinement is check-then-open, so a concurrent directory swap can defeat it; Codex P1, downgraded): readConfined and writeInside lstat/realpath the path then reopen it by name (packages/cli/src/workspace.ts), and realInside recomputes realRoot per call, so a same-user process that renames the workspace or a parent to a symlink during pull's await on /content redirects the write.
+- T7.1s checker P2 (state-directory guard is case-sensitive): routed to T7.2 as a required red-first test.
+- T7.1s checker P2 (ttySafe keeps LF and tab, so a server message can add extra lines to stderr): isUnsafeChar exempts 0x09 and 0x0a (packages/cli/src/output.ts), so a server error or title with a newline prints as several lines and could fake a line like 'signed in as ...'; single-line record output could also escape LF.
+
+### From T7.1's checker (168b07b, 2026-10-07)
+
+- T7.1 checker P2 (logout skips the https/loopback check and sends the stored session token to the MOSS_MULTI_SERVER override; Codex P1, downgraded): program.ts logout calls resolveConfig and createApi directly instead of server(), and clears credentials first, so an off-loopback http:// override receives the session in cleartext while the session stays valid.
+- T7.1 checker P2 (one owner per tracked file compares path strings, so a case variant on APFS keeps two owners; Codex P1, downgraded): routed to T7.2 as a required red-first test.
+- T7.1 checker P2 (share <email> never prints the invitation link): under ruling 19 an email share grants nothing until redeemed, but the CLI prints 'shared with ...' and never fetches or prints the link (program.ts, api.ts).
+- T7.1 checker P2 (the A§17 `comments` and `suggestions` read commands are missing): routed to T7.3 as a required red-first test.
+- T7.1 checker P2 (`add` keeps a leading `# Title` line, so the title shows twice): routed to T7.4 as a required red-first test.
 
 ### From T6.S4's checker (2b48bb4, 2026-10-08)
 
@@ -799,6 +963,10 @@ Local browser verification remains assigned to the independent checker under the
 - T4.Q (m4 on the m3 fixes) checker P2, owned by m3 (from T3.B10): a duplicate refused after source access is lost returns a different 404 body: `apps/web/src/api/docs.ts:195-198` answers the late refusal (source revoked or trashed while the snapshot is pending) with refuse(404, 'not-found', <message>) while admission uses `notFound()` (respond.ts:8, no message), so the two denials are not byte-identical as A§8 requires (no unauthorized copy).
 - T5.Q (m5 on the m4 fixes) checker P2: no single regression test covers an unmounted Suggest-mode preedit — j01 covers unmounting a preedit in Edit mode and j16 covers compositionend in Suggest mode, but nothing exercises the combined unmount flush in register-input.ts (the red on 43da2b70 was a typecheck failure, not behavioral) → add a journey that unmounts an active Suggest-mode preedit while a peer edits, proven red against a draft-client apply.
 - T6.Q (No deterministic selftests for the setup auth resend) checker P2: setupPost's resend and mintPrincipal's 'already exists' recovery in e2e/lib/principals.ts have no focused selftests; add cases that an ordinary 503 stays a failure, a non-503 carrying the proxy text stays a failure, a second failed attempt stays a failure, and recovery returns the real user id.
+- T7.Q (Two dismissed CI failures have no baseline failure on record) checker P2: of the four failures dismissed in the full-lane reruns, note-store.linear (run 38535601745) and suggest-ingest T5.2 (run 38512418550) failed the same assertions on earlier base runs, but two have no baseline on record: the WebKit j15-comments-drafts uncaught 'ResizeObserver loop' on attempt 1 (comment code and journey identical to m6 1b681ff1; head and m6 both passed 8 of 8 repeats in runs 38717509595 and 38717513000) and suggest.test.ts:791 T5.4 'one fixed frame size in every scenario' (2 sizes instead of 1).
+- T7.B3 checker P2 (pull pins its workspace root only after resolveDocId's request): in pull, resolveDocId runs before findRoot/pinRoot (packages/cli/src/program.ts:340-343), so a root swapped for a link during a title-prefix GET /api/docs is pinned as trusted and pull writes the note and state there → select and pin the root before resolveDocId, with a regression test that swaps the root during a title-prefix pull.
+- T7.B3 checker P2 (State-file reads and lock retries skip the pinned-root and link re-checks): readBase uses only noLinks, not realInside or the pin, so a base-missing retry can send an outside .moss-multi/<id>/base.md (program.ts:393-395); writeInside calls mkdirSync before its first realInside check, so a swap during add or create can leave an empty outside directory; lockWorkspace re-pins on each retry but runs noLinks once, so a .moss-multi swapped for a link while waiting can get an outside .lock (workspace.ts:436-468).
+- T7.B3 checker P2 (Device-login server fields are not field-escaped): deviceLogin builds its CliError from the server's error_description without a status (config.ts:176-192) and the top-level handler applies fieldSafe only when the error has a status (program.ts:593-595), so an LF in that text starts a new output line; user_code is printed only through ttySafe.
 - T3.B11 (Asset quota, streaming reads and near-cap probe) re-check P2: SP9 probe records no Worker memory telemetry — j11-media's near-cap probe checks bytes, SHA-256, exact size and the 206 tail read but not Worker memory or 128 MB isolate headroom on deployed staging (same gap as above, already a required test under T8.2).
 - T3.B17 (Read-only controls and folder permission UI) checker P2: invariant 9's tab-navigation exemption also applies outside read-only bodies — the detector exempts any [role=tablist] > div[role=tab] under any non-live title or body binding without checking data-body-binding=readonly, so a focusable tab in an unbound or terminal body or a closed title passes; limit the exemption to a read-only body binding and add negative selftest fixtures for unbound and terminal bodies (test gate only; no product defect).
 - T4.Q second pass (m4 on the later m3 fixes) checker P2, owned by m3 (from T3.B17): invariant 9's tab exemption in e2e/lib/detectors.js editableUnbound is not limited to readonly body bindings, so a focused tab in an unbound or terminal body goes unreported (same item as the T3.B17 line above; not introduced by the merge).

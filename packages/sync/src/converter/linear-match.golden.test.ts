@@ -2,6 +2,7 @@
 // paragraph of the converter corpus and over random strings of the tokens the regexes care about.
 // scripts/measure-converter.mjs holds the converter to linear cost on unclosed openers in workerd; the typing
 // shortcuts and the table divider check, which it does not reach, are held to it here.
+/* eslint-disable regexp/no-super-linear-backtracking -- the old patterns are the golden references */
 import { LINEAR_REGEXP_KEYS, linearRegExp } from '@moss-desktop/renderer/editor/markdown/linear-match';
 import { isTableDividerRow } from '@moss-desktop/renderer/editor/markdown/transformers';
 import { describe, expect, it } from 'vitest';

@@ -19,6 +19,8 @@ export const TRASH_COPY = {
   unsyncedTitle: 'Some edits haven’t synced',
   unsyncedBody: 'Moving to Trash now will discard edits in this window that haven’t reached the server. Cancel to keep editing and wait for the connection to return.',
   unsyncedConfirm: 'Move to Trash anyway',
+  /** The CLI's `rm` (A§17). */
+  cliTrashed: `moved to Trash — you can restore it ${restorable}`,
 } as const;
 
 /** What every trash request answers besides its ids: the CLI's JSON action and the API's DELETE bodies. */

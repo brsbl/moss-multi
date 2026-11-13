@@ -47,9 +47,16 @@ function workspacePackage(repo, spec) {
   return typeof target === 'string' ? withExtension(join(dir, target)) : null;
 }
 
+/** `spec.replace(/\?.*$/, '')` in linear time: from the first `?` on the last line. */
+export function withoutQuery(spec) {
+  const line = Math.max(...['\n', '\r', '\u2028', '\u2029'].map((brk) => spec.lastIndexOf(brk))) + 1;
+  const query = spec.indexOf('?', line);
+  return query === -1 ? spec : spec.slice(0, query);
+}
+
 // Moss's aliases (ARCHITECTURE §2): @moss/shared, @/ and @moss-desktop/.
 export function resolveSpecifier(repo, fromFile, spec) {
-  const clean = spec.replace(/\?.*$/, '');
+  const clean = withoutQuery(spec);
   if (clean.startsWith('./') || clean.startsWith('../')) return { file: withExtension(resolve(dirname(fromFile), clean)) };
   if (clean === '@moss/shared') return { file: withExtension(join(repo, SHARED, 'index')) };
   if (clean.startsWith('@moss/shared/')) return { file: withExtension(join(repo, SHARED, clean.slice('@moss/shared/'.length))) };

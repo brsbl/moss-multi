@@ -20,7 +20,7 @@ import { createDb, type Db } from '../db/client.ts';
 import { assets, assetVersions, docMedia } from '../db/schema.ts';
 import type { AppEnv } from '../env.ts';
 import { json } from '../worker/route.ts';
-import { editsLiveDoc, MAX_FOLDER_DEPTH, readsLiveDoc, resolveDocAccess, writeActor, writeActorArgs, type WriteActor } from './access.ts';
+import { actingUserId, editsLiveDoc, MAX_FOLDER_DEPTH, readsLiveDoc, resolveDocAccess, writeActor, writeActorArgs, type WriteActor } from './access.ts';
 import { bytesMatchType } from './media-sniff.ts';
 import { readCapped, remoteFetch, REMOTE_TIMEOUT_MS, takeFetchToken } from './remote.ts';
 import { NO_STORE, notFound, readJsonObject, refuse } from './respond.ts';
@@ -221,7 +221,8 @@ const OVER_QUOTA = /NOT NULL constraint failed: assets\.folder_id/;
  */
 export async function admitMedia(request: Request, env: AdmitEnv, principal: Principal, docId: string, folderId: string,
   incoming: number): Promise<Response | null> {
-  const names = [principal.id];
+  // The acting person's window: an agent spends its owner's, so keys add no rate.
+  const names = [actingUserId(principal) ?? principal.id];
   const token = shareTokenOf(request);
   // The link counts whenever it is what makes the caller an editor, a weaker grant of their own notwithstanding.
   if (token && !roleAtLeast((await resolveDocAccess(createDb(env.DB), principal, docId))?.role, 'editor')) {

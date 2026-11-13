@@ -1,0 +1,19 @@
+{
+  // The moss-multi CLI (A§17): Node only, bundled by esbuild into dist/moss-multi.mjs.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
