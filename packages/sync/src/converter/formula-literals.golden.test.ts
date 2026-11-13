@@ -72,7 +72,7 @@ describe('replaceNumericLiterals matches moss\'s numeric-literal regex exactly',
   });
 });
 
-it('the harness\'s doubling legs (4 KB to 2 MB, the converter's scale note) run formulas on both sides of lineChars', () => {
+it('the harness\'s doubling legs (4 KB to 2 MB, the converter scale note) run formulas on both sides of lineChars', () => {
   expect(LINEAR_IMPORT_LIMITS.lineChars).toBeGreaterThan(4096);
   expect(LINEAR_IMPORT_LIMITS.lineChars).toBeLessThan(MARKDOWN_MAX_BYTES);
 });

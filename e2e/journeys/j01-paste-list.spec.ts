@@ -25,13 +25,13 @@ function nestedList(count: number): string {
   return lines.join('\n');
 }
 
-test('j01-paste-list: a 12,000-item list pasted between two paragraphs lands whole, in frames under the cap, without holding the tab, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
+test('j01-paste-list: an 11,000-item list pasted between two paragraphs lands whole, in frames under the cap, without holding the tab, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(900_000);
-  const markdown = flatList(12_000);
+  const markdown = flatList(11_000);
   const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
     references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${markdown}Z\n\nAfter.` },
   });
-  expect(want.whole.split('\n').filter((line) => line.startsWith('- item ')).length, 'the reference export holds every item').toBe(12_000);
+  expect(want.whole.split('\n').filter((line) => line.startsWith('- item ')).length, 'the reference export holds every item').toBe(11_000);
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');

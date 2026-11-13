@@ -547,7 +547,7 @@ it('a doc-cap refusal says which limit it met: the text limit, the structure lim
   serverEvent(socket, { t: 'write-refused', reason: 'doc-cap' });
   expect(refusalMessage()).toBe('This note is at its size limit, so your last change was not saved.');
 });
-it('a paste is refused whole before it applies when it would take the note past 1,020,000 characters or 180,000 structs, counting the payloads the tab holds; one just under lands (T3.B31c)', async () => {
+it('a paste is refused whole before it applies when it would take the note past 1,020,000 characters or 170,000 structs, counting the payloads the tab holds; one just under lands (T3.B31c)', async () => {
   const { pasteFits } = await import('../large-paste.ts');
   const socket = latest(); socket.open(); session.provider.synced = true;
   // 900,000 characters in the body and 100,000 in a code block the tree names.
@@ -559,6 +559,6 @@ it('a paste is refused whole before it applies when it would take the note past 
   const structs = [...session.doc.store.clients.values(), ...[...session.payloads.docs.values()].flatMap((doc) => [...doc.store.clients.values()])]
     .reduce((sum, list) => sum + list.length, 0);
   // A paste's own batches may split up to 256 structs its replay does not.
-  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 180_000 - structs - 256 }), 'up to the structure cap fits').toBe(true);
-  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 180_000 - structs - 255 }), 'past it is refused').toBe(false);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 170_000 - structs - 256 }), 'up to the structure cap fits').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 170_000 - structs - 255 }), 'past it is refused').toBe(false);
 });

@@ -752,8 +752,13 @@ describe('RPC', () => {
 });
 
 describe('answers', () => {
+  // These notes pass the text limit (A§5.1); they test the answers, not admission.
+  class Roomy extends DocDO {
+    static override limits = { ...DocDO.limits, textCharCap: Infinity };
+  }
+
   it('answers a step 1 far behind in frames under 256 KiB of whole blocks, updates first and the step 2 last', async () => {
-    const opened = await start(openDoc());
+    const opened = await start(openDoc(new Backing(), Roomy as never));
     const writer = await connect(opened, { role: 'editor' });
     const lexical = bindLexical(writer.doc);
     await writer.hello();
@@ -780,7 +785,7 @@ describe('answers', () => {
   });
 
   it('answers a multi-author doc in dependency order: no piece leaves a peer pending where a higher client id builds on a lower one (B212)', async () => {
-    const opened = await start(openDoc());
+    const opened = await start(openDoc(new Backing(), Roomy as never));
     const lowDoc = new Y.Doc();
     lowDoc.clientID = 7;
     const low = await connect(opened, { role: 'editor' }, lowDoc);

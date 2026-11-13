@@ -14,8 +14,8 @@ import { grantDoc } from '../lib/grants.ts';
 import { numberedLines as lines } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
-// Just under the structure guard, which holds a note to about 36,000 one-line paragraphs (A§5.1).
-const LINES = 35_000;
+// Under the structure guard, which holds a note to about 34,000 one-line paragraphs (A§5.1).
+const LINES = 33_000;
 const CONTROL_LINES = 400;
 const TYPED = 'abcdefghijklmnopqrst';
 /**

@@ -54,11 +54,11 @@ function edit(doc: Y.Doc, next: () => number): void {
 }
 
 describe('growthOf and TextCount', () => {
-  it.each([1, 2, 3, 4, 5])('predict exactly the text an update adds and never fewer structs than land, over concurrent edits (seed %i)', (seed) => {
+  it.each([1, 2, 3, 4, 5, 6])('predict the text an update adds (exactly from one writer, never under from several) and never fewer structs than land (seed %i)', (seed) => {
     const next = random(seed);
     const server = new Y.Doc();
     const counted = new TextCount(server);
-    const writers = [new Y.Doc(), new Y.Doc(), new Y.Doc()];
+    const writers = Array.from({ length: seed % 2 ? 3 : 1 }, () => new Y.Doc());
     for (let round = 0; round < 300; round += 1) {
       const writer = writers[Math.floor(next() * writers.length)];
       // A writer sometimes works from a stale copy, so its edits interleave with the others'.
@@ -72,7 +72,10 @@ describe('growthOf and TextCount', () => {
       const structs = structCount(server);
       Y.applyUpdate(server, update);
       expect(server.store.pendingStructs, 'no update waits').toBeNull();
-      expect(counted.chars - chars, `round ${round}: the text it adds`).toBe(growth.chars);
+      // Exact without concurrency; a stale writer's edit inside a block another deleted adds nothing it predicts, and its
+      // delete of a block takes text it never saw: the prediction is then above what lands, never below.
+      if (writers.length === 1) expect(counted.chars - chars, `round ${round}: the text it adds`).toBe(growth.chars);
+      else expect(counted.chars - chars, `round ${round}: the text it adds`).toBeLessThanOrEqual(growth.chars);
       expect(structCount(server) - structs, `round ${round}: the structs it adds`).toBeLessThanOrEqual(growth.structs);
       expect(counted.chars, 'the kept count is the walked one').toBe(countChars(server));
     }

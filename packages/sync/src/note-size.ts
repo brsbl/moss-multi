@@ -15,8 +15,9 @@ export interface PayloadSize {
 
 /** A payload doc's text characters (its `payload` text; a chart's or sketch's keys hold none) and structs. */
 export function payloadSize(doc: Y.Doc): PayloadSize {
-  const text = doc.share.get('payload');
-  return { chars: text instanceof Y.Text ? text.length : 0, structs: structCount(doc) };
+  // A type a remote update made is untyped until read as one; a chart's or sketch's doc has no `payload`.
+  const chars = doc.share.has('payload') ? doc.getText('payload').length : 0;
+  return { chars, structs: structCount(doc) };
 }
 
 /** Which top-level types' text counts: the note's body (`root`), or everything (a payload doc). */
@@ -230,7 +231,9 @@ export function growthOf(doc: Y.Doc, update: Uint8Array, scope: Scope = 'body'):
     const known = scoped.get(struct);
     if (known !== undefined) return known;
     // A chain too deep to follow counts, so the estimate never falls short.
-    if (depth > 10_000 || !(struct instanceof Y.Item)) return true;
+    if (scope === 'all' || depth > 1_000 || !(struct instanceof Y.Item)) return true;
+    // Counted while it resolves, so a crafted cycle of origins ends.
+    scoped.set(struct, true);
     let result: boolean;
     const parent = struct.parent as unknown;
     if (typeof parent === 'string') result = scope === 'all' || parent === 'root';

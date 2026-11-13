@@ -44,6 +44,8 @@ async function expectLinear<T>(prepare: (markdown: string) => Promise<T>, run: (
 
 const fed: IndexEntry[] = [];
 class FedDoc extends DocDO {
+  // The doubling legs pass the note's text limit; they time the converter, not admission.
+  static override limits = { ...DocDO.limits, textCharCap: Infinity };
   static override searchFeed = (): SearchFeed => ({ index: async (entry) => { fed.push(entry); return { linksChanged: false }; } });
 }
 

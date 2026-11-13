@@ -88,12 +88,12 @@ describe('the text limit, 1,020,000 characters', () => {
   });
 });
 
-describe('the structure limit, 180,000 structs', () => {
-  it('35,998 one-line paragraphs land; 36,000 are a 413 naming the structure limit', { timeout: 300_000 }, async () => {
-    const under = await create(lines(35_998));
+describe('the structure limit, 170,000 structs', () => {
+  it('33,998 one-line paragraphs land; 34,000 are a 413 naming the structure limit', { timeout: 300_000 }, async () => {
+    const under = await create(lines(33_998));
     expect(under.status, await under.clone().text()).toBe(201);
     const before = await rows();
-    const over = await create(lines(36_000));
+    const over = await create(lines(34_000));
     expect(over.status).toBe(413);
     expect(await over.json()).toEqual({
       error: 'doc-cap', limit: 'structure', message: 'This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.',

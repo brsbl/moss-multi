@@ -11,8 +11,8 @@ import { expect, test, ui } from '../lib/test.ts';
 
 test('j01-paste-race: a peer’s edit during a large paste’s check moves the paste with the caret, and its redo lands where it was after a block is added above @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(600_000);
-  // 12,000 paragraphs: the paste, its undo and its redo fit the structure guard (A§5.1).
-  const lines = Array.from({ length: 12_000 }, (_, i) => `Race line ${i}.`);
+  // 11,000 paragraphs: the paste, its undo and its redo fit the structure guard (A§5.1).
+  const lines = Array.from({ length: 11_000 }, (_, i) => `Race line ${i}.`);
   const { ada, ben, docId } = await setup(actors, stack, 'Top.\n\nHello world here.\n\nTail.', { severablePeer: true });
   const pasted = lines.join('\n\n');
   const want = {
