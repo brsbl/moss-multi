@@ -35,7 +35,7 @@ import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { readMeta, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
 import { ReviewBand, ReviewButton, SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
 import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
-import { HistoryButton, HistoryView, useHistoryOpen } from '../history/HistoryView.tsx';
+import { HistoryButton, HistoryView, RestoreNoticeBand, useHistoryOpen } from '../history/HistoryView.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
@@ -693,7 +693,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} /></>,
+    noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
     bottomBand: docId && !historyOpen ? <><RoleBand docId={docId} /><ReviewBand docId={docId} /></> : null,
     collaboration,
     bodyLive: live,

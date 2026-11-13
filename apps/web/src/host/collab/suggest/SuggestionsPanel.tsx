@@ -3,6 +3,7 @@
 // suggestion, an accept, a reject and a withdraw show in every window as the doc syncs; each open card's hunks come
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { Button } from '@moss/shared/components/ui/button';
+import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
@@ -12,7 +13,7 @@ import {
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
 import { Check, PencilLine, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
@@ -53,6 +54,28 @@ export function openSuggestion(docId: string, record: string | null): void {
 
 function closePanel(docId: string): void {
   if (openPanels.delete(docId)) panelChanged();
+}
+
+// A Reject or Withdraw waiting for its confirmation. It is kept outside the list, so closing the list cannot drop it.
+interface PendingClose {
+  readonly docId: string;
+  readonly action: 'reject' | 'withdraw';
+  /** The author's name, or null when the person closing it wrote it. */
+  readonly author: string | null;
+  run(): void;
+}
+let pendingClose: PendingClose | null = null;
+function askToClose(next: PendingClose | null): void {
+  pendingClose = next;
+  panelChanged();
+}
+
+/** An event the open confirmation caused: the list stays open under it. */
+function fromConfirmation(docId: string, event: Event): boolean {
+  if (pendingClose?.docId === docId) return true;
+  const within = (node: EventTarget | null | undefined) =>
+    node instanceof Element && !!node.closest('[data-remote-web-surface-blocking-dialog], [data-moss-modal-overlay]');
+  return within(event.target) || within((event as FocusEvent).relatedTarget);
 }
 
 const subscribePanels = (listener: () => void) => {
@@ -161,6 +184,9 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
     }
   };
 
+  // Reject and Withdraw cannot be undone, so they ask first; Accept needs every change shown instead.
+  const ask = (action: 'reject' | 'withdraw') => askToClose({ docId, action, author: own ? null : meta.authorName, run: () => void act(action) });
+
   return (
     <div
       {...{ [SUGGESTION_CARD_ATTR]: '', [SUGGESTION_ID_ATTR]: meta.id, [SUGGESTION_STATUS_ATTR]: meta.status }}
@@ -234,14 +260,14 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
                 <Check aria-hidden className="h-3 w-3" />
                 Accept
               </Button>
-              <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => void act('reject')}>
+              <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('reject')}>
                 <X aria-hidden className="h-3 w-3" />
                 Reject
               </Button>
             </>
           ) : null}
           {own && !reviewer ? (
-            <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => void act('withdraw')}>
+            <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('withdraw')}>
               <X aria-hidden className="h-3 w-3" />
               Withdraw
             </Button>
@@ -284,6 +310,33 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
         <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
       ))}
     </div>
+  );
+}
+
+/** Moss's danger confirmation for a pending Reject or Withdraw on `docId`, focused on Cancel. */
+function CloseConfirmation({ docId }: { docId: string }): ReactNode {
+  const pending = pendingClose?.docId === docId ? pendingClose : null;
+  // The copy stays while the dialog animates out.
+  const shown = useRef(pending);
+  if (pending) shown.current = pending;
+  const reject = shown.current?.action !== 'withdraw';
+  const author = shown.current?.author ?? null;
+  return (
+    <ConfirmationDialog
+      open={pending !== null}
+      onOpenChange={(next) => {
+        if (!next && pendingClose === pending) askToClose(null);
+      }}
+      title={reject ? 'Reject suggestion?' : 'Withdraw suggestion?'}
+      description={reject
+        ? `${author === null ? 'Your' : `${author}'s`} proposed change will be discarded for everyone. This action cannot be undone.`
+        : 'Your proposed change will be discarded. This action cannot be undone.'}
+      confirmLabel={reject ? 'Reject' : 'Withdraw'}
+      cancelLabel="Cancel"
+      cancelAutoFocus
+      variant="danger"
+      onConfirm={() => pending?.run()}
+    />
   );
 }
 
@@ -338,6 +391,9 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
             collisionPadding={16}
             className="z-50 flex max-h-comment-list-popover w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-floating shadow-surface outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
             onOpenAutoFocus={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
+            onFocusOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
+            onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             {...{ [SUGGESTIONS_PANEL_ATTR]: '' }}
           >
             <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
@@ -365,6 +421,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
+      <CloseConfirmation docId={docId} />
     </TooltipProvider>
   );
 }

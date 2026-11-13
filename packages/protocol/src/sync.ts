@@ -95,6 +95,11 @@ export type ServerEvent =
    */
   | { t: 'usage'; pb: number }
   | { t: 'doc-deleted' }
+  /**
+   * A restore landed (T9.4): every socket of the note hears it after the restore's update, named by who restored and
+   * the restore point that holds the note as it was. Undo stacks of the note clear on it; older clients ignore it.
+   */
+  | { t: 'restored'; by: string; point: string | null }
   | SuggestReply;
 
 /** The same coverage for one payload doc (A§10.10), keyed by its block id in the ack's `p`. */

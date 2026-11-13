@@ -4,7 +4,7 @@
 import { UNDO_COMMAND, REDO_COMMAND, type LexicalEditor } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
-  ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, isDeleted, type AbstractType, type Transaction,
+  ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, isDeleted, type AbstractType, type Doc, type Transaction,
 } from 'yjs';
 import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payload-docs';
 
@@ -15,10 +15,32 @@ export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
 export const copyBookkeeping = { work: 0 };
 type StackItem = UndoManager['undoStack'][number];
 
+/**
+ * The undo stacks bound to each note's Y.Doc: the body's (its block fields with it) and the title's. A restore clears
+ * them (T9.4): their steps describe items the restore replaced, so replaying one would write text in no version.
+ */
+const undoStacks = new WeakMap<Doc, Set<() => void>>();
+
+/** Registers a stack's clear for the doc's restores; returns the unregistration. */
+export function registerUndoClear(doc: Doc, clear: () => void): () => void {
+  const set = undoStacks.get(doc) ?? new Set<() => void>();
+  undoStacks.set(doc, set);
+  set.add(clear);
+  return () => { set.delete(clear); };
+}
+
+/** Empties every undo and redo stack bound to the doc. */
+export function clearUndoOf(doc: Doc): void {
+  for (const clear of [...(undoStacks.get(doc) ?? [])]) clear();
+}
+
 /** The plugin drives it as it would the root UndoManager: undo, redo, clear, the stacks' lengths and their events. */
 export function createBindingUndoManager(binding: Binding): UndoManager {
   // A setter and an attribute written in one Lexical update undo together.
   const stack = new BodyUndo(createRootUndoManager(binding), binding.editor ? lexicalAction(binding.editor) : undefined);
+  const unregister = registerUndoClear(binding.doc, () => stack.clear());
+  const destroy = stack.destroy.bind(stack);
+  stack.destroy = () => { unregister(); destroy(); };
   const payloads = payloadDocsFor(binding.doc);
   for (const doc of payloads.docs.values()) stack.trackPayload(doc, REGISTER_LOCAL_ORIGIN, UNDO_CAPTURE_TIMEOUT_MS);
   payloads.onHold((_id, doc) => { stack.trackPayload(doc, REGISTER_LOCAL_ORIGIN, UNDO_CAPTURE_TIMEOUT_MS); });

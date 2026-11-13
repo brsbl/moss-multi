@@ -170,6 +170,8 @@ import { useMossMultiPane } from '@moss-multi/host/collab/pane';
 // moss-multi seam: trash (T2.3): only the owner trashes or restores; trash copy comes from the one module
 import { TRASH_COPY } from '@moss-multi/host/retention';
 import { canTrashNote } from '@moss-multi/host/trash';
+// moss-multi seam: action-feedback (T9.4): host actions confirm themselves in this pane's feedback pill
+import { subscribeActionFeedback } from '@moss-multi/host/collab/feedback';
 
 const TRASH_RETENTION_DAYS = 30;
 const MS_IN_DAY = 24 * 60 * 60 * 1000;
@@ -1457,6 +1459,8 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       actionFeedbackTimeoutRef.current = null;
     }, duration);
   }, []);
+  // moss-multi seam: action-feedback (T9.4)
+  useEffect(() => (note?.id ? subscribeActionFeedback(note.id, showActionFeedback) : undefined), [note?.id, showActionFeedback]);
 
   // Show a copy toast when a note/anchor link is copied from inside the editor
   // (e.g. the collapsible-heading context menu). The event bubbles from the
@@ -5144,6 +5148,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
         ) : null}
         {actionFeedback ? (
           <div
+            data-action-feedback="" // moss-multi seam: action-feedback (T9.4, the floating detector's allowlist)
             className={cn(
               'absolute left-1/2 -translate-x-1/2 z-50',
               actionFeedback.position === 'bottom' ? 'bottom-8' : 'top-14',

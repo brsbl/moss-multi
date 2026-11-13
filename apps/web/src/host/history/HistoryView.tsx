@@ -11,7 +11,7 @@ import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dial
 import { Input } from '@moss/shared/components/ui/input';
 import { noteEntityAtom } from '@moss/shared/state/note-atoms';
 import {
-  HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, VERSION_BADGE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
+  HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, RESTORE_NOTICE_ATTR, VERSION_BADGE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
   type HistoryViewState,
 } from '@moss-multi/protocol/dom-contract';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
@@ -22,6 +22,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
 import { heldDocOf, waitDocsAcked } from '../collab/doc-session.ts';
+import { showActionFeedback } from '../collab/feedback.ts';
+import { beginOwnRestore, dismissRestoreNotice, useRestoreNotice } from '../collab/restore-notice.ts';
+import { clearUndoOf } from '../collab/undo.ts';
 import { displayTitle } from '../collab/title-binding.ts';
 import { versionPreviewNoteId } from '../media/web-asset-url.ts';
 import { timeAgo } from '../surfaces/NotificationsBell.tsx';
@@ -74,6 +77,20 @@ export function useHistoryOpen(docId: string | null): boolean {
   return docId !== null && open.has(docId);
 }
 
+// The version History selects when it next shows the note: a restore notice opens it on the restore point.
+const wanted = new Map<string, string>();
+
+export function openHistoryAt(docId: string, versionId: string): void {
+  wanted.set(docId, versionId);
+  if (open.has(docId)) changed();
+  else setHistoryOpen(docId, true);
+}
+
+function useWantedVersion(docId: string): string | null {
+  useSyncExternalStore(subscribe, () => version, () => 0);
+  return wanted.get(docId) ?? null;
+}
+
 async function call(url: string, body?: unknown): Promise<{ ok: boolean; status: number; json: Record<string, unknown>; text: string }> {
   // A role that comes from a share link travels with every call, as the comment API's does.
   const share = new URLSearchParams(window.location.search).get('share');
@@ -96,6 +113,43 @@ const docUrl = (docId: string) => `/api/docs/${encodeURIComponent(docId)}`;
 /** The server's sentence for a refusal, else ours. */
 const refusal = (json: Record<string, unknown>, fallback: string): string =>
   typeof json.message === 'string' ? json.message : json.error === 'rate-limited' ? 'Too many requests. Try again in a minute.' : fallback;
+
+type Restored = { ok: true; point: string | null } | { ok: false; message: string };
+
+/**
+ * Restores `versionId` over `base`. Once it lands, this tab's undo stacks for the note are cleared: their steps
+ * describe what the restore replaced. The DocDO's event for it is this tab's own, so it names no one here.
+ */
+async function postRestore(docId: string, versionId: string, base: RestoreBase | undefined): Promise<Restored> {
+  const finish = beginOwnRestore(docId);
+  let point: string | null | undefined;
+  try {
+    const result = await call(`${docUrl(docId)}/versions/${encodeURIComponent(versionId)}/restore`, { base });
+    if (!result.ok) return { ok: false, message: refusal(result.json, 'The version could not be restored.') };
+    point = typeof result.json.restorePoint === 'string' ? result.json.restorePoint : null;
+    const held = heldDocOf(docId);
+    if (held) clearUndoOf(held.doc);
+    return { ok: true, point };
+  } catch {
+    return { ok: false, message: 'The server could not be reached. Try again.' };
+  } finally {
+    finish(point);
+  }
+}
+
+/** Moss's feedback pill confirms the restore; its Undo restores the restore point over the note as it is at the click. */
+function confirmRestore(docId: string, point: string | null): void {
+  let undone = false;
+  const undo = async () => {
+    if (undone) return;
+    undone = true;
+    const held = heldDocOf(docId);
+    const base = held ? { ...captureRestoreBase(held.doc, held.payloads), age: 0 } : undefined;
+    const result = point ? await postRestore(docId, point, base) : { ok: false as const, message: 'The version could not be restored.' };
+    if (!result.ok) showActionFeedback(docId, { type: 'error', message: result.message });
+  };
+  showActionFeedback(docId, { type: 'success', message: 'Restored version', ...(point ? { action: { label: 'Undo', onClick: () => void undo() } } : {}) });
+}
 
 /**
  * The note's body as markdown, without its frontmatter: what the read-only editor renders. A leading section is
@@ -147,6 +201,31 @@ export function HistoryButton({ docId }: { docId: string }): ReactNode {
     >
       <History aria-hidden className="h-3.5 w-3.5" />
     </button>
+  );
+}
+
+/**
+ * Someone else's restore of the open note, in the pane's notice band (built as SuggestUnsavedBand is) until dismissed.
+ * Whoever can open History can open it on the restore point, which holds the note as it was before.
+ */
+export function RestoreNoticeBand({ docId }: { docId: string }): ReactNode {
+  const notice = useRestoreNotice(docId);
+  const role = useDocRole(docId);
+  const auth = useAuthState();
+  if (!notice) return null;
+  const canOpen = role !== null && auth.status === 'signed-in' && notice.point !== null;
+  return (
+    <div {...{ [RESTORE_NOTICE_ATTR]: '' }} role="status" className="flex items-center gap-3 border-b border-border-subtle bg-surface-raised-card px-4 py-2 text-xs text-ink-default">
+      <span className="min-w-0 flex-1">{notice.by} restored an earlier version of this note.</span>
+      {canOpen ? (
+        <button type="button" className="underline" onClick={() => openHistoryAt(docId, notice.point!)}>
+          See the note before the restore
+        </button>
+      ) : null}
+      <button type="button" className="text-ink-muted underline" onClick={() => dismissRestoreNotice(docId)}>
+        Dismiss
+      </button>
+    </div>
   );
 }
 
@@ -292,6 +371,16 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
     };
   }, [docId, listRound]);
 
+  // Opened on a given version (a restore notice's restore point): it is selected once listed.
+  const want = useWantedVersion(docId);
+  useEffect(() => {
+    if (!want) return;
+    setSelectedId(want);
+    setRestoreError(null);
+    if (list.state === 'ready' && !list.value.some((v) => v.id === want)) setListRound((r) => r + 1);
+    wanted.delete(docId);
+  }, [docId, want]);
+
   const versions = list.state === 'ready' ? list.value : [];
   const selected = versions.find((v) => v.id === selectedId) ?? versions[0] ?? null;
   const selectedText = selected ? texts[selected.id] : undefined;
@@ -364,20 +453,16 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
     if (!selected) return;
     setRestoring(true);
     setRestoreError(null);
-    try {
-      const seen = restoreBase.current;
-      const base = seen ? { ...seen.base, age: Math.max(0, Math.round(performance.now() - seen.at)) } : undefined;
-      const result = await call(`${docUrl(docId)}/versions/${encodeURIComponent(selected.id)}/restore`, { base });
-      if (!result.ok) {
-        setRestoreError(refusal(result.json, 'The version could not be restored.'));
-        return;
-      }
-      setHistoryOpen(docId, false);
-    } catch {
-      setRestoreError('The server could not be reached. Try again.');
-    } finally {
-      setRestoring(false);
+    const seen = restoreBase.current;
+    const base = seen ? { ...seen.base, age: Math.max(0, Math.round(performance.now() - seen.at)) } : undefined;
+    const result = await postRestore(docId, selected.id, base);
+    setRestoring(false);
+    if (!result.ok) {
+      setRestoreError(result.message);
+      return;
     }
+    setHistoryOpen(docId, false);
+    confirmRestore(docId, result.point);
   };
 
   const viewState: HistoryViewState = list.state === 'loading' ? 'loading' : list.state === 'error' ? 'error' : versions.length === 0 ? 'empty' : 'ready';

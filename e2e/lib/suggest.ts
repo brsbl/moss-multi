@@ -96,6 +96,20 @@ export async function closePanel(actor: Actor): Promise<void> {
   await expect(panel(actor)).toBeHidden();
 }
 
+/** The confirmation Reject or Withdraw opens before anything is sent. */
+export const confirmation = (actor: Actor, action: 'Reject' | 'Withdraw'): Locator =>
+  actor.page.getByRole('alertdialog', { name: `${action} suggestion?` });
+
+/** Presses `action` on `card` and confirms it in the dialog it opens. */
+export async function confirmClose(actor: Actor, card: Locator, action: 'Reject' | 'Withdraw'): Promise<void> {
+  await card.getByRole('button', { name: action, exact: true }).click();
+  const dialog = confirmation(actor, action);
+  await expect(dialog, `${action} asks first`).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();
+  await dialog.getByRole('button', { name: action, exact: true }).click();
+  await expect(dialog).toBeHidden();
+}
+
 /** The open card's inserted and deleted row texts, once its preview has loaded. */
 export async function cardRows(actor: Actor): Promise<{ card: Locator; inserted: string[]; deleted: string[] }> {
   const card = (await openPanel(actor)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);

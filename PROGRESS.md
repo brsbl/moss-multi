@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (234 of 285 planned tasks verified)
+**Overall: 83% done** (236 of 285 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 7 / 25 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 9 / 25 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -257,6 +257,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T9.6 verified: the vault's owner can restore a note from a trashed vault, from the row menu or More actions; the vault comes back to the switcher with the note at its top, and the note never moves to another vault.
 - 2026-11-13 — T9.15 verified: "+ Note" stays available after the active folder is deleted or trashed, creating the note at the vault's top level, and the active folder follows a rename to its new path.
 - 2026-11-13 — T9.16 verified: the login card says when a link is an invite, offers the way back to a share link, and names a malformed email at sign-up.
+- 2026-11-13 — T9.4 verified: restoring a version names who restored it in every open window of the note, with an Undo pill for the restorer, and Cmd+Z no longer undoes past the restore.
+- 2026-11-13 — T9.5 verified: Reject and Withdraw ask first in Moss's danger confirmation, focused on Cancel, so a stray second click on a marker can no longer discard someone's suggestion; Accept stays one click.
 
 ## T1.1s identity audit
 
@@ -296,6 +298,18 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.5's checker (df95a68, 2026-11-13)
+
+- T9.5 (Reject and Withdraw ask first) checker P2: a pending Reject/Withdraw confirmation outlives its record; pendingClose holds only docId and the card's act, so if the suggestion closes another way the dialog still offers the action, the server refuses it as not open, and the refusal goes to the closed card's error so nothing shows (no data lost). Key the pending action by record id and drop it once the record is no longer open.
+- T9.5 (Reject and Withdraw ask first) checker P2: j16-review's timing leg checks the confirmation and Cancel focus only when Reject is under the pointer, so a layout change that moves Reject off the marker lets the 250 ms and 700 ms cases pass untested; assert Reject is the hit target for each gap.
+- T9.5 (Reject and Withdraw ask first) checker P2: no 390x844 shots, though a signed-in editor-link holder can reach Reject; evidence gap only, no mobile defect known.
+
+### From T9.4's checker (2e934e9, 2026-11-13)
+
+- T9.4 (restore announced to every window) checker P2: another person's "restored" notice is held behind this tab's own in-flight restore or pill Undo for the same note, so a slow or stalled answer delays the named band with no limit.
+- T9.4 checker P2: the "Restored version / Undo" pill can follow the pane to another note within its 2.4 s, since the feedback seam only re-subscribes on note.id change; its Undo still targets the first note and, if that note is closed, fails silently.
+- T9.4 checker P2: DocDO's restoreVersion sends the "restored" event through #all(), reaching sockets whose access check has not passed (only the restorer's display name and an opaque restore-point id); iterate this.getConnections() instead.
 
 ### From T9.15's checker (e75ab2a, 2026-11-13)
 

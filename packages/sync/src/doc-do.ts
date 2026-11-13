@@ -2015,7 +2015,7 @@ export class DocDO extends YServer<SyncEnv> {
    * anyone inserted since merges in where it was typed and is never removed (checked before applying). A missing base,
    * one older than RESTORE_BASE_MAX_AGE_MS, or one that is not a state of the doc is refused 409 `restore-base-stale`.
    */
-  async restoreVersion(input: { id: string; base?: unknown; reviewer: Reviewer; actor?: CommentActor }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
+  async restoreVersion(input: { id: string; base?: unknown; reviewer: Reviewer; actor?: CommentActor; by?: string }): Promise<{ ok: true; restorePoint: string | null; version: string | null } | ReviewRefusal> {
     const store = await this.#ready();
     const stale: ReviewRefusal = { ok: false, status: 409, reason: 'restore-base-stale' };
     let base: DecodedBase | null = null;
@@ -2066,6 +2066,9 @@ export class DocDO extends YServer<SyncEnv> {
       await this.#versionsChanged();
       return outcome;
     }
+    // After the restore's own update on every socket: each window clears its undo stacks for the note, and names it.
+    const restored = JSON.stringify({ t: 'restored', by: input.by ?? input.reviewer.id, point: pointId } satisfies ServerEvent);
+    for (const connection of this.#all()) this.sendCustomMessage(connection, restored);
     const after = await this.#autoVersion(store, input.reviewer.id);
     if (!after) await this.#versionsChanged();
     return { ok: true, restorePoint: pointId, version: after?.id ?? null };
