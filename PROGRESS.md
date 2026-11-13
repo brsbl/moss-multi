@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 83% done** (236 of 285 planned tasks verified)
+**Overall: 83% done** (237 of 285 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 9 / 25 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 10 / 25 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -259,6 +259,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T9.16 verified: the login card says when a link is an invite, offers the way back to a share link, and names a malformed email at sign-up.
 - 2026-11-13 — T9.4 verified: restoring a version names who restored it in every open window of the note, with an Undo pill for the restorer, and Cmd+Z no longer undoes past the restore.
 - 2026-11-13 — T9.5 verified: Reject and Withdraw ask first in Moss's danger confirmation, focused on Cancel, so a stray second click on a marker can no longer discard someone's suggestion; Accept stays one click.
+- 2026-11-13 — T9.10 verified: a viewer or commenter sees their access named in the note's bottom band, and typing into a note they cannot edit says why instead of doing nothing.
 
 ## T1.1s identity audit
 
@@ -298,6 +299,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.10's checker (f5f6248, 2026-11-13)
+
+- T9.10 (A reader sees their access and why typing is refused) checker P2: a paste into a read-only title shows 'Opening note…' instead of the role sentence; RoleBand's capture-phase paste listener announces the refusal but does not consume the paste, so the title's own onPaste calls TitleField.write(), whose closed-field refuseInput(OPENING_NOTE) overwrites the role sentence and skips the once-per-notice guard (title text is restored, nothing lost); j08's access-band leg covers keyboard input only and has no paste case.
 
 ### From T9.5's checker (df95a68, 2026-11-13)
 

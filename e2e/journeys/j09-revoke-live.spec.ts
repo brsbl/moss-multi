@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import type { BrowserContext, Locator, Page, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, ROLE_ATTR, SYNC_UNACKED_ATTR,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, ROLE_ATTR, ROLE_BAND_ATTR, SYNC_UNACKED_ATTR,
   TERMINAL_REASON_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
@@ -112,6 +112,18 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   await ben.page.keyboard.type('blocked');
   expect(await ui.fieldText(ben, docId, 'body'), 'a keystroke changes nothing').toBe(TEXT);
   expect(await ui.fieldText(ada, docId, 'body'), 'and nothing reaches Ada').toBe(TEXT);
+
+  // T9.10: the band says so and stays; once the notice clears, a later key is refused out loud again.
+  const band = ui.pane(ben, docId).locator(`[${ROLE_BAND_ATTR}]`);
+  await expect(band, 'the band says he can view only').toHaveText("View only. You can't edit this note.");
+  const refusal = ui.pane(ben, docId).locator('[data-input-refusal]');
+  await expect(refusal, 'the demotion notice clears').toHaveText('', { timeout: LIVE_TIMEOUT });
+  await expect(band, 'and the band stays').toBeVisible();
+  await ui.body(ben, docId).click({ force: true });
+  await ben.page.keyboard.type('again');
+  await expect(refusal, 'a later key is refused out loud').toHaveText("You can view this note, but you can't edit it.");
+  await actors.checkpoint('demoted-typing');
+  expect(await ui.fieldText(ada, docId, 'body'), 'and still nothing reaches Ada').toBe(TEXT);
 });
 
 test('j09 removal: removing a member ends the note for them in place (revoked) @p:ppl-2 @evidence', async ({ actors }) => {
