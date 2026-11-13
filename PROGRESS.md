@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 49% done** (122 of 250 planned tasks verified)
+**Overall: 47% done** (123 of 261 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 70 / 70 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 71 / 71 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -142,6 +142,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T3.B4 verified: a paste near the note's size cap is admitted against the server's latest count plus this tab's own unacked writes, a silent or stalled sync connection now reconnects and replays instead of hanging, and a peer joining an empty copy receives a multi-author note in dependency order.
 - 2026-10-19 — T3.B30 verified: an upload's memory now follows the bytes it has actually sent rather than its declared size, and a video is stored in one streamed put, so a disconnect cannot leave a multipart upload outside the vault's quota.
 - 2026-10-19 — T3.B28 verified: a note shaped with thousands of interleaved writers no longer makes the server do quadratic work to answer a reader's sync, and a huge answer can no longer overflow the stack, so any reader still gets the note in bounded time.
+- 2026-11-13 — T3.B31a verified: creating, importing or exporting a large note now needs little more memory than the note at rest, because an import frees its copy before applying and an export reads the live note in place without writing to it, and a CI memory job holds that line for notes of 20,000 blocks and more.
 
 ## T1.1s identity audit
 
