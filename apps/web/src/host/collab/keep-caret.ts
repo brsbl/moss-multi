@@ -166,12 +166,14 @@ function $restore(editor: LexicalEditor, held: HeldCaret): void {
   const replay = inFlight(before.text, text, before.offset);
   if (replay) {
     $placeAt(block, replay.at + replay.deleted);
-    const end = $getSelection();
+    const placed = $getSelection();
+    // Placing again moves the same selection, so keep the end point's values.
+    const end = $isRangeSelection(placed) ? { ...placed.anchor } : null;
     $placeAt(block, replay.at);
     const selection = $getSelection();
-    if (!$isRangeSelection(selection) || !$isRangeSelection(end)) return;
+    if (!$isRangeSelection(selection) || !end) return;
     if (replay.deleted) {
-      selection.focus.set(end.anchor.key, end.anchor.offset, end.anchor.type);
+      selection.focus.set(end.key, end.offset, end.type);
       selection.removeText();
     } else {
       selection.insertText(replay.inserted);
