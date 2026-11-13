@@ -19,8 +19,12 @@ const isLow = (code: number) => code >= 0xdc00 && code <= 0xdfff;
  * An edit script that turns `current` into `target`, touching only what changed. The common prefix and suffix are
  * retained, and the middle is aligned by code points while its table fits `budget` cells, then by lines, and past
  * that is one replace. Every tier is exact; only its granularity degrades. No op splits a surrogate pair.
+ *
+ * With `sparse`, a middle past the table first searches for a short edit script (Myers, work proportional to the
+ * edits) by code point, then by word, each within `budget` steps: a long paragraph changed in a few places keeps
+ * its unchanged text, where the line tier would replace a single-line paragraph whole.
  */
-export function diffText(current: string, target: string, budget = LCS_CELL_BUDGET): TextOp[] {
+export function diffText(current: string, target: string, budget = LCS_CELL_BUDGET, sparse = false): TextOp[] {
   if (current === target) return [];
   const max = Math.min(current.length, target.length);
   let prefix = 0;
@@ -35,13 +39,13 @@ export function diffText(current: string, target: string, budget = LCS_CELL_BUDG
   // spreading that many into one call throws past the engine's argument limit.
   const ops: TextOp[] = [];
   if (prefix > 0) ops.push({ retain: prefix });
-  middle(a, b, ops, budget);
+  middle(a, b, ops, budget, sparse);
   // A trailing retain changes nothing.
   if (ops.length > 0 && 'retain' in ops[ops.length - 1]) ops.pop();
   return ops;
 }
 
-function middle(a: string, b: string, ops: TextOp[], budget: number): void {
+function middle(a: string, b: string, ops: TextOp[], budget: number, sparse: boolean): void {
   if (!a || !b) {
     if (a) append(ops, { delete: a.length });
     if (b) append(ops, { insert: b });
@@ -49,6 +53,8 @@ function middle(a: string, b: string, ops: TextOp[], budget: number): void {
   }
   // Sized before splitting, so a middle past the budget never allocates a token per character or line.
   if ((codePoints(a) + 1) * (codePoints(b) + 1) <= budget) return lcs(Array.from(a), Array.from(b), ops);
+  if (sparse && a.length + b.length <= budget && myers(Array.from(a), Array.from(b), ops, budget)) return;
+  if (sparse && words(a) + words(b) <= budget && myers(wordTokens(a), wordTokens(b), ops, budget)) return;
   if ((newlines(a) + 2) * (newlines(b) + 2) <= budget) return lcs(lineTokens(a), lineTokens(b), ops);
   append(ops, { delete: a.length });
   append(ops, { insert: b });
@@ -58,6 +64,28 @@ function codePoints(text: string): number {
   let n = text.length;
   for (let i = 1; i < text.length; i += 1) if (isLow(text.charCodeAt(i)) && isHigh(text.charCodeAt(i - 1))) n -= 1;
   return n;
+}
+
+const isSpace = (code: number) => code === 32 || (code >= 9 && code <= 13) || code === 0xa0 || code === 0x2028 || code === 0x2029 || code === 0x3000 || (code >= 0x2000 && code <= 0x200a);
+
+/** Runs of space and of non-space: the word tokens, counted without allocating them. */
+function words(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i += 1) if (i === 0 || isSpace(text.charCodeAt(i)) !== isSpace(text.charCodeAt(i - 1))) n += 1;
+  return n;
+}
+
+/** Runs of space and of non-space, which join back to the text exactly; a surrogate pair is never space. */
+function wordTokens(text: string): string[] {
+  const tokens: string[] = [];
+  let start = 0;
+  for (let i = 1; i <= text.length; i += 1) {
+    if (i === text.length || isSpace(text.charCodeAt(i)) !== isSpace(text.charCodeAt(i - 1))) {
+      tokens.push(text.slice(start, i));
+      start = i;
+    }
+  }
+  return tokens;
 }
 
 function newlines(text: string): number {
@@ -73,11 +101,8 @@ function lineTokens(text: string): string[] {
   return tokens;
 }
 
-/**
- * The LCS alignment of two token lists, appended to `ops` sized in UTF-16 units. Tokens are interned to integers
- * first, so a cell costs one integer comparison however long its lines are.
- */
-function lcs(a: string[], b: string[], ops: TextOp[]): void {
+/** Tokens as integers, so comparing two costs one integer comparison however long they are. */
+function interned(a: string[], b: string[]): [Int32Array, Int32Array] {
   const ids = new Map<string, number>();
   const intern = (tokens: string[]) =>
     Int32Array.from(tokens, (token) => {
@@ -85,8 +110,85 @@ function lcs(a: string[], b: string[], ops: TextOp[]): void {
       if (id === undefined) ids.set(token, (id = ids.size));
       return id;
     });
-  const x = intern(a);
-  const y = intern(b);
+  return [intern(a), intern(b)];
+}
+
+/**
+ * Myers' greedy shortest edit script of two token lists, appended to `ops` and true, or false with `ops` untouched
+ * once the search passes `budget` steps (a diagonal visited or a token matched). Work and memory grow with the
+ * number of edits, not the product of the lengths.
+ */
+function myers(a: string[], b: string[], ops: TextOp[], budget: number): boolean {
+  const [x, y] = interned(a, b);
+  const n = x.length;
+  const m = y.length;
+  const offset = n + m + 1;
+  // v[offset + k] is the furthest x reached on diagonal k = x - y; trace[d] keeps diagonals -d..d after round d.
+  const v = new Int32Array(2 * offset + 1);
+  const trace: Int32Array[] = [];
+  let work = 0;
+  let found = -1;
+  for (let d = 0; d <= n + m && found < 0; d += 1) {
+    for (let k = -d; k <= d; k += 2) {
+      let px = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
+      let py = px - k;
+      while (px < n && py < m && x[px] === y[py]) {
+        px += 1;
+        py += 1;
+        work += 1;
+      }
+      v[offset + k] = px;
+      work += 1;
+      if (work > budget) return false;
+      if (px >= n && py >= m) {
+        found = d;
+        break;
+      }
+    }
+    trace.push(v.slice(offset - d, offset + d + 1));
+  }
+  // Walk back from the end; steps are 0 kept, 1 deleted from a, 2 inserted from b, each with its token index.
+  const steps: number[] = [];
+  let i = n;
+  let j = m;
+  for (let d = found; d > 0; d -= 1) {
+    const prev = trace[d - 1];
+    const at = (k: number) => prev[k + d - 1];
+    const k = i - j;
+    const down = k === -d || (k !== d && at(k - 1) < at(k + 1));
+    const pk = down ? k + 1 : k - 1;
+    const pi = at(pk);
+    const pj = pi - pk;
+    const start = down ? pi : pi + 1;
+    while (i > start) {
+      i -= 1;
+      j -= 1;
+      steps.push(0, i);
+    }
+    if (down) steps.push(2, j - 1);
+    else steps.push(1, i - 1);
+    i = pi;
+    j = pj;
+  }
+  while (i > 0) {
+    i -= 1;
+    steps.push(0, i);
+  }
+  for (let s = steps.length - 2; s >= 0; s -= 2) {
+    const token = steps[s + 1];
+    if (steps[s] === 0) append(ops, { retain: a[token].length });
+    else if (steps[s] === 1) append(ops, { delete: a[token].length });
+    else append(ops, { insert: b[token] });
+  }
+  return true;
+}
+
+/**
+ * The LCS alignment of two token lists, appended to `ops` sized in UTF-16 units. Tokens are interned to integers
+ * first, so a cell costs one integer comparison however long its lines are.
+ */
+function lcs(a: string[], b: string[], ops: TextOp[]): void {
+  const [x, y] = interned(a, b);
   const m = x.length;
   const n = y.length;
   const width = n + 1;
