@@ -4,7 +4,7 @@ import { $getRoot, $isElementNode, $parseSerializedNode, type LexicalNode, type 
 import { getServerByName, routePartykitRequest } from 'partyserver';
 import * as Y from 'yjs';
 import { docLimitOf, encodePartyPrincipal, isDocCapError, TRUSTED } from '@moss-multi/protocol/sync';
-import { DocDO } from '../src/doc-do.ts';
+import { DocDO, type SearchFeed } from '../src/doc-do.ts';
 import { structCount } from '../src/note-size.ts';
 import type { PayloadWork } from '../src/payloads.ts';
 import { importBody, phases, serverWrite } from '../src/server-doc.ts';
@@ -42,6 +42,18 @@ function firstRun(type: Y.AbstractType<unknown>, depth = 0): Y.Item | null {
 
 /** The DocDO, plus a method that reports its payload work (a getter is not an RPC method). */
 export class MeasuredDocDO extends DocDO {
+  /**
+   * Search as the Worker feeds it (doc-do.ts #feedSearch), so a save runs the export and the feed: the entry is
+   * structured-cloned, as an RPC serialises it in the sender, and held until the call returns.
+   */
+  static override searchFeed = (): SearchFeed => ({
+    index: async (entry) => {
+      const wire = structuredClone(entry);
+      fedTo.set(wire.docId, { docId: wire.docId, bodyChars: wire.body.length, marks: SAVE_MARKS.filter((mark) => wire.body.includes(mark)) });
+      return { linksChanged: false };
+    },
+  });
+
   work(): PayloadWork {
     return { ...this.payloadWork };
   }

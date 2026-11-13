@@ -163,11 +163,20 @@ const stateOf = (doc: Y.Doc, client: number): number => {
 
 /** How many clocks in [start, end) the ranges delete. `ranges` is sorted and merged (Y.mergeDeleteSets). */
 export function deletedWithin(ranges: readonly { clock: number; len: number }[], start: number, end: number): number {
+  // The first range ending after `start`, found by bisection, so a frame of many strings and ranges stays linear.
+  let low = 0;
+  let high = ranges.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    const { clock, len } = ranges[mid];
+    if (clock + len <= start) low = mid + 1;
+    else high = mid;
+  }
   let deleted = 0;
-  for (const { clock, len } of ranges) {
-    const from = Math.max(start, clock);
-    const to = Math.min(end, clock + len);
-    if (to > from) deleted += to - from;
+  for (let i = low; i < ranges.length; i += 1) {
+    const { clock, len } = ranges[i];
+    if (clock >= end) break;
+    deleted += Math.min(end, clock + len) - Math.max(start, clock);
   }
   return deleted;
 }

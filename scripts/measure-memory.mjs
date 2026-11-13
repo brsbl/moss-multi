@@ -510,6 +510,8 @@ export function memoryProblems(notes) {
       problems.push(`${n.name}: its state is ${state} bytes, over the ${stateAllowance(size)} its text and structs allow`);
     }
     if (!n.budget) continue;
+    // Without an entry, the save left out the export and the feed a production save runs.
+    if (!(n.plain?.fed?.bodyChars > 0)) problems.push(`${n.name}: its save fed search no entry of the note`);
     const rest = n.plain?.phases?.save?.restMb;
     if (typeof rest !== 'number') problems.push(`${n.name}: the note at rest is unknown`);
     else if (rest > REST_LIMIT_MB) problems.push(`${n.name}: at rest it takes ${rest} MB, over ${REST_LIMIT_MB.toFixed(1)} MB`);
