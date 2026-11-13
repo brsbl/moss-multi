@@ -56,6 +56,8 @@ function main(out) {
   // The History reference (T6.B3): glyphdown's history page in moss's DS, and the versions it shows; oracle-only.
   copyFileSync(join(HERE, 'HistoryPage.stories.tsx'), join(TREE, 'packages/desktop/stories/HistoryPage.stories.tsx'));
   copyFileSync(join(REPO, 'e2e/fixtures/history.json'), join(TREE, 'packages/desktop/stories/history.json'));
+  // The arrow-below-the-last-block probe (T9.2): a trailing callout and a trailing table; oracle-only.
+  copyFileSync(join(HERE, 'TrailingBlock.stories.tsx'), join(TREE, 'packages/desktop/stories/TrailingBlock.stories.tsx'));
   const outDir = resolve(out);
   // Ladle joins --outDir onto its cwd.
   const viteConfig = join(HERE, 'vite.oracle.mjs');
