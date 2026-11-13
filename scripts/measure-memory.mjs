@@ -61,6 +61,11 @@ async function cases() {
     ['j01-paste-table reference: 5,000 rows', `Before.\n\n${notes.table(5_000)}\n\nAfter.`, true, 'table row'],
     ['j01-paste reference: 2 MB of mixed markdown', notes.mixedMarkdown(2_000_000), true, null],
     ['j01-paste reference: 200k of mixed markdown', notes.mixedMarkdown(200_000), false, null],
+    ['cal-par-36k', notes.numberedLines(36_000), true, 'paragraph'],
+    ['cal-list-33k', notes.flatList(33_334), true, 'list item'],
+    ['cal-table-12k5', notes.table(12_500), true, 'table row'],
+    ['cal-table-11k', notes.table(11_000), true, 'table row'],
+    ['cal-mixed-1m', notes.mixedMarkdown(1_020_000), true, null],
   ];
 }
 

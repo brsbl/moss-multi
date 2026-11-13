@@ -179,7 +179,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        note: ['j01-large', 'paste-blocks', 'paste-list', 'paste-race', 'paste-table', '2 MB of mixed', '200k of mixed']
+        note: ['j01-large', 'paste-list', 'cal-par-36k', 'cal-list-33k', 'cal-table-12k5', 'cal-table-11k', 'cal-mixed-1m']
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
