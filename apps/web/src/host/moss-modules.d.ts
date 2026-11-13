@@ -312,6 +312,9 @@ declare module '@moss/shared/primitives' {
       sideOffset?: number;
       collisionPadding?: number;
       onOpenAutoFocus?: (event: Event) => void;
+      onPointerDownOutside?: (event: Event) => void;
+      onFocusOutside?: (event: Event) => void;
+      onEscapeKeyDown?: (event: KeyboardEvent) => void;
     }>;
     Title: ComponentType<HTMLAttributes<HTMLHeadingElement>>;
   };

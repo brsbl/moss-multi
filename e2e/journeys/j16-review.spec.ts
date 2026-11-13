@@ -2,14 +2,17 @@
 // A suggester's suggestion is listed in the peer's Suggestions panel and notifies the owner; the owner accepts it from
 // the painted mark in Edit mode and both windows converge on the accepted text, then rejects the next one from the
 // panel and it leaves both windows; and the author's withdraw removes the inserted text from every view, Review
-// included, while the server's note stays byte-identical.
+// included, while the server's note stays byte-identical. Reject and Withdraw ask first, so two clicks on a marker
+// never reject.
 import type { Actor } from '../lib/actors.ts';
 import {
   BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, REVIEW_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
   SUGGESTION_STATUS_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { BIND_TIMEOUT, button, caret, cards, closePanel, content, openIn, openPanel, panel, settled as acked, sharedNote } from '../lib/suggest.ts';
+import {
+  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, settled as acked, sharedNote,
+} from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /** The suggester types `text` at `offset` into the body text holding `at`; it is sent, acknowledged and never refused. */
@@ -89,7 +92,7 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
   const next = (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
   await expect(next).toContainText('extra', { timeout: BIND_TIMEOUT });
-  await next.getByRole('button', { name: 'Reject' }).click();
+  await confirmClose(ada, next, 'Reject');
   await expect(cards(ada, 'rejected')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await closePanel(ada);
   await expect(ui.body(ben, docId), "the rejected text leaves the author's window").not.toContainText('extra', { timeout: BIND_TIMEOUT });
@@ -98,6 +101,77 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   const exported = await content(ada, docId);
   expect(exported).toContain('Second paragraph here.');
   expect(exported).not.toContain('extra');
+});
+
+test('j16-review: two clicks on a marker never reject; Reject asks first, Cancel and Escape keep the suggestion, and confirming closes it for everyone @p:mean-2 @p:R17', async ({ actors }) => {
+  // At 1440 px this line puts the marker after "opening" where the list then shows Reject.
+  const { ada, ben, docId } = await sharedNote(actors, 'Keep every original word in this opening line of the note.\n\nSecond paragraph here.');
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  // The confirmed reject closes the author's own record, which rebuilds his fork (§5).
+  ben.expectReconnects(1, docId);
+  await suggestText(ben, docId, 'this opening', 12, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  const reject = confirmation(ada, 'Reject');
+
+  // A double click on the marker, fast and slow: the second click at worst opens the confirmation, on Cancel.
+  for (const gap of [250, 700]) {
+    await closePanel(ada);
+    // A repaint replaces the wedge, so its centre is read in one step, once it is laid out.
+    let point = { x: 0, y: 0 };
+    await expect.poll(async () => {
+      point = await ada.page.evaluate((selector) => {
+        const rect = document.querySelector(selector)?.getBoundingClientRect();
+        return rect && rect.width > 0 ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : { x: 0, y: 0 };
+      }, `[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`);
+      return point.x > 0;
+    }, { timeout: BIND_TIMEOUT }).toBe(true);
+    const first = Date.now();
+    await ada.page.mouse.click(point.x, point.y);
+    await expect(panel(ada)).toBeVisible();
+    const under = await ada.page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('button')?.textContent?.trim() ?? '', point);
+    await ada.page.waitForTimeout(Math.max(0, gap - (Date.now() - first)));
+    await ada.page.mouse.click(point.x, point.y);
+    test.info().annotations.push({ type: 'second click', description: `${gap} ms: ${under || 'no button'}` });
+    if (under === 'Reject') {
+      await expect(reject, `${gap} ms: the second click on Reject asks first`).toBeVisible();
+      await expect(reject.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();
+      await ada.page.keyboard.press('Escape');
+      await expect(reject).toBeHidden();
+    }
+    await ada.page.waitForTimeout(500);
+    await expect(button(ada), `${gap} ms: the suggestion is still open`).toHaveAttribute('aria-label', /1 open/);
+    await expect(cards(ada, 'rejected')).toHaveCount(0);
+  }
+
+  // From the list: Reject asks, naming the author; Escape and Cancel keep the suggestion.
+  const card = (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  for (const dismiss of ['Escape', 'Cancel'] as const) {
+    await card.getByRole('button', { name: 'Reject' }).click();
+    await expect(reject).toBeVisible();
+    await expect(reject).toContainText(/Ben.*['’]s proposed change will be discarded for everyone\. This action cannot be undone\./);
+    await expect(reject.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();
+    const dialogBox = (await reject.boundingBox())!;
+    const onTop = await ada.page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('[role="alertdialog"]'),
+      { x: dialogBox.x + dialogBox.width / 2, y: dialogBox.y + dialogBox.height / 2 });
+    expect(onTop, 'the dialog paints above the list').toBe(true);
+    if (dismiss === 'Escape') await ada.page.keyboard.press('Escape');
+    else await reject.getByRole('button', { name: 'Cancel' }).click();
+    await expect(reject).toBeHidden();
+    await expect(panel(ada), 'the list stays open under the dialog').toBeVisible();
+    await expect(card, `${dismiss} keeps the suggestion`).toHaveCount(1);
+  }
+  await expect(ui.body(ben, docId)).toContainText('this opening plus line');
+
+  await confirmClose(ada, card, 'Reject');
+  await expect(cards(ada, 'rejected')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId), "the rejected text leaves the author's window").not.toContainText('plus', { timeout: BIND_TIMEOUT });
+  await expect(ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"]`), 'its mark leaves Edit mode').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await closePanel(ada);
 });
 
 test('j16-review: Review is offered only while a suggestion is open; Done and Escape leave it, and deciding the last one returns the owner to editing @p:mean-2 @p:R17', async ({ actors }) => {
@@ -212,7 +286,21 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   await expect(ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"]`), 'Edit mode marks it').not.toHaveCount(0, { timeout: BIND_TIMEOUT });
 
   const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
-  await own.getByRole('button', { name: 'Withdraw' }).click();
+  // Withdraw asks first; Escape and Cancel keep the suggestion.
+  const withdraw = confirmation(ben, 'Withdraw');
+  for (const dismiss of ['Escape', 'Cancel'] as const) {
+    await own.getByRole('button', { name: 'Withdraw' }).click();
+    await expect(withdraw).toBeVisible();
+    await expect(withdraw).toContainText('Your proposed change will be discarded. This action cannot be undone.');
+    await expect(withdraw.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();
+    if (dismiss === 'Escape') await ben.page.keyboard.press('Escape');
+    else await withdraw.getByRole('button', { name: 'Cancel' }).click();
+    await expect(withdraw).toBeHidden();
+    await expect(own, `${dismiss} keeps the suggestion`).toHaveCount(1);
+    await expect(panel(ben), 'the list stays open under the dialog').toBeVisible();
+  }
+  await expect(ui.body(carl, docId)).toContainText('Keep every original plus word.');
+  await confirmClose(ben, own, 'Withdraw');
   await expect(cards(ben, 'withdrawn')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await closePanel(ben);
 
