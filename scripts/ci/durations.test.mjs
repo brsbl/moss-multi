@@ -49,7 +49,8 @@ describe('durations --write', () => {
   const FILES = { editing: 'j01-undo.spec.ts', sharing: 'j08-share.spec.ts' };
   const report = (engine, file) => ({ suites: [{ specs: [{ file: `journeys/${file}`, tests: [leg(engine, 60_000)] }] }] });
 
-  /** A stub gh serving runs whose jobs have the given conclusions, keyed `engine/group`. */
+  /** A stub gh serving runs whose jobs have the given conclusions, keyed `engine/group` (other names are other jobs), by
+   * page as GitHub does: a page over 50 of a run with more than 50 jobs is a 502. */
   function stubGh(runs) {
     return (args) => {
       const path = args[0] === 'api' ? args[1] : null;
@@ -59,9 +60,14 @@ describe('durations --write', () => {
       if (jobsMatch) {
         const jobs = Object.entries(runs[jobsMatch[1]]).map(([shard, conclusion]) => {
           const [engine, group] = shard.split('/');
-          return { name: `e2e (${engine}, ${group})`, conclusion, started_at: '2026-10-01T00:00:00Z', completed_at: '2026-10-01T00:03:00Z' };
+          const name = group ? `e2e (${engine}, ${group})` : shard;
+          return { name, conclusion, started_at: '2026-10-01T00:00:00Z', completed_at: '2026-10-01T00:03:00Z' };
         });
-        return JSON.stringify({ jobs });
+        const query = new URL(path, 'https://api.github.com/').searchParams;
+        const perPage = Number(query.get('per_page') ?? 30);
+        const page = Number(query.get('page') ?? 1);
+        if (perPage > 50 && jobs.length > 50) throw new Error('gh: HTTP 502');
+        return JSON.stringify({ total_count: jobs.length, jobs: jobs.slice((page - 1) * perPage, page * perPage) });
       }
       if (args[0] === 'run' && args[1] === 'download') {
         const [, engine, group] = /^e2e-(\w+)-(\w+)-1$/.exec(args[args.indexOf('-n') + 1]);
@@ -114,5 +120,14 @@ describe('durations --write', () => {
     const written = JSON.parse(readFileSync(file, 'utf8'));
     expect(written.runs).toEqual([101, 102]);
     expect(Object.keys(written.journeys)).toEqual(['j01-undo.spec.ts', 'j08-share.spec.ts']);
+  });
+
+  it('reads a run of more than 50 jobs by pages of 50, its shards past the first page included', () => {
+    const others = Object.fromEntries(Array.from({ length: 60 }, (_, index) => [`job ${index}`, 'success']));
+    const complete = { ...others, 'chromium/editing': 'success', 'webkit/editing': 'success', 'chromium/sharing': 'success', 'webkit/sharing': 'success' };
+    const { code, file, errors } = run({ 101: complete });
+    expect(errors).toEqual([]);
+    expect(code).toBe(0);
+    expect(Object.keys(JSON.parse(readFileSync(file, 'utf8')).journeys)).toEqual(['j01-undo.spec.ts', 'j08-share.spec.ts']);
   });
 });
