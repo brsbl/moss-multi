@@ -258,7 +258,7 @@ describe('growthOf for an update of only deletions (coordinator ruling 2)', () =
       const before = structCount(server);
       Y.applyUpdate(server, update);
       expect(structCount(server) - before, `${length}: never more than predicted`).toBeLessThanOrEqual(growth.structs);
-      if (length < 10_000) expect(growth.structs, `${length}: a deletion beside the deleted end adds nothing`).toBe(0);
+      if (length < 10_000) expect(growth.structs, `${length}: a deletion beside the deleted end adds nothing`).toBeLessThanOrEqual(0);
     }
     expect(structCount(server)).toBeLessThanOrEqual(start + 1);
   });

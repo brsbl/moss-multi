@@ -4,7 +4,7 @@
 // they had; a write that only deletes is admitted up to the structure headroom, or whenever it adds no struct, so a
 // note at a limit, or one stored over it, can be shrunk.
 // The caps are shrunk here so each case is small; the `memory` CI job and the API harness hold the real ones.
-import { $getRoot, $isParagraphNode, $isTextNode } from 'lexical';
+import { $createRangeSelection, $getRoot, $isParagraphNode, $isTextNode, $setSelection } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
@@ -393,6 +393,36 @@ describe('deletions (coordinator ruling 2)', () => {
       expect((await doc.dobj.noteSize()).structs, 'and the count never rose').toBeLessThanOrEqual(ceiling);
       expect(await doc.dobj.exportMarkdown()).not.toContain('Run');
     } finally { ada.dispose(); }
+  });
+
+  it('deleting whole lines as the editor does, a selection from one line\'s start to another\'s, lands in a note at the ceiling', async () => {
+    const { Doc, limits } = capped({ structHeadroom: 20 });
+    const doc = await opened(Doc);
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    try {
+      for (let i = 0; i < 10; i += 1) ada.insertParagraph(`Row ${i} words`);
+      await syncAll(ada, ben);
+      const ceiling = (await doc.dobj.noteSize()).structs;
+      limits.structCap = ceiling - 20;
+      // The binding deletes the selected lines and the last one's text, and writes that text again: a write that
+      // inserts, but frees more structs than it adds.
+      ada.editor.update(() => {
+        const rows = $getRoot().getChildren().filter((node) => $isParagraphNode(node) && node.getTextContent().startsWith('Row'));
+        const from = rows.find((node) => node.getTextContent() === 'Row 6 words')!.getFirstChild()!;
+        const to = rows.find((node) => node.getTextContent() === 'Row 4 words')!.getFirstChild()!;
+        const selection = $createRangeSelection();
+        selection.anchor.set(from.getKey(), 0, 'text');
+        selection.focus.set(to.getKey(), 0, 'text');
+        $setSelection(selection);
+        selection.removeText();
+      }, { discrete: true });
+      await syncAll(ada, ben);
+      expect(refusals(ada), 'the deletion lands').toEqual([]);
+      expect((await doc.dobj.noteSize()).structs).toBeLessThanOrEqual(ceiling);
+      expect(ben.paragraphs().filter((text) => text.startsWith('Row'))).toHaveLength(8);
+      expect(await doc.dobj.exportMarkdown()).not.toContain('Row 5 words');
+    } finally { ada.dispose(); ben.dispose(); }
   });
 
   it('deleting whole paragraphs never raises the count, and lands in a note at the ceiling', async () => {
