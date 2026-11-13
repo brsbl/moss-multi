@@ -28,6 +28,8 @@ import { Outbox, type Frame } from './outbox.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
 import { isSuggestReply, SuggestLedger } from './suggest-acks.ts';
 import { markSession, markUnacked } from './unacked.ts';
+import { heardRestore } from './restore-notice.ts';
+import { clearUndoOf } from './undo.ts';
 
 const PARTY = 'doc-d-o';
 const ACCESS_TIMEOUT_MS = 10_000;
@@ -941,6 +943,10 @@ export class DocSession {
       refuseInput(this.#refusedMessage);
     } else if (event.t === 'doc-deleted') {
       this.end('deleted');
+    } else if (event.t === 'restored') {
+      // The restore's update came first on this socket: undo steps from before it would replay replaced items.
+      clearUndoOf(this.doc);
+      heardRestore(this.docId, { by: String(event.by), point: typeof event.point === 'string' ? event.point : null });
     }
   }
 }

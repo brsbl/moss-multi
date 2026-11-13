@@ -12,6 +12,7 @@ import { UndoManager, Doc, applyUpdate, encodeStateAsUpdate, encodeStateVector }
 import { useSyncExternalStore } from 'react';
 import { OPENING_NOTE } from '../opening-guard.ts';
 import { refuseInput } from '../refusal.ts';
+import { registerUndoClear } from './undo.ts';
 
 /** Local title writes; the title's own undo manager (T1.6) tracks this origin. */
 export const TITLE_LOCAL_ORIGIN = Symbol('moss-multi:title-local');
@@ -151,6 +152,7 @@ export class TitleField {
     const undo = new UndoManager(doc.getText('title'), {
       trackedOrigins: new Set([TITLE_LOCAL_ORIGIN]), captureTimeout: 1_000,
     });
+    const unregisterUndo = registerUndoClear(doc, () => undo.clear());
     const onKeyDown = (event: KeyboardEvent) => {
       if (!this.#owns(event.target) || !(event.metaKey || event.ctrlKey) || event.altKey) return;
       const key = event.key.toLowerCase();
@@ -167,6 +169,7 @@ export class TitleField {
       doc,
       stop: () => {
         stopObserving();
+        unregisterUndo();
         undo.destroy();
         document.removeEventListener('keydown', onKeyDown, true);
         document.removeEventListener('compositionstart', onCompositionStart, true);
