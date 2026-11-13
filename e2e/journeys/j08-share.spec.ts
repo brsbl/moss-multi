@@ -421,7 +421,8 @@ test('j08 inherited: a note\'s Share dialog names it and lists who reaches it fr
   await ui.waitOpen(ada, docId, 'live');
   const dialog = await ui.openShare(ada, docId);
   const firstLine = 'Share “Packing list” with people by email, with one of your agents by its ID, or with anyone who has a link.';
-  await expect(dialog.getByText(firstLine, { exact: true }).filter({ visible: true }), 'the dialog names the note in its first line').toHaveCount(1);
+  // The shell's own description is screen-reader only; the first visible line is the body's.
+  await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the note in its first line').toHaveText(firstLine);
   const fromFolder = dialog.getByRole('list', { name: `From folder “${folderName}”`, exact: true });
   await expect(fromFolder.getByRole('listitem').filter({ hasText: benPrincipal.name }), 'Ben, from the folder, at comment').toContainText('Can comment');
   const fromVault = dialog.getByRole('list', { name: 'From vault “Home”', exact: true });

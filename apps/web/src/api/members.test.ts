@@ -268,7 +268,9 @@ describe.each(['query', 'header'] as const)('signed-in link-only member privacy 
     ] });
     const owner = await withLink('GET', path, ada.cookie);
     expect(owner.status).toBe(200);
-    expect(await owner.json()).toEqual({ members: [
+    // The owner's view also names the target and who reaches it from above (T9.7), covered below.
+    const { members: ownerMembers, invites } = (await owner.json()) as { members: unknown; invites: unknown };
+    expect({ members: ownerMembers, invites }).toEqual({ members: [
       { principalId: ada.id, principalType: 'user', name: 'Ada', email: ada.email, role: 'owner' },
       { principalId: ben.id, principalType: 'user', name: 'Ben', email: ben.email, role: 'viewer' },
     ], invites: [] });
