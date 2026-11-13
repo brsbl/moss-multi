@@ -207,7 +207,8 @@ test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault 
   // Declared setup: a folder and two same-titled notes, one at the vault's top and one in the folder.
   const origin = new URL(ada.page.url()).origin;
   const send = (path: string, data: object) => ada.context.request.post(`${origin}${path}`, { headers: { origin }, data, timeout: 15_000 });
-  const vaultId = (await listing(ada)).vault.id;
+  const vaultId = (await listing(ada)).vaults.find((vault) => vault.name === TRIP)?.id ?? '';
+  expect(vaultId, 'the new vault is listed').not.toBe('');
   const made = await send('/api/folders', { parentId: vaultId, name: 'Bookings' });
   expect(made.status(), 'declared setup: the folder').toBe(201);
   const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
