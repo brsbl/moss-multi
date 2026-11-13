@@ -4,6 +4,7 @@ import type { TableNode } from '@lexical/table';
 import { expect, test, ui } from '../lib/test.ts';
 import { grantDoc } from '../lib/grants.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
+import { arrowBelow } from '../lib/arrow-below.ts';
 
 const fixture = 'Shared paragraph.\n\n| Original | Value |\n| --- | --- |\n| cell | 1 |\n\n:::tabs\n=== First\nFirst panel\n=== Second\nSecond panel\n:::\n\n## Fold me\n\nHidden paragraph.\n\n{{timeline|6 weeks}}';
 async function setup(actors: Actors, baseUrl: string, markdown = fixture) {
@@ -470,4 +471,41 @@ test('j01 editing: a composition cancelled below a node-selected chart leaves th
   }
   await ui.waitAcked(ada, id);
   expect(await exported(ada, id)).toContain('Peer');
+});
+
+test('j01 editing: typing after arrowing below a note\'s last block lands in a paragraph directly below it @p:col-1', async ({ actors, stack }) => {
+  // T9.2: two ArrowDowns past a trailing callout or table left the DOM selection outside the editor (at the root's
+  // end, then in the bottom toolbar) while the editor kept focus, and every key typed after that was dropped.
+  actors.solo('caret keys in one editor; no peer is involved');
+  const ada = await actors.session(await actors.principal('ada'));
+  const blockKey = '[data-block-decorator-key]';
+  const cases = [
+    { name: 'callout', markdown: '```moss-callout\nwarning\nBudget is frozen until the board meets.\n```', block: '.moss-callout-shell', start: '.moss-callout p', presses: 2 },
+    { name: 'table', markdown: '| Item | Cost |\n| --- | --- |\n| Travel | 5k |', block: 'table', start: 'table tr:last-child td:first-child', presses: 2 },
+    { name: 'tab group', markdown: ':::tabs\n=== First\nFirst panel\n=== Second\nSecond panel\n:::', block: blockKey, start: `${blockKey} p:visible`, presses: 2 },
+    // A decorator holds no caret: the first ArrowDown from the line above selects it, the next ones are past it.
+    { name: 'code block', markdown: '```ts\nconst answer = 42;\n```', block: blockKey, start: 'p:has-text("Budget notes.")', presses: 3 },
+    { name: 'chart', markdown: '```moss-chart\n{"type":"bar","title":"Requests","data":[{"label":"Mon","value":12},{"label":"Tue","value":18}]}\n```', block: blockKey, start: 'p:has-text("Budget notes.")', presses: 3 },
+  ];
+  for (const { name, markdown, block, start, presses } of cases) {
+    const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: `Trailing ${name}`, markdown: `Budget notes.\n\n${markdown}` } });
+    expect(created.status()).toBe(201);
+    const { doc: { id } } = await created.json() as { doc: { id: string } };
+    await ada.goto(`/d/${id}`);
+    await ui.waitLive(ada, id);
+    const root = ui.body(ada, id);
+    await root.locator(block).first().waitFor();
+    const before = await exported(ada, id);
+    const result = await arrowBelow(ada.page, root, root.locator(start).first(), presses, 'hello');
+    expect(result.after.filter((place) => place === 'outside' || place === 'unfocused'), `${name}: the DOM selection stays in the focused editor after each ArrowDown`).toEqual([]);
+    expect(result.last, `${name}: the typing is a paragraph at the end`).toEqual({ tag: 'P', text: 'hello' });
+    expect(await root.evaluate((element, selector) => {
+      const previous = element.lastElementChild?.previousElementSibling;
+      return !!previous && (previous.matches(selector) || !!previous.querySelector(selector));
+    }, block), `${name}: directly below the block`).toBe(true);
+    await ui.waitAcked(ada, id);
+    // The exporter spaces a tab group's closing fence from what follows with one more blank line.
+    const after = await exported(ada, id);
+    expect(after.startsWith(before.trimEnd()) && after.slice(before.trimEnd().length).trim(), `${name}: the note keeps the block and gains the paragraph`).toBe('hello');
+  }
 });

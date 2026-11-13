@@ -28,12 +28,15 @@ import {
   $isNodeSelection,
   $isParagraphNode,
   $isRangeSelection,
+  $isRootNode, // moss-multi seam: arrow-below-last-block (T9.2)
   $isTextNode,
   $setSelection,
   BEFORE_INPUT_COMMAND, // moss-multi seam: type-after-block (T3.13)
   CLICK_COMMAND,
   COMMAND_PRIORITY_HIGH,
+  COMMAND_PRIORITY_CRITICAL, // moss-multi seam: arrow-below-last-block (T9.2)
   COMMAND_PRIORITY_LOW,
+  COMMAND_PRIORITY_NORMAL, // moss-multi seam: arrow-below-last-block (T9.2)
   COMPOSITION_START_COMMAND, // moss-multi seam: type-after-block (T3.13)
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
@@ -47,7 +50,7 @@ import {
 import {
   $isHorizontalRuleNode
 } from '@lexical/react/LexicalHorizontalRuleNode';
-import { $isTableNode } from '@lexical/table';
+import { $isTableNode, $isTableRowNode } from '@lexical/table'; // moss-multi seam: arrow-below-last-block (T9.2)
 import { $isCalloutNode } from '../nodes/CalloutNode';
 import { $isChartNode } from '../nodes/ChartNode';
 import { $isCodeBlockNode } from '../nodes/CodeBlockNode';
@@ -360,6 +363,44 @@ function $navigateToSibling(editor: LexicalEditor, node: LexicalNode, direction:
   }
 }
 
+// moss-multi seam: arrow-below-last-block (T9.2): the note's last block when a collapsed selection sits at the
+// root's end just after it, where Lexical's table exit (TableNode.selectNext) and the browser's own caret move out of a
+// callout leave it.
+function $trailingBlockAtRootEnd(): LexicalNode | null {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null;
+  const root = selection.anchor.getNode();
+  if (!$isRootNode(root) || selection.anchor.offset !== root.getChildrenSize()) return null;
+  const last = root.getLastChild();
+  return $isBlockDecoratorNode(last) ? last : null;
+}
+
+// moss-multi seam: arrow-below-last-block (T9.2): the note's last block when the caret is on the last visual line of
+// its last line (any cell of a table's last row, any tab panel), so an ArrowDown would leave it with nothing below.
+function $trailingBlockAboveCaret(editor: LexicalEditor): LexicalNode | null {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null;
+  const anchorNode = selection.anchor.getNode();
+  if ($isRootNode(anchorNode)) return null;
+  const topBlock = $getTopLevelBlock(anchorNode);
+  if (!$isBlockDecoratorNode(topBlock) || topBlock.getNextSibling()) return null;
+  let line: LexicalNode = anchorNode;
+  while (!($isElementNode(line) && !line.isInline()) && line.getParent()) line = line.getParent()!;
+  for (let current = line; current !== topBlock; current = current.getParent()!) {
+    const parent = current.getParent();
+    if (!parent) return null;
+    if (!$isTableRowNode(parent) && !$isTabGroupNode(parent) && current.getNextSibling()) return null;
+  }
+  const lineDOM = editor.getElementByKey(line.getKey());
+  const domSelection = window.getSelection();
+  if (!lineDOM || !domSelection || domSelection.rangeCount === 0) return null;
+  const range = domSelection.getRangeAt(0);
+  const rects = range.getClientRects();
+  const caret = rects.length > 0 ? rects[0] : range.getBoundingClientRect();
+  if (caret.height === 0) return topBlock; // an empty line has one line
+  return caret.bottom + caret.height > lineDOM.getBoundingClientRect().bottom ? topBlock : null;
+}
+
 /**
  * Plugin that enables keyboard navigation for block-level DecoratorNodes.
  */
@@ -640,6 +681,39 @@ export function DecoratorBlockPlugin(): null {
       unregisterBackspace();
       unregisterBackspaceFromText();
       unregisterDelete();
+    };
+  }, [editor]);
+
+  // moss-multi seam: arrow-below-last-block (T9.2): ArrowDown out of the note's last block selects the block, as an
+  // ArrowDown from the line above it does. Before, the caret went to the root's end (the browser's move out of a
+  // callout, Lexical's out of a table), and the next ArrowDown reached TabExitPlugin, whose $getNearestRootOrShadowRoot
+  // throws on the root: the command aborted, the browser moved the selection out of the editor into the bottom toolbar,
+  // and every key typed after was dropped. The node selection's own handlers then hold further ArrowDowns, and a typed
+  // key or Enter starts a paragraph below; arrows insert nothing. From the root's end it runs first (CRITICAL; no menu
+  // opens there); from inside the block at NORMAL, after moss's HIGH handlers (open menus, the table and tab exits).
+  useEffect(() => {
+    const handle = (event: KeyboardEvent | null, $find: () => LexicalNode | null): boolean => {
+      if (!event || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.isComposing) return false;
+      if (!editor.isEditable()) return false;
+      const block = $find();
+      if (!block) return false;
+      event.preventDefault();
+      $selectNode(editor, block);
+      return true;
+    };
+    const unregisterRootEnd = editor.registerCommand(
+      KEY_ARROW_DOWN_COMMAND,
+      (event) => handle(event, $trailingBlockAtRootEnd),
+      COMMAND_PRIORITY_CRITICAL
+    );
+    const unregisterLastLine = editor.registerCommand(
+      KEY_ARROW_DOWN_COMMAND,
+      (event) => handle(event, () => $trailingBlockAboveCaret(editor)),
+      COMMAND_PRIORITY_NORMAL
+    );
+    return () => {
+      unregisterRootEnd();
+      unregisterLastLine();
     };
   }, [editor]);
 
