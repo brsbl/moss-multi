@@ -367,9 +367,10 @@ describe('deploy-staging.yml target', () => {
     const running = runningFor(WORKFLOW, 'staging');
     expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary']);
     expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
-    // deploy-staging.yml at main a3bb1b31 through stagingView: byte-identical jobs, steps, triggers, env and concurrency.
+    // deploy-staging.yml at main a3bb1b31 through stagingView: byte-identical jobs, steps, triggers, env and concurrency,
+    // except T9.25's "Read the CI run" (pages of 50 with retries; main's copy was ebb9449a…f889e8f72).
     // A deliberate change to the staging jobs updates this hash.
-    expect(sha256(stagingView(WORKFLOW))).toBe('ebb9449a5ac7380ba7f741dc661350d1c5437611a50f00fe0d22397f889e8f72');
+    expect(sha256(stagingView(WORKFLOW))).toBe('0a50277204a94695bdcee9f88dfe9b47745a02accccffb5329122efd0911143b');
   });
 
   it('target=pilot runs only the gate, then deploy-pilot.yml: no staging deploy, canary or upload', () => {
