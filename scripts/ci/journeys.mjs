@@ -78,6 +78,8 @@ export const GROUPS = {
   suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
+  // Strikes, joins, pastes and highlights made while suggesting, through the card and accept.
+  reviewStrikes: ['j16-review-strikes'],
   // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
   suggestMarks: ['j16-marks'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.
