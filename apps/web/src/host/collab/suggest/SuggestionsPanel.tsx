@@ -401,10 +401,9 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
       >
         {counted ? (
           <Tooltip>
-            <TooltipTrigger asChild>
+            <TooltipTrigger asChild ref={focusHome} /* Moss's asChild drops a child's own ref */>
               <Popover.Trigger asChild>
                 <button
-                  ref={focusHome}
                   type="button"
                   data-collab-chrome=""
                   {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}

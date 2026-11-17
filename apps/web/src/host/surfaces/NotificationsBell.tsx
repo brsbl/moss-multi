@@ -86,10 +86,9 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
     <Menu open={open} onOpenChange={onOpenChange}>
       <TooltipProvider>
         <Tooltip>
-          <TooltipTrigger asChild>
+          <TooltipTrigger asChild ref={focusHome} /* Moss's asChild drops a child's own ref */>
             <DropdownMenuTrigger asChild>
               <button
-                ref={focusHome}
                 type="button"
                 data-collab-chrome=""
                 aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'}
