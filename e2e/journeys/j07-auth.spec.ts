@@ -499,6 +499,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   await rename.press('Enter');
   expect((await renamed).status(), 'the rename meets the ended session').toBe(401);
   await expectEnded('a folder rename');
+  await expect(rename, 'the rename lets go of its input once the session has ended').toBeEnabled();
   await signInAgain('a folder rename');
 
   // The server closes the note's socket as the session ends, which hides Share and History: each is open already.
@@ -516,4 +517,41 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   await expectEnded('History');
   await expect(ui.pane(ada, docId).locator(`[${HISTORY_VIEW_ATTR}]`), 'History closes on the ended note').toHaveCount(0);
   await signInAgain('History');
+});
+
+test('with no note open, an ended session\'s "Sign in" works from the keyboard and the mouse after "+ Note" @p:R10 @p:ppl-1', async ({ actors }) => {
+  test.setTimeout(180_000);
+  const person = await actors.principal('ada');
+  const ada = await actors.open(person);
+  actors.solo('one person whose own session ends under her open tab');
+  ada.expectHttp(401, /^\/api\//);
+  const signInButton = ada.page.locator(ENDED_BANNER).getByRole('button', { name: 'Sign in', exact: true });
+  const endAndCreate = async (what: string) => {
+    await ada.goto('/');
+    await waitForShell(ada);
+    await expect(ada.page.getByText('Create a new note to get started'), `${what}: no note is open`).toBeVisible();
+    await endSessionElsewhere(ada);
+    const created = ada.page.waitForResponse((r) => new URL(r.url()).pathname === '/api/docs' && r.request().method() === 'POST');
+    await ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
+    expect((await created).status(), `${what}: "+ Note" meets the ended session`).toBe(401);
+    await expect(signInButton, `${what}: the banner offers "Sign in"`).toBeVisible({ timeout: 2_000 });
+    await expect(ada.page.getByText('Opening note…'), `${what}: "+ Note" no longer holds the keyboard`).toHaveCount(0);
+  };
+  const signedInAgain = async (what: string) => {
+    await expect(ada.page, `${what}: "Sign in" goes to the card, returning here`).toHaveURL(atLogin('/'), { timeout: BOOT_TIMEOUT });
+    await ui.waitForLoginCard(ada);
+    await ui.signInThroughCard(ada, person);
+    await expect(ada.page, `${what}: signing in returns to the same place`).toHaveURL(atPath('/'), { timeout: BOOT_TIMEOUT });
+    await waitForShell(ada);
+  };
+
+  await endAndCreate('the keyboard');
+  await signInButton.focus();
+  await ada.page.keyboard.press('Enter');
+  await signedInAgain('the keyboard');
+
+  await endAndCreate('the mouse');
+  // A real click, hit-tested: nothing of the window's chrome may sit over the banner.
+  await signInButton.click({ timeout: 5_000 });
+  await signedInAgain('the mouse');
 });

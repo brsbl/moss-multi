@@ -130,3 +130,19 @@ it('creates a note in the active folder, and reports each folder’s role for th
   expect(bridge[WORKSPACE].folderRole('Notes/Plans')).toBe('viewer');
   expect(bridge[WORKSPACE].folderRole('Notes/Nowhere')).toBeNull();
 });
+
+it('lets go of a rename the ended session cut off, with the banner’s sentence and no "Try again" (T9.17)', async () => {
+  const server = fakeServer();
+  let end!: () => void;
+  const ended = new Promise<void>((resolve) => { end = resolve; });
+  // The session-aware fetch holds the 401 that ended the session: the PATCH never answers.
+  const fetch = vi.fn<typeof globalThis.fetch>((input, init) =>
+    init?.method === 'PATCH' ? new Promise<Response>(() => undefined) : server.fetch(input, init));
+  const bridge = createBridge({ pathname: () => '/', fetch, sessionEnded: () => ended });
+  await bridge.notes.getAll();
+  const outcome = bridge.folders.rename({ currentPath: 'Notes/Plans', newName: 'Trips' })
+    .then(() => 'renamed', (error: Error) => error.message);
+  end();
+  const settled = await Promise.race([outcome, new Promise((done) => setTimeout(() => done('pending'), 50))]);
+  expect(settled, 'the rename settles, so its input and dialog let go').toBe('Your session has ended. Sign in again to continue.');
+});
