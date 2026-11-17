@@ -573,10 +573,11 @@ test("j06-folders: the browser's Back and Forward move between the notes she ope
   const marked = () => ada.page.evaluate(() => Boolean((window as unknown as { __t919?: boolean }).__t919)
     && Boolean((document.querySelector('[data-moss-app-shell]') as (Element & { __t919?: boolean }) | null)?.__t919));
   await mark();
-  // Back reaches A and B again, Forward B and C: each binds once more in this document.
+  // Back reaches A and B again, Forward B and C: each binds once more in this document. C, the newest note, may also
+  // have opened as the startup note after the reload.
   ada.expectReconnects(1, a);
   ada.expectReconnects(2, b);
-  ada.expectReconnects(1, c);
+  ada.expectReconnects(2, c);
   const shows = async (docId: string, when: string) => {
     await expect(ada.page, `${when}: the address names the note`).toHaveURL(at(docId));
     await ui.waitLive(ada, docId);
