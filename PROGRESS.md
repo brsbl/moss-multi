@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 43% done** (124 of 286 planned tasks verified)
+**Overall: 44% done** (125 of 286 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 72 / 72 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 73 / 73 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -144,6 +144,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T3.B28 verified: a note shaped with thousands of interleaved writers no longer makes the server do quadratic work to answer a reader's sync, and a huge answer can no longer overflow the stack, so any reader still gets the note in bounded time.
 - 2026-11-13 — T3.B31a verified: creating, importing or exporting a large note now needs little more memory than the note at rest, because an import frees its copy before applying and an export reads the live note in place without writing to it, and a CI memory job holds that line for notes of 20,000 blocks and more.
 - 2026-11-13 — T3.B31b verified: a note now stores only the block properties that differ from their defaults, so a large note takes about a third of the memory it did, and the server writes a default back when an older tab empties a key.
+- 2026-11-16 — T3.B31c verified: a note now holds up to 1.02 million characters, as in Google Docs, and a structure ceiling of 165,000 structs, checked alike on live edits, pastes, creates, duplicates and imports, with deletions and format changes given headroom and refusals that name the limit.
 
 ## T1.1s identity audit
 
@@ -565,3 +566,6 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B31b (A note stores only what differs from the defaults) checker P2: the server's default write-back competes with a concurrent user write by client id — lean-defaults.ts:85-87 writes an ordinary map value, so a peer setting the same key at the same moment can lose to the server's default; owned by T3.B33.
 - T3.B31b (A note stores only what differs from the defaults) checker P2: on the earlier build, redoing a first write does nothing after the server's write-back (the write-back is a later remote change, so Yjs refuses that client's redo of its first bold, color, alignment or indent; peers still converge); A§10.11 statement owned by T3.B33.
 - T3.B31b (A note stores only what differs from the defaults) checker P2: default write-backs skip the state-cap admission check — the repair transaction is written after #overCap admitted only the incoming frame (doc-do.ts:683-695; admission.ts:179-187), so a small frame that deletes many keys can push a doc near its cap over it; owned by T3.B33.
+- T3.B31c (The note size limit matches Google Docs and holds on the real server) checker P2: payload map property writes get only the deletion headroom, not the format/property headroom — the payload-frame path (packages/sync/src/doc-do.ts:1606) passes !growth.inserts to #limitMet while the body path passes !growth.content (:1508), so at STRUCT_CAP a keyed-property write on a chart or sketch payload is refused; chart and sketch map keys are content, so any headroom must not let payload content grow past the cap.
+- T3.B31c (The note size limit matches Google Docs and holds on the real server) checker P2: a paste flushed or timed out while named payloads are still arriving is checked with incomplete counts — payloadsArrive (apps/web/src/host/large-paste.ts:207-212) stops on a flush or after 10 s without reporting readiness and landPaste (:865-866) then checks the local payload counts, so the server can refuse such a paste partway; when the wait ends while awaiting() is still non-empty, the preflight should refuse or re-check rather than admit.
+- T3.B31c (The note size limit matches Google Docs and holds on the real server) checker P2: the refusal band does not look like Moss's error notice — compared with Moss's retry toast (story retry-toast--save-failed) it is a flat full-width strip with neutral colours and no warning icon, not a rounded floating toast with Moss's error colours; pre-existing styling outside this task, which changed only the wording.
