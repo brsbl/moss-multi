@@ -1,8 +1,8 @@
 // POST /api/docs takes the largest note it promises (T3.S7, T4.R2; A§18) through the real DocDO in the Node harness:
-// near-cap markdown with comment markers and a moss comments sidecar, every character escaped, lands whole with its
-// threads. body-cap.test.ts holds every route's 413s.
+// markdown at the note's text limit with comment markers and a near-cap moss comments sidecar, every character escaped,
+// lands whole with its threads. body-cap.test.ts holds every route's 413s.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { COMMENTS_SIDECAR_MAX_BYTES, CREATE_BODY_MAX_BYTES, MARKDOWN_MAX_BYTES, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import { DocDO } from '../../../../packages/sync/src/doc-do.ts';
 import { Backing, openDoc, start, wake, type Opened } from '../../../../packages/sync/test/harness/do-harness.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
@@ -37,24 +37,23 @@ beforeAll(async () => {
 }, 60_000);
 afterAll(() => d1?.dispose());
 
-/** The create body before T4.R2, which took the markdown escaped but not a sidecar beside it. */
-const MARKDOWN_ONLY_BODY_MAX_BYTES = MARKDOWN_CAP_BYTES * 6 + 64 * 1024;
-
 describe('note creation at the body cap', () => {
-  it('takes near-cap markdown with markers and a full sidecar, every character escaped, and keeps them all', async () => {
+  it('takes markdown at the text limit with markers and a near-cap sidecar, every character escaped, and keeps them all', async () => {
     // JSON escapes each U+0001 as six bytes.
     const fill = '\u0001'.repeat(1_000);
     const head = 'The %%m:c1:start%%quick brown%%m:c1:end%% fox.\n\n';
-    const paragraphs = Math.floor((MARKDOWN_CAP_BYTES - head.length - 4_096) / (fill.length + 2));
+    const paragraphs = Math.floor((TEXT_CHAR_CAP - 1_000) / fill.length);
     const markdown = `${head}${`${fill}\n\n`.repeat(paragraphs)}`;
-    expect(new TextEncoder().encode(markdown).byteLength).toBeLessThanOrEqual(MARKDOWN_CAP_BYTES);
+    expect(new TextEncoder().encode(markdown).byteLength).toBeLessThanOrEqual(MARKDOWN_MAX_BYTES);
     const at = 1_700_000_000;
     const comments: Record<string, unknown> = { c1: { text: 'On the fox', createdAt: at, updatedAt: at, source: 'user' } };
-    for (let i = 1; i <= 24; i += 1) comments[`r${i}`] = { text: '\u0001'.repeat(10_000), parentId: 'c1', createdAt: at + i, updatedAt: at + i, source: 'user' };
-    expect(new TextEncoder().encode(JSON.stringify(comments)).byteLength, 'the sidecar is within its own cap').toBeLessThanOrEqual(MARKDOWN_CAP_BYTES);
+    for (let i = 1; i <= 32; i += 1) comments[`r${i}`] = { text: '\u0001'.repeat(10_000), parentId: 'c1', createdAt: at + i, updatedAt: at + i, source: 'user' };
+    const sidecarBytes = new TextEncoder().encode(JSON.stringify(comments)).byteLength;
+    expect(sidecarBytes, 'the sidecar is within its own cap').toBeLessThanOrEqual(COMMENTS_SIDECAR_MAX_BYTES);
+    expect(sidecarBytes, 'and fills most of it').toBeGreaterThan(COMMENTS_SIDECAR_MAX_BYTES * 0.9);
     const sent = JSON.stringify({ title: 'Imported', markdown, comments });
     const bytes = new TextEncoder().encode(sent).byteLength;
-    expect(bytes, 'the smaller cap would refuse it').toBeGreaterThan(MARKDOWN_ONLY_BODY_MAX_BYTES);
+    expect(bytes, 'the markdown and the sidecar are each escaped').toBeGreaterThan(paragraphs * fill.length * 6 + sidecarBytes);
     expect(bytes).toBeLessThanOrEqual(CREATE_BODY_MAX_BYTES);
 
     const response = await handleApi(new Request(`${BASE}/api/docs`, {
@@ -73,6 +72,6 @@ describe('note creation at the body cap', () => {
     const map = dobj.document.getMap('comments').toJSON() as Record<string, { text?: string; parentId?: string; author?: string; status?: string }>;
     expect(map['c:c1']).toMatchObject({ text: 'On the fox', author: ada.id });
     expect(map['a:c1']?.status, 'the root is anchored on its marked text').toBe('anchored');
-    for (let i = 1; i <= 24; i += 1) expect(map[`c:r${i}`], `reply r${i}`).toMatchObject({ text: '\u0001'.repeat(10_000), parentId: 'c1' });
+    for (let i = 1; i <= 32; i += 1) expect(map[`c:r${i}`], `reply r${i}`).toMatchObject({ text: '\u0001'.repeat(10_000), parentId: 'c1' });
   }, 300_000);
 });

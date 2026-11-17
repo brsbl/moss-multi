@@ -168,6 +168,32 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  # T3.B31a, T3.B31c: the heap each note at the caps needs to create, wake and export in workerd (V8's heap cap
+  # bisected, 3 of 3 fresh runs), against absolute budgets; notes past each cap are refused with that limit; the tables
+  # land in the job summary. One note per job: each note's bisection takes minutes.
+  memory:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        note: ['^text cap', '^structure cap: .* one-line', '^structure cap: .* list items', '^structure cap: the largest table', '^structure ceiling: .* one-line', '^structure ceiling: .* list items', '^structure ceiling: the largest table', '^past the', '^200k of mixed', '^scattered edits']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: DocDO memory in workerd
+        run: node scripts/measure-memory.mjs
+        env:
+          MEASURE_MEMORY_CASES: ${{ matrix.note }}
+        timeout-minutes: 25
+
   build:
     needs: plan
     if: needs.plan.outputs.build == 'true'
@@ -570,7 +596,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, memory]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
