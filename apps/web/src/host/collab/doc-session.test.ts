@@ -885,7 +885,8 @@ it('a paste whose payload docs are slow to arrive is settled once they have, nev
   expect(rootText(), 'the paste stays').toContain('Alpha 3.');
   expect(updatesSent(socket)).toHaveLength(0);
   expect(storedPastes()[key], 'not settled yet').toBeDefined();
-  Y.applyUpdate(session.payloads.get('code')!, Y.encodeStateAsUpdate(code));
+  // Its state arrives from the server, as the payload sync applies it.
+  Y.applyUpdate(session.payloads.get('code')!, Y.encodeStateAsUpdate(code), session.provider);
   session.payloads.arrived('code');
   await vi.advanceTimersByTimeAsync(1);
   expect(rootText(), 'it landed whole').toContain('Alpha 3.');
