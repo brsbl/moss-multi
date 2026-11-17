@@ -9,7 +9,7 @@ import {
 } from '@moss-desktop/renderer/editor/utils/note-link-clipboard';
 import { displayTitle, liveTitle, writeLiveTitle } from '../collab/title-binding.ts';
 import { subscribeTerminal, terminalOf } from '../collab/terminal.ts';
-import { askDocAccess, rememberRole } from '../access.ts';
+import { askDocAccess, rememberRole, startRoleRead } from '../access.ts';
 import { onNativeMenuCommand } from '../media/image-menu.ts';
 import { chooseFilesInBrowser, createImagesApi } from '../media/uploads.ts';
 import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
@@ -326,12 +326,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (vaultId) query.set('vault', vaultId);
     if (docId) query.set('doc', docId);
     if (folderId) query.set('folder', folderId);
+    // A role is the listing's as of when it was asked: a newer read or access change wins (T9.12).
+    const remember = startRoleRead();
     const pending: Promise<NoteMetadata[]> = listingRequest(`/api/workspace${query.size ? `?${query}` : ''}`).then((data) => {
       if (version !== loadVersion) return listing ?? [];
       const vaultsChanged = JSON.stringify([workspaceSnapshot?.vault, workspaceSnapshot?.vaults]) !== JSON.stringify([data.vault, data.vaults]);
       workspaceSnapshot = data;
       try { storage?.setItem(VAULT_KEY, data.vault.id); } catch { /* An in-memory choice still works. */ }
-      for (const row of data.docs) rememberRole(row.id, row.role);
+      for (const row of data.docs) remember(row.id, row.role);
       const docs = data.docs.map(toNoteMetadata);
       for (const doc of docs) known.set(doc.id, doc);
       if (vaultsChanged) workspaceListeners.forEach((listener) => listener());
@@ -365,6 +367,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const vault = workspaceSnapshot.vault.id;
         const query = new URLSearchParams({ vault });
         if (!full) for (const id of ids) query.append('ids', id);
+        const remember = startRoleRead();
         const data = await listingRequest(`/api/workspace?${query}`);
         if (generation !== channelGeneration) break;
         if (version !== loadVersion) {
@@ -382,7 +385,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         workspaceSnapshot = { ...data, docs };
         const wasTrashed = new Set(pushed.filter((id) => known.get(id)?.trashedAt != null));
         for (const id of removed) known.delete(id);
-        for (const doc of data.docs) { known.set(doc.id, toNoteMetadata(doc)); rememberRole(doc.id, doc.role); }
+        for (const doc of data.docs) { known.set(doc.id, toNoteMetadata(doc)); remember(doc.id, doc.role); }
         listing = Promise.resolve(docs.map(toNoteMetadata));
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));

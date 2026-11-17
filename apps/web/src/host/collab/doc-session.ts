@@ -14,7 +14,7 @@ import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, ty
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { rememberRole } from '../access.ts';
+import { startRoleRead, supersedeRoleReads } from '../access.ts';
 import { onOutdated } from '../client-protocol.ts';
 import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
@@ -160,7 +160,8 @@ function closeNormally(provider: YProvider, held: () => boolean): void {
 const shareToken = (): string | null => new URLSearchParams(window.location.search).get('share');
 
 type AccessAnswer =
-  | { kind: 'role'; role: Role; canWrite: boolean; canSuggest: boolean }
+  /** `remember` applies the role to the tab unless a newer read or an access change superseded this one (T9.12). */
+  | { kind: 'role'; role: Role; canWrite: boolean; canSuggest: boolean; remember: () => boolean }
   | { kind: 'deleted' }
   | { kind: 'gone' }
   | { kind: 'signed-out' }
@@ -172,6 +173,7 @@ type AccessAnswer =
 export async function askAccess(docId: string): Promise<AccessAnswer> {
   const share = shareToken();
   const query = share ? `?share=${encodeURIComponent(share)}` : '';
+  const remember = startRoleRead();
   try {
     return await heldRead((signal) => fetch(`/api/docs/${encodeURIComponent(docId)}/access${query}`, {
       credentials: 'same-origin',
@@ -184,7 +186,7 @@ export async function askAccess(docId: string): Promise<AccessAnswer> {
       const body = (await response.json()) as { role?: unknown; deleted?: unknown };
       if (body.deleted === true) return { kind: 'deleted' };
       return isRole(body.role)
-        ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester') }
+        ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester'), remember: () => remember(docId, body.role) }
         : { kind: 'unknown' };
     }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
@@ -276,7 +278,7 @@ function reaskRole(docId: string): void {
   }
   reasking.set(docId, false);
   void askAccess(docId).then((answer) => {
-    if (answer.kind === 'role' && held.has(docId) && !terminalOf(docId)) rememberRole(docId, answer.role);
+    if (answer.kind === 'role' && held.has(docId) && !terminalOf(docId)) answer.remember();
   }).finally(() => {
     const again = reasking.get(docId);
     reasking.delete(docId);
@@ -292,7 +294,10 @@ export function reaskDocRoles(event: WorkspaceEvent): void {
   if (event.type !== 'meta' && event.type !== 'vaults') return;
   const every = event.type === 'vaults' || event.folderIds.length > 0;
   for (const docId of [...held.keys()]) {
-    if (!terminalOf(docId) && (every || event.docIds.includes(docId))) reaskRole(docId);
+    if (terminalOf(docId) || !(every || event.docIds.includes(docId))) continue;
+    // An answer to a read already under way may predate this change, so it no longer applies.
+    supersedeRoleReads(docId);
+    reaskRole(docId);
   }
 }
 
@@ -637,7 +642,7 @@ export class DocSession {
     this.#reopening = true;
     const answer = await askAccess(this.docId).finally(() => { this.#reopening = false; });
     if (this.#disposed || answer.kind !== 'role' || terminalOf(this.docId) !== 'deleted') return;
-    rememberRole(this.docId, answer.role);
+    answer.remember();
     this.#ended = false;
     this.#failedHandshakes = 0;
     clearTerminal(this.docId);
@@ -820,8 +825,9 @@ export class DocSession {
         this.end('deleted');
         return;
       case 'role':
-        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place).
-        rememberRole(this.docId, answer.role);
+        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place), unless a newer
+        // read answered or access changed meanwhile; the session still acts on what the server said after the close.
+        answer.remember();
         // A suggester's failed handshakes are the network: its suggestions still need delivering, so it reconnects.
         if (!answer.canWrite && !(cause === 'handshake' && answer.canSuggest)) {
           refuseInput(VIEW_ONLY);

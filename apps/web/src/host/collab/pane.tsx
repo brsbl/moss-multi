@@ -174,8 +174,8 @@ class PaneBinding implements SuggestPane {
   readonly #mountListeners = new Set<() => void>();
   /** A raise waits to bind a fresh session at its role (T9.12), even into the mode the pane already shows. */
   #rebind = false;
-  /** What the feedback pill says once the raised pane can do it. */
-  #announce: string | null = null;
+  /** What the feedback pill announces once the raised pane can do it; dropped if the role falls below it first. */
+  #announce: (typeof RAISED)[number] | null = null;
 
   #role: Role | null;
   /** `fromTrash`: the editor holds the Trash view's REST content, which is cleared before the plugin binds. */
@@ -228,6 +228,7 @@ class PaneBinding implements SuggestPane {
       this.#raised(gained);
       return;
     }
+    if (this.#announce && !can(role, this.#announce)) this.#announce = null;
     this.#retarget(previous !== null);
     if (this.#session) this.#apply(this.#session.state);
   }
@@ -238,7 +239,7 @@ class PaneBinding implements SuggestPane {
    * at. Moss's feedback pill says what changed once the pane can do it.
    */
   #raised(gained: (typeof RAISED)[number]): void {
-    this.#announce = RAISED_NOTICE[gained];
+    this.#announce = gained;
     if (!this.#session && gained !== 'comment') this.canWrite = true;
     if (gained === 'comment' || !this.#session) {
       this.#retarget();
@@ -499,7 +500,7 @@ class PaneBinding implements SuggestPane {
       resetting: state.resync || (this.#switching && this.#state.resetting),
       docState: terminal ? 'terminal' : state.retrying ? 'retrying' : !state.synced || state.resync ? 'binding' : state.connection === 'offline' ? 'offline' : 'live',
     });
-    const message = this.#announce;
+    const message = this.#announce && RAISED_NOTICE[this.#announce];
     if (message && session && !terminal && !this.#switching && state.synced && !state.resync && this.#mountReady) {
       this.#announce = null;
       queueMicrotask(() => showActionFeedback(this.docId, { type: 'success', message }));
