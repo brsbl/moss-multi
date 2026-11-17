@@ -95,7 +95,10 @@ export interface BrowserHooks {
   /** This tab's session storage, and its opener's when an opener of this origin exists. */
   session: SessionStore | null;
   openerSession(): Pick<Storage, 'getItem'> | null;
+  /** A new history entry at `path`, the browser's Back returning to this one (T9.19). */
+  pushPath(path: string): void;
   replacePath(path: string): void;
+  /** The browser's Back or Forward reached a note's address (`/d/<id>`) while moss is mounted. */
   onPopState(listener: () => void): () => void;
   copy(text: string, html: string): Promise<void>;
   /** The file chooser behind "/media → From computer"; `[]` when dismissed. */
@@ -151,6 +154,8 @@ const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 const PDF_SESSION_KEY = 'moss-multi:pdf-export';
 /** How long Save as Markdown waits for unacked edits before refusing. */
 export const EXPORT_ACK_WAIT_MS = 8_000;
+/** How long after the browser's Back or Forward the focused note may still be on its way to the note it chose. */
+const POP_SETTLE_MS = 3_000;
 /** A listing read with no answer, headers or body, by then is given up and asked again. */
 export const LISTING_DEADLINE_MS = 15_000;
 /** moss reads other notes' content (file-link previews, workspace formulas) at most this many at a time (A§9). */
@@ -251,6 +256,7 @@ export const inertBrowser: BrowserHooks = {
   download: noop,
   session: null,
   openerSession: () => null,
+  pushPath: noop,
   replacePath: noop,
   onPopState: () => noop,
   copy: async () => undefined,
@@ -300,6 +306,11 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const token = share();
     return token ? `${path}?share=${encodeURIComponent(token)}` : path;
   };
+  // The address's history (T9.19): the notes the panes show, the focused note with the panes then, and the note the
+  // browser's Back or Forward last chose.
+  let shownNotes: string[] = [];
+  let focused: { id: string | null; panes: string[] } | null = null;
+  let popped: { id: string; until: number } | null = null;
 
   // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
   const known = new Map<string, NoteMetadata>();
@@ -851,7 +862,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       search,
       getFilesystemPath: async (id: string) => docUrl(id),
-      setOpenFileWatchTargets: none,
+      // The notes moss's panes show, reported just before the focused one (App.tsx): see setFocusedNoteId.
+      setOpenFileWatchTargets: async (ids: string[]) => {
+        shownNotes = [...ids];
+      },
       copyLinkToClipboard: async (id: string, input: { noteTitle?: string } = {}) => {
         const note = await byId(id);
         const { payload } = buildCopyNoteLinkClipboardData({ noteId: id, noteTitle: input.noteTitle ?? note?.title ?? '', folderPath: ROOT_FOLDER });
@@ -901,9 +915,12 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
           void refreshForNavigation(id);
           callback?.(id);
         };
+        // The browser's Back or Forward opens the note through moss's own switch, which adds no history entry.
         const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
-          if (id && callback) open(id);
+          if (!id || !callback) return;
+          popped = { id, until: Date.now() + POP_SETTLE_MS };
+          open(id);
         });
         // The bell's notices open a note through moss's own switch (navigation.ts, A§9).
         const offOpen = callback ? registerDocOpener(open) : noop;
@@ -1006,13 +1023,28 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       getWindowContext: async () => ({ windowId: 1, initialNoteId: docIdFromPath(pathname()), launchReason: 'initial-launch' as const, openedFromWindowId: null }),
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
+      // A pane going to another note is a visit with its own history entry, so the browser's Back returns to the note
+      // before it (T9.19). The first note, a redirect, a trashed note's successor and focus moving between split panes
+      // (a note that was already showing, or one still showing) replace the address instead.
       setFocusedNoteId: async (id: string | null) => {
-        if (id && known.get(id)?.trashedAt == null) watchBacklinks(id);
+        const before = focused;
+        focused = { id, panes: shownNotes };
+        const live = (noteId: string) => known.get(noteId)?.trashedAt == null;
+        if (id && live(id)) watchBacklinks(id);
         // A trashed note has no address: a fresh load of it is the one 404 (A§8).
-        if (id && known.get(id)?.trashedAt == null && docIdFromPath(pathname()) !== id) {
-          browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
-          await refreshForNavigation(id);
-        }
+        if (!id || !live(id)) return;
+        const address = docIdFromPath(pathname());
+        if (popped?.id === id) popped = null;
+        if (address === id) return;
+        // Back or Forward chose a note moss is still switching to; the notes it passes on the way are not visits.
+        if (popped && popped.id === address && Date.now() < popped.until) return;
+        popped = null;
+        const visit = before?.id != null && before.id === address && live(before.id)
+          && !before.panes.includes(id) && !shownNotes.includes(before.id);
+        const path = withShare(`/d/${encodeURIComponent(id)}`);
+        if (visit) browser.pushPath(path);
+        else browser.replacePath(path);
+        await refreshForNavigation(id);
       },
       startWindowDrag: none,
       moveWindowDrag: none,
@@ -1112,9 +1144,17 @@ function windowBrowser(): BrowserHooks {
     // Moss keeps its own back and forward (A§9 navigation), so the address changes without the router: TanStack wraps
     // window.history.replaceState, and the route change it reports would remount moss's whole App.
     replacePath: (path) => History.prototype.replaceState.call(window.history, window.history.state, '', path),
+    pushPath: (path) => History.prototype.pushState.call(window.history, window.history.state, '', path),
+    // Back or Forward between two notes is moss's to handle: the router never hears it, as it never heard the entries
+    // (it would load the route again). Capture on window runs before the router's own listener there.
     onPopState: (listener) => {
-      window.addEventListener('popstate', listener);
-      return () => window.removeEventListener('popstate', listener);
+      const pop = (event: PopStateEvent) => {
+        if (!docIdFromPath(window.location.pathname)) return;
+        event.stopImmediatePropagation();
+        listener();
+      };
+      window.addEventListener('popstate', pop, true);
+      return () => window.removeEventListener('popstate', pop, true);
     },
     copy: async (text, html) => {
       if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return navigator.clipboard.writeText(text);
