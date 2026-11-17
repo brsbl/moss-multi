@@ -10,7 +10,7 @@ import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
-import { footerDestination } from './footer.ts';
+import { footerDestination, handOffWhenGone } from './footer.ts';
 import type { Notice } from '../notifications.ts';
 
 /** How many notices the open inbox lists. */
@@ -76,33 +76,9 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
     setOpen(next);
     if (next) navigating.current = false;
     if (next || !bar?.current) return;
-    // The bell may leave with its inbox, now or once the read marks land. If it does before the person does anything
-    // else, focus, which was in the inbox, goes to the inbox's own home rather than wherever the closing menu left it.
-    const home = bar.current;
-    const destination = footerDestination(home);
-    const started = performance.now();
-    let acted = false;
-    const act = () => { acted = true; };
-    const opts = { capture: true };
-    window.addEventListener('pointerdown', act, opts);
-    window.addEventListener('keydown', act, opts);
-    const done = () => {
-      window.removeEventListener('pointerdown', act, opts);
-      window.removeEventListener('keydown', act, opts);
-    };
-    const settle = () => {
-      if (navigating.current || acted) return done();
-      if (home.querySelector('button[aria-label^="Notifications"]')) {
-        if (performance.now() - started < 2_000) requestAnimationFrame(settle);
-        else done();
-        return;
-      }
-      done();
-      // Never take focus back from a field the person moved to (the editor, a search box).
-      if (document.activeElement?.closest('input, textarea, select, [contenteditable="true"]')) return;
-      destination?.focus();
-    };
-    requestAnimationFrame(settle);
+    // The bell may leave with its inbox, now or once the read marks land: focus then goes to the inbox's own home.
+    const destination = footerDestination(bar.current);
+    handOffWhenGone(bar.current, 'button[aria-label^="Notifications"]', () => destination, () => navigating.current);
   };
   return (
     <Menu open={open} onOpenChange={onOpenChange}>

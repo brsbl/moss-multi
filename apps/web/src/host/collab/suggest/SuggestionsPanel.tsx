@@ -19,6 +19,7 @@ import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { sessionFetch } from '../../session-fetch.ts';
+import { handOffWhenGone } from '../../surfaces/footer.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
@@ -374,15 +375,9 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
   const [pinned, setPinned] = useState(false);
-  // Whether the count was the panel's activator when it closed: only then can focus have been on it.
-  const pinnedAtClose = useRef(false);
   const shown = showCount && open.length > 0;
   if (isOpen && shown && !pinned) setPinned(true);
-  if (!isOpen && pinned) {
-    pinnedAtClose.current = true;
-    setPinned(false);
-  }
-  if (isOpen && pinned) pinnedAtClose.current = false;
+  if (!isOpen && pinned) setPinned(false);
   if (role === null) return null;
   const reviewing = mode === 'review';
   // While the panel is open the count it opened from stays, even when the pane narrows or the last suggestion closes.
@@ -393,7 +388,12 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
         open={isOpen}
         onOpenChange={(next) => {
           if (next) openSuggestion(docId, null);
-          else closePanel(docId);
+          else {
+            closePanel(docId);
+            // The count that opened the list leaves its slot once the list closes: focus goes to More actions.
+            const bar = anchor?.current?.closest<HTMLElement>(`[${TOP_BAR_ATTR}]`);
+            if (pinned && bar) handOffWhenGone(bar, `[${SUGGESTIONS_BUTTON_ATTR}]`, () => bar.querySelector<HTMLElement>('button[aria-label="More actions"]'));
+          }
         }}
       >
         {counted ? (
@@ -425,14 +425,6 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
             collisionPadding={16}
             className="z-50 flex max-h-comment-list-popover w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-floating shadow-surface outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
             onOpenAutoFocus={(event) => event.preventDefault()}
-            onCloseAutoFocus={(event) => {
-              // The count is about to leave its slot: hand focus to the pane's own More actions instead.
-              if (shown || !pinnedAtClose.current) return;
-              const more = anchor?.current?.closest(`[${TOP_BAR_ATTR}]`)?.querySelector<HTMLElement>('button[aria-label="More actions"]');
-              if (!more) return;
-              event.preventDefault();
-              more.focus();
-            }}
             onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onFocusOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
