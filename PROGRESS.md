@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 79% done** (240 of 302 planned tasks verified)
+**Overall: 80% done** (241 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 13 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 14 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -263,6 +263,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T9.8 verified: inviting someone to a note says plainly that no email is sent and offers the invite link to copy, Copy confirms on its own button, and a bare name without an email is not sent.
 - 2026-11-17 — T9.12 verified: when the owner raises someone's access, their open note switches to the new role without a reload, waiting for their own edits to land first, and says once that they can now edit (or suggest, or comment).
 - 2026-11-17 — T9.44 verified: an HTML block's source keeps its own scrolling viewport when the preview is short, and a formula being typed shows as Moss's padded, rounded chip under its text.
+- 2026-11-17 — T9.21 verified: the first click into a table just inserted from the slash menu now behaves as pristine Moss does (a quick click in a new note can be dropped there too), and j01 and a parity leg pin that typed text stays inside the table.
 
 ## T1.1s identity audit
 
@@ -302,6 +303,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.21's checker (7d1bad2, 2026-11-17)
+
+- T9.21 (Find out why the first click into a new table is ignored) checker P2: the milestone PR should record the disposition "same as Moss, no code change": pristine Moss at the pin also drops a quick first click into a table just inserted from the slash menu in a new note (parity run https://github.com/brsbl/moss-multi/actions/runs/44065606002).
+- T9.21 (Find out why the first click into a new table is ignored) checker P2: the j01 new-note quick case accepts either [2,2] or [1,0], so it cannot notice the race becoming more or less frequent; first-click.ts finds the first cell containing 'x', so it does not prove the text was not also duplicated in another cell.
 
 ### From T9.44's checker (22a4eec, 2026-11-17)
 
