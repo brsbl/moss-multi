@@ -18,7 +18,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  import { hydrateComments } from './editor/utils/comment-import';
  import { noteIntelligenceEnabledAtom, pendingAgentCommentContextAtom, promptDraftAtom } from '@moss/shared/state/atoms';
  import { connectedFolderEntriesAtom, contextPillsAtom, setMentionPillsAtom } from './state/granted-dirs-atoms';
-@@ -167,6 +169,12 @@ import {
+@@ -167,6 +169,16 @@ import {
    isRendererDevelopment,
    isRendererProduction
  } from './utils/renderer-env';
@@ -26,12 +26,16 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
 +import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: new-note (A§9, R2)
 +import { armOpeningGuard } from '@moss-multi/host/opening-guard';
++// moss-multi seam: capabilities (T3.B17): "+ Note" and Cmd/Ctrl+N create only where the caller may add notes
++import { canCreateNote, noteTargetFolder } from '@moss-multi/host/folders';
++// moss-multi seam: notice-stack (T3.B17): a failure notice never covers the open note's Trash notice
++import { standAboveTrashNotice } from '@moss-multi/host/notice-stack';
 +// moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
 +import { useNarrow } from '@moss-multi/host/viewport';
  
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
  const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
-@@ -312,27 +320,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
+@@ -312,27 +324,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
    };
  };
  
@@ -65,7 +69,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const module = await import('./panels/TrashedNotesPanelContent');
    return { default: module.TrashedNotesPanelContent };
  }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
-@@ -1138,10 +1147,11 @@ export function App() {
+@@ -1138,10 +1151,11 @@ export function App() {
    const didInitializeStartupSelectionRef = useRef(false);
    const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
  
@@ -79,7 +83,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    }, []);
    const handleBodyFocusComplete = useCallback(() => {
      setShouldFocusBody(false);
-@@ -1155,6 +1165,9 @@ export function App() {
+@@ -1155,6 +1169,9 @@ export function App() {
    const toggleZenMode = useSetAtom(toggleZenModeAtom);
    const notesPanelWrapperRef = useRef<HTMLDivElement | null>(null);
    const [showZenNotesPanel, setShowZenNotesPanel] = useState(false);
@@ -89,7 +93,24 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const [showZenTopBar, setShowZenTopBar] = useState(false);
    const [updateInfo, setUpdateInfo] = useState<UpdateReadyInfo | null>(null);
    const [selectedContext, setSelectedContext] = useState<string | null>(null);
-@@ -2859,7 +2872,7 @@ export function App() {
+@@ -2846,11 +2863,11 @@ export function App() {
+ 
+     // Always create regular notes in a non-system folder.
+     // If the active folder is a system folder, fall back to root.
+-    const folders = store.get(backendFoldersAtom);
+-    const isBlockedSystemFolder = folders.some(
+-      (f) => f.path === activeFolderPath && f.type === 'system'
+-    );
+-    const targetFolderPath = isBlockedSystemFolder ? 'Notes' : activeFolderPath;
++    // moss-multi seam: capabilities (T3.B17): one target rule with "+ Note", and no create where the caller can't add.
++    const targetFolderPath = noteTargetFolder(activeFolderPath, store.get(backendFoldersAtom));
++    if (!canCreateNote(targetFolderPath)) {
++      return null;
++    }
+ 
+     const finishCreation = (note: MockNote, preloadedRecord?: NoteWithContent): MockNote => {
+       insertNote(note);
+@@ -2859,7 +2876,7 @@ export function App() {
        }
        navigateToNote(note.id);
        if (focusTarget === 'title') {
@@ -98,10 +119,12 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        } else {
          setShouldFocusBody(true);
        }
-@@ -2917,11 +2930,16 @@ export function App() {
+@@ -2917,12 +2934,19 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
++    // moss-multi seam: capabilities (T3.B17): Cmd/Ctrl+N where "+ Note" is not offered does nothing, focus included.
++    if (!canCreateNote(noteTargetFolder(activeFolderPath, store.get(backendFoldersAtom)))) return;
 +    // moss-multi seam: new-note (A§9, R2): the trigger lets go of focus, and keys typed before the note binds are
 +    // refused visibly rather than lost or pressing "+ Note" again.
 +    const opening = armOpeningGuard();
@@ -111,12 +134,14 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        return;
      }
 -    await createAndActivateNote({ focusTarget: 'body' });
+-  }, [createAndActivateNote, flushBeforeNoteSwitch]);
 +    if (await createAndActivateNote({ focusTarget: 'title' })) opening.created();
 +    else opening.disarm();
-   }, [createAndActivateNote, flushBeforeNoteSwitch]);
++  }, [activeFolderPath, createAndActivateNote, flushBeforeNoteSwitch, store]);
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
-@@ -2932,35 +2950,7 @@ export function App() {
+     const canSwitch = await flushBeforeNoteSwitch();
+@@ -2932,35 +2956,7 @@ export function App() {
      if (!entity) return;
  
      try {
@@ -153,7 +178,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        const note = mapRecordToMockNote(persistedRecord);
        insertNote(note);
        applyNoteRecordToStore(persistedRecord);
-@@ -3127,14 +3117,8 @@ export function App() {
+@@ -3127,14 +3123,8 @@ export function App() {
    const handleRenameNote = useCallback(
      (noteId: string) => {
        handleSelectNote(noteId);
@@ -170,7 +195,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      },
      [handleSelectNote]
    );
-@@ -3159,7 +3143,8 @@ export function App() {
+@@ -3159,7 +3149,8 @@ export function App() {
              noteId,
              error
            });
@@ -180,7 +205,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
            await reconcileNotesFromDisk('restore-error', noteId);
            return;
          }
-@@ -3788,7 +3773,8 @@ export function App() {
+@@ -3788,7 +3779,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -190,7 +215,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3914,8 +3900,21 @@ export function App() {
+@@ -3914,8 +3906,21 @@ export function App() {
    }, [store, activeNoteId]);
  
    const handleCollapseNotesPanel = useCallback(() => {
@@ -213,7 +238,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
    const handleOpenActionImages = useCallback((sources: string[], startIndex: number) => {
      if (!sources.length) return;
-@@ -3942,12 +3941,13 @@ export function App() {
+@@ -3942,12 +3947,13 @@ export function App() {
      onRestoreNote: handleNoteRestored,
      onNavigateToNote: handleSelectNote,
      isActionsPanelHidden: actionsPanelHidden,
@@ -230,7 +255,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4047,7 +4047,7 @@ export function App() {
+@@ -4047,7 +4053,7 @@ export function App() {
        searchBarAutoFocus={searchBarAutoFocus}
        onCloseSearch={handleCloseSearch}
        onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
@@ -239,7 +264,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
-@@ -4063,6 +4063,7 @@ export function App() {
+@@ -4063,6 +4069,7 @@ export function App() {
        feedbackTooltipOpen={feedbackTooltipFixtureOpen}
        mode={appMode}
        onModeChange={handlePanelViewChange}
@@ -247,7 +272,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onOpenFeedback={() => setFeedbackDialogOpen(true)}
        onOpenSettings={async () => {
          handleCloseSearch();
-@@ -4072,8 +4073,8 @@ export function App() {
+@@ -4072,8 +4079,8 @@ export function App() {
      />
    );
  
@@ -258,7 +283,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const notesPanelWidthPx = notesListWidth + NOTES_PANEL_RESIZER_WIDTH_PX;
  
    const notePanelContent =
-@@ -4108,11 +4109,13 @@ export function App() {
+@@ -4108,11 +4115,13 @@ export function App() {
          notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
          notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
          notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',
@@ -272,3 +297,12 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      >
        <div
          className="flex h-full min-w-0 shrink-0 overflow-hidden"
+@@ -4199,6 +4208,8 @@ export function App() {
+       <SnapshotUiFixtureLayer fixture={automationUiFixture} />
+       {operationFailure ? (
+         <div
++          key={operationFailure.id /* moss-multi seam: notice-stack (T3.B17): each notice measures where it stands */}
++          ref={standAboveTrashNotice}
+           className="pointer-events-none fixed bottom-8 left-1/2 z-50 -translate-x-1/2"
+           style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+         >

@@ -38,14 +38,14 @@ function stackRun({ status = 'running', session = null } = {}) {
 }
 
 /** A fake `bb browser-automation`: records every call; `list` reports `sessions`; `run` defers to `onRun`. */
-function fakeBb({ onRun = null, sessions = [] } = {}) {
+function fakeBb({ onRun = null, onClose = null, sessions = [] } = {}) {
   const calls = [];
   const bb = async (args) => {
     calls.push(args);
     const [command] = args;
     if (command === 'list') return sessions;
     if (command === 'open') return { id: 'sid-1', state: 'ready', previewDirective: '::browser-preview{session="sid-1"}' };
-    if (command === 'close') return { id: args[1], state: 'closed' };
+    if (command === 'close') return onClose ? onClose(args) : { id: args[1], state: 'closed' };
     if (command === 'run') return onRun ? onRun(args) : { text: 'ok', images: [], exitCode: 0, hostId: 'host_test' };
     throw new Error(`unexpected bb ${command}`);
   };
@@ -178,6 +178,24 @@ describe('close', () => {
     const { bb, calls } = fakeBb();
     await closeSession({ runId: 'r1' }, { runsDir, bb });
     expect(calls).toEqual([['close', 'sid-1']]);
+    expect(existsSync(join(dir, 'qa.json'))).toBe(false);
+  });
+
+  it('forgets a session bb reports already expired', async () => {
+    const { runsDir, dir } = stackRun({ session: 'sid-1' });
+    const { bb } = fakeBb({ onClose: () => { throw new Error('session_unavailable: sid-1'); } });
+    await expect(closeSession({ runId: 'r1' }, { runsDir, bb })).resolves.toEqual({ closed: 'sid-1' });
+    expect(existsSync(join(dir, 'qa.json'))).toBe(false);
+  });
+
+  it('keeps the session recorded when the close fails otherwise, so a retry can close it', async () => {
+    const { runsDir, dir } = stackRun({ session: 'sid-1' });
+    const broken = fakeBb({ onClose: () => { throw new Error('ECONNRESET'); } });
+    await expect(closeSession({ runId: 'r1' }, { runsDir, bb: broken.bb })).rejects.toThrow(/ECONNRESET/);
+    expect(JSON.parse(readFileSync(join(dir, 'qa.json'), 'utf8')).sessionId).toBe('sid-1');
+    const working = fakeBb();
+    await closeSession({ runId: 'r1' }, { runsDir, bb: working.bb });
+    expect(working.calls).toEqual([['close', 'sid-1']]);
     expect(existsSync(join(dir, 'qa.json'))).toBe(false);
   });
 });

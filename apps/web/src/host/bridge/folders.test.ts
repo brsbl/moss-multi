@@ -117,8 +117,10 @@ it('creates a note in the active folder, and reports each folder’s role for th
   const server = fakeServer();
   const bridge = createBridge({ pathname: () => '/', fetch: server.fetch });
   await bridge.notes.getAll();
-  await bridge.notes.create('Untitled', 'Notes/Plans');
+  const created = await bridge.notes.create('Untitled', 'Notes/Plans');
   expect(server.calls).toContainEqual({ method: 'POST', path: '/api/docs', body: { folderId: 'f-plans' } });
+  // The answer names the folder by id; moss reads the new note's folder from the record, so it is the one asked for.
+  expect(created.folderPath, 'the new note is in the folder it was made in (T3.B17)').toBe('Notes/Plans');
   expect(bridge[WORKSPACE].folderRole('Notes/Plans')).toBe('owner');
   expect(bridge[WORKSPACE].folderRole('Notes')).toBe('owner');
   server.state.vaultRole = 'viewer';

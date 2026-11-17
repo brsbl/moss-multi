@@ -182,7 +182,7 @@ export async function runScript({ runId, file = null, body = null, timeout = DEF
   return { result: output.text ?? '', exitCode: output.exitCode ?? 0, shots };
 }
 
-/** Closes the run's session (an already expired one too) and forgets it. */
+/** Closes the run's session (an already expired one too) and forgets it; any other failure keeps it for a retry. */
 export async function closeSession({ runId }, deps = defaultDeps()) {
   const qaPath = join(runDir(runId, deps.runsDir), 'qa.json');
   if (!existsSync(qaPath)) fail(`no browser session recorded for stack run ${runId}`);
@@ -191,9 +191,8 @@ export async function closeSession({ runId }, deps = defaultDeps()) {
     await deps.bb(['close', sessionId]);
   } catch (error) {
     if (!/session_unavailable|not found|closed|expired/i.test(error.message)) throw error;
-  } finally {
-    rmSync(qaPath, { force: true });
   }
+  rmSync(qaPath, { force: true });
   return { closed: sessionId };
 }
 

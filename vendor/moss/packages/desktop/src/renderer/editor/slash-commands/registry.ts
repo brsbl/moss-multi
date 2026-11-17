@@ -625,7 +625,7 @@ export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
     }
   }
   // moss-multi seam: hide-registry (A§9)
-].filter((command) => !(command.id === 'emoji' && hidden('emoji-panel')) && !(command.id === 'media' && hidden('media-upload')));
+].filter((command) => !(command.id === 'emoji' && hidden('emoji-panel')));
 
 /**
  * Filter commands based on search query

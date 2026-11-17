@@ -35,6 +35,50 @@ declare module '@moss-desktop/renderer/editor/utils/note-link-clipboard' {
   export function buildMossNoteLinkClipboardHtml(payload: MossNoteLinkClipboardPayload): string;
 }
 
+declare module '@moss-desktop/common/embed-iframe-policy' {
+  export type EmbedIframeRiskProfile = 'local-html-preview' | 'remote-oembed-preview' | 'remote-social-embed' | 'remote-video' | 'remote-webpage';
+  export function getEmbedIframePolicy(riskProfile: EmbedIframeRiskProfile): {
+    riskProfile: EmbedIframeRiskProfile;
+    sandbox: string;
+    referrerPolicy?: import('react').HTMLAttributeReferrerPolicy;
+    loading?: 'lazy' | 'eager';
+    allow?: string;
+    allowFullScreen?: boolean;
+  };
+}
+
+declare module '@moss-desktop/common/web-embed-url' {
+  export function resolveRemoteWebSurfaceUrl(text: string): string;
+}
+
+declare module '@moss-desktop/common/web-embed-preview' {
+  export type WebEmbedPreviewMetadata = Record<string, string | number | boolean | null>;
+  export interface WebEmbedPreviewDescriptor { normalizedUrl: string; urlHash: string; cacheKey: string }
+  export interface WebEmbedPreviewResult {
+    kind: 'web-embed-preview';
+    sourceKey: string;
+    sourceSignature: string;
+    cacheKey: string;
+    status: 'resolved' | 'fallback' | 'failed';
+    assetRelativePath?: string;
+    html?: string;
+    metadata?: WebEmbedPreviewMetadata;
+    generatedAt?: string;
+    expiresAt?: string;
+    errorCode?: string;
+  }
+  export function getWebEmbedPreviewDescriptor(url: string): WebEmbedPreviewDescriptor | null;
+  export function createWebEmbedFallbackMetadata(normalizedUrl: string, extras?: WebEmbedPreviewMetadata): WebEmbedPreviewMetadata;
+  export function createWebEmbedPreviewResult(input: {
+    descriptor: WebEmbedPreviewDescriptor;
+    status: WebEmbedPreviewResult['status'];
+    assetRelativePath?: string;
+    metadata?: WebEmbedPreviewMetadata;
+    generatedAt?: string;
+    expiresAt?: string;
+  }): WebEmbedPreviewResult;
+}
+
 declare module '@moss-desktop/renderer/editor/utils/editorUpdateTags' {
   export const DIRTY_TRACKER_DERIVED_TAGS: ReadonlySet<string>;
 }
@@ -107,8 +151,11 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
 
 // The notes list's context-menu item, which the folder "Share…" slot renders (T2.4).
 declare module '@moss/shared/components/ui/context-menu' {
-  import type { ComponentType, HTMLAttributes } from 'react';
-  export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
+  import type { ComponentType, ForwardRefExoticComponent, HTMLAttributes, ReactElement, ReactNode, RefAttributes } from 'react';
+  export const ContextMenu: ComponentType<{ children: ReactNode }>;
+  export const ContextMenuTrigger: ForwardRefExoticComponent<{ render?: ReactElement } & RefAttributes<HTMLElement>>;
+  export const ContextMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { onCloseAutoFocus?: (event: Event) => void }>;
+  export const ContextMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { disabled?: boolean; onSelect?: (event: Event) => void }>;
 }
 
 declare module '@moss/shared/components/ui/input' {
@@ -152,6 +199,14 @@ declare module '@moss-desktop/renderer/editor/markdown/transformers' {
   }
   export function $collectTableLayoutMetadata(): LocalLayoutMetadata;
   export function $collectTabGroupLayoutMetadata(): Pick<LocalLayoutMetadata, 'tabGroupCount' | 'tabGroups'>;
+}
+
+// The module a substitute replaces, at the pin (A§2.1; vite.config.ts `substitutes`).
+declare module '@moss-pristine/asset-url' {
+  export const REMOTE_URL_PATTERN: RegExp;
+  export function normalizeLocalAssetPathForDisplay(src: string): string;
+  export function toDisplaySrc(src: string, noteId?: string | null): string;
+  export function fromDisplaySrc(src: string, currentNoteId?: string | null): string;
 }
 
 declare module '@moss-desktop/renderer/panels/notesPanelUtils' {

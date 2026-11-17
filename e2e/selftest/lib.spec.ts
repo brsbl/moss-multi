@@ -1,14 +1,19 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
 // the sever, the reach sweep and the UI verbs.
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { request } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
-import { classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { socketProblems } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
 import { unreachableControls } from '../lib/reach.js';
 import { makeSeverable } from '../lib/sever.ts';
+import type { SocketEntry } from '../lib/telemetry.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
 import { expect, test } from './fixtures.ts';
@@ -28,6 +33,41 @@ test.describe('exact bytes (invariant 7)', () => {
     expect(typedProblems('two one', [typed('one'), typed('two')])).not.toEqual([]);
     expect(typedProblems('two one', [typed('one'), typed('two', 'ben')])).toEqual([]);
     expect(typedProblems('two one', [typed('one', 'ada', false), typed('two', 'ada', false)])).toEqual([]);
+  });
+});
+
+test.describe('API request connections', () => {
+  test("each request through an actor's API context goes out on a connection of its own", async () => {
+    const sockets = new Set<number>();
+    const server = createServer((req, res) => {
+      sockets.add(req.socket.remotePort ?? 0);
+      res.end('ok');
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+    const api = closeEachConnection(await request.newContext());
+    try {
+      await api.get(url);
+      await api.post(url, { data: { a: 1 } });
+      await api.fetch(url, { method: 'GET' });
+      expect(sockets.size, 'no request reuses a pooled connection').toBe(3);
+    } finally {
+      await api.dispose();
+      server.close();
+    }
+  });
+});
+
+test.describe('doc sockets (invariant 3)', () => {
+  const socket = (openedAt: number, closedAt: number | null, close: string | null = null): SocketEntry => (
+    { url: `ws://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 0, openedAt, closedAt, error: null, close }
+  );
+  test('two sockets the page lost to a navigation, with no close heard, are still two opens and an overlap', () => {
+    expect(socketProblems([socket(0, 5_000), socket(100, 5_000)], new Map())).toHaveLength(2);
+  });
+  test("a browser-only socket closed at once, beside the page's one, is not the page's", () => {
+    expect(socketProblems([socket(0, null), socket(10, 11)], new Map())).toEqual([]);
+    expect(socketProblems([socket(0, null), socket(10, 11, '1000')], new Map())).not.toEqual([]);
   });
 });
 

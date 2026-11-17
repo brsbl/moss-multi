@@ -1,0 +1,26 @@
+{
+  // The contract, the frame editor, the host helpers (plain JS, checked against the contract by the tests), their
+  // tests and the build config; vendored moss stops at src/moss-modules.d.ts.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "allowJs": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "paths": {
+      "@moss-editor/*": ["./src/*.ts"],
+      "@moss-multi/host/*": ["../../apps/web/src/host/*"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

@@ -12,31 +12,72 @@ export type Ack = Extract<ServerEvent, { t: 'ack' }>;
 /** The note's own writes. */
 const NOTE = '';
 
+interface Write {
+  update: Uint8Array;
+  /** The clocks it reaches. */
+  ends: Map<number, number>;
+  /** A payload write the DocDO's last usage figure may already include (made before it, still unacked). */
+  counted?: boolean;
+}
+
 interface Pending {
-  updates: Uint8Array[];
-  acked: DeleteSet[];
+  writes: Write[];
+  /** Every delete acked since the writes were made, merged as each ack arrives. */
+  acked: DeleteSet | null;
   sv: Map<number, number>;
+}
+
+/** Payload `id`'s entry in an ack: an own key holding an object, so an id like `constructor` reads nothing inherited. */
+function payloadCoverage(ack: Ack, id: string): PayloadAck | undefined {
+  const entry: unknown = ack.p && Object.hasOwn(ack.p, id) ? ack.p[id] : undefined;
+  return entry !== null && typeof entry === 'object' && typeof (entry as PayloadAck).sv === 'string' ? (entry as PayloadAck) : undefined;
 }
 
 export class AckLedger {
   readonly #pending = new Map<string, Pending>();
+  /** Payloads whose writes are set aside (PayloadSync parks them): kept and settled by acks, but not unacked. */
+  readonly #parked = new Set<string>();
 
   /** Some local write is not yet covered by an ack. */
   get unacked(): boolean {
-    return this.#pending.size > 0;
+    for (const id of this.#pending.keys()) if (!this.#parked.has(id)) return true;
+    return false;
   }
 
   /** A local write, as the doc emitted it: the note's, or payload `id`'s. */
   wrote(update: Uint8Array, id: string = NOTE): void {
     let pending = this.#pending.get(id);
-    if (!pending) this.#pending.set(id, (pending = { updates: [], acked: [], sv: new Map() }));
-    pending.updates.push(update);
+    if (!pending) this.#pending.set(id, (pending = { writes: [], acked: null, sv: new Map() }));
+    pending.writes.push({ update, ends: Y.parseUpdateMeta(update).to });
+  }
+
+  /** Sets payload `id`'s writes aside (true), or counts them as unacked again (false). */
+  park(id: string, parked: boolean): void {
+    if (parked) this.#parked.add(id);
+    else this.#parked.delete(id);
   }
 
   /** Replay only unacknowledged writes if a channel recovers without reconnecting. */
   pendingUpdate(id: string = NOTE): Uint8Array | null {
-    const updates = this.#pending.get(id)?.updates;
-    return updates?.length ? Y.mergeUpdates(updates) : null;
+    const writes = this.#pending.get(id)?.writes;
+    return writes?.length ? Y.mergeUpdates(writes.map((write) => write.update)) : null;
+  }
+
+  /**
+   * The bytes of the payload writes no ack has covered yet, made since the DocDO's last usage figure: growth that
+   * figure does not include. One made before it may have persisted with its ack lost, and is in it (B207).
+   */
+  pendingPayloadBytes(): number {
+    let bytes = 0;
+    for (const [id, pending] of this.#pending) {
+      if (id !== NOTE) for (const write of pending.writes) if (!write.counted) bytes += write.update.byteLength;
+    }
+    return bytes;
+  }
+
+  /** The DocDO reported its usage: every payload write pending now is counted in it. */
+  usageReported(): void {
+    for (const [id, pending] of this.#pending) if (id !== NOTE) for (const write of pending.writes) write.counted = true;
   }
 
   /** The payloads with unacked writes. */
@@ -47,15 +88,27 @@ export class AckLedger {
   /** Reads an ack; true when it settles every pending write. */
   acked(ack: Ack): boolean {
     for (const [id, pending] of [...this.#pending]) {
-      const coverage: PayloadAck | undefined = id === NOTE ? ack : ack.p?.[id];
+      const coverage = id === NOTE ? ack : payloadCoverage(ack, id);
       if (!coverage) continue;
-      if (coverage.ds) pending.acked.push(Y.decodeSnapshot(base64ToBytes(coverage.ds)).ds);
+      if (coverage.ds) {
+        const ds = Y.decodeSnapshot(base64ToBytes(coverage.ds)).ds;
+        pending.acked = pending.acked ? Y.mergeDeleteSets([pending.acked, ds]) : ds;
+      }
       for (const [client, clock] of Y.decodeStateVector(base64ToBytes(coverage.sv))) {
         if ((pending.sv.get(client) ?? 0) < clock) pending.sv.set(client, clock);
       }
-      const covered = Y.createSnapshot(Y.mergeDeleteSets(pending.acked), pending.sv);
-      if (Y.snapshotContainsUpdate(covered, Y.mergeUpdates(pending.updates))) this.#pending.delete(id);
+      // Each write the acks cover settles on its own, so a large paste's batches leave the ledger as they are acked and
+      // a resync resends only what is still in flight. Structs past the acked vector settle nothing yet.
+      const reached = pending.writes.filter((write) => [...write.ends].every(([client, clock]) => (pending.sv.get(client) ?? 0) >= clock));
+      if (reached.length === 0) continue;
+      const covered = Y.createSnapshot(pending.acked ?? Y.createDeleteSet(), pending.sv);
+      const settled = new Set(reached.filter((write) => Y.snapshotContainsUpdate(covered, write.update)));
+      if (settled.size > 0) pending.writes = pending.writes.filter((write) => !settled.has(write));
+      if (pending.writes.length === 0) {
+        this.#pending.delete(id);
+        this.#parked.delete(id);
+      }
     }
-    return this.#pending.size === 0;
+    return !this.unacked;
   }
 }

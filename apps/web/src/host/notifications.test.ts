@@ -1,6 +1,7 @@
 // The tab's notices (T2.8): read on a push, cleared on sign-out without a request, and marked read with a keepalive
 // request that the page never waits for, so opening a notice can never wait on the network mid-sentence (L§4.6).
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { setLeaving } from './leave.ts';
 import { createNotifications, type Notice } from './notifications.ts';
 
 const notice = (id: string, read = false): Notice => ({
@@ -47,4 +48,116 @@ it('keeps only the newest read when pushes overlap, and forgets everything on si
   await store.refresh();
   expect(store.get()).toEqual([]);
   expect(calls.length, 'no request once signed out').toBe(before);
+});
+
+// A reader who loses access through a move hears only a meta event; the server lists notices by current access.
+it('reads the notices again on a metadata push, coalesced, so a notice for a note the reader lost clears', async () => {
+  vi.useFakeTimers();
+  try {
+    const { store, calls } = harness([[notice('a')], []]);
+    await store.refresh();
+    expect(store.unread()).toBe(1);
+    for (let i = 0; i < 5; i += 1) store.receive({ type: 'meta', docIds: ['doc-a'], folderIds: ['f1'] });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(store.get(), 'the stale notice is gone').toEqual([]);
+    expect(store.unread()).toBe(0);
+    expect(calls.filter((c) => c.url === '/api/notifications'), 'a burst of pushes reads once').toHaveLength(2);
+  } finally { vi.useRealTimers(); }
+});
+
+it('drops a read that was in flight when the session ended, and asks nothing afterwards', async () => {
+  vi.useFakeTimers();
+  try {
+    let answer!: (response: Response) => void;
+    const calls: string[] = [];
+    let signedIn = true;
+    const store = createNotifications({
+      signedIn: () => signedIn,
+      fetch: (input) => {
+        calls.push(String(input));
+        return new Promise<Response>((resolve) => { answer = resolve; });
+      },
+    });
+    store.receive({ type: 'meta', docIds: ['doc-a'], folderIds: [] });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(calls, 'the push asked').toEqual(['/api/notifications']);
+    store.receive({ type: 'meta', docIds: ['doc-b'], folderIds: [] });
+    signedIn = false;
+    store.clear();
+    answer(Response.json({ notifications: [notice('late')] }));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(store.get(), 'the late answer never shows').toEqual([]);
+    expect(calls, 'nothing asked after clear').toHaveLength(1);
+  } finally { vi.useRealTimers(); }
+});
+
+// A metadata push lands as the page reloads: the bell's read follows the page's leave, so WebKit logs no page error.
+it('holds the bell read while the page leaves and reads again once it stays', async () => {
+  let end = () => undefined as void;
+  let controller = new AbortController();
+  const stayed = new Promise<void>((resolve) => { end = resolve; });
+  setLeaving(() => ({ signal: controller.signal, stayed }));
+  try {
+    const signals: (AbortSignal | null | undefined)[] = [];
+    let answers = 0;
+    const store = createNotifications({
+      signedIn: () => true,
+      fetch: (_input, init) => {
+        signals.push(init?.signal);
+        if (answers++ === 0) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          });
+        }
+        return Promise.resolve(Response.json({ notifications: [notice('a')] }));
+      },
+    });
+    const reading = store.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signals[0]?.aborted, 'the read carries the leave').toBe(false);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signals[0]?.aborted, 'the leave aborts it').toBe(true);
+    expect(signals, 'nothing sent while the page leaves').toHaveLength(1);
+    controller = new AbortController();
+    end();
+    await reading;
+    expect(signals, 'sent again once the page stays').toHaveLength(2);
+    expect(store.unread()).toBe(1);
+  } finally { setLeaving(null); }
+});
+
+// Sign-out while a bell read is held by a leave: the page stays, and the read must not go out for a session that ended.
+it('never sends a held bell read once clear() ran', async () => {
+  let end = () => undefined as void;
+  let controller = new AbortController();
+  const stayed = new Promise<void>((resolve) => { end = resolve; });
+  setLeaving(() => ({ signal: controller.signal, stayed }));
+  try {
+    let signedIn = true;
+    const sent: string[] = [];
+    const store = createNotifications({
+      signedIn: () => signedIn,
+      fetch: (input, init) => {
+        sent.push(String(input));
+        if (sent.length === 1) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          });
+        }
+        return Promise.resolve(Response.json({ notifications: [notice('a')] }));
+      },
+    });
+    const reading = store.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    signedIn = false;
+    store.clear();
+    controller = new AbortController();
+    end();
+    await reading;
+    expect(sent, 'the held read is not sent after sign-out').toHaveLength(1);
+    expect(store.unread()).toBe(0);
+  } finally { setLeaving(null); }
 });

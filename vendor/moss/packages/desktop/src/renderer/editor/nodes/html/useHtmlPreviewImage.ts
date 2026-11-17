@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 
 import { htmlPreviewApi } from '../../../api/electron';
 import { toDisplaySrc } from '../../utils/asset-url';
+// moss-multi seam: html-preview (A§16)
+import { htmlFrameSrc } from '@moss-multi/host/html-frame';
 import { describeMossHtmlPreview } from '../../../../common/moss-html-runtime';
 import type { DerivedPreviewStatus } from '../../../../common/derived-preview';
 
@@ -263,6 +265,7 @@ export function useHtmlPreviewImage({
   noteId: string | null;
   rawHtml: string;
 }): {
+  livePreview: boolean;
   previewImageUrl: string;
   preloadImageUrl: string | null;
   previewImageFailed: boolean;
@@ -297,13 +300,15 @@ export function useHtmlPreviewImage({
     storedPreviewState.descriptorKey === currentDescriptorKey
       ? storedPreviewState
       : createInitialPreviewState(currentDescriptorKey, currentPreviewDescriptor.relativePath);
+  // moss-multi seam: html-preview (A§16): a live block resolves no screenshot URL.
+  const livePreview = htmlFrameSrc(noteId) !== null;
   const previewImageUrl = buildImageUrl(
-    previewState.visibleRelativePath,
+    livePreview ? null : previewState.visibleRelativePath,
     noteId,
     previewState.visibleNonce
   ) ?? '';
   const preloadImageUrl = buildImageUrl(
-    previewState.pendingRelativePath,
+    livePreview ? null : previewState.pendingRelativePath,
     noteId,
     previewState.pendingNonce
   );
@@ -494,11 +499,14 @@ export function useHtmlPreviewImage({
   }, [ensurePreviewImage]);
 
   // moss-multi seam: html-preview (A§16; P:Notes): a browser never loads moss-asset://, so a cached preview
-  // screenshot that resolves there is never requested (the page CSP would refuse it with a console error); the
-  // preview reads as unavailable until the live sandboxed iframe replaces screenshots (T3.2).
-  const screenshotLoads = !toDisplaySrc(currentPreviewDescriptor.relativePath, noteId).startsWith('moss-asset://');
-  const status = screenshotLoads || previewState.status === 'loading' ? previewState.status : 'error';
+  // screenshot that resolves there is never requested (the page CSP would refuse it with a console error). Where the
+  // host serves the sandboxed frame document, the block's static preview is the live iframe itself (`livePreview`),
+  // and no screenshot is requested; elsewhere a screenshot that loads shows (the viewer's cached ones), else the block
+  // reads as unavailable.
+  const screenshotLoads = !livePreview && !toDisplaySrc(currentPreviewDescriptor.relativePath, noteId).startsWith('moss-asset://');
+  const status = livePreview ? 'ready' : screenshotLoads || previewState.status === 'loading' ? previewState.status : 'error';
   return {
+    livePreview,
     previewImageUrl: screenshotLoads ? previewImageUrl : '',
     preloadImageUrl: screenshotLoads ? preloadImageUrl : null,
     previewImageFailed: status === 'error',

@@ -1,6 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
-import { judgeGroup, parseArgs, parseEtime, parsePs, persistDirFor } from './stack.mjs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { judgeGroup, parseArgs, parseEtime, parsePs, persistDirFor, removeSecretEnv, secretEnvPath, wranglerArgs } from './stack.mjs';
 
 const RUN = '/repo/.local-stack/runs/r1';
 const WRANGLER = `/usr/bin/node /repo/apps/web/node_modules/wrangler/bin/wrangler.js dev --persist-to ${RUN}/state --port 8850`;
@@ -56,6 +58,35 @@ describe('judgeGroup', () => {
   });
 });
 
+// Reaping keeps live stacks whichever storage they use and removes dead ones of both kinds.
+describe('judgeGroup storage', () => {
+  const SHM = '/dev/shm/moss-stack/r1';
+  const stacks = {
+    'default storage': { persistDir: `${RUN}/state`, command: WRANGLER },
+    '--state-dir': { persistDir: SHM, command: `/usr/bin/node /repo/apps/web/node_modules/wrangler/bin/wrangler.js dev --persist-to ${SHM} --port 8850` },
+  };
+  const workerd = { pid: 101, pgid: 100, age: 3600, command: '/x/workerd serve --binary -' };
+
+  it.each(Object.entries(stacks))('keeps a live %s stack', (_, { persistDir, command }) => {
+    const list = [{ pid: 100, pgid: 100, age: 3600, command }, workerd];
+    expect(judgeGroup({ pgid: 100, runDir: RUN, state: { ...running, persistDir }, list, maxAge: 4 * 3600, now: NOW })).toEqual({ ours: true, why: null });
+  });
+
+  it.each(Object.entries(stacks))('removes a dead %s stack', (_, { persistDir, command }) => {
+    const leader = { pid: 100, pgid: 100, age: 3600, command };
+    const state = { ...running, persistDir };
+    const judge = (s, list) => judgeGroup({ pgid: 100, runDir: RUN, state: s, list, maxAge: 4 * 3600, now: NOW });
+    expect(judge(state, [workerd])).toEqual({ ours: true, why: 'leader dead' });
+    expect(judge({ ...state, status: 'stopped' }, [leader, workerd])).toEqual({ ours: true, why: 'run stopped' });
+  });
+
+  it('never claims a --state-dir group recorded for another run', () => {
+    const list = [{ pid: 100, pgid: 100, age: 3600, command: stacks['--state-dir'].command }, workerd];
+    const state = { ...running, persistDir: '/dev/shm/moss-stack/r2' };
+    expect(judgeGroup({ pgid: 100, runDir: RUN, state, list, maxAge: 4 * 3600, now: NOW })).toEqual({ ours: false, why: null });
+  });
+});
+
 describe('parseArgs', () => {
   it('reads flags with values, inline values and booleans', () => {
     expect(parseArgs(['start', '--run-id', 'r1', '--port=8851', '--hooks', '--json'])).toEqual({
@@ -80,5 +111,46 @@ describe('stack storage', () => {
       const start = /stack\.mjs start[^\n]*\n[^\n]*/.exec(jobs[job] ?? '')?.[0] ?? '';
       expect(start, job).toContain('--state-dir /dev/shm/');
     }
+  });
+});
+
+// B065: the auth and test-hook secrets never reach wrangler's argv, where any process listing shows them.
+describe('wrangler secrets', () => {
+  const dirs = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const stateIn = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stack-run-'));
+    dirs.push(dir);
+    return {
+      buildDir: '/b', port: 8850, persistDir: join(dir, 'state'), baseUrl: 'http://127.0.0.1:8850', hooks: true,
+      secretsPath: join(dir, 'secrets.json'), statePath: join(dir, 'state.json'),
+    };
+  };
+  const AUTH = 'sentinel-auth-0f9a';
+  const HOOKS = 'sentinel-hooks-77c1';
+
+  it('passes them in a private env file, never as --var', () => {
+    const state = stateIn();
+    const argv = wranglerArgs(state, { betterAuthSecret: AUTH, testHooksSecret: HOOKS });
+    expect(argv.join(' ')).not.toContain(AUTH);
+    expect(argv.join(' ')).not.toContain(HOOKS);
+    const file = argv[argv.indexOf('--env-file') + 1];
+    expect(file).toBe(secretEnvPath(state));
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readFileSync(file, 'utf8')).toBe(`BETTER_AUTH_SECRET=${AUTH}\nMOSS_TEST_HOOKS_SECRET=${HOOKS}\n`);
+    expect(argv).toContain('BETTER_AUTH_URL:http://127.0.0.1:8850');
+    expect(argv).toContain('MOSS_TEST_HOOKS:1');
+  });
+
+  it('rewrites the file on each launch, leaves out the hook secret without hooks, and deletes it with the run', () => {
+    const state = stateIn();
+    wranglerArgs(state, { betterAuthSecret: AUTH, testHooksSecret: HOOKS });
+    const argv = wranglerArgs({ ...state, hooks: false }, { betterAuthSecret: 'second', testHooksSecret: HOOKS });
+    expect(readFileSync(secretEnvPath(state), 'utf8')).toBe('BETTER_AUTH_SECRET=second\n');
+    expect(argv).not.toContain('MOSS_TEST_HOOKS:1');
+    removeSecretEnv(state);
+    expect(existsSync(secretEnvPath(state))).toBe(false);
   });
 });

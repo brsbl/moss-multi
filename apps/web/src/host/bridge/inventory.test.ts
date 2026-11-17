@@ -111,4 +111,8 @@ describe('the bridge inventory', () => {
     expect(closedMilestone('2')).toBe(2);
     expect(expiredStaged(INVENTORY, closedMilestone(process.env.TRACE_MILESTONE))).toEqual([]);
   });
+
+  it('has no staged entry past M2, which has closed, whatever TRACE_MILESTONE this run has', () => {
+    expect(expiredStaged(INVENTORY, 2)).toEqual([]);
+  });
 });

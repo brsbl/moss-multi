@@ -4,9 +4,6 @@
 
 const SHOWN_MS = 4_000;
 
-/** A pasted or dropped image or video while uploads are staged (media-upload, T3.1). */
-export const MEDIA_UPLOAD_REFUSED = "Images and video can't be uploaded on the web yet.";
-
 let message = '';
 let timer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
@@ -22,6 +19,15 @@ function show(next: string, ms: number | null): void {
 /** Announces that an input was refused; the notice clears on its own. */
 export function refuseInput(text: string): void {
   show(text, SHOWN_MS);
+}
+
+/** A refusal already announced; a caller that logs failures (moss's upload paths) leaves it out. */
+export class AnnouncedRefusal extends Error {}
+
+/** Announces `text` and returns the error to throw, so moss's own catch sees a failure. */
+export function announceRefusal(text: string): AnnouncedRefusal {
+  refuseInput(text);
+  return new AnnouncedRefusal(text);
 }
 
 /** Lets `text`, if it is still shown, clear sooner: its cause has passed. */

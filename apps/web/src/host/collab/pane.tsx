@@ -15,13 +15,14 @@ import {
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
 import { useStore } from 'jotai';
-import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
+import { $createParagraphNode, $getRoot, $setSelection, SKIP_SCROLL_INTO_VIEW_TAG, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
 import { TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
+import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
   docOwner, openDocSession, subscribeDocOwners, type DocSession, type SessionState,
 } from './doc-session.ts';
@@ -29,9 +30,39 @@ import { bindFrontmatter } from './frontmatter-binding.ts';
 import { displayTitle, TitleField } from './title-binding.ts';
 import { localIdentity, startPresence } from './presence.ts';
 import { cursorController } from './cursors.ts';
+import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
+
+/**
+ * A paste rolled back (T3.B32): the note shows where the pane was when the paste began, not where the paste had
+ * scrolled it. Set once the binding has laid out enough of the note to reach it, or after 5 s, whichever is first.
+ */
+function scrollBack(editor: LexicalEditor, top: number): void {
+  const until = Date.now() + 5_000;
+  const step = () => {
+    const root = editor.getRootElement();
+    let scroller: HTMLElement | null = root;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    scroller ??= document.scrollingElement as HTMLElement | null;
+    if (!scroller) return;
+    if (scroller.scrollHeight - scroller.clientHeight < top && Date.now() < until) {
+      requestAnimationFrame(step);
+      return;
+    }
+    // The rebound note restores a caret, which would scroll it into view: the place wins for the next 2 s.
+    const target = scroller;
+    const pin = () => {
+      if (target.scrollTop !== top) target.scrollTop = top;
+    };
+    pin();
+    target.addEventListener('scroll', pin);
+    setTimeout(() => target.removeEventListener('scroll', pin), 2_000);
+  };
+  editor.update(() => $setSelection(null), { tag: SKIP_SCROLL_INTO_VIEW_TAG });
+  requestAnimationFrame(step);
+}
 
 interface PaneState {
   docState: DocState;
@@ -143,8 +174,12 @@ class PaneBinding {
     const stop = subscribeTerminal(() => {
       if (this.#session) this.#apply(this.#session.state);
     });
+    const stopLanding = subscribeLanding(() => {
+      if (this.#session && this.#editor === editor) this.#apply(this.#session.state);
+    });
     return () => {
       stop();
+      stopLanding();
       if (this.#editor === editor) this.#editor = null;
     };
   }
@@ -181,9 +216,13 @@ class PaneBinding {
     const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role ? 'unbound' : state.canWrite && can(this.#role, 'edit') && !state.writePaused ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
-    editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked ? '1' : '0');
+    editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked || isLanding(editor) ? '1' : '0');
     const session = this.#session;
     if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live');
+    if (session && state.synced && !state.resync && session.rolledBackScroll !== null) {
+      scrollBack(editor, session.rolledBackScroll);
+      session.rolledBackScroll = null;
+    }
     this.set({
       bodyState,
       bodyVisible: state.synced && !state.resync,
@@ -299,11 +338,12 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
       if (!session.stopPresence) {
         const stopPresence = startPresence(id, session.provider);
         const stopCursors = cursors.start(session.provider);
-        session.stopPresence = () => { stopPresence(); stopCursors(); };
+        const stopDirLift = liftDirOnLargeRemote(editor, session.doc);
+        session.stopPresence = () => { stopPresence(); stopCursors(); stopDirLift(); };
       }
       return session.provider as unknown as Provider;
     },
-    [binding, cursors],
+    [binding, cursors, editor],
   );
   return (
     <LexicalCollaboration>

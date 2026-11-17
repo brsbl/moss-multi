@@ -1,5 +1,6 @@
 import { is } from 'drizzle-orm';
 import { getTableConfig, SQLiteTable } from 'drizzle-orm/sqlite-core';
+import { Miniflare } from 'miniflare';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migratedD1, migrations, statements, type TestD1 } from '../test/d1.ts';
 import * as schema from './schema.ts';
@@ -85,6 +86,11 @@ describe('DDL parity', () => {
     expect(migrations().map((m) => m.name)[0]).toBe('0000_init.sql');
   });
 
+  it('numbers every migration once, in journal order', () => {
+    const names = migrations().map((m) => m.name);
+    expect(names.map((name) => name.slice(0, 4))).toEqual(names.map((_, i) => String(i).padStart(4, '0')));
+  });
+
   it('has every schema.ts reference in the migration DDL with the same onDelete', () => {
     const declared = declaredForeignKeys();
     expect(declared.filter((fk) => fk.onDelete === 'cascade').length).toBeGreaterThan(10);
@@ -156,4 +162,33 @@ describe('the applied SQL in D1', () => {
     await expect(run('INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)',
       'f4', 'u3', 'u3', 'Loose', 'folder', t)).rejects.toThrow(/CHECK/i);
   });
+});
+
+describe('upgrading a D1 that holds the previous migrations', () => {
+  it('applies the newest migration over existing rows', async () => {
+    const mf = new Miniflare({
+      modules: true, script: 'export default { fetch: () => new Response(null) }', compatibilityDate: '2025-09-02', d1Databases: ['DB'],
+    });
+    try {
+      const db = (await mf.getD1Database('DB')) as unknown as D1Database;
+      const files = migrations();
+      const apply = async (sql: string) => { for (const statement of statements(sql)) await db.prepare(statement).run(); };
+      for (const { sql } of files.slice(0, -1)) await apply(sql);
+      const t = Date.now();
+      const run = (sql: string, ...values: unknown[]) => db.prepare(sql).bind(...values).run();
+      await run('INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)', 'u1', 'Ada', 'ada-up@example.invalid', t, t);
+      await run('INSERT INTO folders (id, owner_user_id, created_by, name, kind, parent_id, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)', 'v1', 'u1', 'u1', 'Home', 'vault', t);
+      await run('INSERT INTO docs (id, owner_user_id, created_by, folder_id, filename, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', 'd1', 'u1', 'u1', 'v1', 'a.md', t, t);
+      await apply(files.at(-1)!.sql);
+      expect((await db.prepare('SELECT count(*) AS n FROM docs').first<{ n: number }>())?.n).toBe(1);
+      await run('INSERT INTO content_objects (hash, size, refcount) VALUES (?, ?, ?)', 'h1', 3, 1);
+      await run('INSERT INTO doc_media (doc_id, filename, version_id, content_hash, content_type, size, created_by, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)',
+        'd1', 'a.png', 'h1', 'image/png', 3, 'u1', t);
+      await run('INSERT INTO doc_members (doc_id, principal_id, principal_type, role, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?)', 'd1', 'u2', 'user', 'viewer', 'u1', t);
+      await run('DELETE FROM doc_members WHERE doc_id = ?', 'd1');
+      expect((await db.prepare('SELECT epoch FROM access_epochs WHERE owner_user_id = ?').bind('u1').first<{ epoch: number }>())?.epoch, 'the epoch triggers still fire').toBeGreaterThan(0);
+    } finally {
+      await mf.dispose();
+    }
+  }, 60_000);
 });
