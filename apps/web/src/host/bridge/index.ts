@@ -18,6 +18,7 @@ import { setWikiCandidates } from '../wiki-links.ts';
 import { registerDocOpener } from '../navigation.ts';
 import { anySignal, currentLeave, heldRead, installLeaving, isLeaveCancelled, leaveAwareSend, type Leave } from '../leave.ts';
 import type { TrashGuard } from '../trash-guard.ts';
+import { SESSION_ENDED_COPY, whenSessionEnded } from '../session-fetch.ts';
 
 /** moss's NoteMetadataRecord: timestamps in seconds, folders as `Notes/...` paths. */
 export interface NoteMetadata {
@@ -116,6 +117,8 @@ export interface BridgeOptions {
   reopenDocs?: (docIds: string[]) => void;
   /** The page's current leave (leave.ts); the page's own by default. */
   leaving?: () => Leave | undefined;
+  /** Settles once the session ends under this tab, whose session-aware fetch then holds the call it cut off. */
+  sessionEnded?: () => Promise<void>;
 }
 
 export type { Leave } from '../leave.ts';
@@ -254,7 +257,7 @@ export const inertBrowser: BrowserHooks = {
   chooseFiles: async () => [],
 };
 
-export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard, reopenDocs }: BridgeOptions) {
+export function createBridge({ pathname, share = () => null, fetch: fetcher = fetch.bind(globalThis), storage = null, browser = inertBrowser, subscribeWorkspace: subscribe, leaving, trashGuard = openGuard, reopenDocs, sessionEnded = () => new Promise<void>(() => undefined) }: BridgeOptions) {
   /** Every API call carries the tab's share token, so a link holder reads and edits through the link (T2.4). */
   const request = (path: string, init: RequestInit = {}) => {
     const token = share();
@@ -930,7 +933,11 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       rename: async ({ currentPath, newName }: { currentPath: string; newName: string }) => {
         const id = await folderId(currentPath);
-        const answer = await changeFolders(`/api/folders/${encodeURIComponent(id)}`, { method: 'PATCH', json: { name: newName } }) as { folder?: { name: string } };
+        // A rename the ended session cut off lets go of moss's input and dialog with the banner's sentence (T9.17).
+        const answer = await Promise.race([
+          changeFolders(`/api/folders/${encodeURIComponent(id)}`, { method: 'PATCH', json: { name: newName } }),
+          sessionEnded().then(() => { throw new Error(SESSION_ENDED_COPY); }),
+        ]) as { folder?: { name: string } };
         announceFolders();
         const renamed = answer.folder?.name ?? newName;
         return entryFor(id, { name: renamed, path: `${currentPath.split('/').slice(0, -1).join('/')}/${renamed}` });
@@ -1119,6 +1126,9 @@ export function installBridge(
   reopenDocs?: (docIds: string[]) => void,
 ): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard, reopenDocs,
+    // A 401 that means the session ended ends the tab in place, and the call never settles (auth-state.ts).
+    fetch: authStore.sessionAware(fetch.bind(globalThis)),
+    sessionEnded: whenSessionEnded,
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: installLeaving(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({

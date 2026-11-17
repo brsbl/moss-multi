@@ -6,6 +6,7 @@ import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
 import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, reaskDocRoles, reopenDocs, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
+import { anyTerminal, subscribeTerminal } from './collab/terminal.ts';
 import { ImageContextMenu } from './media/ImageContextMenu.tsx';
 import { ReloadConfirmation } from './surfaces/ReloadConfirmation.tsx';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
@@ -60,6 +61,10 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
     useEffect(() => auth.subscribe((state) => {
       if (state.status === 'signed-out') severDocSessions();
       else pauseDocWrites(state.status === 'signing-out');
+    }), []);
+    // A note whose socket the server closed as session-ended asks the session once; if it is gone the whole tab ends.
+    useEffect(() => subscribeTerminal(() => {
+      if (anyTerminal('session-ended')) void auth.confirmSession();
     }), []);
     return (
       <>
