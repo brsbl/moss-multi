@@ -160,12 +160,15 @@ const LINES_AND_AN_INSERT: UndoAction[] = [
 export const CARET_SCENARIOS: CaretScenario[] = [
   { name: 'undo then type', actions: [...LINES_AND_AN_INSERT, UNDO_KEY, UNDO_KEY, { type: 'WHERE' }] },
   { name: 'redo then type', actions: [...LINES_AND_AN_INSERT, UNDO_KEY, UNDO_KEY, REDO_KEY, REDO_KEY, { type: 'HERE' }] },
+  // Undo returns the caret to the change even after it moved elsewhere.
+  { name: 'caret moved, undo then type', actions: [...LINES_AND_AN_INSERT, { caretAtEnd: 'Gamma line.' }, UNDO_KEY, UNDO_KEY, { type: 'WHERE' }] },
 ];
 
 /** The body pristine moss at the pin ends each caret scenario with. */
 export const MOSS_UNDO_CARET: Record<string, string[]> = {
   'undo then type': [s, 'paragraph|Alpha line.WHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
   'redo then type': [s, 'paragraph|Alpha line.', 'paragraph|InsertedHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
+  'caret moved, undo then type': [s, 'paragraph|Alpha line.WHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
 };
 
 /** Plays a caret scenario on the note in `root` (holding only "Start."); returns the body after it. */

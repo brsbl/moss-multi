@@ -422,6 +422,8 @@ test('j01 undo: Ada undoes a line she inserted; her next word lands on the resto
   await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Inserted');
   await converged(ada, ben, id, 'inserted');
   await ada.page.waitForTimeout(NEW_STEP_MS);
+  // Ada's caret moves away first; undo brings it back to the change.
+  await caretAtEnd(ada, id, 'Beta line');
   await pressUntil(ada, ben, id, UNDO, 'Alpha line.\n\nBeta line.\n\nGamma line.', 3, []);
   await ada.page.keyboard.type('WHERE');
   expect(await converged(ada, ben, id, 'Ada typed'), 'Ada\'s word lands at the end of the line the undo restored').toBe('Alpha line.WHERE\n\nBeta line.\n\nGamma line.');
