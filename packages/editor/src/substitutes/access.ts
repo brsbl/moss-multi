@@ -16,6 +16,10 @@ export type DocAnswer = { kind: 'open'; role: Role; doc: AccessibleDoc } | { kin
 
 export function rememberRole(): void {}
 
+export const startRoleRead = (): ((docId: string, role: unknown) => boolean) => () => false;
+
+export function supersedeRoleReads(): void {}
+
 export const knownRole = (): Role | null => 'owner';
 
 export const askDocAccess = (): Promise<DocAnswer> => Promise.resolve({ kind: 'unavailable' });

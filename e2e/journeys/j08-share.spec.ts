@@ -10,7 +10,8 @@ import { readFileSync } from 'node:fs';
 import type { Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, ROLE_ATTR, ROLE_BAND_ATTR, SYNC_UNACKED_ATTR,
+  ACTION_FEEDBACK_ATTR, APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR,
+  INPUT_REFUSAL_ATTR, ROLE_ATTR, ROLE_BAND_ATTR, SUGGEST_CHIP_ATTR, SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { acceptInvite, grant, grantDoc } from '../lib/grants.ts';
 import type { Principal } from '../lib/principals.ts';
@@ -871,4 +872,47 @@ test('j08 access band: a viewer and a commenter see their access, refused typing
   await dee.page.keyboard.type('x');
   await expect(ui.pane(dee, docId).locator(`[${INPUT_REFUSAL_ATTR}]`), 'a suggester typing in the title is told who renames').toHaveText('Only an editor can rename this note.');
   await actors.requireDistinct(4);
+});
+
+// T9.12: a raise reaches the open note without a reload. Viewer to commenter changes only what the band and the pill
+// say; commenter to suggester reconnects at the new role and opens Suggest.
+test('j08 raise: Cy at view is raised to comment, then to suggest, and the open note follows each without a reload @p:ppl-2@2 @evidence', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const cyPrincipal = await actors.principal('cy');
+  await grantDoc(ada, docId, cyPrincipal, 'viewer');
+  const cy = await actors.open(cyPrincipal, { path: `/d/${docId}` });
+  await ui.waitOpen(cy, docId, 'readonly');
+  await actors.requireDistinct(2);
+  // Only the raise to suggest needs a socket at the new role.
+  cy.expectReconnects(1, docId);
+  const band = ui.pane(cy, docId).locator(`[${ROLE_BAND_ATTR}]`);
+  const pill = cy.page.locator(`[${ACTION_FEEDBACK_ATTR}]`);
+  await expect(band).toHaveText("View only. You can't edit this note.");
+  const raise = async (role: string) => {
+    const response = await ada.context.request.patch(`/api/docs/${docId}/members`,
+      { headers: { origin: stack.baseUrl }, data: { principalId: cyPrincipal.id!, role } });
+    expect(response.status(), `the raise to ${role} is saved`).toBe(200);
+  };
+
+  await raise('commenter');
+  await expect(pill, 'the pill says what changed').toHaveText('You can now comment on this note.', { timeout: 2_000 });
+  await expect(band, 'the band follows the role').toHaveText("Comment only. You can't edit this note.");
+  await expect(ui.pane(cy, docId)).toHaveAttribute(ROLE_ATTR, 'commenter');
+  await expect(ui.body(cy, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  await actors.checkpoint('raised-to-comment');
+  await expect(pill).toHaveCount(0, { timeout: LIVE_TIMEOUT });
+
+  await raise('suggester');
+  await expect(cy.page.locator(`[${SUGGEST_CHIP_ATTR}]`), 'the chip says Suggesting').toHaveText('Suggesting', { timeout: 2_000 });
+  await expect(pill).toHaveText('You can now suggest changes to this note.', { timeout: 2_000 });
+  await expect(ui.pane(cy, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'suggest');
+  await expect(ui.body(cy, docId), 'and takes typing as suggestions').toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: 2_000 });
+  await expect(band, 'the band goes').toHaveCount(0);
+  await actors.checkpoint('raised-to-suggest');
+  await ui.body(cy, docId).click();
+  await cy.page.keyboard.press('ControlOrMeta+End');
+  await cy.page.keyboard.type(' proposed');
+  await expect.poll(() => ui.pane(cy, docId).getAttribute(SUGGEST_SENT_ATTR), { message: 'a suggestion is sent', timeout: LIVE_TIMEOUT }).not.toBe('0');
+  expect(await ui.fieldText(ada, docId, 'body'), "the owner's text is unchanged").toBe(TEXT);
 });

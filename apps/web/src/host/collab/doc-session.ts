@@ -9,11 +9,12 @@ import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-c
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
+import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { rememberRole } from '../access.ts';
+import { startRoleRead, supersedeRoleReads } from '../access.ts';
 import { onOutdated } from '../client-protocol.ts';
 import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
@@ -59,7 +60,7 @@ export const WRITE_REFUSED: Record<WriteRefusalReason, string> = {
   'protected-type': 'Your last change could not be saved. Reconnecting to the saved note.',
 };
 export const HALTED_REFUSED = 'Your last change could not be saved. Reconnecting to the saved note.';
-const VIEW_ONLY = 'You can view this note but can no longer edit it.';
+export const VIEW_ONLY = 'You can view this note but can no longer edit it.';
 
 /**
  * The provider's WebSocket (its WebSocketPolyfill). `detach` closes the socket and runs the provider's close path
@@ -159,7 +160,8 @@ function closeNormally(provider: YProvider, held: () => boolean): void {
 const shareToken = (): string | null => new URLSearchParams(window.location.search).get('share');
 
 type AccessAnswer =
-  | { kind: 'role'; role: Role; canWrite: boolean; canSuggest: boolean }
+  /** `remember` applies the role to the tab unless a newer read or an access change superseded this one (T9.12). */
+  | { kind: 'role'; role: Role; canWrite: boolean; canSuggest: boolean; remember: () => boolean }
   | { kind: 'deleted' }
   | { kind: 'gone' }
   | { kind: 'signed-out' }
@@ -171,6 +173,7 @@ type AccessAnswer =
 export async function askAccess(docId: string): Promise<AccessAnswer> {
   const share = shareToken();
   const query = share ? `?share=${encodeURIComponent(share)}` : '';
+  const remember = startRoleRead();
   try {
     return await heldRead((signal) => fetch(`/api/docs/${encodeURIComponent(docId)}/access${query}`, {
       credentials: 'same-origin',
@@ -183,7 +186,7 @@ export async function askAccess(docId: string): Promise<AccessAnswer> {
       const body = (await response.json()) as { role?: unknown; deleted?: unknown };
       if (body.deleted === true) return { kind: 'deleted' };
       return isRole(body.role)
-        ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester') }
+        ? { kind: 'role', role: body.role, canWrite: roleAtLeast(body.role, 'editor'), canSuggest: roleAtLeast(body.role, 'suggester'), remember: () => remember(docId, body.role) }
         : { kind: 'unknown' };
     }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
@@ -263,6 +266,39 @@ export function endTrashedDocs(docIds: string[]): void {
  */
 export function reopenDocs(docIds: string[]): void {
   for (const session of [...sessions]) if (docIds.includes(session.docId)) void session.reopen();
+}
+
+/** Docs whose role is being asked again; true when another ask is owed once this one answers. */
+const reasking = new Map<string, boolean>();
+
+function reaskRole(docId: string): void {
+  if (reasking.has(docId)) {
+    reasking.set(docId, true);
+    return;
+  }
+  reasking.set(docId, false);
+  void askAccess(docId).then((answer) => {
+    if (answer.kind === 'role' && held.has(docId) && !terminalOf(docId)) answer.remember();
+  }).finally(() => {
+    const again = reasking.get(docId);
+    reasking.delete(docId);
+    if (again) reaskRole(docId);
+  });
+}
+
+/**
+ * The workspace channel says access may have changed (A§8): each open note it names (every one, for a vault or folder
+ * change or a reconnect) asks for its role again and its pane follows the answer. The server stays the authority.
+ */
+export function reaskDocRoles(event: WorkspaceEvent): void {
+  if (event.type !== 'meta' && event.type !== 'vaults') return;
+  const every = event.type === 'vaults' || event.folderIds.length > 0;
+  for (const docId of [...held.keys()]) {
+    if (terminalOf(docId) || !(every || event.docIds.includes(docId))) continue;
+    // An answer to a read already under way may predate this change, so it no longer applies.
+    supersedeRoleReads(docId);
+    reaskRole(docId);
+  }
 }
 
 /** Resolves true once no session of these docs holds an unacked edit, or false after `timeoutMs`. */
@@ -606,7 +642,8 @@ export class DocSession {
     this.#reopening = true;
     const answer = await askAccess(this.docId).finally(() => { this.#reopening = false; });
     if (this.#disposed || answer.kind !== 'role' || terminalOf(this.docId) !== 'deleted') return;
-    rememberRole(this.docId, answer.role);
+    // A stale answer (access changed while it was asked) is asked again.
+    if (!answer.remember()) return this.reopen();
     this.#ended = false;
     this.#failedHandshakes = 0;
     clearTerminal(this.docId);
@@ -789,8 +826,13 @@ export class DocSession {
         this.end('deleted');
         return;
       case 'role':
-        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place).
-        rememberRole(this.docId, answer.role);
+        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place). A newer read
+        // answered or access changed meanwhile (a lowering raised back before this answer came): this one is stale, so
+        // ask again rather than act on it.
+        if (!answer.remember()) {
+          void this.#reask(cause);
+          return;
+        }
         // A suggester's failed handshakes are the network: its suggestions still need delivering, so it reconnects.
         if (!answer.canWrite && !(cause === 'handshake' && answer.canSuggest)) {
           refuseInput(VIEW_ONLY);
