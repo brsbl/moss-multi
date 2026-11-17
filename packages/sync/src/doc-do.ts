@@ -590,8 +590,8 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     const started = Date.now();
-    await this.#feedSearch();
     if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
+    await this.#feedSearch();
     this.#saveMs = Date.now() - started;
   }
 
