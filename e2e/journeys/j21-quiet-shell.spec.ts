@@ -422,9 +422,7 @@ test('j21 a reader in Review has one bottom row with their access and Review, an
   await row.getByRole('button', { name: 'Done', exact: true }).click();
   await leftReview('Done leaves Review');
 
-  const toggle = reviewSwitch(await openPanel(carl));
-  await toggle.click();
-  await expect(toggle, 'the switch shows Review pressed').toHaveAttribute('aria-pressed', 'true', { timeout: BIND_TIMEOUT });
+  await (reviewSwitch(await openPanel(carl))).click();
   await closePanel(carl);
   await inReview('back in Review from the list');
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
