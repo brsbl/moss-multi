@@ -31,6 +31,7 @@ const surfaceHeight = (actor: Actor, id: string) => ui.body(actor, id).locator('
   .evaluate(element => element.getBoundingClientRect().height);
 
 test('j11 editor geometry: the HTML source editor of a short live preview shows its whole source viewport @p:note-2', async ({ actors, stack }) => {
+  actors.solo('one editor opens the source of her own HTML block; the frame is local layout');
   const { ada, id } = await note(actors, stack.baseUrl, 'HTML source', 'Intro.\n\n```moss-html\n<p>An HTML block.</p>\n```\n\nLast line.');
   await expect(ui.body(ada, id).locator('[data-moss-html-preview-viewport]')).toBeVisible();
   await expect.poll(() => surfaceHeight(ada, id), { message: 'the live preview is shorter than the source editor needs' }).toBeLessThan(171);
@@ -71,7 +72,7 @@ const draftGeometry = (actor: Actor, id: string, paragraphText: string, draft: s
   const before = document.createRange();
   if (start > 0) { before.setStart(text, start - 2); before.setEnd(text, start - 1); }
   const chip = document.querySelector('[data-formula-draft-chip]');
-  const selection = getSelection()!.getRangeAt(0).getBoundingClientRect();
+  const selection = getSelection()!.rangeCount ? getSelection()!.getRangeAt(0).getBoundingClientRect() : null;
   return {
     paragraph: paragraph.getBoundingClientRect().toJSON() as DOMRect,
     text: range.getBoundingClientRect().toJSON() as DOMRect,
@@ -79,7 +80,7 @@ const draftGeometry = (actor: Actor, id: string, paragraphText: string, draft: s
     chip: chip ? chip.getBoundingClientRect().toJSON() as DOMRect : null,
     radius: chip ? getComputedStyle(chip).borderRadius : null,
     lineHeight: parseFloat(getComputedStyle(text.parentElement!).lineHeight),
-    caret: selection.left,
+    caret: selection?.left ?? NaN,
   };
 }, [paragraphText, draft] as const);
 
