@@ -609,3 +609,176 @@ it('a code block deleted in this tab stops counting toward the paste check at on
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_000, structs: 10 }), 'its text no longer counts').toBe(true);
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_001, structs: 10 }), 'up to the limit, and no further').toBe(false);
 });
+
+// ---------- T3.B32: a paste that cannot finish leaves nothing behind ----------
+
+const PASTE_ROLLED_BACK = "The paste didn't fit, so nothing was pasted.";
+const rollbackKey = (client: number) => `moss-multi:paste-rollback:doc:${client}`;
+/** The update frames (sync type 2) a socket sent. */
+const updatesSent = (socket: FakeSocket) => socket.sent.filter((frame) => frame instanceof Uint8Array && frame[0] === 0 && frame[1] === 2);
+const trackPaste = (doc: Y.Doc, abort: () => void) =>
+  (sessionModule as unknown as { trackPaste?: (doc: Y.Doc, abort: () => void) => { finish(): void } | null }).trackPaste?.(doc, abort) ?? null;
+
+/** A fresh profile whose role on the doc is editor (earlier tests demote it). */
+async function freshProfile(): Promise<void> {
+  const { rememberRole } = await import('../access.ts');
+  rememberRole('doc', 'editor');
+  localStorage.clear();
+}
+
+/**
+ * A paste of `batches` updates in another tab's doc, after 'Kept.' that the server holds: the server takes the first
+ * `landed` of them. Returns the server's doc and the paste's record, as the refused tab stored it.
+ */
+function cutPaste(batches: number, landed: number) {
+  const server = new Y.Doc();
+  server.get('root', Y.XmlText).insert(0, 'Kept.');
+  const tab = new Y.Doc();
+  Y.applyUpdate(tab, Y.encodeStateAsUpdate(server));
+  const updates: Uint8Array[] = [];
+  tab.on('update', (update: Uint8Array) => updates.push(update));
+  const from = Y.getState(tab.store, tab.clientID);
+  const root = tab.get('root', Y.XmlText);
+  for (let i = 0; i < batches; i += 1) root.insert(root.length, ` Alpha ${i}.`);
+  for (const update of updates.slice(0, landed)) Y.applyUpdate(server, update);
+  const record = { note: { client: tab.clientID, from, to: Y.getState(tab.store, tab.clientID) }, payloads: {} };
+  return { server, record };
+}
+
+/** The server's copy arrives as the answer to the session's step 1. */
+function answer(socket: FakeSocket, server: Y.Doc): void {
+  socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(1, Y.encodeStateAsUpdate(server)).slice().buffer }));
+}
+
+/** The ack covering every write of the session's doc, its deletes included. */
+function ackAll(socket: FakeSocket): void {
+  const ds = Y.encodeSnapshot(Y.createSnapshot(Y.createDeleteSetFromStructStore(session.doc.store), new Map()));
+  serverEvent(socket, { t: 'ack', sv: base64(Y.encodeStateVector(session.doc)), ds: base64(ds) });
+}
+
+it('a large paste cut short by a limit stops landing, says nothing was pasted and stores its items by doc and client id (T3.B32)', async () => {
+  const { refusalMessage } = await import('../refusal.ts');
+  await freshProfile();
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const root = session.doc.get('root', Y.XmlText);
+  root.insert(0, 'Kept.');
+  const abort = vi.fn();
+  const from = Y.getState(session.doc.store, session.doc.clientID);
+  const track = trackPaste(session.doc, abort);
+  expect(track, 'a session tracks the paste').not.toBeNull();
+  const code = session.payloads.hold('code', true);
+  code.getText('payload').insert(0, 'c'.repeat(40));
+  root.insert(root.length, 'Alpha'.repeat(100));
+  track?.finish();
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+  expect(abort, 'nothing more of the paste lands').toHaveBeenCalled();
+  expect(refusalMessage()).toBe(PASTE_ROLLED_BACK);
+  const stored: unknown = JSON.parse(localStorage.getItem(rollbackKey(session.doc.clientID)) ?? 'null');
+  expect(stored).toEqual({
+    note: { client: session.doc.clientID, from, to: from + 500 },
+    payloads: { code: { client: code.clientID, from: 0, to: 40 } },
+  });
+  socket.ended(4409);
+  expect(refusalMessage(), 'the close says it again').toBe(PASTE_ROLLED_BACK);
+  expect(session.state.resync).toBe(true);
+});
+
+it('the next binding deletes the landed part of a cut paste before the note shows, and keeps its record until the deletes are acked; reopened before that, it resumes (T3.B32)', async () => {
+  const { refusalMessage } = await import('../refusal.ts');
+  await freshProfile();
+  const { server, record } = cutPaste(6, 3);
+  expect(server.get('root', Y.XmlText).toString(), 'half the paste landed').toBe('Kept. Alpha 0. Alpha 1. Alpha 2.');
+  localStorage.setItem(rollbackKey(record.note.client), JSON.stringify(record));
+  const socket = latest(); socket.open();
+  answer(socket, server);
+  expect(session.state.synced, 'the note stays closed while the rollback runs').toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(session.state.synced).toBe(true);
+  expect(session.doc.get('root', Y.XmlText).toString(), 'nothing of the paste shows').toBe('Kept.');
+  expect(updatesSent(socket).length, 'the deletes go out').toBeGreaterThan(0);
+  expect(refusalMessage()).toBe(PASTE_ROLLED_BACK);
+  expect(session.state.unacked).toBe(true);
+  expect(localStorage.getItem(rollbackKey(record.note.client)), 'kept until acked').not.toBeNull();
+
+  // The tab closes before the deletes reach the server: the note reopened in this profile rolls the paste back again.
+  session.dispose();
+  session = new DocSession('doc');
+  await session.provider.connect();
+  const again = latest(); again.open();
+  answer(again, server);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(session.doc.get('root', Y.XmlText).toString()).toBe('Kept.');
+  Y.applyUpdate(server, Y.encodeStateAsUpdate(session.doc));
+  expect(server.get('root', Y.XmlText).toString(), 'the server holds the note as it was before the paste').toBe('Kept.');
+  ackAll(again);
+  expect(session.state.unacked).toBe(false);
+  expect(localStorage.getItem(rollbackKey(record.note.client)), 'acked: done').toBeNull();
+});
+
+it('a paste that landed whole is left as it is, and its record dropped (T3.B32)', async () => {
+  await freshProfile();
+  const { server, record } = cutPaste(4, 4);
+  localStorage.setItem(rollbackKey(record.note.client), JSON.stringify(record));
+  const socket = latest(); socket.open();
+  answer(socket, server);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(session.state.synced).toBe(true);
+  expect(session.doc.get('root', Y.XmlText).toString()).toBe('Kept. Alpha 0. Alpha 1. Alpha 2. Alpha 3.');
+  expect(updatesSent(socket)).toHaveLength(0);
+  expect(session.state.unacked).toBe(false);
+  expect(localStorage.getItem(rollbackKey(record.note.client))).toBeNull();
+});
+
+it('without write access the landed part stays: a read-only binding tries nothing, and a rollback refused in its turn is never tried again (T3.B32)', async () => {
+  await freshProfile();
+  const { server, record } = cutPaste(6, 3);
+  const landed = server.get('root', Y.XmlText).toString();
+  localStorage.setItem(rollbackKey(record.note.client), JSON.stringify(record));
+  // Demoted to viewer meanwhile: the pane binds read-only.
+  session.dispose();
+  session = new DocSession('doc', false);
+  await session.provider.connect();
+  let socket = latest(); socket.open();
+  answer(socket, server);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(session.state.synced).toBe(true);
+  expect(session.doc.get('root', Y.XmlText).toString(), 'the documented residual').toBe(landed);
+  expect(updatesSent(socket)).toHaveLength(0);
+  expect(localStorage.getItem(rollbackKey(record.note.client))).toBeNull();
+
+  // Write access the tab still believed it had: the DocDO refuses the deletes, and nothing tries them again.
+  localStorage.setItem(rollbackKey(record.note.client), JSON.stringify(record));
+  session.dispose();
+  session = new DocSession('doc');
+  await session.provider.connect();
+  socket = latest(); socket.open();
+  answer(socket, server);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(updatesSent(socket).length).toBeGreaterThan(0);
+  serverEvent(socket, { t: 'write-refused', reason: 'role' });
+  socket.ended(4409);
+  expect(localStorage.getItem(rollbackKey(record.note.client))).toBeNull();
+  session.dispose();
+  session = new DocSession('doc');
+  await session.provider.connect();
+  socket = latest(); socket.open();
+  answer(socket, server);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(session.doc.get('root', Y.XmlText).toString()).toBe(landed);
+  expect(updatesSent(socket), 'no loop').toHaveLength(0);
+});
+
+it('a person demoted mid-paste stores nothing: the part that landed stays, as documented (T3.B32)', async () => {
+  await freshProfile();
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ role: 'viewer' }));
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const root = session.doc.get('root', Y.XmlText);
+  const track = trackPaste(session.doc, () => {});
+  root.insert(0, 'Alpha'.repeat(100));
+  track?.finish();
+  serverEvent(socket, { t: 'write-refused', reason: 'role' });
+  socket.ended(4403);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(session.state).toMatchObject({ canWrite: false, resync: true });
+  expect(localStorage.length).toBe(0);
+});
