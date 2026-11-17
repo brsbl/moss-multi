@@ -530,6 +530,7 @@ export class DocDO extends YServer<SyncEnv> {
     keepLeanKeys(this.document, serverLeanDefaults(), LEAN_KEYS, isConnection);
     this.#seed(store);
     this.#comments.flush();
+    if ((globalThis as { __memA?: boolean }).__memA === undefined) { this.#searchStale = store.meta('search-fed') !== SEARCH_FEED_VERSION; return; }
     let client = Number(store.meta('suggestions-client'));
     if (!client) {
       client = newSuggestionsClient(this.document);
