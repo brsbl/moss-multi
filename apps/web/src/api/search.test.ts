@@ -92,6 +92,21 @@ describe('GET /api/search', () => {
     expect(allowed).not.toContain(trashed);
   });
 
+  it("names each hit's vault when the caller reaches that vault, and no vault for a note shared on its own", async () => {
+    const other = await insertFolder(d1.db, ada, null);
+    const sub = await insertFolder(d1.db, ada, other);
+    const atHome = await named(ada, 'Home note', 'home-note.md');
+    const deep = await insertDoc(d1.db, ada, { folderId: sub });
+    const sharedAlone = await named(ben, 'Ben shares', 'ben-shares.md');
+    await insertGrant(d1.db, { docId: sharedAlone }, ada, 'viewer');
+    hits = [atHome, deep, sharedAlone];
+    const { results } = await (await get('/api/search?q=x', ada.cookie)).json() as { results: { id: string; vaultId?: string }[] };
+    expect(results.find((hit) => hit.id === atHome)?.vaultId).toBe(ada.homeId);
+    expect(results.find((hit) => hit.id === deep)?.vaultId, 'a note in a subfolder names the vault at its root').toBe(other);
+    expect(results.find((hit) => hit.id === sharedAlone), 'a note shared alone is found').toBeDefined();
+    expect(results.find((hit) => hit.id === sharedAlone)?.vaultId, 'and never names a vault the caller cannot open').toBeUndefined();
+  });
+
   it('feeds allowed docs the index lacks and answers with them, answers an empty query without the index, and 401s with no session', async () => {
     const doc = await named(ada, 'Unfed', 'unfed.md');
     unindexed = [doc];

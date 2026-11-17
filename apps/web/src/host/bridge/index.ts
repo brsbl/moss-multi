@@ -563,14 +563,16 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       .map((note) => ({ id: note.id, title: note.title, folderPath: note.folderPath, updatedAt: note.updatedAt, matchType: 'title' }));
     const { results } = await heldRequest(`/api/search?${new URLSearchParams({ q: query.trim(), limit: String(limit) })}`, async (response) => {
       if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
-      return await response.json() as { results: (ApiDoc & { snippet: string })[] };
+      return await response.json() as { results: (ApiDoc & { snippet: string; vaultId?: string })[] };
     });
     const seen = new Set(titled.map((hit) => hit.id));
-    const indexed: NoteSearchResult[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
+    // Each result carries its own vault, so where a displayed result opens never depends on a later answer (T9.18).
+    const indexed: (NoteSearchResult & { vaultId?: string })[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
       const listedNote = listed.find((note) => note.id === hit.id);
       const title = listedNote?.title ?? toNoteMetadata(hit).title;
       return { id: hit.id, title, folderPath: listedNote?.folderPath ?? ROOT_FOLDER, updatedAt: listedNote?.updatedAt ?? seconds(hit.updatedAt),
-        ...(title.toLowerCase().includes(needle) ? { matchType: 'title' as const } : { snippet: hit.snippet, matchType: 'content' as const }) };
+        ...(title.toLowerCase().includes(needle) ? { matchType: 'title' as const } : { snippet: hit.snippet, matchType: 'content' as const }),
+        ...(hit.vaultId ? { vaultId: hit.vaultId } : {}) };
     });
     return [...titled, ...indexed].slice(0, limit);
   };
@@ -711,6 +713,12 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       switchVault: async (id: string) => {
         await load(id);
         diskListeners.forEach((listener) => listener([], []));
+      },
+      /** The vault a displayed search result opens in, when it is another of the caller's listed vaults (T9.18). */
+      resultVault: (result: object): string | null => {
+        const { vaultId } = result as { vaultId?: unknown };
+        const id = typeof vaultId === 'string' ? vaultId : null;
+        return id && id !== workspaceSnapshot?.vault.id && workspaceSnapshot?.vaults?.some((vault) => vault.id === id) ? id : null;
       },
       /** The owner trashed this note, as far as this tab knows. */
       isTrashed: (id: string) => known.get(id)?.trashedAt != null,

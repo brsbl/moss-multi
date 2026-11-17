@@ -25,6 +25,8 @@ export interface SearchResultRow {
   snippet: string;
   folderId: string;
   updatedAt: number;
+  /** The vault the doc sits in, when the caller can open that vault; absent for a note reached on its own. */
+  vaultId?: string;
 }
 
 export interface LinkedDoc {
@@ -55,8 +57,16 @@ async function docIdsInVault(db: D1Database, vaultId: string): Promise<Set<strin
 
 /** The caller's discovery closure; a share link alone discovers nothing (A§8). */
 async function discoverable(db: Db, principal: Principal) {
-  if (principal.type === 'anonymous') return new Map<string, Awaited<ReturnType<typeof accessibleDocs>>[number]>();
-  return new Map((await accessibleDocs(db, principal, await accessibleFolders(db, principal))).map((row) => [row.id, row]));
+  return (await discovery(db, principal)).docs;
+}
+
+/** The discoverable docs, and the vault each discoverable folder sits in when the caller can open that vault. */
+async function discovery(db: Db, principal: Principal) {
+  if (principal.type === 'anonymous') return { docs: new Map<string, Awaited<ReturnType<typeof accessibleDocs>>[number]>(), vaultOf: new Map<string, string>() };
+  const folders = await accessibleFolders(db, principal);
+  const vaults = new Set(folders.filter((folder) => folder.kind === 'vault').map((folder) => folder.id));
+  const vaultOf = new Map(folders.filter((folder) => vaults.has(folder.vaultId)).map((folder) => [folder.id, folder.vaultId]));
+  return { docs: new Map((await accessibleDocs(db, principal, folders)).map((row) => [row.id, row])), vaultOf };
 }
 
 async function search(request: Request, env: SearchEnv): Promise<Response> {
@@ -66,7 +76,8 @@ async function search(request: Request, env: SearchEnv): Promise<Response> {
   const query = (url.searchParams.get('q') ?? '').trim();
   const limit = Number(url.searchParams.get('limit') ?? '') || undefined;
   const db = createDb(env.DB);
-  let allowed = await discoverable(db, principal);
+  const found = await discovery(db, principal);
+  let allowed = found.docs;
   const vaultId = url.searchParams.get('vault');
   if (vaultId) {
     const vault = await resolveFolderAccess(db, principal, vaultId);
@@ -83,7 +94,9 @@ async function search(request: Request, env: SearchEnv): Promise<Response> {
   // D1 names the doc: the index's copy of a title can trail a rename by a save.
   const results: SearchResultRow[] = answer.results.flatMap((hit) => {
     const row = allowed.get(hit.docId);
-    return row ? [{ id: row.id, title: row.title, snippet: hit.snippet, folderId: row.folderId, updatedAt: row.updatedAt }] : [];
+    if (!row) return [];
+    const vault = found.vaultOf.get(row.folderId);
+    return [{ id: row.id, title: row.title, snippet: hit.snippet, folderId: row.folderId, updatedAt: row.updatedAt, ...(vault ? { vaultId: vault } : {}) }];
   });
   return json({ results }, 200, NO_STORE);
 }

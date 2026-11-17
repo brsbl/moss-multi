@@ -1962,6 +1962,9 @@ export function App() {
             return;
           }
         }
+        // moss-multi seam: search-elsewhere (T9.18): a result from another vault switched the listing just before;
+        // the store re-reads the listing before the note opens, so the active note resolves to it.
+        if (!store.get(noteEntityAtom(noteId))) await reconcileNotesFromDisk('search-elsewhere', noteId);
 
         setAppMode(targetView);
         viewSelectionRef.current[targetView] = noteId;
@@ -1969,7 +1972,7 @@ export function App() {
         // No swap needed - activeActionTabsAtom auto-derives from activeNoteId
       });
     },
-    [flushBeforeNoteSwitch, navigateToNote, runSerializedNoteSwitch, store]
+    [flushBeforeNoteSwitch, navigateToNote, reconcileNotesFromDisk, runSerializedNoteSwitch, store]
   );
 
   const handleCloseSplitPane = useCallback(
