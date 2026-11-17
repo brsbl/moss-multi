@@ -107,8 +107,12 @@ test('j11 editor geometry: a formula draft is moss\'s padded, rounded chip for t
   await expect(ui.body(ada, id).locator('[data-lexical-text][style*="padding"]'), 'the padding goes with the chip').toHaveCount(0);
 
   // A draft alone on its line: moss's chip, 8 px a side, the line plus 2 px above and below.
-  await ui.body(ada, id).locator('p').filter({ hasText: /^Last line\.$/ }).click();
-  await ada.page.keyboard.press('End');
+  // The click retries until the caret is on the line: the editor may still be settling the draft it just left.
+  await expect(async () => {
+    await ui.body(ada, id).locator('p').filter({ hasText: /^Last line\.$/ }).click();
+    await ada.page.keyboard.press('End');
+    expect(await ada.page.evaluate(() => getSelection()?.anchorNode?.parentElement?.closest('p')?.textContent)).toBe('Last line.');
+  }).toPass({ timeout: 10_000 });
   await ada.page.keyboard.press('Enter');
   await ada.page.keyboard.type('=2+3', { delay: 40 });
   await expect.poll(async () => (await draftGeometry(ada, id, '=2+3', '=2+3'))?.chip ?? null, { message: 'Ada sees the draft chip' }).not.toBeNull();
