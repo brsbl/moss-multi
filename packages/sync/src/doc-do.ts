@@ -468,7 +468,6 @@ export class DocDO extends YServer<SyncEnv> {
   /** The one writer of `suggestions` (reserved client S) and the suggestion ingest (docs/design/suggestions.md). */
   #suggestions: SuggestionsWriter | null = null;
   #ingest: SuggestIngest | null = null;
-  #makeIngest: (() => SuggestIngest) | null = null;
   /**
    * When the next idle check of open records is due (§4.7: an idle record with nothing to show is rejected by the
    * system), and the `updatedAt` each open record was last checked at, kept in storage (`idle-checked`) across wakes.
@@ -538,7 +537,7 @@ export class DocDO extends YServer<SyncEnv> {
     }
     this.#suggestions = new SuggestionsWriter(this.document, client);
     this.#cooldowns = new SuggestCooldowns(this.ctx.storage.sql);
-    this.#makeIngest = () => new SuggestIngest(this.document, {
+    this.#ingest = new SuggestIngest(this.document, {
       stateCap: this.#limits.stateCapBytes,
       // Built on the first op that names a node type, so a wake pays nothing for it.
       registry: { has: (type) => nodeRegistry().has(type) },
@@ -552,9 +551,6 @@ export class DocDO extends YServer<SyncEnv> {
       },
       limit: (growth) => this.#recordLimit(growth),
     });
-    // A note never suggested on builds the ingest on its first suggest frame or leased-client check: a wake and a save
-    // of it pay nothing for it. A note holding records builds it now, so every close of one is heard.
-    if (recordIds(this.document).length > 0) this.#ingestNow();
     store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
       if (this.#idleAt !== null) return;
@@ -594,8 +590,8 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     const started = Date.now();
-    if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
     await this.#feedSearch();
+    if (this.#store && this.#store.pendingRows > 0) this.#store.compact(this.document);
     this.#saveMs = Date.now() - started;
   }
 
@@ -864,7 +860,7 @@ export class DocDO extends YServer<SyncEnv> {
       const changes = classified.changes || (classified.exhausted && !this.#provedInert(connection, decoded.ds));
       const guarded = () => !!this.#comments?.check(decoded);
       // Only the DocDO writes `suggestions` (I2), and a leased client id only ever writes a record (A§5.1 step 4).
-      const leased = () => !!this.#suggestions?.touches(decoded) || !!this.#ingestNow()?.namesLease(frame.update);
+      const leased = () => !!this.#suggestions?.touches(decoded) || !!this.#ingest?.namesLease(frame.update);
       if (changes && this.#refused(connection, attachment, () => this.#noteLimit(store, frame.update), missing, guarded, leased)) return;
       // Gate 2b on every step 2 or update, inert or not, whatever the role: no client frame reaches `comments`
       // (comments.md §3, I1). O(frame · log); it follows no references.
@@ -928,7 +924,7 @@ export class DocDO extends YServer<SyncEnv> {
   /** Suggest-mode frames (docs/design/suggestions.md §2): the live role on every frame, one reply each. */
   override onCustomMessage(connection: Connection, message: string): void {
     const attachment = attachmentOf(connection);
-    const ingest = this.#ingestNow();
+    const ingest = this.#ingest;
     if (!attachment || !ingest) return;
     if (this.#coolingDown(attachment.principalId)) {
       connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
@@ -978,7 +974,7 @@ export class DocDO extends YServer<SyncEnv> {
 
   override onClose(connection: Connection): void {
     const nonce = attachmentOf(connection)?.nonce;
-    if (nonce) this.#ingestNow()?.expireConnection(nonce);
+    if (nonce) this.#ingest?.expireConnection(nonce);
     leavePresence(this.document.awareness, connection, this.getConnections());
     this.#dropWaiting(connection);
     this.#rate.forget(connection);
@@ -2227,7 +2223,7 @@ export class DocDO extends YServer<SyncEnv> {
       }
       // A leased client id writes a payload only inside a record (A§5.1 step 4), as in the body.
       const target = known ? payloads.doc(id) : (unknownPayload ??= new Y.Doc());
-      const leased = () => !!this.#ingestNow()?.namesLease(data, target);
+      const leased = () => !!this.#ingest?.namesLease(data, target);
       const budget = roleAtLeast(attachment.role, 'editor') ? Infinity : data.byteLength * CLASSIFY_BUDGET_PER_BYTE + 1024;
       const { changes, exhausted, missing, deletes } = classifySync(target, data, undefined, budget);
       // Only an editor may write a payload, so a sub-editor's frame past its budget meets the role refusal.
@@ -2346,12 +2342,6 @@ export class DocDO extends YServer<SyncEnv> {
     const limit = overCap();
     if (limit) return this.#refuse(connection, 'doc-cap', CLOSE.writeRefused, limit);
     return false;
-  }
-
-  /** The suggestion ingest, built on first use (onLoad). */
-  #ingestNow(): SuggestIngest | null {
-    if (!this.#ingest && this.#makeIngest) this.#ingest = this.#makeIngest();
-    return this.#ingest;
   }
 
   #coolingDown(principalId: string): boolean {
