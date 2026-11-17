@@ -55,7 +55,7 @@ const look = (row: Locator) => row.evaluate((el) => {
 });
 
 /** How far the row's bottom edge sits above the bottom of its pane. */
-const aboveBottom = (actor: Actor, docId: string, row: Locator) => row.evaluate((el, selector) => {
+const aboveBottom = (docId: string, row: Locator) => row.evaluate((el, selector) => {
   const pane = document.querySelector(selector)!.getBoundingClientRect();
   return Math.round(Math.min(pane.bottom, window.innerHeight) - el.getBoundingClientRect().bottom);
 }, paneSelector(docId));
@@ -122,7 +122,7 @@ test('j21 at rest the top bar holds only Moss\'s actions, and More actions holds
   const rows = ada.page.locator(`[${MODE_ROW_ATTR}]`);
   await ada.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await expect(rows, 'one Suggesting row').toHaveCount(1);
-  expect(await aboveBottom(ada, docId, rows), 'unfocused, the row sits where Moss\'s docked toolbar does').toBeLessThanOrEqual(32);
+  expect(await aboveBottom(docId, rows), 'unfocused, the row sits where Moss\'s docked toolbar does').toBeLessThanOrEqual(32);
   expect(await look(rows), 'a quiet row, no card of its own').toEqual({ shadow: 'none', border: 0 });
   await ui.body(ada, docId).getByText('Resting words').click();
   const toolbar = ada.page.locator(`[${FLOATING_TOOLBAR_ATTR}]`).filter({ has: ada.page.locator('button[aria-label]') });
@@ -130,7 +130,7 @@ test('j21 at rest the top bar holds only Moss\'s actions, and More actions holds
   await expect(rows, 'still one Suggesting row').toHaveCount(1);
   const [row, tools] = await Promise.all([rows.boundingBox(), toolbar.locator('button[aria-label]').first().boundingBox()]);
   expect(row!.y, 'the state is nearest the bottom, under the editing tools').toBeGreaterThan(tools!.y + tools!.height);
-  expect(await aboveBottom(ada, docId, rows), 'and stays at the bottom edge').toBeLessThanOrEqual(32);
+  expect(await aboveBottom(docId, rows), 'and stays at the bottom edge').toBeLessThanOrEqual(32);
 
   await rows.getByRole('button', { name: 'Stop suggesting', exact: true }).click();
   await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });

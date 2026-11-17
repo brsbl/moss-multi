@@ -52,7 +52,7 @@ async function expectReadable(actor: Actor, docId: string, size: Viewport): Prom
  * Search in note, Moss's own top-bar button at every width (T9.30): type, step through the matches and close it by
  * tapping, with every control on screen reachable and nothing pushed off the side.
  */
-async function searchesTheNote(actor: Actor, docId: string, size: Viewport): Promise<void> {
+async function searchesTheNote(actor: Actor, docId: string): Promise<void> {
   const page = actor.page;
   const more = page.getByRole('button', { name: 'More actions', exact: true });
   await page.locator('[data-top-bar]').getByRole('button', { name: 'Search in note', exact: true }).click();
@@ -108,7 +108,7 @@ for (const size of TIER_A) {
     expect(await band.evaluate((el) => getComputedStyle(el).boxShadow), 'a quiet row at the bottom, not a floating card').toBe('none');
     await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in to do more', exact: true }), 'no sign-in in the top bar').toHaveCount(0);
     await actors.checkpoint(`${size.name}-stranger-alone`);
-    await searchesTheNote(stranger, docId, size);
+    await searchesTheNote(stranger, docId);
 
     // 1 other: Ada comes back to the note.
     const ada2 = await actors.open(adaPrincipal, { label: 'ada-2', viewport: size, path: `/d/${docId}` });
@@ -251,7 +251,7 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   await expectReachable(ada, 'More actions', menu);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
-  await searchesTheNote(ada, docId, PHONE);
+  await searchesTheNote(ada, docId);
 
   await ui.openShare(ada, docId);
   await expectReachable(ada, 'Share', dialog);
