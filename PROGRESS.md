@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 44% done** (125 of 286 planned tasks verified)
+**Overall: 44% done** (126 of 286 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 73 / 73 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 74 / 74 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -145,6 +145,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T3.B31a verified: creating, importing or exporting a large note now needs little more memory than the note at rest, because an import frees its copy before applying and an export reads the live note in place without writing to it, and a CI memory job holds that line for notes of 20,000 blocks and more.
 - 2026-11-13 — T3.B31b verified: a note now stores only the block properties that differ from their defaults, so a large note takes about a third of the memory it did, and the server writes a default back when an older tab empties a key.
 - 2026-11-16 — T3.B31c verified: a note now holds up to 1.02 million characters, as in Google Docs, and a structure ceiling of 165,000 structs, checked alike on live edits, pastes, creates, duplicates and imports, with deletions and format changes given headroom and refusals that name the limit.
+- 2026-11-17 — T3.B33 verified: the note server now puts a body property of the wrong type or a non-finite number, such as a NaN indent, back to its default on every peer, counts that repair against the note's limits, and never overwrites a concurrent valid write with it.
 
 ## T1.1s identity audit
 
@@ -569,3 +570,6 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B31c (The note size limit matches Google Docs and holds on the real server) checker P2: payload map property writes get only the deletion headroom, not the format/property headroom — the payload-frame path (packages/sync/src/doc-do.ts:1606) passes !growth.inserts to #limitMet while the body path passes !growth.content (:1508), so at STRUCT_CAP a keyed-property write on a chart or sketch payload is refused; chart and sketch map keys are content, so any headroom must not let payload content grow past the cap.
 - T3.B31c (The note size limit matches Google Docs and holds on the real server) checker P2: a paste flushed or timed out while named payloads are still arriving is checked with incomplete counts — payloadsArrive (apps/web/src/host/large-paste.ts:207-212) stops on a flush or after 10 s without reporting readiness and landPaste (:865-866) then checks the local payload counts, so the server can refuse such a paste partway; when the wait ends while awaiting() is still non-empty, the preflight should refuse or re-check rather than admit.
 - T3.B31c (The note size limit matches Google Docs and holds on the real server) checker P2: the refusal band does not look like Moss's error notice — compared with Moss's retry toast (story retry-toast--save-failed) it is a flat full-width strip with neutral colours and no warning icon, not a rounded floating toast with Moss's error colours; pre-existing styling outside this task, which changed only the wording.
+- T3.B33 (The note server never keeps a body property of the wrong type) checker P2: a valid write that loses to a concurrent invalid write ends at the default — key X; peer A (client 100) writes NaN after X; peer B (client 50), not having seen A, writes indent 2 after X; the server repairs A to 0 under client 0, then B arrives and the value is 0, not 2; Yjs Item.integrate orders B before A by client id with or without the repair (plain Yjs would end at NaN), so B loses to A's invalid write, not to the repair.
+- T3.B33 (The note server never keeps a body property of the wrong type) checker P2: keepLeanKeys walks every client in transaction.afterState per transaction before skipping unchanged ones, outside repairWork.steps, so the cost is O(historical clients + touched structs) rather than O(keys touched) and the equal-steps test cannot see it; cheap per client and bounded in practice.
+- T3.B33 (The note server never keeps a body property of the wrong type) checker P2: the BUILDPLAN line names an 'offline indent, undo, indent' undo-lean test that does not exist — the two-peer test injects NaN directly into the earlier binding's Y.Doc and then indents and outdents through setIndent, because on m3 that sequence never produced NaN; the test is real and was red first, but the BUILDPLAN line overstates it.
