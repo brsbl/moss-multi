@@ -642,7 +642,8 @@ export class DocSession {
     this.#reopening = true;
     const answer = await askAccess(this.docId).finally(() => { this.#reopening = false; });
     if (this.#disposed || answer.kind !== 'role' || terminalOf(this.docId) !== 'deleted') return;
-    answer.remember();
+    // A stale answer (access changed while it was asked) is asked again.
+    if (!answer.remember()) return this.reopen();
     this.#ended = false;
     this.#failedHandshakes = 0;
     clearTerminal(this.docId);
@@ -825,9 +826,13 @@ export class DocSession {
         this.end('deleted');
         return;
       case 'role':
-        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place), unless a newer
-        // read answered or access changed meanwhile; the session still acts on what the server said after the close.
-        answer.remember();
+        // The pane's role, its top bar and its menus follow the answer (a demotion lowers them in place). A newer read
+        // answered or access changed meanwhile (a lowering raised back before this answer came): this one is stale, so
+        // ask again rather than act on it.
+        if (!answer.remember()) {
+          void this.#reask(cause);
+          return;
+        }
         // A suggester's failed handshakes are the network: its suggestions still need delivering, so it reconnects.
         if (!answer.canWrite && !(cause === 'handshake' && answer.canSuggest)) {
           refuseInput(VIEW_ONLY);

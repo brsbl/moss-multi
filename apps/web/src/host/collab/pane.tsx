@@ -49,7 +49,7 @@ import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
-import { showActionFeedback } from './feedback.ts';
+import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
 
 interface PaneState {
@@ -229,6 +229,8 @@ class PaneBinding implements SuggestPane {
       return;
     }
     if (this.#announce && !can(role, this.#announce)) this.#announce = null;
+    // A raise's pill still up says what the person can no longer do: it goes now (T9.12).
+    if (previous) for (const tier of RAISED) if (can(previous, tier) && !can(role, tier)) withdrawActionFeedback(this.docId, RAISED_NOTICE[tier]);
     this.#retarget(previous !== null);
     if (this.#session) this.#apply(this.#session.state);
   }
