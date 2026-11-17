@@ -102,7 +102,8 @@ describe('comment writes meet the note\'s limits @p:tech-3', () => {
 
   it('a sidecar import keeps only the records that fit under the structure guard, leaving the title room', async () => {
     const ids = ['k0', 'k1', 'k2', 'k3'];
-    const markdown = `${ids.map((id) => `%%m:${id}:start%%word ${id}%%m:${id}:end%%`).join(' and ')}.`;
+    // One marked paragraph each, so the import's node estimate stays under what it writes.
+    const markdown = ids.map((id) => `%%m:${id}:start%%Word ${id}%%m:${id}:end%%`).join('\n\n');
     const sidecar = Object.fromEntries(ids.map((id, i) => [id, { text: `Comment ${id}`, createdAt: i, updatedAt: i, source: 'user' }]));
     const bare = await note(capped().Doc, { markdown, comments: {}, title: 'Imported' });
     const structs = (await bare.dobj.noteSize()).structs;

@@ -38,7 +38,6 @@
     "__type": "callout"
   },
   "chart": {
-    "__commentIds": [],
     "__regId": "",
     "__type": "chart"
   },
@@ -59,7 +58,6 @@
     "__type": "code"
   },
   "code-block": {
-    "__commentIds": [],
     "__language": "plaintext",
     "__regId": "",
     "__theme": "one-light",
@@ -82,7 +80,6 @@
     }
   },
   "embed-pill": {
-    "__commentIds": [],
     "__displayText": "",
     "__textFormat": 0,
     "__type": "embed-pill",
@@ -91,7 +88,6 @@
     }
   },
   "file-link": {
-    "__commentIds": [],
     "__displayText": null,
     "__headingText": null,
     "__isResolved": {
@@ -106,7 +102,6 @@
     "__type": "file-link"
   },
   "formula": {
-    "__commentIds": [],
     "__formulaId": {
       "$": "varies"
     },
@@ -132,7 +127,6 @@
     "__type": "horizontalrule"
   },
   "html-block": {
-    "__commentIds": [],
     "__regId": "",
     "__source": "fenced",
     "__type": "html-block"
@@ -141,7 +135,6 @@
     "__altText": {
       "$": "undefined"
     },
-    "__commentIds": [],
     "__obsidianRef": null,
     "__src": {
       "$": "undefined"
@@ -227,7 +220,6 @@
     "__type": "root"
   },
   "sketch": {
-    "__commentIds": [],
     "__regId": "",
     "__type": "sketch"
   },
@@ -311,7 +303,6 @@
   },
   "video": {
     "__altText": "",
-    "__commentIds": [],
     "__src": {
       "$": "undefined"
     },
@@ -319,7 +310,6 @@
   },
   "web-embed": {
     "__altText": "",
-    "__commentIds": [],
     "__type": "web-embed",
     "__url": {
       "$": "undefined"
