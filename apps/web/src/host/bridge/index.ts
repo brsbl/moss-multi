@@ -16,6 +16,7 @@ import { createWebEmbedPreviewApi } from '../embeds/web-embed-preview.ts';
 import { waitForAllAcked } from '../collab/unacked.ts';
 import { setWikiCandidates } from '../wiki-links.ts';
 import { registerDocOpener } from '../navigation.ts';
+import { onNotePopState } from '../note-popstate.ts';
 import { anySignal, currentLeave, heldRead, installLeaving, isLeaveCancelled, leaveAwareSend, type Leave } from '../leave.ts';
 import type { TrashGuard } from '../trash-guard.ts';
 import { SESSION_ENDED_COPY, whenSessionEnded } from '../session-fetch.ts';
@@ -915,12 +916,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
           void refreshForNavigation(id);
           callback?.(id);
         };
-        // The browser's Back or Forward opens the note through moss's own switch, which adds no history entry.
+        // The browser's Back or Forward opens the note through moss's own switch, which adds no history entry. The
+        // listing is read once moss has switched (setFocusedNoteId), as for any visit: read during the switch, it
+        // mounted the pane twice.
         const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
           if (!id || !callback) return;
           popped = { id, until: Date.now() + POP_SETTLE_MS };
-          open(id);
+          callback(id);
         });
         // The bell's notices open a note through moss's own switch (navigation.ts, A§9).
         const offOpen = callback ? registerDocOpener(open) : noop;
@@ -1034,7 +1037,11 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // A trashed note has no address: a fresh load of it is the one 404 (A§8).
         if (!id || !live(id)) return;
         const address = docIdFromPath(pathname());
-        if (popped?.id === id) popped = null;
+        if (popped?.id === id && address === id) {
+          popped = null;
+          await refreshForNavigation(id);
+          return;
+        }
         if (address === id) return;
         // Back or Forward chose a note moss is still switching to; the notes it passes on the way are not visits.
         if (popped && popped.id === address && Date.now() < popped.until) return;
@@ -1145,17 +1152,8 @@ function windowBrowser(): BrowserHooks {
     // window.history.replaceState, and the route change it reports would remount moss's whole App.
     replacePath: (path) => History.prototype.replaceState.call(window.history, window.history.state, '', path),
     pushPath: (path) => History.prototype.pushState.call(window.history, window.history.state, '', path),
-    // Back or Forward between two notes is moss's to handle: the router never hears it, as it never heard the entries
-    // (it would load the route again). Capture on window runs before the router's own listener there.
-    onPopState: (listener) => {
-      const pop = (event: PopStateEvent) => {
-        if (!docIdFromPath(window.location.pathname)) return;
-        event.stopImmediatePropagation();
-        listener();
-      };
-      window.addEventListener('popstate', pop, true);
-      return () => window.removeEventListener('popstate', pop, true);
-    },
+    // Back or Forward between two notes is moss's to handle; the router never hears it (host/note-popstate.ts).
+    onPopState: onNotePopState,
     copy: async (text, html) => {
       if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return navigator.clipboard.writeText(text);
       await navigator.clipboard.write([

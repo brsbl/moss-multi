@@ -8,12 +8,15 @@ import { StartClient } from '@tanstack/react-start/client';
 import { StrictMode, startTransition } from 'react';
 import { hydrateRoot } from 'react-dom/client';
 import { installClientProtocol } from './host/client-protocol.ts';
+import { installNotePopState } from './host/note-popstate.ts';
 import { BUILD } from './provenance.ts';
 
 // Stamped before React mounts.
 document.documentElement.setAttribute(CLIENT_BUILD_ATTR, `${BUILD.commit}:${BUILD.clientHash}`);
 // Before anything fetches: every API call names this bundle's client protocol (rule 10).
 installClientProtocol();
+// Before the router: Back and Forward between notes never reach it (T9.19).
+installNotePopState();
 
 startTransition(() => {
   hydrateRoot(
