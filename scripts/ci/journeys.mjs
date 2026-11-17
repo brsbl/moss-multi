@@ -15,7 +15,7 @@ export const ALL = 'all';
 // Every group's estimate must fit the shard budget below (`plan.mjs budget`); split a group when it does not.
 export const GROUPS = {
   // Chrome, auth and invites.
-  shell: ['j00-shell', 'j07', 'j10', 'j19'],
+  shell: ['j00-shell', 'j07', 'j10', 'j19', 'j21'],
   // Sharing.
   share: ['j08'],
   // Live access changes: demotion, removal, link revocation, sign-out.
