@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { InfraBlocked } from '../lib/infra.ts';
-import { MOSS_UNDO_STEPS, UNDO_SCENARIOS, undoSteps, type UndoSteps } from '../lib/undo-steps.ts';
+import { CARET_SCENARIOS, MOSS_UNDO_CARET, MOSS_UNDO_STEPS, UNDO_SCENARIOS, undoCaret, undoSteps, type UndoSteps } from '../lib/undo-steps.ts';
 import { serveStatic, type StaticServer } from './serve-static.ts';
 
 const OUT = join(import.meta.dirname, '../test-results/parity');
@@ -42,6 +42,25 @@ for (const scenario of UNDO_SCENARIOS) {
       console.log(`pristine moss, ${scenario.name}: ${JSON.stringify(result)}`);
       test.info().annotations.push({ type: 'pristine moss', description: JSON.stringify(result) });
       expect(result, `pristine moss: ${scenario.name}`).toEqual(MOSS_UNDO_STEPS[scenario.name]);
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+// T9.14: where the next word lands after undo and redo in pristine moss.
+for (const scenario of CARET_SCENARIOS) {
+  test(`undo caret, ${scenario.name}: where the next word lands in pristine moss`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
+    try {
+      const page = await context.newPage();
+      await page.goto(`${oracle.url}/?story=${STORY}&mode=preview`);
+      const root = page.locator('[data-moss-note-editor-root="true"]').filter({ hasText: 'Start.' });
+      await root.locator('p').first().waitFor({ timeout: 30_000 });
+      const result = await undoCaret(page, root, scenario);
+      console.log(`pristine moss, caret, ${scenario.name}: ${JSON.stringify(result)}`);
+      test.info().annotations.push({ type: 'pristine moss', description: JSON.stringify(result) });
+      expect(result, `pristine moss: ${scenario.name}`).toEqual(MOSS_UNDO_CARET[scenario.name]);
     } finally {
       await context.close();
     }

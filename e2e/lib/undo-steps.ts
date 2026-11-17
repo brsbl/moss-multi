@@ -4,7 +4,7 @@
 // (e2e/parity/undo-steps.spec.ts); MOSS_UNDO_STEPS is what moss at the pin does, so both assert the same steps.
 import type { Locator, Page } from '@playwright/test';
 
-export type UndoAction = { type: string } | { key: string } | { paste: string } | { menu: string };
+export type UndoAction = { type: string } | { key: string } | { paste: string } | { menu: string } | { caretAtEnd: string } | { wait: number };
 
 export interface UndoScenario {
   name: string;
@@ -89,9 +89,9 @@ export const blocksOf = (root: Locator): Promise<string[]> => root.evaluate((ele
   return (editor.getEditorState().toJSON().root.children ?? []).map((block) => `${block.type === 'heading' ? block.tag : block.type}|${show(block)}`);
 });
 
-/** Puts the caret at the end of the note's first paragraph ("Start."). */
-async function caretAtStartEnd(page: Page, root: Locator): Promise<void> {
-  const first = root.locator('p').first();
+/** Puts the caret at the end of the note's first paragraph ("Start."), or of the one starting with `start`. */
+async function caretAtStartEnd(page: Page, root: Locator, start?: string): Promise<void> {
+  const first = start === undefined ? root.locator('p').first() : root.locator('p').filter({ hasText: start }).first();
   await first.scrollIntoViewIfNeeded();
   const box = await first.boundingBox();
   if (!box) throw new Error('the first paragraph is not visible');
@@ -108,6 +108,8 @@ async function caretAtStartEnd(page: Page, root: Locator): Promise<void> {
 async function play(page: Page, root: Locator, action: UndoAction): Promise<void> {
   if ('type' in action) await page.keyboard.type(action.type, { delay: KEY_DELAY_MS });
   else if ('key' in action) await page.keyboard.press(action.key);
+  else if ('wait' in action) await page.waitForTimeout(action.wait);
+  else if ('caretAtEnd' in action) await caretAtStartEnd(page, root, action.caretAtEnd);
   else if ('paste' in action) {
     await root.evaluate((element, text) => {
       const target = (element as HTMLElement).isContentEditable ? element : (element.querySelector('[contenteditable]') ?? element);
@@ -136,4 +138,45 @@ export async function undoSteps(page: Page, root: Locator, scenario: UndoScenari
     undone.push(await blocksOf(root));
   }
   return { typed, undone };
+}
+
+/**
+ * Where the caret is after undo and redo (T9.14): three lines typed, a line inserted under the first, then Cmd+Z (and
+ * Cmd+Shift+Z) and a word typed without clicking. The pauses pass Moss's history merge window, so the insert is steps
+ * of its own. Shared by the j01-undo leg and the probe against pristine moss, as the scenarios above are.
+ */
+export interface CaretScenario {
+  name: string;
+  actions: UndoAction[];
+}
+
+const UNDO_KEY = { key: 'ControlOrMeta+z' };
+const REDO_KEY = { key: 'ControlOrMeta+Shift+z' };
+const LINES_AND_AN_INSERT: UndoAction[] = [
+  { key: 'Enter' }, { type: 'Alpha line.' }, { key: 'Enter' }, { type: 'Beta line.' }, { key: 'Enter' }, { type: 'Gamma line.' },
+  { wait: 1_500 }, { caretAtEnd: 'Alpha line.' }, { key: 'Enter' }, { type: 'Inserted' }, { wait: 1_500 },
+];
+
+export const CARET_SCENARIOS: CaretScenario[] = [
+  { name: 'undo then type', actions: [...LINES_AND_AN_INSERT, UNDO_KEY, UNDO_KEY, { type: 'WHERE' }] },
+  { name: 'redo then type', actions: [...LINES_AND_AN_INSERT, UNDO_KEY, UNDO_KEY, REDO_KEY, REDO_KEY, { type: 'HERE' }] },
+  // Undo returns the caret to the change even after it moved elsewhere.
+  { name: 'caret moved, undo then type', actions: [...LINES_AND_AN_INSERT, { caretAtEnd: 'Gamma line.' }, UNDO_KEY, UNDO_KEY, { type: 'WHERE' }] },
+  // The caret keeps its typing format too: bold turned on in an empty line stays on after the bold word is undone.
+  { name: 'bold word undone, then type', actions: [{ key: 'Enter' }, { wait: 1_500 }, { key: 'ControlOrMeta+b' }, { type: 'bold' }, { wait: 1_500 }, UNDO_KEY, { type: 'xyz' }] },
+];
+
+/** The body pristine moss at the pin ends each caret scenario with. */
+export const MOSS_UNDO_CARET: Record<string, string[]> = {
+  'undo then type': [s, 'paragraph|Alpha line.WHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
+  'redo then type': [s, 'paragraph|Alpha line.', 'paragraph|InsertedHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
+  'caret moved, undo then type': [s, 'paragraph|Alpha line.WHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
+  'bold word undone, then type': [s, 'paragraph|**xyz**'],
+};
+
+/** Plays a caret scenario on the note in `root` (holding only "Start."); returns the body after it. */
+export async function undoCaret(page: Page, root: Locator, scenario: CaretScenario): Promise<string[]> {
+  await caretAtStartEnd(page, root);
+  for (const action of scenario.actions) await play(page, root, action);
+  return blocksOf(root);
 }

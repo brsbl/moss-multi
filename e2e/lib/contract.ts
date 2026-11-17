@@ -24,6 +24,8 @@ export const NAMES = {
   suggestionsPanel: dom.SUGGESTIONS_PANEL_ATTR,
   actionFeedback: dom.ACTION_FEEDBACK_ATTR,
   remote: [dom.REMOTE_CARET_ATTR, dom.REMOTE_SELECTION_ATTR, dom.REMOTE_LABEL_ATTR],
+  // moss's table chrome (TableColumnResizePlugin): fixed handles over the table the caret is in.
+  tableUi: 'data-moss-table-ui-owner',
   sidebarRow: dom.SIDEBAR_ROW_ATTR,
   lexical: dom.LEXICAL_EDITOR_SELECTOR,
   observe: 'data-e2e-observe',
