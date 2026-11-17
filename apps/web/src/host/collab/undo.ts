@@ -4,7 +4,7 @@
 // HistoryPlugin) would start a new entry (T9.13), and otherwise after a pause of the capture window.
 import { createEmptyHistoryState, registerHistory } from '@lexical/history';
 import {
-  COLLABORATION_TAG, HISTORIC_TAG, UNDO_COMMAND, REDO_COMMAND, type EditorState, type LexicalEditor, type NodeKey,
+  COLLABORATION_TAG, UNDO_COMMAND, REDO_COMMAND, type EditorState, type LexicalEditor, type NodeKey,
 } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
@@ -126,8 +126,8 @@ export function markUndoStep(binding: Binding, update: LexicalUpdate): void {
   if (update.tags.has(COLLABORATION_TAG)) return;
   const entry = stepRules.get(binding);
   if (!entry) return;
-  // The caret a step starting with this update returns to on undo (T9.14); an undo's own update is no new step.
-  if (!update.tags.has(HISTORIC_TAG)) noteCaretBefore(binding, update);
+  // The caret a step starting with this update returns to on undo (T9.14).
+  noteCaretBefore(binding, update);
   if (suggesting.has(binding.editor)) return;
   const kind = entry.rule(update);
   // A selection change merges in Lexical and writes nothing, so it holds no step open.

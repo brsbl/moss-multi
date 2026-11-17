@@ -4,7 +4,7 @@
 import { $getAnchorAndFocusForUserState, type Binding, type UserState } from '@lexical/yjs';
 import {
   $createRangeSelection, $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isRootNode, $isTextNode,
-  $setSelection, type EditorState, type LexicalNode, type PointType,
+  $setSelection, type EditorState, type LexicalNode, type PointType, type RangeSelection,
 } from 'lexical';
 import { ContentType, Item, createRelativePositionFromTypeIndex, findIndexSS, getItem, type AbstractType, type RelativePosition } from 'yjs';
 import type { StepCarets } from '@moss-multi/sync/payload-docs';
@@ -85,11 +85,9 @@ function $restoreCaret(binding: Binding, caret: Caret | null, entries: Entries):
     const anchor = $point(at.anchorKey, at.anchorOffset);
     const focus = $point(at.focusKey, at.focusOffset);
     if (anchor && focus) {
-      let selection = $getSelection();
-      if (!$isRangeSelection(selection)) {
-        selection = $createRangeSelection();
-        $setSelection(selection);
-      }
+      const current = $getSelection();
+      const selection: RangeSelection = $isRangeSelection(current) ? current : $createRangeSelection();
+      if (selection !== current) $setSelection(selection);
       selection.anchor.set(...anchor);
       selection.focus.set(...focus);
       const node = $getNodeByKey(anchor[0]);
