@@ -19,10 +19,13 @@ export interface PasteSpan {
 /** Clock ranges, `[client, clock, length]`. */
 export type Ranges = [number, number, number][];
 
+/** A payload doc a paste made, and the deletes the pasting tab made in it (absent for none). */
+export type PayloadSpan = PasteSpan & { deletes?: Ranges };
+
 /** A paste's items in the note and in each payload doc it made (by payload id), and the deletes it held back. */
 export interface PasteRecord {
   note: PasteSpan;
-  payloads: Record<string, PasteSpan>;
+  payloads: Record<string, PayloadSpan>;
   /** The note deletes the paste's writes made, sent only once all its items landed. */
   deletes?: Ranges;
   /**
@@ -83,6 +86,32 @@ export function landedPart(doc: Y.Doc, span: PasteSpan): PasteSpan | null {
 /** Whether `doc` holds all of `span`. */
 export const landedWhole = (doc: Y.Doc, span: PasteSpan): boolean => Y.getState(doc.store, span.client) >= span.to;
 
+/**
+ * Whether another writer deleted some of `span`'s clocks in `struct`, a deleted struct: a delete leaves no item of the
+ * writer who made it, so one the pasting tab did not make itself (`own`, its deletes) is another writer's edit.
+ */
+function deletedByOthers(struct: Y.Item | Y.GC, span: PasteSpan, own: Ranges): boolean {
+  if (struct.id.client !== span.client) return false;
+  const from = Math.max(struct.id.clock, span.from);
+  const to = Math.min(struct.id.clock + struct.length, span.to);
+  if (to <= from) return false;
+  // `own` is merged, so one range covers the clocks or none does.
+  let lo = 0;
+  let hi = own.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const [client, clock] = own[mid];
+    if (client < span.client || (client === span.client && clock <= from)) {
+      found = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  if (found < 0) return true;
+  const [client, clock, length] = own[found];
+  return client !== span.client || clock + length < to;
+}
+
 /** Whether `item` holds any of `span`'s clocks. */
 const overlaps = (span: PasteSpan) => (item: Y.Item): boolean =>
   item.id.client === span.client && item.id.clock < span.to && item.id.clock + item.length > span.from;
@@ -128,10 +157,13 @@ export interface RollbackPlan {
  * holding another writer's live item, or an element naming a payload id in `pinned`, is kept whole. A property the
  * paste set on a node it did not make keeps the pasted value, since setting it replaced the old one on every copy.
  */
-export function rollbackPlan(doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_STRUCTS, pinned: ReadonlySet<string> = new Set()): RollbackPlan {
+export function rollbackPlan(
+  doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_STRUCTS, pinned: ReadonlySet<string> = new Set(), deletes: Ranges = [],
+): RollbackPlan {
   const part = landedPart(doc, span);
   if (!part) return { updates: [], kept: 0 };
   const mine = overlaps(part);
+  const own = mergeRanges(deletes);
   const range = (item: Y.Item): [number, number, number] => {
     const from = Math.max(item.id.clock, part.from);
     return [part.client, from, Math.min(item.id.clock + item.length, part.to) - from];
@@ -155,12 +187,19 @@ export function rollbackPlan(doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_
   };
   const blocks = new Set<Y.Item>();
   const runs = new Map<Y.Item, Y.Item[]>();
+  // Blocks holding a pasted item another writer deleted (a whole block deleted is gone, and a rollback's own deletes
+  // are whole blocks and whole runs, so a resumed one finds none in a block it still deletes).
+  const touched = new Set<Y.Item>();
   const structs = doc.store.clients.get(part.client) ?? [];
   for (let i = Y.findIndexSS(structs, part.from); i < structs.length && structs[i].id.clock < part.to; i += 1) {
     const struct = structs[i];
-    if (!(struct instanceof Y.Item) || struct.deleted) continue;
+    if (!(struct instanceof Y.Item)) continue;
     const parent = struct.parent as Y.AbstractType<unknown>;
     const top = topOf(parent);
+    if (struct.deleted) {
+      if (top !== null && deletedByOthers(struct, part, own)) touched.add(top);
+      continue;
+    }
     if (top === null) {
       if (struct.parentSub === null) blocks.add(struct);
     } else if (!mine(top) && struct.parentSub === null && !(parent._item && mine(parent._item))) {
@@ -180,7 +219,7 @@ export function rollbackPlan(doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_
   let size = 0;
   for (let i = ordered.length - 1; i >= 0; i -= 1) {
     const { structs: count, others } = survey(ordered[i], mine, pinned);
-    if (others) {
+    if (others || touched.has(ordered[i])) {
       kept += 1;
       continue;
     }
@@ -194,9 +233,9 @@ export function rollbackPlan(doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_
   }
   if (batch.length > 0) updates.push(deletesUpdate(mergeRanges(batch)));
 
-  for (const run of runs.values()) {
+  for (const [top, run] of runs) {
     const inRun = new Set(run);
-    let others = run.some((item) => survey(item, mine, pinned).others);
+    let others = touched.has(top) || run.some((item) => survey(item, mine, pinned).others);
     // Another writer's text between the run's items, or right after a text node's property map it ends with (that
     // map owns the characters after it in @lexical/yjs), would go with the run or change node.
     for (const parent of new Set(run.map((item) => item.parent as Y.AbstractType<unknown>))) {
@@ -233,11 +272,19 @@ export function rollBack(doc: Y.Doc, span: PasteSpan, origin: unknown, maxStruct
   return updates.length;
 }
 
-/** Whether `doc` holds a live item outside `span`: another writer's write in a payload doc the paste made. */
-export function holdsOthers(doc: Y.Doc, span: PasteSpan): boolean {
+/**
+ * Whether another writer wrote into a payload doc the paste made: a live item outside `span`, or an item of the
+ * paste's deleted by a delete the pasting tab did not make (`deletes`).
+ */
+export function holdsOthers(doc: Y.Doc, span: PasteSpan, deletes: Ranges = []): boolean {
+  const own = mergeRanges(deletes);
   for (const [client, structs] of doc.store.clients) {
     for (const struct of structs) {
-      if (!(struct instanceof Y.Item) || struct.deleted) continue;
+      // A GC struct is deleted content too.
+      if (struct.deleted) {
+        if (deletedByOthers(struct, span, own)) return true;
+        continue;
+      }
       if (client !== span.client || struct.id.clock < span.from || struct.id.clock >= span.to) return true;
     }
   }
@@ -247,14 +294,16 @@ export function holdsOthers(doc: Y.Doc, span: PasteSpan): boolean {
 /**
  * Rolls a paste back in its note. Its payload docs are never written: a pasted block whose payload another writer
  * wrote into is kept whole, and one deleted leaves its payload doc unnamed, withheld as any deleted block's is.
- * Returns the count of rollback updates and of blocks kept.
+ * `deletes` are the note deletes the paste made itself, and a payload span's the payload's. Returns the count of
+ * rollback updates and of blocks kept.
  */
 export function rollBackPaste(
-  note: Y.Doc, span: PasteSpan, payloads: [id: string, doc: Y.Doc, span: PasteSpan][], origin: unknown, maxStructs = ROLLBACK_STRUCTS,
+  note: Y.Doc, span: PasteSpan, payloads: [id: string, doc: Y.Doc, span: PayloadSpan][], origin: unknown, maxStructs = ROLLBACK_STRUCTS,
+  deletes: Ranges = [],
 ): { updates: number; kept: number } {
   const pinned = new Set<string>();
-  for (const [id, doc, payload] of payloads) if (holdsOthers(doc, payload)) pinned.add(id);
-  const { updates, kept } = rollbackPlan(note, span, maxStructs, pinned);
+  for (const [id, doc, payload] of payloads) if (holdsOthers(doc, payload, payload.deletes)) pinned.add(id);
+  const { updates, kept } = rollbackPlan(note, span, maxStructs, pinned, deletes);
   for (const update of updates) Y.applyUpdate(note, update, origin);
   return { updates: updates.length, kept };
 }
@@ -373,7 +422,9 @@ export function isPasteRecord(value: unknown): value is PasteRecord {
   };
   const record = value as PasteRecord | null;
   if (typeof record !== 'object' || record === null || !span(record.note) || typeof record.payloads !== 'object' || record.payloads === null) return false;
-  if (!Object.values(record.payloads).every(span)) return false;
-  if (record.deletes !== undefined && !(Array.isArray(record.deletes) && record.deletes.every((range) => Array.isArray(range) && range.length === 3 && range.every(count)))) return false;
+  const ranges = (each: unknown): boolean =>
+    each === undefined || (Array.isArray(each) && each.every((range) => Array.isArray(range) && range.length === 3 && range.every(count)));
+  if (!Object.values(record.payloads).every((each) => span(each) && ranges(each.deletes))) return false;
+  if (!ranges(record.deletes)) return false;
   return record.decided === undefined || record.decided === 'cut' || record.decided === 'whole';
 }

@@ -9,7 +9,7 @@ import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, namedPayloadIds, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
-import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBackPaste, withoutDeletes, type PasteRecord, type Ranges } from '@moss-multi/sync/paste-rollback';
+import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBackPaste, withoutDeletes, type PasteRecord, type PayloadSpan, type Ranges } from '@moss-multi/sync/paste-rollback';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { knownRole, rememberRole } from '../access.ts';
@@ -312,13 +312,17 @@ export class PasteTrack {
   /** Where the pane was scrolled when the paste began, restored if it is rolled back. */
   scrollTop: number | undefined;
   readonly #made = new Map<string, Y.Doc>();
+  /** The deletes the paste makes in each payload doc it made, so a rollback tells another writer's deletes apart. */
+  readonly #watches = new Map<string, PasteWatch>();
   readonly #ends = new Map<string, number>();
   readonly #stop: () => void;
 
   constructor(readonly doc: Y.Doc, payloads: PayloadDocs, readonly abort: () => void, readonly onFinish: () => void) {
     this.watch = new PasteWatch(doc);
     this.#stop = payloads.onHold((id, payload, fresh) => {
-      if (fresh && !this.finished) this.#made.set(id, payload);
+      if (!fresh || this.finished) return;
+      this.#made.set(id, payload);
+      if (!this.#watches.has(id)) this.#watches.set(id, new PasteWatch(payload));
     });
   }
 
@@ -331,6 +335,7 @@ export class PasteTrack {
     if (this.finished) return;
     this.watch.finish();
     for (const [id, payload] of this.#made) this.#ends.set(id, Y.getState(payload.store, payload.clientID));
+    for (const watch of this.#watches.values()) watch.finish();
     this.#stop();
     this.onFinish();
   }
@@ -339,6 +344,8 @@ export class PasteTrack {
     const payloads: PasteRecord['payloads'] = {};
     for (const [id, payload] of this.#made) {
       payloads[id] = { client: payload.clientID, from: 0, to: this.#ends.get(id) ?? Y.getState(payload.store, payload.clientID) };
+      const deletes = this.#watches.get(id)?.deletes() ?? [];
+      if (deletes.length > 0) payloads[id].deletes = deletes;
     }
     return payloads;
   }
@@ -784,7 +791,8 @@ export class DocSession {
         if (record.deletes?.length) applyDeletes(this.doc, record.deletes, ROLLBACK_ORIGIN);
       } else {
         cut = true;
-        kept += rollBackPaste(this.doc, record.note, payloads.map(([id, span]) => [id, this.payloads.hold(id), span]), ROLLBACK_ORIGIN).kept;
+        const held = payloads.map(([id, span]): [string, Y.Doc, PayloadSpan] => [id, this.payloads.hold(id), span]);
+        kept += rollBackPaste(this.doc, record.note, held, ROLLBACK_ORIGIN, undefined, record.deletes).kept;
         if (record.scrollTop !== undefined) this.rolledBackScroll = record.scrollTop;
       }
       this.#applied.add(key);
