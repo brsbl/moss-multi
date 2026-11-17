@@ -477,6 +477,22 @@ export class BodyUndo extends Observable<StackEvent> {
     };
   }
 
+  /**
+   * Where an edit about to land falls (T9.13): `push` ends the current step first, so the edit starts the next one;
+   * `merge` keeps the step open for it however long after it lands. A held step stays one either way.
+   */
+  boundary(kind: 'push' | 'merge'): void {
+    if (this.#holds > 0) return;
+    if (kind === 'push') {
+      this.stopCapturing();
+      return;
+    }
+    if (this.root.lastChange === 0 || this.undone.length === 0) return;
+    const now = Date.now();
+    this.root.lastChange = now;
+    this.#lastChange = now;
+  }
+
   /** True while undo or redo replays a step: the stack items its managers add then are no new edit. */
   get replaying(): boolean {
     return this.#replaying;

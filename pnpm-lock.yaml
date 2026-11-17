@@ -231,6 +231,9 @@ importers:
       '@fontsource/jetbrains-mono':
         specifier: 5.3.0
         version: 5.3.0
+      '@lexical/history':
+        specifier: 0.48.0
+        version: 0.48.0(typescript@5.9.3)
       '@lexical/react':
         specifier: 0.48.0
         version: 0.48.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(yjs@13.6.31(patch_hash=51215c51792f340b2bcb4eb386037ec7c86a241329939ab6b965150f51ba69fc))

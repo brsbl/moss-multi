@@ -23,6 +23,7 @@ import * as Y from 'yjs';
 import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
+import { keepCaptureSteps } from '../undo.ts';
 import { charsAround, idKey, isPending, sharedItem, textIds, toSpans } from './chars.ts';
 import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type UndoStep } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
@@ -780,6 +781,7 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     return notice !== null;
   };
   return mergeRegister(
+    keepCaptureSteps(editor),
     () => watch(null),
     () => doc.off('beforeTransaction', settle),
     () => trace.stop(),
