@@ -75,16 +75,17 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) navigating.current = false;
-    if (next || !leaving) return;
-    // The bell leaves with its inbox. Only if focus went with it does it move, to the inbox's own home.
+    if (next) return;
+    // The bell may leave with its inbox, now or once the read marks land. Only if focus went with it does focus
+    // move, to the inbox's own home; while it is still in the closing inbox or on the bell, look again.
     const destination = footerDestination(bar?.current ?? null);
     const started = performance.now();
     const settle = () => {
       if (navigating.current) return;
       const active = document.activeElement;
       if (active && active !== document.body) {
-        // Still in the closing inbox: wait for it to go, then look again.
-        if (active.closest('[role="menu"]') && performance.now() - started < 1_000) requestAnimationFrame(settle);
+        const waiting = active.closest('[role="menu"]') || active.matches('button[aria-label^="Notifications"]');
+        if (waiting && performance.now() - started < 2_000) requestAnimationFrame(settle);
         return;
       }
       destination?.focus();
