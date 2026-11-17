@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 44% done** (126 of 286 planned tasks verified)
+**Overall: 42% done** (127 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 74 / 74 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -146,6 +146,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T3.B31b verified: a note now stores only the block properties that differ from their defaults, so a large note takes about a third of the memory it did, and the server writes a default back when an older tab empties a key.
 - 2026-11-16 — T3.B31c verified: a note now holds up to 1.02 million characters, as in Google Docs, and a structure ceiling of 165,000 structs, checked alike on live edits, pastes, creates, duplicates and imports, with deletions and format changes given headroom and refusals that name the limit.
 - 2026-11-17 — T3.B33 verified: the note server now puts a body property of the wrong type or a non-finite number, such as a NaN indent, back to its default on every peer, counts that repair against the note's limits, and never overwrites a concurrent valid write with it.
+- 2026-11-17 — T3.B32 verified: a large paste that a size limit cuts short is now rolled back, so the part that landed is deleted in whole blocks before the note shows, every peer converges on it, a reload mid-rollback resumes it, and a block another writer edited is kept whole and the notice says so.
 
 ## T1.1s identity audit
 
@@ -573,3 +574,4 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: a valid write that loses to a concurrent invalid write ends at the default — key X; peer A (client 100) writes NaN after X; peer B (client 50), not having seen A, writes indent 2 after X; the server repairs A to 0 under client 0, then B arrives and the value is 0, not 2; Yjs Item.integrate orders B before A by client id with or without the repair (plain Yjs would end at NaN), so B loses to A's invalid write, not to the repair.
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: keepLeanKeys walks every client in transaction.afterState per transaction before skipping unchanged ones, outside repairWork.steps, so the cost is O(historical clients + touched structs) rather than O(keys touched) and the equal-steps test cannot see it; cheap per client and bounded in practice.
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: the BUILDPLAN line names an 'offline indent, undo, indent' undo-lean test that does not exist — the two-peer test injects NaN directly into the earlier binding's Y.Doc and then indents and outdents through setIndent, because on m3 that sequence never produced NaN; the test is real and was red first, but the BUILDPLAN line overstates it.
+- T3.B32 (A paste that cannot finish leaves nothing behind) checker P2: the cut notice first says 'nothing was pasted', then changes to the 'kept' wording — while the note is hidden and rebinding the cutting tab shows "The paste didn't fit, so nothing was pasted.", and once the rollback finds a line someone else edited it changes to "...It was removed, except for what someone else had already edited."; the body is hidden during the first text and the final text is correct, so this is a brief wording flicker, not a wrong result.
