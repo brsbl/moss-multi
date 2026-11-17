@@ -222,6 +222,9 @@ export function suggestionStateBytes(doc: Y.Doc): number {
     }
     return bytes;
   }
+  // With no S struct the note holds no suggestion state, and the two encodings below (each a walk of the whole store
+  // for its delete set) would only agree: a wake of a note never suggested on pays nothing.
+  if (!doc.store.clients.get(writer.client)?.length) return 0;
   const full = Y.encodeStateVector(doc);
   const without = Y.decodeStateVector(full);
   without.delete(writer.client);
