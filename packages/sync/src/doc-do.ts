@@ -30,7 +30,7 @@ import { seedPayload } from './payload-docs.ts';
 import { growthOf, structCount, TextCount } from './note-size.ts';
 import { JANITOR, migratePayloads, payloadSize, PayloadStore, type PayloadWork } from './payloads.ts';
 import { SEARCH_DO_NAME, type IndexEntry } from './search-do.ts';
-import { keepLeanKeys } from './lean-defaults.ts';
+import { keepLeanKeys, predictRepairs } from './lean-defaults.ts';
 import {
   attachPayloadSource, exportDocMarkdown, ExportWroteError, IMPORT_STRUCTS_PAST, importBody, rootIsEmpty, SERVER_IMPORT, SERVER_SEED, seedEmptyParagraph, serverLeanDefaults,
 } from './server-doc.ts';
@@ -1531,11 +1531,15 @@ export class DocDO extends YServer<SyncEnv> {
    * deletions is held to the structure guard and its headroom alone, so a note stored past the byte cap can shrink.
    */
   #noteLimit(store: DocStore, update: Uint8Array): DocLimit | null {
+    // The defaults keepLeanKeys would write back after it are counted with it: a struct and some bytes each.
+    const repairs = predictRepairs(this.document, update, serverLeanDefaults());
+    if (repairs.count > this.#limits.repairsPerFrame) return 'structure';
     const before = this.#size();
     const after = this.#sizeAfter(before, update);
+    after.size.structs += repairs.count;
     const limit = this.#limitMet(before, after.size, after.headroom);
-    if (limit || after.deletes) return limit;
-    return this.#overCap(store, update) ? 'state' : null;
+    if (limit || (after.deletes && !repairs.count)) return limit;
+    return this.#overCap(store, update, repairs.bytes) ? 'state' : null;
   }
 
   /**
