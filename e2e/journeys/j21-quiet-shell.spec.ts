@@ -326,6 +326,12 @@ test('j21 people, unread and open suggestions are quiet cues that yield by the p
   await page.setViewportSize({ width: 390, height: 844 });
   await expectFits(ada, docId, '390');
   await expectNative(ada, docId, '390', ['Show notes panel', ...NATIVE]);
+  // Too narrow to read, the location yields instead of showing clipped fragments beside Moss's actions.
+  const clipped = await bar.evaluate((root) => [...root.querySelectorAll('*')]
+    .filter((el) => [...el.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && (node.textContent ?? '').trim()))
+    .filter((el) => { const box = el.getBoundingClientRect(); return box.width > 1 && box.width < 48 && el.scrollWidth > el.clientWidth + 1; })
+    .map((el) => el.textContent));
+  expect(clipped, '390: no clipped text in the bar').toEqual([]);
   // People here is in the Suggestions list's heading, its own action there.
   await (await ui.openNoteMenu(ada, docId)).getByRole('menuitem', { name: /^Suggestions/ }).click();
   await expect(panel).toBeVisible();
