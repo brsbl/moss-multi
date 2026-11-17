@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 84% done** (238 of 285 planned tasks verified)
+**Overall: 79% done** (239 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 11 / 25 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 12 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -261,6 +261,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T9.5 verified: Reject and Withdraw ask first in Moss's danger confirmation, focused on Cancel, so a stray second click on a marker can no longer discard someone's suggestion; Accept stays one click.
 - 2026-11-13 — T9.10 verified: a viewer or commenter sees their access named in the note's bottom band, and typing into a note they cannot edit says why instead of doing nothing.
 - 2026-11-13 — T9.8 verified: inviting someone to a note says plainly that no email is sent and offers the invite link to copy, Copy confirms on its own button, and a bare name without an email is not sent.
+- 2026-11-17 — T9.12 verified: when the owner raises someone's access, their open note switches to the new role without a reload, waiting for their own edits to land first, and says once that they can now edit (or suggest, or comment).
 
 ## T1.1s identity audit
 
@@ -300,6 +301,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.12's checker (d7e5982, 2026-11-17)
+
+- T9.12 (A raise in access reaches your open note without a reload) checker P2: a stale-answer re-ask can starve under steady metadata traffic; after a 4403, DocSession.#reask re-asks at once whenever answer.remember() rejects a superseded answer, skipping the 1-15 s backoff, so title and body metadata events can keep a disconnected session re-requesting at HTTP-completion rate until a quiet interval (reopen() has the same shape); bound or coalesce the retry.
+- T9.12 (A raise in access reaches your open note without a reload) checker P2: in split view a raise on note B clears note A's 'You can view this note but can no longer edit it.' notice, because B's #raised calls settleRefusal(VIEW_ONLY, 0), which matches only the global text; A stays read-only with its role band, so impact is low.
 
 ### From T9.8's checker (6805432, 2026-11-13)
 
