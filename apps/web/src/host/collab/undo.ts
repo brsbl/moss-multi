@@ -97,6 +97,23 @@ function lexicalStepRule(editor: LexicalEditor): (update: LexicalUpdate) => 'pus
 }
 
 /**
+ * Editors suggesting (suggest/routing.ts): their steps stay bursts within the capture window. A strike's undo and redo
+ * count on the binding step its native edit makes joining the keys around it (routing's `native`, `depth`), and Moss
+ * has no Suggest mode to follow.
+ */
+const suggesting = new WeakMap<LexicalEditor, number>();
+export function keepCaptureSteps(editor: LexicalEditor): () => void {
+  suggesting.set(editor, (suggesting.get(editor) ?? 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const left = (suggesting.get(editor) ?? 1) - 1;
+    if (left > 0) suggesting.set(editor, left); else suggesting.delete(editor);
+  };
+}
+
+/**
  * Called by the binding before it writes a local update to the note (seam a): an update Moss's history would push
  * starts a new undo step. A peer's update reaches the editor tagged as collaboration and leaves the rule as it was, so
  * typing around a peer's keystrokes stays one step, as it would alone.
@@ -104,7 +121,7 @@ function lexicalStepRule(editor: LexicalEditor): (update: LexicalUpdate) => 'pus
 export function markUndoStep(binding: Binding, update: LexicalUpdate): void {
   if (update.tags.has(COLLABORATION_TAG)) return;
   const entry = stepRules.get(binding);
-  if (!entry) return;
+  if (!entry || suggesting.has(binding.editor)) return;
   const kind = entry.rule(update);
   // A selection change merges in Lexical and writes nothing, so it holds no step open.
   if (kind === 'push' || (kind === 'merge' && (update.dirtyLeaves.size > 0 || update.dirtyElements.size > 0))) entry.stack.boundary(kind);
