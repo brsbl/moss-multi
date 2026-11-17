@@ -59,14 +59,15 @@ async function sharedNote(
   return { id, ada, ben, adaPrincipal };
 }
 
-const historyButton = (actor: Actor, id: string): Locator => ui.pane(actor, id).locator(`[${HISTORY_BUTTON_ATTR}]`);
+/** More actions → Version history (T9.30). */
+const pressHistory = async (actor: Actor, id: string): Promise<void> => (await ui.openNoteMenu(actor, id)).locator(`[${HISTORY_BUTTON_ATTR}]`).click();
 const historyView = (actor: Actor, id: string): Locator => ui.pane(actor, id).locator(`[${HISTORY_VIEW_ATTR}]`);
 const rows = (actor: Actor, id: string): Locator => historyView(actor, id).locator(`[${VERSION_ROW_ATTR}]`);
 const content = (actor: Actor, id: string): Locator => historyView(actor, id).locator(`[${VERSION_CONTENT_ATTR}]`);
 
-/** History from the top bar: the pane shows the view, settled past loading. */
+/** History from More actions: the pane shows the view, settled past loading. */
 async function openHistory(actor: Actor, id: string): Promise<Locator> {
-  await historyButton(actor, id).click();
+  await pressHistory(actor, id);
   const view = historyView(actor, id);
   await expect(view, `${actor.label}: History opens in the editor pane`).toBeVisible();
   await expect(view, `${actor.label}: the versions load`).not.toHaveAttribute(HISTORY_VIEW_ATTR, 'loading', { timeout: BIND_TIMEOUT });
@@ -396,7 +397,7 @@ test('j17-history: a versions fetch that fails shows an error, never "No checkpo
   const isVersions = (url: URL) => url.pathname === versionsPath;
   await ada.page.route(isVersions, (route) =>
     route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'rate-limited' }) }));
-  await historyButton(ada, id).click();
+  await pressHistory(ada, id);
   const view = historyView(ada, id);
   await expect(view, 'the failed fetch is an error state').toHaveAttribute(HISTORY_VIEW_ATTR, 'error', { timeout: BIND_TIMEOUT });
   await expect(view.getByRole('alert'), 'said in words').toContainText('could not be loaded');

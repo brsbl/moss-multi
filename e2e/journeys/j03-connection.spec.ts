@@ -640,7 +640,7 @@ test('j03-connection: a real Settings chunk load failure preserves the shell and
   });
   bea.sever!.blackhole();
   await ui.typeBody(bea, docId, ' with an unsynced addition');
-  await bea.page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await (await ui.openAppMenu(bea.page)).getByRole('menuitem', { name: 'Settings', exact: true }).click();
   await expect.poll(() => failures).toBeGreaterThan(0);
   await expect(bea.page.locator('[data-input-refusal]')).toContainText('could not load');
   await expect(bea.page.locator('[data-moss-app-shell]')).toBeVisible();

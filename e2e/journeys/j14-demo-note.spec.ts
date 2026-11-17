@@ -131,7 +131,7 @@ test('j14 demo note: Ada builds every family through paste and slash commands, a
     }
   };
   await checkpointAll('demo-note');
-  await ben.page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await ui.openSettingsDialog(ben.page);
   await ben.page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: 'Dark', exact: true }).click();
   await expect(ben.page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await ben.page.keyboard.press('Escape');

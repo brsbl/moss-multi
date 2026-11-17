@@ -1,6 +1,7 @@
 // j16-suggest (T5.1; docs/design/suggestions.md §5, §7, §8, PRODUCT ruling 17): Suggest mode in the real app. A solo
-// owner with nothing selected toggles Suggest in the docked toolbar and the caret stays where it was; a principal
-// shared as suggester through the dialog opens locked to the "Suggesting" chip; on a cold load a suggester's first
+// owner with nothing selected starts Suggest from More actions and stops it at the bottom of the pane, and the caret
+// stays where it was; a principal shared as suggester through the dialog opens locked to the "Suggesting" state; on a
+// cold load a suggester's first
 // delete leaves the text on the server and paints it struck, and a viewer opens in Review and sees it; explicit
 // deletes strike exactly the original characters (past an inline link, over mixed own and original text) and undo
 // takes a strike back; two windows of one suggester show each other's suggestions live; an IME composition in a code
@@ -12,11 +13,10 @@ import {
   TITLE_BINDING_ATTR,
 } from '../lib/contract.ts';
 import { acceptInvite, grantDoc } from '../lib/grants.ts';
-import { BIND_TIMEOUT, BOOT_TIMEOUT, caret, content, frames, mod, openIn, painted, settled } from '../lib/suggest.ts';
+import { BIND_TIMEOUT, BOOT_TIMEOUT, caret, content, frames, mod, openIn, openPanel, painted, settled } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const SUGGEST = { role: 'button', name: 'Suggest changes' } as const;
-const REVIEW = { role: 'button', name: 'Review suggestions' } as const;
 const wordKey = process.platform === 'darwin' ? 'Alt' : 'Control';
 
 /** A real mouse click just inside the right edge of the character before `offset` in the body text holding `text`. */
@@ -40,7 +40,7 @@ async function clickAfter(actor: Actor, docId: string, text: string, offset: num
 
 const sentCount = async (actor: Actor, docId: string): Promise<number> => Number(await ui.pane(actor, docId).getAttribute(SUGGEST_SENT_ATTR));
 
-test('j16-suggest: a solo owner with nothing selected toggles Suggest in the docked toolbar, and the caret stays where it was @p:mean-2 @p:R17', async ({ actors }) => {
+test('j16-suggest: a solo owner with nothing selected starts Suggest from More actions and stops it at the bottom, and the caret stays where it was @p:mean-2 @p:R17', async ({ actors }) => {
   actors.solo('the owner suggests on a note nobody else has open');
   const ada = await actors.open(await actors.principal('ada'));
   const docId = await ui.createNote(ada);
@@ -51,14 +51,14 @@ test('j16-suggest: a solo owner with nothing selected toggles Suggest in the doc
   await expect(pane).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
   await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'edit');
 
-  // A real click puts the caret after "Owner" with nothing selected, so moss's docked bottom toolbar shows.
+  // A real click puts the caret after "Owner" with nothing selected, so moss's docked bottom toolbar shows, with no
+  // idle Suggest control beside it: Suggest changes is in More actions (T9.30).
   await clickAfter(ada, docId, 'Owner text kept', 5);
   const docked = ada.page.locator(`[${FLOATING_TOOLBAR_ATTR}]`);
-  const toggle = docked.getByRole(SUGGEST.role, { name: SUGGEST.name });
-  await expect(toggle, 'the docked toolbar offers Suggest').toBeVisible();
-  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(docked, 'the docked toolbar shows').toBeVisible();
+  await expect(ada.page.getByRole(SUGGEST.role, { name: SUGGEST.name }), 'no idle Suggest control').toHaveCount(0);
   ada.expectReconnects(2, docId);
-  await toggle.click();
+  await (await ui.openNoteMenu(ada, docId)).getByRole('menuitem', { name: SUGGEST.name, exact: true }).click();
   await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
   await expect(body).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await expect(ui.title(ada, docId), 'the title is read-only while suggesting').toHaveAttribute(TITLE_BINDING_ATTR, 'readonly');
@@ -77,8 +77,10 @@ test('j16-suggest: a solo owner with nothing selected toggles Suggest in the doc
   expect(exported, 'a pending suggestion is not in the note').not.toContain('plus');
 
   // Back to Edit: the caret returns to the original text before the pending suggestion.
-  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-  await toggle.click();
+  const state = pane.locator(`[${SUGGEST_CHIP_ATTR}]`);
+  await expect(state, 'one Suggesting state at the bottom of the pane').toHaveText(/^Suggesting/);
+  await expect(state).toHaveAttribute(SUGGEST_CHIP_ATTR, 'unlocked');
+  await pane.getByRole('button', { name: 'Stop suggesting', exact: true }).click();
   await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
   await expect(body).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await ada.declareRemount(docId);
@@ -110,9 +112,10 @@ test('j16-suggest: a principal shared as suggester through the dialog opens lock
   await actors.requireDistinct(2);
   await ben.observeEditor(docId);
   const chip = ben.page.locator(`[${SUGGEST_CHIP_ATTR}]`);
-  await expect(chip, 'the chip says Suggesting').toHaveText('Suggesting');
+  await expect(chip, 'the bottom state says Suggesting').toHaveText('Suggesting');
   await expect(chip, 'a suggester cannot leave Suggest').toHaveAttribute(SUGGEST_CHIP_ATTR, 'locked');
   await expect(ben.page.getByRole(SUGGEST.role, { name: SUGGEST.name }), 'no toggle for a locked suggester').toHaveCount(0);
+  await expect(ben.page.getByRole('button', { name: 'Stop suggesting', exact: true }), 'no way out of Suggest for a suggester').toHaveCount(0);
   await expect(ui.title(ben, docId)).toHaveAttribute(TITLE_BINDING_ATTR, 'readonly');
   await expect(pane).toHaveAttribute(SUGGEST_SENT_ATTR, '0');
 
@@ -399,7 +402,7 @@ test('j16-suggest offline:suggestions typed offline reach the server after the s
   // The owner reviews the note: both suggestions are there, and the body is unchanged.
   ada.expectReconnects(1, docId);
   await openIn(ada, docId, 'edit');
-  await ada.page.getByRole(REVIEW.role, { name: REVIEW.name }).click();
+  await (await openPanel(ada)).getByRole('button', { name: 'Review', exact: true }).click();
   await expect(ui.pane(ada, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ada, docId)).toContainText('Online words.', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ada, docId), 'the offline suggestion was delivered').toContainText('Offline words.', { timeout: 45_000 });

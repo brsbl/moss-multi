@@ -201,6 +201,8 @@ async function trashOpenNote(page: Page): Promise<void> {
 async function openSettings(page: Page, target: Target): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   if (!target.webSections) return;
+  // The web's footer Settings opens its app menu first (T9.30).
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Settings', exact: true }).click();
   await expect(page.locator(target.webSections.selector), 'Account and Agents render').toHaveCount(target.webSections.count, { timeout: 15_000 });
   await expect(page.getByText('No agents yet.', { exact: true })).toBeVisible({ timeout: 15_000 });
 }

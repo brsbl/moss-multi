@@ -105,15 +105,12 @@ for (const size of TIER_A) {
     const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
     await expect(signIn, 'the stranger is offered sign-in, label and all').toBeVisible();
     await expect(signIn, 'exactly once at this width (T9.10)').toHaveCount(1);
-    // T9.10: the band says the link is view only; below 640 px it holds the sign-in, which the top bar then drops.
+    // T9.10, T9.30: the band says the link is view only and holds the sign-in at every width; the top bar has none.
     const band = ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`);
     await expect(band, 'the band shows when the note opens').toBeVisible();
     await expect(band).toContainText('View only.');
-    if (size.width < 640) await expect(band.getByRole('button', { name: 'Sign in to do more', exact: true }), 'the band holds the sign-in').toBeVisible();
-    else {
-      await expect(band.getByText("You can't edit this note."), 'the band says why').toBeVisible();
-      await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in to do more', exact: true }), 'the top bar keeps the sign-in').toBeVisible();
-    }
+    await expect(band.getByRole('button', { name: 'Sign in to do more', exact: true }), 'the band holds the sign-in').toBeVisible();
+    await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in to do more', exact: true }), 'no sign-in in the top bar').toHaveCount(0);
     await actors.checkpoint(`${size.name}-stranger-alone`);
     await searchesTheNote(stranger, docId, size);
 
@@ -287,6 +284,11 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   await row.click({ button: 'right' });
   await expect(page.getByRole('menu')).toBeVisible();
   await expectReachable(ada, 'the note menu', menu);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toBeHidden();
+
+  await ui.openAppMenu(page);
+  await expectReachable(ada, 'the app menu', menu);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
 
