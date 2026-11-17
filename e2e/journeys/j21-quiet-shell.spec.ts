@@ -7,11 +7,11 @@
 import type { Locator } from '@playwright/test';
 import type { Actor, Viewport } from '../lib/actors.ts';
 import {
-  COLLAB_CHROME_ATTR, CONNECTION_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, FLOATING_TOOLBAR_ATTR, HISTORY_VIEW_ATTR, MODE_ROW_ATTR, SIDEBAR_ROW_ATTR,
+  BODY_BINDING_ATTR, COLLAB_CHROME_ATTR, CONNECTION_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, FLOATING_TOOLBAR_ATTR, HISTORY_VIEW_ATTR, MODE_ROW_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SIDEBAR_ROW_ATTR,
   SUGGEST_CHIP_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR, TOP_BAR_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grant, grantDoc } from '../lib/grants.ts';
-import { BIND_TIMEOUT, caret, openIn } from '../lib/suggest.ts';
+import { BIND_TIMEOUT, caret, closePanel, openIn, openPanel, reviewSwitch, sharedNote } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const DESKTOP: Viewport = { width: 1440, height: 1000 };
@@ -277,6 +277,26 @@ test('j21 people, unread and open suggestions are quiet cues that yield by the p
     expect(face.weight, 'regular-weight initials').toBeLessThanOrEqual(500);
   }
 
+  // A focused cue that leaves the bar, its popup never opened, hands focus to its stable home, never to the page: the
+  // bell to the sidebar footer's Settings (or the notes-panel toggle while the sidebar is away), the count and People
+  // here to More actions, where Suggestions and its roster stay.
+  const focusMoves = async (cue: Locator, width: number, home: string[], what: string) => {
+    await page.setViewportSize(DESKTOP);
+    await expect(cue, `${what} is back at 1440`).toBeVisible();
+    await cue.focus();
+    await expect(cue).toBeFocused();
+    await page.setViewportSize({ width, height: 1000 });
+    await expect(cue, `${what} leaves the bar at ${width}`).toHaveCount(0);
+    await expect.poll(async () => {
+      const at = await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName ?? null);
+      return at !== null && home.includes(at) ? 'home' : at;
+    }, { message: `${what}: focus moves to its home, not the page` }).toBe('home');
+  };
+  await focusMoves(bell, 900, ['Settings', 'Show notes panel'], 'the focused bell');
+  await focusMoves(count, 640, ['More actions'], 'the focused count');
+  await focusMoves(people, 600, ['More actions'], 'the focused People here');
+  await page.setViewportSize(DESKTOP);
+
   // An open popup keeps its activator in its slot while the pane narrows; once it closes the cue yields and focus,
   // which was on it, moves to More actions.
   await count.click();
@@ -353,4 +373,49 @@ test('j21 two panes each keep Moss\'s actions on their own bar @p:tech-9 @p:col-
   await expect(ada.page.getByRole('dialog', { name: 'Share' })).toBeVisible();
   await ada.page.keyboard.press('Escape');
   await expect(ui.pane(ada, first).getByRole('button', { name: 'More actions', exact: true }), 'focus returns to that pane\'s More actions').toBeFocused();
+});
+
+test('j21 a reader in Review has one bottom row with their access and Review, and Done or Escape leaves Review @p:tech-9 @p:col-2', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  const carlPrincipal = await actors.principal('carl');
+  await grantDoc(ada, docId, carlPrincipal, 'viewer');
+  const carl = await actors.session(carlPrincipal, { viewport: DESKTOP });
+  await openIn(ben, docId, 'suggest');
+  await actors.requireDistinct(3);
+  await caret(ben, docId, 'original word', 8);
+  await ben.page.keyboard.type(' plus');
+  await expect(ui.pane(ben, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  await expect(ui.pane(ben, docId)).toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+
+  // Entering and leaving Review remounts the viewer's body on a fresh socket each time.
+  carl.expectReconnects(4, docId);
+  const pane = await openIn(carl, docId, 'review');
+  const page = carl.page;
+  const row = page.locator(`[${ROLE_BAND_ATTR}]`);
+  const review = page.locator(`[${REVIEW_BAND_ATTR}]`);
+  const inReview = async (what: string) => {
+    await expect(pane, what).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+    await expect(row, `${what}: one row holds the access and Review`).toHaveText('View only. Reviewing suggestions. Done');
+    await expect(review, `${what}: and it is the Review row`).toHaveCount(1);
+    await expect(page.locator(`[${ROLE_BAND_ATTR}], [${REVIEW_BAND_ATTR}]`), `${what}: no second row`).toHaveCount(1);
+    expect(await look(row), 'a quiet row').toEqual({ shadow: 'none', border: 0 });
+    expect(await aboveBottom(docId, row), 'at the bottom').toBeLessThanOrEqual(32);
+  };
+  const leftReview = async (what: string) => {
+    await expect(pane, what).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
+    await expect(ui.body(carl, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
+    await expect(row, `${what}: the row keeps the reader's access`).toHaveText("View only. You can't edit this note.");
+    await expect(review).toHaveCount(0);
+  };
+
+  await inReview('a viewer opens in Review');
+  await row.getByRole('button', { name: 'Done', exact: true }).click();
+  await leftReview('Done leaves Review');
+
+  await (reviewSwitch(await openPanel(carl))).click();
+  await closePanel(carl);
+  await inReview('back in Review from the list');
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press('Escape');
+  await leftReview('Escape leaves Review');
 });
