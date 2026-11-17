@@ -14,7 +14,7 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.css b/packages/
  html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-gap-cursor-line {
    opacity: 1 !important;
    background-color: var(--comment-color, theme('colors.accent-brand')) !important;
-@@ -1173,3 +1179,22 @@ html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-g
+@@ -1173,3 +1179,28 @@ html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-g
  .moss-tab-group > [data-tab-panel][data-active] {
    display: block;
  }
@@ -32,8 +32,14 @@ diff --git a/packages/desktop/src/renderer/editor/MarkdownEditor.css b/packages/
 +  pointer-events: none;
 +}
 +
++/* The chip paints over the text; blending keeps the text's own pixels, as a chip under the text would. */
 +.moss-formula-draft-chip {
 +  position: absolute;
 +  border-radius: 0.375rem;
 +  background-color: var(--surface-note-selected-bright);
++  mix-blend-mode: darken;
++}
++
++[data-theme='dark'] .moss-formula-draft-chip {
++  mix-blend-mode: lighten;
 +}

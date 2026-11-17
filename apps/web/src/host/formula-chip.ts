@@ -1,6 +1,6 @@
 // A bound editor's formula draft chip (local-view, A§10). Moss pads and rounds the draft by splitting its text nodes
 // and styling them, which would write to the shared note. Here the chip is local paint: inline padding on the edge
-// spans of the draft's DOM, where the draft starts or ends a span, and a rounded box behind the text.
+// spans of the draft's DOM, where the draft starts or ends a span, and a rounded box blended under the text.
 import type { LexicalEditor } from 'lexical';
 
 const PAD_X = 8; // moss's draft chip: padding 0.5rem a side, 0.125rem above and below, end radius 0.375rem
@@ -59,7 +59,7 @@ function room(range: Range, side: 'start' | 'end', padded: boolean, edge: number
 function draw(editor: LexicalEditor, state: ChipState): void {
   const root = editor.getRootElement();
   if (!root?.parentNode || !state.ranges.length) { state.layer?.replaceChildren(); return; }
-  // Before the root in tree order: the root is positioned, so its text paints over the chip.
+  // A positioned sibling of the root, so it paints over the text: MarkdownEditor.css blends it under the glyphs.
   if (!state.layer || state.layer.nextSibling !== root) {
     state.layer?.remove();
     state.layer = document.createElement('div');
