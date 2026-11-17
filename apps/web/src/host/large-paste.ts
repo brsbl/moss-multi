@@ -21,7 +21,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
-import { countedPayloadBytes, PASTE_LIMIT_BYTES, WRITE_REFUSED } from './collab/doc-session.ts';
+import { countedPayloadBytes, PASTE_LIMIT_BYTES, trackPaste, WRITE_REFUSED, type PasteTrack } from './collab/doc-session.ts';
 import { markLanding } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
@@ -694,6 +694,10 @@ class PasteJob {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flushing = false;
   #ended = false;
+  /** The paste's items as they land, rolled back if a limit cuts it short (T3.B32). */
+  track: PasteTrack | null = null;
+  /** A limit cut it short: nothing more of it lands. */
+  aborted = false;
   /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
   readonly #dir = new DirLift();
 
@@ -746,11 +750,24 @@ class PasteJob {
     }
   };
 
+  /** A limit cut the paste short (T3.B32): nothing more of it lands. */
+  readonly abort = (): void => {
+    if (this.#ended) return;
+    this.aborted = true;
+    clearTimeout(this.#timer);
+    try {
+      this.#steps.return();
+    } catch {
+      // running: it lands nothing more once this job has ended
+    }
+    this.#end();
+  };
+
   readonly #tick = (): void => {
     this.#timer = undefined;
     let done = true;
     try {
-      done = !!this.#steps.next().done;
+      done = this.#ended || !!this.#steps.next().done;
     } finally {
       if (done) this.#end();
       else this.#timer = setTimeout(this.#tick, 0);
@@ -770,11 +787,15 @@ class PasteJob {
       if (editor._updating || editor._pendingEditorState !== null) {
         const stop = editor.registerUpdateListener(() => {
           stop();
+          this.track?.finish();
           if (!jobs.has(editor)) markLanding(editor, false);
         });
       } else {
+        this.track?.finish();
         markLanding(editor, false);
       }
+    } else {
+      this.track?.finish();
     }
     markUnacked(this, false);
   }
@@ -802,6 +823,14 @@ class PasteJob {
   restoreDir(): void {
     this.#dir.restore();
   }
+}
+
+/** The element the pane scrolls `editor` in: the root's nearest scrolling ancestor. */
+export function scrollerOf(editor: LexicalEditor): HTMLElement | null {
+  for (let element = editor.getRootElement(); element; element = element.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight) return element;
+  }
+  return document.scrollingElement as HTMLElement | null;
 }
 
 /** Whether `point` names a node still in the note, at an offset it has. */
@@ -883,6 +912,8 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   // so tagged never reaches the doc: each batch commits it first, on its own.
   const settle = () => editor.read(noop);
   settle();
+  job.track = trackPaste(noteDoc(editor), job.abort);
+  if (job.track) job.track.scrollTop = scrollerOf(editor)?.scrollTop;
   const live = editor.getEditorState()._selection;
   pacing.time(first, () => editor.update(() => {
     if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
@@ -944,7 +975,8 @@ function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<
       if (!slices.done && !job.flushing) yield;
     }
   } finally {
-    slices.finish();
+    // Cut short by a limit, the rest is never redone: the session binds the server's copy and rolls it back.
+    if (!job.aborted) slices.finish();
     settle();
     job.restoreDir();
   }
@@ -966,6 +998,9 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   const slices = undo.redoInSlices(stamp);
   if (!slices) return false;
   const job = new PasteJob(editor, (each) => redoSlices(each, slices, max));
+  // A redo lands in many updates as the paste did, so a limit can cut it short too.
+  job.track = trackPaste(noteDoc(editor), job.abort);
+  if (job.track) job.track.scrollTop = scrollerOf(editor)?.scrollTop;
   jobs.set(editor, job);
   job.start();
   return true;

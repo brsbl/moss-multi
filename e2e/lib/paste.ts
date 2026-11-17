@@ -343,6 +343,8 @@ export function fence(language: string, bytes: number, line: (i: number) => stri
 export const TEXT_NOTICE = 'This note has reached its size limit (1.02 million characters).';
 export const STRUCTURE_NOTICE = 'This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.';
 export const BYTES_NOTICE = 'This note is at its size limit, so your last change was not saved.';
+/** A large paste cut short by a limit is rolled back (T3.B32). */
+export const PASTE_ROLLED_BACK_NOTICE = "The paste didn't fit, so nothing was pasted.";
 
 /**
  * A paste's admission figures (the `moss-paste-admission` mark): what it adds (bytes, characters, structs), what the
