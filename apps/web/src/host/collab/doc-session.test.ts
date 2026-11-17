@@ -768,7 +768,7 @@ it('a large paste that replaced a selection sends its deletes only once all its 
   expect(frames, 'each batch goes out').toHaveLength(2);
   expect(frames.flatMap(deletesOf), "without the paste's deletes").toEqual([]);
   Y.applyUpdate(server, updateOf(frames[0]));
-  expect(server.get('root', Y.XmlText).toString(), 'the selection stays on the server while the paste lands').toBe('Alpha 0.Kept. Tail.');
+  expect(server.get('root', Y.XmlText).toString(), 'the selection stays on the server while the paste lands').toBe('Kept.Alpha 0. Tail.');
 
   // Its second batch is refused for a limit: the next binding rolls the paste back.
   serverEvent(socket, { t: 'write-refused', reason: 'doc-cap', limit: 'text' });
@@ -874,6 +874,8 @@ it('a paste whose payload docs are slow to arrive is settled once they have, nev
   const code = new Y.Doc();
   code.getText('payload').insert(0, 'c'.repeat(40));
   localStorage.setItem(key, JSON.stringify({ ...record, payloads: { code: { client: code.clientID, from: 0, to: 40 } } }));
+  // The binding holds the note's tree as it opens, so the rollback reads which payloads it names.
+  session.doc.get('root', Y.XmlText);
   session.payloads.hold('code');
   session.payloads.await('code');
   const socket = latest(); socket.open();
