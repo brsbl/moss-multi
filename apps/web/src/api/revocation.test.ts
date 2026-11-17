@@ -18,6 +18,7 @@ const failing = new Set<string>();
 const ended: { principalId: string; sessionId: string }[] = [];
 const published: { principalId: string; event: unknown }[] = [];
 let endFails = false;
+let publishFails = false;
 
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
@@ -35,7 +36,10 @@ const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    publish: async (event: unknown) => { published.push({ principalId: id.name, event }); },
+    publish: async (event: unknown) => {
+      if (publishFails) throw new Error('PrincipalDO unavailable');
+      published.push({ principalId: id.name, event });
+    },
     endSession: async (sessionId: string) => {
       if (endFails) throw new Error('PrincipalDO unavailable');
       ended.push({ principalId: id.name, sessionId });
@@ -63,6 +67,7 @@ beforeEach(() => {
   ended.length = 0;
   published.length = 0;
   endFails = false;
+  publishFails = false;
   race = null;
 });
 
@@ -164,11 +169,37 @@ describe('members: lowering and removing access kicks @p:ppl-2', () => {
     expect(heard(retired.id), 'a revoked agent').toEqual([]);
   });
 
-  it('a raise kicks nobody: a promotion takes effect on reload', async () => {
+  it('a raise kicks nobody and tells them and their live agents, so their open notes ask for the new role', async () => {
+    const gus = await signedUpUser(env, 'raise-gus', 'Gus');
+    const agent = await insertAgent(d1.db, gus);
+    const heard = (principalId: string) => published.filter((p) => p.principalId === principalId).map((p) => p.event);
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, gus, 'viewer');
+    const response = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { principalId: gus.id, role: 'editor' });
+    expect(response.status).toBe(200);
+    expect(await roleOf('doc_members', 'doc_id', docId, gus.id)).toBe('editor');
+    expect(rechecks, 'no socket is closed from the server').toEqual([]);
+    const meta = { type: 'meta', docIds: [docId], folderIds: [] };
+    await vi.waitFor(() => {
+      expect(heard(gus.id)).toContainEqual(meta);
+      expect(heard(agent.id), 'the live agent').toContainEqual(meta);
+    });
+
+    published.length = 0;
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    await insertGrant(d1.db, { folderId: folder }, gus, 'commenter');
+    expect((await call('PATCH', `/api/folders/${folder}/members`, ada.cookie, { principalId: gus.id, role: 'suggester' })).status).toBe(200);
+    expect(rechecks).toEqual([]);
+    await vi.waitFor(() => expect(heard(gus.id)).toContainEqual({ type: 'vaults' }));
+  });
+
+  it('a raise whose notification fails still succeeds', async () => {
     const docId = await insertDoc(d1.db, ada);
     await insertGrant(d1.db, { docId }, ben, 'viewer');
+    publishFails = true;
     const response = await call('PATCH', `/api/docs/${docId}/members`, ada.cookie, { principalId: ben.id, role: 'editor' });
     expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ changed: { principalId: ben.id, role: 'editor' } });
     expect(await roleOf('doc_members', 'doc_id', docId, ben.id)).toBe('editor');
     expect(rechecks).toEqual([]);
   });
