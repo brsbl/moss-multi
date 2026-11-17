@@ -5,7 +5,7 @@
 import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
-import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, reopenDocs, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
+import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, reaskDocRoles, reopenDocs, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
 import { ImageContextMenu } from './media/ImageContextMenu.tsx';
 import { ReloadConfirmation } from './surfaces/ReloadConfirmation.tsx';
 import { SignOutConfirmation } from './surfaces/SignOutConfirmation.tsx';
@@ -33,7 +33,10 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
   const bridge = installBridge(
     auth,
     createTrashGuard({ close: closeDocsToWrites, waitAcked: waitDocsAcked, confirm: askTrashConfirmation, end: endTrashedDocs }),
-    (event) => inbox.receive(event),
+    (event) => {
+      inbox.receive(event);
+      reaskDocRoles(event);
+    },
     reopenDocs,
   );
   // HTML blocks run live in the Worker's sandboxed frame document (A§16).

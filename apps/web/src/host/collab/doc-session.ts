@@ -9,6 +9,7 @@ import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-c
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
+import type { WorkspaceEvent } from '@moss-multi/protocol/workspace';
 import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
@@ -263,6 +264,36 @@ export function endTrashedDocs(docIds: string[]): void {
  */
 export function reopenDocs(docIds: string[]): void {
   for (const session of [...sessions]) if (docIds.includes(session.docId)) void session.reopen();
+}
+
+/** Docs whose role is being asked again; true when another ask is owed once this one answers. */
+const reasking = new Map<string, boolean>();
+
+function reaskRole(docId: string): void {
+  if (reasking.has(docId)) {
+    reasking.set(docId, true);
+    return;
+  }
+  reasking.set(docId, false);
+  void askAccess(docId).then((answer) => {
+    if (answer.kind === 'role' && held.has(docId) && !terminalOf(docId)) rememberRole(docId, answer.role);
+  }).finally(() => {
+    const again = reasking.get(docId);
+    reasking.delete(docId);
+    if (again) reaskRole(docId);
+  });
+}
+
+/**
+ * The workspace channel says access may have changed (A§8): each open note it names (every one, for a vault or folder
+ * change or a reconnect) asks for its role again and its pane follows the answer. The server stays the authority.
+ */
+export function reaskDocRoles(event: WorkspaceEvent): void {
+  if (event.type !== 'meta' && event.type !== 'vaults') return;
+  const every = event.type === 'vaults' || event.folderIds.length > 0;
+  for (const docId of [...held.keys()]) {
+    if (!terminalOf(docId) && (every || event.docIds.includes(docId))) reaskRole(docId);
+  }
 }
 
 /** Resolves true once no session of these docs holds an unacked edit, or false after `timeoutMs`. */
