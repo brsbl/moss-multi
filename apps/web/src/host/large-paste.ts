@@ -696,6 +696,8 @@ class PasteJob {
   #ended = false;
   /** The paste's items as they land, rolled back if a limit cuts it short (T3.B32). */
   track: PasteTrack | null = null;
+  /** A limit cut it short: nothing more of it lands. */
+  aborted = false;
   /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
   readonly #dir = new DirLift();
 
@@ -751,6 +753,7 @@ class PasteJob {
   /** A limit cut the paste short (T3.B32): nothing more of it lands. */
   readonly abort = (): void => {
     if (this.#ended) return;
+    this.aborted = true;
     clearTimeout(this.#timer);
     try {
       this.#steps.return();
@@ -820,6 +823,14 @@ class PasteJob {
   restoreDir(): void {
     this.#dir.restore();
   }
+}
+
+/** The element the pane scrolls `editor` in: the root's nearest scrolling ancestor. */
+export function scrollerOf(editor: LexicalEditor): HTMLElement | null {
+  for (let element = editor.getRootElement(); element; element = element.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight) return element;
+  }
+  return document.scrollingElement as HTMLElement | null;
 }
 
 /** Whether `point` names a node still in the note, at an offset it has. */
@@ -902,6 +913,7 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   const settle = () => editor.read(noop);
   settle();
   job.track = trackPaste(noteDoc(editor), job.abort);
+  if (job.track) job.track.scrollTop = scrollerOf(editor)?.scrollTop;
   const live = editor.getEditorState()._selection;
   pacing.time(first, () => editor.update(() => {
     if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
@@ -963,7 +975,8 @@ function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<
       if (!slices.done && !job.flushing) yield;
     }
   } finally {
-    slices.finish();
+    // Cut short by a limit, the rest is never redone: the session binds the server's copy and rolls it back.
+    if (!job.aborted) slices.finish();
     settle();
     job.restoreDir();
   }
@@ -985,6 +998,9 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   const slices = undo.redoInSlices(stamp);
   if (!slices) return false;
   const job = new PasteJob(editor, (each) => redoSlices(each, slices, max));
+  // A redo lands in many updates as the paste did, so a limit can cut it short too.
+  job.track = trackPaste(noteDoc(editor), job.abort);
+  if (job.track) job.track.scrollTop = scrollerOf(editor)?.scrollTop;
   jobs.set(editor, job);
   job.start();
   return true;

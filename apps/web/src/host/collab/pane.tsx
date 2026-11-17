@@ -35,6 +35,24 @@ import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
 
+/**
+ * A paste rolled back (T3.B32): the note shows where the pane was when the paste began, not where the paste had
+ * scrolled it. Set once the binding has laid out enough of the note to reach it, or after 5 s, whichever is first.
+ */
+function scrollBack(editor: LexicalEditor, top: number): void {
+  const until = Date.now() + 5_000;
+  const step = () => {
+    const root = editor.getRootElement();
+    let scroller: HTMLElement | null = root;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    scroller ??= document.scrollingElement as HTMLElement | null;
+    if (!scroller) return;
+    if (scroller.scrollHeight - scroller.clientHeight >= top || Date.now() >= until) scroller.scrollTop = top;
+    else requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 interface PaneState {
   docState: DocState;
   bodyState: BindingState;
@@ -190,6 +208,10 @@ class PaneBinding {
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked || isLanding(editor) ? '1' : '0');
     const session = this.#session;
     if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live');
+    if (session && state.synced && !state.resync && session.rolledBackScroll !== null) {
+      scrollBack(editor, session.rolledBackScroll);
+      session.rolledBackScroll = null;
+    }
     this.set({
       bodyState,
       bodyVisible: state.synced && !state.resync,
