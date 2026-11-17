@@ -13,7 +13,9 @@ import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
 import { registerFork } from './forks.ts';
-import { chainHead, landingOf, metaBytes, openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds, SUGGESTIONS, successorIn } from './records.ts';
+import {
+  chainHead, landingOf, metaBytes, opChars, openRecords, partBytes, readMeta, readRecord, recordBytes, recordChars, recordIds, SUGGESTIONS, successorIn,
+} from './records.ts';
 import { bindCheck } from './review.ts';
 
 export { openRecords };
@@ -1230,6 +1232,30 @@ export class SuggestFork {
     const creating = [...pending.keys()].filter((id) => !readRecord(this.body, id)).length;
     if (creates && openRecords(this.body, this.options.me).length + creating >= SUGGEST_LIMITS.openPerPrincipal) return 'open-cap';
     return null;
+  }
+
+  /**
+   * The text the record an edit in `blocks` and `payloads` lands in would hold before the edit, as the DocDO counts it
+   * toward the note's text limit (doc/suggest.ts Info.chars): the landing record's ops (none for a new record or a
+   * continuation), what is still unanswered for it, and every older open record of the author's it would merge.
+   */
+  recordChars(blocks?: { from: number; to: number }, payloads: readonly Y.Doc[] = []): number {
+    const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
+    if (!lease) return 0;
+    const pending = new Map<string, number>();
+    for (const { request, op } of [...this.#inflight, ...this.#waiting]) {
+      if (request.t === 'suggest-ops' && op) pending.set(request.record, (pending.get(request.record) ?? 0) + opChars(op.update));
+    }
+    const held = (id: string) => {
+      const record = readRecord(this.body, id);
+      return (record ? recordChars(record) : 0) + (pending.get(id) ?? 0);
+    };
+    const head = chainHead(lease.record, successorIn(this.body));
+    const meta = readMeta(this.body, head);
+    const continues = (meta ? landingOf(meta.status) : 'head') === 'continuation';
+    let chars = continues ? (pending.get(lease.record) ?? 0) : held(head) + (head === lease.record ? 0 : (pending.get(lease.record) ?? 0));
+    for (const other of this.#mergedBy(head, blocks ?? { from: this.#caretBlock, to: this.#caretBlock }, payloads)) chars += held(other);
+    return chars;
   }
 
   /**

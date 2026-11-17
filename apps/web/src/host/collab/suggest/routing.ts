@@ -763,19 +763,21 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     const strike = last && stack.length <= expected ? last : null;
     const native = !strike || (strike.native && stack.length === expected);
     let extra = 0;
+    let extraChars = 0;
     let targets: IdSpan[] = [];
     if (strike && kind === 'undo') {
       for (const run of strike.runs) {
         let gone = 0;
         for (let i = 0; i < run.len; i += 1) if (removed(Y.createID(run.id.client, run.id.clock + i))) gone += 1;
         if (gone) extra += gone * 5 + 64;
+        extraChars += gone;
       }
     }
     if (strike && kind === 'redo') targets = standing(strike.targets);
     const steps: UndoStep[] = native
       ? stack.map((step) => ('entries' in step ? step : { entries: [{ manager: undo, item: step }] }))
       : [];
-    const notice = admitStep(fork, kind, root, steps, extra, targets);
+    const notice = admitStep(fork, kind, root, steps, extra, targets, extraChars);
     if (notice) refuseInput(notice);
     return notice !== null;
   };
@@ -829,7 +831,10 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
         ? UNMEASURED
         : measured === 'cells'
         ? OVER_CELLS
-        : $admitPaste(fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0, inserted.chars);
+        : $admitPaste(
+          fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0, inserted.chars,
+          range ? range.mine.reduce((sum, { from, to }) => sum + to - from, 0) + range.mineLeaves.reduce((sum, leaf) => sum + leaf.getTextContentSize(), 0) : 0,
+        );
       if (notice) {
         event.preventDefault();
         refuseInput(notice);

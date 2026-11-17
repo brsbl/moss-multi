@@ -11,6 +11,8 @@ export interface ForkView {
    * `payloads`, fits every suggestion cap: null, or the refusal it would meet.
    */
   admit(bytes: number, strike?: readonly IdSpan[], blocks?: { from: number; to: number }, payloads?: readonly Y.Doc[]): SuggestRefusal | null;
+  /** The text the record such an edit lands in already holds, as the DocDO counts it toward the note's text limit. */
+  recordChars(blocks?: { from: number; to: number }, payloads?: readonly Y.Doc[]): number;
 }
 
 const forks = new WeakMap<Y.Doc, ForkView>();

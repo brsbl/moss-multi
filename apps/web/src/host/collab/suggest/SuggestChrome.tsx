@@ -84,8 +84,9 @@ export function SuggestUnsavedBand({ docId }: { docId: string | null }): ReactNo
   if (!docId || (blocks.length === 0 && !full)) return null;
   const text = blocks.join('\n\n');
   return (
-    <div {...{ [SUGGEST_UNSAVED_ATTR]: '' }} role="alert" className="flex items-center gap-3 border-b border-border-subtle bg-surface-raised-card px-4 py-2 text-xs text-ink-default">
-      <span className="min-w-0 flex-1">
+    <div {...{ [SUGGEST_UNSAVED_ATTR]: '' }} role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-status-error-border bg-status-error-surface px-4 py-2 text-xs text-status-error-text">
+      {/* Moss's error notice; on a phone the actions wrap below the message rather than squeezing it. */}
+      <span className="min-w-0 basis-full sm:flex-1 sm:basis-auto">
         {full
           ? noRoomNotice(full === 'room' ? null : full, blocks.length > 0)
           : 'This suggestion was closed while you typed, so your last changes were not saved.'}
@@ -101,7 +102,7 @@ export function SuggestUnsavedBand({ docId }: { docId: string | null }): ReactNo
           {copied ? 'Copied' : 'Copy what wasn’t saved'}
         </button>
       ) : null}
-      <button type="button" className="text-ink-muted underline" onClick={() => { setCopied(false); dismissUnsaved(docId); }}>
+      <button type="button" className="underline opacity-80" onClick={() => { setCopied(false); dismissUnsaved(docId); }}>
         Dismiss
       </button>
     </div>

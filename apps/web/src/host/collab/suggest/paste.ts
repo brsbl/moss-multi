@@ -256,6 +256,35 @@ function $restBytes(selection: BaseSelection | null): number {
   return bytes;
 }
 
+/** The characters of the rest $restBytes measures: the text the split re-creates, as the text limit counts it. */
+function $restChars(selection: BaseSelection | null): number {
+  if (!$isRangeSelection(selection)) return 0;
+  const end = selection.isBackward() ? selection.anchor : selection.focus;
+  const node = end.getNode();
+  if ($isRootOrShadowRoot(node)) return 0;
+  let chars = 0;
+  if ($isTextNode(node)) chars += node.getTextContentSize() - end.offset;
+  else if ($isElementNode(node)) chars += node.getChildren().slice(end.offset).reduce((sum, child) => sum + child.getTextContentSize(), 0);
+  for (let at: LexicalNode = node, parent = at.getParent(); parent && !$isRootOrShadowRoot(parent); at = parent, parent = at.getParent()) {
+    for (let next = at.getNextSibling(); next; next = next.getNextSibling()) chars += next.getTextContentSize();
+  }
+  return chars;
+}
+
+/**
+ * The note limit (A§5.1 Limits) an edit's writes would pass, as the DocDO's #recordLimit counts them, or null: the
+ * text the record it lands in already holds and the `chars` it adds, beside the note's text, when it adds any; and the
+ * `structs` its writes add beside the note's.
+ */
+function noteLimit(
+  fork: ForkView, chars: number, structs: number, blocks?: { from: number; to: number }, payloads?: readonly Y.Doc[],
+): 'text' | 'structure' | null {
+  const size = heldSize(fork.body);
+  if (chars > 0 && size.chars + fork.recordChars(blocks, payloads) + chars > TEXT_CHAR_CAP) return 'text';
+  if (size.structs + structs > STRUCT_CAP) return 'structure';
+  return null;
+}
+
 /**
  * What undo restores of the author's own selected text and leaves, which Lexical's paste removes natively: their
  * characters and nodes as new copies (undo.ts), a leaf's payload with it, and the blocks the selection spans.
@@ -292,6 +321,8 @@ const REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
 
 /** Structs the DocDO's first write of a record adds to the note (doc/suggest.ts CREATE_STRUCTS and WRITE_STRUCTS). */
 const RECORD_WRITE_STRUCTS = 7;
+/** Structs each further frame (an op or a delete part) adds (doc/suggest.ts WRITE_STRUCTS). */
+const FRAME_STRUCTS = 2;
 
 /** What the pane's own editor may write beyond the copy (its other plugins' transforms): a share and a floor. */
 const COPY_SLACK = 1.05;
@@ -299,7 +330,8 @@ const COPY_FLOOR = 1_024;
 
 /**
  * Admits, at the selection, a paste whose ops measure `measured` bytes on the fork's copy (measurePaste), striking
- * `targets` (the body text it replaces) and removing `owned` bytes of the author's own text ($ownedBytes): null when it
+ * `targets` (the body text it replaces) and removing `owned` bytes and `ownedChars` characters of the author's own text
+ * ($ownedBytes), inserting `chars` characters on the copy: null when it
  * fits every limit, else the notice to show. A record's ops only grow, so it counts the paste, its one undo and its one
  * redo: the paste twice (the redo re-creates it), the rest of the block it splits once more and again as restored
  * copies (stepBytes) for its undo and its redo, the strike twice (the redo strikes again), and the own text once (the
@@ -309,23 +341,25 @@ const COPY_FLOOR = 1_024;
  * suggestions may fill with the payloads the DocDO counts for the body. Every undo and redo is admitted again on its
  * own (admitStep).
  */
-export function $admitPaste(fork: ForkView, measured: number, targets: IdSpan[], owned = 0, chars = 0): string | null {
+export function $admitPaste(fork: ForkView, measured: number, targets: IdSpan[], owned = 0, chars = 0, ownedChars = 0): string | null {
   const paste = measured > 0 ? measured * COPY_SLACK + COPY_FLOOR : 0;
-  // The note's text and structure limits (A§5.1 Limits): the text the paste and its redo insert, and the structs a
-  // new record's write adds, beside what the note holds.
-  if (measured > 0) {
-    const size = heldSize(fork.body);
-    if (chars > 0 && size.chars + 2 * chars > TEXT_CHAR_CAP) return DOC_LIMIT_NOTICE.text;
-    if (size.structs + RECORD_WRITE_STRUCTS > STRUCT_CAP) return DOC_LIMIT_NOTICE.structure;
-  }
   const selection = $getSelection();
-  const adds = 2 * paste + (1 + 2 * PER_BYTE) * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0) + owned;
-  if (noteBytes(fork.body) + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return WRITE_REFUSED['doc-cap'];
   // The blocks it spans: an older open record of the author's it builds on merges into its record.
   const tops = $isRangeSelection(selection)
     ? [selection.anchor, selection.focus].map((point) => point.getNode().getTopLevelElement()?.getIndexWithinParent() ?? -1)
     : [-1];
-  const refusal = fork.admit(adds, targets, { from: Math.min(...tops), to: Math.max(...tops) });
+  const blocks = { from: Math.min(...tops), to: Math.max(...tops) };
+  // The note's text and structure limits (A§5.1 Limits), beside what the note and the record it lands in hold: the
+  // text the paste and its redo insert (the split rest with it), the rest again as restored copies for its undo and its
+  // redo, the own text its undo restores; the structs of a new record's write and its strike.
+  if (measured > 0) {
+    const text = chars > 0 ? 2 * (chars + $restChars(selection)) + ownedChars : 0;
+    const limit = noteLimit(fork, text, RECORD_WRITE_STRUCTS + (targets.length ? FRAME_STRUCTS : 0), blocks);
+    if (limit) return DOC_LIMIT_NOTICE[limit];
+  }
+  const adds = 2 * paste + (1 + 2 * PER_BYTE) * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0) + owned;
+  if (noteBytes(fork.body) + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return WRITE_REFUSED['doc-cap'];
+  const refusal = fork.admit(adds, targets, blocks);
   return refusal ? (REFUSED[refusal] ?? REFUSED.default) : null;
 }
 
@@ -433,8 +467,10 @@ function surelyReplays({ entries }: UndoStep, body: Y.Doc | undefined): boolean 
  * them when none surely does): each deleted item comes back as a new copy with its content (yjs redoItem), and what a
  * step inserted goes in a delete set.
  */
-export function stepBytes(steps: readonly UndoStep[], body?: Y.Doc): { bytes: number; docs: Set<Y.Doc>; run: UndoStep[] } {
+export function stepBytes(steps: readonly UndoStep[], body?: Y.Doc): { bytes: number; chars: number; docs: Set<Y.Doc>; run: UndoStep[] } {
   let bytes = 0;
+  // The text the restored copies insert, as the DocDO counts a record's toward the note's text limit.
+  let chars = 0;
   const docs = new Set<Y.Doc>();
   const run: UndoStep[] = [];
   for (let at = steps.length - 1; at >= 0; at -= 1) {
@@ -442,7 +478,9 @@ export function stepBytes(steps: readonly UndoStep[], body?: Y.Doc): { bytes: nu
     for (const { manager, item } of steps[at].entries) {
       docs.add(manager.doc);
       eachItem(manager.doc, item.deletions, (struct, offset, len) => {
-        if (struct.deleted) bytes += contentBytes(struct, offset, len) * PER_BYTE + ITEM_BYTES + bytesOf(struct.parentSub ?? '');
+        if (!struct.deleted) return;
+        bytes += contentBytes(struct, offset, len) * PER_BYTE + ITEM_BYTES + bytesOf(struct.parentSub ?? '');
+        if (struct.content instanceof Y.ContentString) chars += len;
       });
       eachItem(manager.doc, item.insertions, (struct) => {
         if (!struct.deleted) bytes += 16;
@@ -450,7 +488,7 @@ export function stepBytes(steps: readonly UndoStep[], body?: Y.Doc): { bytes: nu
     }
     if (surelyReplays(steps[at], body)) break;
   }
-  return { bytes, docs, run };
+  return { bytes, chars, docs, run };
 }
 
 /**
@@ -485,8 +523,9 @@ export function stepBlocks(root: Y.XmlText, run: readonly UndoStep[]): { from: n
 }
 
 /** A refused undo's or redo's notice, by the cap it would pass. */
-function stepRefused(kind: 'undo' | 'redo', refusal: SuggestRefusal | 'doc-cap'): string {
+function stepRefused(kind: 'undo' | 'redo', refusal: SuggestRefusal | 'doc-cap' | 'text' | 'structure'): string {
   const done = kind === 'undo' ? 'undone' : 'redone';
+  if (refusal === 'text' || refusal === 'structure') return `${DOC_LIMIT_NOTICE[refusal]} Nothing was ${done}.`;
   if (refusal === 'doc-cap') return `This note is at its size limit, so nothing was ${done}.`;
   if (refusal === 'open-cap') return `You have too many open suggestions on this note, so nothing was ${done}.`;
   if (refusal === 'record-closed' || refusal === 'lease') return `Suggesting stopped, so nothing was ${done}.`;
@@ -499,7 +538,7 @@ function stepRefused(kind: 'undo' | 'redo', refusal: SuggestRefusal | 'doc-cap')
  * step stays where it is in the history.
  */
 export function admitStep(
-  fork: ForkView, kind: 'undo' | 'redo', root: Y.XmlText, steps: readonly UndoStep[], extra: number, targets: IdSpan[],
+  fork: ForkView, kind: 'undo' | 'redo', root: Y.XmlText, steps: readonly UndoStep[], extra: number, targets: IdSpan[], extraChars = 0,
 ): string | null {
   const replay = stepBytes(steps, root.doc ?? undefined);
   const adds = replay.bytes + extra;
@@ -508,7 +547,13 @@ export function admitStep(
   if (noteBytes(fork.body) + adds + strike > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return stepRefused(kind, 'doc-cap');
   // A payload doc's items it names may be an older record's of the author's, which merges too (client.ts #forward).
   const payloads = [...replay.docs].filter((doc) => doc !== root.doc);
-  const refusal = fork.admit(adds, targets, stepBlocks(root, replay.run), payloads);
+  const blocks = stepBlocks(root, replay.run);
+  // The note's text and structure limits, as $admitPaste counts them: the text its restored copies insert, and the
+  // structs of a record's first write, a frame per further doc it writes and its strike.
+  const structs = RECORD_WRITE_STRUCTS + FRAME_STRUCTS * (Math.max(0, replay.docs.size - 1) + (targets.length ? 1 : 0));
+  const limit = noteLimit(fork, replay.chars + extraChars, structs, blocks, payloads);
+  if (limit) return stepRefused(kind, limit);
+  const refusal = fork.admit(adds, targets, blocks, payloads);
   return refusal ? stepRefused(kind, refusal) : null;
 }
 
