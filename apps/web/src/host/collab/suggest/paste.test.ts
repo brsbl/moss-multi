@@ -1654,6 +1654,9 @@ it.each([
  * history kept and suggesting still on, never refused by the DocDO after it changed the fork.
  */
 function refusedAtLimit(pane: ReturnType<typeof suggesting>, limit: 'text' | 'structure', act: () => void): void {
+  // A peer's edit reaches F first.
+  vi.runAllTimers();
+  pane.pump();
   const text = pane.text();
   const before = pane.requests();
   act();
