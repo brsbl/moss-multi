@@ -78,10 +78,18 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
     if (next || !leaving) return;
     // The bell leaves with its inbox. Only if focus went with it does it move, to the inbox's own home.
     const destination = footerDestination(bar?.current ?? null);
-    setTimeout(() => {
-      if (navigating.current || (document.activeElement && document.activeElement !== document.body)) return;
+    const started = performance.now();
+    const settle = () => {
+      if (navigating.current) return;
+      const active = document.activeElement;
+      if (active && active !== document.body) {
+        // Still in the closing inbox: wait for it to go, then look again.
+        if (active.closest('[role="menu"]') && performance.now() - started < 1_000) requestAnimationFrame(settle);
+        return;
+      }
       destination?.focus();
-    }, 0);
+    };
+    requestAnimationFrame(settle);
   };
   return (
     <Menu open={open} onOpenChange={onOpenChange}>
