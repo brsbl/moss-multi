@@ -17,6 +17,12 @@ export const auth = createAuthStore({
   beforeSignOut: prepareSignOut,
 });
 
+/** fetch for the host's API callers: a 401 that means the session ended ends this tab in place (auth-state.ts). */
+export const sessionFetch: typeof fetch = auth.sessionAware((input, init) => fetch(input, init));
+
+/** A tab whose session ended while it was open (not a link visitor, who was never signed in). */
+export const sessionEnded = (state: AuthState): boolean => state.status === 'signed-out' && state.ended === true;
+
 if (typeof window !== 'undefined') {
   // A degraded tab retries at once when the network or the tab comes back.
   const retryIfDegraded = () => {

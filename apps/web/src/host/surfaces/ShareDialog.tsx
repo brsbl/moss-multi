@@ -17,6 +17,7 @@ import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } fro
 import { Check, UserPlus, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
+import { sessionEnded, sessionFetch, useAuthState } from '../auth.ts';
 import { useTerminal } from '../collab/terminal.ts';
 import { heldRead, isLeaveCancelled, leaveAwareSend } from '../leave.ts';
 
@@ -201,7 +202,7 @@ const linkUrl = (target: ShareTarget, token: string) =>
 /** A read is held while the page leaves and sent again if it stays; a change is sent at most once, and one a leave cut
  * off rejects with `LeaveCancelled` once the page stays, for the caller to read the lists again (leave.ts). */
 export async function call<T>(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; body: (T & { message?: string }) | null }> {
-  const send = (signal: AbortSignal | undefined) => fetch(path, {
+  const send = (signal: AbortSignal | undefined) => sessionFetch(path, {
     credentials: 'same-origin',
     ...init,
     headers: { accept: 'application/json', ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
@@ -607,10 +608,15 @@ export function openShare(target: ShareTarget): void {
 export function ShareDialogHost(): ReactNode {
   const target = useSyncExternalStore(subscribe, () => current, () => null);
   const [shown, setShown] = useState<ShareTarget | null>(null);
+  // A session that ended under the dialog closes it: the page's banner says how to sign in again.
+  const ended = sessionEnded(useAuthState());
   useEffect(() => {
     if (target) setShown(target);
   }, [target]);
-  if (!shown) return null;
+  useEffect(() => {
+    if (ended) publish(null);
+  }, [ended]);
+  if (!shown || ended) return null;
   return <ShareDialog key={`${shown.type}:${shown.id}`} target={shown} open={target !== null} onOpenChange={(open) => { if (!open) publish(null); }} />;
 }
 

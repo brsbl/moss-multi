@@ -20,7 +20,7 @@ import { useAtomValue } from 'jotai';
 import { ArrowLeft, Clock, History, RotateCcw, Tag } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
-import { useAuthState } from '../auth.ts';
+import { sessionEnded, sessionFetch, useAuthState } from '../auth.ts';
 import { heldDocOf, waitDocsAcked } from '../collab/doc-session.ts';
 import { showActionFeedback } from '../collab/feedback.ts';
 import { beginOwnRestore, dismissRestoreNotice, useRestoreNotice } from '../collab/restore-notice.ts';
@@ -95,7 +95,7 @@ async function call(url: string, body?: unknown): Promise<{ ok: boolean; status:
   // A role that comes from a share link travels with every call, as the comment API's does.
   const share = new URLSearchParams(window.location.search).get('share');
   const headers: Record<string, string> = { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) };
-  const response = await fetch(url, body === undefined
+  const response = await sessionFetch(url, body === undefined
     ? { method: 'GET', credentials: 'same-origin', cache: 'no-store', headers }
     : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const text = await response.text().catch(() => '');
@@ -353,6 +353,11 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
   const [restoreError, setRestoreError] = useState<string | null>(null);
   // The note as this tab held it when Restore was opened: the restore's base, so what others type after it is kept.
   const restoreBase = useRef<{ base: Omit<RestoreBase, 'age'>; at: number } | null>(null);
+  // A session that ended under History closes it: the note's banner says how to sign in again.
+  const ended = sessionEnded(useAuthState());
+  useEffect(() => {
+    if (ended) setHistoryOpen(docId, false);
+  }, [ended, docId]);
 
   useEffect(() => {
     let live = true;

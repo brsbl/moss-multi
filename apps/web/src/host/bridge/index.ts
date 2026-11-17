@@ -1119,6 +1119,8 @@ export function installBridge(
   reopenDocs?: (docIds: string[]) => void,
 ): Bridge {
   const bridge = createBridge({ pathname: () => window.location.pathname, storage: localStorageOrNull(), browser: windowBrowser(), trashGuard, reopenDocs,
+    // A 401 that means the session ended ends the tab in place, and the call never settles (auth-state.ts).
+    fetch: authStore.sessionAware(fetch.bind(globalThis)),
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: installLeaving(),
     subscribeWorkspace: (receive, pause) => subscribeWorkspace({

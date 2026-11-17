@@ -33,7 +33,8 @@ export function signInToDoMore(): void {
  */
 export function SignInToDoMore({ inBand = false }: { inBand?: boolean }): ReactNode {
   const auth = useAuthState();
-  if (auth.status !== 'signed-out') return null;
+  // A tab whose session ended offers its banner's "Sign in" instead.
+  if (auth.status !== 'signed-out' || auth.ended) return null;
   return (
     <button
       type="button"

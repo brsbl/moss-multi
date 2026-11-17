@@ -15,7 +15,8 @@ export type AuthState =
   | { status: 'degraded'; attempts: number }
   | { status: 'signed-in'; user: SessionUser }
   | { status: 'signing-out'; user: SessionUser }
-  | { status: 'signed-out' };
+  /** `ended`: the session ended under this open tab (an API answered 401 and the lookup agreed); it stays in place. */
+  | { status: 'signed-out'; ended?: true };
 
 export type SocialProviderId = 'github' | 'google';
 
@@ -267,8 +268,42 @@ export function createAuthStore(deps: AuthDeps) {
     return { ok: true, user: outcome.user };
   }
 
+  let confirming: Promise<boolean> | null = null;
+
+  /** One lookup after a 401 in a tab that believes it is signed in; true only when the server says signed out. */
+  function confirmSession(): Promise<boolean> {
+    if (state.status === 'signed-out') return Promise.resolve(state.ended === true);
+    if (state.status !== 'signed-in') return Promise.resolve(false);
+    confirming ??= (async () => {
+      const never = new Promise<void>(() => undefined);
+      const answer = await Promise.race([ask(), sleep(LOOKUP_TIMEOUT_MS, never).then(() => UNAVAILABLE)]);
+      // An unanswered or failed lookup changes nothing (R10); a sign-out begun meanwhile goes its own way.
+      if (answer.kind !== 'signed-out' || state.status !== 'signed-in') return false;
+      write({ status: 'signed-out', ended: true });
+      return true;
+    })().finally(() => {
+      confirming = null;
+    });
+    return confirming;
+  }
+
   return {
     get: (): AuthState => state,
+
+    confirmSession,
+
+    /**
+     * `fetcher` for a signed-in tab's API calls: a 401 is checked once against the session. When the session has
+     * ended the tab ends in place (the auth state says so, its notes go terminal) and the call never settles, so the
+     * action's own failure message is not shown. Any other answer, a 5xx, and a network failure pass through as they are.
+     */
+    sessionAware(fetcher: typeof fetch): typeof fetch {
+      return async (input, init) => {
+        const response = await fetcher(input, init);
+        if (response.status === 401 && await confirmSession()) return new Promise<never>(() => undefined);
+        return response;
+      };
+    },
 
     subscribe(listener: (state: AuthState) => void): () => void {
       listeners.add(listener);

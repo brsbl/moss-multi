@@ -20,6 +20,12 @@ export function clearTerminal(docId: string): void {
   if (reasons.delete(docId)) changed();
 }
 
+/** Whether any doc of this tab ended for `reason`. */
+export function anyTerminal(reason: TerminalReason): boolean {
+  for (const value of reasons.values()) if (value === reason) return true;
+  return false;
+}
+
 export function terminalOf(docId: string): TerminalReason | null {
   return reasons.get(docId) ?? null;
 }
