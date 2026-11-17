@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (242 of 302 planned tasks verified)
+**Overall: 80% done** (243 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 15 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 16 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -265,6 +265,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.44 verified: an HTML block's source keeps its own scrolling viewport when the preview is short, and a formula being typed shows as Moss's padded, rounded chip under its text.
 - 2026-11-17 — T9.21 verified: the first click into a table just inserted from the slash menu now behaves as pristine Moss does (a quick click in a new note can be dropped there too), and j01 and a parity leg pin that typed text stays inside the table.
 - 2026-11-17 — T9.13 verified: each Cmd+Z takes back one step, as in Moss, rather than a whole burst of typing, and a parity leg checks each step against pristine Moss.
+- 2026-11-17 — T9.17 verified: when a session ends, "+ Note", a folder rename, Share, History and the vault menu say to sign in again and give the keyboard back instead of dead-ending, the banner clears the window's drag strip with no note open, and signing in returns to the same place.
 
 ## T1.1s identity audit
 
@@ -304,6 +305,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.17's checker (09d6bc7, 2026-11-17)
+
+- T9.17 (An ended session says to sign in instead of dead-ending) checker P2: comment, people and inbox API callers still use plain fetch, so a comment 401 is not checked against the session; it shows Moss's 'Sign in to comment.' rather than a dead end, and the doc socket then closes as session-ended within the 5 s access tick.
+- T9.17 (An ended session says to sign in instead of dead-ending) checker P2: the brief's dogfood proof folder still holds the attempt-1 no-note after shot with the old banner placement; the current-build shots are the r2 set (evidence location only, no product issue).
 
 ### From T9.13's checker (4d609cd, 2026-11-17)
 
