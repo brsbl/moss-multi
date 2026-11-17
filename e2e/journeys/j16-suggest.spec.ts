@@ -9,7 +9,7 @@
 // census operation, made through the real UI, is recorded with no refusal.
 import type { Actor } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, NAMES, SUGGEST_CHIP_ATTR, SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, MODE_ROW_ATTR, NAMES, SUGGEST_CHIP_ATTR, SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR,
   TITLE_BINDING_ATTR,
 } from '../lib/contract.ts';
 import { acceptInvite, grantDoc } from '../lib/grants.ts';
@@ -77,10 +77,11 @@ test('j16-suggest: a solo owner with nothing selected starts Suggest from More a
   expect(exported, 'a pending suggestion is not in the note').not.toContain('plus');
 
   // Back to Edit: the caret returns to the original text before the pending suggestion.
-  const state = pane.locator(`[${SUGGEST_CHIP_ATTR}]`);
+  // The one Suggesting row: in the pane's bottom slot, or in Moss's docked toolbar while it shows (T9.30).
+  const state = ada.page.locator(`[${SUGGEST_CHIP_ATTR}]`);
   await expect(state, 'one Suggesting state at the bottom of the pane').toHaveText(/^Suggesting/);
   await expect(state).toHaveAttribute(SUGGEST_CHIP_ATTR, 'unlocked');
-  await pane.getByRole('button', { name: 'Stop suggesting', exact: true }).click();
+  await ada.page.locator(`[${MODE_ROW_ATTR}]`).getByRole('button', { name: 'Stop suggesting', exact: true }).click();
   await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
   await expect(body).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await ada.declareRemount(docId);

@@ -114,7 +114,7 @@ test('j21 at rest the top bar holds only Moss\'s actions, and More actions holds
   ada.expectReconnects(2, docId);
   await (await ui.openNoteMenu(ada, docId)).getByRole('menuitem', { name: 'Suggest changes', exact: true }).click();
   await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
-  await expect(pane.locator(`[${SUGGEST_CHIP_ATTR}]`), 'one Suggesting state, at the bottom').toBeVisible();
+  await expect(ada.page.locator(`[${SUGGEST_CHIP_ATTR}]`), 'one Suggesting state, at the bottom').toBeVisible();
   await expect.poll(() => visibleChrome(ada, docId), { message: 'still nothing added to the top bar' }).toEqual([]);
   expect(await ui.noteMenuEntries(ada, docId), 'no second Suggest entry while suggesting').not.toContain('Suggest changes');
 
@@ -311,9 +311,10 @@ test('j21 people, unread and open suggestions are quiet cues that yield by the p
   await expect(panel).toBeVisible();
   await panel.getByRole('button', { name: /^People here/ }).click();
   await expect(page.getByRole('menu').getByText(benPrincipal.name, { exact: true }), 'the roster names Ben').toBeVisible();
-  await page.keyboard.press('Escape');
-  if (await panel.isVisible()) await page.keyboard.press('Escape');
-  await expect(panel).toBeHidden();
+  await expect(async () => {
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden({ timeout: 1_000 });
+  }, 'Escape closes the roster, then the list').toPass({ timeout: 5_000 });
 
   // The bell's inbox: once nothing is unread its cue goes, and focus moves to the footer's Settings, where the
   // inbox lives.
