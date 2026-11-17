@@ -9,7 +9,8 @@ import {
 import { ContentType, Item, createRelativePositionFromTypeIndex, findIndexSS, getItem, type AbstractType, type RelativePosition } from 'yjs';
 import type { StepCarets } from '@moss-multi/sync/payload-docs';
 
-interface Caret { anchor: RelativePosition; focus: RelativePosition }
+/** The selection's ends and its typing format and style, as Moss's history keeps them with the editor state. */
+interface Caret { anchor: RelativePosition; focus: RelativePosition; format: number; style: string }
 type Entries = Parameters<StepCarets['restore']>[1];
 /** The parts of @lexical/yjs's collab nodes a position needs (CollabTextNode, CollabElementNode). */
 interface CollabNode { getSharedType(): AbstractType<unknown>; getOffset?(): number; _parent?: { _xmlText?: AbstractType<unknown> } }
@@ -46,7 +47,7 @@ function caretOf(binding: Binding, state: EditorState): Caret | null {
       const backward = !collapsed && selection.isBackward();
       const anchor = $relative(binding, selection.anchor, backward ? -1 : 0);
       const focus = $relative(binding, selection.focus, !collapsed && !backward ? -1 : 0);
-      return anchor && focus ? { anchor, focus } : null;
+      return anchor && focus ? { anchor, focus, format: selection.format, style: selection.style } : null;
     }, { editor: binding.editor });
   } catch {
     return null;
@@ -90,9 +91,8 @@ function $restoreCaret(binding: Binding, caret: Caret | null, entries: Entries):
       if (selection !== current) $setSelection(selection);
       selection.anchor.set(...anchor);
       selection.focus.set(...focus);
-      const node = $getNodeByKey(anchor[0]);
-      selection.format = $isTextNode(node) ? node.getFormat() : 0;
-      selection.style = $isTextNode(node) ? node.getStyle() : '';
+      selection.format = caret.format;
+      selection.style = caret.style;
       return;
     }
   }
