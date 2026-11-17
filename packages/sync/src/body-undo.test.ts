@@ -39,3 +39,41 @@ it('joins every edit made while held to the last step, however late, and lets go
     vi.useRealTimers();
   }
 });
+
+// T9.14: each step keeps where the caret was before it and after its last edit; undo restores the first, redo the
+// second, through every round.
+it('restores the caret from before a step on undo and from after it on redo', () => {
+  const doc = new Y.Doc();
+  const text = doc.getText('t');
+  const origin = { name: 'local' };
+  // Edits join a step until stopCapturing ends it.
+  const undo = new BodyUndo(new Y.UndoManager(text, { trackedOrigins: new Set([origin]), captureTimeout: 60_000 }));
+  // `prior` is the caret as the editor's update began, `caret` the caret now.
+  let prior = 'start';
+  let caret = 'start';
+  const restored: unknown[] = [];
+  undo.carets = { before: () => prior, after: () => caret, restore: (at) => { restored.push(at); } };
+  try {
+    prior = 'before one';
+    doc.transact(() => { text.insert(0, 'one'); caret = 'after one'; }, origin);
+    undo.stopCapturing();
+    prior = 'before two';
+    doc.transact(() => { text.insert(3, ' two'); caret = 'inside two'; }, origin);
+    prior = 'inside two';
+    doc.transact(() => { text.insert(7, '!'); caret = 'after two'; }, origin);
+    expect(undo.undoStack).toHaveLength(2);
+    prior = caret = 'moved away';
+    undo.undo();
+    undo.undo();
+    expect(text.toString()).toBe('');
+    undo.redo();
+    undo.redo();
+    expect(text.toString()).toBe('one two!');
+    undo.undo();
+    undo.redo();
+    expect(restored).toEqual(['before two', 'before one', 'after one', 'after two', 'before two', 'after two']);
+  } finally {
+    undo.destroy();
+    doc.destroy();
+  }
+});
