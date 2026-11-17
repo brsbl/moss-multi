@@ -8,7 +8,7 @@ import { cookieHeader } from '../lib/doc-client.ts';
 import { signIn, type Principal } from '../lib/principals.ts';
 import type { Page, Request, Route } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
-import { APP_STATE_ATTR, CONNECTION_BANNER_ATTR, HISTORY_BUTTON_ATTR } from '../lib/contract.ts';
+import { APP_STATE_ATTR, CONNECTION_BANNER_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const SHELL = '[data-moss-app-shell]';
@@ -449,7 +449,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
     await expect(banner, `${what}: the session-ended banner shows`).toBeVisible({ timeout: 2_000 });
     await expect(banner).toContainText('Your session has ended. Sign in again to continue.');
     // The failed action's own message would come with the 401; give it a moment to show if it were going to.
-    await ada.page.waitForTimeout(500);
+    await ada.page.waitForTimeout(1_500);
     await expect(ada.page.getByText(/try again/i), `${what}: no "Try again" message`).toHaveCount(0);
     expect(new URL(ada.page.url()).pathname, `${what}: the tab stays on the note`).toBe(path);
   };
@@ -467,7 +467,9 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   await waitForShell(ada);
   await ui.waitLive(ada, docId);
   await endSessionElsewhere(ada);
+  const created = ada.page.waitForResponse((r) => new URL(r.url()).pathname === '/api/docs' && r.request().method() === 'POST');
   await ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
+  expect((await created).status(), '"+ Note" meets the ended session').toBe(401);
   await expectEnded('"+ Note"');
   await signInAgain('"+ Note"');
 
@@ -478,18 +480,23 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   const rename = trips.getByRole('textbox');
   await expect(rename, 'the folder name becomes an input').toBeFocused();
   await rename.fill('Trips 2025');
+  const renamed = ada.page.waitForResponse((r) => /^\/api\/folders\/[^/]+$/.test(new URL(r.url()).pathname) && r.request().method() === 'PATCH');
   await rename.press('Enter');
+  expect((await renamed).status(), 'the rename meets the ended session').toBe(401);
   await expectEnded('a folder rename');
   await signInAgain('a folder rename');
 
+  // The server closes the note's socket as the session ends, which hides Share and History: each is open already.
+  await ui.openShare(ada, docId);
   await endSessionElsewhere(ada);
-  await ui.pane(ada, docId).getByRole('button', { name: 'Share', exact: true }).click();
   await expectEnded('Share');
   await expect(ada.page.getByRole('dialog', { name: 'Share' }), 'Share closes, so the banner can be used').toHaveCount(0);
   await signInAgain('Share');
 
-  await endSessionElsewhere(ada);
   await ui.pane(ada, docId).locator(`[${HISTORY_BUTTON_ATTR}]`).click();
+  await expect(ui.pane(ada, docId).locator(`[${HISTORY_VIEW_ATTR}]`), 'History opens').toBeVisible();
+  await endSessionElsewhere(ada);
   await expectEnded('History');
+  await expect(ui.pane(ada, docId).locator(`[${HISTORY_VIEW_ATTR}]`), 'History closes on the ended note').toHaveCount(0);
   await signInAgain('History');
 });
