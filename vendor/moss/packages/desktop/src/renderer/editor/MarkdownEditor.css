@@ -1182,8 +1182,20 @@ html[data-moss-comment-ui-open="true"] .comment-highlight-active .editor-block-g
 }
 
 /* moss-multi seam: local-view (A§10): formula drafts are local paint, without splitting shared text. */
+/* moss's draft chip colors (MathCalculationPlugin FORMULA_CHIP_BASE_STYLE): the highlight colors the text, and
+   host/formula-chip.ts pads the spans and paints the rounded chip behind it. */
 ::highlight(formula-draft) {
-  /* moss's draft chip colors (MathCalculationPlugin FORMULA_CHIP_BASE_STYLE); a highlight cannot pad or round. */
-  background-color: var(--surface-note-selected-bright);
   color: var(--accent-brand-pressed);
+}
+
+.moss-formula-draft-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.moss-formula-draft-chip {
+  position: absolute;
+  border-radius: 0.375rem;
+  background-color: var(--surface-note-selected-bright);
 }
