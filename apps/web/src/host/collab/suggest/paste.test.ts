@@ -17,7 +17,11 @@ import { mergeRegister } from '@lexical/utils';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { markdownToState } from '../../../../../../packages/sync/src/converter/index.ts';
-import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/src/doc/suggest.ts';
+import type { DocLimit } from '@moss-multi/protocol/sync';
+import { DOC_LIMIT_NOTICE } from '@moss-multi/protocol/sync';
+import { handleSuggest, SuggestIngest, type RecordGrowth } from '../../../../../../packages/sync/src/doc/suggest.ts';
+import { serverWrite } from '../../../../../../packages/sync/src/server-doc.ts';
+import { heldSize } from '../../large-paste.ts';
 import { Composite, destroyView, GROUP_IDLE_MS, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { payloadDocsFor, payloadText } from '../../../../../../packages/sync/src/payload-docs.ts';
 import { REGISTER_LOCAL_ORIGIN } from '../../../../../../packages/sync/src/registers.ts';
@@ -34,12 +38,32 @@ import { $pasteAt, measurePaste, stepBytes } from './paste.ts';
 import { pendingInserts, struckByRecord } from './paint.ts';
 import { registerSuggestRouting } from './routing.ts';
 
+/** The note's text and structure limits, lowered by a test so a note reaches them quickly (A§5.1 Limits). */
+const caps = vi.hoisted(() => ({ text: 0, structs: 0 }));
+vi.mock('@moss-multi/protocol/limits', async (original) => {
+  const real = await original<typeof import('@moss-multi/protocol/limits')>();
+  caps.text = real.TEXT_CHAR_CAP;
+  caps.structs = real.STRUCT_CAP;
+  return {
+    ...real,
+    get TEXT_CHAR_CAP() {
+      return caps.text;
+    },
+    get STRUCT_CAP() {
+      return caps.structs;
+    },
+  };
+});
+
 /** The payload bytes the DocDO last said it counts for a doc (doc-session.ts), withheld payloads included. */
 const counted = new WeakMap<Y.Doc, number>();
 vi.mock('../doc-session.ts', async (original) => ({
   ...(await original<typeof import('../doc-session.ts')>()),
   countedPayloadBytes: (doc: Y.Doc) => counted.get(doc) ?? 0,
 }));
+
+const TEXT_CHAR_CAP_REAL = caps.text;
+const STRUCT_CAP_REAL = caps.structs;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -101,10 +125,18 @@ const plainClipboard = (text: string) => ({
  * @lexical/rich-text's paste handler makes one, in one update); a reachable DocDO. `before` runs on the DocDO before
  * the fork asks for its leases.
  */
-function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n', before?: (ingest: SuggestIngest) => void) {
+function suggesting(markdown = 'Intro line stays.\n\nClosing line stays too.\n', before?: (ingest: SuggestIngest) => void, limited = false) {
   const live = seededBody(markdown);
   let n = 0;
-  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}` });
+  // `limited`: the DocDO's #recordLimit, the note's text and structs beside the record's (caps, as a test lowers them).
+  const limit = (growth: RecordGrowth): DocLimit | null => {
+    const size = heldSize(live);
+    if (growth.chars > 0 && size.chars + growth.chars > caps.text) return 'text';
+    return size.structs + growth.structs > caps.structs ? 'structure' : null;
+  };
+  const ingest = new SuggestIngest(live, {
+    stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => `r${(n += 1)}`, ...(limited ? { limit } : {}),
+  });
   before?.(ingest);
   const outbox: SuggestRequest[] = [];
   let requests = 0;
@@ -1613,5 +1645,105 @@ it.each([
     } finally {
       near.dispose();
     }
+  }
+});
+
+/**
+ * T5.V: a Suggest-mode paste, undo or redo is admitted against the note's text and structure limits as the DocDO counts
+ * them, the text the landing record already holds included: past one it is refused whole with nothing sent, the
+ * history kept and suggesting still on, never refused by the DocDO after it changed the fork.
+ */
+function refusedAtLimit(pane: ReturnType<typeof suggesting>, limit: 'text' | 'structure', act: () => void): void {
+  const text = pane.text();
+  const before = pane.requests();
+  act();
+  const notice = noticed();
+  pane.pump();
+  expect(notice, 'refused naming the limit').toContain(DOC_LIMIT_NOTICE[limit]);
+  expect(pane.requests(), 'nothing was sent').toBe(before);
+  expect(pane.text(), 'F is unchanged').toBe(text);
+  expect(pane.fork.closed, 'suggesting stays on').toBe(false);
+  expect(pane.unsaved, 'nothing offered back').toEqual([]);
+}
+
+/** Text a peer adds to the note's first paragraph, as the DocDO's body takes it. */
+const peerTypes = (pane: ReturnType<typeof suggesting>, text: string) =>
+  serverWrite(pane.live, 'peer', () => textNode('Intro').setTextContent(`Intro line stays.${text}`));
+
+it('T5.V: a caret paste counts the text its record already holds: past the note\'s text limit with it, refused whole before anything changes', { timeout: 120_000 }, () => {
+  const pane = suggesting(undefined, undefined, true);
+  try {
+    caps.text = heldSize(pane.live).chars + 100;
+    pane.type('t'.repeat(95));
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.fork.closed).toBe(false);
+    refusedAtLimit(pane, 'text', () => pane.paste(['p'.repeat(10)]));
+  } finally {
+    caps.text = TEXT_CHAR_CAP_REAL;
+    pane.dispose();
+  }
+});
+
+it('T5.V: a redo of a paste is admitted against the note\'s text limit: once a peer took the room, refused with the history kept', { timeout: 120_000 }, () => {
+  const pane = suggesting(undefined, undefined, true);
+  try {
+    caps.text = heldSize(pane.live).chars + 25;
+    pane.paste(['p'.repeat(10)]);
+    vi.runAllTimers();
+    pane.pump();
+    pane.undo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.text()).not.toContain('pppp');
+    peerTypes(pane, 'q'.repeat(10));
+    refusedAtLimit(pane, 'text', () => pane.redo());
+    caps.text = TEXT_CHAR_CAP_REAL;
+    pane.redo();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.text(), 'the refused redo stayed in the history').toContain('p'.repeat(10));
+    expect(pane.fork.closed).toBe(false);
+  } finally {
+    caps.text = TEXT_CHAR_CAP_REAL;
+    pane.dispose();
+  }
+});
+
+it('T5.V: an undo restoring the suggester\'s own deleted text is admitted against the note\'s text limit: past it, refused with the history kept', { timeout: 120_000 }, () => {
+  const pane = suggesting(undefined, undefined, true);
+  try {
+    caps.text = heldSize(pane.live).chars + 100;
+    pane.type(' ' + 'o'.repeat(40));
+    vi.runAllTimers();
+    pane.pump();
+    pane.stopCapturing();
+    pane.select('Closing', 'Closing line stays too.'.length, 'Closing line stays too.'.length + 41);
+    pane.backspace();
+    vi.runAllTimers();
+    pane.pump();
+    expect(pane.text()).not.toContain('oooo');
+    peerTypes(pane, 'q'.repeat(30));
+    refusedAtLimit(pane, 'text', () => pane.undo());
+  } finally {
+    caps.text = TEXT_CHAR_CAP_REAL;
+    pane.dispose();
+  }
+});
+
+it('T5.V: a redo of a paste is admitted against the note\'s structure limit: at it, refused with the history kept', { timeout: 120_000 }, () => {
+  const pane = suggesting(undefined, undefined, true);
+  try {
+    pane.paste(['p'.repeat(10)]);
+    vi.runAllTimers();
+    pane.pump();
+    pane.undo();
+    vi.runAllTimers();
+    pane.pump();
+    caps.structs = heldSize(pane.live).structs + 1;
+    refusedAtLimit(pane, 'structure', () => pane.redo());
+  } finally {
+    caps.structs = STRUCT_CAP_REAL;
+    pane.dispose();
   }
 });
