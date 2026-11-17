@@ -4,7 +4,7 @@
 // HistoryPlugin) would start a new entry (T9.13), and otherwise after a pause of the capture window.
 import { createEmptyHistoryState, registerHistory } from '@lexical/history';
 import {
-  COLLABORATION_TAG, UNDO_COMMAND, REDO_COMMAND, type EditorState, type LexicalEditor, type NodeKey,
+  COLLABORATION_TAG, HISTORIC_TAG, UNDO_COMMAND, REDO_COMMAND, type EditorState, type LexicalEditor, type NodeKey,
 } from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
@@ -13,6 +13,7 @@ import {
 import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payload-docs';
 
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
+import { bindingCarets, noteCaretBefore } from './undo-caret.ts';
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
 /** The merge window of Moss's HistoryPlugin: @lexical/react's useHistory default. */
@@ -44,7 +45,10 @@ export function clearUndoOf(doc: Doc): void {
 export function createBindingUndoManager(binding: Binding): UndoManager {
   // A setter and an attribute written in one Lexical update undo together.
   const stack = new BodyUndo(createRootUndoManager(binding), binding.editor ? lexicalAction(binding.editor) : undefined);
-  if (binding.editor) stepRules.set(binding, { stack, rule: lexicalStepRule(binding.editor) });
+  if (binding.editor) {
+    stepRules.set(binding, { stack, rule: lexicalStepRule(binding.editor) });
+    stack.carets = bindingCarets(binding);
+  }
   const unregister = registerUndoClear(binding.doc, () => stack.clear());
   const destroy = stack.destroy.bind(stack);
   stack.destroy = () => {
@@ -121,7 +125,10 @@ export function keepCaptureSteps(editor: LexicalEditor): () => void {
 export function markUndoStep(binding: Binding, update: LexicalUpdate): void {
   if (update.tags.has(COLLABORATION_TAG)) return;
   const entry = stepRules.get(binding);
-  if (!entry || suggesting.has(binding.editor)) return;
+  if (!entry) return;
+  // The caret a step starting with this update returns to on undo (T9.14); an undo's own update is no new step.
+  if (!update.tags.has(HISTORIC_TAG)) noteCaretBefore(binding, update);
+  if (suggesting.has(binding.editor)) return;
   const kind = entry.rule(update);
   // A selection change merges in Lexical and writes nothing, so it holds no step open.
   if (kind === 'push' || (kind === 'merge' && (update.dirtyLeaves.size > 0 || update.dirtyElements.size > 0))) entry.stack.boundary(kind);
