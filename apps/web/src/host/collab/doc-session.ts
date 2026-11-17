@@ -9,7 +9,7 @@ import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, namedPayloadIds, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
-import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBack, withoutDeletes, type PasteRecord, type Ranges } from '@moss-multi/sync/paste-rollback';
+import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBackPaste, withoutDeletes, type PasteRecord, type Ranges } from '@moss-multi/sync/paste-rollback';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { knownRole, rememberRole } from '../access.ts';
@@ -768,12 +768,12 @@ export class DocSession {
     let cut = false;
     for (const [key, record] of records) {
       const payloads = Object.entries(record.payloads).filter(([id]) => ids.has(id));
+      // One still arriving would read as cut short, and its landed items would stay once it arrived.
+      if (payloads.some(([id]) => this.payloads.awaiting(id))) {
+        waiting.push([key, record]);
+        continue;
+      }
       if (!record.decided) {
-        // One still arriving would read as cut short.
-        if (payloads.some(([id]) => this.payloads.awaiting(id))) {
-          waiting.push([key, record]);
-          continue;
-        }
         const whole = landedWhole(this.doc, record.note) && payloads.every(([id, span]) => landedWhole(this.payloads.hold(id), span));
         record.decided = whole ? 'whole' : 'cut';
         saveRollback(key, record);
@@ -782,8 +782,7 @@ export class DocSession {
         if (record.deletes?.length) applyDeletes(this.doc, record.deletes, ROLLBACK_ORIGIN);
       } else {
         cut = true;
-        for (const [id, span] of payloads) rollBack(this.payloads.hold(id), span, ROLLBACK_ORIGIN);
-        rollBack(this.doc, record.note, ROLLBACK_ORIGIN);
+        rollBackPaste(this.doc, record.note, payloads.map(([id, span]) => [id, this.payloads.hold(id), span]), ROLLBACK_ORIGIN);
         if (record.scrollTop !== undefined) this.rolledBackScroll = record.scrollTop;
       }
       this.#applied.add(key);
