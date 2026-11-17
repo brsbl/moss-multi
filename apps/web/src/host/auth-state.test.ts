@@ -18,6 +18,7 @@ function store(lookups: unknown[], respond: (path: string, init?: RequestInit) =
     fetch,
     leave: vi.fn(),
     setAppState: vi.fn(),
+    onHeld: vi.fn(),
     // Backoff waits end at once; a lookup's timeout ends only when woken, so a quick answer always beats it.
     sleep: vi.fn(async (ms: number, wake: Promise<void>) => (ms === LOOKUP_TIMEOUT_MS ? wake : undefined)),
   };
@@ -235,6 +236,7 @@ describe('an API answer that says the caller is not signed in (T9.17)', () => {
     expect(auth.get()).toEqual({ status: 'signed-out', ended: true });
     expect(seen).toEqual(['signed-in', 'signed-out']);
     expect(deps.leave, 'the tab stays where it is').not.toHaveBeenCalled();
+    expect(deps.onHeld, 'each held call lets its action go').toHaveBeenCalledTimes(2);
     expect(await settles(fetcher('/api/docs/d1/versions')), 'a later 401 in the ended tab is held too').toBe('pending');
     expect(deps.lookup).toHaveBeenCalledTimes(2);
   });
@@ -245,6 +247,7 @@ describe('an API answer that says the caller is not signed in (T9.17)', () => {
       await auth.resolve();
       const response = await auth.sessionAware(api(401))('/api/docs', { method: 'POST' });
       expect(response.status, 'the 401 reaches its caller').toBe(401);
+      expect(deps.onHeld).not.toHaveBeenCalled();
       expect(auth.get()).toEqual({ status: 'signed-in', user: ADA });
       expect(deps.leave).not.toHaveBeenCalled();
     }

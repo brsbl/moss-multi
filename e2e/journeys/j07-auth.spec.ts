@@ -466,8 +466,13 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
     expect(await ada.page.evaluate(() => (window as unknown as { tryAgainSeen?: string }).tryAgainSeen ?? null), `${what}: no "Try again" message, even briefly`).toBeNull();
     expect(new URL(ada.page.url()).pathname, `${what}: the tab stays on the note`).toBe(path);
   };
-  const signInAgain = async (what: string) => {
-    await ada.page.locator(ENDED_BANNER).getByRole('button', { name: 'Sign in', exact: true }).click();
+  const signInAgain = async (what: string, by: 'mouse' | 'keyboard' = 'mouse') => {
+    const button = ada.page.locator(ENDED_BANNER).getByRole('button', { name: 'Sign in', exact: true });
+    if (by === 'mouse') await button.click();
+    else {
+      await button.focus();
+      await ada.page.keyboard.press('Enter');
+    }
     await expect(ada.page, `${what}: "Sign in" goes to the card, returning here`).toHaveURL(atLogin(path), { timeout: BOOT_TIMEOUT });
     await ui.waitForLoginCard(ada);
     await ui.signInThroughCard(ada, person);
@@ -485,7 +490,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   await ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
   expect((await created).status(), '"+ Note" meets the ended session').toBe(401);
   await expectEnded('"+ Note"');
-  await signInAgain('"+ Note"');
+  await signInAgain('"+ Note"', 'keyboard');
 
   await watchTryAgain();
   await endSessionElsewhere(ada);

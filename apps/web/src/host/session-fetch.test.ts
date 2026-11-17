@@ -3,7 +3,7 @@
 // opening guard gives the keyboard back, so the banner's "Sign in" can be pressed.
 import { afterEach, expect, it } from 'vitest';
 import { armOpeningGuard } from './opening-guard.ts';
-import { setSessionEnded } from './session-fetch.ts';
+import { sessionCallHeld, setSessionEnded } from './session-fetch.ts';
 
 afterEach(() => setSessionEnded(false));
 
@@ -23,4 +23,11 @@ it('gives the keyboard back when the session ends under a pending "+ Note"', () 
   setSessionEnded(true);
   expect(pressOnButton('Enter'), 'Enter on "Sign in" is not swallowed').toBe(false);
   expect(pressOnButton(' '), 'nor is Space').toBe(false);
+});
+
+it('gives the keyboard back to a "+ Note" pressed after the session had already ended', () => {
+  setSessionEnded(true);
+  armOpeningGuard();
+  sessionCallHeld();
+  expect(pressOnButton('Enter'), 'the create was held: Enter on "Sign in" is not swallowed').toBe(false);
 });
