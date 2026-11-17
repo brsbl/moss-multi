@@ -92,7 +92,7 @@ const textStyles = (actor: Actor, id: string) => ui.body(actor, id).evaluate(ele
 });
 
 test('j11 editor geometry: a formula draft is moss\'s padded, rounded chip for the typist only, and nothing of it is shared @p:note-2', async ({ actors, stack }) => {
-  const { ada, ben, id, wire } = await note(actors, stack.baseUrl, 'Formula draft', 'Intro.\n\nTotal cost\n\nLast line.', true);
+  const { ada, ben, id, wire } = await note(actors, stack.baseUrl, 'Formula draft', 'Intro.\n\nTotal cost\n\n=2+\n\nLast line.', true);
   // A draft inside a longer text run pads only into the room the text leaves.
   await ui.body(ada, id).locator('p').filter({ hasText: /^Total cost$/ }).click();
   await ada.page.keyboard.press('End');
@@ -107,14 +107,14 @@ test('j11 editor geometry: a formula draft is moss\'s padded, rounded chip for t
   await expect(ui.body(ada, id).locator('[data-lexical-text][style*="padding"]'), 'the padding goes with the chip').toHaveCount(0);
 
   // A draft alone on its line: moss's chip, 8 px a side, the line plus 2 px above and below.
-  // The click retries until the caret is on the line: the editor may still be settling the draft it just left.
+  // The click retries until the caret is on the line: the editor may still be settling the draft it just left. The
+  // line is typed into without Enter, which an open formula menu would take.
   await expect(async () => {
-    await ui.body(ada, id).locator('p').filter({ hasText: /^Last line\.$/ }).click();
+    await ui.body(ada, id).locator('p').filter({ hasText: /^=2\+$/ }).click();
     await ada.page.keyboard.press('End');
-    expect(await ada.page.evaluate(() => getSelection()?.anchorNode?.parentElement?.closest('p')?.textContent)).toBe('Last line.');
+    expect(await ada.page.evaluate(() => getSelection()?.anchorNode?.parentElement?.closest('p')?.textContent)).toBe('=2+');
   }).toPass({ timeout: 10_000 });
-  await ada.page.keyboard.press('Enter');
-  await ada.page.keyboard.type('=2+3', { delay: 40 });
+  await ada.page.keyboard.type('3');
   await expect.poll(async () => (await draftGeometry(ada, id, '=2+3', '=2+3'))?.chip ?? null, { message: 'Ada sees the draft chip' }).not.toBeNull();
   const own = (await draftGeometry(ada, id, '=2+3', '=2+3'))!;
   const chip = own.chip!;
