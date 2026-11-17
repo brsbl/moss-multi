@@ -1,15 +1,13 @@
 // Host slots the vendored notes list and Settings call through moss-multi seams (A§2.2: seam once, fill in host).
 // Each renders nothing until the task named beside it fills it.
-import { FacePile } from '../../../../packages/ui/src/FacePile.tsx';
-import { usePeers } from './collab/presence.ts';
-import type { ReactNode } from 'react';
-import { ConnectionIndicator } from './collab/ConnectionNotice.tsx';
-import { useRoleBand } from './collab/RoleBand.tsx';
+import type { ReactElement, ReactNode } from 'react';
+import type { SuggestionsSource } from './collab/suggest/SuggestionsPanel.tsx';
 import { AccountSection } from './surfaces/AccountSection.tsx';
 import { AgentsSection } from './surfaces/AgentsSection.tsx';
-import { NotificationsBell } from './surfaces/NotificationsBell.tsx';
-import { ShareControl } from './surfaces/ShareDialog.tsx';
-import { FolderShareItem, SignInToDoMore } from './surfaces/ShareEntryPoints.tsx';
+import { AppMenu } from './surfaces/AppMenu.tsx';
+import { NoteMenuItems as NoteMenuEntries } from './surfaces/NoteMenuItems.tsx';
+import { FolderShareItem } from './surfaces/ShareEntryPoints.tsx';
+import { TopBarCues } from './surfaces/TopBarCues.tsx';
 import { getBridge, WORKSPACE } from './bridge/index.ts';
 
 /** True for a doc surfaced at the vault root because it was shared directly (A§11); it offers no move. T1.2. */
@@ -22,8 +20,15 @@ export const FolderMenuItems: (props: { folderPath: string }) => ReactNode = ({ 
 /** Sections added to moss's Settings dialog: Account with Sign out (T0.10), then Agents (T3.6). */
 export const SettingsSections: () => ReactNode = () => <><AccountSection /><AgentsSection /></>;
 
-/** Web chrome at the start of an open note's top-bar right group: the face pile, Share (or, for a link visitor, Sign
- * in to do more), the connection indicator and the bell (T1.1, T1.3, T1.5, T2.4, T2.8). */
-export const TopBarCollab: (props: { docId: string }) => ReactNode = ({ docId }) => (
-  <><FacePile peers={usePeers(docId)} /><SignInToDoMore inBand={useRoleBand(docId) !== null} /><ShareControl docId={docId} /><ConnectionIndicator docId={docId} /><NotificationsBell /></>
+/** Web cues at the start of an open note's top-bar right group, each only while it has something to say: People
+ * here, the unread bell and the open-suggestions count (T9.30). */
+export const TopBarCollab: (props: { docId: string; suggestions: SuggestionsSource | null }) => ReactNode = ({ docId, suggestions }) => (
+  <TopBarCues docId={docId} suggestions={suggestions} />
 );
+
+/** Entries added to an open note's More actions before Trash: Share…, Suggestions, Suggest changes, Version
+ * history (T9.30). */
+export const NoteMenuItems: (props: { docId: string }) => ReactNode = ({ docId }) => <NoteMenuEntries docId={docId} />;
+
+/** The sidebar footer's Settings button, wrapped as the trigger of the app menu (T9.30). */
+export const SettingsFooterMenu: (props: { children: ReactElement; onOpenSettings: () => void }) => ReactNode = (props) => <AppMenu {...props} />;

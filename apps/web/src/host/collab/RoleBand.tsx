@@ -32,10 +32,7 @@ export function useRoleBand(docId: string | null): string | null {
   return lead && terminal === null && !historyOpen ? lead : null;
 }
 
-/**
- * The band. A signed-out link visitor's holds "Sign in to do more" below 640 px, where the top bar's copy hides; from
- * 640 px up the top bar keeps it and the band says why.
- */
+/** The band. A signed-out link visitor's holds "Sign in to do more" at every width: the top bar has none (T9.30). */
 export function RoleBand({ docId }: { docId: string }): ReactNode {
   const lead = useRoleBand(docId);
   const signedOut = useAuthState().status === 'signed-out';
@@ -46,12 +43,9 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
         <span className="text-xs text-ink-muted">
           {lead}{' '}
           {signedOut ? (
-            <>
-              <button type="button" onClick={signInToDoMore} className="font-medium text-ink-default hover:text-ink-muted sm:hidden">
-                Sign in to do more
-              </button>
-              <span className="hidden sm:inline">{CANNOT_EDIT}</span>
-            </>
+            <button type="button" onClick={signInToDoMore} className="font-medium text-ink-default hover:text-ink-muted">
+              Sign in to do more
+            </button>
           ) : CANNOT_EDIT}
         </span>
       </div>

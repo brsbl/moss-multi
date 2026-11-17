@@ -1,98 +1,50 @@
-// Suggest-mode chrome (docs/design/suggestions.md §5, §8): the Suggest toggle in moss's docked toolbar for editors
-// and owners, the top bar's "Suggesting" chip (locked for a suggester) and Review switch, the band shown in Review,
-// and the band that offers back text a closed suggestion could not keep.
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-import { REVIEW_BAND_ATTR, SUGGEST_CHIP_ATTR, SUGGEST_TOGGLE_ATTR, SUGGEST_UNSAVED_ATTR } from '@moss-multi/protocol/dom-contract';
+// Suggest-mode chrome (docs/design/suggestions.md §5, §8): the pane's bottom row while suggesting (Stop suggesting
+// for editors and owners; a suggester is locked), the band shown in Review, and the band that offers back text a
+// closed suggestion could not keep. Suggest changes and Review start from More actions and the Suggestions list.
+import { REVIEW_BAND_ATTR, SUGGEST_CHIP_ATTR, SUGGEST_UNSAVED_ATTR } from '@moss-multi/protocol/dom-contract';
 import { can, type Role } from '@moss-multi/protocol/roles';
-import { PencilLine } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useDocRole } from '../../access.ts';
 import { useTerminal } from '../terminal.ts';
-import { dismissUnsaved, lockedToSuggest, requestMode, useNoSuggestionRoom, useOpenSuggestions, useShownMode, useUnsaved } from './mode.ts';
-
-const TOOL = 'flex h-8 cursor-pointer items-center justify-center gap-1 rounded-md border border-border-clear px-2 text-xs text-ink-default transition-all duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-default/15 active:scale-90';
-const IDLE = 'hover:border-border-subtle hover:bg-surface-sidebar';
-const ACCENT = 'border-accent-brand bg-surface-note-selected/70 text-accent-brand-pressed shadow-[inset_0_1px_2px_var(--ink-shadow-soft)]';
+import { dismissUnsaved, lockedToSuggest, requestMode, useNoSuggestionRoom, useShownMode, useUnsaved } from './mode.ts';
 
 /**
- * MarkdownEditor's suggest-toggle seam: a small shell docked at the right of moss's bottom toolbar, positioned out
- * of its flow so moss's own bar keeps its layout. In it, an editor or owner switches between Edit and Suggest.
+ * MarkdownEditor's suggest-toggle seam. Suggest changes is a More actions entry and the one Suggesting state is the
+ * pane's bottom row (T9.30), so the docked toolbar adds no control of its own.
  */
-export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
-  const role = useDocRole(noteId);
-  const mode = useShownMode(noteId);
-  if (!can(role, 'edit') || mode === null || mode === 'review') return null;
-  const on = mode === 'suggest';
-  return (
-    <div data-suggest-dock="" className="pointer-events-auto absolute bottom-0 left-full -ml-2 inline-flex rounded-lg border border-border-subtle bg-surface-panel px-1.5 py-1 shadow-sm">
-      <button
-        type="button"
-        {...{ [SUGGEST_TOGGLE_ATTR]: '' }}
-        aria-label="Suggest changes"
-        aria-pressed={on}
-        title={on ? 'Suggesting: your changes are proposed, not applied' : 'Suggest changes instead of editing'}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={() => requestMode(noteId, on ? 'edit' : 'suggest')}
-        className={`${TOOL} ${on ? ACCENT : IDLE}`}
-      >
-        <PencilLine aria-hidden className="h-4 w-4" />
-        <span>Suggest</span>
-      </button>
-    </div>
-  );
-}
+export const ToolbarCollab: (props: { noteId: string }) => ReactNode = () => null;
 
-/** In the top bar: "Suggesting" while the pane suggests (locked for a suggester). */
-export function SuggestModeChip({ docId }: { docId: string }): ReactNode {
+/**
+ * The pane's bottom row while it suggests: "Suggesting", and for someone who may edit, Stop suggesting. It moves up
+ * above Moss's docked toolbar while that shows (styles.css), so the two never overlap.
+ */
+export function SuggestBand({ docId }: { docId: string }): ReactNode {
   const role = useDocRole(docId);
   const mode = useShownMode(docId);
-  if (mode !== 'suggest' || role === null) return null;
+  const terminal = useTerminal(docId);
+  if (mode !== 'suggest' || role === null || terminal !== null) return null;
   const locked = lockedToSuggest(role);
   return (
-    <span
-      data-collab-chrome=""
-      {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }}
-      title={locked ? 'You can suggest changes to this note' : 'Your changes are proposed as suggestions'}
-      className="flex shrink-0 items-center rounded-full border border-accent-brand px-2 py-0.5 text-micro text-accent-brand-pressed"
-    >
-      Suggesting
-    </span>
+    <div data-mode-row="" className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
+      <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
+        <span {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }} className="text-xs text-ink-muted">Suggesting</span>
+        {locked ? null : (
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => requestMode(docId, 'edit')}
+            className="shrink-0 text-xs font-medium text-ink-default hover:text-ink-muted"
+          >
+            Stop suggesting
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
 /** Leaves Review for the role's own mode: Suggest for a suggester, otherwise the plain body. */
 export const leaveReview = (docId: string, role: Role | null): void => requestMode(docId, lockedToSuggest(role) ? 'suggest' : 'edit');
-
-/**
- * In the top bar, from 640 px up, for those who can edit or suggest: the Review switch, offered only while the note
- * has an open suggestion or the pane is already in Review (T9.1). Viewers and commenters switch from the list header.
- */
-export function ReviewButton({ docId }: { docId: string }): ReactNode {
-  const role = useDocRole(docId);
-  const mode = useShownMode(docId);
-  const open = useOpenSuggestions(docId);
-  const reviewing = mode === 'review';
-  if (mode === null || !can(role, 'suggest') || (!reviewing && open === 0)) return null;
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            data-collab-chrome=""
-            aria-label="Review suggestions"
-            aria-pressed={reviewing}
-            onClick={() => (reviewing ? leaveReview(docId, role) : requestMode(docId, 'review'))}
-            className={`hidden h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs font-medium transition-colors focus-visible:outline-none sm:flex ${reviewing ? 'bg-surface-panel text-ink-default' : 'text-ink-faint hover:bg-surface-note-hover/40 hover:text-ink-muted'}`}
-          >
-            Review
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{reviewing ? 'Done reviewing' : 'Review suggestions'}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
 
 /** Surfaces whose own Escape comes first: popovers, dialogs, menus, the find bar. */
 const ESCAPE_OWNERS = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-moss-note-search-input]';

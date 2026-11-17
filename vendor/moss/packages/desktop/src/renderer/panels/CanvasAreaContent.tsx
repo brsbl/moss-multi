@@ -4615,7 +4615,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       {/* Right: metadata toggle + find bar + copy + more + panel toggle */}
       {hideRightControls ? <div className="flex-1" /> : (
       <div className={cn('flex shrink-0 items-center gap-1.5', showFocusedSearchBar && 'max-sm:min-w-0 max-sm:flex-1')} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        <div className={cn('contents', offWhileSearching)}>{mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): Share, connection, face pile, bell */}</div>
+        <div className={cn('contents', offWhileSearching)}>{mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): people, unread and open-suggestion cues (T9.30) */}</div>
         {!showFocusedSearchBar && onOpenSearch ? (
           <TooltipProvider>
             <Tooltip>
@@ -4761,6 +4761,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               <FileDigit aria-hidden className="h-3.5 w-3.5" />
               Note stats
             </DropdownMenuItem>
+            {mossMultiPane.noteMenuItems /* moss-multi seam: note-menu (T9.30): Share, Suggestions, Suggest changes, Version history */}
             {/* moss-multi seam: trash (T2.3): Trash and Restore note are the owner's (A§8) */}
             {!isExternal && !canTrashNote(note?.id ?? '') ? null : (<>
             <DropdownMenuSeparator />

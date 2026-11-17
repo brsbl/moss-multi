@@ -1,7 +1,7 @@
 // Glyphdown's owned-first vault menu, composed from moss's DS in the notes-panel header (A§11). On a vault the caller
 // owns, the menu ends with "Share vault…" (T2.4) and an inline "New vault" row, and an always-visible actions button
 // beside it offers Rename and Move to Trash (T3.5); members get no vault actions.
-import { useRef, useState, useSyncExternalStore, type ComponentProps, type ComponentType, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ComponentProps, type ComponentType, type ReactNode } from 'react';
 import { getDefaultStore } from 'jotai';
 import { activeFolderPathAtom } from '@moss/shared/state/atoms';
 import { Check, ChevronDown, FolderRoot, MoreHorizontal, Pencil, Plus, Trash2, UserPlus } from 'lucide-react';
@@ -20,6 +20,7 @@ const MenuContent = DropdownMenuContent as ComponentType<ComponentProps<typeof D
 const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
 const holdHover = { onMouseMoveCapture: stop, onPointerMoveCapture: stop, onMouseOverCapture: stop, onPointerOverCapture: stop };
 
+export const SWITCH_FAILED = 'Could not switch vaults. Please try again.';
 const UNREACHABLE = 'The server couldn’t be reached. Check your connection and try again.';
 
 /** A vault request; a refusal throws the server's sentence. */
@@ -40,6 +41,23 @@ async function vaultRequest(path: string, method: string, body?: unknown): Promi
   return answer;
 }
 
+// The app menu's New vault… (T9.30) opens this menu on its inline "New vault" row.
+const newVaultListeners = new Set<() => void>();
+export function requestNewVault(): void {
+  for (const listener of newVaultListeners) listener();
+}
+
+/** Switches to vault `id` and back to its top level; false when the switch failed. */
+export async function switchToVault(bridge: Bridge, id: string): Promise<boolean> {
+  try {
+    await bridge[WORKSPACE].switchVault(id);
+    getDefaultStore().set(activeFolderPathAtom, 'Notes');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function VaultSwitcher() {
   const bridge = getBridge();
   return bridge ? <VaultMenu bridge={bridge} /> : null;
@@ -53,6 +71,14 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
   const [trashing, setTrashing] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const ask = () => {
+      setOpen(true);
+      setCreating(true);
+    };
+    newVaultListeners.add(ask);
+    return () => { newVaultListeners.delete(ask); };
+  }, []);
   if (!workspace) return null;
   const active = workspace.vault;
   const vaults = workspace.vaults ?? [active];
@@ -62,14 +88,8 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
   const switchTo = async (id: string) => {
     setPending(true);
     setError(null);
-    try {
-      await bridge[WORKSPACE].switchVault(id);
-      getDefaultStore().set(activeFolderPathAtom, 'Notes');
-    } catch {
-      setError('Could not switch vaults. Please try again.');
-    } finally {
-      setPending(false);
-    }
+    if (!(await switchToVault(bridge, id))) setError(SWITCH_FAILED);
+    setPending(false);
   };
   const create = async (name: string) => {
     const { vault } = await vaultRequest('/api/vaults', 'POST', { name });

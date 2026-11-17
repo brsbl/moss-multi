@@ -9,6 +9,8 @@ import {
 } from '@moss/shared/components/ui/tooltip';
 // moss-multi seam: trash-drop (T2.3; deviation 10): the Trash button takes a dropped note
 import { trashDropTarget } from '@moss-multi/host/trash';
+// moss-multi seam: app-menu (T9.30)
+import { SettingsFooterMenu } from '@moss-multi/host/slots';
 
 export type NotesPanelMode = 'notes' | 'trash';
 
@@ -36,15 +38,17 @@ export function NotesPanelFooter({
   return (
     <TooltipProvider delayDuration={400}>
       <div className="flex items-center justify-between">
+        {/* moss-multi seam: app-menu (T9.30): Settings opens the web's app menu, whose last row opens Settings */}
+        <SettingsFooterMenu onOpenSettings={onOpenSettings}>
         <button
           type="button"
-          onClick={onOpenSettings}
           className="flex h-7 items-center gap-1.5 rounded -ml-1.5 px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted"
           aria-label="Settings"
         >
           <Settings className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
           <span className="text-xs font-light">Settings</span>
         </button>
+        </SettingsFooterMenu>
         <div className="flex items-center gap-1">
           <Tooltip
             open={feedbackTooltipOpen ? true : undefined}

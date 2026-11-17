@@ -1,11 +1,12 @@
-// The bell (T2.8; A§11): in the note's top bar beside Share, the connection indicator and the face pile, so nothing
-// floats over the canvas (L§1.3). It follows glyphdown's NotificationsBell (an unread count, "Mark all read", newest
-// first) built from moss's DS menu and the InboxItem primitive, and it is pushed through the workspace channel rather
-// than polled. A notice opens its item in place through navigation.ts and is marked read with keepalive.
+// The inbox (T2.8; A§11): always in the sidebar's app menu, and as a quiet bell in the note's top bar while something
+// is unread (T9.30), so nothing floats over the canvas (L§1.3). It follows glyphdown's NotificationsBell ("Mark all
+// read", newest first) built from moss's DS menu and the InboxItem primitive, and it is pushed through the workspace
+// channel rather than polled. A notice opens its item in place through navigation.ts and is marked read with keepalive.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { Bell } from 'lucide-react';
-import { useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { InboxItem, UnreadBadge } from '../../../../../packages/ui/src/InboxItem.tsx';
+import { useRef, useState, useSyncExternalStore, type ComponentType, type ReactNode, type RefObject } from 'react';
+import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
@@ -43,12 +44,71 @@ export function noticeText(notice: Notice): string {
   return kind === 'doc' ? `${notice.by} shared “${title}” with you` : `${notice.by} shared the ${kind} “${title}” with you`;
 }
 
-export function NotificationsBell(): ReactNode {
+// moss's DropdownMenu is Base UI's Menu root, which takes a controlled `open`.
+const Menu = DropdownMenu as ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
+
+/** The signed-in person's notices, newest first; empty for anyone else. */
+function useNotices(): Notice[] {
   const auth = useAuthState();
   const notices = useSyncExternalStore(inbox.subscribe, inbox.get, () => EMPTY);
+  return auth.status === 'signed-in' ? notices : EMPTY;
+}
+
+/** How many notices are unread: the top bar's bell shows only while there are some (T9.30). */
+export function useUnreadCount(): number {
+  return useNotices().filter((n) => !n.read).length;
+}
+
+/**
+ * The top bar's unread shortcut: a quiet bell, only while something is unread and the bar has room (`show`). Once
+ * opened it stays until the inbox closes. The inbox is always in the sidebar's app menu.
+ */
+export function NotificationsBell({ show = true }: { show?: boolean }): ReactNode {
+  const auth = useAuthState();
+  const unread = useUnreadCount();
+  const [open, setOpen] = useState(false);
+  if (auth.status !== 'signed-in' || (!open && (!show || unread === 0))) return null;
+  return (
+    <Menu open={open} onOpenChange={setOpen}>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-collab-chrome=""
+                aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'}
+                className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+              >
+                <Bell aria-hidden className="h-3.5 w-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          {open ? null : <TooltipContent side="bottom">Notifications</TooltipContent>}
+        </Tooltip>
+      </TooltipProvider>
+      <InboxContent align="end" />
+    </Menu>
+  );
+}
+
+/** The inbox opened from the app menu, at `anchor` (the sidebar's Settings), which gets focus back on close. */
+export function InboxMenu({ open, onOpenChange, anchor }: {
+  open: boolean; onOpenChange: (open: boolean) => void; anchor: RefObject<HTMLElement | null>;
+}): ReactNode {
+  return (
+    <Menu open={open} onOpenChange={onOpenChange}>
+      <InboxContent align="start" side="top" anchor={anchor} />
+    </Menu>
+  );
+}
+
+function InboxContent({ align, side = 'bottom', anchor }: {
+  align: 'start' | 'end'; side?: 'top' | 'bottom'; anchor?: RefObject<HTMLElement | null>;
+}): ReactNode {
+  const notices = useNotices();
   // A notice that navigates keeps focus from returning to the bell, where a typed Space or Enter would reopen it.
   const opening = useRef(false);
-  if (auth.status !== 'signed-in') return null;
   const unread = notices.filter((n) => !n.read);
 
   const open = (notice: Notice) => {
@@ -59,25 +119,22 @@ export function NotificationsBell(): ReactNode {
   };
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          data-collab-chrome=""
-          aria-label={unread.length ? `Notifications, ${unread.length} unread` : 'Notifications'}
-          className="relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
-        >
-          <Bell aria-hidden className="h-3.5 w-3.5" />
-          <UnreadBadge count={unread.length} />
-        </button>
-      </DropdownMenuTrigger>
       <DropdownMenuContent
-        align="end"
+        align={align}
+        side={side}
+        anchor={anchor}
+        collisionPadding={16}
         className="w-80 max-w-[calc(100vw-2rem)] p-0"
         onCloseAutoFocus={(event) => {
-          if (!opening.current) return;
-          opening.current = false;
-          event.preventDefault();
+          if (opening.current) {
+            opening.current = false;
+            event.preventDefault();
+            return;
+          }
+          if (anchor?.current) {
+            event.preventDefault();
+            anchor.current.focus();
+          }
         }}
       >
         <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2">
@@ -100,6 +157,5 @@ export function NotificationsBell(): ReactNode {
           )}
         </div>
       </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
