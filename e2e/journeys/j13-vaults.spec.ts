@@ -276,11 +276,12 @@ test('j13-vaults: a search result from Ada’s other vault opens there, by click
   const origin = new URL(ada.page.url()).origin;
   const send = (path: string, data: object) => ada.context.request.post(`${origin}${path}`, { headers: { origin }, data, timeout: 15_000 });
   const home = (await listing(ada)).vault.id;
-  // Declared setup: a note only Home holds, then a vault Scratch with a note of its own.
+  // Declared setup: a vault Scratch with notes of its own, and a note only Home holds, made from Scratch so nothing
+  // has opened it yet.
+  await newVault(ada, 'Home', 'Scratch');
   const made = await send('/api/docs', { folderId: home, title: `Lentil soup ${run}`, markdown: `Red ${word}, cumin and lemon.` });
   expect(made.status(), 'declared setup: the Home note').toBe(201);
   const soup = ((await made.json()) as { doc: { id: string } }).doc.id;
-  await newVault(ada, 'Home', 'Scratch');
   const scratch = (await listing(ada)).vaults.find((vault) => vault.name === 'Scratch')?.id ?? '';
   const pad = await send('/api/docs', { folderId: scratch, title: `Scratch pad ${run}`, markdown: `Only ${local} here.` });
   expect(pad.status(), 'declared setup: the Scratch note').toBe(201);
