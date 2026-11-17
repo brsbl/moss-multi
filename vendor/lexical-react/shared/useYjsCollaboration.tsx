@@ -66,7 +66,7 @@ import {isOwnOrigin, syncUnderOrigin} from '@moss-multi/host/collab/origins';
 import {bindLocalLayout} from '@moss-multi/host/collab/layout-local';
 import {bindCommentPaint} from '@moss-multi/host/comments/paint';
 import {bindRegisters} from '@moss-multi/host/collab/registers';
-import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
+import {createBindingUndoManager, markUndoStep} from '@moss-multi/host/collab/undo';
 import {
   type Doc,
   type Snapshot,
@@ -150,6 +150,8 @@ export function useYjsCollaboration(
         tags,
       }) => {
         if (!tags.has(SKIP_COLLAB_TAG)) {
+          // moss-multi seam: plugin-a (A§10.2 a): an update Moss's history would push starts a new undo step
+          markUndoStep(binding, {prevEditorState, editorState, dirtyLeaves, dirtyElements, tags});
           // moss-multi seam: plugin-b (A§10.2 b): derived updates reach Yjs under DERIVED_ORIGIN
           syncUnderOrigin(binding, tags, () =>
             syncLexicalUpdateToYjs(
@@ -564,7 +566,7 @@ export function useYjsHistory(
   editor: LexicalEditor,
   binding: Binding,
 ): () => void {
-  // moss-multi seam: plugin-a (A§10.2 a): only this binding's writes are undoable, one step per 1000 ms burst
+  // moss-multi seam: plugin-a (A§10.2 a): only this binding's writes are undoable, in the steps Moss's history makes
   const undoManager = useMemo(() => createBindingUndoManager(binding), [binding]);
 
   return useYjsUndoManager(editor, undoManager);
