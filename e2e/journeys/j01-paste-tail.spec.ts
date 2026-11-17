@@ -2,8 +2,9 @@
 // each frame of a large paste on its own. A paste that fit when it was checked is cut short when another writer fills
 // the room while its later frames are still on the way. Ada's tab then rolls the paste back: it stops sending it, binds
 // the server's copy and deletes the part that landed before the note shows again, and says "The paste didn't fit, so
-// nothing was pasted." She and Ben converge on the note as it was before the paste plus Ben's lines, nothing of the
-// paste shows at any settled point, and an undo cannot bring it back. A rollback cut off by the tab closing resumes
+// nothing was pasted." She and Ben converge on the note as it was before the paste plus Ben's lines, the line her
+// paste replaced included (the paste's deletes go only once all of it has landed), nothing of the paste shows at any
+// settled point, and an undo cannot bring it back. A rollback cut off by the tab closing resumes
 // when the note is opened again in the same browser profile. Ben is a protocol-level client (doc-client.ts); Ada's doc
 // socket runs through a sever proxy that holds the rest of her paste.
 //
@@ -97,8 +98,9 @@ interface Cut {
 /**
  * Ada opens a note 110,000 structs under the guard and pastes A with her acks lost: a part goes out and lands, then
  * her socket goes dark with the rest to send. Ben fills the room, and her socket comes back: the rest is refused.
+ * With `select`, her paste replaces the line 'Kept.'; otherwise it goes at the end of it.
  */
-async function cutPaste(actors: Actors, stack: Stack, before?: (ada: Actor, docId: string) => void): Promise<Cut> {
+async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: (ada: Actor, docId: string) => void): Promise<Cut> {
   const ada = await actors.session(await actors.principal('ada'), { severable: true });
   const docId = await importNote(ada, stack, 'Paste target', 'Kept.');
   const principal = await actors.principal('ben');
@@ -114,6 +116,10 @@ async function cutPaste(actors: Actors, stack: Stack, before?: (ada: Actor, docI
   const exportBefore = await exported(ada, docId);
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
   await ada.page.keyboard.press('End');
+  if (select) {
+    await ada.page.keyboard.press('Shift+Home');
+    expect(await ada.page.evaluate(() => window.getSelection()?.toString()), 'the line the paste replaces').toBe('Kept.');
+  }
 
   const bytes = stateBytes(ben);
   const beforeStructs = structs(ben);
@@ -152,11 +158,11 @@ async function expectRolledBack({ ada, ben, docId, before, bravos }: Cut): Promi
   return server;
 }
 
-test('j01-paste-tail: a paste cut short near the cap by another writer is rolled back, says so, both peers converge on the note without it, and an undo cannot bring it back @p:col-1', async ({ actors, stack }) => {
+test('j01-paste-tail: a paste that replaced a line, cut short near the cap by another writer, is rolled back, says so, both peers converge on the note as it was, that line included, and an undo cannot bring it back @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(900_000);
   let ben: DocClient | null = null;
   try {
-    const cut = await cutPaste(actors, stack);
+    const cut = await cutPaste(actors, stack, true);
     ben = cut.ben;
     const { ada, docId } = cut;
     await ui.waitBodyLive(ada, docId, 180_000);
@@ -180,7 +186,7 @@ test('j01-paste-tail: a rollback cut off by the tab closing resumes when the not
   let ben: DocClient | null = null;
   try {
     // Ada's writes after the refusal never reach the DocDO: her tab rolls the paste back, and its deletes wait.
-    const cut = await cutPaste(actors, stack, (ada, docId) => ada.sever!.holdWritesAfterRefusal(docId));
+    const cut = await cutPaste(actors, stack, false, (ada, docId) => ada.sever!.holdWritesAfterRefusal(docId));
     ben = cut.ben;
     const { ada, docId } = cut;
     await ui.waitBodyLive(ada, docId, 180_000);

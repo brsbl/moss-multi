@@ -1,13 +1,16 @@
 // T3.B32 in the DocDO harness: a large paste cut short by a limit leaves nothing behind. The DocDO admits each of the
 // paste's frames on its own (no reservation, A§5.1), so another writer can fill the room while its later frames are on
 // the way; the pasting tab then deletes the paste's landed items, by client id and clock range, in delete-only batches
-// the DocDO admits at any limit. Its note and payload docs end as they were before the paste, plus everyone else's
-// writes. The browser side (the record, its resume, the notice) is in doc-session.test and j01-paste-tail.
-import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
+// the DocDO admits at any limit. The paste's own deletes (a selection it replaced) are held back until all of it has
+// landed, so a cut one deleted nothing. Its note and payload docs end as they were before the paste, plus everyone
+// else's writes, a peer's text typed into a pasted line too. The browser side (the record, holding the deletes back,
+// the resume, the notice) is in doc-session.test and j01-paste-tail.
+import * as decoding from 'lib0/decoding';
+import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isParagraphNode, $isTextNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { STRUCT_CAP } from '@moss-multi/protocol/limits';
-import { CLOSE } from '@moss-multi/protocol/sync';
+import { CLOSE, encodeSyncFrame } from '@moss-multi/protocol/sync';
 import { DocDO, type DocLimits } from '../../src/doc-do.ts';
 import { payloadText } from '../../src/payload-docs.ts';
 import { Backing, openDoc, start, type Opened } from './do-harness.ts';
@@ -178,6 +181,91 @@ describe('a cut paste rolled back (T3.B32)', () => {
       expect(cut.ben.paragraphs()).toEqual(third.paragraphs());
       expect(await cut.doc.dobj.exportMarkdown()).not.toMatch(/Alpha|print/);
     } finally { third.dispose(); cut.ben.dispose(); }
+  });
+
+  it('keeps what another writer typed inside a landed pasted line, and only that of it', async () => {
+    const cut = await cutPaste();
+    cut.limits.structCap = STRUCT_CAP;
+    await syncAll(cut.ben);
+    cut.ben.appendToParagraph('Alpha 0-0.', ' Ben was here.');
+    await syncAll(cut.ben);
+    const { again, frames } = await rollingBack(cut, 40);
+    try {
+      for (const frame of frames) await again.socket.deliver(frame);
+      await syncAll(again, cut.ben);
+      await syncAll(again, cut.ben);
+      expect(again.socket.closed).toBeNull();
+      const held = cut.ben.paragraphs();
+      expect(held, "Ben's words stay, in the line he typed them in").toContain(' Ben was here.');
+      expect(nothingPasted(held)).toEqual([]);
+      expect(again.paragraphs()).toEqual(held);
+      const server = await cut.doc.dobj.exportMarkdown();
+      expect(server).toContain('Ben was here.');
+      expect(server).not.toMatch(/Alpha|print/);
+    } finally { again.dispose(); cut.ben.dispose(); }
+  });
+
+  it('a paste that replaced a selection holds its deletes back until it lands, so cut short it leaves the selection, and its rollback the note as it was', async () => {
+    const { PasteWatch, withoutDeletes, rollBack } = use();
+    expect(PasteWatch, "the paste's deletes, recorded").toBeTypeOf('function');
+    expect(withoutDeletes, 'held back from what is sent').toBeTypeOf('function');
+    const { Doc, limits } = capped();
+    const doc = await start(openDoc(new Backing(), Doc as never));
+    const ada = await LiveClient.open(doc, { id: 'ada' });
+    const ben = await LiveClient.open(doc, { id: 'ben' });
+    ada.insertParagraph('Kept.');
+    await syncAll(ada, ben);
+    const before = ben.paragraphs();
+    expect(before).toContain('Kept.');
+    const watch = new PasteWatch(ada.doc);
+    // The first batch replaces the selected 'Kept.'; five more follow.
+    ada.editor.update(() => {
+      const kept = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent() === 'Kept.');
+      const text = $isParagraphNode(kept) ? kept.getFirstChild() : null;
+      if (!$isTextNode(text)) throw new Error('no Kept.');
+      text.select(0, 5);
+      $getSelection()!.insertNodes(Array.from({ length: 40 }, (_, i) => $createParagraphNode().append($createTextNode(`Alpha 0-${i}.`))));
+    }, { discrete: true });
+    for (let b = 1; b < 6; b += 1) {
+      ada.editor.update(() => {
+        for (let i = 0; i < 40; i += 1) $getRoot().append($createParagraphNode().append($createTextNode(`Alpha ${b}-${i}.`)));
+      }, { discrete: true });
+    }
+    await ada.settle();
+    watch.finish();
+    expect(watch.deletes().length, 'the paste deleted the selection').toBeGreaterThan(0);
+    // What the tab sends: each frame without the paste's deletes.
+    const frames = ada.socket.drain().map((frame) => {
+      const decoder = decoding.createDecoder(frame);
+      if (decoding.readVarUint(decoder) !== 0 || decoding.readVarUint(decoder) !== 2) return frame;
+      return encodeSyncFrame(2, withoutDeletes(decoding.readVarUint8Array(decoder), watch.deletes()));
+    });
+    expect(frames.length).toBeGreaterThan(4);
+    for (const frame of frames.slice(0, 3)) await ada.socket.deliver(frame);
+    expect(await doc.dobj.exportMarkdown(), 'the selection stays on the server while the paste lands').toContain('Kept.');
+    for (let i = 0; i < 5; i += 1) ben.insertParagraph(`Bravo ${i}.`);
+    await syncAll(ben);
+    limits.structCap = structsOf(doc.dobj.document);
+    for (const frame of frames.slice(3)) if (ada.socket.socket.readyState === 1) await ada.socket.deliver(frame);
+    await ada.socket.pump();
+    expect(ada.socket.events).toContainEqual({ t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+    ada.dispose();
+    const again = await LiveClient.open(doc, { id: 'ada' });
+    try {
+      rollBack(again.doc, watch.span(), ROLLBACK, 40);
+      again.flush();
+      for (const frame of again.socket.drain()) {
+        await again.socket.deliver(frame);
+        expect(again.socket.closed, 'a deletion is admitted at the limit').toBeNull();
+      }
+      await syncAll(again, ben);
+      await syncAll(again, ben);
+      const held = ben.paragraphs();
+      expect(nothingPasted(held)).toEqual([]);
+      expect(held.filter((text) => !text.startsWith('Bravo')), 'the note before the paste, its selection too').toEqual(before);
+      expect(held.filter((text) => text.startsWith('Bravo'))).toHaveLength(5);
+      expect(again.paragraphs()).toEqual(held);
+    } finally { again.dispose(); ben.dispose(); }
   });
 });
 
