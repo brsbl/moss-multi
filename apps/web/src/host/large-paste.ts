@@ -197,6 +197,21 @@ export function pasteLimit(doc: Y.Doc | undefined, bytes: number, largestFrame: 
   return limit;
 }
 
+/** How long a paste waits for the payload docs its note names that are still arriving (heldSize counts them). */
+const ARRIVAL_WAIT_MS = 10_000;
+
+/**
+ * Yields while a payload doc the note names has not arrived from the server yet, so the paste is checked with its
+ * text and structs counted; at most ARRIVAL_WAIT_MS, and not at all once `flushing()` (other input lands the paste).
+ */
+export function* payloadsArrive(doc: Y.Doc | undefined, flushing: () => boolean): Generator<void, void> {
+  if (!doc) return;
+  const docs = payloadDocsFor(doc);
+  const named = [...namedPayloadIds(doc)];
+  const until = Date.now() + ARRIVAL_WAIT_MS;
+  while (!flushing() && Date.now() < until && named.some((id) => docs.awaiting(id))) yield;
+}
+
 /** Whether the paste fits every limit (pasteLimit). */
 export const pasteFits = (doc: Y.Doc | undefined, bytes: number, largestFrame: number, adds?: PayloadSize): boolean =>
   pasteLimit(doc, bytes, largestFrame, adds) === null;
@@ -847,6 +862,7 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
 
   // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
   const { bytes, largestFrame, adds } = yield* rehearse(request, max, noteDoc(editor));
+  yield* payloadsArrive(noteDoc(editor), () => job.flushing);
   const limit = pasteLimit(noteDoc(editor), bytes, largestFrame, adds);
   if (limit) {
     refuseInput(limit === 'state' ? WRITE_REFUSED['doc-cap'] : DOC_LIMIT_NOTICE[limit]);
