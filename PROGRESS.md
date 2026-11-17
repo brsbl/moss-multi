@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 48% done** (145 of 299 planned tasks verified)
+**Overall: 48% done** (146 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 74 / 74 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 17 / 18 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 18 / 19 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -168,6 +168,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T3.B31b verified: a note now stores only the block properties that differ from their defaults, so a large note takes about a third of the memory it did, and the server writes a default back when an older tab empties a key.
 - 2026-11-16 — T3.B31c verified: a note now holds up to 1.02 million characters, as in Google Docs, and a structure ceiling of 165,000 structs, checked alike on live edits, pastes, creates, duplicates and imports, with deletions and format changes given headroom and refusals that name the limit.
 - 2026-11-17 — T3.B33 verified: the note server now puts a body property of the wrong type or a non-finite number, such as a NaN indent, back to its default on every peer, counts that repair against the note's limits, and never overwrites a concurrent valid write with it.
+- 2026-11-17 — T4.V verified: comments now run on m3's note size limits, lean layout and in-place export, so a comment, reply, resolve or sidecar import counts against the note's structure guard and a refused comment write names the limit, with the full lane green on the m4 head.
 
 ## T1.1s identity audit
 
@@ -648,3 +649,7 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: a valid write that loses to a concurrent invalid write ends at the default — key X; peer A (client 100) writes NaN after X; peer B (client 50), not having seen A, writes indent 2 after X; the server repairs A to 0 under client 0, then B arrives and the value is 0, not 2; Yjs Item.integrate orders B before A by client id with or without the repair (plain Yjs would end at NaN), so B loses to A's invalid write, not to the repair.
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: keepLeanKeys walks every client in transaction.afterState per transaction before skipping unchanged ones, outside repairWork.steps, so the cost is O(historical clients + touched structs) rather than O(keys touched) and the equal-steps test cannot see it; cheap per client and bounded in practice.
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: the BUILDPLAN line names an 'offline indent, undo, indent' undo-lean test that does not exist — the two-peer test injects NaN directly into the earlier binding's Y.Doc and then indents and outdents through setIndent, because on m3 that sequence never produced NaN; the test is real and was red first, but the BUILDPLAN line overstates it.
+- T4.V (m4 on m3's note size limits) checker P2, owned by m3 (from T3.B31c): a paste that replaces a selection counts the selected text twice — pasteLimit in apps/web/src/host/large-paste.ts adds the whole rehearsed paste to the live character and struct counts without subtracting the selection it replaces, so a fitting replacement paste near TEXT_CHAR_CAP can be refused (refuses only; never loses data; code identical to m3).
+- T4.V (m4 on m3's note size limits) checker P2: a reply reserves two structs although it writes one — createComment always checks COMMENT_STRUCTS=2 while the reply branch of comments.create writes a single c:<id> record, so with exactly one struct left a reply is refused with 413 'structure' (off by one, conservative).
+- T4.V (m4 on m3's note size limits) checker P2, owned by m3 (duplicate path): duplicate admission leaves out the replacement title's structs — createFromSnapshot admits the snapshot and payload growth, then writes the new title uncounted, so a snapshot that exactly fills the structure guard can end a few structs over it.
+- T4.V (m4 on m3's note size limits) checker P2: anchor re-mints flushed after an admitted frame are not counted against the structure guard — the comments flush can write changed anchor records that admission never reserved; the 2,000-record cap bounds the live count but not the accumulated history.
