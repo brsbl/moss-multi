@@ -49,18 +49,13 @@ async function expectReadable(actor: Actor, docId: string, size: Viewport): Prom
 }
 
 /**
- * Search in note, as a person on this screen finds it (folded into More actions below 640 px): type, step through
- * the matches and close it by tapping, with every control on screen reachable and nothing pushed off the side.
+ * Search in note, Moss's own top-bar button at every width (T9.30): type, step through the matches and close it by
+ * tapping, with every control on screen reachable and nothing pushed off the side.
  */
 async function searchesTheNote(actor: Actor, docId: string, size: Viewport): Promise<void> {
   const page = actor.page;
   const more = page.getByRole('button', { name: 'More actions', exact: true });
-  if (size.width < 640) {
-    await more.click();
-    await page.getByRole('menu').getByRole('menuitem', { name: 'Search in note', exact: true }).click();
-  } else {
-    await page.getByRole('button', { name: 'Search in note', exact: true }).click();
-  }
+  await page.locator('[data-top-bar]').getByRole('button', { name: 'Search in note', exact: true }).click();
   const box = page.getByRole('searchbox', { name: 'Find in note', exact: true });
   await expect(box, `${actor.label}: the search field opens`).toBeVisible();
   await box.fill('a s');
@@ -110,6 +105,7 @@ for (const size of TIER_A) {
     await expect(band, 'the band shows when the note opens').toBeVisible();
     await expect(band).toContainText('View only.');
     await expect(band.getByRole('button', { name: 'Sign in to do more', exact: true }), 'the band holds the sign-in').toBeVisible();
+    expect(await band.evaluate((el) => getComputedStyle(el).boxShadow), 'a quiet row at the bottom, not a floating card').toBe('none');
     await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in to do more', exact: true }), 'no sign-in in the top bar').toHaveCount(0);
     await actors.checkpoint(`${size.name}-stranger-alone`);
     await searchesTheNote(stranger, docId, size);
@@ -126,7 +122,8 @@ for (const size of TIER_A) {
     await grantDoc(ada2, docId, benPrincipal, 'editor');
     const ben = await actors.open(benPrincipal, { viewport: size, path: `/d/${docId}` });
     await ui.waitOpen(ben, docId, 'live');
-    await expect(ada2.page.locator('[data-top-bar]').getByRole('button', { name: /^People here/ }), 'Ada sees Ben is here').toBeVisible({ timeout: BIND_TIMEOUT });
+    await expect(await ui.peopleHere(ada2, docId), 'Ada sees Ben is here').toBeVisible({ timeout: BIND_TIMEOUT });
+    await ada2.page.keyboard.press('Escape');
     await expectReadable(stranger, docId, size);
     await expectReachable(stranger, 'with Ada and Ben there');
     await expectReachable(ada2, 'the owner with two others there');
@@ -246,11 +243,11 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   const dialog = '[role=dialog]';
 
   await expectReachable(ada, 'the note');
+  for (const native of ['Search in note', 'Copy note link', 'More actions', 'Show actions panel']) {
+    await expect(page.locator('[data-top-bar]').getByRole('button', { name: native, exact: true }), `${native} stays in the top bar at 390 px`).toBeVisible();
+  }
   await page.getByRole('button', { name: 'More actions', exact: true }).click();
   await expect(page.getByRole('menu')).toBeVisible();
-  for (const folded of ['Search in note', 'Copy note link']) {
-    await expect(page.getByRole('menu').getByRole('menuitem', { name: folded, exact: true }), `${folded} folds into the overflow menu`).toBeVisible();
-  }
   await expectReachable(ada, 'More actions', menu);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();

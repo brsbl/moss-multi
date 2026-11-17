@@ -193,6 +193,17 @@ export async function noteMenuEntries(actor: Actor, docId: string): Promise<stri
   return entries;
 }
 
+/**
+ * The note's People here action: in the top bar while the pane has room, else in the Suggestions list's heading,
+ * which this opens through More actions (T9.30).
+ */
+export async function peopleHere(actor: Actor, docId: string): Promise<Locator> {
+  const inBar = pane(actor, docId).locator('[data-top-bar]').getByRole('button', { name: /^People here/ });
+  if ((await pane(actor, docId).boundingBox())!.width >= 640) return inBar;
+  await (await openNoteMenu(actor, docId)).getByRole('menuitem', { name: /^Suggestions/ }).click();
+  return actor.page.locator(`[${NAMES.suggestionsPanel}]`).getByRole('button', { name: /^People here/ });
+}
+
 /** Whether the note's More actions offers Share (T9.30: Share lives there, for its owner). */
 export const offersShare = async (actor: Actor, docId: string): Promise<boolean> => (await noteMenuEntries(actor, docId)).includes('Share…');
 
