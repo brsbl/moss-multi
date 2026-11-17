@@ -728,6 +728,20 @@ it('a large paste cut short by a limit stops landing, says nothing was pasted an
   expect(session.state.resync).toBe(true);
 });
 
+it("a large paste's record holds the deletes it made in a payload doc it made, so its rollback tells another writer's apart (T3.B32)", async () => {
+  await freshProfile();
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  const track = trackPaste(session.doc, () => {});
+  const code = session.payloads.hold('code', true);
+  code.getText('payload').insert(0, 'c'.repeat(40));
+  code.getText('payload').delete(0, 5);
+  session.doc.get('root', Y.XmlText).insert(0, 'Alpha');
+  track?.finish();
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+  const [stored] = Object.values(storedPastes()) as { payloads: Record<string, unknown> }[];
+  expect(stored.payloads.code).toEqual({ client: code.clientID, from: 0, to: 40, deletes: [[code.clientID, 0, 5]] });
+});
+
 it('two large pastes still unacked when a limit refuses a write each keep their own record (T3.B32)', async () => {
   await freshProfile();
   const socket = latest(); socket.open(); session.provider.synced = true;
@@ -944,7 +958,7 @@ it('a person demoted mid-paste stores nothing: the part that landed stays, as do
  * Another tab's paste of a code block and a line after 'Kept.', all of it on the server and stored as cut short; the
  * code block's payload doc holds the paste's 'print(1)' and, when given, `peer` typed in by another writer.
  */
-function cutCodePaste(peer?: string) {
+function cutCodePaste(peer?: string, { peerDeletes = false, ownDeletes = false } = {}) {
   const server = new Y.Doc();
   server.get('root', Y.XmlText).insert(0, 'Kept.');
   const tab = new Y.Doc();
@@ -957,14 +971,16 @@ function cutCodePaste(peer?: string) {
   tab.get('root', Y.XmlText).insert(6, ' Alpha.');
   Y.applyUpdate(server, Y.encodeStateAsUpdate(tab));
   const code = new Y.Doc();
-  code.getText('payload').insert(0, 'print(1)');
+  code.getText('payload').insert(0, ownDeletes ? 'print(1)x' : 'print(1)');
+  if (ownDeletes) code.getText('payload').delete(8, 1);
   const payload = new Y.Doc();
   Y.applyUpdate(payload, Y.encodeStateAsUpdate(code));
   if (peer) payload.getText('payload').insert(0, peer);
+  if (peerDeletes) payload.getText('payload').delete(0, 2);
   const key = rollbackKey(tab.clientID, from);
   localStorage.setItem(key, JSON.stringify({
     note: { client: tab.clientID, from, to: Y.getState(tab.store, tab.clientID) },
-    payloads: { code: { client: code.clientID, from: 0, to: 8 } },
+    payloads: { code: ownDeletes ? { client: code.clientID, from: 0, to: 9, deletes: [[code.clientID, 8, 1]] } : { client: code.clientID, from: 0, to: 8 } },
     decided: 'cut',
   }));
   // The binding holds the note's tree as it opens; the payload doc is on its way.
@@ -993,6 +1009,31 @@ it("a cut paste's code block another writer typed into stays whole, the paste's 
   expect([...namedPayloadIds(session.doc)], 'the code block stays named').toEqual(['code']);
   expect(codeText(), "the other writer's code and the paste's, as it stood").toBe('ben();print(1)');
   expect(refusalMessage()).toBe(PASTE_PARTLY_KEPT);
+});
+
+it("a cut paste's code block another writer only deleted from stays whole, and the notice says so (T3.B32)", async () => {
+  const { namedPayloadIds } = await import('@moss-multi/sync/payload-docs');
+  const { refusalMessage } = await import('../refusal.ts');
+  await freshProfile();
+  const { arrive } = cutCodePaste(undefined, { peerDeletes: true });
+  arrive();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(rootText(), "the paste's line goes").not.toContain('Alpha');
+  expect([...namedPayloadIds(session.doc)], 'the code block stays named').toEqual(['code']);
+  expect(codeText(), 'as it stood').toBe('int(1)');
+  expect(refusalMessage()).toBe(PASTE_PARTLY_KEPT);
+});
+
+it("a cut paste's code block holding only the paste's own deletes goes whole (T3.B32)", async () => {
+  const { namedPayloadIds } = await import('@moss-multi/sync/payload-docs');
+  const { refusalMessage } = await import('../refusal.ts');
+  await freshProfile();
+  const { arrive } = cutCodePaste(undefined, { ownDeletes: true });
+  arrive();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(rootText()).not.toContain('Alpha');
+  expect([...namedPayloadIds(session.doc)]).toEqual([]);
+  expect(refusalMessage()).toBe(PASTE_ROLLED_BACK);
 });
 
 it('a paste already found cut short waits for its payload docs too, and once they arrive deletes its block whole, leaving the payload as it was (T3.B32)', async () => {

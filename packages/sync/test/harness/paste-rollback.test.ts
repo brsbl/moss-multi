@@ -303,6 +303,59 @@ describe('a cut paste rolled back (T3.B32)', () => {
     } finally { again.dispose(); cut.ben.dispose(); }
   });
 
+  // A delete leaves no item of the writer who made it: only the paste's own deletes tell it apart.
+  it('keeps a landed pasted line another writer only deleted from whole', async () => {
+    const cut = await cutPaste();
+    cut.limits.structCap = STRUCT_CAP;
+    await syncAll(cut.ben);
+    const clock = Y.getState(cut.ben.doc.store, cut.ben.doc.clientID);
+    cut.ben.editor.update(() => {
+      const line = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent() === 'Alpha 0-0.');
+      const text = $isParagraphNode(line) ? line.getFirstChild() : null;
+      if (!$isTextNode(text)) throw new Error('no Alpha 0-0.');
+      text.spliceText(9, 1, '');
+    }, { discrete: true });
+    await syncAll(cut.ben);
+    expect(Y.getState(cut.ben.doc.store, cut.ben.doc.clientID), 'Ben only deleted').toBe(clock);
+    const { again, frames, kept } = await rollingBack(cut, 40);
+    try {
+      for (const frame of frames) await again.socket.deliver(frame);
+      await syncAll(again, cut.ben);
+      await syncAll(again, cut.ben);
+      expect(kept, 'one block kept').toBe(1);
+      const held = cut.ben.paragraphs();
+      expect(nothingPasted(held), 'the line he deleted from stays, and nothing else of the paste').toEqual(['Alpha 0-0']);
+      expect(again.paragraphs()).toEqual(held);
+      expect(tree(cut.ben)).toEqual(await fresh(cut));
+    } finally { again.dispose(); cut.ben.dispose(); }
+  });
+
+  it('keeps a landed pasted code block another writer only deleted from whole', async () => {
+    const { rollBackPaste } = use();
+    const cut = await cutPaste();
+    cut.limits.structCap = STRUCT_CAP;
+    await syncAll(cut.ben);
+    const payload = cut.ben.payloadDoc(0)!;
+    cut.ben.erase(0, 0, 2);
+    await syncAll(cut.ben);
+    expect(heldText(payload)).toBe('int(1)');
+    expect(Y.getState(payload.store, payload.clientID), 'Ben only deleted').toBe(0);
+    const again = await LiveClient.open(cut.doc, { id: 'ada' });
+    try {
+      const code = again.payloads.get(cut.payloadId)!;
+      const result = rollBackPaste(again.doc, cut.record.note, [[cut.payloadId, code, cut.record.payloads[cut.payloadId]]], ROLLBACK, 40) as unknown;
+      expect(result, 'one block kept').toMatchObject({ kept: 1 });
+      again.flush();
+      for (const frame of again.socket.drain()) await again.socket.deliver(frame);
+      await syncAll(again, cut.ben);
+      await syncAll(again, cut.ben);
+      expect(cut.ben.ids(), 'the code block stays').toEqual([cut.payloadId]);
+      expect(heldText(cut.ben.payloadDoc(0)), 'as it stood').toBe('int(1)');
+      expect(nothingPasted(cut.ben.paragraphs())).toEqual([]);
+      expect(tree(cut.ben)).toEqual(await fresh(cut));
+    } finally { again.dispose(); cut.ben.dispose(); }
+  });
+
   // The first batch replaces the selected 'Kept.', or goes into the middle of 'Kept. Tail.' (splitting it); five more
   // follow. Either way the line ends as it was.
   // While it lands the server holds the line's text beside the paste's: the binding writes a line's change as a
@@ -449,5 +502,39 @@ describe('rollback updates (T3.B32)', () => {
     expect(result).toMatchObject({ kept: 1 });
     expect(named(root), 'the chart stays').toBe(1);
     expect(chart.getMap('payload-map').toJSON(), 'as it stands').toEqual({ title: 'Ben', data: '1,2,3' });
+  });
+
+  it("a pasted chart another writer only deleted an entry from stays whole", () => {
+    const { rollBackPaste } = use();
+    const { note, root, chart, span, payload } = pastedChart();
+    const peer = new Y.Doc();
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(chart));
+    peer.getMap('payload-map').delete('data');
+    Y.applyUpdate(chart, Y.encodeStateAsUpdate(peer));
+    expect(Y.getState(chart.store, peer.clientID), 'the peer only deleted').toBe(0);
+    const result = rollBackPaste(note, span, [['chart', chart, payload]], ROLLBACK) as unknown;
+    expect(result).toMatchObject({ kept: 1 });
+    expect(named(root), 'the chart stays').toBe(1);
+    expect(chart.getMap('payload-map').toJSON(), 'as it stands').toEqual({ title: 'Pasted' });
+  });
+
+  it("the paste's own deletes, in its payload or in a block it made, keep nothing", () => {
+    const { rollBackPaste, PasteWatch } = use();
+    const { note, root, chart, span, payload } = pastedChart();
+    const watch = new PasteWatch(chart);
+    chart.getMap('payload-map').delete('data');
+    watch.finish();
+    const at = Y.getState(note.store, note.clientID);
+    const noteWatch = new PasteWatch(note);
+    const line = new Y.XmlText();
+    root.insertEmbed(root.length, line);
+    line.insert(0, 'Alpha.');
+    line.delete(5, 1);
+    noteWatch.finish();
+    const whole = { ...span, to: Y.getState(note.store, note.clientID) };
+    expect(at).toBe(span.to);
+    const result = rollBackPaste(note, whole, [['chart', chart, { ...payload, deletes: watch.deletes() }]], ROLLBACK, undefined, noteWatch.deletes()) as unknown;
+    expect(result).toMatchObject({ kept: 0 });
+    expect(root.toDelta(), 'only the line before the paste').toHaveLength(1);
   });
 });
