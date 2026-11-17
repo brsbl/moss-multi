@@ -66,6 +66,11 @@ export function armOpeningGuard(message = OPENING_NOTE): OpeningGuard {
   };
 }
 
+/** Lets go of an armed guard whose create can no longer finish (the session ended under it, T9.17). */
+export function disarmOpeningGuard(): void {
+  current?.();
+}
+
 /** Browsers must never interpret Backspace outside an editable as history navigation. */
 export function installBackspaceGuard(): () => void {
   const guard = (event: KeyboardEvent) => {

@@ -748,7 +748,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
+    noticeBand: <><ConnectionNotice docId={docId} bare={!docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
     bottomBand: docId && !historyOpen ? <><RoleBand docId={docId} /><ReviewBand docId={docId} /></> : null,
     collaboration,
     bodyLive: live,
