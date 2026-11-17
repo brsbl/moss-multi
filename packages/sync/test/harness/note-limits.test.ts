@@ -4,7 +4,7 @@
 // they had; a write that only deletes is admitted up to the structure headroom, or whenever it adds no struct, so a
 // note at a limit, or one stored over it, can be shrunk.
 // The caps are shrunk here so each case is small; the `memory` CI job and the API harness hold the real ones.
-import { $createRangeSelection, $getRoot, $isParagraphNode, $isTextNode, $setSelection } from 'lexical';
+import { $createRangeSelection, $getRoot, $isParagraphNode, $isTextNode, $setSelection, type ParagraphNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
@@ -408,7 +408,7 @@ describe('deletions (coordinator ruling 2)', () => {
       // The binding deletes the selected lines and the last one's text, and writes that text again: a write that
       // inserts, but frees more structs than it adds.
       ada.editor.update(() => {
-        const rows = $getRoot().getChildren().filter((node) => $isParagraphNode(node) && node.getTextContent().startsWith('Row'));
+        const rows = $getRoot().getChildren().filter((node): node is ParagraphNode => $isParagraphNode(node) && node.getTextContent().startsWith('Row'));
         const from = rows.find((node) => node.getTextContent() === 'Row 6 words')!.getFirstChild()!;
         const to = rows.find((node) => node.getTextContent() === 'Row 4 words')!.getFirstChild()!;
         const selection = $createRangeSelection();

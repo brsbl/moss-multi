@@ -562,6 +562,38 @@ it('a paste is refused whole before it applies when it would take the note past 
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 165_000 - structs - 256 }), 'up to the structure cap fits').toBe(true);
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 165_000 - structs - 255 }), 'past it is refused').toBe(false);
 });
+it('a paste waits for a payload doc the note names that is still arriving, so its text counts when the paste is checked (T3.B31c)', async () => {
+  const { pasteFits, payloadsArrive } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  session.doc.get('root', Y.XmlText).insert(0, 'a'.repeat(900_000));
+  nameInTree('code');
+  const code = session.payloads.hold('code', true);
+  session.payloads.await('code');
+  const wait = payloadsArrive(session.doc, () => false);
+  expect(wait.next().done, 'waits while the code block\'s text is on its way').toBe(false);
+  expect(wait.next().done).toBe(false);
+  code.getText('payload').insert(0, 'c'.repeat(100_000));
+  session.payloads.arrived('code');
+  expect(wait.next().done, 'goes on once it arrived').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 20_001, structs: 10 }), 'and its text counts').toBe(false);
+});
+it('a paste stops waiting for an arriving payload doc after 10 seconds, or at once when other input lands it (T3.B31c)', async () => {
+  const { payloadsArrive } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  nameInTree('code');
+  session.payloads.hold('code', true);
+  session.payloads.await('code');
+  const wait = payloadsArrive(session.doc, () => false);
+  expect(wait.next().done).toBe(false);
+  vi.advanceTimersByTime(10_001);
+  expect(wait.next().done, 'past the wait').toBe(true);
+  let flushing = false;
+  const flushed = payloadsArrive(session.doc, () => flushing);
+  expect(flushed.next().done).toBe(false);
+  flushing = true;
+  expect(flushed.next().done, 'landed by other input').toBe(true);
+  expect(payloadsArrive(undefined, () => false).next().done, 'no note, nothing to wait for').toBe(true);
+});
 it('a code block deleted in this tab stops counting toward the paste check at once, as the server stops counting it (T3.B31c)', async () => {
   const { pasteFits } = await import('../large-paste.ts');
   const socket = latest(); socket.open(); session.provider.synced = true;
