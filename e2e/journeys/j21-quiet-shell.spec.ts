@@ -7,7 +7,7 @@
 import type { Locator } from '@playwright/test';
 import type { Actor, Viewport } from '../lib/actors.ts';
 import {
-  BODY_BINDING_ATTR, COLLAB_CHROME_ATTR, CONNECTION_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, FLOATING_TOOLBAR_ATTR, HISTORY_VIEW_ATTR, MODE_ROW_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SIDEBAR_ROW_ATTR,
+  BODY_BINDING_ATTR, COLLAB_CHROME_ATTR, CONNECTION_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, FLOATING_TOOLBAR_ATTR, HISTORY_VIEW_ATTR, MODE_ROW_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SIDEBAR_ROW_ATTR,
   SUGGEST_CHIP_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR, TOP_BAR_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grant, grantDoc } from '../lib/grants.ts';
@@ -414,13 +414,17 @@ test('j21 a reader in Review has one bottom row with their access and Review, an
     await expect(ui.body(carl, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
     await expect(row, `${what}: the row keeps the reader's access`).toHaveText("View only. You can't edit this note.");
     await expect(review).toHaveCount(0);
+    // Leaving remounts the body; the next switch waits until it is live again.
+    await expect(pane).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
   };
 
   await inReview('a viewer opens in Review');
   await row.getByRole('button', { name: 'Done', exact: true }).click();
   await leftReview('Done leaves Review');
 
-  await (reviewSwitch(await openPanel(carl))).click();
+  const toggle = reviewSwitch(await openPanel(carl));
+  await toggle.click();
+  await expect(toggle, 'the switch shows Review pressed').toHaveAttribute('aria-pressed', 'true', { timeout: BIND_TIMEOUT });
   await closePanel(carl);
   await inReview('back in Review from the list');
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

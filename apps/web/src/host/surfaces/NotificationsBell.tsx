@@ -3,14 +3,14 @@
 // read", newest first) built from moss's DS menu and the InboxItem primitive, and it is pushed through the workspace
 // channel rather than polled. A notice opens its item in place through navigation.ts and is marked read with keepalive.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
 import { Bell } from 'lucide-react';
 import { useRef, useState, useSyncExternalStore, type ComponentType, type ReactNode, type RefObject } from 'react';
 import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
-import { footerDestination, handOffWhenGone, useFocusHome } from './footer.ts';
+import { footerDestination, handOffWhenGone, HomeTrigger, useFocusHome } from './footer.ts';
 import type { Notice } from '../notifications.ts';
 
 /** How many notices the open inbox lists. */
@@ -86,7 +86,7 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
     <Menu open={open} onOpenChange={onOpenChange}>
       <TooltipProvider>
         <Tooltip>
-          <TooltipTrigger asChild ref={focusHome} /* Moss's asChild drops a child's own ref */>
+          <HomeTrigger asChild ref={focusHome}>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -97,7 +97,7 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
                 <Bell aria-hidden className="h-3.5 w-3.5" />
               </button>
             </DropdownMenuTrigger>
-          </TooltipTrigger>
+          </HomeTrigger>
           {open ? null : <TooltipContent side="bottom">Notifications</TooltipContent>}
         </Tooltip>
       </TooltipProvider>

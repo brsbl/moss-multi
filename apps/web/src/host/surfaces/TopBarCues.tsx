@@ -5,7 +5,7 @@
 // actions → Suggestions), then People here moves into the Suggestions list's heading. An open popup keeps its
 // activator until it closes.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
 import { TOP_BAR_ATTR } from '@moss-multi/protocol/dom-contract';
 import { Bot, Users } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
@@ -13,7 +13,7 @@ import { FacePile, type Avatar } from '../../../../../packages/ui/src/FacePile.t
 import { ConnectionIndicator } from '../collab/ConnectionNotice.tsx';
 import { usePeers } from '../collab/presence.ts';
 import { SuggestionsButton, type SuggestionsSource } from '../collab/suggest/SuggestionsPanel.tsx';
-import { useFocusHome } from './footer.ts';
+import { HomeTrigger, useFocusHome } from './footer.ts';
 import { NotificationsBell } from './NotificationsBell.tsx';
 
 /** Pane widths (CSS px) below which each cue yields, in order. */
@@ -60,7 +60,7 @@ export function PeopleHere({ docId, compact, onOpenChange, home }: {
     <Menu open={open} onOpenChange={setOpen}>
       <TooltipProvider>
         <Tooltip>
-          <TooltipTrigger asChild ref={focusHome} /* Moss's asChild drops a child's own ref */>
+          <HomeTrigger asChild ref={focusHome}>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -71,7 +71,7 @@ export function PeopleHere({ docId, compact, onOpenChange, home }: {
                 {compact ? <Users aria-hidden className="h-3.5 w-3.5" /> : <FacePile peers={peers} neutral />}
               </button>
             </DropdownMenuTrigger>
-          </TooltipTrigger>
+          </HomeTrigger>
           {open ? null : <TooltipContent side="bottom">People here</TooltipContent>}
         </Tooltip>
       </TooltipProvider>

@@ -4,7 +4,7 @@
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { Button } from '@moss/shared/components/ui/button';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
 import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
@@ -19,7 +19,7 @@ import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { sessionFetch } from '../../session-fetch.ts';
-import { handOffWhenGone, useFocusHome } from '../../surfaces/footer.ts';
+import { handOffWhenGone, HomeTrigger, useFocusHome } from '../../surfaces/footer.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
@@ -401,7 +401,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
       >
         {counted ? (
           <Tooltip>
-            <TooltipTrigger asChild ref={focusHome} /* Moss's asChild drops a child's own ref */>
+            <HomeTrigger asChild ref={focusHome}>
               <Popover.Trigger asChild>
                 <button
                   type="button"
@@ -416,7 +416,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
                   {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
                 </button>
               </Popover.Trigger>
-            </TooltipTrigger>
+            </HomeTrigger>
             <TooltipContent side="bottom">Suggestions</TooltipContent>
           </Tooltip>
         ) : anchor ? <Popover.Anchor virtualRef={anchor} /> : null}

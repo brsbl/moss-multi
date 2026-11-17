@@ -1,6 +1,7 @@
 // The sidebar footer's Settings target, home of the app menu and its inbox (T9.30). A cue that leaves the top bar
 // while it had focus hands focus here, or to the notes-panel toggle while the sidebar is put away.
-import { useCallback, useRef } from 'react';
+import { TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { useCallback, useRef, type ComponentType, type ReactNode, type Ref } from 'react';
 
 export const APP_MENU_ATTR = 'data-app-menu';
 
@@ -69,3 +70,6 @@ export function useFocusHome(home: () => HTMLElement | null): (el: HTMLElement |
     });
   }, []);
 }
+
+/** Moss's TooltipTrigger, typed to take the ref `useFocusHome` gives: its asChild drops a child's own ref. */
+export const HomeTrigger = TooltipTrigger as unknown as ComponentType<{ asChild?: boolean; children: ReactNode; ref?: Ref<HTMLElement> }>;
