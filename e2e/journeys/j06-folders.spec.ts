@@ -539,3 +539,59 @@ test('j06-folders: renaming the folder of the open note keeps "+ Note", and a ne
   await expect(inFolder(ada, 'Trips 2025').locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${made}"]`), 'the new note shows in the renamed folder').toBeVisible();
   expect((await api.listing()).docs.find((d) => d.id === made)?.folderPath, 'and the server has it there').toBe('Notes/Trips 2025');
 });
+
+test("j06-folders: the browser's Back and Forward move between the notes she opened, with no page load and her folder still open (T9.19)", async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner moves between her own notes');
+  const api = setup(ada);
+  const trips = await api.folder('Trips', await api.home());
+  const a = await api.note('Lisbon', trips);
+  const b = await api.note('Porto', trips);
+  const c = await api.note('Faro', trips);
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expandFolder(ada, 'Trips');
+  const entries = () => ada.page.evaluate(() => window.history.length);
+  const at = (docId: string) => new RegExp(`/d/${docId}$`);
+
+  await ui.openNote(ada, a);
+  await expect(ada.page).toHaveURL(at(a));
+  const start = await entries();
+  await ui.openNote(ada, b);
+  await expect(ada.page).toHaveURL(at(b));
+  expect(await entries(), 'opening B adds one history entry').toBe(start + 1);
+  await ui.openNote(ada, c);
+  await expect(ada.page).toHaveURL(at(c));
+  expect(await entries(), 'opening C adds one more').toBe(start + 2);
+
+  // This document and moss's shell element are marked: a page load or a remount of the app drops the mark.
+  const mark = () => ada.page.evaluate(() => {
+    (window as unknown as { __t919?: boolean }).__t919 = true;
+    const shell = document.querySelector('[data-moss-app-shell]') as (Element & { __t919?: boolean }) | null;
+    if (shell) shell.__t919 = true;
+  });
+  const marked = () => ada.page.evaluate(() => Boolean((window as unknown as { __t919?: boolean }).__t919)
+    && Boolean((document.querySelector('[data-moss-app-shell]') as (Element & { __t919?: boolean }) | null)?.__t919));
+  await mark();
+  // Back reaches A and B again, Forward B and C: each binds once more in this document.
+  ada.expectReconnects(1, a);
+  ada.expectReconnects(2, b);
+  ada.expectReconnects(1, c);
+  const shows = async (docId: string, when: string) => {
+    await expect(ada.page, `${when}: the address names the note`).toHaveURL(at(docId));
+    await ui.waitLive(ada, docId);
+    await ada.declareRemount(docId);
+    await expect.poll(() => ui.paneIds(ada), { message: `${when}: the note is the one pane` }).toEqual([docId]);
+    expect(await marked(), `${when}: no page load and no remount of the app`).toBe(true);
+    await expect(ui.folderRow(ada, 'Trips'), `${when}: Trips is still open`).toHaveAccessibleName(/expanded$/);
+    expect(await entries(), `${when}: no entry added`).toBe(start + 2);
+  };
+  await ada.page.goBack({ waitUntil: 'commit' });
+  await shows(b, 'Back');
+  await ada.page.goBack({ waitUntil: 'commit' });
+  await shows(a, 'Back again');
+  await ada.page.goForward({ waitUntil: 'commit' });
+  await shows(b, 'Forward');
+  await ada.page.goForward({ waitUntil: 'commit' });
+  await shows(c, 'Forward again');
+});

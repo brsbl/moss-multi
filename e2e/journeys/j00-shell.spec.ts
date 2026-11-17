@@ -507,3 +507,72 @@ test('every DS menu, dialog and tooltip opens inside a data-overlay-surface, eve
   for (const kind of ['portal', 'dialog', 'menu', 'tooltip']) expect(kinds, `a ${kind} opened`).toContain(kind);
   expect(seen.filter((record) => !record.covered), 'surfaces outside a data-overlay-surface').toEqual([]);
 });
+
+// T9.19: the browser's Back and Forward move between notes. A pane going to another note adds one history entry;
+// focus moving between split panes moves the address with it and adds none.
+const historyLength = (page: Page): Promise<number> => page.evaluate(() => window.history.length);
+const addressOf = (docId: string): RegExp => new RegExp(`/d/${docId}$`);
+
+test('split view: clicking between the panes moves the address and adds no history entry; a pane going to another note adds one (T9.19)', async ({ actors }) => {
+  const ada = await openShell(actors, await actors.principal('ada'));
+  actors.solo('one person moves between her own split panes');
+  const { page } = ada;
+  const a = await openNewNote(ada);
+  const b = await openNewNote(ada, [a]);
+  const c = await openNewNote(ada, [a, b]);
+  const row = (docId: string) => page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${docId}"]`);
+  // A opens again in the split, then B in its place: each binds once more.
+  ada.expectReconnects(1, a);
+  ada.expectReconnects(1, b);
+
+  await row(a).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Open in Split Tab', exact: true }).click();
+  await ui.waitBodyLive(ada, a);
+  await expect.poll(() => ui.paneIds(ada), { message: 'C left, A right' }).toEqual([c, a]);
+  const settled = await historyLength(page);
+  for (const docId of [c, a, c, a]) {
+    await ui.body(ada, docId).click();
+    await expect(page, 'the address follows the focused pane').toHaveURL(addressOf(docId));
+  }
+  expect(await historyLength(page), 'clicking between the panes adds no history entry').toBe(settled);
+
+  // The focused right pane goes to B: that is a visit.
+  await row(b).click();
+  await expect(ui.pane(ada, a), 'the right pane leaves A').toHaveCount(0, { timeout: 15_000 });
+  await ui.waitBodyLive(ada, b);
+  await expect(page).toHaveURL(addressOf(b));
+  expect(await historyLength(page), 'a pane going to another note adds one entry').toBe(settled + 1);
+});
+
+test("Moss's back arrow is a visit: after A, B, C and the arrow back to B, the browser's Back shows C, then B, then A (T9.19)", async ({ actors }) => {
+  const ada = await openShell(actors, await actors.principal('ada'));
+  actors.solo('one person moves between her own notes');
+  const { page } = ada;
+  const a = await openNewNote(ada);
+  const b = await openNewNote(ada, [a]);
+  const c = await openNewNote(ada, [a, b]);
+  await expect(page).toHaveURL(addressOf(c));
+  // The arrow reopens B, then Back reopens C, B and A.
+  ada.expectReconnects(1, a);
+  ada.expectReconnects(2, b);
+  ada.expectReconnects(1, c);
+  const before = await historyLength(page);
+  await page.evaluate(() => { (window as unknown as { __t919?: boolean }).__t919 = true; });
+  const shows = async (docId: string, when: string) => {
+    await expect(page, `${when}: the address names the note`).toHaveURL(addressOf(docId));
+    await ui.waitBodyLive(ada, docId);
+    await expect.poll(() => ui.paneIds(ada), { message: `${when}: the note is the one pane` }).toEqual([docId]);
+    expect(await page.evaluate(() => Boolean((window as unknown as { __t919?: boolean }).__t919)), `${when}: no page load`).toBe(true);
+  };
+
+  await ui.pane(ada, c).getByRole('button', { name: 'Go back' }).click();
+  await shows(b, "Moss's back arrow");
+  expect(await historyLength(page), "the arrow's move adds one entry").toBe(before + 1);
+  await page.goBack({ waitUntil: 'commit' });
+  await shows(c, 'Back');
+  await page.goBack({ waitUntil: 'commit' });
+  await shows(b, 'Back again');
+  await page.goBack({ waitUntil: 'commit' });
+  await shows(a, 'Back a third time');
+  expect(await historyLength(page), 'Back adds no entry').toBe(before + 1);
+});

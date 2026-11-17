@@ -566,3 +566,78 @@ it('still rejects a failed listing at once when the page is not leaving', async 
   fail(new TypeError('Load failed'));
   await expect(listed).rejects.toThrow('Load failed');
 });
+
+describe("the T9.19 bridge: the browser's Back and Forward move between notes (A§9 navigation)", () => {
+  /** A tab's address and its history entries, as the browser keeps them. */
+  function tab(start = '/') {
+    const entries = [start];
+    let index = 0;
+    let pop: (() => void) | null = null;
+    const browser: BrowserHooks = {
+      ...inertBrowser,
+      pushPath: (path: string) => { entries.splice(index + 1, Infinity, path); index = entries.length - 1; },
+      replacePath: (path: string) => { entries[index] = path; },
+      onPopState: (listener: () => void) => { pop = listener; return () => { pop = null; }; },
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(LISTING));
+    const api = createBridge({ pathname: () => entries[index].split('?')[0], fetch, browser });
+    const opened: string[] = [];
+    const off = api.notes.onInternalFileOpen((id: string) => { opened.push(id); });
+    const go = (delta: number) => { index += delta; pop?.(); };
+    return { api, entries, opened, off, go, at: () => entries[index] };
+  }
+  /** moss reports the notes its panes show, then the focused one (App.tsx, one effect after the other). */
+  const show = async (api: ReturnType<typeof createBridge>, panes: string[], focused: string) => {
+    await api.notes.setOpenFileWatchTargets(panes);
+    await api.system.setFocusedNoteId(focused);
+  };
+
+  it('adds one entry per note opened, none for the first note, and Back and Forward reopen them through moss', async () => {
+    const t = tab('/');
+    await show(t.api, ['a'], 'a');
+    expect(t.entries, 'the first note of the session replaces the address').toEqual(['/d/a']);
+    await show(t.api, ['b'], 'b');
+    await show(t.api, ['c'], 'c');
+    expect(t.entries, 'one entry per note opened').toEqual(['/d/a', '/d/b', '/d/c']);
+
+    t.go(-1);
+    expect(t.opened, 'Back opens B through moss').toEqual(['b']);
+    await show(t.api, ['b'], 'b');
+    t.go(-1);
+    await show(t.api, ['a'], 'a');
+    t.go(1);
+    await show(t.api, ['b'], 'b');
+    expect(t.opened).toEqual(['b', 'a', 'b']);
+    expect(t.entries, 'Back and Forward add no entry').toEqual(['/d/a', '/d/b', '/d/c']);
+    expect(t.at()).toBe('/d/b');
+    t.off();
+  });
+
+  it('adds no entry when focus moves between split panes, and one when a pane goes to another note', async () => {
+    const t = tab('/d/a');
+    await show(t.api, ['a'], 'a');
+    expect(t.entries, 'a note already in the address').toEqual(['/d/a']);
+    await show(t.api, ['a', 'b'], 'b');
+    await show(t.api, ['a', 'b'], 'a');
+    await show(t.api, ['a', 'b'], 'b');
+    expect(t.entries, 'opening a split and clicking between its panes adds nothing; the address follows focus').toEqual(['/d/b']);
+    await show(t.api, ['a', 'c'], 'c');
+    expect(t.entries, 'the right pane going to C is a visit').toEqual(['/d/b', '/d/c']);
+    await show(t.api, ['a'], 'a');
+    expect(t.entries, 'closing the split adds nothing').toEqual(['/d/b', '/d/a']);
+    t.off();
+  });
+
+  it("waits for moss to reach the note Back chose, so a quick second Back keeps Forward's entries", async () => {
+    const t = tab('/');
+    for (const id of ['a', 'b', 'c']) await show(t.api, [id], id);
+    t.go(-1);
+    t.go(-1);
+    // moss switches one note at a time: B first, then A.
+    await show(t.api, ['b'], 'b');
+    await show(t.api, ['a'], 'a');
+    expect(t.entries).toEqual(['/d/a', '/d/b', '/d/c']);
+    expect(t.at()).toBe('/d/a');
+    t.off();
+  });
+});
