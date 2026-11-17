@@ -162,6 +162,8 @@ export const CARET_SCENARIOS: CaretScenario[] = [
   { name: 'redo then type', actions: [...LINES_AND_AN_INSERT, UNDO_KEY, UNDO_KEY, REDO_KEY, REDO_KEY, { type: 'HERE' }] },
   // Undo returns the caret to the change even after it moved elsewhere.
   { name: 'caret moved, undo then type', actions: [...LINES_AND_AN_INSERT, { caretAtEnd: 'Gamma line.' }, UNDO_KEY, UNDO_KEY, { type: 'WHERE' }] },
+  // The caret keeps its typing format too: bold turned on in an empty line stays on after the bold word is undone.
+  { name: 'bold word undone, then type', actions: [{ key: 'Enter' }, { wait: 1_500 }, { key: 'ControlOrMeta+b' }, { type: 'bold' }, { wait: 1_500 }, UNDO_KEY, { type: 'xyz' }] },
 ];
 
 /** The body pristine moss at the pin ends each caret scenario with. */
@@ -169,6 +171,7 @@ export const MOSS_UNDO_CARET: Record<string, string[]> = {
   'undo then type': [s, 'paragraph|Alpha line.WHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
   'redo then type': [s, 'paragraph|Alpha line.', 'paragraph|InsertedHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
   'caret moved, undo then type': [s, 'paragraph|Alpha line.WHERE', 'paragraph|Beta line.', 'paragraph|Gamma line.'],
+  'bold word undone, then type': [s, 'paragraph|**xyz**'],
 };
 
 /** Plays a caret scenario on the note in `root` (holding only "Start."); returns the body after it. */
