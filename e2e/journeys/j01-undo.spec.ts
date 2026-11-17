@@ -64,8 +64,9 @@ async function caretAtEnd(actor: Actor, id: string, start: string, left = 0) {
   });
   await expect.poll(caretIn, { message: `${actor.label}: the caret is in "${start}"` }).toMatch(new RegExp(`^${start}`));
   await actor.page.keyboard.press('End');
-  if (left === 0) return;
-  // Arrow keys raced the editor's own selection handling in CI, so the caret moves through the editor.
+  // Arrow keys raced the editor's own selection handling in CI, so the caret moves through the editor. A caret on its
+  // text node, never on the paragraph: Moss's history (T9.13) makes the first key after a caret on the paragraph a step
+  // of its own, and these legs count steps.
   await ui.body(actor, id).evaluate((element, { start, left }) => {
     const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
     editor.update(() => {
@@ -77,6 +78,20 @@ async function caretAtEnd(actor: Actor, id: string, start: string, left = 0) {
       text.select(at, at);
     }, { discrete: true });
   }, { start, left });
+}
+
+/**
+ * Holds Ada's undo step open until the returned release, as a large paste holds its own (BodyUndo.hold): keys typed
+ * at a person's pace are several steps (T9.13), and these legs need a line created and deleted within one.
+ */
+async function holdStep(actor: Actor, id: string): Promise<() => Promise<void>> {
+  await ui.body(actor, id).evaluate((element) => {
+    type Held = { stopCapturing(): void; hold(): () => void };
+    const undo = (element as unknown as { __lexicalEditor: Record<symbol, Held> }).__lexicalEditor[Symbol.for('@lexical/yjs/UndoManager')]!;
+    undo.stopCapturing();
+    (window as unknown as { __undoRelease: () => void }).__undoRelease = undo.hold();
+  });
+  return async () => { await actor.page.evaluate(() => (window as unknown as { __undoRelease: () => void }).__undoRelease()); };
 }
 
 /** Selects the last `back` characters (`all`: every one) of the paragraph starting with `start` (collapsed: the caret before them), through the editor. */
@@ -241,8 +256,9 @@ test('j01 undo: Ada creates a line and deletes Ben\'s words from it within one u
   const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Intro line.');
   if (!ben) throw new Error('no ben');
   await caretAtEnd(ada, id, 'Intro line');
+  const release = await holdStep(ada, id);
   await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Alpha');
-  // Ada keeps typing at the start of her line, each key within the capture window (1 s), until Ben's words arrive.
+  // Ada keeps typing at the start of her line, within one held step, until Ben's words arrive.
   await selectEnd(ada, id, 'Alpha', 'Alpha'.length, true);
   const benTypes = (async () => {
     await expect(paragraph(ben, id, 'x*Alpha')).toBeVisible({ timeout: PEER_TIMEOUT });
@@ -257,6 +273,7 @@ test('j01 undo: Ada creates a line and deletes Ben\'s words from it within one u
   await selectEnd(ada, id, 'x*Alpha', ' BEN'.length);
   await ada.page.keyboard.press('Backspace');
   const deleted = await converged(ada, ben, id, 'deleted');
+  await release();
   expect(deleted).toMatch(/^Intro line\.\n\nx+Alpha$/);
   await ada.page.waitForTimeout(NEW_STEP_MS);
   const undone = await press(ada, ben, id, UNDO, 2, ['BEN']);
@@ -296,8 +313,9 @@ for (const { what, select, deleted } of [
     const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Intro line.');
     if (!ben) throw new Error('no ben');
     await caretAtEnd(ada, id, 'Intro line');
+    const release = await holdStep(ada, id);
     await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Alpha');
-    // Ben types at the start of Ada's line while she keeps typing at its end within the capture window (1 s).
+    // Ben types at the start of Ada's line while she keeps typing at its end, within one held step.
     const benTypes = (async () => {
       await expect(paragraph(ben, id, 'Alpha')).toBeVisible({ timeout: PEER_TIMEOUT });
       await selectEnd(ben, id, 'Alpha', 'all', true); await ben.page.keyboard.type('BEN ');
@@ -312,6 +330,7 @@ for (const { what, select, deleted } of [
     await select(ada, id);
     await ada.page.keyboard.press('Backspace');
     expect(await converged(ada, ben, id, 'deleted')).toBe(deleted);
+    await release();
     await ada.page.waitForTimeout(NEW_STEP_MS);
     const undone = await press(ada, ben, id, UNDO, 1, ['BEN']);
     expect(undone, 'only Ada\'s line is undone').toBe('Intro line.\n\nBEN ');
@@ -353,6 +372,7 @@ for (const { what, select, deleted } of [
 
 for (const scenario of UNDO_SCENARIOS) {
   test(`j01 undo: steps as in Moss, ${scenario.name}; each Cmd+Z takes back what pristine Moss's does @p:col-3`, async ({ actors, stack }) => {
+    actors.solo('one person\'s undo steps, compared with pristine moss');
     const ada = await actors.session(await actors.principal('ada'));
     const result = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Undo steps', markdown: START_MARKDOWN } });
     expect(result.status()).toBe(201);
