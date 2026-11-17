@@ -5,7 +5,7 @@ import { expect, test, ui } from '../lib/test.ts';
 import { grantDoc } from '../lib/grants.ts';
 import type { Actor, Actors } from '../lib/actors.ts';
 
-const fixture = 'Shared paragraph.\n\n| Original | Value |\n| --- | --- |\n| cell | 1 |\n\n:::tabs\n=== First\nFirst panel\n=== Second\nSecond panel\n:::\n\n## Fold me\n\nHidden paragraph.\n\n{{timeline|6 weeks}}';
+const fixture = 'Shared paragraph.\n\n| Original | Value |\n| --- | --- |\n| cell | 1 |\n\n:::tabs\n=== First\nFirst panel\n=== Second\nSecond panel\n:::\n\n## Fold me\n\nHidden paragraph.\n\n{{timeline|6 weeks|name=span}}';
 async function setup(actors: Actors, baseUrl: string, markdown = fixture) {
   const ada = await actors.session(await actors.principal('ada'));
   const result = await ada.context.request.post('/api/docs', { headers: { origin: baseUrl }, data: { title: 'Editing', markdown } });
