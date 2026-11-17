@@ -268,7 +268,8 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
 
   await suggestText(ben, docId, 'Second paragraph', 6, ' extra');
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
-  await expect(review(ada)).toHaveAttribute('aria-pressed', 'false');
+  await expect(await review(ada)).toHaveAttribute('aria-pressed', 'false');
+  await closePanel(ada);
   await ada.page.waitForTimeout(500);
   await expect(pane, "a colleague's next suggestion leaves the owner editing").toHaveAttribute(EDIT_MODE_ATTR, 'edit');
   await expect(ui.pane(carl, docId), "the viewer's mode never moved").toHaveAttribute(EDIT_MODE_ATTR, 'review');
