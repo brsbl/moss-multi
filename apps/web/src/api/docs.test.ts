@@ -125,7 +125,7 @@ describe('POST /api/docs', () => {
 
   it('refuses invalid and oversized markdown before creating a doc', async () => {
     expect((await create(ada.cookie, { markdown: 42 })).status).toBe(400);
-    expect((await create(ada.cookie, { markdown: 'é'.repeat(1024 * 1024 + 1) })).status).toBe(413);
+    expect((await create(ada.cookie, { markdown: 'é'.repeat(2 * 1024 * 1024 + 1) })).status).toBe(413);
     expect(created).toEqual([]);
   });
 
