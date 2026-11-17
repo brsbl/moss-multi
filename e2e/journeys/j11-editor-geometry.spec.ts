@@ -118,9 +118,9 @@ test('j11 editor geometry: a formula draft is moss\'s padded, rounded chip for t
   // would land on the committed formula's line.
   await ada.page.keyboard.press('ArrowUp');
   await ada.page.keyboard.press('End');
-  await ada.page.keyboard.type(' =4*5', { delay: 40 });
-  await expect.poll(async () => (await draftGeometry(ada, id, 'Total cost =4*5', '=4*5'))?.chip?.left ?? null).not.toBeNull();
-  const inline = (await draftGeometry(ada, id, 'Total cost =4*5', '=4*5'))!;
+  await ada.page.keyboard.type(' price=12', { delay: 40 });
+  await expect.poll(async () => (await draftGeometry(ada, id, 'Total cost price=12', 'price=12'))?.chip?.left ?? null).not.toBeNull();
+  const inline = (await draftGeometry(ada, id, 'Total cost price=12', 'price=12'))!;
   expect(inline.chip!.left, 'the chip does not cover the word before it').toBeGreaterThanOrEqual(inline.before!.right - 0.5);
   expect(inline.chip!.right).toBeCloseTo(inline.text.right + 8, 0);
 
