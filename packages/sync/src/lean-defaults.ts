@@ -39,7 +39,10 @@ export function keepLeanDefault(binding: Binding, item: Item): boolean {
   return value !== undefined && write(parent, key, value);
 }
 
-const isNodeType = (type: AbstractType<unknown>) => type instanceof YMap || type instanceof XmlText || type instanceof XmlElement;
+/** Keys and structs the repairs looked at, a step counter for tests. */
+export const repairWork = { steps: 0 };
+
+const isNodeType =(type: AbstractType<unknown>) => type instanceof YMap || type instanceof XmlText || type instanceof XmlElement;
 const stored = (type: AbstractType<unknown>, key: string) => {
   const item = type._map.get(key);
   return item !== undefined && !item.deleted;

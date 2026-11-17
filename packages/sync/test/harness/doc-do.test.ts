@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
-import { DocDO } from '../../src/doc-do.ts';
+import { DocDO, type DocLimits } from '../../src/doc-do.ts';
 import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
-import { serverWrite } from '../../src/server-doc.ts';
+import { keepLeanKeys, repairWork } from '../../src/lean-defaults.ts';
+import { serverLeanDefaults, serverWrite } from '../../src/server-doc.ts';
 import { interleavedChains } from './answer-shapes.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, step1, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
 
@@ -1145,5 +1146,215 @@ describe('lean layout (A§10.11)', () => {
     }
     const woken = await start(wake(opened));
     expect(block(woken.dobj.document).getAttributes(), 'the defaults are persisted').toEqual(PLAIN);
+  });
+});
+
+// T3.B33: a body property a client frame writes with the wrong type for its class default (or a non-finite number) is
+// put back to the default, counted with the frame against the limits, never over a concurrent valid write.
+describe('wrong-typed body properties (A§10.11)', () => {
+  const block = (doc: Y.Doc, at = 0) => (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[])[at]!.insert as Y.XmlText;
+  const structsOf = (doc: Y.Doc) => [...doc.store.clients.values()].reduce((sum, structs) => sum + structs.length, 0);
+  const refused = (client: TestClient) => client.events.filter((event) => event.t === 'write-refused');
+
+  function capped(caps: Partial<DocLimits>): { Doc: typeof DocDO; limits: DocLimits } {
+    const limits = { ...DocDO.limits, ...caps } as DocLimits;
+    class Capped extends DocDO {
+      static override limits = limits;
+    }
+    return { Doc: Capped, limits };
+  }
+
+  /** `count` more paragraphs, each with `attributes`, written by `client` in one frame. */
+  async function paragraphs(client: TestClient, count: number, attributes: Record<string, unknown> = {}): Promise<void> {
+    const root = client.doc.get('root', Y.XmlText);
+    client.doc.transact(() => {
+      for (let i = 0; i < count; i += 1) {
+        const paragraph = new Y.XmlText();
+        root.insertEmbed(root.length, paragraph);
+        paragraph.setAttribute('__type', 'paragraph');
+        for (const [key, value] of Object.entries(attributes)) paragraph.setAttribute(key, value as never);
+      }
+    });
+    await client.flush();
+  }
+
+  /** Sets `key` on the first `count` paragraphs of `client`'s doc, in one transaction. */
+  function setOn(client: TestClient, key: string, value: unknown, count = Number.POSITIVE_INFINITY): void {
+    const blocks = (client.doc.get('root', Y.XmlText).toDelta() as { insert: Y.XmlText }[]).slice(0, count);
+    client.doc.transact(() => {
+      for (const op of blocks) op.insert.setAttribute(key, value as never);
+    });
+  }
+
+  it.each([
+    ['__indent', Number.NaN, 0],
+    ['__format', 'x', 0],
+    ['__style', 7, ''],
+    ['__indent', Number.POSITIVE_INFINITY, 0],
+  ] as const)('a client frame writing %s %s is put back to the default, and every peer reads it', async (key, wrong, fallback) => {
+    const opened = await start(openDoc());
+    const ben = await editorOn(opened);
+    const ada = await editorOn(opened);
+    block(ben.doc).setAttribute(key, wrong as never);
+    await ben.flush();
+    await ada.pump();
+    for (const [who, doc] of [['the server', opened.dobj.document], ['Ben', ben.doc], ['Ada', ada.doc]] as const) {
+      expect(block(doc).getAttribute(key), `${who} holds the default`).toBe(fallback);
+    }
+    expect(ben.closed, 'the writer stays connected').toBeNull();
+    const woken = await start(wake(opened));
+    expect(block(woken.dobj.document).getAttribute(key), 'the default is persisted').toBe(fallback);
+  });
+
+  it('leaves a valid write, a key whose default is null, and `__type` alone, writing nothing', async () => {
+    const opened = await start(openDoc());
+    const ben = await editorOn(opened);
+    const values = { __indent: 2, __format: 1, __style: 'color: red', __dir: 5 };
+    for (const [key, value] of Object.entries(values)) block(ben.doc).setAttribute(key, value as never);
+    await ben.flush();
+    expect(block(opened.dobj.document).getAttributes()).toEqual({ __type: 'paragraph', ...values });
+    expect(Y.encodeStateVector(opened.dobj.document), 'the server wrote nothing of its own').toEqual(Y.encodeStateVector(ben.doc));
+  });
+
+  for (const repair of ['a wrong-typed value', 'an emptied key'] as const) {
+    for (const [order, id] of [['lower', 1], ['higher', 2 ** 32 - 2]] as const) {
+      it(`a peer's concurrent valid write survives the repair of ${repair} on every peer, its client id ${order}`, async () => {
+        const opened = await start(openDoc());
+        const ben = await editorOn(opened);
+        const adaDoc = new Y.Doc();
+        adaDoc.clientID = id;
+        const ada = await connect(opened, { role: 'editor' }, adaDoc);
+        await ada.hello();
+        if (repair === 'an emptied key') {
+          block(ben.doc).setAttribute('__indent', 1 as never);
+          await ben.flush();
+          await ada.pump();
+          block(ben.doc).removeAttribute('__indent');
+        } else {
+          block(ben.doc).setAttribute('__indent', Number.NaN as never);
+        }
+        // Ada has Ben's write, and not yet the server's repair, when she indents.
+        const bens = Y.encodeStateAsUpdate(ben.doc, Y.encodeStateVector(ada.doc));
+        await ben.flush();
+        expect(block(opened.dobj.document).getAttribute('__indent'), 'the server repaired it').toBe(0);
+        Y.applyUpdate(ada.doc, bens);
+        ada.drain();
+        block(ada.doc).setAttribute('__indent', 2 as never);
+        await ada.flush();
+        await ben.pump();
+        for (const [who, doc] of [['the server', opened.dobj.document], ['Ben', ben.doc], ['Ada', ada.doc]] as const) {
+          expect(block(doc).getAttribute('__indent'), `${who} holds Ada's write`).toBe(2);
+        }
+      });
+    }
+  }
+
+  it('a repair runs only while the key still holds the value it repairs', () => {
+    const doc = new Y.Doc();
+    const paragraph = new Y.XmlText();
+    doc.transact(() => {
+      doc.get('root', Y.XmlText).insertEmbed(0, paragraph);
+      paragraph.setAttribute('__type', 'paragraph');
+    }, 'seed');
+    const detach = keepLeanKeys(doc, serverLeanDefaults(), 'lean-keys', (origin) => origin === 'peer');
+    // Another write lands after the peer's and before the repair would run.
+    doc.on('afterTransaction', (transaction: Y.Transaction) => {
+      if (transaction.origin === 'peer') doc.transact(() => paragraph.setAttribute('__indent', 3 as never), 'other');
+    });
+    doc.transact(() => paragraph.setAttribute('__indent', Number.NaN as never), 'peer');
+    expect(paragraph.getAttribute('__indent')).toBe(3);
+    detach();
+    doc.destroy();
+  });
+
+  it('a small frame emptying many keys on a note near its state cap is refused whole when its repair would pass the cap', async () => {
+    const { Doc, limits } = capped({});
+    const opened = await start(openDoc(new Backing(), Doc as never));
+    const ben = await editorOn(opened);
+    const ada = await editorOn(opened);
+    await paragraphs(ben, 400, { __indent: 1 });
+    await ada.pump();
+    const root = ben.doc.get('root', Y.XmlText);
+    const before = Y.encodeStateVector(ben.doc);
+    ben.doc.transact(() => {
+      for (const op of root.toDelta() as { insert: Y.XmlText }[]) op.insert.removeAttribute('__indent');
+    });
+    // What the note would hold once the frame and its repair landed.
+    const copy = new Y.Doc();
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(opened.dobj.document));
+    const detach = keepLeanKeys(copy, serverLeanDefaults(), 'lean-keys', (origin) => origin === 'frame');
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(ben.doc, before), 'frame');
+    detach();
+    expect(block(copy, 399).getAttribute('__indent'), 'the copy holds the repair').toBe(0);
+    const after = Y.encodeStateAsUpdate(copy).byteLength;
+    const stored = Y.encodeStateAsUpdate(opened.dobj.document);
+    expect(after, 'the repair adds bytes').toBeGreaterThan(stored.byteLength);
+    limits.stateCapBytes = after - 1;
+    await ben.flush();
+    expect(refused(ben)).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
+    expect(ben.closed?.code).toBe(CLOSE.writeRefused);
+    expect(Y.encodeStateAsUpdate(opened.dobj.document), 'the server keeps what it had').toEqual(stored);
+    expect(stored.byteLength, 'and stays within the cap').toBeLessThanOrEqual(limits.stateCapBytes);
+    await ada.pump();
+    expect(block(ada.doc, 399).getAttribute('__indent'), 'the peer keeps what it had').toBe(1);
+  });
+
+  it('a frame whose repair would pass the structure limit is refused whole; within it, it lands repaired', async () => {
+    const { Doc, limits } = capped({ structHeadroom: 0 });
+    const opened = await start(openDoc(new Backing(), Doc as never));
+    const ben = await editorOn(opened);
+    await paragraphs(ben, 199, { __indent: 1 });
+    setOn(ben, '__indent', 1, 1);
+    await ben.flush();
+    const now = structsOf(opened.dobj.document);
+    // The frame adds a struct per paragraph and its repair another: room for the frame alone.
+    limits.structCap = now + 300;
+    setOn(ben, '__indent', Number.NaN);
+    await ben.flush();
+    expect(refused(ben)).toContainEqual({ t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+    expect(structsOf(opened.dobj.document), 'the server keeps what it had').toBe(now);
+    expect(block(opened.dobj.document, 199).getAttribute('__indent')).toBe(1);
+
+    limits.structCap = now + 400;
+    const carl = await editorOn(opened);
+    setOn(carl, '__indent', Number.NaN);
+    await carl.flush();
+    expect(carl.closed).toBeNull();
+    expect(block(carl.doc, 199).getAttribute('__indent'), 'repaired on the writer').toBe(0);
+    expect(structsOf(opened.dobj.document)).toBeLessThanOrEqual(limits.structCap);
+  });
+
+  it('repairs per frame are bounded: past the bound the frame is refused whole', async () => {
+    const { Doc } = capped({ repairsPerFrame: 3 });
+    const opened = await start(openDoc(new Backing(), Doc as never));
+    const ben = await editorOn(opened);
+    await paragraphs(ben, 3);
+    setOn(ben, '__indent', Number.NaN, 3);
+    await ben.flush();
+    expect(ben.closed, 'three repairs land').toBeNull();
+    expect(block(opened.dobj.document, 2).getAttribute('__indent')).toBe(0);
+    const carl = await editorOn(opened);
+    setOn(carl, '__indent', Number.NaN, 4);
+    await carl.flush();
+    expect(refused(carl)).toContainEqual({ t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+    expect(block(opened.dobj.document, 3).getAttribute('__indent'), 'none of the frame applied').toBeUndefined();
+  });
+
+  it('costs the same on a small note and on a note near its limits (steps, not wall time)', async () => {
+    const steps = async (extra: number): Promise<number> => {
+      const { Doc, limits } = capped({ structHeadroom: 0 });
+      const opened = await start(openDoc(new Backing(), Doc as never));
+      const ben = await editorOn(opened);
+      if (extra) await paragraphs(ben, extra, { __indent: 1 });
+      limits.structCap = structsOf(opened.dobj.document) + 4;
+      const from = repairWork.steps;
+      block(ben.doc).setAttribute('__indent', Number.NaN as never);
+      await ben.flush();
+      expect(block(opened.dobj.document).getAttribute('__indent')).toBe(0);
+      return repairWork.steps - from;
+    };
+    const small = await steps(0);
+    expect(small).toBeGreaterThan(0);
+    expect(await steps(20_000)).toBe(small);
   });
 });

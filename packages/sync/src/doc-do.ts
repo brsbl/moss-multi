@@ -79,6 +79,8 @@ export interface DocLimits {
   anonymousSocketsPerAddress: number;
   /** The bytes of step 1s one socket may have waiting for that budget; past it one waits without its vector. */
   waitingAnswerBytesPerConnection: number;
+  /** Body properties one frame may leave for the DocDO to put back to their defaults; past it the frame is refused. */
+  repairsPerFrame: number;
 }
 
 export interface CreateDocInput {
@@ -297,6 +299,7 @@ export class DocDO extends YServer<SyncEnv> {
     answerBudget: ANSWER_BUDGET,
     anonymousSocketsPerAddress: ANONYMOUS_SOCKETS_PER_ADDRESS,
     waitingAnswerBytesPerConnection: 128 * 1024,
+    repairsPerFrame: 10_000,
   };
   /** Where the title, filename and updated_at projections land (A§5.1). */
   static projectionTarget: (env: SyncEnv) => ProjectionTarget | null = (env) => (env?.DB ? d1Projections(env.DB, (id) => publishMeta(env, [id])) : null);

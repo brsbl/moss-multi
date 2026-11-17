@@ -175,3 +175,44 @@ describe('T3.B31b undo across a key\'s first write keeps the default stored @p:c
     } finally { dispose(); }
   });
 });
+
+describe('T3.B33 the server never keeps a body property of the wrong type @p:col-1 @p:col-3', () => {
+  // Offline, the earlier build's undo deletes the key its first indent wrote, its reader hands the node `undefined`, and
+  // its next indent computes undefined + 1: it writes NaN.
+  it('a peer on the earlier binding that indents, undoes and indents again offline stores no NaN: every peer reads 0 and can indent and outdent', async () => {
+    const { ada, ben, dispose } = await mixed();
+    try {
+      await expectBoth(ada, ben, PLAIN, 'opened');
+      ben.step(() => { paragraph().setIndent(paragraph().getIndent() + 1); });
+      ben.undo.undo();
+      ben.step(() => { paragraph().setIndent(paragraph().getIndent() + 1); });
+      await expectBoth(ada, ben, PLAIN, 'Ben reconnects: the server put the default back');
+      ben.step(() => { paragraph().setIndent(paragraph().getIndent() + 1); });
+      const indented = { ...PLAIN, paragraph: { ...PLAIN.paragraph, indent: 1 } };
+      await expectBoth(ada, ben, indented, 'Ben indents');
+      ada.step(() => { paragraph().setIndent(paragraph().getIndent() + 1); });
+      await expectBoth(ada, ben, { ...PLAIN, paragraph: { ...PLAIN.paragraph, indent: 2 } }, 'Ada indents');
+      ada.step(() => { if (paragraph().getIndent() > 0) paragraph().setIndent(paragraph().getIndent() - 1); });
+      await expectBoth(ada, ben, indented, 'Ada outdents');
+      ben.step(() => { if (paragraph().getIndent() > 0) paragraph().setIndent(paragraph().getIndent() - 1); });
+      await expectBoth(ada, ben, PLAIN, 'Ben outdents');
+    } finally { dispose(); }
+  });
+
+  // The disclosed residual (A§10.11): the server's write-back follows the item Ben's undo deleted, so his redo of that
+  // first write finds a later change it did not make and does nothing; every peer keeps the default.
+  it('a redo of a first write on the earlier binding after the write-back does nothing, and both peers converge', async () => {
+    const { ada, ben, dispose } = await mixed();
+    try {
+      ben.step(() => { text().toggleFormat('bold'); });
+      await expectBoth(ada, ben, { ...PLAIN, text: { ...PLAIN.text, format: 1 } }, 'Ben bolds');
+      ben.undo.undo();
+      await expectBoth(ada, ben, PLAIN, 'Ben undoes the bold');
+      ben.undo.redo();
+      await expectBoth(ada, ben, PLAIN, 'Ben redoes it: nothing changes');
+      expect(Object.fromEntries(run(server).entries())).toEqual({ __type: 'text', __format: 0 });
+      ben.step(() => { text().toggleFormat('italic'); });
+      await expectBoth(ada, ben, { ...PLAIN, text: { ...PLAIN.text, format: 2 } }, 'Ben italicizes');
+    } finally { dispose(); }
+  });
+});
