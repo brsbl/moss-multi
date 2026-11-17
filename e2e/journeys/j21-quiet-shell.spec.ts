@@ -104,6 +104,7 @@ test('j21 the sidebar\'s Settings opens the app menu, walked by keys: Current va
   await expect(menu, 'the app menu opens').toBeVisible();
   await expect(menu.getByText(/^Current vault: .+/), 'it names the vault on screen').toBeVisible();
   expect(await ui.menuEntries(menu)).toEqual(['Switch vault…', 'Notifications', 'Connection status', 'Account', 'Settings']);
+  await expect.poll(() => menu.evaluate((m) => m.contains(document.activeElement)), { message: 'focus is in the menu' }).toBe(true);
   await page.keyboard.press('End');
   await expect(menu.getByRole('menuitem', { name: 'Settings', exact: true }), 'End reaches the last entry').toBeFocused();
   await page.keyboard.press('Home');

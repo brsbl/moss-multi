@@ -353,8 +353,8 @@ function CloseConfirmation({ docId }: { docId: string }): ReactNode {
 export function SuggestionsButton({ docId, source, showCount = true, anchor }: {
   docId: string; source: SuggestionsSource; showCount?: boolean; anchor?: RefObject<HTMLElement | null>;
 }): ReactNode {
-  // Opened from the count: the count keeps its place until the panel closes.
-  const [fromCount, setFromCount] = useState(false);
+  // While the panel is open, the count stays as it was when it opened, so the panel never loses its anchor.
+  const [pinned, setPinned] = useState<boolean | null>(null);
   const records = useRecords(source);
   const body = useSyncExternalStore(source.subscribeMount, () => source.body, () => null);
   const role = useDocRole(docId);
@@ -371,20 +371,18 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor }: {
     .filter((record) => record.meta.status !== 'open')
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
-  useEffect(() => { if (!isOpen) setFromCount(false); }, [isOpen]);
+  const live = open.length > 0 && showCount;
+  useEffect(() => { setPinned(isOpen ? (held) => held ?? live : null); }, [isOpen]);
   if (role === null) return null;
   const reviewing = mode === 'review';
-  const counted = (open.length > 0 && showCount) || (isOpen && fromCount);
+  const counted = pinned ?? live;
   return (
     <TooltipProvider>
       <Popover.Root
         open={isOpen}
         onOpenChange={(next) => {
-          if (!next) closePanel(docId);
-          else {
-            setFromCount(true);
-            openSuggestion(docId, null);
-          }
+          if (next) openSuggestion(docId, null);
+          else closePanel(docId);
         }}
       >
         {counted ? (
