@@ -41,12 +41,12 @@ function lineRects(ranges: Range[]): DOMRect[] {
   return lines.sort((a, b) => a.top - b.top || a.left - b.left);
 }
 
-/** Room beside the draft before the neighbouring character's glyph, or a full pad when a span edge was padded. */
-function room(range: Range, side: 'start' | 'end', padded: boolean, edge: number): number {
-  if (padded) return PAD_X;
+/** Room beside the draft before the neighbouring character's glyph; a full pad at a span edge, which is padded. */
+function room(range: Range, side: 'start' | 'end', edge: number): number {
   const text = textOf(side === 'start' ? range.startContainer : range.endContainer);
   const offset = side === 'start' ? range.startOffset : range.endOffset;
-  if (!text || (side === 'start' ? offset === 0 : offset >= text.length)) return 0;
+  if (!text) return 0;
+  if (side === 'start' ? offset === 0 : offset >= text.length) return PAD_X;
   const at = side === 'start' ? offset - 1 : offset;
   if (!/\s/.test(text.data[at])) return 0;
   const neighbour = document.createRange();
@@ -73,8 +73,8 @@ function draw(editor: LexicalEditor, state: ChipState): void {
   const lineHeight = (span && parseFloat(getComputedStyle(span).lineHeight)) || (lines[0]?.height ?? 0);
   const boxes = lines.length ? formulaChipBoxes(lines, {
     lineHeight,
-    startRoom: room(first, 'start', state.padded.includes(span as HTMLElement), lines[0].left),
-    endRoom: room(last, 'end', state.padded.includes(textOf(last.endContainer)?.parentElement as HTMLElement), lines[lines.length - 1].right),
+    startRoom: room(first, 'start', lines[0].left),
+    endRoom: room(last, 'end', lines[lines.length - 1].right),
   }) : [];
   const origin = state.layer.getBoundingClientRect();
   state.layer.replaceChildren(...boxes.map((box, index) => {
