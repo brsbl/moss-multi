@@ -131,7 +131,7 @@ diff --git a/packages/desktop/src/renderer/panels/CanvasAreaContent.tsx b/packag
      }, duration);
    }, []);
 +  // moss-multi seam: action-feedback (T9.4)
-+  useEffect(() => (note?.id ? subscribeActionFeedback(note.id, showActionFeedback) : undefined), [note?.id, showActionFeedback]);
++  useEffect(() => (note?.id ? subscribeActionFeedback(note.id, showActionFeedback, (message) => setActionFeedback((current) => (current?.message === message ? null : current))) : undefined), [note?.id, showActionFeedback]);
  
    // Show a copy toast when a note/anchor link is copied from inside the editor
    // (e.g. the collapsible-heading context menu). The event bubbles from the

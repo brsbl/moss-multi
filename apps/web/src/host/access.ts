@@ -29,8 +29,36 @@ const roles = new Map<string, Role>();
 const listeners = new Set<() => void>();
 const asking = new Map<string, Promise<DocAnswer>>();
 
+/** Every read of a role takes a ticket as it starts; each doc keeps the newest ticket that answered or superseded it. */
+let tickets = 0;
+const settled = new Map<string, number>();
+
+/**
+ * Starts a read of the caller's roles. The remember it returns applies a doc's role unless a read started later has
+ * answered for that doc, or access changed since this one started (T9.12): a slow answer never undoes a newer one, as a
+ * raise's answer arriving after the lowering that followed it. It returns whether the role applied.
+ */
+export function startRoleRead(): (docId: string, role: unknown) => boolean {
+  const ticket = ++tickets;
+  return (docId, role) => {
+    if (role === undefined || ticket < (settled.get(docId) ?? 0)) return false;
+    settled.set(docId, ticket);
+    applyRole(docId, role);
+    return true;
+  };
+}
+
+/** Access to `docId` may have changed: answers to reads already under way no longer apply; ask again. */
+export function supersedeRoleReads(docId: string): void {
+  settled.set(docId, ++tickets);
+}
+
 export function rememberRole(docId: string, role: unknown): void {
-  if (role === undefined || roles.get(docId) === role) return;
+  startRoleRead()(docId, role);
+}
+
+function applyRole(docId: string, role: unknown): void {
+  if (roles.get(docId) === role) return;
   // A role this client does not know forgets the one it held: an unknown role gets no actions (A§8).
   if (!isRole(role)) {
     if (!roles.delete(docId)) return;
@@ -62,6 +90,7 @@ const ACCESS_TIMEOUT_MS = 10_000;
 /** Held while the page leaves and asked again if it stays, so a reload never cuts it off (leave.ts). */
 async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocAnswer> {
   const share = shareParam();
+  const remember = startRoleRead();
   try {
     return await heldRead((signal) => fetcher(`/api/docs/${encodeURIComponent(docId)}`, {
       credentials: 'same-origin',
@@ -77,7 +106,7 @@ async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocA
       if (!response.ok) return { kind: 'unavailable' };
       const body = (await response.json()) as { role?: unknown; doc?: AccessibleDoc };
       if (!isRole(body.role) || !body.doc) return { kind: 'unavailable' };
-      rememberRole(docId, body.role);
+      remember(docId, body.role);
       return { kind: 'open', role: body.role, doc: body.doc };
     }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {

@@ -26,7 +26,7 @@ import { NoteMenuItems, TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
-  aliasProvider, docOwner, openDocSession, subscribeDocOwners, waitDocsAcked, type DocSession, type SessionState,
+  aliasProvider, docOwner, openDocSession, subscribeDocOwners, VIEW_ONLY, waitDocsAcked, type DocSession, type SessionState,
 } from './doc-session.ts';
 import { auth } from '../auth.ts';
 import { captureCaret, type CaretMark } from './suggest/caret.ts';
@@ -48,6 +48,8 @@ import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
+import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
+import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
 
 interface PaneState {
@@ -136,6 +138,14 @@ function dropUndo(editor: LexicalEditor | null, clients: number[]): void {
 const allows = (mode: EditMode, role: Role | null): boolean =>
   role !== null && (mode === 'review' || (mode === 'edit' ? role !== 'suggester' : can(role, 'suggest')));
 
+/** What a raise can newly let a person do in the note, the most first. */
+const RAISED = ['edit', 'suggest', 'comment'] as const;
+const RAISED_NOTICE: Record<(typeof RAISED)[number], string> = {
+  edit: 'You can now edit this note.',
+  suggest: 'You can now suggest changes to this note.',
+  comment: 'You can now comment on this note.',
+};
+
 /** Refusals that mean the note has no room for more suggestions (T5.S4): retrying in a new F would be refused too. */
 const NO_SUGGESTION_ROOM: ReadonlySet<SuggestRefusal> = new Set<SuggestRefusal>(['doc-cap', 'ops-cap']);
 
@@ -162,6 +172,10 @@ class PaneBinding implements SuggestPane {
   #caret: CaretMark | null = null;
   #stopOpen: (() => void) | null = null;
   readonly #mountListeners = new Set<() => void>();
+  /** A raise waits to bind a fresh session at its role (T9.12), even into the mode the pane already shows. */
+  #rebind = false;
+  /** What the feedback pill announces once the raised pane can do it; dropped if the role falls below it first. */
+  #announce: (typeof RAISED)[number] | null = null;
 
   #role: Role | null;
   /** `fromTrash`: the editor holds the Trash view's REST content, which is cleared before the plugin binds. */
@@ -207,10 +221,39 @@ class PaneBinding implements SuggestPane {
   }
 
   setRole(role: Role | null): void {
-    const known = this.#role !== null;
+    const previous = this.#role;
     this.#role = role;
-    this.#retarget(known);
+    const gained = previous === null || role === null ? null : RAISED.find((tier) => can(role, tier) && !can(previous, tier)) ?? null;
+    if (gained) {
+      this.#raised(gained);
+      return;
+    }
+    if (this.#announce && !can(role, this.#announce)) this.#announce = null;
+    // A raise's pill still up says what the person can no longer do: it goes now (T9.12).
+    if (previous) for (const tier of RAISED) if (can(previous, tier) && !can(role, tier)) withdrawActionFeedback(this.docId, RAISED_NOTICE[tier]);
+    this.#retarget(previous !== null);
     if (this.#session) this.#apply(this.#session.state);
+  }
+
+  /**
+   * A raise in place (T9.12): the pane takes the new role's default mode unless the person chose Review, and a raise
+   * to suggest or edit binds a fresh session once every edit is acked, since a socket keeps the role it was admitted
+   * at. Moss's feedback pill says what changed once the pane can do it.
+   */
+  #raised(gained: (typeof RAISED)[number]): void {
+    this.#announce = gained;
+    // A lowering's notice still up contradicts the raise.
+    if (gained !== 'comment') settleRefusal(VIEW_ONLY, 0);
+    if (!this.#session && gained !== 'comment') this.canWrite = true;
+    if (gained === 'comment' || !this.#session) {
+      this.#retarget();
+      if (this.#session) this.#apply(this.#session.state);
+      return;
+    }
+    this.#target = modeFor(this.docId, this.#role);
+    this.#noRoom = false;
+    this.#rebind = true;
+    this.#remount();
   }
 
   get mode(): EditMode {
@@ -427,6 +470,11 @@ class PaneBinding implements SuggestPane {
     this.#session = null;
     this.#mount = null;
     this.#switching = false;
+    // A raise binds its fresh session writable; the server still refuses what the role does not allow.
+    if (this.#rebind) {
+      this.#rebind = false;
+      this.canWrite = true;
+    }
     this.set({ resetting: false, revision: this.#state.revision + 1, mode: this.#mode });
     this.#mountChanged();
     // A request made while this switch waited is served next.
@@ -439,9 +487,11 @@ class PaneBinding implements SuggestPane {
     const editor = this.#editor;
     if (!editor) return;
     const terminal = terminalOf(this.docId);
-    this.canWrite = state.canWrite;
+    // Only the session bound now speaks for the next one: a released one's late state never does.
+    if (this.#session?.state === state) this.canWrite = state.canWrite;
     // Suggest writes only records, so a suggester's session (which cannot write the body) still types into F.
-    const writes = this.#mode === 'edit' ? state.canWrite && can(this.#role, 'edit') : this.#mode === 'suggest' && can(this.#role, 'suggest') && !this.#inputClosed;
+    // A session admitted below a raise writes nothing until the fresh one binds.
+    const writes = !this.#rebind && (this.#mode === 'edit' ? state.canWrite && can(this.#role, 'edit') : this.#mode === 'suggest' && can(this.#role, 'suggest') && !this.#inputClosed);
     const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role || !this.#mountReady ? 'unbound' : writes && !state.writePaused ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
@@ -454,6 +504,11 @@ class PaneBinding implements SuggestPane {
       resetting: state.resync || (this.#switching && this.#state.resetting),
       docState: terminal ? 'terminal' : state.retrying ? 'retrying' : !state.synced || state.resync ? 'binding' : state.connection === 'offline' ? 'offline' : 'live',
     });
+    const message = this.#announce && RAISED_NOTICE[this.#announce];
+    if (message && session && !terminal && !this.#switching && state.synced && !state.resync && this.#mountReady) {
+      this.#announce = null;
+      queueMicrotask(() => showActionFeedback(this.docId, { type: 'success', message }));
+    }
   }
 }
 
