@@ -182,11 +182,8 @@ describe('smallestCap', () => {
     return { fits, probes };
   };
 
-  it('bisects to within 2 MB above the need', async () => {
-    const { fits } = needing(131);
-    const cap = await smallestCap(fits, 87, 197);
-    expect(cap).toBeGreaterThanOrEqual(131);
-    expect(cap).toBeLessThanOrEqual(133);
+  it('bisects to the need, to the MB', async () => {
+    for (const need of [84, 85, 86, 87, 130, 131]) expect(await smallestCap(needing(need).fits, 54, 116)).toBe(need);
   });
 
   it('lowers a low bound that already fits and raises a high bound that does not', async () => {

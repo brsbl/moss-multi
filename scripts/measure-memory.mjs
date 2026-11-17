@@ -457,8 +457,11 @@ async function deleteToCeiling(origin, doc) {
   }
 }
 
-/** The bisection's resolution, in MB of `--max-heap-size`. */
-const NEED_STEP_MB = 2;
+/**
+ * The bisection's resolution, in MB of `--max-heap-size`: 1 MB, the flag's own unit. At 2 MB a need of 86 MB that
+ * failed at 85 was reported as 87, over a budget of 86.4.
+ */
+const NEED_STEP_MB = 1;
 const NEED_CEILING_MB = 1024;
 const NEED_DOC = 'needs';
 
