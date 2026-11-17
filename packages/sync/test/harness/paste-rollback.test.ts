@@ -1,10 +1,10 @@
 // T3.B32 in the DocDO harness: a large paste cut short by a limit leaves nothing behind. The DocDO admits each of the
 // paste's frames on its own (no reservation, A§5.1), so another writer can fill the room while its later frames are on
-// the way; the pasting tab then deletes the paste's landed items, by client id and clock range, in delete-only batches
-// the DocDO admits at any limit. The paste's own deletes (a selection it replaced) are held back until all of it has
-// landed, so a cut one deleted nothing. Its note and payload docs end as they were before the paste, plus everyone
-// else's writes, a peer's text typed into a pasted line too. The browser side (the record, holding the deletes back,
-// the resume, the notice) is in doc-session.test and j01-paste-tail.
+// the way; the pasting tab then deletes the paste's landed blocks whole, in delete-only batches of whole blocks the
+// DocDO admits at any limit, and the exact run it inserted into a line it did not make. The paste's own deletes (a
+// selection it replaced) are held back until all of it has landed, so a cut one deleted nothing. A pasted block
+// another writer wrote into, or into its payload, stays whole. A peer's bound editor follows the rollback. The browser
+// side (the record, holding the deletes back, the resume, the notice) is in doc-session.test and j01-paste-tail.
 import * as decoding from 'lib0/decoding';
 import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isParagraphNode, $isTextNode } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -101,16 +101,31 @@ async function cutPaste(): Promise<Cut> {
 }
 
 /** Ada's next binding (a fresh doc and socket) applies the rollback, its updates queued but not sent. */
-async function rollingBack(cut: Cut, maxStructs: number): Promise<{ again: LiveClient; frames: Uint8Array[] }> {
-  const { rollBack } = use();
+async function rollingBack(cut: Cut, maxStructs: number): Promise<{ again: LiveClient; frames: Uint8Array[]; kept: number }> {
+  const { rollBackPaste } = use();
   const again = await LiveClient.open(cut.doc, { id: 'ada' });
   const code = again.payloads.get(cut.payloadId);
   expect(code, 'the landed code block is named, so its doc arrives').toBeDefined();
-  // Its payload's items first, while the note still names it; then the note's.
-  rollBack(code!, cut.record.payloads[cut.payloadId], ROLLBACK, maxStructs);
-  expect(rollBack(again.doc, cut.record.note, ROLLBACK, maxStructs), 'in several batches').toBeGreaterThan(2);
+  const result = rollBackPaste(again.doc, cut.record.note, [[cut.payloadId, code!, cut.record.payloads[cut.payloadId]]], ROLLBACK, maxStructs) as
+    { updates: number; kept: number } | number;
+  const { updates, kept } = typeof result === 'number' ? { updates: result, kept: -1 } : result;
+  expect(updates, 'in several batches').toBeGreaterThan(2);
   again.flush();
-  return { again, frames: again.socket.drain() };
+  return { again, frames: again.socket.drain(), kept };
+}
+
+/** The whole tree a client's editor shows: each top-level block's type and text. */
+function tree(client: LiveClient): string[] {
+  client.flush();
+  return client.editor.getEditorState().read(() => $getRoot().getChildren().map((node) => `${node.getType()}:${node.getTextContent()}`));
+}
+
+/** What a fresh binding of the server's copy shows (a reload, or the export's view). */
+async function fresh(cut: Cut): Promise<string[]> {
+  const reader = await LiveClient.open(cut.doc, { id: 'cy' });
+  try {
+    return tree(reader);
+  } finally { reader.dispose(); }
 }
 
 const nothingPasted = (paragraphs: string[]) => paragraphs.filter((text) => /Alpha|print/.test(text));
@@ -134,7 +149,57 @@ describe('a cut paste rolled back (T3.B32)', () => {
       expect(cut.ben.paragraphs().filter((text) => !text.startsWith('Bravo')), 'the note before the paste').toEqual(cut.before);
       expect(cut.ben.paragraphs().filter((text) => text.startsWith('Bravo'))).toHaveLength(5);
       expect(again.ids(), 'no code block').toEqual([]);
-      expect(payloadText(again.payloads.get(cut.payloadId)!).toString(), "the code block's text is gone").toBe('');
+      expect(payloadText(again.payloads.get(cut.payloadId)!).toString(), 'its payload doc is left as it was, unnamed').toBe('print(1)');
+    } finally { again.dispose(); cut.ben.dispose(); }
+  });
+
+  it('deletes only whole top-level blocks, the last first, each batch whole blocks', async () => {
+    const { rollbackUpdates } = use();
+    const cut = await cutPaste();
+    const again = await LiveClient.open(cut.doc, { id: 'ada' });
+    try {
+      const root = again.doc.get('root', Y.XmlText);
+      const order = new Map<Y.Item, number>();
+      let at = 0;
+      for (let item = root._start; item; item = item.right) order.set(item, at++);
+      const updates = rollbackUpdates(again.doc, cut.record.note, 40);
+      expect(updates.length, 'in several batches').toBeGreaterThan(2);
+      const positions = updates.map((update) => {
+        const { structs, ds } = Y.decodeUpdate(update);
+        expect(structs, 'delete-only').toEqual([]);
+        const deleted: number[] = [];
+        ds.clients.forEach((items, client) => {
+          for (const { clock, len } of items) {
+            for (let c = clock; c < clock + len; c += 1) {
+              const item = Y.getItem(again.doc.store, Y.createID(client, c)) as Y.Item;
+              expect(item.parent, 'a top-level block, never a part of one').toBe(root);
+              deleted.push(order.get(item)!);
+            }
+          }
+        });
+        return deleted.sort((a, b) => a - b);
+      });
+      for (let i = 1; i < positions.length; i += 1) {
+        expect(positions[i].at(-1)!, 'each batch before the one before it').toBeLessThan(positions[i - 1][0]);
+      }
+    } finally { again.dispose(); cut.ben.dispose(); }
+  });
+
+  it("a peer's bound editor shows exactly what the server holds after the rollback, with no error", async () => {
+    const cut = await cutPaste();
+    expect(tree(cut.ben).some((line) => line.includes('Alpha')), 'Ben sees the part that landed').toBe(true);
+    const { again, frames } = await rollingBack(cut, 7);
+    try {
+      for (const frame of frames) {
+        await again.socket.deliver(frame);
+        await syncAll(cut.ben);
+      }
+      await syncAll(again, cut.ben);
+      expect(cut.ben.errors, "no error in Ben's editor").toEqual([]);
+      const shown = tree(cut.ben);
+      expect(shown.filter((line) => /Alpha|print/.test(line))).toEqual([]);
+      expect(shown, "Ben's editor equals the server's copy").toEqual(await fresh(cut));
+      expect(tree(again)).toEqual(shown);
     } finally { again.dispose(); cut.ben.dispose(); }
   });
 
@@ -183,29 +248,30 @@ describe('a cut paste rolled back (T3.B32)', () => {
     } finally { third.dispose(); cut.ben.dispose(); }
   });
 
-  it('keeps what another writer typed inside a landed pasted line, and only that of it', async () => {
+  it('keeps a landed pasted line another writer typed into whole, and removes the rest of the paste', async () => {
     const cut = await cutPaste();
     cut.limits.structCap = STRUCT_CAP;
     await syncAll(cut.ben);
     cut.ben.appendToParagraph('Alpha 0-0.', ' Ben was here.');
     await syncAll(cut.ben);
-    const { again, frames } = await rollingBack(cut, 40);
+    const { again, frames, kept } = await rollingBack(cut, 40);
     try {
       for (const frame of frames) await again.socket.deliver(frame);
       await syncAll(again, cut.ben);
       await syncAll(again, cut.ben);
       expect(again.socket.closed).toBeNull();
+      expect(kept, 'one block kept').toBe(1);
       const held = cut.ben.paragraphs();
-      expect(held, "Ben's words stay, in the line he typed them in").toContain(' Ben was here.');
-      expect(nothingPasted(held)).toEqual([]);
+      expect(nothingPasted(held), 'the line he typed into stays whole, and nothing else of the paste').toEqual(['Alpha 0-0. Ben was here.']);
       expect(again.paragraphs()).toEqual(held);
+      expect(tree(cut.ben)).toEqual(await fresh(cut));
       const server = await cut.doc.dobj.exportMarkdown();
-      expect(server).toContain('Ben was here.');
-      expect(server).not.toMatch(/Alpha|print/);
+      expect(server).toContain('Alpha 0-0. Ben was here.');
+      expect(server).not.toMatch(/Alpha 0-1\.|print/);
     } finally { again.dispose(); cut.ben.dispose(); }
   });
 
-  it("keeps a landed pasted code block another writer typed into, with that writer's code and none of the paste's", async () => {
+  it('keeps a landed pasted code block another writer typed into whole, its pasted code too', async () => {
     const { rollBackPaste } = use();
     expect(rollBackPaste, 'a whole paste rolled back, its payload docs with it').toBeTypeOf('function');
     const cut = await cutPaste();
@@ -217,7 +283,8 @@ describe('a cut paste rolled back (T3.B32)', () => {
     const again = await LiveClient.open(cut.doc, { id: 'ada' });
     try {
       const code = again.payloads.get(cut.payloadId)!;
-      rollBackPaste(again.doc, cut.record.note, [[cut.payloadId, code, cut.record.payloads[cut.payloadId]]], ROLLBACK, 40);
+      const result = rollBackPaste(again.doc, cut.record.note, [[cut.payloadId, code, cut.record.payloads[cut.payloadId]]], ROLLBACK, 40) as unknown;
+      expect(result, 'one block kept').toMatchObject({ kept: 1 });
       again.flush();
       for (const frame of again.socket.drain()) await again.socket.deliver(frame);
       await syncAll(again, cut.ben);
@@ -225,17 +292,24 @@ describe('a cut paste rolled back (T3.B32)', () => {
       expect(again.socket.closed).toBeNull();
       expect(cut.ben.ids(), 'the code block stays').toEqual([cut.payloadId]);
       expect(again.ids()).toEqual([cut.payloadId]);
-      expect(heldText(cut.ben.payloadDoc(0)), "Ben's code, without the paste's").toBe('ben();');
-      expect(heldText(again.payloadDoc(0))).toBe('ben();');
+      expect(heldText(cut.ben.payloadDoc(0)), "Ben's code and the paste's, as it stood").toBe('ben();print(1)');
+      expect(heldText(again.payloadDoc(0))).toBe('ben();print(1)');
       expect(nothingPasted(cut.ben.paragraphs())).toEqual([]);
       expect(again.paragraphs()).toEqual(cut.ben.paragraphs());
+      expect(tree(cut.ben)).toEqual(await fresh(cut));
       const server = await cut.doc.dobj.exportMarkdown();
-      expect(server).toContain('ben();');
-      expect(server).not.toMatch(/Alpha|print/);
+      expect(server).toContain('ben();print(1)');
+      expect(server).not.toMatch(/Alpha/);
     } finally { again.dispose(); cut.ben.dispose(); }
   });
 
-  it('a paste that replaced a selection holds its deletes back until it lands, so cut short it leaves the selection, and its rollback the note as it was', async () => {
+  // The first batch replaces the selected 'Kept.', or goes into the middle of 'Kept. Tail.' (splitting it); five more
+  // follow. Either way the line ends as it was.
+  const cases: [string, string, [number, number]][] = [
+    ['a paste that replaced a selection holds its deletes back until it lands, so cut short it leaves the selection, and its rollback the note as it was', 'Kept.', [0, 5]],
+    ['a paste into the middle of a line leaves that line as it was: the run it inserted there goes, with the blocks it made', 'Kept. Tail.', [5, 5]],
+  ];
+  for (const [name, line, [anchor, focus]] of cases) it(name, async () => {
     const { PasteWatch, withoutDeletes, rollBack } = use();
     expect(PasteWatch, "the paste's deletes, recorded").toBeTypeOf('function');
     expect(withoutDeletes, 'held back from what is sent').toBeTypeOf('function');
@@ -243,17 +317,16 @@ describe('a cut paste rolled back (T3.B32)', () => {
     const doc = await start(openDoc(new Backing(), Doc as never));
     const ada = await LiveClient.open(doc, { id: 'ada' });
     const ben = await LiveClient.open(doc, { id: 'ben' });
-    ada.insertParagraph('Kept.');
+    ada.insertParagraph(line);
     await syncAll(ada, ben);
     const before = ben.paragraphs();
-    expect(before).toContain('Kept.');
+    expect(before).toContain(line);
     const watch = new PasteWatch(ada.doc);
-    // The first batch replaces the selected 'Kept.'; five more follow.
     ada.editor.update(() => {
-      const kept = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent() === 'Kept.');
+      const kept = $getRoot().getChildren().find((node) => $isParagraphNode(node) && node.getTextContent() === line);
       const text = $isParagraphNode(kept) ? kept.getFirstChild() : null;
-      if (!$isTextNode(text)) throw new Error('no Kept.');
-      text.select(0, 5);
+      if (!$isTextNode(text)) throw new Error(`no ${line}`);
+      text.select(anchor, focus);
       $getSelection()!.insertNodes(Array.from({ length: 40 }, (_, i) => $createParagraphNode().append($createTextNode(`Alpha 0-${i}.`))));
     }, { discrete: true });
     for (let b = 1; b < 6; b += 1) {
@@ -263,7 +336,7 @@ describe('a cut paste rolled back (T3.B32)', () => {
     }
     await ada.settle();
     watch.finish();
-    expect(watch.deletes().length, 'the paste deleted the selection').toBeGreaterThan(0);
+    expect(watch.deletes().length, 'the paste deleted the text it replaced or moved').toBeGreaterThan(0);
     // What the tab sends: each frame without the paste's deletes.
     const frames = ada.socket.drain().map((frame) => {
       const decoder = decoding.createDecoder(frame);
@@ -272,7 +345,7 @@ describe('a cut paste rolled back (T3.B32)', () => {
     });
     expect(frames.length).toBeGreaterThan(4);
     for (const frame of frames.slice(0, 3)) await ada.socket.deliver(frame);
-    expect(await doc.dobj.exportMarkdown(), 'the selection stays on the server while the paste lands').toContain('Kept.');
+    expect(await doc.dobj.exportMarkdown(), 'the line stays on the server while the paste lands').toContain(line);
     for (let i = 0; i < 5; i += 1) ben.insertParagraph(`Bravo ${i}.`);
     await syncAll(ben);
     limits.structCap = structsOf(doc.dobj.document);
@@ -292,15 +365,20 @@ describe('a cut paste rolled back (T3.B32)', () => {
       await syncAll(again, ben);
       const held = ben.paragraphs();
       expect(nothingPasted(held)).toEqual([]);
-      expect(held.filter((text) => !text.startsWith('Bravo')), 'the note before the paste, its selection too').toEqual(before);
+      expect(held.filter((text) => !text.startsWith('Bravo')), 'the note before the paste, that line too').toEqual(before);
       expect(held.filter((text) => text.startsWith('Bravo'))).toHaveLength(5);
       expect(again.paragraphs()).toEqual(held);
+      expect(ben.errors, "no error in Ben's editor").toEqual([]);
+      const reader = await LiveClient.open(doc, { id: 'cy' });
+      const server = tree(reader);
+      reader.dispose();
+      expect(tree(ben), "Ben's editor equals the server's copy").toEqual(server);
     } finally { again.dispose(); ben.dispose(); }
   });
 });
 
 describe('rollback updates (T3.B32)', () => {
-  it('delete only the landed part of a span, last items first, each at most maxStructs structs cut between structs; a whole span is reported whole', () => {
+  it('delete only the landed part of a span, whole items, the last in the document first, about maxStructs structs per batch; a whole span is reported whole', () => {
     const { landedPart, landedWhole, rollbackUpdates } = use();
     const doc = new Y.Doc();
     const text = doc.getText('t');
@@ -322,8 +400,52 @@ describe('rollback updates (T3.B32)', () => {
       expect(client).toBe(doc.clientID);
       return list.map((item) => [item.clock, item.len]);
     });
-    expect(ranges).toEqual([[[from + 14, 6]], [[from + 8, 6]], [[from + 2, 6]], [[from, 2]]]);
+    // '99' ... '00' 'before': '00' (the first clock) is the last pasted item in the document.
+    expect(ranges).toEqual([[[from, 6]], [[from + 6, 6]], [[from + 12, 6]], [[from + 18, 2]]]);
     for (const update of updates) Y.applyUpdate(doc, update);
     expect(text.toString(), 'the text before the span stays').toBe('before');
+  });
+
+  /** A note holding 'Kept.' and a pasted chart (a compound payload, its fields in a Y.Map) after it. */
+  function pastedChart() {
+    const note = new Y.Doc();
+    const root = note.get('root', Y.XmlText);
+    const kept = new Y.XmlText();
+    root.insertEmbed(0, kept);
+    kept.insert(0, 'Kept.');
+    const from = Y.getState(note.store, note.clientID);
+    const element = new Y.XmlElement('chart');
+    root.insertEmbed(1, element);
+    element.setAttribute('__type', 'chart');
+    element.setAttribute('__regId', 'chart');
+    const span = { client: note.clientID, from, to: Y.getState(note.store, note.clientID) };
+    const chart = new Y.Doc();
+    chart.getMap('payload-map').set('title', 'Pasted');
+    chart.getMap('payload-map').set('data', '1,2,3');
+    const payload = { client: chart.clientID, from: 0, to: Y.getState(chart.store, chart.clientID) };
+    return { note, root, chart, span, payload };
+  }
+  const named = (root: Y.XmlText) => root.toDelta().filter((op: { insert: unknown }) => op.insert instanceof Y.XmlElement).length;
+
+  it('a pasted chart nobody else edited goes whole: its element deleted, its payload left as it was', () => {
+    const { rollBackPaste } = use();
+    const { note, root, chart, span, payload } = pastedChart();
+    const result = rollBackPaste(note, span, [['chart', chart, payload]], ROLLBACK) as unknown;
+    expect(result).toMatchObject({ kept: 0 });
+    expect(named(root), 'no chart').toBe(0);
+    expect(chart.getMap('payload-map').toJSON(), 'nothing inside its payload deleted').toEqual({ title: 'Pasted', data: '1,2,3' });
+  });
+
+  it("a pasted chart another writer edited stays whole, the paste's entries too", () => {
+    const { rollBackPaste } = use();
+    const { note, root, chart, span, payload } = pastedChart();
+    const peer = new Y.Doc();
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(chart));
+    peer.getMap('payload-map').set('title', 'Ben');
+    Y.applyUpdate(chart, Y.encodeStateAsUpdate(peer));
+    const result = rollBackPaste(note, span, [['chart', chart, payload]], ROLLBACK) as unknown;
+    expect(result).toMatchObject({ kept: 1 });
+    expect(named(root), 'the chart stays').toBe(1);
+    expect(chart.getMap('payload-map').toJSON(), 'as it stands').toEqual({ title: 'Ben', data: '1,2,3' });
   });
 });

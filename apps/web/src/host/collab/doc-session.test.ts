@@ -613,6 +613,7 @@ it('a code block deleted in this tab stops counting toward the paste check at on
 // ---------- T3.B32: a paste that cannot finish leaves nothing behind ----------
 
 const PASTE_ROLLED_BACK = "The paste didn't fit, so nothing was pasted.";
+const PASTE_PARTLY_KEPT = "The paste didn't fit. It was removed, except for what someone else had already edited.";
 const ROLLBACK_PREFIX = 'moss-multi:paste-rollback:doc:';
 const rollbackKey = (client: number, from: number) => `${ROLLBACK_PREFIX}${client}:${from}`;
 /** The pastes this profile stores for 'doc', by key. */
@@ -980,8 +981,9 @@ function cutCodePaste(peer?: string) {
 }
 const codeText = () => session.payloads.get('code')!.getText('payload').toString();
 
-it("a cut paste's code block another writer typed into stays, with that writer's text and none of the paste's (T3.B32)", async () => {
+it("a cut paste's code block another writer typed into stays whole, the paste's code too, and the notice says so (T3.B32)", async () => {
   const { namedPayloadIds } = await import('@moss-multi/sync/payload-docs');
+  const { refusalMessage } = await import('../refusal.ts');
   await freshProfile();
   const { arrive } = cutCodePaste('ben();');
   arrive();
@@ -989,10 +991,12 @@ it("a cut paste's code block another writer typed into stays, with that writer's
   expect(session.state.synced).toBe(true);
   expect(rootText(), "the paste's line goes").not.toContain('Alpha');
   expect([...namedPayloadIds(session.doc)], 'the code block stays named').toEqual(['code']);
-  expect(codeText(), "the other writer's code, without the paste's").toBe('ben();');
+  expect(codeText(), "the other writer's code and the paste's, as it stood").toBe('ben();print(1)');
+  expect(refusalMessage()).toBe(PASTE_PARTLY_KEPT);
 });
 
-it('a paste already found cut short waits for its payload docs too, and rolls them back once they arrive (T3.B32)', async () => {
+it('a paste already found cut short waits for its payload docs too, and once they arrive deletes its block whole, leaving the payload as it was (T3.B32)', async () => {
+  const { refusalMessage } = await import('../refusal.ts');
   const { namedPayloadIds } = await import('@moss-multi/sync/payload-docs');
   await freshProfile();
   const { key, arrive } = cutCodePaste();
@@ -1004,5 +1008,6 @@ it('a paste already found cut short waits for its payload docs too, and rolls th
   await vi.advanceTimersByTimeAsync(1);
   expect(rootText()).not.toContain('Alpha');
   expect([...namedPayloadIds(session.doc)]).toEqual([]);
-  expect(codeText(), "the paste's code goes too").toBe('');
+  expect(codeText(), 'nothing inside the payload is deleted').toBe('print(1)');
+  expect(refusalMessage()).toBe(PASTE_ROLLED_BACK);
 });

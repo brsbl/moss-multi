@@ -4,9 +4,11 @@
 // the server's copy and deletes the part that landed before the note shows again, and says "The paste didn't fit, so
 // nothing was pasted." She and Ben converge on the note as it was before the paste plus Ben's lines, the line her
 // paste replaced included (the paste's deletes go only once all of it has landed), nothing of the paste shows at any
-// settled point, and an undo cannot bring it back. A rollback cut off by the tab closing resumes
-// when the note is opened again in the same browser profile. Ben is a protocol-level client (doc-client.ts); Ada's doc
-// socket runs through a sever proxy that holds the rest of her paste.
+// settled point, and an undo cannot bring it back. Ben also has the note open in a browser: his editor shows the part
+// that landed, then follows the rollback's whole-block deletes with no page error, until it shows what the server
+// exports. A rollback cut off by the tab closing resumes when the note is opened again in the same browser profile.
+// Ben's writes come from a protocol-level client (doc-client.ts); Ada's doc socket runs through a sever proxy that
+// holds the rest of her paste.
 //
 // The note is created through POST /api/docs as declared setup.
 import * as Y from 'yjs';
@@ -83,11 +85,22 @@ async function watchSettled(ada: Actor, docId: string): Promise<void> {
 
 /** What of the paste the watch saw (after a reload no watch runs: the pane binds only once its rollback is applied). */
 const leaked = (ada: Actor) => ada.page.evaluate(() => (window as unknown as { __pasteWatch?: { leaked: string } }).__pasteWatch?.leaked ?? '');
+/** A page's rendered note, one entry per top-level block with text; null while the page is too busy to answer. */
+const rendered = (actor: Actor, docId: string) => ui.body(actor, docId)
+  .evaluate((element) => [...element.children].map((block) => block.textContent ?? '').filter(Boolean), undefined, { timeout: 10_000 })
+  .catch((error: Error) => {
+    if (error.name === 'TimeoutError') return null;
+    throw error;
+  });
+/** The export's blocks, as `rendered` reads a note of plain lines. */
+const blocks = (markdown: string) => markdown.split(/\n{2,}/).map((line) => line.trim()).filter(Boolean);
 const storedRollbacks = (ada: Actor) => ada.page.evaluate((prefix) => Object.keys(localStorage).filter((key) => key.startsWith(prefix)).length, ROLLBACK_KEY);
 
 interface Cut {
   ada: Actor;
   ben: DocClient;
+  /** Ben's browser page on the note, when the leg opens one. */
+  peer: Actor | null;
   docId: string;
   /** The server's export before the paste. */
   before: string;
@@ -98,9 +111,10 @@ interface Cut {
 /**
  * Ada opens a note 110,000 structs under the guard and pastes A with her acks lost: a part goes out and lands, then
  * her socket goes dark with the rest to send. Ben fills the room, and her socket comes back: the rest is refused.
- * With `select`, her paste replaces the line 'Kept.'; otherwise it goes at the end of it.
+ * With `select`, her paste replaces the line 'Kept.'; otherwise it goes at the end of it. With `peer`, Ben also has
+ * the note open in a browser page while it happens.
  */
-async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: (ada: Actor, docId: string) => void): Promise<Cut> {
+async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: (ada: Actor, docId: string) => void, peer = false): Promise<Cut> {
   const ada = await actors.session(await actors.principal('ada'), { severable: true });
   const docId = await importNote(ada, stack, 'Paste target', 'Kept.');
   const principal = await actors.principal('ben');
@@ -114,6 +128,13 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
   await ada.goto(`/d/${docId}`);
   await ui.waitBodyLive(ada, docId, 180_000);
   const exportBefore = await exported(ada, docId);
+  let page: Actor | null = null;
+  if (peer) {
+    page = await actors.open(principal, { label: 'ben-page', path: `/d/${docId}` });
+    // A page applying a large paste can read its socket as silent and reconnect.
+    page.expectReconnects(2, docId);
+    await ui.waitBodyLive(page, docId, 180_000);
+  }
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
   await ada.page.keyboard.press('End');
   if (select) {
@@ -131,6 +152,12 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
   const rest = (await lastAdds(ada)) - (structs(ben) - beforeStructs);
   expect(rest, 'part of the paste is still to come').toBeGreaterThan(10_000);
   expect(count(ben.text(), 'Alpha'), 'Ben sees the part that landed').toBeGreaterThan(0);
+  if (page) {
+    const shown = page;
+    await expect.poll(async () => (await rendered(shown, docId))?.filter((line) => line.startsWith('Alpha ')).length ?? 0, {
+      message: "Ben's open note shows the part that landed", timeout: 180_000,
+    }).toBeGreaterThan(0);
+  }
 
   // Ben fills the room: his writes fit beside what landed, the rest of the paste no longer does.
   const bravos = await fillTo(ben, STRUCT_CAP - Math.floor(rest / 2), 'Bravo');
@@ -138,7 +165,7 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
   before?.(ada, docId);
   ada.sever!.restore();
   await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the cut is announced').toContainText(PASTE_ROLLED_BACK_NOTICE, { timeout: 240_000 });
-  return { ada, ben, docId, before: exportBefore, bravos };
+  return { ada, ben, peer: page, docId, before: exportBefore, bravos };
 }
 
 /** Ada and Ben hold the same note: the one before the paste with Ben's lines after it, nothing of the paste. */
@@ -158,15 +185,24 @@ async function expectRolledBack({ ada, ben, docId, before, bravos }: Cut): Promi
   return server;
 }
 
-test('j01-paste-tail: a paste that replaced a line, cut short near the cap by another writer, is rolled back, says so, both peers converge on the note as it was, that line included, and an undo cannot bring it back @p:col-1', async ({ actors, stack }) => {
+test('j01-paste-tail: a paste that replaced a line, cut short near the cap by another writer, is rolled back, says so, both peers converge on the note as it was, that line included, the other writer\'s open editor too, and an undo cannot bring it back @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(900_000);
   let ben: DocClient | null = null;
   try {
-    const cut = await cutPaste(actors, stack, true);
+    const cut = await cutPaste(actors, stack, true, undefined, true);
     ben = cut.ben;
-    const { ada, docId } = cut;
+    const { ada, docId, peer } = cut;
     await ui.waitBodyLive(ada, docId, 180_000);
     const server = await expectRolledBack(cut);
+    // Ben's open editor followed the rollback: it shows what the server exports, and nothing of the paste.
+    const expected = JSON.stringify(blocks(server));
+    await expect.poll(async () => JSON.stringify(await rendered(peer!, docId)) === expected, {
+      message: "Ben's open note equals the server's export", timeout: 240_000,
+    }).toBe(true);
+    await expect.poll(async () => JSON.stringify(await fingerprint(peer!, docId)) === JSON.stringify(print(cut.ben.text())), {
+      message: "Ben's editor holds what his doc holds", timeout: 60_000,
+    }).toBe(true);
+    expect(peer!.telemetry.pageErrors.map((error) => error.message), "no page error on Ben's page").toEqual([]);
     await expect.poll(() => storedRollbacks(ada), { message: 'the acked rollback leaves nothing stored', timeout: 60_000 }).toBe(0);
 
     // The rollback is no undo step and the binding started a fresh history: an undo brings nothing back.
