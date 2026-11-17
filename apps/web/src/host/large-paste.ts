@@ -21,7 +21,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
-import { countedPayloadBytes, PASTE_LIMIT_BYTES, WRITE_REFUSED } from './collab/doc-session.ts';
+import { countedPayloadBytes, PASTE_LIMIT_BYTES, trackPaste, WRITE_REFUSED, type PasteTrack } from './collab/doc-session.ts';
 import { markLanding } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
@@ -694,6 +694,8 @@ class PasteJob {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flushing = false;
   #ended = false;
+  /** The paste's items as they land, rolled back if a limit cuts it short (T3.B32). */
+  track: PasteTrack | null = null;
   /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
   readonly #dir = new DirLift();
 
@@ -746,11 +748,23 @@ class PasteJob {
     }
   };
 
+  /** A limit cut the paste short (T3.B32): nothing more of it lands. */
+  readonly abort = (): void => {
+    if (this.#ended) return;
+    clearTimeout(this.#timer);
+    try {
+      this.#steps.return();
+    } catch {
+      // running: it lands nothing more once this job has ended
+    }
+    this.#end();
+  };
+
   readonly #tick = (): void => {
     this.#timer = undefined;
     let done = true;
     try {
-      done = !!this.#steps.next().done;
+      done = this.#ended || !!this.#steps.next().done;
     } finally {
       if (done) this.#end();
       else this.#timer = setTimeout(this.#tick, 0);
@@ -770,11 +784,15 @@ class PasteJob {
       if (editor._updating || editor._pendingEditorState !== null) {
         const stop = editor.registerUpdateListener(() => {
           stop();
+          this.track?.finish();
           if (!jobs.has(editor)) markLanding(editor, false);
         });
       } else {
+        this.track?.finish();
         markLanding(editor, false);
       }
+    } else {
+      this.track?.finish();
     }
     markUnacked(this, false);
   }
@@ -883,6 +901,7 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   // so tagged never reaches the doc: each batch commits it first, on its own.
   const settle = () => editor.read(noop);
   settle();
+  job.track = trackPaste(noteDoc(editor), job.abort);
   const live = editor.getEditorState()._selection;
   pacing.time(first, () => editor.update(() => {
     if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
