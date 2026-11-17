@@ -53,10 +53,13 @@ async function note(Doc: typeof DocDO): Promise<{ opened: Opened; sam: TestClien
   return { opened, sam };
 }
 
-async function lease(client: TestClient): Promise<LeaseGrant> {
+/** One lease request's grants: the active lease and a spare. */
+async function lease(client: TestClient): Promise<LeaseGrant[]> {
   const reply = await send(client, { t: 'suggest-lease' });
   expect(reply).toMatchObject({ t: 'suggest-leased' });
-  return (reply as Extract<SuggestReply, { t: 'suggest-leased' }>).leases[0];
+  const grants = (reply as Extract<SuggestReply, { t: 'suggest-leased' }>).leases;
+  expect(grants).toHaveLength(2);
+  return grants;
 }
 
 /** The ops `step` makes in a fork of the client's doc under `grant`'s lease, as suggest-ops requests. */
@@ -89,13 +92,12 @@ describe('suggestion writes meet the note\'s limits @p:tech-3 @p:mean-2', () => 
   it('at the structure guard a record is refused naming the limit, as is every growth frame in its window; a withdraw lands', async () => {
     const { Doc, limits } = capped();
     const { opened, sam } = await note(Doc);
-    const grant = await lease(sam);
+    const [grant, second] = await lease(sam);
     const [first] = opsOf(sam, grant, () => select('Hello', 5).insertText(' there'));
     expect(await send(sam, first)).toMatchObject({ t: 'suggest-ack' });
     const open = recordIds(opened.dobj.document)[0];
 
     limits.structCap = (await opened.dobj.noteSize()).structs;
-    const second = await lease(sam);
     const [next] = opsOf(sam, second, () => select('Indented', 0).insertText('More '));
     await expectLimit(opened, sam, next, 'structure');
     // The connection's window answers the next growth frame alike, without admission.
@@ -105,16 +107,15 @@ describe('suggestion writes meet the note\'s limits @p:tech-3 @p:mean-2', () => 
 
     await nextWindow();
     limits.structCap = STRUCT_CAP;
-    const third = await lease(sam);
-    const [again] = opsOf(sam, third, () => select('Indented', 0).insertText('More '));
-    expect(await send(sam, again), 'under the guard again').toMatchObject({ t: 'suggest-ack' });
+    // The refused record was never written, so its lease opens it now.
+    expect(await send(sam, next), 'under the guard again').toMatchObject({ t: 'suggest-ack' });
   });
 
   it('a record whose inserted text would take the note past its text limit is refused naming it', async () => {
     const { Doc, limits } = capped();
     const { opened, sam } = await note(Doc);
     limits.textCharCap = (await opened.dobj.noteSize()).chars + 8;
-    const grant = await lease(sam);
+    const [grant] = await lease(sam);
     const fork = new ForkShim(sam.doc, grant.client);
     try {
       const request = (op: { doc: string; update: Uint8Array }): SuggestRequest => ({ t: 'suggest-ops', record: grant.record, doc: op.doc, update: bytesToBase64(op.update) });
@@ -133,7 +134,7 @@ describe('suggestion writes meet the note\'s limits @p:tech-3 @p:mean-2', () => 
   it('an accept that would pass the text or structure limit is refused 409 naming it with nothing written; reject lands', async () => {
     const { Doc, limits } = capped();
     const { opened, sam } = await note(Doc);
-    const grant = await lease(sam);
+    const [grant, other] = await lease(sam);
     for (const request of opsOf(sam, grant, () => select('Hello', 5).insertText(' accepted words'))) {
       expect(await send(sam, request)).toMatchObject({ t: 'suggest-ack' });
     }
@@ -161,7 +162,6 @@ describe('suggestion writes meet the note\'s limits @p:tech-3 @p:mean-2', () => 
     expect(body(opened)).toContain('accepted words');
 
     // A reject writes only the record's status, so it lands at the guard.
-    const other = await lease(sam);
     for (const request of opsOf(sam, other, () => select('Indented', 0).insertText('Rejected '))) {
       expect(await send(sam, request)).toMatchObject({ t: 'suggest-ack' });
     }
