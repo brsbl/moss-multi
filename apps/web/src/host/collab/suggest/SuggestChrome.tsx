@@ -1,7 +1,7 @@
 // Suggest-mode chrome (docs/design/suggestions.md §5, §8): the pane's bottom row while suggesting (Stop suggesting
 // for editors and owners; a suggester is locked), the band shown in Review, and the band that offers back text a
 // closed suggestion could not keep. Suggest changes and Review start from More actions and the Suggestions list.
-import { REVIEW_BAND_ATTR, SUGGEST_CHIP_ATTR, SUGGEST_UNSAVED_ATTR } from '@moss-multi/protocol/dom-contract';
+import { MODE_ROW_ATTR, REVIEW_BAND_ATTR, SUGGEST_CHIP_ATTR, SUGGEST_UNSAVED_ATTR } from '@moss-multi/protocol/dom-contract';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useDocRole } from '../../access.ts';
@@ -25,7 +25,7 @@ export function SuggestBand({ docId }: { docId: string }): ReactNode {
   if (mode !== 'suggest' || role === null || terminal !== null) return null;
   const locked = lockedToSuggest(role);
   return (
-    <div data-mode-row="" className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
+    <div {...{ [MODE_ROW_ATTR]: '' }} className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
       <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
         <span {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }} className="text-xs text-ink-muted">Suggesting</span>
         {locked ? null : (

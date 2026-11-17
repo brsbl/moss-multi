@@ -117,6 +117,8 @@ export const SUGGEST_MARK_ATTR = 'data-suggest-mark';
 export const REVIEW_BAND_ATTR = 'data-review-band';
 /** The band at the canvas's bottom that tells a viewer or commenter they cannot edit the note. */
 export const ROLE_BAND_ATTR = 'data-role-band';
+/** The pane's bottom mode row while it suggests (T9.30): "Suggesting", and Stop suggesting for an editor. */
+export const MODE_ROW_ATTR = 'data-mode-row';
 /** On the pane: suggest frames sent and refused by this pane's fork (test readouts). */
 export const SUGGEST_SENT_ATTR = 'data-suggest-sent';
 export const SUGGEST_REFUSED_ATTR = 'data-suggest-refused';

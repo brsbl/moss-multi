@@ -126,7 +126,7 @@ for (const size of TIER_A) {
     await grantDoc(ada2, docId, benPrincipal, 'editor');
     const ben = await actors.open(benPrincipal, { viewport: size, path: `/d/${docId}` });
     await ui.waitOpen(ben, docId, 'live');
-    await expect(ada2.page.locator('[data-top-bar] [data-presence-client]'), 'Ada sees Ben in her face pile').not.toHaveCount(0, { timeout: BIND_TIMEOUT });
+    await expect(ada2.page.locator('[data-top-bar]').getByRole('button', { name: /^People here/ }), 'Ada sees Ben is here').toBeVisible({ timeout: BIND_TIMEOUT });
     await expectReadable(stranger, docId, size);
     await expectReachable(stranger, 'with Ada and Ben there');
     await expectReachable(ada2, 'the owner with two others there');

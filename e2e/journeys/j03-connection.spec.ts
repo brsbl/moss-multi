@@ -158,7 +158,7 @@ test('j03-connection: a black-holed socket shows the banner within 14 s while th
   sever.blackhole();
   await measure.until('banner after a black-hole', bannerShows(bea, docId, 'offline'), { budgetMs: BANNER_BUDGET_MS, timeoutMs: 25_000 });
   await expect(indicator(bea, docId), 'the indicator says offline').toHaveAttribute(CONNECTION_ATTR, 'offline');
-  await expect(indicator(bea, docId)).toBeVisible();
+  await expect(banner(bea, docId), 'the banner is what shows it (T9.30)').toBeVisible();
   await expect(ui.pane(bea, docId)).toHaveAttribute(DOC_STATE_ATTR, 'offline');
   await expect(indicator(ada, docId), 'the other window is unaffected').toHaveAttribute(CONNECTION_ATTR, 'online');
   await expect(banner(ada, docId), 'the other window shows no banner').toHaveCount(0);
@@ -173,7 +173,6 @@ test('j03-connection: a black-holed socket shows the banner within 14 s while th
   await bea.page.setViewportSize({ width: 390, height: 844 });
   // Below 640 px the notes panel overlays the canvas and is put away while a note is open (deviation 11).
   await expect(bea.page.locator('[data-overlay-surface]'), 'the notes panel is out of the way').toHaveCount(0);
-  await expect(indicator(bea, docId)).toBeInViewport();
   await expect(banner(bea, docId)).toBeInViewport();
   await actors.checkpoint('black-hole-mobile');
   await bea.page.setViewportSize({ width: 1440, height: 1000 });
@@ -659,14 +658,17 @@ test('j03-connection: a real Settings chunk load failure preserves the shell and
   await ui.expectNoRemount(bea, docId, 'retrying the lazy import');
 });
 
-test('j03-connection: the online indicator is sanctioned chrome with a visible mobile dot @p:col-4', async ({ actors }) => {
-  const { ada, docId, peer } = await sharedNote(actors, 'An online dot');
+test('j03-connection: a healthy connection is published in the top bar for assistive tech and draws nothing @p:col-4', async ({ actors }) => {
+  const { ada, docId, peer } = await sharedNote(actors, 'A quiet connection');
   await actors.open(peer);
   await actors.requireDistinct(2);
-  await expect(indicator(ada, docId)).toHaveAttribute('data-collab-chrome', '');
-  await ada.page.setViewportSize({ width: 390, height: 844 });
-  const color = await indicator(ada, docId).locator('[aria-hidden]').evaluate(el => getComputedStyle(el).backgroundColor);
-  expect(color).not.toBe('rgba(0, 0, 0, 0)');
+  for (const size of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await ada.page.setViewportSize(size);
+    await expect(indicator(ada, docId)).toHaveAttribute(CONNECTION_ATTR, 'online');
+    await expect(indicator(ada, docId), 'a live status, not a control').toHaveAttribute('role', 'status');
+    const box = await indicator(ada, docId).boundingBox();
+    expect(box === null || box.width <= 1, `${size.width}: no Connected capsule (T9.30)`).toBe(true);
+  }
 });
 
 const UNSYNCED = ' then words only this window holds';

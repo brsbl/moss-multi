@@ -272,10 +272,11 @@ async function historyNote(page: Page): Promise<string> {
   return `/d/${encodeURIComponent(id)}`;
 }
 
-/** History from the note's top bar, settled on the newest version's Diff vs current. */
+/** More actions → Version history (T9.30), settled on the newest version's Diff vs current. */
 async function openHistory(page: Page): Promise<void> {
   await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
-  await page.locator(`[${HISTORY_BUTTON_ATTR}]`).click();
+  await page.getByRole('button', { name: 'More actions', exact: true }).click();
+  await page.getByRole('menu').locator(`[${HISTORY_BUTTON_ATTR}]`).click();
   await expect(page.locator(`[${HISTORY_VIEW_ATTR}]`)).toHaveAttribute(HISTORY_VIEW_ATTR, 'ready', { timeout: 15_000 });
   await expect(page.locator(`[${VERSION_CONTENT_ATTR}="diff"] ins`).first(), 'the diff renders').toBeVisible({ timeout: 15_000 });
 }
