@@ -288,6 +288,8 @@ const MIN_ANSWER_SHARE = 1 / 4096;
 const MIN_TARGET_SHARE = 1 / 32;
 /** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
+/** The most structs one comment write adds to the note: a root's record and its anchor (A§5.1 Limits). */
+const COMMENT_STRUCTS = 2;
 
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
@@ -999,9 +1001,13 @@ export class DocDO extends YServer<SyncEnv> {
       }
       // Right after the tree diff, in the same turn (comments.md §13).
       // The import's diff may be past a log row and not yet counted in stateBytes, so the room is measured.
+      // Records also stop at the structure guard, leaving the title's structs: a root is two structs, a reply one.
       if (sidecar) {
         const room = this.#commentRoom(Y.encodeStateAsUpdate(this.document).byteLength);
-        this.#comments?.importSidecar(sidecar, marks, input.author ?? input.ownerId, this.#limits.maxComments, room);
+        const titleStructs = titleUpdate ? growthOf(this.document, titleUpdate).structs : 0;
+        const structRoom = this.#limits.structCap - this.#size().structs - titleStructs;
+        const records = Math.min(this.#limits.maxComments, Math.max(0, Math.floor(structRoom / COMMENT_STRUCTS)));
+        this.#comments?.importSidecar(sidecar, marks, input.author ?? input.ownerId, records, room);
       }
     }
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
@@ -1064,6 +1070,8 @@ export class DocDO extends YServer<SyncEnv> {
   createComment(input: CommentCreate & { actor?: CommentActor }): Promise<CommentResult> {
     const { actor, ...create } = input;
     return this.#commentWrite(actor, (store, comments) => {
+      const limit = this.#commentLimit(COMMENT_STRUCTS);
+      if (limit) return limit;
       // The record and anchor bytes, quote included, count against the comments' share of the cap (A§5.1 Limits).
       const result = comments.create(create, this.#limits.maxComments, this.#commentRoom(store.stateBytes));
       comments.flush();
@@ -1073,13 +1081,13 @@ export class DocDO extends YServer<SyncEnv> {
 
   /** Resolves or reopens a thread for a commenter or above (comments.md §12). */
   resolveComment(input: { id: string; resolved: boolean; by: CommentSource; actor?: CommentActor }): Promise<CommentResult> {
-    return this.#commentWrite(input.actor, (_store, comments) => comments.resolve(input.id, input.resolved, input.by));
+    return this.#commentWrite(input.actor, (_store, comments) => this.#commentLimit(1, true) ?? comments.resolve(input.id, input.resolved, input.by));
   }
 
   /** Edits a comment's text; `author` is the Worker's principal and must be the comment's author (comments.md §12). */
   editComment(input: { id: string; author: string; text: string; actor?: CommentActor }): Promise<CommentResult> {
     return this.#commentWrite(input.actor, (store, comments) =>
-      comments.edit(input.id, input.author, input.text, this.#commentRoom(store.stateBytes)));
+      this.#commentLimit(1) ?? comments.edit(input.id, input.author, input.text, this.#commentRoom(store.stateBytes)));
   }
 
   /**
@@ -1093,7 +1101,18 @@ export class DocDO extends YServer<SyncEnv> {
   /** Adds or removes the principal's reaction on a comment (comments.md §12); a removal has the structure headroom. */
   reactComment(input: { id: string; principal: string; emoji: string; on: boolean; actor?: CommentActor }): Promise<CommentResult> {
     return this.#commentWrite(input.actor, (store, comments) =>
-      comments.react(input.id, input.principal, input.emoji, input.on, this.#commentRoom(store.stateBytes)));
+      this.#commentLimit(1, !input.on) ?? comments.react(input.id, input.principal, input.emoji, input.on, this.#commentRoom(store.stateBytes)));
+  }
+
+  /**
+   * The note's limits for a comment write adding up to `structs` structs (A§5.1 Limits), as the shared #limitMet holds a
+   * frame to them: it adds no body text, and its structs count toward the structure guard; a resolve or a removed
+   * reaction, which adds no record, has the headroom formats and properties have. The state bound is #commentRoom.
+   */
+  #commentLimit(structs: number, headroom = false): Extract<CommentResult, { ok: false }> | null {
+    const before = this.#size();
+    const limit = this.#limitMet(before, { chars: before.chars, structs: before.structs + structs }, headroom);
+    return limit ? { ok: false, status: 413, error: 'doc-cap', limit } : null;
   }
 
   /**
