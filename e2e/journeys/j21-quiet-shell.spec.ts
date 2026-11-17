@@ -23,17 +23,19 @@ const visibleChrome = (actor: Actor, docId: string): Promise<string[]> =>
     .filter((el) => { const box = el.getBoundingClientRect(); return box.width > 1 && box.height > 1; })
     .map((el) => el.getAttribute('aria-label') ?? (el.textContent ?? '').trim()));
 
-/** The bar fits: nothing scrolls sideways and every visible control lies inside the window. */
+/** The bar fits once the resize has laid out: nothing scrolls sideways and every visible control lies inside the window. */
 async function expectFits(actor: Actor, docId: string, what: string): Promise<void> {
-  const fit = await topBar(actor, docId).evaluate((bar) => {
-    const width = window.innerWidth;
-    const outside = [...bar.querySelectorAll('button, [role="button"]')]
-      .filter((el) => { const box = el.getBoundingClientRect(); return box.width > 1 && (box.right > width + 0.5 || box.left < -0.5); })
-      .map((el) => el.getAttribute('aria-label') ?? el.textContent ?? '');
-    return { overflow: bar.scrollWidth - bar.clientWidth, outside };
-  });
-  expect(fit.outside, `${what}: no control leaves the window`).toEqual([]);
-  expect(fit.overflow, `${what}: the bar does not scroll sideways`).toBeLessThanOrEqual(1);
+  await expect(async () => {
+    const fit = await topBar(actor, docId).evaluate((bar) => {
+      const width = window.innerWidth;
+      const outside = [...bar.querySelectorAll('button, [role="button"]')]
+        .filter((el) => { const box = el.getBoundingClientRect(); return box.width > 1 && (box.right > width + 0.5 || box.left < -0.5); })
+        .map((el) => el.getAttribute('aria-label') ?? el.textContent ?? '');
+      return { overflow: bar.scrollWidth - bar.clientWidth, outside };
+    });
+    expect(fit.outside, `${what}: no control leaves the window`).toEqual([]);
+    expect(fit.overflow, `${what}: the bar does not scroll sideways`).toBeLessThanOrEqual(1);
+  }).toPass({ timeout: 5_000 });
 }
 
 test('j21 at rest the top bar holds only Moss\'s actions, and More actions holds Share, Suggestions, Suggest changes and Version history before Trash @p:tech-9 @p:ppl-2 @p:mean-3', async ({ actors }) => {
@@ -95,7 +97,11 @@ test('j21 the sidebar\'s Settings opens the app menu, walked by keys: Current va
   const page = ada.page;
   const settings = page.getByRole('button', { name: 'Settings', exact: true });
 
-  const menu = await ui.openAppMenu(page);
+  // From the keyboard: Enter on the focused footer target opens the menu on its first entry.
+  await settings.focus();
+  await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu');
+  await expect(menu, 'the app menu opens').toBeVisible();
   await expect(menu.getByText(/^Current vault: .+/), 'it names the vault on screen').toBeVisible();
   expect(await ui.menuEntries(menu)).toEqual(['Switch vault…', 'Notifications', 'Connection status', 'Account', 'Settings']);
   await page.keyboard.press('End');
