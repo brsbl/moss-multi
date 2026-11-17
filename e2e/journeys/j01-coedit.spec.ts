@@ -37,7 +37,7 @@ test('j01 setup: Ada shares her note with Ben from the Share dialog, and Ben ope
   await ui.waitAcked(ada, docId);
 
   const dialog = await ui.shareWith(ada, docId, benPrincipal, 'Can edit');
-  await expect(ui.inviteRow(dialog, benPrincipal.email), 'the owner sees the email she shared with, pending until Ben redeems it').toContainText('Invited');
+  await expect(ui.inviteRow(dialog, benPrincipal.email), 'the owner sees the email she shared with, pending until Ben redeems it').toContainText(ui.INVITE_WAITING);
   if (!ada.principal) throw new Error('ada has no principal');
   await expect(ui.accessRow(dialog, ada.principal), 'Ada is listed as the owner').toContainText('Owner');
   await actors.checkpoint('shared');

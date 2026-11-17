@@ -176,7 +176,7 @@ test('j19 invite: an invite to an unknown email gives a copyable link that redee
   const dialog = await ui.openShare(ada, target);
   await ui.shareInDialog(dialog, guest.email, 'Can comment');
   const row = ui.inviteRow(dialog, guest.email);
-  await expect(row).toContainText('Invited');
+  await expect(row).toContainText(ui.INVITE_WAITING);
   const url = await ui.inviteLink(dialog, guest.email);
   await expect(row.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
   // The link admits only an account with the invite's email (PRODUCT ruling 19), and the dialog says so.

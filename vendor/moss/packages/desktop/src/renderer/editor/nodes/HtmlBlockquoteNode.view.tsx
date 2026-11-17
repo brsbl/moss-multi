@@ -54,6 +54,8 @@ const LIVE_PREVIEW_SCROLL_CSS = `html,body{overflow:auto !important}
 ${MOSS_HIDE_SCROLLBARS_CSS}`;
 const CANVAS_PREVIEW_SHRINK_WRAP_CSS = 'html,body{min-height:0 !important}';
 const LIVE_BADGE_RESERVE_PX = 36; // moss-multi seam: content-height (T3.B13)
+// moss-multi seam: content-height: the source editor's h-10 header, 96 px source minimum, footer and border.
+const HTML_SOURCE_MIN_FRAME_PX = 40 + 96 + 33 + 2;
 const HTML_PREVIEW_SKELETON_WIDTHS = ['80%', '100%', '60%', '90%', '45%'] as const;
 const HTML_BLOCKQUOTE_LINK_CLASSNAME =
   'font-medium text-ink-accent underline decoration-border-default underline-offset-2 transition-colors hover:text-accent-brand hover:decoration-accent-brand';
@@ -1062,7 +1064,12 @@ function MossHtmlPreviewComponent({
     <SharedPreviewFrame
       nodeKey={nodeKey}
       selected={isSelected}
-      frameSize={noteFrameSizeWithBadge /* moss-multi seam: content-height (T3.B13) */}
+      frameSize={
+        /* moss-multi seam: content-height (T3.B13): a short live preview's frame still fits the source editor */
+        isEditing && noteFrameSizeWithBadge.height < HTML_SOURCE_MIN_FRAME_PX
+          ? { ...noteFrameSizeWithBadge, height: HTML_SOURCE_MIN_FRAME_PX }
+          : noteFrameSizeWithBadge
+      }
       beforeLabel="Insert paragraph before HTML block"
       afterLabel="Insert paragraph after HTML block"
       onGapClick={handleGapClick}

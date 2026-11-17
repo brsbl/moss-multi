@@ -170,9 +170,22 @@ const people = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'P
 /** A person's row in the open Share dialog's "People with access" list. */
 export const accessRow = (dialog: Locator, person: Principal): Locator => people(dialog).filter({ hasText: person.name });
 
+/** The open Share dialog's "Pending invites" rows (T9.8). */
+export const pendingInvites = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'Pending invites' }).getByRole('listitem');
+
 /** A row by email, as the owner sees it: an invite still pending (no email's invite is redeemed until its holder
  * follows it, T2.8) or a member. */
-export const inviteRow = (dialog: Locator, email: string): Locator => people(dialog).filter({ hasText: email });
+export const inviteRow = (dialog: Locator, email: string): Locator =>
+  dialog.getByRole('list', { name: /^(People with access|Pending invites)$/ }).getByRole('listitem').filter({ hasText: email });
+
+/** A pending invite's label: nothing is emailed (PRODUCT ruling 19), so it waits for its link to be opened. */
+export const INVITE_WAITING = 'Waiting for them to open the invite link';
+
+/** The status after sharing by email (T9.8): an invite link, and no email. */
+export const inviteCreated = (email: string): string => `Invite link created for ${email}. No email is sent. Copy the link and send it to them.`;
+
+/** An agent's id is a UUID (Settings → Agents); the dialog's submit reads "Share" only for one (T9.8). */
+const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The copyable /invite link of a pending invite in the open Share dialog (T2.8), read from its field. */
 export async function inviteLink(dialog: Locator, email: string): Promise<string> {
@@ -208,10 +221,10 @@ export const pathOf = (url: string): string => {
 
 /** Adds `email` (or an agent id, T3.6) at `access` in an open Share dialog (note, folder or vault); the dialog stays
  * open. */
-export async function shareInDialog(dialog: Locator, email: string, access: Access, confirmation = `Shared with ${email}.`): Promise<void> {
+export async function shareInDialog(dialog: Locator, email: string, access: Access, confirmation = inviteCreated(email)): Promise<void> {
   await dialog.getByLabel('Email or agent ID', { exact: true }).fill(email);
   await dialog.getByRole('radiogroup', { name: 'Access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
-  await dialog.getByRole('button', { name: 'Share', exact: true }).click();
+  await dialog.getByRole('button', { name: AGENT_ID.test(email) ? 'Share' : 'Create invite link', exact: true }).click();
   await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(confirmation);
 }
 

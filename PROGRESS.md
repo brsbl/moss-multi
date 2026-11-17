@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 83% done** (237 of 285 planned tasks verified)
+**Overall: 79% done** (240 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 10 / 25 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 13 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -260,6 +260,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-13 — T9.4 verified: restoring a version names who restored it in every open window of the note, with an Undo pill for the restorer, and Cmd+Z no longer undoes past the restore.
 - 2026-11-13 — T9.5 verified: Reject and Withdraw ask first in Moss's danger confirmation, focused on Cancel, so a stray second click on a marker can no longer discard someone's suggestion; Accept stays one click.
 - 2026-11-13 — T9.10 verified: a viewer or commenter sees their access named in the note's bottom band, and typing into a note they cannot edit says why instead of doing nothing.
+- 2026-11-13 — T9.8 verified: inviting someone to a note says plainly that no email is sent and offers the invite link to copy, Copy confirms on its own button, and a bare name without an email is not sent.
+- 2026-11-17 — T9.12 verified: when the owner raises someone's access, their open note switches to the new role without a reload, waiting for their own edits to land first, and says once that they can now edit (or suggest, or comment).
+- 2026-11-17 — T9.44 verified: an HTML block's source keeps its own scrolling viewport when the preview is short, and a formula being typed shows as Moss's padded, rounded chip under its text.
 
 ## T1.1s identity audit
 
@@ -299,6 +302,24 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.44's checker (22a4eec, 2026-11-17)
+
+- T9.44 (HTML source and formula drafts keep Moss's geometry) checker P2: formula draft paint is not torn down when MathCalculationPlugin unmounts; paintFormulaDraft's ResizeObserver and update listener are disposed only by a later call with an empty range list, so a person demoted to read-only while a draft is open can keep the chip layer and span padding on the read-only body (found in source, not reproduced).
+- T9.44 (HTML source and formula drafts keep Moss's geometry) checker P2: the formula chip does not follow a horizontally scrolled table cell; the chip layer sits beside the editor root, outside nested table scroll areas, and redraws only on root resize or editor update, so the chip stays put and unclipped while the table text scrolls sideways (found in source, not reproduced; vertical canvas scroll tracks).
+- T9.44 (HTML source and formula drafts keep Moss's geometry) checker P2: draft text sits about 1 px lower inside the chip than in Moss, likely from the 27 px chip on a 23 px line against Moss's 26.5 px; padding, radius, colours and weight match.
+- T9.44 (HTML source and formula drafts keep Moss's geometry) checker P2: parts of the brief's broader done-evidence are missing: no 640 px or short-viewport operability proof, no dark long-source proof, no two viewers with different formula contexts, no combined T9.30/T9.41 composition; j11 checks the closed block is under 171 px rather than equal to the saved preview height.
+- T9.44 (HTML source and formula drafts keep Moss's geometry) checker P2: already on origin/m9 (364005c8), not caused by T9.44: a click on another line after an inline formula draft does not move the caret, so typed text lands at the end of the draft's line and Home+Enter then splits that line; pristine Moss not yet checked.
+
+### From T9.12's checker (d7e5982, 2026-11-17)
+
+- T9.12 (A raise in access reaches your open note without a reload) checker P2: a stale-answer re-ask can starve under steady metadata traffic; after a 4403, DocSession.#reask re-asks at once whenever answer.remember() rejects a superseded answer, skipping the 1-15 s backoff, so title and body metadata events can keep a disconnected session re-requesting at HTTP-completion rate until a quiet interval (reopen() has the same shape); bound or coalesce the retry.
+- T9.12 (A raise in access reaches your open note without a reload) checker P2: in split view a raise on note B clears note A's 'You can view this note but can no longer edit it.' notice, because B's #raised calls settleRefusal(VIEW_ONLY, 0), which matches only the global text; A stays read-only with its role band, so impact is low.
+
+### From T9.8's checker (6805432, 2026-11-13)
+
+- T9.8 (An invite says no email is sent and offers its link) checker P2: a stale clipboard error stays after a later copy succeeds; copyFailed sets a dialog-level error, and a later successful copy on the invite row or share link only changes that CopyButton's own state, so the old 'Couldn't copy' alert stays beside 'Copied' (before this change each copy went through run(), which cleared the status). Copying still works.
+- T9.8 (An invite says no email is sent and offers its link) checker P2: re-inviting the same email at a lower role returns the server message 'To lower it, change it under People with access.', but the invite's controls now sit under 'Pending invites', so the message names the wrong section (the server string predates this change).
 
 ### From T9.10's checker (f5f6248, 2026-11-13)
 

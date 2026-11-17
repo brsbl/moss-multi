@@ -1,6 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/MathCalculationPlugin.tsx @ 762abb777
 // moss-multi seam: local-view (A§10): local computed paint never becomes document content.
 import { $isBoundEditor, isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
+import { paintFormulaDraft } from '@moss-multi/host/formula-chip';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
@@ -1155,7 +1156,11 @@ export function MathCalculationPlugin({
   );
 
   const clearAllDraftStyles = useCallback(() => {
-    if ($isBoundEditor()) { CSS.highlights?.delete('formula-draft'); return; }
+    if ($isBoundEditor()) {
+      // After any queued paint, in order.
+      queueMicrotask(() => { CSS.highlights?.delete('formula-draft'); paintFormulaDraft(editor, []); });
+      return;
+    }
     const root = $getRoot();
 
     const visit = (node: LexicalNode) => {
@@ -1178,7 +1183,7 @@ export function MathCalculationPlugin({
     for (const child of root.getChildren()) {
       visit(child);
     }
-  }, []);
+  }, [editor]);
 
   const applyDraftStylePlan = useCallback((plan: FormulaDraftStylePlan) => {
     if ($isBoundEditor()) {
@@ -1193,6 +1198,7 @@ export function MathCalculationPlugin({
           const range = document.createRange(); range.setStart(text, start); range.setEnd(text, end); ranges.push(range);
         }
         if (typeof Highlight !== 'undefined') CSS.highlights?.set('formula-draft', new Highlight(...ranges));
+        paintFormulaDraft(editor, ranges);
       });
       return;
     }

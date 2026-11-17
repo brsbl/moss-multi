@@ -353,6 +353,18 @@ async function shareAgent(env: MembersEnv, target: MemberTarget, caller: Princip
 const KICK_FAILED = 'The change is saved, but some open windows haven’t closed yet. Try again.';
 
 /**
+ * Tells `principalIds` (already widened to their live agents) that their access to the target changed: their sidebar
+ * re-reads and their open notes ask for their role again. Best effort: the change stands whether or not it arrives.
+ */
+async function notifyChanged(db: D1Database, env: MembersEnv, target: MemberTarget, principalIds: string[]): Promise<void> {
+  const principalDO = env.PrincipalDO;
+  if (!principalDO) return;
+  const event = target.type === 'doc' ? { type: 'meta' as const, docIds: [target.id], folderIds: [] } : { type: 'vaults' as const };
+  await Promise.all(principalIds.map((id) => publishTo({ DB: db, PrincipalDO: principalDO }, id, event)
+    .catch((error: unknown) => console.error('workspace access notification failed', error))));
+}
+
+/**
  * Closes `principalIds` (with their live agents) on every doc the target reaches, after the change committed, and
  * tells each of them to re-read their sidebar. A DocDO that does not acknowledge answers 503 so the owner retries; a
  * retry kicks again.
@@ -367,20 +379,15 @@ async function kickFrom(db: D1Database, env: MembersEnv, target: MemberTarget, p
     return refuse(503, 'unavailable', KICK_FAILED);
   }
   // Their sidebar drops what they can no longer open, without a reload.
-  const event = target.type === 'doc' ? { type: 'meta' as const, docIds: [target.id], folderIds: [] } : { type: 'vaults' as const };
-  const principalDO = env.PrincipalDO;
-  if (principalDO) {
-    for (const id of notified) {
-      waitUntil(publishTo({ DB: db, PrincipalDO: principalDO }, id, event).catch((error: unknown) => console.error('workspace kick notification failed', error)));
-    }
-  }
+  waitUntil(notifyChanged(db, env, target, notified));
   return null;
 }
 
 /**
  * PATCH `{principalId | email, role}` changes access and DELETE `{principalId | email}` removes it. A member is named by
- * id: lowering or removing them kicks them (a raise waits for their reload, A§8). An invite still open is named by
- * email; it has granted nothing, so changing it kicks nobody.
+ * id: lowering or removing them kicks them; a raise kicks nobody and only tells them, so their open notes ask for the
+ * new role and reconnect once their edits are acked (A§8). An invite still open is named by email; it has granted
+ * nothing, so changing it kicks nobody.
  */
 async function change(
   db: Db, env: MembersEnv, target: MemberTarget, ownerUserId: string, caller: Principal, body: Record<string, unknown>, remove: boolean,
@@ -451,7 +458,11 @@ async function change(
       continue;
     }
     const raise = !remove && lower(grant.role, role as Role);
-    if (!raise) {
+    if (raise) {
+      // No kick: a kick closes their sockets from here and cannot wait for their edits in flight.
+      waitUntil(withAgents(env.DB, [principalId]).then((ids) => notifyChanged(env.DB, env, target, ids))
+        .catch((error: unknown) => console.error('workspace access notification failed', error)));
+    } else {
       const failed = await kickFrom(env.DB, env, target, [principalId], Date.now());
       if (failed) return failed;
     }
