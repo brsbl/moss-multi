@@ -392,6 +392,20 @@ type StackItem = Y.UndoManager['undoStack'][number];
 interface Step {
   entries: { manager: Y.UndoManager; item: StackItem }[];
   stamp: unknown;
+  /** Where the caret was as the step began, and after its last edit (StepCarets). */
+  before?: unknown;
+  after?: unknown;
+}
+
+/**
+ * The editor's caret around each step (T9.14), opaque to the stack: `before` as the edit that starts a step began,
+ * `after` once each of its edits landed. Undo hands `restore` the first, redo the second, with the step's entries
+ * and the ones replaying it added.
+ */
+export interface StepCarets {
+  before(): unknown;
+  after(): unknown;
+  restore(caret: unknown, entries: Step['entries']): void;
 }
 
 /**
@@ -414,6 +428,8 @@ export class BodyUndo extends Observable<StackEvent> {
   #lastChange = 0;
   /** Open holds: while any is, every tracked edit joins the last step. */
   #holds = 0;
+  /** Set by the editor that owns the stack; without it steps keep no caret. */
+  carets: StepCarets | null = null;
 
   constructor(
     readonly root: Y.UndoManager,
@@ -439,7 +455,11 @@ export class BodyUndo extends Observable<StackEvent> {
       this.emit('stack-item-added', [event, this]);
     });
     manager.on('stack-item-updated', (event: { type: 'undo' | 'redo' }) => {
-      if (!this.#replaying && event.type === 'undo') this.#lastChange = Date.now();
+      if (!this.#replaying && event.type === 'undo') {
+        this.#lastChange = Date.now();
+        const last = this.undone.at(-1);
+        if (last && this.carets) last.after = this.carets.after();
+      }
       this.emit('stack-item-updated', [event, this]);
     });
     manager.on('stack-item-popped', (event: unknown) => this.emit('stack-item-popped', [event, this]));
@@ -453,8 +473,9 @@ export class BodyUndo extends Observable<StackEvent> {
     if (last && (this.#holds > 0 || (stamp !== null && last.stamp === stamp) || now - this.#lastChange < this.root.captureTimeout)) {
       last.entries.push({ manager, item });
       last.stamp = stamp;
+      if (this.carets) last.after = this.carets.after();
     } else {
-      this.undone.push({ entries: [{ manager, item }], stamp });
+      this.undone.push({ entries: [{ manager, item }], stamp, before: this.carets?.before(), after: this.carets?.after() });
       for (const other of this.managers) if (other !== manager) other.stopCapturing();
     }
     this.#lastChange = now;
@@ -582,13 +603,14 @@ export class BodyUndo extends Observable<StackEvent> {
         }
         if (replayed.length === 0) return;
         const entries = mergeReplayed(replayed);
-        this.undone.push({ entries, stamp: step.stamp });
+        this.undone.push({ entries, stamp: step.stamp, before: step.before, after: step.after });
         this.#replaying = true;
         try {
           this.emit('stack-item-added', [{ type: 'undo', stackItem: entries.at(-1)!.item }, this]);
         } finally {
           this.#replaying = false;
         }
+        this.carets?.restore(step.after, [...step.entries, ...entries]);
       },
     };
   }
@@ -615,6 +637,7 @@ export class BodyUndo extends Observable<StackEvent> {
   #step(from: Step[], to: Step[], kind: 'undo' | 'redo'): unknown {
     this.stopCapturing();
     this.#replaying = true;
+    let replayed: { step: Step; entries: Step['entries']; first: unknown } | null = null;
     try {
       while (from.length) {
         const step = from.pop()!;
@@ -626,15 +649,20 @@ export class BodyUndo extends Observable<StackEvent> {
         }
         if (this.#replayed.length) {
           // Undo replays a step backwards, so the items it adds are in reverse; redo replays them forwards.
-          to.push({ entries: kind === 'undo' ? this.#replayed.reverse() : this.#replayed, stamp: step.stamp });
-          return first;
+          const entries = kind === 'undo' ? this.#replayed.reverse() : this.#replayed;
+          to.push({ entries, stamp: step.stamp, before: step.before, after: step.after });
+          replayed = { step, entries, first };
+          break;
         }
       }
-      return null;
     } finally {
       this.#replaying = false;
       this.#replayed = [];
     }
+    if (!replayed) return null;
+    const { step, entries, first } = replayed;
+    this.carets?.restore(kind === 'undo' ? step.before : step.after, [...step.entries, ...entries]);
+    return first;
   }
 }
 
