@@ -338,4 +338,18 @@ test('j13-vaults: a search result from Ada’s other vault opens there, by click
   await expect(field).toBeHidden();
   await expect(noteRow(ada, soup)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
   await actors.checkpoint('cross-vault-enter');
+
+  // In Scratch with the Home note still open, choosing its result moves to Home all the same.
+  await switchTo(ada, 'Home', 'Scratch', 'Scratch');
+  await expect(noteRow(ada, padId), 'the panel lists Scratch’s notes').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect.poll(() => ui.paneIds(ada), { message: 'the Home note stays open across the switch' }).toContain(soup);
+  await search(word);
+  await expect(noteRow(ada, soup)).toBeVisible({ timeout: BIND_TIMEOUT });
+  await noteRow(ada, soup).click();
+  await expect(switcher(ada, 'Home'), 'an open note’s result moves to its vault').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(field).toBeHidden();
+  await expect(noteRow(ada, padId), 'the panel lists Home’s notes').toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, soup)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await ui.waitLive(ada, soup);
+  await actors.checkpoint('cross-vault-already-open');
 });
