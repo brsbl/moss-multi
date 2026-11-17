@@ -6,7 +6,7 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import { SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { MOSS_UNDO_STEPS, START_MARKDOWN, UNDO_SCENARIOS, undoSteps } from '../lib/undo-steps.ts';
+import { CARET_SCENARIOS, MOSS_UNDO_CARET, MOSS_UNDO_STEPS, START_MARKDOWN, UNDO_SCENARIOS, undoCaret, undoSteps } from '../lib/undo-steps.ts';
 
 const PEER_TIMEOUT = 10_000;
 /** Past the undo capture window (1 s), so the next edit is its own step. */
@@ -396,3 +396,35 @@ for (const scenario of UNDO_SCENARIOS) {
     expect(steps, `${scenario.name}: the same steps as pristine moss (e2e/parity/undo-steps.spec.ts)`).toEqual(MOSS_UNDO_STEPS[scenario.name]);
   });
 }
+
+// T9.14: after undo and redo the caret is where the change was, as in Moss's history, which keeps the selection
+// with every entry. The same keys run against pristine moss in e2e/parity/undo-steps.spec.ts.
+for (const scenario of CARET_SCENARIOS) {
+  test(`j01 undo: caret as in Moss, ${scenario.name}; the next word lands where pristine Moss's does @p:col-3`, async ({ actors, stack }) => {
+    actors.solo('one person\'s caret after undo and redo, compared with pristine moss');
+    const ada = await actors.session(await actors.principal('ada'));
+    const result = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Undo caret', markdown: START_MARKDOWN } });
+    expect(result.status()).toBe(201);
+    const { doc: { id } } = await result.json() as { doc: { id: string } };
+    await ada.goto(`/d/${id}`);
+    await ui.waitLive(ada, id); await ada.observeEditor(id);
+    const blocks = await undoCaret(ada.page, ui.body(ada, id), scenario);
+    expect(blocks, `${scenario.name}: the word lands where pristine moss puts it (e2e/parity/undo-steps.spec.ts)`).toEqual(MOSS_UNDO_CARET[scenario.name]);
+  });
+}
+
+test('j01 undo: Ada undoes a line she inserted; her next word lands on the restored line and Ben\'s caret stays put @p:col-3', async ({ actors, stack }) => {
+  const { ada, ben, id } = await setup(actors, stack.baseUrl, 'Alpha line.\n\nBeta line.\n\nGamma line.');
+  if (!ben) throw new Error('no ben');
+  // Ben's caret sits inside a word of the last line while Ada works above it.
+  await caretAtEnd(ben, id, 'Gamma line', 2);
+  await caretAtEnd(ada, id, 'Alpha line');
+  await ada.page.keyboard.press('Enter'); await ada.page.keyboard.type('Inserted');
+  await converged(ada, ben, id, 'inserted');
+  await ada.page.waitForTimeout(NEW_STEP_MS);
+  await pressUntil(ada, ben, id, UNDO, 'Alpha line.\n\nBeta line.\n\nGamma line.', 3, []);
+  await ada.page.keyboard.type('WHERE');
+  expect(await converged(ada, ben, id, 'Ada typed'), 'Ada\'s word lands at the end of the line the undo restored').toBe('Alpha line.WHERE\n\nBeta line.\n\nGamma line.');
+  await ben.page.keyboard.type('BEN');
+  expect(await converged(ada, ben, id, 'Ben typed'), 'Ben\'s word lands where his caret was').toBe('Alpha line.WHERE\n\nBeta line.\n\nGamma linBENe.');
+});
