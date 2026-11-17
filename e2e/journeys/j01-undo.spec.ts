@@ -55,6 +55,17 @@ async function press(ada: Actor, ben: Actor, id: string, key: string, times: num
   }
   return text;
 }
+/**
+ * Ada presses `key` until the body is `want`, at most `max` times, checking each press as `press` does; returns the
+ * presses. Steps follow Moss's history (T9.13), whose boundaries inside a burst of keys depend on how the editor
+ * received them, and these legs are about whose text an undo touches, not how many steps a burst took.
+ */
+async function pressUntil(ada: Actor, ben: Actor, id: string, key: string, want: string, max: number, kept: string[]): Promise<number> {
+  for (let i = 1; i <= max; i++) {
+    if ((await press(ada, ben, id, key, 1, kept)) === want) return i;
+  }
+  throw new Error(`${key} ${max} times never reached ${JSON.stringify(want)}: ${JSON.stringify(await docText(ada, id))}`);
+}
 /** The caret at the end of the paragraph starting with `start`, then `left` characters back. */
 async function caretAtEnd(actor: Actor, id: string, start: string, left = 0) {
   await paragraph(actor, id, start).click();
@@ -123,9 +134,9 @@ test('j01 undo: interleaved typing in one paragraph;Ada\'s Cmd+Z keeps Ben\'s wo
   const full = await converged(ada, ben, id, 'typed');
   expect(full).toBe('Intro line.\n\nAlpha one BEN-TWO three');
   await ada.page.waitForTimeout(NEW_STEP_MS);
-  const undone = await press(ada, ben, id, UNDO, 2, ['BEN-TWO']);
-  expect(undone, 'both of Ada\'s steps are undone and nothing of Ben\'s').toBe('Intro line.\n\n BEN-TWO');
-  const redone = await press(ada, ben, id, REDO, 2, ['BEN-TWO']);
+  // Both of Ada's words are undone and nothing of Ben's.
+  const steps = await pressUntil(ada, ben, id, UNDO, 'Intro line.\n\n BEN-TWO', 4, ['BEN-TWO']);
+  const redone = await press(ada, ben, id, REDO, steps, ['BEN-TWO']);
   expect(redone, 'redo restores the text exactly').toBe(full);
   await actors.reloadAll();
   for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id)).toBe(full); }
@@ -221,12 +232,14 @@ test('j01 undo: Ada deletes Ben\'s words, undoes that, then undoes her line; his
   expect(await converged(ada, ben, id, 'deleted')).toBe('Intro line.\n\nAlpha');
   await ada.page.waitForTimeout(NEW_STEP_MS);
   // Undoing the delete restores Ben's words as copies made by Ada's client; they are still his.
-  expect(await press(ada, ben, id, UNDO, 1, ['BEN']), 'undoing the delete restores Ben\'s words').toBe('Intro line.\n\nAlpha BEN');
-  expect(await press(ada, ben, id, UNDO, 2, ['BEN']), 'only Ada\'s line is undone').toBe('Intro line.\n\n BEN');
+  // The delete may be more than one step (pressUntil); Ben's words are whole again once it is undone.
+  const deletes = await pressUntil(ada, ben, id, UNDO, 'Intro line.\n\nAlpha BEN', 4, []);
+  // Then only Ada's line is undone.
+  const steps = deletes + await pressUntil(ada, ben, id, UNDO, 'Intro line.\n\n BEN', 3, ['BEN']);
   // Redo replays Ada's own delete of Ben's words last; a second round restores copies of the copies.
-  expect(await press(ada, ben, id, REDO, 3, []), 'redo replays Ada\'s delete last').toBe('Intro line.\n\nAlpha');
-  expect(await press(ada, ben, id, UNDO, 3, ['BEN'])).toBe('Intro line.\n\n BEN');
-  await press(ada, ben, id, REDO, 3, []);
+  expect(await press(ada, ben, id, REDO, steps, []), 'redo replays Ada\'s delete last').toBe('Intro line.\n\nAlpha');
+  expect(await press(ada, ben, id, UNDO, steps, [])).toBe('Intro line.\n\n BEN');
+  await press(ada, ben, id, REDO, steps, []);
   expect(await converged(ada, ben, id, 'redone again')).toBe('Intro line.\n\nAlpha');
 });
 
