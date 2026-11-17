@@ -14,7 +14,7 @@ import { CLOSE, encodeSyncFrame } from '@moss-multi/protocol/sync';
 import { DocDO, type DocLimits } from '../../src/doc-do.ts';
 import { payloadText } from '../../src/payload-docs.ts';
 import { Backing, openDoc, start, type Opened } from './do-harness.ts';
-import { LiveClient, syncAll } from './live-client.ts';
+import { heldText, LiveClient, syncAll } from './live-client.ts';
 
 type Rollback = typeof import('../../src/paste-rollback.ts');
 const rollback: Rollback | null = await import('../../src/paste-rollback.ts').catch(() => null);
@@ -201,6 +201,36 @@ describe('a cut paste rolled back (T3.B32)', () => {
       expect(again.paragraphs()).toEqual(held);
       const server = await cut.doc.dobj.exportMarkdown();
       expect(server).toContain('Ben was here.');
+      expect(server).not.toMatch(/Alpha|print/);
+    } finally { again.dispose(); cut.ben.dispose(); }
+  });
+
+  it("keeps a landed pasted code block another writer typed into, with that writer's code and none of the paste's", async () => {
+    const { rollBackPaste } = use();
+    expect(rollBackPaste, 'a whole paste rolled back, its payload docs with it').toBeTypeOf('function');
+    const cut = await cutPaste();
+    cut.limits.structCap = STRUCT_CAP;
+    await syncAll(cut.ben);
+    expect(cut.ben.ids(), 'the pasted code block reached Ben').toEqual([cut.payloadId]);
+    cut.ben.type(0, 0, 'ben();');
+    await syncAll(cut.ben);
+    const again = await LiveClient.open(cut.doc, { id: 'ada' });
+    try {
+      const code = again.payloads.get(cut.payloadId)!;
+      rollBackPaste(again.doc, cut.record.note, [[cut.payloadId, code, cut.record.payloads[cut.payloadId]]], ROLLBACK, 40);
+      again.flush();
+      for (const frame of again.socket.drain()) await again.socket.deliver(frame);
+      await syncAll(again, cut.ben);
+      await syncAll(again, cut.ben);
+      expect(again.socket.closed).toBeNull();
+      expect(cut.ben.ids(), 'the code block stays').toEqual([cut.payloadId]);
+      expect(again.ids()).toEqual([cut.payloadId]);
+      expect(heldText(cut.ben.payloadDoc(0)), "Ben's code, without the paste's").toBe('ben();');
+      expect(heldText(again.payloadDoc(0))).toBe('ben();');
+      expect(nothingPasted(cut.ben.paragraphs())).toEqual([]);
+      expect(again.paragraphs()).toEqual(cut.ben.paragraphs());
+      const server = await cut.doc.dobj.exportMarkdown();
+      expect(server).toContain('ben();');
       expect(server).not.toMatch(/Alpha|print/);
     } finally { again.dispose(); cut.ben.dispose(); }
   });

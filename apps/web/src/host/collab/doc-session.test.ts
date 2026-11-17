@@ -938,3 +938,71 @@ it('a person demoted mid-paste stores nothing: the part that landed stays, as do
   expect(session.state).toMatchObject({ canWrite: false, resync: true });
   expect(localStorage.length).toBe(0);
 });
+
+/**
+ * Another tab's paste of a code block and a line after 'Kept.', all of it on the server and stored as cut short; the
+ * code block's payload doc holds the paste's 'print(1)' and, when given, `peer` typed in by another writer.
+ */
+function cutCodePaste(peer?: string) {
+  const server = new Y.Doc();
+  server.get('root', Y.XmlText).insert(0, 'Kept.');
+  const tab = new Y.Doc();
+  Y.applyUpdate(tab, Y.encodeStateAsUpdate(server));
+  const from = Y.getState(tab.store, tab.clientID);
+  const element = new Y.XmlElement('code-block');
+  element.setAttribute('__type', 'code-block');
+  element.setAttribute('__regId', 'code');
+  tab.get('root', Y.XmlText).insertEmbed(5, element);
+  tab.get('root', Y.XmlText).insert(6, ' Alpha.');
+  Y.applyUpdate(server, Y.encodeStateAsUpdate(tab));
+  const code = new Y.Doc();
+  code.getText('payload').insert(0, 'print(1)');
+  const payload = new Y.Doc();
+  Y.applyUpdate(payload, Y.encodeStateAsUpdate(code));
+  if (peer) payload.getText('payload').insert(0, peer);
+  const key = rollbackKey(tab.clientID, from);
+  localStorage.setItem(key, JSON.stringify({
+    note: { client: tab.clientID, from, to: Y.getState(tab.store, tab.clientID) },
+    payloads: { code: { client: code.clientID, from: 0, to: 8 } },
+    decided: 'cut',
+  }));
+  // The binding holds the note's tree as it opens; the payload doc is on its way.
+  session.doc.get('root', Y.XmlText);
+  session.payloads.hold('code');
+  session.payloads.await('code');
+  const socket = latest(); socket.open();
+  answer(socket, server);
+  const arrive = () => {
+    Y.applyUpdate(session.payloads.get('code')!, Y.encodeStateAsUpdate(payload), session.provider);
+    session.payloads.arrived('code');
+  };
+  return { key, arrive };
+}
+const codeText = () => session.payloads.get('code')!.getText('payload').toString();
+
+it("a cut paste's code block another writer typed into stays, with that writer's text and none of the paste's (T3.B32)", async () => {
+  const { namedPayloadIds } = await import('@moss-multi/sync/payload-docs');
+  await freshProfile();
+  const { arrive } = cutCodePaste('ben();');
+  arrive();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(session.state.synced).toBe(true);
+  expect(rootText(), "the paste's line goes").not.toContain('Alpha');
+  expect([...namedPayloadIds(session.doc)], 'the code block stays named').toEqual(['code']);
+  expect(codeText(), "the other writer's code, without the paste's").toBe('ben();');
+});
+
+it('a paste already found cut short waits for its payload docs too, and rolls them back once they arrive (T3.B32)', async () => {
+  const { namedPayloadIds } = await import('@moss-multi/sync/payload-docs');
+  await freshProfile();
+  const { key, arrive } = cutCodePaste();
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(session.state.synced, 'the note shows after 10 s').toBe(true);
+  expect(rootText(), 'not rolled back while its code block is on its way').toContain('Alpha');
+  expect(storedPastes()[key], 'not settled yet').toBeDefined();
+  arrive();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(rootText()).not.toContain('Alpha');
+  expect([...namedPayloadIds(session.doc)]).toEqual([]);
+  expect(codeText(), "the paste's code goes too").toBe('');
+});
