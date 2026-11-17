@@ -307,6 +307,73 @@ test('j09 raise then lower: a raise whose answers reach Ben only after Ada has l
   expect(await ui.fieldText(ada, docId, 'body'), 'and nothing reaches Ada').toBe(TEXT);
 });
 
+test('j09 raise then quick lower: lowered while the pill says he can edit, the pill goes at once @p:ppl-2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'viewer');
+  const ben = await openRecorded(actors, benPrincipal, `/d/${docId}`);
+  await ui.waitOpen(ben, docId, 'readonly');
+  await actors.requireDistinct(2);
+  // The raise reconnects at edit; the lowering's kick rebinds read-only once.
+  ben.expectReconnects(2, docId);
+
+  const origin = new URL(ada.page.url()).origin;
+  const setBen = (role: string) => ada.context.request.patch(`${origin}/api/docs/${docId}/members`,
+    { headers: { origin }, data: { principalId: benPrincipal.id!, role } });
+  expect((await setBen('editor')).status(), 'the raise is saved').toBe(200);
+  const pill = ben.page.locator(`[${ACTION_FEEDBACK_ATTR}]`);
+  await expect(pill, 'the pill says he can edit').toHaveText(CAN_EDIT_NOW, { timeout: LIVE_TIMEOUT });
+  expect((await setBen('viewer')).status(), 'the lowering is saved').toBe(200);
+  // The pill would stay 2.4 s on its own.
+  await expect(pill, 'the pill goes with the lowering').toHaveCount(0, { timeout: 1_500 });
+  await ui.waitOpen(ben, docId, 'readonly');
+  await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
+});
+
+test('j09 lower then raise: a lowering whose answers reach Ben only after Ada has raised him back leaves his note taking typing @p:ppl-2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'editor');
+  const ben = await openRecorded(actors, benPrincipal, `/d/${docId}`);
+  await ui.waitOpen(ben, docId, 'live');
+  await actors.requireDistinct(2);
+  // The lowering's kick closes his socket 4403 and he reconnects once.
+  ben.expectReconnects(1, docId);
+
+  // Reads Ben starts while he is a viewer get the server's answer at once, delivered only once the raise reached him.
+  let holding = true;
+  let heldAccess = 0;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await ben.context.route((url) => ACCESS_ASK.test(url.pathname) || url.pathname === '/api/workspace', async (route) => {
+    if (!holding || route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    if (ACCESS_ASK.test(new URL(route.request().url()).pathname)) heldAccess += 1;
+    await released;
+    await route.fulfill({ response });
+  });
+
+  const origin = new URL(ada.page.url()).origin;
+  const setBen = (role: string) => ada.context.request.patch(`${origin}/api/docs/${docId}/members`,
+    { headers: { origin }, data: { principalId: benPrincipal.id!, role } });
+  expect((await setBen('viewer')).status(), 'the lowering is saved').toBe(200);
+  await expect.poll(async () => (await closes(ben.page)).map((c) => c.code), { message: "Ben's doc socket closes 4403", timeout: LIVE_TIMEOUT }).toContain(4403);
+  await expect.poll(() => heldAccess, { message: 'Ben asks for his lowered role', timeout: LIVE_TIMEOUT }).toBeGreaterThan(0);
+  expect((await setBen('editor')).status(), 'the raise back is saved').toBe(200);
+  await ben.page.waitForTimeout(1_000);
+  holding = false;
+  release();
+
+  await expect(ui.body(ben, docId), 'his note takes typing again').toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: LIVE_TIMEOUT });
+  await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
+  await expect(ui.pane(ben, docId).locator(`[${ROLE_BAND_ATTR}]`), 'no role band').toHaveCount(0);
+  const typed = ' typed after the raise back';
+  await ui.typeBody(ben, docId, typed);
+  await expect.poll(() => ui.fieldText(ada, docId, 'body'), { message: 'his typing reaches Ada', timeout: LIVE_TIMEOUT }).toBe(`${TEXT}${typed}`);
+});
+
 test('j09 removal: removing a member ends the note for them in place (revoked) @p:ppl-2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
