@@ -63,6 +63,8 @@ import { noteCan } from '@moss-multi/host/capabilities';
 import { TRASH_COPY } from '@moss-multi/host/retention';
 import { canTrashNote } from '@moss-multi/host/trash';
 import { refuseInput } from '@moss-multi/host/refusal';
+// moss-multi seam: search-elsewhere (T9.18)
+import { openInResultVault } from '@moss-multi/host/search-elsewhere';
 
 const NOTES_FOLDER_NAME = 'Notes';
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -625,9 +627,11 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
     const handleSelectNote = useCallback(
       (id: string) => {
         setLastViewedNoteId(id);
+        // moss-multi seam: search-elsewhere (T9.18): a displayed result from another vault switches to it, then opens.
+        if (hasPanelSearchQuery && openInResultVault(ipcSearchResults.find((result) => result.id === id), () => onSelectNote(id))) return;
         onSelectNote(id);
       },
-      [onSelectNote, setLastViewedNoteId]
+      [hasPanelSearchQuery, ipcSearchResults, onSelectNote, setLastViewedNoteId]
     );
 
     const handleSearchChange = useCallback((value: string) => {

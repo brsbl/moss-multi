@@ -266,3 +266,90 @@ test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault 
   expect(new Set(live.map((doc) => doc.filename)).size, 'two rows, two filenames').toBe(2);
   await actors.checkpoint('vault-restored');
 });
+
+test('j13-vaults: a search result from Ada’s other vault opens there, by click and by Enter; one from the vault on screen opens in place @p:note-7 @p:note-4@3', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner searches across her own vaults');
+  const run = Math.random().toString(36).slice(2, 8);
+  const word = `lentil${run}`;
+  const local = `scratchword${run}`;
+  const origin = new URL(ada.page.url()).origin;
+  const send = (path: string, data: object) => ada.context.request.post(`${origin}${path}`, { headers: { origin }, data, timeout: 15_000 });
+  const home = (await listing(ada)).vault.id;
+  // Declared setup: a vault Scratch with notes of its own, and a note only Home holds, made from Scratch so nothing
+  // has opened it yet.
+  await newVault(ada, 'Home', 'Scratch');
+  const made = await send('/api/docs', { folderId: home, title: `Lentil soup ${run}`, markdown: `Red ${word}, cumin and lemon.` });
+  expect(made.status(), 'declared setup: the Home note').toBe(201);
+  const soup = ((await made.json()) as { doc: { id: string } }).doc.id;
+  const scratch = (await listing(ada)).vaults.find((vault) => vault.name === 'Scratch')?.id ?? '';
+  const pad = await send('/api/docs', { folderId: scratch, title: `Scratch pad ${run}`, markdown: `Only ${local} here.` });
+  expect(pad.status(), 'declared setup: the Scratch note').toBe(201);
+  const padId = ((await pad.json()) as { doc: { id: string } }).doc.id;
+  // A newer Scratch note heads its listing, where a note the store lacks would fall back to.
+  const later = await send('/api/docs', { folderId: scratch, title: `Later ${run}`, markdown: 'Nothing about soup.' });
+  expect(later.status(), 'declared setup: a second Scratch note').toBe(201);
+  const laterId = ((await later.json()) as { doc: { id: string } }).doc.id;
+  await expect(noteRow(ada, padId)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, laterId)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, soup), 'Scratch does not list the Home note').toHaveCount(0);
+  for (const [query, docId] of [[word, soup], [local, padId]]) {
+    await expect.poll(async () => {
+      const answer = await ada.context.request.get(`${origin}/api/search?q=${query}`);
+      return ((await answer.json()) as { results?: { id: string }[] }).results?.map((hit) => hit.id) ?? [];
+    }, { message: `the index answers ${query}`, timeout: 20_000 }).toContain(docId);
+  }
+  const field = ada.page.getByRole('textbox', { name: 'Search notes' });
+  const search = async (query: string) => {
+    if (!(await field.isVisible())) await ada.page.getByRole('button', { name: 'Search notes', exact: true }).click();
+    await field.fill(query);
+  };
+
+  // A result from the vault on screen opens in place.
+  await search(local);
+  await noteRow(ada, padId).click();
+  await ui.waitLive(ada, padId);
+  await ada.declareRemount(padId);
+  await expect(switcher(ada, 'Scratch'), 'a result from the vault on screen keeps the vault').toBeVisible();
+
+  // Clicking the Home result: the switcher shows Home, the panel lists Home's notes, and the note is open and live.
+  await search(word);
+  await expect(noteRow(ada, soup), 'the Home note is found from Scratch').toBeVisible({ timeout: BIND_TIMEOUT });
+  await noteRow(ada, soup).click();
+  await expect(switcher(ada, 'Home'), 'the switcher moves to the note’s vault').toBeVisible({ timeout: BIND_TIMEOUT });
+  await ui.waitLive(ada, soup);
+  await ada.declareRemount(soup);
+  await expect(field, 'choosing a result closes search').toBeHidden();
+  await expect(noteRow(ada, soup), 'the panel lists Home’s notes').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, padId)).toHaveCount(0);
+  await actors.checkpoint('cross-vault-click');
+
+  // Back in Scratch, Enter on the only result does the same. Each note opens once more, and only once more.
+  ada.expectReconnects(1, padId);
+  ada.expectReconnects(1, soup);
+  await switchTo(ada, 'Home', 'Scratch', 'Scratch');
+  await ui.openNote(ada, padId);
+  await search(word);
+  await expect(noteRow(ada, soup)).toBeVisible({ timeout: BIND_TIMEOUT });
+  await field.press('Enter');
+  await expect(switcher(ada, 'Home'), 'Enter moves to the note’s vault too').toBeVisible({ timeout: BIND_TIMEOUT });
+  await ui.waitLive(ada, soup);
+  await ada.declareRemount(soup);
+  await expect(field).toBeHidden();
+  await expect(noteRow(ada, soup)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await actors.checkpoint('cross-vault-enter');
+
+  // In Scratch with the Home note still open, choosing its result moves to Home all the same.
+  await switchTo(ada, 'Home', 'Scratch', 'Scratch');
+  await expect(noteRow(ada, padId), 'the panel lists Scratch’s notes').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect.poll(() => ui.paneIds(ada), { message: 'the Home note stays open across the switch' }).toContain(soup);
+  await search(word);
+  await expect(noteRow(ada, soup)).toBeVisible({ timeout: BIND_TIMEOUT });
+  await noteRow(ada, soup).click();
+  await expect(switcher(ada, 'Home'), 'an open note’s result moves to its vault').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(field).toBeHidden();
+  await expect(noteRow(ada, padId), 'the panel lists Home’s notes').toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, soup)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await ui.waitLive(ada, soup);
+  await actors.checkpoint('cross-vault-already-open');
+});

@@ -514,6 +514,29 @@ describe('the T3.4 bridge', () => {
     expect(await api.notes.search({ query: '  ' })).toEqual([]);
   });
 
+  it('a displayed result keeps the vault it opens in, whatever search answers after it (T9.18)', async () => {
+    const home = { ...listing, vaults: [{ id: 'v1', name: 'Home' }, { id: 'v2', name: 'Scratch' }] };
+    const answers = [
+      { results: [
+        { id: 's1', title: 'Lentil soup', snippet: 'lentil', folderId: 'v2', updatedAt: 1_700_000_300_000, vaultId: 'v2' },
+        { id: 'd2', title: 'Diary', snippet: 'a lentil', folderId: 'v1', updatedAt: 1_700_000_200_000, vaultId: 'v1' },
+        { id: 'x9', title: 'Shared', snippet: 'lentil', folderId: 'f9', updatedAt: 1_700_000_200_000 },
+      ] },
+      { results: [] },
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) =>
+      Response.json(String(input).startsWith('/api/search') ? answers.shift() : home));
+    const api = createBridge({ pathname: () => '/', fetch });
+    const shown = await api.notes.search({ query: 'lentil' });
+    // An older or unrelated answer arrives after the displayed one.
+    await api.notes.search({ query: 'nothing' });
+    const pick = (id: string) => shown.find((hit) => hit.id === id) ?? {};
+    expect(pick('s1'), 'the result names its vault').toMatchObject({ vaultId: 'v2' });
+    expect(api[WORKSPACE].resultVault(pick('s1')), 'a result from another vault opens there').toBe('v2');
+    expect(api[WORKSPACE].resultVault(pick('d2')), 'a result from the vault on screen opens in place').toBeNull();
+    expect(api[WORKSPACE].resultVault(pick('x9')), 'a note reached on its own opens as before').toBeNull();
+  });
+
   it('reads headings from GET /api/docs/:id/headings', async () => {
     const api = createBridge({ pathname: () => '/', fetch: routes({ '/api/docs/d1/headings': { headings: [{ level: 2, text: 'Risks' }] } }) });
     expect(await api.notes.getHeadings('d1')).toEqual([{ level: 2, text: 'Risks' }]);
