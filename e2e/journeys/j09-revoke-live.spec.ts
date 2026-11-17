@@ -365,6 +365,8 @@ test('j09 lower then raise: a lowering whose answers reach Ben only after Ada ha
   await ben.page.waitForTimeout(1_000);
   holding = false;
   release();
+  // His socket closed with the lowering while his body stayed open to offline typing: the held answers land first.
+  await ben.page.waitForTimeout(3_000);
 
   await expect(ui.body(ben, docId), 'his note takes typing again').toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: LIVE_TIMEOUT });
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
