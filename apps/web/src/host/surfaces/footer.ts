@@ -1,5 +1,7 @@
 // The sidebar footer's Settings target, home of the app menu and its inbox (T9.30). A cue that leaves the top bar
 // while it had focus hands focus here, or to the notes-panel toggle while the sidebar is put away.
+import { useCallback, useRef } from 'react';
+
 export const APP_MENU_ATTR = 'data-app-menu';
 
 const shown = (el: HTMLElement): boolean => el.getClientRects().length > 0 && !el.closest('[inert], [aria-hidden="true"]');
@@ -40,4 +42,30 @@ export function handOffWhenGone(bar: HTMLElement, cue: string, destination: () =
     destination()?.focus();
   };
   requestAnimationFrame(settle);
+}
+
+/**
+ * A ref for a top-bar cue: when the cue leaves the page while it holds focus, focus goes to `home()` instead of the
+ * page. React detaches the ref before it removes the node, so the check sees where focus was; the move waits until
+ * the node is really gone (a ref merely re-attached keeps its focus) and never takes focus from anything else.
+ */
+export function useFocusHome(home: () => HTMLElement | null): (el: HTMLElement | null) => void {
+  const node = useRef<HTMLElement | null>(null);
+  const target = useRef(home);
+  target.current = home;
+  return useCallback((el: HTMLElement | null) => {
+    if (el) {
+      node.current = el;
+      return;
+    }
+    const left = node.current;
+    node.current = null;
+    if (!left?.contains(document.activeElement)) return;
+    queueMicrotask(() => {
+      if (left.isConnected) return;
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      target.current()?.focus();
+    });
+  }, []);
 }

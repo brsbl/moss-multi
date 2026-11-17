@@ -10,7 +10,7 @@ import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
-import { footerDestination, handOffWhenGone } from './footer.ts';
+import { footerDestination, handOffWhenGone, useFocusHome } from './footer.ts';
 import type { Notice } from '../notifications.ts';
 
 /** How many notices the open inbox lists. */
@@ -70,6 +70,8 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
   const unread = useUnreadCount();
   const [open, setOpen] = useState(false);
   const navigating = useRef(false);
+  // Focused when it leaves, unopened, it hands focus to the inbox's home too.
+  const focusHome = useFocusHome(() => footerDestination(bar?.current ?? null));
   const leaving = !show || unread === 0;
   if (auth.status !== 'signed-in' || (!open && leaving)) return null;
   const onOpenChange = (next: boolean) => {
@@ -87,6 +89,7 @@ export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: 
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
               <button
+                ref={focusHome}
                 type="button"
                 data-collab-chrome=""
                 aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'}

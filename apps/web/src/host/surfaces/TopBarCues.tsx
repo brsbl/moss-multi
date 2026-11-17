@@ -13,6 +13,7 @@ import { FacePile, type Avatar } from '../../../../../packages/ui/src/FacePile.t
 import { ConnectionIndicator } from '../collab/ConnectionNotice.tsx';
 import { usePeers } from '../collab/presence.ts';
 import { SuggestionsButton, type SuggestionsSource } from '../collab/suggest/SuggestionsPanel.tsx';
+import { useFocusHome } from './footer.ts';
 import { NotificationsBell } from './NotificationsBell.tsx';
 
 /** Pane widths (CSS px) below which each cue yields, in order. */
@@ -46,8 +47,11 @@ const peopleLabel = (peers: Avatar[]): string => {
  * Others in the note: their initials, or one Users target when the bar is narrow; either opens the list of names.
  * `pinned` reports while its list is open, so the bar keeps it in its slot until the list closes.
  */
-export function PeopleHere({ docId, compact, onOpenChange }: { docId: string; compact: boolean; onOpenChange?: (open: boolean) => void }): ReactNode {
+export function PeopleHere({ docId, compact, onOpenChange, home }: {
+  docId: string; compact: boolean; onOpenChange?: (open: boolean) => void; home?: () => HTMLElement | null;
+}): ReactNode {
   const peers = usePeers(docId);
+  const focusHome = useFocusHome(home ?? (() => null));
   const [open, setOpenState] = useState(false);
   const setOpen = (next: boolean) => { setOpenState(next); onOpenChange?.(next); };
   if (peers.length === 0) return null;
@@ -59,6 +63,7 @@ export function PeopleHere({ docId, compact, onOpenChange }: { docId: string; co
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
               <button
+                ref={focusHome}
                 type="button"
                 data-collab-chrome=""
                 aria-label={label}
@@ -93,10 +98,12 @@ export function TopBarCues({ docId, suggestions }: { docId: string; suggestions:
   const [peopleOpen, setPeopleOpen] = useState(false);
   // Below 640 px of pane People here leaves the bar for the Suggestions list's heading; an open roster stays put.
   const peopleInBar = width >= YIELD_AT.peopleOut || peopleOpen || !suggestions;
+  // Focused when it leaves the bar, People here hands focus to More actions, whose Suggestions list holds it now.
+  const moreActions = () => bar.current?.querySelector<HTMLElement>('button[aria-label="More actions"]') ?? null;
   return (
     <>
       <span ref={probe} hidden />
-      {peopleInBar ? <PeopleHere docId={docId} compact={width < YIELD_AT.people} onOpenChange={setPeopleOpen} /> : null}
+      {peopleInBar ? <PeopleHere docId={docId} compact={width < YIELD_AT.people} onOpenChange={setPeopleOpen} home={moreActions} /> : null}
       <NotificationsBell show={width >= YIELD_AT.bell} bar={bar} />
       {suggestions ? (
         <SuggestionsButton

@@ -65,17 +65,10 @@ export const leaveReview = (docId: string, role: Role | null): void => requestMo
 const ESCAPE_OWNERS = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-moss-note-search-input]';
 const escapeOwned = (): boolean => [...document.querySelectorAll(ESCAPE_OWNERS)].some((el) => el.getClientRects().length > 0);
 
-/**
- * The pane's bottom row (T9.30) while someone who can edit or suggest is in Review, in place of the editing tools: why
- * typing does nothing, and Done. Escape does what Done does unless something else handles it.
- */
-export function ReviewBand({ docId }: { docId: string }): ReactNode {
-  const role = useDocRole(docId);
-  const mode = useShownMode(docId);
-  const terminal = useTerminal(docId);
-  const shown = mode === 'review' && can(role, 'suggest') && terminal === null;
+/** While `active`, Escape leaves Review for the role's own mode, unless something else handles it. */
+export function useEscapeLeavesReview(docId: string, role: Role | null, active: boolean): void {
   useEffect(() => {
-    if (!shown) return;
+    if (!active) return;
     let owned = false;
     const capture = (event: KeyboardEvent) => {
       if (event.key === 'Escape') owned = escapeOwned();
@@ -92,7 +85,20 @@ export function ReviewBand({ docId }: { docId: string }): ReactNode {
       window.removeEventListener('keydown', capture, true);
       window.removeEventListener('keydown', bubble);
     };
-  }, [docId, role, shown]);
+  }, [docId, role, active]);
+}
+
+/**
+ * The pane's bottom row (T9.30) while someone who can edit or suggest is in Review, in place of the editing tools: why
+ * typing does nothing, and Done. Escape does what Done does unless something else handles it. A reader's Review is
+ * said in their own row (RoleBand).
+ */
+export function ReviewBand({ docId }: { docId: string }): ReactNode {
+  const role = useDocRole(docId);
+  const mode = useShownMode(docId);
+  const terminal = useTerminal(docId);
+  const shown = mode === 'review' && can(role, 'suggest') && terminal === null;
+  useEscapeLeavesReview(docId, role, shown);
   if (!shown) return null;
   return (
     <div className={BOTTOM_ROW_SLOT}>

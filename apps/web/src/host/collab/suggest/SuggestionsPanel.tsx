@@ -19,7 +19,7 @@ import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { sessionFetch } from '../../session-fetch.ts';
-import { handOffWhenGone } from '../../surfaces/footer.ts';
+import { handOffWhenGone, useFocusHome } from '../../surfaces/footer.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
@@ -375,6 +375,9 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
   const [pinned, setPinned] = useState(false);
+  const moreActions = () => anchor?.current?.closest<HTMLElement>(`[${TOP_BAR_ATTR}]`)?.querySelector<HTMLElement>('button[aria-label="More actions"]') ?? null;
+  // A focused count that leaves, unopened, hands focus to More actions, where Suggestions stays.
+  const focusHome = useFocusHome(moreActions);
   const shown = showCount && open.length > 0;
   if (isOpen && shown && !pinned) setPinned(true);
   if (!isOpen && pinned) setPinned(false);
@@ -392,7 +395,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
             closePanel(docId);
             // The count that opened the list leaves its slot once the list closes: focus goes to More actions.
             const bar = anchor?.current?.closest<HTMLElement>(`[${TOP_BAR_ATTR}]`);
-            if (pinned && bar) handOffWhenGone(bar, `[${SUGGESTIONS_BUTTON_ATTR}]`, () => bar.querySelector<HTMLElement>('button[aria-label="More actions"]'));
+            if (pinned && bar) handOffWhenGone(bar, `[${SUGGESTIONS_BUTTON_ATTR}]`, moreActions);
           }
         }}
       >
@@ -401,6 +404,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
             <TooltipTrigger asChild>
               <Popover.Trigger asChild>
                 <button
+                  ref={focusHome}
                   type="button"
                   data-collab-chrome=""
                   {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}
