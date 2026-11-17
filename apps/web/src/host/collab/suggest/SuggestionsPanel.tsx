@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
+import { sessionFetch } from '../../session-fetch.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
@@ -125,7 +126,7 @@ async function call(url: string, body?: unknown): Promise<{ ok: boolean; status:
   // A role that comes from a share link travels with every call, as the comment API's does.
   const share = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('share');
   const headers: Record<string, string> = { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) };
-  const response = await fetch(url, body === undefined
+  const response = await sessionFetch(url, body === undefined
     ? { method: 'GET', credentials: 'same-origin', headers }
     : { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;

@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 import { lookupSession } from '../auth/session-fn.ts';
 import { setAppState } from './app-state.ts';
 import { createAuthStore, LOGIN_PATH, type AuthState, type SessionUser } from './auth-state.ts';
+import { armSessionFetch, sessionCallHeld, setSessionEnded } from './session-fetch.ts';
 import { prepareSignOut } from './sign-out-guard.ts';
 import { leaveTo } from './navigation.ts';
 
@@ -15,7 +16,12 @@ export const auth = createAuthStore({
   leave: leaveTo,
   setAppState,
   beforeSignOut: prepareSignOut,
+  onHeld: sessionCallHeld,
 });
+
+// The host's API callers fetch through session-fetch.ts: a 401 that means the session ended ends this tab in place.
+armSessionFetch(auth.sessionAware((input, init) => fetch(input, init)));
+auth.subscribe((state) => setSessionEnded(state.status === 'signed-out' && state.ended === true));
 
 if (typeof window !== 'undefined') {
   // A degraded tab retries at once when the network or the tab comes back.

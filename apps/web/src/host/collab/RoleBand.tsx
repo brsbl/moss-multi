@@ -36,7 +36,9 @@ export function useRoleBand(docId: string | null): string | null {
 /** The band. A signed-out link visitor's holds "Sign in to do more" at every width: the top bar has none (T9.30). */
 export function RoleBand({ docId }: { docId: string }): ReactNode {
   const lead = useRoleBand(docId);
-  const signedOut = useAuthState().status === 'signed-out';
+  const auth = useAuthState();
+  // A tab whose session ended offers its banner's "Sign in" instead (T9.17).
+  const signedOut = auth.status === 'signed-out' && !auth.ended;
   if (!lead) return null;
   return (
     <div className={BOTTOM_ROW_SLOT}>

@@ -10,6 +10,7 @@ import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dial
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
+import { sessionFetch } from '../session-fetch.ts';
 import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
 import { openShare } from './ShareDialog.tsx';
 
@@ -27,7 +28,7 @@ const UNREACHABLE = 'The server couldn’t be reached. Check your connection and
 async function vaultRequest(path: string, method: string, body?: unknown): Promise<{ vault?: { id: string } }> {
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await sessionFetch(path, {
       method,
       credentials: 'same-origin',
       headers: { accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
