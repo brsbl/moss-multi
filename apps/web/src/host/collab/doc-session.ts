@@ -60,7 +60,7 @@ export const WRITE_REFUSED: Record<WriteRefusalReason, string> = {
   'protected-type': 'Your last change could not be saved. Reconnecting to the saved note.',
 };
 export const HALTED_REFUSED = 'Your last change could not be saved. Reconnecting to the saved note.';
-const VIEW_ONLY = 'You can view this note but can no longer edit it.';
+export const VIEW_ONLY = 'You can view this note but can no longer edit it.';
 
 /**
  * The provider's WebSocket (its WebSocketPolyfill). `detach` closes the socket and runs the provider's close path

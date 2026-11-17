@@ -26,7 +26,7 @@ import { TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
-  aliasProvider, docOwner, openDocSession, subscribeDocOwners, waitDocsAcked, type DocSession, type SessionState,
+  aliasProvider, docOwner, openDocSession, subscribeDocOwners, VIEW_ONLY, waitDocsAcked, type DocSession, type SessionState,
 } from './doc-session.ts';
 import { auth } from '../auth.ts';
 import { captureCaret, type CaretMark } from './suggest/caret.ts';
@@ -50,6 +50,7 @@ import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
 import { ConnectionNotice } from './ConnectionNotice.tsx';
 import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
+import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
 
 interface PaneState {
@@ -242,6 +243,8 @@ class PaneBinding implements SuggestPane {
    */
   #raised(gained: (typeof RAISED)[number]): void {
     this.#announce = gained;
+    // A lowering's notice still up contradicts the raise.
+    if (gained !== 'comment') settleRefusal(VIEW_ONLY, 0);
     if (!this.#session && gained !== 'comment') this.canWrite = true;
     if (gained === 'comment' || !this.#session) {
       this.#retarget();
