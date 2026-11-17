@@ -110,7 +110,7 @@ async function play(page: Page, root: Locator, action: UndoAction): Promise<void
   else if ('key' in action) await page.keyboard.press(action.key);
   else if ('paste' in action) {
     await root.evaluate((element, text) => {
-      const target = element.isContentEditable ? element : (element.querySelector('[contenteditable]') ?? element);
+      const target = (element as HTMLElement).isContentEditable ? element : (element.querySelector('[contenteditable]') ?? element);
       const clipboardData = new DataTransfer();
       clipboardData.setData('text/plain', text);
       target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
