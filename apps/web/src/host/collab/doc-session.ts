@@ -22,7 +22,7 @@ import {
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
 import { Outbox, syncWrite, type Frame } from './outbox.ts';
-import { dropRollback, PASTE_ROLLED_BACK, saveRollback, storedRollbacks, storeRollback, type StoredPaste } from './paste-rollback.ts';
+import { dropRollback, PASTE_PARTLY_KEPT, PASTE_ROLLED_BACK, saveRollback, storedRollbacks, storeRollback, type StoredPaste } from './paste-rollback.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
 import { markSession, markUnacked } from './unacked.ts';
 
@@ -743,9 +743,10 @@ export class DocSession {
 
   /**
    * Settles each stored paste (T3.B32) before the pane shows the note, the latest first. One cut short is rolled
-   * back: its payload docs' items first, while the note still names them, then the note's. Its deletes were never
-   * sent, so nothing it replaced needs restoring. One that landed whole sends its held deletes, which completes it.
-   * A paste whose payload docs have not arrived after 10 s is settled once they have, as the note shows.
+   * back in whole blocks, a block another writer wrote into (or into its payload, read once it has arrived) kept
+   * whole. Its deletes were never sent, so nothing it replaced needs restoring. One that landed whole sends its held
+   * deletes, which completes it. A paste whose payload docs have not arrived after 10 s is settled once they have, as
+   * the note shows.
    */
   async #rollBack(stored: Map<string, StoredPaste>): Promise<void> {
     const records = [...stored].sort(([, a], [, b]) => b.note.from - a.note.from);
@@ -766,6 +767,7 @@ export class DocSession {
   #settle(records: [string, StoredPaste][], ids: Set<string>): [string, StoredPaste][] {
     const waiting: [string, StoredPaste][] = [];
     let cut = false;
+    let kept = 0;
     for (const [key, record] of records) {
       const payloads = Object.entries(record.payloads).filter(([id]) => ids.has(id));
       // One still arriving would read as cut short, and its landed items would stay once it arrived.
@@ -782,12 +784,12 @@ export class DocSession {
         if (record.deletes?.length) applyDeletes(this.doc, record.deletes, ROLLBACK_ORIGIN);
       } else {
         cut = true;
-        rollBackPaste(this.doc, record.note, payloads.map(([id, span]) => [id, this.payloads.hold(id), span]), ROLLBACK_ORIGIN);
+        kept += rollBackPaste(this.doc, record.note, payloads.map(([id, span]) => [id, this.payloads.hold(id), span]), ROLLBACK_ORIGIN).kept;
         if (record.scrollTop !== undefined) this.rolledBackScroll = record.scrollTop;
       }
       this.#applied.add(key);
     }
-    if (cut) refuseInput(PASTE_ROLLED_BACK);
+    if (cut) refuseInput(kept > 0 ? PASTE_PARTLY_KEPT : PASTE_ROLLED_BACK);
     if (!this.#ledger.unacked) this.#settled();
     return waiting;
   }

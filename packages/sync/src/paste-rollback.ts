@@ -2,11 +2,9 @@
 // as a client id and a clock range per doc, and the deletes its writes make (the selection it replaced, the text a
 // split moved). Those deletes go out only once every item of the paste has landed (`withoutDeletes` strips them from
 // what is sent until then), so a paste cut short by a limit has deleted nothing on the server. Rolling it back is then
-// deleting the part that landed: delete-only updates, which the DocDO admits at any limit (A§5.1), each deleting at
-// most ROLLBACK_STRUCTS of the paste's structs, from the paste's end back, so a cut falls between structs and a
-// batch's deletions merge with the deleted tail after it. A pasted container a peer has typed into stays, with the
-// peer's characters, as undo keeps one (host/collab/undo.ts); so does a pasted code, HTML or formula block whose
-// payload doc a peer has typed into, with the peer's text.
+// deleting the part that landed: delete-only updates, which the DocDO admits at any limit (A§5.1). The unit is a whole
+// top-level block the paste made, never a part of one, so a peer's bound editor sees blocks removed as when a person
+// deletes them. A pasted block another writer wrote into, or into its payload, stays whole, pasted content included.
 import * as encoding from 'lib0/encoding';
 import * as Y from 'yjs';
 import { encodeUpdate } from './update-pieces.ts';
@@ -85,116 +83,157 @@ export function landedPart(doc: Y.Doc, span: PasteSpan): PasteSpan | null {
 /** Whether `doc` holds all of `span`. */
 export const landedWhole = (doc: Y.Doc, span: PasteSpan): boolean => Y.getState(doc.store, span.client) >= span.to;
 
+/** Whether `item` holds any of `span`'s clocks. */
+const overlaps = (span: PasteSpan) => (item: Y.Item): boolean =>
+  item.id.client === span.client && item.id.clock < span.to && item.id.clock + item.length > span.from;
+
+/** The payload id an element item names, if it holds one. */
+function payloadIdOf(item: Y.Item): string | null {
+  if (!(item.content instanceof Y.ContentType) || !(item.content.type instanceof Y.XmlElement)) return null;
+  const id: unknown = item.content.type.getAttribute('__regId');
+  return typeof id === 'string' ? id : null;
+}
+
+/** `item` and what it holds: its live structs, and whether another writer wrote one, or into a payload in `pinned`. */
+function survey(item: Y.Item, mine: (item: Y.Item) => boolean, pinned: ReadonlySet<string>): { structs: number; others: boolean } {
+  let structs = 0;
+  let others = false;
+  const stack = [item];
+  while (stack.length > 0) {
+    const next = stack.pop()!;
+    if (next.deleted) continue;
+    structs += 1;
+    if (!mine(next)) others = true;
+    if (!(next.content instanceof Y.ContentType)) continue;
+    const id = pinned.size > 0 ? payloadIdOf(next) : null;
+    if (id !== null && pinned.has(id)) others = true;
+    const type = next.content.type as Y.AbstractType<unknown>;
+    for (let child = type._start; child; child = child.right) stack.push(child);
+    for (const child of type._map.values()) stack.push(child);
+  }
+  return { structs, others };
+}
+
+/** What a rollback deletes, read before any of it is applied, and how many blocks it keeps. */
+export interface RollbackPlan {
+  updates: Uint8Array[];
+  kept: number;
+}
+
 /**
- * The pasted containers that stay: a container (a paragraph's Y.XmlText, a list, a table, a text node's property map)
- * holding a live item a peer wrote, and the properties it was created with. Deleting it would delete the peer's
- * characters for everyone; only the paste's own characters go.
+ * The delete-only updates that roll back the landed part of `span` in `doc` (a note bound by @lexical/yjs). Each
+ * top-level block the paste made is deleted whole (its own item, which takes its subtree with it), the last in the
+ * document first, in batches of whole blocks of about `maxStructs` structs each. A run the paste inserted into a block
+ * it did not make (a paste into the middle of a line) goes in one update for that block. A pasted block, or run,
+ * holding another writer's live item, or an element naming a payload id in `pinned`, is kept whole. A property the
+ * paste set on a node it did not make keeps the pasted value, since setting it replaced the old one on every copy.
  */
-function keeper(span: PasteSpan, pinned: ReadonlySet<string>): (item: Y.Item) => boolean {
-  const inSpan = (item: Y.Item) => item.id.client === span.client && item.id.clock >= span.from && item.id.clock < span.to;
-  // An element naming a payload doc that holds a peer's items: deleting it would hide the peer's text.
-  const isPinned = (item: Y.Item): boolean => {
-    if (pinned.size === 0 || !(item.content instanceof Y.ContentType) || !(item.content.type instanceof Y.XmlElement)) return false;
-    const id: unknown = item.content.type.getAttribute('__regId');
-    return typeof id === 'string' && pinned.has(id);
+export function rollbackPlan(doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_STRUCTS, pinned: ReadonlySet<string> = new Set()): RollbackPlan {
+  const part = landedPart(doc, span);
+  if (!part) return { updates: [], kept: 0 };
+  const mine = overlaps(part);
+  const range = (item: Y.Item): [number, number, number] => {
+    const from = Math.max(item.id.clock, part.from);
+    return [part.client, from, Math.min(item.id.clock + item.length, part.to) - from];
   };
-  const isPeers = (item: Y.Item) => !item.deleted && (!inSpan(item) || isPinned(item));
-  const holdsNested = (item: Y.Item | null): boolean =>
-    !!item && !item.deleted && item.content instanceof Y.ContentType && holdsPeers(item.content.type as Y.AbstractType<unknown>);
-  // A peer's live item in the sequence, or in a nested type at any depth (a property value is not content).
-  const holdsPeers = (type: Y.AbstractType<unknown>): boolean => {
-    for (let item = type._start; item; item = item.right) if (isPeers(item) || holdsNested(item)) return true;
-    for (const item of type._map.values()) if (holdsNested(item)) return true;
-    return false;
+  // Each type's top-level block: the item in a root type it is under, null for a root type itself.
+  const tops = new Map<Y.AbstractType<unknown>, Y.Item | null>();
+  const topOf = (type: Y.AbstractType<unknown>): Y.Item | null => {
+    const path: Y.AbstractType<unknown>[] = [];
+    let top: Y.Item | null | undefined;
+    for (let at = type; top === undefined; ) {
+      top = tops.get(at);
+      if (top !== undefined) break;
+      path.push(at);
+      const item = at._item;
+      if (item === null) top = null;
+      else if ((item.parent as Y.AbstractType<unknown>)._item === null) top = item;
+      else at = item.parent as Y.AbstractType<unknown>;
+    }
+    for (const each of path) tops.set(each, top);
+    return top;
   };
-  const known = new Map<Y.Item, boolean>();
-  const keeps = (item: Y.Item): boolean => {
-    if (item.deleted || !(item.content instanceof Y.ContentType)) return false;
-    let kept = known.get(item);
-    if (kept !== undefined) return kept;
-    const type = item.content.type as Y.AbstractType<unknown>;
-    kept = false;
-    if (isPinned(item)) {
-      kept = true;
-    } else if (item.parent instanceof Y.XmlText && item.parentSub === null && type instanceof Y.Map) {
-      // In @lexical/yjs a text node's property map owns the characters after it, up to the next embed.
-      for (let next = item.right; next; next = next.right) {
-        if (next.deleted) continue;
-        if (!(next.content instanceof Y.ContentString)) break;
-        if (isPeers(next)) {
-          kept = true;
+  const blocks = new Set<Y.Item>();
+  const runs = new Map<Y.Item, Y.Item[]>();
+  const structs = doc.store.clients.get(part.client) ?? [];
+  for (let i = Y.findIndexSS(structs, part.from); i < structs.length && structs[i].id.clock < part.to; i += 1) {
+    const struct = structs[i];
+    if (!(struct instanceof Y.Item) || struct.deleted) continue;
+    const parent = struct.parent as Y.AbstractType<unknown>;
+    const top = topOf(parent);
+    if (top === null) {
+      if (struct.parentSub === null) blocks.add(struct);
+    } else if (!mine(top) && struct.parentSub === null && !(parent._item && mine(parent._item))) {
+      const run = runs.get(top);
+      if (run) run.push(struct);
+      else runs.set(top, [struct]);
+    }
+  }
+
+  const updates: Uint8Array[] = [];
+  let kept = 0;
+  const ordered: Y.Item[] = [];
+  for (const root of new Set([...blocks].map((block) => block.parent as Y.AbstractType<unknown>))) {
+    for (let item = root._start; item; item = item.right) if (blocks.has(item)) ordered.push(item);
+  }
+  let batch: Ranges = [];
+  let size = 0;
+  for (let i = ordered.length - 1; i >= 0; i -= 1) {
+    const { structs: count, others } = survey(ordered[i], mine, pinned);
+    if (others) {
+      kept += 1;
+      continue;
+    }
+    batch.push(range(ordered[i]));
+    size += count;
+    if (size >= maxStructs) {
+      updates.push(deletesUpdate(mergeRanges(batch)));
+      batch = [];
+      size = 0;
+    }
+  }
+  if (batch.length > 0) updates.push(deletesUpdate(mergeRanges(batch)));
+
+  for (const run of runs.values()) {
+    const inRun = new Set(run);
+    let others = run.some((item) => survey(item, mine, pinned).others);
+    // Another writer's text between the run's items, or right after a text node's property map it ends with (that
+    // map owns the characters after it in @lexical/yjs), would go with the run or change node.
+    for (const parent of new Set(run.map((item) => item.parent as Y.AbstractType<unknown>))) {
+      let left = run.filter((item) => item.parent === parent).length;
+      let last: Y.Item | null = null;
+      for (let item = parent._start; item && !others; item = item.right) {
+        if (inRun.has(item)) {
+          left -= 1;
+          last = item;
+          continue;
+        }
+        if (item.deleted || last === null) continue;
+        if (left > 0) others = !mine(item);
+        else {
+          others = last.content instanceof Y.ContentType && item.content instanceof Y.ContentString && !mine(item);
           break;
         }
       }
-    } else {
-      kept = holdsPeers(type);
     }
-    known.set(item, kept);
-    return kept;
-  };
-  return (item) => {
-    if (item.parentSub !== null) {
-      // A property goes with the container the paste made. One it set on a block it did not make stays: setting it
-      // replaced the old value on every copy, so deleting it would leave the property unset.
-      const owner = (item.parent as Y.AbstractType<unknown>)._item;
-      return !owner || !inSpan(owner) || keeps(owner);
-    }
-    return keeps(item);
-  };
-}
-
-/**
- * The delete-only updates that remove the landed part of `span` from `doc`, last items first, each covering at most
- * `maxStructs` of `doc`'s structs, a pasted container that holds a peer's items left out, and so is an element naming
- * a payload id in `pinned`. Read before any is applied.
- */
-export function rollbackUpdates(doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_STRUCTS, pinned: ReadonlySet<string> = new Set()): Uint8Array[] {
-  const part = landedPart(doc, span);
-  if (!part) return [];
-  const keeps = keeper(part, pinned);
-  const structs = doc.store.clients.get(part.client) ?? [];
-  const updates: Uint8Array[] = [];
-  let ranges: Ranges = [];
-  let hi: number | null = null;
-  let lo = part.to;
-  let n = 0;
-  const close = () => {
-    if (hi !== null && hi > lo) ranges.push([part.client, lo, hi - lo]);
-    hi = null;
-  };
-  for (let i = structs.length - 1; i >= 0; i -= 1) {
-    const struct = structs[i];
-    if (struct.id.clock >= part.to) continue;
-    if (struct.id.clock + struct.length <= part.from) break;
-    const start = Math.max(struct.id.clock, part.from);
-    const end = Math.min(struct.id.clock + struct.length, part.to);
-    if (struct instanceof Y.Item && keeps(struct)) {
-      close();
-      continue;
-    }
-    hi ??= end;
-    lo = start;
-    n += 1;
-    if (n >= maxStructs && start > part.from) {
-      close();
-      updates.push(deletesUpdate(ranges.reverse()));
-      ranges = [];
-      n = 0;
-    }
+    if (others) kept += 1;
+    else updates.push(deletesUpdate(mergeRanges(run.map(range))));
   }
-  close();
-  if (ranges.length > 0) updates.push(deletesUpdate(ranges.reverse()));
-  return updates;
+  return { updates, kept };
 }
 
-/** Deletes the landed part of `span` from `doc` under `origin`, one transaction per rollback update; returns their count. */
+/** The delete-only updates rolling back the landed part of `span` (rollbackPlan). */
+export const rollbackUpdates = (doc: Y.Doc, span: PasteSpan, maxStructs = ROLLBACK_STRUCTS, pinned: ReadonlySet<string> = new Set()): Uint8Array[] =>
+  rollbackPlan(doc, span, maxStructs, pinned).updates;
+
+/** Rolls back the landed part of `span` in `doc` under `origin`, one transaction per update; returns their count. */
 export function rollBack(doc: Y.Doc, span: PasteSpan, origin: unknown, maxStructs = ROLLBACK_STRUCTS, pinned?: ReadonlySet<string>): number {
   const updates = rollbackUpdates(doc, span, maxStructs, pinned);
   for (const update of updates) Y.applyUpdate(doc, update, origin);
   return updates.length;
 }
 
-/** Whether `doc` holds a live item outside `span`: another writer's text in a payload doc the paste made. */
+/** Whether `doc` holds a live item outside `span`: another writer's write in a payload doc the paste made. */
 export function holdsOthers(doc: Y.Doc, span: PasteSpan): boolean {
   for (const [client, structs] of doc.store.clients) {
     for (const struct of structs) {
@@ -206,20 +245,18 @@ export function holdsOthers(doc: Y.Doc, span: PasteSpan): boolean {
 }
 
 /**
- * Rolls a paste back: each payload doc's landed items first, while the note still names it, then the note's. A
- * payload doc another writer typed into keeps the element naming it, and its properties, so that writer's text still
- * shows. Returns the count of rollback updates.
+ * Rolls a paste back in its note. Its payload docs are never written: a pasted block whose payload another writer
+ * wrote into is kept whole, and one deleted leaves its payload doc unnamed, withheld as any deleted block's is.
+ * Returns the count of rollback updates and of blocks kept.
  */
 export function rollBackPaste(
   note: Y.Doc, span: PasteSpan, payloads: [id: string, doc: Y.Doc, span: PasteSpan][], origin: unknown, maxStructs = ROLLBACK_STRUCTS,
-): number {
+): { updates: number; kept: number } {
   const pinned = new Set<string>();
-  let count = 0;
-  for (const [id, doc, payload] of payloads) {
-    if (holdsOthers(doc, payload)) pinned.add(id);
-    count += rollBack(doc, payload, origin, maxStructs);
-  }
-  return count + rollBack(note, span, origin, maxStructs, pinned);
+  for (const [id, doc, payload] of payloads) if (holdsOthers(doc, payload)) pinned.add(id);
+  const { updates, kept } = rollbackPlan(note, span, maxStructs, pinned);
+  for (const update of updates) Y.applyUpdate(note, update, origin);
+  return { updates: updates.length, kept };
 }
 
 /** Applies `ranges`' deletes to `doc` under `origin`, in updates of at most ROLLBACK_STRUCTS ranges. */

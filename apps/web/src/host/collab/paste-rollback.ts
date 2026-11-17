@@ -5,6 +5,8 @@
 import { isPasteRecord, type PasteRecord } from '@moss-multi/sync/paste-rollback';
 
 export const PASTE_ROLLED_BACK = "The paste didn't fit, so nothing was pasted.";
+/** A rollback that kept the pasted blocks another writer had edited. */
+export const PASTE_PARTLY_KEPT = "The paste didn't fit. It was removed, except for what someone else had already edited.";
 
 const PREFIX = 'moss-multi:paste-rollback:';
 

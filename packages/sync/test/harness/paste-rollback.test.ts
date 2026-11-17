@@ -305,11 +305,13 @@ describe('a cut paste rolled back (T3.B32)', () => {
 
   // The first batch replaces the selected 'Kept.', or goes into the middle of 'Kept. Tail.' (splitting it); five more
   // follow. Either way the line ends as it was.
-  const cases: [string, string, [number, number]][] = [
-    ['a paste that replaced a selection holds its deletes back until it lands, so cut short it leaves the selection, and its rollback the note as it was', 'Kept.', [0, 5]],
-    ['a paste into the middle of a line leaves that line as it was: the run it inserted there goes, with the blocks it made', 'Kept. Tail.', [5, 5]],
+  // While it lands the server holds the line's text beside the paste's: the binding writes a line's change as a
+  // diff ('Kept. Tail.' to 'Kept.Alpha 0-0.' keeps the last '.'), and its deletes are held back.
+  const cases: [string, string, [number, number], string][] = [
+    ['a paste that replaced a selection holds its deletes back until it lands, so cut short it leaves the selection, and its rollback the note as it was', 'Kept.', [0, 5], 'Kept'],
+    ['a paste into the middle of a line leaves that line as it was: the run it inserted there goes, with the blocks it made', 'Kept. Tail.', [5, 5], 'Kept. Tail'],
   ];
-  for (const [name, line, [anchor, focus]] of cases) it(name, async () => {
+  for (const [name, line, [anchor, focus], landing] of cases) it(name, async () => {
     const { PasteWatch, withoutDeletes, rollBack } = use();
     expect(PasteWatch, "the paste's deletes, recorded").toBeTypeOf('function');
     expect(withoutDeletes, 'held back from what is sent').toBeTypeOf('function');
@@ -345,7 +347,7 @@ describe('a cut paste rolled back (T3.B32)', () => {
     });
     expect(frames.length).toBeGreaterThan(4);
     for (const frame of frames.slice(0, 3)) await ada.socket.deliver(frame);
-    expect(await doc.dobj.exportMarkdown(), 'the line stays on the server while the paste lands').toContain(line);
+    expect(await doc.dobj.exportMarkdown(), 'the line stays on the server while the paste lands').toContain(landing);
     for (let i = 0; i < 5; i += 1) ben.insertParagraph(`Bravo ${i}.`);
     await syncAll(ben);
     limits.structCap = structsOf(doc.dobj.document);
