@@ -115,6 +115,7 @@ declare module '@moss/shared/state/atoms' {
   export const revealFolderPathAtom: WritableAtom<null, [string | null | undefined], void>;
   export const hydrateNotesAtom: WritableAtom<null, [], Promise<void>>;
   export const splitTabNoteIdAtom: WritableAtom<string | null, [string | null], void>;
+  export const focusedNoteIdAtom: import('jotai').Atom<string | null>;
   export const openSplitTabAtom: WritableAtom<null, [string], void>;
   export const splitNavigateToNoteAtom: WritableAtom<null, [string], void>;
   export const splitGoBackAtom: WritableAtom<null, [], void>;
@@ -201,12 +202,27 @@ declare module '@moss/shared/components/ui/card' {
 }
 
 declare module '@moss/shared/components/ui/dropdown-menu' {
-  import type { ComponentType, HTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react';
+  import type { ButtonHTMLAttributes, ComponentType, ForwardRefExoticComponent, HTMLAttributes, ReactNode, RefAttributes, RefObject } from 'react';
   export const DropdownMenu: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void; modal?: boolean }>;
-  export const DropdownMenuTrigger: ComponentType<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }>;
-  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & { align?: 'start' | 'center' | 'end'; onCloseAutoFocus?: (event: Event) => void }>;
+  export const DropdownMenuTrigger: ForwardRefExoticComponent<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean } & RefAttributes<HTMLElement>>;
+  type Placement = {
+    align?: 'start' | 'center' | 'end';
+    side?: 'top' | 'bottom' | 'left' | 'right';
+    sideOffset?: number;
+    alignOffset?: number;
+    collisionPadding?: number;
+    anchor?: RefObject<Element | null>;
+    onCloseAutoFocus?: (event: Event) => void;
+  };
+  export const DropdownMenuContent: ComponentType<HTMLAttributes<HTMLDivElement> & Placement>;
+  export const DropdownMenuSubContent: ComponentType<HTMLAttributes<HTMLDivElement> & Placement>;
   export const DropdownMenuItem: ComponentType<HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }>;
   export const DropdownMenuSeparator: ComponentType<HTMLAttributes<HTMLDivElement>>;
+  export const DropdownMenuLabel: ComponentType<HTMLAttributes<HTMLDivElement>>;
+  export const DropdownMenuRadioGroup: ComponentType<{ children: ReactNode; value?: string; onValueChange?: (value: string) => void }>;
+  export const DropdownMenuRadioItem: ComponentType<HTMLAttributes<HTMLDivElement> & { value: string }>;
+  export const DropdownMenuSub: ComponentType<{ children: ReactNode }>;
+  export const DropdownMenuSubTrigger: ComponentType<HTMLAttributes<HTMLDivElement>>;
 }
 
 // The notes list's context-menu item, which the folder "Share…" slot renders (T2.4).
@@ -305,6 +321,7 @@ declare module '@moss/shared/primitives' {
   export const Popover: {
     Root: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
     Trigger: ComponentType<{ children: ReactNode; asChild?: boolean }>;
+    Anchor: ComponentType<{ virtualRef?: import('react').RefObject<Element | null> }>;
     Portal: ComponentType<{ children: ReactNode }>;
     Content: ComponentType<HTMLAttributes<HTMLDivElement> & {
       align?: 'start' | 'center' | 'end';

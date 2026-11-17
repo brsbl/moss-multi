@@ -65,9 +65,10 @@ export const GROUPS = {
   sync: ['j18-sync'],
   // The pilot's Mac and Linux replicas, with the Mac offline (T7.P3).
   replica: ['j18-replica'],
-  // Version history: the History view, restore under a peer; the quiet note shell and its menus (shell's WebKit shard
-  // is full).
-  history: ['j17', 'j21'],
+  // Version history: the History view, restore under a peer.
+  history: ['j17'],
+  // The quiet note shell: its cues, More actions entries and the footer's app menu (shell's WebKit shard is full).
+  quietShell: ['j21'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
   // frames and offline comments (meaning's WebKit shard is full).
   social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],
