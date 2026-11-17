@@ -220,7 +220,7 @@ declare module '@moss/shared/components/ui/dropdown-menu' {
   export const DropdownMenuSeparator: ComponentType<HTMLAttributes<HTMLDivElement>>;
   export const DropdownMenuLabel: ComponentType<HTMLAttributes<HTMLDivElement>>;
   export const DropdownMenuRadioGroup: ComponentType<{ children: ReactNode; value?: string; onValueChange?: (value: string) => void }>;
-  export const DropdownMenuRadioItem: ComponentType<HTMLAttributes<HTMLDivElement> & { value: string }>;
+  export const DropdownMenuRadioItem: ComponentType<HTMLAttributes<HTMLDivElement> & { value: string; closeOnClick?: boolean }>;
   export const DropdownMenuSub: ComponentType<{ children: ReactNode }>;
   export const DropdownMenuSubTrigger: ComponentType<HTMLAttributes<HTMLDivElement>>;
 }

@@ -150,7 +150,7 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
                   {vault.id === active.id && <Check className="h-3.5 w-3.5 shrink-0 text-ink-muted" aria-hidden />}
                 </DropdownMenuItem>
               ))}
-              {(owned || active.role === 'owner') && <div role="separator" className="-mx-1 my-1 h-px bg-border-subtle" />}
+              {(owned || active.role === 'owner' || creating) && <div role="separator" className="-mx-1 my-1 h-px bg-border-subtle" />}
               {/* A granted co-owner may share the vault (T2.4); create, rename and trash stay with its owner (T3.5). */}
               {active.role === 'owner' && (
                 <DropdownMenuItem onSelect={() => openShare({ type: 'folder', id: active.id, name: active.name, vault: true })}>
@@ -158,6 +158,8 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
                   <span className="min-w-0 flex-1 truncate">Share vault…</span>
                 </DropdownMenuItem>
               )}
+              {/* The app menu's New vault… asks from any vault on screen, shared ones included (T9.30). */}
+              {!owned && creating ? <NewVaultRow onCreate={create} onCancel={() => setCreating(false)} /> : null}
               {owned && (
                 <>
                   {creating ? (

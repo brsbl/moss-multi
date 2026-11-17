@@ -9,6 +9,7 @@ import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
+  TOP_BAR_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
@@ -348,10 +349,12 @@ function CloseConfirmation({ docId }: { docId: string }): ReactNode {
 /**
  * The panel of cards, and in the top bar the count of open suggestions that opens it. The count shows only while a
  * suggestion is open and the bar has room for it (`showCount`, T9.30); More actions → Suggestions and a painted mark
- * open the same panel, at `anchor` when the count is not there.
+ * open the same panel, at `anchor` when the count is not there. A count that opened the panel keeps its slot until
+ * the panel closes; if it then leaves while it had focus, focus moves to the pane's More actions. `people` is the
+ * People here action, shown in the heading once the bar has no room for it.
  */
-export function SuggestionsButton({ docId, source, showCount = true, anchor }: {
-  docId: string; source: SuggestionsSource; showCount?: boolean; anchor?: RefObject<HTMLElement | null>;
+export function SuggestionsButton({ docId, source, showCount = true, anchor, people = null }: {
+  docId: string; source: SuggestionsSource; showCount?: boolean; anchor?: RefObject<HTMLElement | null>; people?: ReactNode;
 }): ReactNode {
   const records = useRecords(source);
   const body = useSyncExternalStore(source.subscribeMount, () => source.body, () => null);
@@ -369,10 +372,20 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor }: {
     .filter((record) => record.meta.status !== 'open')
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
+  const [pinned, setPinned] = useState(false);
+  // Whether the count was the panel's activator when it closed: only then can focus have been on it.
+  const pinnedAtClose = useRef(false);
+  const shown = showCount && open.length > 0;
+  if (isOpen && shown && !pinned) setPinned(true);
+  if (!isOpen && pinned) {
+    pinnedAtClose.current = true;
+    setPinned(false);
+  }
+  if (isOpen && pinned) pinnedAtClose.current = false;
   if (role === null) return null;
   const reviewing = mode === 'review';
-  // While the panel is open the count stays even when the last open suggestion closes, so the panel keeps its anchor.
-  const counted = showCount && (open.length > 0 || (isOpen && records.length > 0));
+  // While the panel is open the count it opened from stays, even when the pane narrows or the last suggestion closes.
+  const counted = shown || (isOpen && pinned);
   return (
     <TooltipProvider>
       <Popover.Root
@@ -411,6 +424,14 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor }: {
             collisionPadding={16}
             className="z-50 flex max-h-comment-list-popover w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-floating shadow-surface outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
             onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => {
+              // The count is about to leave its slot: hand focus to the pane's own More actions instead.
+              if (shown || !pinnedAtClose.current) return;
+              const more = anchor?.current?.closest(`[${TOP_BAR_ATTR}]`)?.querySelector<HTMLElement>('button[aria-label="More actions"]');
+              if (!more) return;
+              event.preventDefault();
+              more.focus();
+            }}
             onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onFocusOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
@@ -422,6 +443,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor }: {
                 <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-muted" strokeWidth={1.5} />
                 {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
               </div>
+              {people ? <div className="ml-auto flex shrink-0 items-center">{people}</div> : null}
               {open.length ? (
                 <button
                   type="button"

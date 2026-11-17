@@ -2,7 +2,8 @@
 // the open-suggestions count. Each shows only while it has something to say; at rest the bar is Moss's own. They yield
 // by the pane's width, never by measuring themselves, so Moss's actions always keep their place: People here folds to
 // one target, then the bell leaves (the inbox stays in the sidebar's app menu), then the count (it stays in More
-// actions → Suggestions). An open popup keeps its activator until it closes.
+// actions → Suggestions), then People here moves into the Suggestions list's heading. An open popup keeps its
+// activator until it closes.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { TOP_BAR_ATTR } from '@moss-multi/protocol/dom-contract';
@@ -15,7 +16,7 @@ import { SuggestionsButton, type SuggestionsSource } from '../collab/suggest/Sug
 import { NotificationsBell } from './NotificationsBell.tsx';
 
 /** Pane widths (CSS px) below which each cue yields, in order. */
-export const YIELD_AT = { people: 880, bell: 760, count: 700 } as const;
+export const YIELD_AT = { people: 880, bell: 760, count: 700, peopleOut: 640 } as const;
 
 const Menu = DropdownMenu as ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
 
@@ -41,10 +42,14 @@ const peopleLabel = (peers: Avatar[]): string => {
   return `People here, ${parts.filter(Boolean).join(', ')}`;
 };
 
-/** Others in the note: their faces, or one Users target when the bar is narrow; either opens the list of names. */
-function PeopleHere({ docId, compact }: { docId: string; compact: boolean }): ReactNode {
+/**
+ * Others in the note: their initials, or one Users target when the bar is narrow; either opens the list of names.
+ * `pinned` reports while its list is open, so the bar keeps it in its slot until the list closes.
+ */
+export function PeopleHere({ docId, compact, onOpenChange }: { docId: string; compact: boolean; onOpenChange?: (open: boolean) => void }): ReactNode {
   const peers = usePeers(docId);
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
+  const setOpen = (next: boolean) => { setOpenState(next); onOpenChange?.(next); };
   if (peers.length === 0) return null;
   const label = peopleLabel(peers);
   return (
@@ -59,7 +64,7 @@ function PeopleHere({ docId, compact }: { docId: string; compact: boolean }): Re
                 aria-label={label}
                 className="flex h-7 min-w-[28px] shrink-0 cursor-pointer items-center justify-center rounded px-0.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
               >
-                {compact ? <Users aria-hidden className="h-3.5 w-3.5" /> : <FacePile peers={peers} />}
+                {compact ? <Users aria-hidden className="h-3.5 w-3.5" /> : <FacePile peers={peers} neutral />}
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
@@ -85,12 +90,23 @@ export function TopBarCues({ docId, suggestions }: { docId: string; suggestions:
   const probe = useRef<HTMLSpanElement | null>(null);
   const bar = useRef<HTMLElement | null>(null);
   const width = usePaneWidth(probe, bar);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  // Below 640 px of pane People here leaves the bar for the Suggestions list's heading; an open roster stays put.
+  const peopleInBar = width >= YIELD_AT.peopleOut || peopleOpen || !suggestions;
   return (
     <>
       <span ref={probe} hidden />
-      <PeopleHere docId={docId} compact={width < YIELD_AT.people} />
-      <NotificationsBell show={width >= YIELD_AT.bell} />
-      {suggestions ? <SuggestionsButton docId={docId} source={suggestions} showCount={width >= YIELD_AT.count} anchor={bar} /> : null}
+      {peopleInBar ? <PeopleHere docId={docId} compact={width < YIELD_AT.people} onOpenChange={setPeopleOpen} /> : null}
+      <NotificationsBell show={width >= YIELD_AT.bell} bar={bar} />
+      {suggestions ? (
+        <SuggestionsButton
+          docId={docId}
+          source={suggestions}
+          showCount={width >= YIELD_AT.count}
+          anchor={bar}
+          people={peopleInBar ? null : <PeopleHere docId={docId} compact />}
+        />
+      ) : null}
       <ConnectionIndicator docId={docId} />
     </>
   );

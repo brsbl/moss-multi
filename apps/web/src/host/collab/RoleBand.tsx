@@ -1,4 +1,4 @@
-// A reader's access (T9.10), in Moss's bottom band (its Trash notice, CanvasAreaContent): a viewer or commenter is told
+// A reader's access (T9.10), in the pane's one bottom row (T9.30): a viewer or commenter is told
 // they cannot edit, signed in or on a link, and the band follows the role. A key typed into a note body or title the
 // role cannot edit is refused out loud through the one refusal notice, once per notice.
 import {
@@ -11,6 +11,7 @@ import { useAuthState } from '../auth.ts';
 import { useHistoryOpen } from '../history/HistoryView.tsx';
 import { refusalMessage, refuseInput } from '../refusal.ts';
 import { signInToDoMore } from '../surfaces/ShareEntryPoints.tsx';
+import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT } from './bottom-row.ts';
 import { useTerminal } from './terminal.ts';
 
 const LEAD: Partial<Record<Role, string>> = { viewer: 'View only.', commenter: 'Comment only.' };
@@ -38,16 +39,14 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
   const signedOut = useAuthState().status === 'signed-out';
   if (!lead) return null;
   return (
-    <div className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
-      <div {...{ [ROLE_BAND_ATTR]: '' }} className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
-        <span className="text-xs text-ink-muted">
-          {lead}{' '}
-          {signedOut ? (
-            <button type="button" onClick={signInToDoMore} className="font-medium text-ink-default hover:text-ink-muted">
-              Sign in to do more
-            </button>
-          ) : CANNOT_EDIT}
-        </span>
+    <div className={BOTTOM_ROW_SLOT}>
+      <div {...{ [ROLE_BAND_ATTR]: '' }} className={BOTTOM_ROW}>
+        <span>{lead}{signedOut ? null : ` ${CANNOT_EDIT}`}</span>{signedOut ? ' ' : null}
+        {signedOut ? (
+          <button type="button" onClick={signInToDoMore} className={BOTTOM_ROW_ACTION}>
+            Sign in to do more
+          </button>
+        ) : null}
       </div>
     </div>
   );

@@ -124,7 +124,7 @@ test('j21 at rest the top bar holds only Moss\'s actions, and More actions holds
   await expect(rows, 'one Suggesting row').toHaveCount(1);
   expect(await aboveBottom(ada, docId, rows), 'unfocused, the row sits where Moss\'s docked toolbar does').toBeLessThanOrEqual(32);
   expect(await look(rows), 'a quiet row, no card of its own').toEqual({ shadow: 'none', border: 0 });
-  await caret(ada, docId, 'Resting words', 7);
+  await ui.body(ada, docId).getByText('Resting words').click();
   const toolbar = ada.page.locator(`[${FLOATING_TOOLBAR_ATTR}]`).filter({ has: ada.page.locator('button[aria-label]') });
   await expect(toolbar.locator(`[${MODE_ROW_ATTR}]`), 'while typing, the row joins Moss\'s docked toolbar').toHaveCount(1);
   await expect(rows, 'still one Suggesting row').toHaveCount(1);
@@ -222,6 +222,7 @@ test('j21 New vault… from the app menu opens its name field while a shared vau
   await (await ui.openAppMenu(page)).getByRole('menuitem', { name: 'Switch vault…', exact: true }).hover();
   const list = page.getByRole('menu').filter({ has: page.getByRole('menuitemradio') });
   await list.getByRole('menuitemradio', { checked: false }).first().click();
+  await expect(page.getByRole('menu'), 'choosing a vault closes the menu').toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Vault actions', exact: true }), 'a shared vault is on screen').toHaveCount(0, { timeout: BIND_TIMEOUT });
 
   await (await ui.openAppMenu(page)).getByRole('menuitem', { name: 'Switch vault…', exact: true }).hover();
@@ -333,6 +334,8 @@ test('j21 two panes each keep Moss\'s actions on their own bar @p:tech-9 @p:col-
   await ui.waitBodyLive(ada, first);
   const second = await ui.newNote(ada, { onlyPane: true });
   await ui.waitBodyLive(ada, second);
+  // Opening the first note again, in the split, binds it on a second socket.
+  ada.expectReconnects(1, first);
   await ada.page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${first}"]`).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Open in Split Tab', exact: true }).click();
   await ui.waitBodyLive(ada, first);

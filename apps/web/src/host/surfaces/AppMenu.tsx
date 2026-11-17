@@ -15,6 +15,7 @@ import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
 import { useConnectionState } from '../collab/ConnectionNotice.tsx';
 import { refuseInput } from '../refusal.ts';
 import { revealAccountSection } from './AccountSection.tsx';
+import { APP_MENU_ATTR } from './footer.ts';
 import { InboxMenu } from './NotificationsBell.tsx';
 import { requestNewVault, SWITCH_FAILED, switchToVault } from './VaultSwitcher.tsx';
 
@@ -58,7 +59,7 @@ function SwitchVault({ bridge }: { bridge: Bridge }): ReactNode {
           }}
         >
           {vaults.map((vault) => (
-            <DropdownMenuRadioItem key={vault.id} value={vault.id} className={ROW}>
+            <DropdownMenuRadioItem key={vault.id} value={vault.id} closeOnClick className={ROW}>
               <span className="flex w-3.5 shrink-0 justify-center">{vault.id === active.id ? <Check aria-hidden className={ICON} /> : null}</span>
               <span className="min-w-0 flex-1 truncate">{vault.name}</span>
             </DropdownMenuRadioItem>
@@ -120,7 +121,7 @@ export function AppMenu({ children, onOpenSettings }: { children: ReactElement; 
   return (
     <>
       <Menu>
-        <DropdownMenuTrigger asChild ref={trigger}>{children}</DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild ref={trigger} {...{ [APP_MENU_ATTR]: '' }}>{children}</DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" sideOffset={6} collisionPadding={16} className="min-w-0 w-max max-w-[calc(100vw-2rem)]">
           {vault ? <DropdownMenuLabel className={`${HEADING} max-w-64 truncate`}>Current vault: {vault.name}</DropdownMenuLabel> : null}
           {vault && bridge ? <SwitchVault bridge={bridge} /> : null}

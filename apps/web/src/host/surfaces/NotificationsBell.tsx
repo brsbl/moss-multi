@@ -10,6 +10,7 @@ import { InboxItem } from '../../../../../packages/ui/src/InboxItem.tsx';
 import { useAuthState } from '../auth.ts';
 import { inbox } from '../inbox.ts';
 import { departTo, openDoc } from '../navigation.ts';
+import { footerDestination } from './footer.ts';
 import type { Notice } from '../notifications.ts';
 
 /** How many notices the open inbox lists. */
@@ -61,15 +62,29 @@ export function useUnreadCount(): number {
 
 /**
  * The top bar's unread shortcut: a quiet bell, only while something is unread and the bar has room (`show`). Once
- * opened it stays until the inbox closes. The inbox is always in the sidebar's app menu.
+ * opened it stays until the inbox closes; if it then leaves, focus goes to the inbox's own home, the sidebar footer's
+ * Settings (through the notes-panel toggle in `bar` while the sidebar is hidden).
  */
-export function NotificationsBell({ show = true }: { show?: boolean }): ReactNode {
+export function NotificationsBell({ show = true, bar }: { show?: boolean; bar?: RefObject<HTMLElement | null> }): ReactNode {
   const auth = useAuthState();
   const unread = useUnreadCount();
   const [open, setOpen] = useState(false);
-  if (auth.status !== 'signed-in' || (!open && (!show || unread === 0))) return null;
+  const navigating = useRef(false);
+  const leaving = !show || unread === 0;
+  if (auth.status !== 'signed-in' || (!open && leaving)) return null;
+  const onOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) navigating.current = false;
+    if (next || !leaving) return;
+    // The bell leaves with its inbox. Only if focus went with it does it move, to the inbox's own home.
+    const destination = footerDestination(bar?.current ?? null);
+    setTimeout(() => {
+      if (navigating.current || (document.activeElement && document.activeElement !== document.body)) return;
+      destination?.focus();
+    }, 0);
+  };
   return (
-    <Menu open={open} onOpenChange={setOpen}>
+    <Menu open={open} onOpenChange={onOpenChange}>
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -87,7 +102,7 @@ export function NotificationsBell({ show = true }: { show?: boolean }): ReactNod
           {open ? null : <TooltipContent side="bottom">Notifications</TooltipContent>}
         </Tooltip>
       </TooltipProvider>
-      <InboxContent align="end" />
+      <InboxContent align="end" onOpenNotice={() => { navigating.current = true; }} />
     </Menu>
   );
 }
@@ -103,8 +118,8 @@ export function InboxMenu({ open, onOpenChange, anchor }: {
   );
 }
 
-function InboxContent({ align, side = 'bottom', anchor }: {
-  align: 'start' | 'end'; side?: 'top' | 'bottom'; anchor?: RefObject<HTMLElement | null>;
+function InboxContent({ align, side = 'bottom', anchor, onOpenNotice }: {
+  align: 'start' | 'end'; side?: 'top' | 'bottom'; anchor?: RefObject<HTMLElement | null>; onOpenNotice?: () => void;
 }): ReactNode {
   const notices = useNotices();
   // A notice that navigates keeps focus from returning to the bell, where a typed Space or Enter would reopen it.
@@ -113,6 +128,7 @@ function InboxContent({ align, side = 'bottom', anchor }: {
 
   const open = (notice: Notice) => {
     opening.current = true;
+    onOpenNotice?.();
     inbox.markRead([notice.id]);
     if (notice.target.type === 'doc') openDoc(notice.target.id);
     else void departTo(`/f/${encodeURIComponent(notice.target.id)}`);

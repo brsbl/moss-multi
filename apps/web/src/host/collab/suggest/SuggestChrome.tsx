@@ -1,44 +1,59 @@
 // Suggest-mode chrome (docs/design/suggestions.md §5, §8): the pane's bottom row while suggesting (Stop suggesting
-// for editors and owners; a suggester is locked), the band shown in Review, and the band that offers back text a
-// closed suggestion could not keep. Suggest changes and Review start from More actions and the Suggestions list.
+// for editors and owners; a suggester is locked), in Moss's docked toolbar while it shows; the row shown in Review;
+// and the band that offers back text a closed suggestion could not keep. Suggest changes and Review start from More
+// actions and the Suggestions list.
 import { MODE_ROW_ATTR, REVIEW_BAND_ATTR, SUGGEST_CHIP_ATTR, SUGGEST_UNSAVED_ATTR } from '@moss-multi/protocol/dom-contract';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useDocRole } from '../../access.ts';
+import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT, useAttachedRow, useRowAttached } from '../bottom-row.ts';
 import { useTerminal } from '../terminal.ts';
 import { dismissUnsaved, lockedToSuggest, requestMode, useNoSuggestionRoom, useShownMode, useUnsaved } from './mode.ts';
 
-/**
- * MarkdownEditor's suggest-toggle seam. Suggest changes is a More actions entry and the one Suggesting state is the
- * pane's bottom row (T9.30), so the docked toolbar adds no control of its own.
- */
-export const ToolbarCollab: (props: { noteId: string }) => ReactNode = () => null;
+/** "Suggesting", and for someone who may edit, Stop suggesting: the one Suggesting state and its exit. */
+function SuggestRow({ docId, className }: { docId: string; className: string }): ReactNode {
+  const role = useDocRole(docId);
+  const locked = lockedToSuggest(role);
+  return (
+    <div {...{ [MODE_ROW_ATTR]: '' }} className={className}>
+      <span {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }}>Suggesting</span>
+      {locked ? null : (
+        <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => requestMode(docId, 'edit')} className={BOTTOM_ROW_ACTION}>
+          Stop suggesting
+        </button>
+      )}
+    </div>
+  );
+}
 
-/**
- * The pane's bottom row while it suggests: "Suggesting", and for someone who may edit, Stop suggesting. It sits just
- * above where Moss's docked toolbar shows while typing, so the two never overlap.
- */
-export function SuggestBand({ docId }: { docId: string }): ReactNode {
+const useSuggesting = (docId: string): boolean => {
   const role = useDocRole(docId);
   const mode = useShownMode(docId);
   const terminal = useTerminal(docId);
-  if (mode !== 'suggest' || role === null || terminal !== null) return null;
-  const locked = lockedToSuggest(role);
+  return mode === 'suggest' && role !== null && terminal === null;
+};
+
+/**
+ * MarkdownEditor's suggest-toggle seam, inside Moss's docked toolbar column: while the pane suggests, the Suggesting
+ * row joins the toolbar as its last line, nearest the bottom (T9.30). Suggest changes itself is a More actions entry.
+ */
+export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
+  return useSuggesting(noteId) ? <AttachedRow docId={noteId} /> : null;
+}
+
+function AttachedRow({ docId }: { docId: string }): ReactNode {
+  useAttachedRow(docId);
+  return <SuggestRow docId={docId} className={`order-last ${BOTTOM_ROW}`} />;
+}
+
+/** The Suggesting row at the docked toolbar's place while the toolbar is away (the editor not focused). */
+export function SuggestBand({ docId }: { docId: string }): ReactNode {
+  const suggesting = useSuggesting(docId);
+  const attached = useRowAttached(docId);
+  if (!suggesting || attached) return null;
   return (
-    <div {...{ [MODE_ROW_ATTR]: '' }} className="pointer-events-none absolute bottom-20 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
-      <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
-        <span {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }} className="text-xs text-ink-muted">Suggesting</span>
-        {locked ? null : (
-          <button
-            type="button"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => requestMode(docId, 'edit')}
-            className="shrink-0 text-xs font-medium text-ink-default hover:text-ink-muted"
-          >
-            Stop suggesting
-          </button>
-        )}
-      </div>
+    <div className={BOTTOM_ROW_SLOT}>
+      <SuggestRow docId={docId} className={BOTTOM_ROW} />
     </div>
   );
 }
@@ -51,7 +66,7 @@ const ESCAPE_OWNERS = '[role="dialog"], [role="alertdialog"], [role="menu"], [ro
 const escapeOwned = (): boolean => [...document.querySelectorAll(ESCAPE_OWNERS)].some((el) => el.getClientRects().length > 0);
 
 /**
- * Moss's bottom band (its Trash notice, CanvasAreaContent) while someone who can edit or suggest is in Review: why
+ * The pane's bottom row (T9.30) while someone who can edit or suggest is in Review, in place of the editing tools: why
  * typing does nothing, and Done. Escape does what Done does unless something else handles it.
  */
 export function ReviewBand({ docId }: { docId: string }): ReactNode {
@@ -80,14 +95,12 @@ export function ReviewBand({ docId }: { docId: string }): ReactNode {
   }, [docId, role, shown]);
   if (!shown) return null;
   return (
-    <div className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
-      <div {...{ [REVIEW_BAND_ATTR]: '' }} className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
-        <span className="text-xs text-ink-muted">
-          {lockedToSuggest(role) ? 'Reviewing suggestions. Suggesting is paused.' : 'Reviewing suggestions. Click a change to accept or reject it. Editing is paused.'}{' '}
-          <button type="button" onClick={() => leaveReview(docId, role)} className="font-medium text-ink-default hover:text-ink-muted">
-            Done
-          </button>
-        </span>
+    <div className={BOTTOM_ROW_SLOT}>
+      <div {...{ [REVIEW_BAND_ATTR]: '' }} className={BOTTOM_ROW}>
+        <span>{lockedToSuggest(role) ? 'Reviewing suggestions. Suggesting is paused.' : 'Reviewing suggestions. Click a change to accept or reject it. Editing is paused.'}</span>{' '}
+        <button type="button" onClick={() => leaveReview(docId, role)} className={BOTTOM_ROW_ACTION}>
+          Done
+        </button>
       </div>
     </div>
   );
