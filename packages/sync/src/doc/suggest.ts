@@ -6,7 +6,7 @@
 import * as Y from 'yjs';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
-import { base64ToBytes } from '@moss-multi/protocol/sync';
+import { base64ToBytes, type DocLimit } from '@moss-multi/protocol/sync';
 import {
   BODY_DOC, channelAllows, checkStructs, contentKind, ownValue, PAYLOAD_ID, placementOf, type DeletePart, type DocKind, type Placement, type RecordMeta,
   type RecordOp,
@@ -253,7 +253,21 @@ export const SUGGEST_CAPS = {
 /** `sv`: each of the record's leases' acknowledged clock in `doc`, the doc the frame wrote. */
 export type IngestResult =
   | { ok: true; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[] }
-  | { ok: false; reason: SuggestRefusal };
+  | { ok: false; reason: SuggestRefusal; limit?: NoteLimit };
+
+/** A note limit a record write can meet besides the state bytes (A§5.1 Limits). */
+export type NoteLimit = Exclude<DocLimit, 'state'>;
+
+/**
+ * What a record write adds to the note as its limits count it: `structs` in the note's doc (the record's map, meta,
+ * ops and parts are structs too), and `chars`, the text the record would bring into the note once accepted (0 when the
+ * write inserts none). `headroom`: it adds no op or part (an undelete), as a deletion has.
+ */
+export interface RecordGrowth {
+  structs: number;
+  chars: number;
+  headroom: boolean;
+}
 
 export interface IngestOptions {
   stateCap: number;
@@ -272,6 +286,8 @@ export interface IngestOptions {
   payloadDoc?: (id: string) => Y.Doc | undefined;
   /** Hears each record ingest creates, once its write landed; `continues` names the accepted record it follows. */
   onCreated?: (id: string, author: string, continues?: string) => void;
+  /** The note limit a record write adding `growth` would pass, or null (the DocDO's #limitMet); none when absent. */
+  limit?: (growth: RecordGrowth) => DocLimit | null;
 }
 
 /** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
@@ -289,11 +305,26 @@ const SPLIT_BYTES = 32;
 const RECORD_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const FORK_ID = /^[A-Za-z0-9_-]{8,64}$/;
 const refused = (reason: SuggestRefusal): { ok: false; reason: SuggestRefusal } => ({ ok: false, reason });
+/**
+ * Structs a record write adds to the note's doc at most: a new record's map with its meta, ops and parts (and the meta
+ * of the accepted record a continuation follows), then one op or part and the meta it patches.
+ */
+const CREATE_STRUCTS = 5;
+const WRITE_STRUCTS = 2;
+
+/** The characters of text an op's new structs insert, in the body or a payload doc. O(frame). */
+function insertedChars(decoded: ReturnType<typeof Y.decodeUpdate>): number {
+  let chars = 0;
+  for (const struct of decoded.structs) if (struct instanceof Y.Item && struct.content instanceof Y.ContentString) chars += struct.length;
+  return chars;
+}
 
 interface Info {
   author: string;
   /** Bytes of ops and parts while open. */
   bytes: number;
+  /** Characters of text its ops insert while open, deleted ones included: what accepting it may add at most. */
+  chars: number;
   open: boolean;
 }
 
@@ -333,7 +364,9 @@ export class SuggestIngest {
       if (open) {
         for (const op of record.ops) {
           try {
-            this.#place(id, op.doc, Y.decodeUpdate(op.update), this.#held(op.doc))?.();
+            const decoded = Y.decodeUpdate(op.update);
+            this.#info.get(id)!.chars += insertedChars(decoded);
+            this.#place(id, op.doc, decoded, this.#held(op.doc))?.();
           } catch {
             // An undecodable stored op is accept's to refuse.
           }
@@ -471,6 +504,10 @@ export class SuggestIngest {
       const value = struct.content.getContent().at(-1);
       if (typeof value !== 'string' || !this.options.registry.has(value)) return refused('node-type');
     }
+    const chars = insertedChars(decoded);
+    const recordChars = (target.create ? 0 : (this.#info.get(target.id)?.chars ?? 0)) + chars;
+    const limit = this.#limit(target, { structs: WRITE_STRUCTS, chars: chars > 0 ? recordChars : 0, headroom: false });
+    if (limit) return limit;
 
     writeSuggestions(this.doc, () => {
       if (target.create) this.#create(who, target.id, now, target.continues);
@@ -480,7 +517,7 @@ export class SuggestIngest {
     });
     placed();
     if (target.create) this.options.onCreated?.(target.id, who.id, target.continues);
-    this.#grow(target.id, update.byteLength);
+    this.#grow(target.id, update.byteLength, chars);
     this.#bind(who, target, now);
     for (const lease of leases) {
       const clocks = { ...lease.clocks, [doc]: meta.to.get(lease.client) ?? ownValue(lease.clocks, doc) ?? 0 };
@@ -502,6 +539,8 @@ export class SuggestIngest {
     const bytes = partBytes(stored);
     const cap = this.#caps(who, target, bytes, 0);
     if (cap) return refused(cap);
+    const limit = this.#limit(target, { structs: WRITE_STRUCTS, chars: 0, headroom: false });
+    if (limit) return limit;
     const now = this.#now();
     writeSuggestions(this.doc, () => {
       if (target.create) this.#create(who, target.id, now, target.continues);
@@ -525,6 +564,9 @@ export class SuggestIngest {
     const index = parts.toArray().findIndex((part) => part.id === partId);
     if (index < 0) return refused('target');
     const bytes = partBytes(parts.get(index));
+    // A part taken out of a merged run splits it once on each side.
+    const limit = this.#limit(target, { structs: WRITE_STRUCTS + 1, chars: 0, headroom: true });
+    if (limit) return limit;
     writeSuggestions(this.doc, () => {
       parts.delete(index, 1);
       patchMeta(this.doc, target.id, { updatedAt: this.#now() });
@@ -548,6 +590,10 @@ export class SuggestIngest {
     // the copy until its next compaction.
     const metaWrites = this.#metaWrite(a.id, 0) + this.#metaWrite(b.id, 0);
     if (this.#overState(metaWrites, moved + metaWrites)) return refused('doc-cap');
+    // The ops and parts it copies are two structs, with the two metas it patches; the text is both records'.
+    const fromChars = this.#info.get(b.id)!.chars;
+    const limit = this.#limit(a, { structs: 2 * WRITE_STRUCTS, chars: fromChars > 0 ? this.#info.get(a.id)!.chars + fromChars : 0, headroom: false });
+    if (limit) return limit;
     const now = this.#now();
     const source = readRecord(this.doc, b.id)!;
     writeSuggestions(this.doc, () => {
@@ -565,7 +611,7 @@ export class SuggestIngest {
     this.leases.rebind(b.id, a.id);
     this.#movePlaced(b.id, a.id);
     this.#closed(b.id, null);
-    this.#grow(a.id, moved);
+    this.#grow(a.id, moved, fromChars);
     return { ok: true, record: a.id, requested: into, doc: BODY_DOC, sv: this.#sv(a.id, BODY_DOC), parts: [] };
   }
 
@@ -692,6 +738,12 @@ export class SuggestIngest {
     return this.options.stateBytes !== undefined && this.options.stateBytes() + state > this.options.stateCap * SUGGEST_LIMITS.reserveShare;
   }
 
+  /** The note limit a write to `target` adding `growth` (and a new record's own structs) would pass, as a refusal. */
+  #limit(target: Extract<Target, { ok: true }>, growth: RecordGrowth): { ok: false; reason: 'doc-cap'; limit: NoteLimit } | null {
+    const limit = this.options.limit?.({ ...growth, structs: growth.structs + (target.create ? CREATE_STRUCTS : 0) });
+    return limit && limit !== 'state' ? { ok: false, reason: 'doc-cap', limit } : null;
+  }
+
   #caps(who: Suggester, target: Extract<Target, { ok: true }>, bytes: number, clients: number): SuggestRefusal | null {
     const recordBytes = (target.create ? 0 : (this.#info.get(target.id)?.bytes ?? 0)) + bytes;
     if (recordBytes > SUGGEST_CAPS.recordOpsBytes) return 'record-cap';
@@ -715,7 +767,7 @@ export class SuggestIngest {
   }
 
   #track(id: string, author: string, bytes: number, open: boolean): void {
-    this.#info.set(id, { author, bytes, open });
+    this.#info.set(id, { author, bytes, chars: 0, open });
     if (!open) return;
     const set = this.#open.get(author) ?? new Set<string>();
     set.add(id);
@@ -723,9 +775,10 @@ export class SuggestIngest {
     this.#openBytes += bytes;
   }
 
-  #grow(id: string, bytes: number): void {
+  #grow(id: string, bytes: number, chars = 0): void {
     const info = this.#info.get(id)!;
     info.bytes += bytes;
+    info.chars += chars;
     this.#openBytes += bytes;
   }
 
@@ -736,6 +789,7 @@ export class SuggestIngest {
       info.open = false;
       this.#openBytes -= info.bytes;
       info.bytes = 0;
+      info.chars = 0;
       this.#open.get(info.author)?.delete(id);
     }
     this.#placed.delete(id);
@@ -937,5 +991,5 @@ export function handleSuggest(ingest: SuggestIngest, who: Suggester, request: Su
   }
   return result.ok
     ? { t: 'suggest-ack', record: result.record, requested: result.requested, doc: result.doc, sv: result.sv, parts: result.parts, ...headroom(ingest) }
-    : refuse(requested, result.reason);
+    : { ...refuse(requested, result.reason), ...(result.limit ? { limit: result.limit } : {}) };
 }

@@ -393,8 +393,11 @@ export type ForkEvent =
   | { type: 'closed'; record: string; status: string; clients: number[] }
   /** F holds text of a closed record with nothing unacked: rebuild F. */
   | { type: 'rebuild' }
-  /** Input closed: `unsaved` is each block holding a change the server never acknowledged. */
-  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[] }
+  /**
+   * Input closed: `unsaved` is each block holding a change the server never acknowledged; `limit`, the note limit a
+   * `doc-cap` refusal named (A§5.1 Limits).
+   */
+  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[]; limit?: 'text' | 'structure' }
   /**
    * A rewrite re-created these struck originals and their copies were removed: the step that moved them must never
    * restore them (an undo restore is a new block the editor has not bound yet), so undo of that step leaves them out.
@@ -910,7 +913,7 @@ export class SuggestFork {
     }
     if (this.#resuming) this.#resuming = false;
     this.#leasing = false;
-    this.#halt(reply.reason, entry);
+    this.#halt(reply.reason, entry, reply.limit);
   }
 
   /**
@@ -1542,7 +1545,7 @@ export class SuggestFork {
    * Closes input in this tick and offers back every block holding a change the server never acknowledged: the
    * refused request's own, and everything still in flight or waiting behind it.
    */
-  #halt(reason: SuggestRefusal, refused?: Pending): void {
+  #halt(reason: SuggestRefusal, refused?: Pending, limit?: 'text' | 'structure'): void {
     if (this.#closed) return;
     this.#closed = true;
     const entries = [...(refused ? [refused] : []), ...this.#inflight, ...this.#waiting];
@@ -1559,7 +1562,7 @@ export class SuggestFork {
       if (!was.length || later.has(block)) unsaved.push(text);
     }
     for (const was of rescued) if (!now.some(([block]) => block === was.block)) unsaved.push(was.text);
-    this.#emit({ type: 'refused', reason, unsaved: [...new Set(unsaved)].filter((text) => text.trim().length > 0) });
+    this.#emit({ type: 'refused', reason, unsaved: [...new Set(unsaved)].filter((text) => text.trim().length > 0), ...(limit ? { limit } : {}) });
     // Refused before its first lease (a note with no room): F still shows the note, read-only.
     if (!this.#ready) this.#start();
   }

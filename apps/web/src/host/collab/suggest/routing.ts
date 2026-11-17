@@ -823,12 +823,13 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       // selection and the paste goes in at its end ($routeRange).
       const native = range !== null && range.body.length === 0 && range.mine.length + range.mineLeaves.length > 0;
       const stack = options.pasteStack?.() ?? null;
-      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack) : null;
+      const inserted = { chars: 0 };
+      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack, inserted) : null;
       const notice = measured === null
         ? UNMEASURED
         : measured === 'cells'
         ? OVER_CELLS
-        : $admitPaste(fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0);
+        : $admitPaste(fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0, inserted.chars);
       if (notice) {
         event.preventDefault();
         refuseInput(notice);

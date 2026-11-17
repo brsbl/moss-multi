@@ -287,7 +287,7 @@ class PaneBinding implements SuggestPane {
           this.#apply(session.state);
           this.#mountChanged();
         },
-        refused: (unsaved, reason) => {
+        refused: (unsaved, reason, limit) => {
           // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
           // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
           // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more.
@@ -296,7 +296,7 @@ class PaneBinding implements SuggestPane {
           if (full) this.#noRoom = true;
           this.#inputClosed = true;
           this.#editor?.setEditable(false);
-          offerUnsaved(this.docId, unsaved, full);
+          offerUnsaved(this.docId, unsaved, full, limit);
           this.#apply(session.state);
           this.#mountChanged();
           if (!again) this.#remount();
@@ -307,7 +307,7 @@ class PaneBinding implements SuggestPane {
       });
       mount.editor = this.#editor;
       // A pane letting go with suggestions unanswered leaves the mount delivering them (A§10.1).
-      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason))));
+      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason, limit) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason), limit)));
       this.#mount = mount;
       return { doc: mount.doc, provider: mount.provider as unknown as Provider };
     }

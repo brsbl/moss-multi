@@ -3,8 +3,9 @@
 // paste runs first on a throwaway copy of the fork with the pane's own paste handlers and transforms, and the bytes of
 // the ops it writes there are admitted against every suggest limit, or the paste is refused with nothing changed.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Provider } from '@lexical/yjs';
-import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { STATE_CAP_BYTES, STRUCT_CAP, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import { SUGGEST_LIMITS, type IdSpan, type SuggestRefusal } from '@moss-multi/protocol/suggest';
+import { DOC_LIMIT_NOTICE } from '@moss-multi/protocol/sync';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { attachPayloadDocs, isPayloadType, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor } from '@moss-multi/sync/payload-docs';
 import { bindRegisters, seedOf } from '@moss-multi/sync/registers';
@@ -18,7 +19,7 @@ import {
   SELECTION_INSERT_CLIPBOARD_NODES_COMMAND, type BaseSelection, type LexicalEditor, type LexicalNode, type PointType, type TextNode,
 } from 'lexical';
 import * as Y from 'yjs';
-import { noteBytes } from '../../large-paste.ts';
+import { heldSize, noteBytes } from '../../large-paste.ts';
 import { WRITE_REFUSED } from '../doc-session.ts';
 
 const utf8 = new TextEncoder();
@@ -131,7 +132,9 @@ export function $overwritesCells(nodes: readonly LexicalNode[], selection: BaseS
  * and payload docs is counted, as the fork forwards each as an op. Null when the copy cannot run it; 'cells' when the
  * paste writes over a table's cells ($overwritesCells), which a suggestion cannot strike.
  */
-export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack): number | 'cells' | null {
+export function measurePaste(
+  source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack, inserted?: { chars: number },
+): number | 'cells' | null {
   const cleanup: (() => void)[] = [];
   let counting = false;
   let bytes = 0;
@@ -149,7 +152,13 @@ export function measurePaste(source: LexicalEditor, fork: SuggestFork, event: Pa
     }, (id) => own.has(id)));
     cleanup.push(() => payloads.destroy());
     const count = (update: Uint8Array, origin: unknown) => {
-      if (counting && origin !== COPY_LOADED && origin !== PAYLOAD_LOADED) bytes += update.byteLength;
+      if (!counting || origin === COPY_LOADED || origin === PAYLOAD_LOADED) return;
+      bytes += update.byteLength;
+      // The text its ops insert, as the DocDO counts a record's toward the note's text limit.
+      if (!inserted) return;
+      for (const struct of Y.decodeUpdate(update).structs) {
+        if (struct instanceof Y.Item && struct.content instanceof Y.ContentString) inserted.chars += struct.length;
+      }
     };
     doc.on('update', count);
     payloads.onHold((_id, payload) => {
@@ -281,6 +290,9 @@ const REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
   lease: 'Suggesting stopped before the paste went in, so none of it was added.',
 };
 
+/** Structs the DocDO's first write of a record adds to the note (doc/suggest.ts CREATE_STRUCTS and WRITE_STRUCTS). */
+const RECORD_WRITE_STRUCTS = 7;
+
 /** What the pane's own editor may write beyond the copy (its other plugins' transforms): a share and a floor. */
 const COPY_SLACK = 1.05;
 const COPY_FLOOR = 1_024;
@@ -297,8 +309,15 @@ const COPY_FLOOR = 1_024;
  * suggestions may fill with the payloads the DocDO counts for the body. Every undo and redo is admitted again on its
  * own (admitStep).
  */
-export function $admitPaste(fork: ForkView, measured: number, targets: IdSpan[], owned = 0): string | null {
+export function $admitPaste(fork: ForkView, measured: number, targets: IdSpan[], owned = 0, chars = 0): string | null {
   const paste = measured > 0 ? measured * COPY_SLACK + COPY_FLOOR : 0;
+  // The note's text and structure limits (A§5.1 Limits): the text the paste and its redo insert, and the structs a
+  // new record's write adds, beside what the note holds.
+  if (measured > 0) {
+    const size = heldSize(fork.body);
+    if (chars > 0 && size.chars + 2 * chars > TEXT_CHAR_CAP) return DOC_LIMIT_NOTICE.text;
+    if (size.structs + RECORD_WRITE_STRUCTS > STRUCT_CAP) return DOC_LIMIT_NOTICE.structure;
+  }
   const selection = $getSelection();
   const adds = 2 * paste + (1 + 2 * PER_BYTE) * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0) + owned;
   if (noteBytes(fork.body) + adds > STATE_CAP_BYTES * SUGGEST_LIMITS.reserveShare) return WRITE_REFUSED['doc-cap'];

@@ -47,8 +47,11 @@ function blocksMarkdown(editor: LexicalEditor | null, doc: Y.Doc, blocks: Block[
 
 export interface SuggestHooks {
   ready(): void;
-  /** `reason`: why the DocDO refused; `doc-cap` and `ops-cap` mean the note has no room for more suggestions. */
-  refused(unsaved: string[], reason: SuggestRefusal): void;
+  /**
+   * `reason`: why the DocDO refused; `doc-cap` and `ops-cap` mean the note has no room for more suggestions, and
+   * `limit` names the note limit a `doc-cap` met (A§5.1 Limits).
+   */
+  refused(unsaved: string[], reason: SuggestRefusal, limit?: 'text' | 'structure'): void;
   rebuild(): void;
   closed(event: Extract<ForkEvent, { type: 'closed' }>): void;
   change(): void;
@@ -92,7 +95,7 @@ export class SuggestMount {
       if (event.type === 'ready') {
         this.provider.synced();
         this.#hooks.ready();
-      } else if (event.type === 'refused') this.#hooks.refused(event.unsaved, event.reason);
+      } else if (event.type === 'refused') this.#hooks.refused(event.unsaved, event.reason, event.limit);
       else if (event.type === 'rebuild') this.#hooks.rebuild();
       else if (event.type === 'closed') this.#hooks.closed(event);
       // Mid-transaction, for the routing's undo steps; the removal that follows repaints as any edit does.
@@ -136,7 +139,7 @@ export class SuggestMount {
    * The pane let go. With nothing unanswered the mount disposes now; otherwise it keeps delivering without a pane,
    * and a refusal meanwhile still offers the unsaved text back through `refused`.
    */
-  retire(refused: (unsaved: string[], reason: SuggestRefusal) => void): void {
+  retire(refused: SuggestHooks['refused']): void {
     this.editor = null;
     if (!this.session.state.unacked) {
       this.dispose();

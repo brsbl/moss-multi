@@ -1,5 +1,6 @@
 // The suggest-mode wire (docs/design/suggestions.md §2): doc-socket string frames in the `__YPS:` envelope. Record
 // ids are minted by the server with each lease; a client names only a record it was minted or one it authors.
+import type { DocLimit } from './sync.ts';
 
 export interface IdSpan {
   client: number;
@@ -63,7 +64,11 @@ export type SuggestReply =
    * frame wrote (`body` for every frame but a payload op); `parts` the delete parts the record now holds.
    */
   | { t: 'suggest-ack'; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[]; room?: number; reserve?: number }
-  | { t: 'suggest-refused'; record: string | null; reason: SuggestRefusal };
+  /**
+   * `limit`: the note limit a `doc-cap` refusal met, text or structure (A§5.1 Limits); absent for the state bytes.
+   * Additive, so a client from before it reads the room notice.
+   */
+  | { t: 'suggest-refused'; record: string | null; reason: SuggestRefusal; limit?: Exclude<DocLimit, 'state'> };
 
 export const SUGGEST_LIMITS = {
   /** Live (unspent, unexpired) leases one principal may hold; a request cannot raise it. */

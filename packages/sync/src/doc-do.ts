@@ -24,7 +24,7 @@ import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresenc
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
 import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
-import { handleSuggest, SqlLeases, SuggestIngest, type Suggester } from './doc/suggest.ts';
+import { handleSuggest, SqlLeases, SuggestIngest, type NoteLimit, type RecordGrowth, type Suggester } from './doc/suggest.ts';
 import { SuggestCooldowns } from './doc/suggest-cooldown.ts';
 import { newSuggestionsClient, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter } from './suggest/records.ts';
 import {
@@ -225,10 +225,12 @@ const aged = (attachment: Attachment, now: number) => agesAt(attachment) <= now;
  * the socket's attachment, so a wake keeps it; a grant, an ack or the end of one refusal window ends it.
  */
 const noRoomUntil = (connection: Connection) => (connection.state as { noRoomUntil?: number } | null)?.noRoomUntil ?? 0;
-function noRoom(connection: Connection, until: number): void {
-  if (noRoomUntil(connection) === until) return;
+/** The note limit the window's refusal named, which each refusal in the window names too. */
+const noRoomLimit = (connection: Connection) => (connection.state as { noRoomLimit?: NoteLimit } | null)?.noRoomLimit;
+function noRoom(connection: Connection, until: number, limit?: NoteLimit): void {
+  if (noRoomUntil(connection) === until && noRoomLimit(connection) === limit) return;
   // Functional setState only, as attach does: the object form would wipe the rest of the attachment.
-  (connection as unknown as Connection<Record<string, unknown>>).setState((previous) => ({ ...(previous ?? {}), noRoomUntil: until }));
+  (connection as unknown as Connection<Record<string, unknown>>).setState((previous) => ({ ...(previous ?? {}), noRoomUntil: until, noRoomLimit: limit }));
 }
 
 /** The trashes holding the doc closed, each with when the alarm may settle it. */
@@ -546,6 +548,7 @@ export class DocDO extends YServer<SyncEnv> {
       onCreated: (record, author, continues) => {
         if (!continues) this.#noticeSuggestion(record, author);
       },
+      limit: (growth) => this.#recordLimit(growth),
     });
     store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
@@ -944,7 +947,8 @@ export class DocDO extends YServer<SyncEnv> {
     // full note stays connected. Every refusal that does reach admission counts toward the cooldown, room or not.
     if (request !== null && GROWTH.has(request.t) && this.#roomless(connection)) {
       const record = request.t === 'suggest-merge' ? request.into : request.t === 'suggest-lease' ? null : request.record;
-      const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap' };
+      const limit = noRoomLimit(connection);
+      const reply: SuggestReply = { t: 'suggest-refused', record: typeof record === 'string' ? record : null, reason: 'doc-cap', ...(limit ? { limit } : {}) };
       this.sendCustomMessage(connection, JSON.stringify(reply));
       return;
     }
@@ -955,7 +959,7 @@ export class DocDO extends YServer<SyncEnv> {
       noRoom(connection, 0);
       return;
     }
-    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') noRoom(connection, Date.now() + SUGGEST_LIMITS.refusals.windowMs);
+    if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') noRoom(connection, Date.now() + SUGGEST_LIMITS.refusals.windowMs, reply.limit);
     this.#countRefusal(attachment.principalId);
   }
 
@@ -1267,6 +1271,48 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
+   * The note's limits for a suggestion record's write (A§5.1 Limits), as the shared #limitMet holds a frame to them: its
+   * structs count toward the structure guard, and the text the record would bring in once accepted toward the text
+   * limit. The state bound is the ingest's share and reserve.
+   */
+  #recordLimit(growth: RecordGrowth): DocLimit | null {
+    const before = this.#size();
+    return this.#limitMet(before, { chars: before.chars + growth.chars, structs: before.structs + growth.structs }, growth.headroom);
+  }
+
+  /**
+   * The note's limits for an accept landing `update` on the body and each payload update (A§5.1 Limits), read from the
+   * updates before anything is written: the body's growth with the payloads it names anew, each named payload's
+   * growth, a new payload whole, and the record's closing meta. G8 holds the state bytes.
+   */
+  #acceptLimit(update: Uint8Array, payloads: readonly [string, Uint8Array][]): DocLimit | null {
+    const before = this.#size();
+    const after = this.#sizeAfter(before, update);
+    // The record's closing meta.
+    after.size.structs += 1;
+    let headroom = after.headroom;
+    for (const [id, payloadUpdate] of payloads) {
+      headroom = false;
+      if (this.#payloads?.has(id)) {
+        const growth = growthOf(this.#payloads.doc(id), payloadUpdate, 'all');
+        after.size.chars += growth.chars;
+        after.size.structs += growth.structs;
+        continue;
+      }
+      const doc = new Y.Doc();
+      try {
+        Y.applyUpdate(doc, payloadUpdate);
+        const size = payloadSize(doc);
+        after.size.chars += size.chars;
+        after.size.structs += size.structs;
+      } finally {
+        doc.destroy();
+      }
+    }
+    return this.#limitMet(before, after.size, headroom);
+  }
+
+  /**
    * The note's limits for a comment write adding up to `structs` structs (A§5.1 Limits), as the shared #limitMet holds a
    * frame to them: it adds no body text, and its structs count toward the structure guard; a resolve or a removed
    * reaction, which adds no record, has the headroom formats and properties have. The state bound is #commentRoom.
@@ -1571,7 +1617,10 @@ export class DocDO extends YServer<SyncEnv> {
    */
   acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string }): Promise<ReviewResult | ReviewRefusal> {
     return this.#review(input, 'editor', (reviewer) => {
-      const result = acceptRecord(this.document, input.id, { previewHash: input.previewHash, digest: input.digest }, reviewer, { stateCap: this.#limits.stateCapBytes });
+      const result = acceptRecord(this.document, input.id, { previewHash: input.previewHash, digest: input.digest }, reviewer, {
+        stateCap: this.#limits.stateCapBytes,
+        limit: (update, payloads) => this.#acceptLimit(update, payloads),
+      });
       if (result.ok) {
         this.#comments?.flush();
         this.#projections?.touch();
