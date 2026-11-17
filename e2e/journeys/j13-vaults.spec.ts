@@ -285,7 +285,12 @@ test('j13-vaults: a search result from Ada’s other vault opens there, by click
   const pad = await send('/api/docs', { folderId: scratch, title: `Scratch pad ${run}`, markdown: `Only ${local} here.` });
   expect(pad.status(), 'declared setup: the Scratch note').toBe(201);
   const padId = ((await pad.json()) as { doc: { id: string } }).doc.id;
+  // A newer Scratch note heads its listing, where a note the store lacks would fall back to.
+  const later = await send('/api/docs', { folderId: scratch, title: `Later ${run}`, markdown: 'Nothing about soup.' });
+  expect(later.status(), 'declared setup: a second Scratch note').toBe(201);
+  const laterId = ((await later.json()) as { doc: { id: string } }).doc.id;
   await expect(noteRow(ada, padId)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, laterId)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
   await expect(noteRow(ada, soup), 'Scratch does not list the Home note').toHaveCount(0);
   for (const [query, docId] of [[word, soup], [local, padId]]) {
     await expect.poll(async () => {
