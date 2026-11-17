@@ -185,24 +185,29 @@ async function expectRolledBack({ ada, ben, docId, before, bravos }: Cut): Promi
   return server;
 }
 
+/** Ben's open editor followed the rollback: it shows what the server exports, nothing of the paste, and no page error. */
+async function expectPeerFollows({ ben, peer, docId }: Cut, server: string): Promise<void> {
+  if (!peer) throw new Error('this leg has no peer page');
+  const expected = JSON.stringify(blocks(server));
+  await expect.poll(async () => JSON.stringify(await rendered(peer, docId)) === expected, {
+    message: "Ben's open note equals the server's export", timeout: 240_000,
+  }).toBe(true);
+  await expect.poll(async () => JSON.stringify(await fingerprint(peer, docId)) === JSON.stringify(print(ben.text())), {
+    message: "Ben's editor holds what his doc holds", timeout: 60_000,
+  }).toBe(true);
+  expect(peer.telemetry.pageErrors.map((error) => error.message), "no page error on Ben's page").toEqual([]);
+}
+
 test('j01-paste-tail: a paste that replaced a line, cut short near the cap by another writer, is rolled back, says so, both peers converge on the note as it was, that line included, the other writer\'s open editor too, and an undo cannot bring it back @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(900_000);
   let ben: DocClient | null = null;
   try {
     const cut = await cutPaste(actors, stack, true, undefined, true);
     ben = cut.ben;
-    const { ada, docId, peer } = cut;
+    const { ada, docId } = cut;
     await ui.waitBodyLive(ada, docId, 180_000);
     const server = await expectRolledBack(cut);
-    // Ben's open editor followed the rollback: it shows what the server exports, and nothing of the paste.
-    const expected = JSON.stringify(blocks(server));
-    await expect.poll(async () => JSON.stringify(await rendered(peer!, docId)) === expected, {
-      message: "Ben's open note equals the server's export", timeout: 240_000,
-    }).toBe(true);
-    await expect.poll(async () => JSON.stringify(await fingerprint(peer!, docId)) === JSON.stringify(print(cut.ben.text())), {
-      message: "Ben's editor holds what his doc holds", timeout: 60_000,
-    }).toBe(true);
-    expect(peer!.telemetry.pageErrors.map((error) => error.message), "no page error on Ben's page").toEqual([]);
+    await expectPeerFollows(cut, server);
     await expect.poll(() => storedRollbacks(ada), { message: 'the acked rollback leaves nothing stored', timeout: 60_000 }).toBe(0);
 
     // The rollback is no undo step and the binding started a fresh history: an undo brings nothing back.
@@ -222,7 +227,7 @@ test('j01-paste-tail: a rollback cut off by the tab closing resumes when the not
   let ben: DocClient | null = null;
   try {
     // Ada's writes after the refusal never reach the DocDO: her tab rolls the paste back, and its deletes wait.
-    const cut = await cutPaste(actors, stack, false, (ada, docId) => ada.sever!.holdWritesAfterRefusal(docId));
+    const cut = await cutPaste(actors, stack, false, (ada, docId) => ada.sever!.holdWritesAfterRefusal(docId), true);
     ben = cut.ben;
     const { ada, docId } = cut;
     await ui.waitBodyLive(ada, docId, 180_000);
@@ -240,7 +245,7 @@ test('j01-paste-tail: a rollback cut off by the tab closing resumes when the not
     await ui.waitBodyLive(ada, docId, 180_000);
     const shown = await ui.body(ada, docId).evaluate((element) => element.textContent ?? '');
     expect(count(shown, 'Alpha'), 'the reopened note never shows the paste').toBe(0);
-    await expectRolledBack(cut);
+    await expectPeerFollows(cut, await expectRolledBack(cut));
     await expect.poll(() => storedRollbacks(ada), { message: 'acked: nothing stored', timeout: 60_000 }).toBe(0);
   } finally {
     ben?.close();
