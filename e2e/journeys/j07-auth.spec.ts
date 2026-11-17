@@ -444,6 +444,18 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   const docId = ((await post('/api/docs', { folderId: folder, title: 'Lisbon' })) as { doc: { id: string } }).doc.id;
   const path = `/d/${docId}`;
 
+  /** From now on, records any "Try again" that appears in the page, however briefly. */
+  const watchTryAgain = () => ada.page.evaluate(() => {
+    const seen = window as unknown as { tryAgainSeen?: string };
+    delete seen.tryAgainSeen;
+    new MutationObserver((records) => {
+      for (const record of records) {
+        const nodes = record.type === 'characterData' ? [record.target] : [...record.addedNodes];
+        const text = nodes.map((node) => node.textContent ?? '').find((t) => /try again/i.test(t));
+        if (text) seen.tryAgainSeen = text;
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
   const expectEnded = async (what: string) => {
     const banner = ada.page.locator(ENDED_BANNER);
     await expect(banner, `${what}: the session-ended banner shows`).toBeVisible({ timeout: 2_000 });
@@ -451,6 +463,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
     // The failed action's own message would come with the 401; give it a moment to show if it were going to.
     await ada.page.waitForTimeout(1_500);
     await expect(ada.page.getByText(/try again/i), `${what}: no "Try again" message`).toHaveCount(0);
+    expect(await ada.page.evaluate(() => (window as unknown as { tryAgainSeen?: string }).tryAgainSeen ?? null), `${what}: no "Try again" message, even briefly`).toBeNull();
     expect(new URL(ada.page.url()).pathname, `${what}: the tab stays on the note`).toBe(path);
   };
   const signInAgain = async (what: string) => {
@@ -466,6 +479,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   await ada.goto(path);
   await waitForShell(ada);
   await ui.waitLive(ada, docId);
+  await watchTryAgain();
   await endSessionElsewhere(ada);
   const created = ada.page.waitForResponse((r) => new URL(r.url()).pathname === '/api/docs' && r.request().method() === 'POST');
   await ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
@@ -473,6 +487,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   await expectEnded('"+ Note"');
   await signInAgain('"+ Note"');
 
+  await watchTryAgain();
   await endSessionElsewhere(ada);
   const trips = ui.folderRow(ada, 'Trips');
   if (/collapsed$/.test((await trips.getAttribute('aria-label')) ?? '')) await trips.click();
@@ -488,6 +503,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
 
   // The server closes the note's socket as the session ends, which hides Share and History: each is open already.
   await ui.openShare(ada, docId);
+  await watchTryAgain();
   await endSessionElsewhere(ada);
   await expectEnded('Share');
   await expect(ada.page.getByRole('dialog', { name: 'Share' }), 'Share closes, so the banner can be used').toHaveCount(0);
@@ -495,6 +511,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
 
   await ui.pane(ada, docId).locator(`[${HISTORY_BUTTON_ATTR}]`).click();
   await expect(ui.pane(ada, docId).locator(`[${HISTORY_VIEW_ATTR}]`), 'History opens').toBeVisible();
+  await watchTryAgain();
   await endSessionElsewhere(ada);
   await expectEnded('History');
   await expect(ui.pane(ada, docId).locator(`[${HISTORY_VIEW_ATTR}]`), 'History closes on the ended note').toHaveCount(0);
