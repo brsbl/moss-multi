@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 80% done** (243 of 302 planned tasks verified)
+**Overall: 81% done** (244 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 16 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 17 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -266,6 +266,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.21 verified: the first click into a table just inserted from the slash menu now behaves as pristine Moss does (a quick click in a new note can be dropped there too), and j01 and a parity leg pin that typed text stays inside the table.
 - 2026-11-17 — T9.13 verified: each Cmd+Z takes back one step, as in Moss, rather than a whole burst of typing, and a parity leg checks each step against pristine Moss.
 - 2026-11-17 — T9.17 verified: when a session ends, "+ Note", a folder rename, Share, History and the vault menu say to sign in again and give the keyboard back instead of dead-ending, the banner clears the window's drag strip with no note open, and signing in returns to the same place.
+- 2026-11-17 — T9.18 verified: choosing a search result from another vault, by click or Enter, switches to that vault the way the vault switcher does and opens the note live; results from the vault on screen open as before.
 
 ## T1.1s identity audit
 
@@ -305,6 +306,11 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.18's checker (6acf27d, 2026-11-17)
+
+- T9.18 (A search result from another vault opens) checker P2: a delayed cross-vault selection can override a newer note selection; the vault switch runs outside the app's serialized note-navigation queue and the open is enqueued only when it settles, so a slow switch can still open the earlier result after the person picked another note (found in source, not reproduced).
+- T9.18 (A search result from another vault opens) checker P2: a failed vault switch is swallowed and the open still runs with no error shown; the switcher stays on the current vault for an already-open note, and otherwise the re-read listing lacks the note so another note may open (authorization is not bypassed).
 
 ### From T9.17's checker (09d6bc7, 2026-11-17)
 
