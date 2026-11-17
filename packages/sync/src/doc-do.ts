@@ -539,7 +539,8 @@ export class DocDO extends YServer<SyncEnv> {
     this.#cooldowns = new SuggestCooldowns(this.ctx.storage.sql);
     this.#ingest = new SuggestIngest(this.document, {
       stateCap: this.#limits.stateCapBytes,
-      registry: nodeRegistry(),
+      // Built on the first op that names a node type, so a wake pays nothing for it.
+      registry: { has: (type) => nodeRegistry().has(type) },
       leases: new SqlLeases(this.ctx.storage.sql),
       // The note plus every stored payload, withheld ones included, as #overCap counts (A§10).
       stateBytes: () => store.stateBytes + payloads.totalBytes,

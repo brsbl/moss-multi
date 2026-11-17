@@ -272,7 +272,7 @@ export interface RecordGrowth {
 export interface IngestOptions {
   stateCap: number;
   /** Registered Lexical node types (`__type` values). */
-  registry: ReadonlySet<string>;
+  registry: Pick<ReadonlySet<string>, 'has'>;
   now?: () => number;
   leases?: LeaseStore;
   /** The doc's encoded state now, for the projected state cap. */
