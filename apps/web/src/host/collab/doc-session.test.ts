@@ -537,3 +537,75 @@ it('counts payloads as the DocDO\'s total plus unacked local growth: a paste tha
   expect(countedPayloadBytes(session.doc), 'neither lost nor double-counted').toBe(acked);
   expect(pasteFits(session.doc, PASTE_LIMIT_BYTES - note - acked - 1_000, 1_000)).toBe(true);
 });
+it('a doc-cap refusal says which limit it met: the text limit, the structure limit, or the bytes notice as before (T3.B31c)', async () => {
+  const { refusalMessage } = await import('../refusal.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap', limit: 'text' });
+  expect(refusalMessage()).toBe('This note has reached its size limit (1.02 million characters).');
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+  expect(refusalMessage()).toBe('This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.');
+  serverEvent(socket, { t: 'write-refused', reason: 'doc-cap' });
+  expect(refusalMessage()).toBe('This note is at its size limit, so your last change was not saved.');
+});
+it('a paste is refused whole before it applies when it would take the note past 1,020,000 characters or 165,000 structs, counting the payloads the tab holds; one just under lands (T3.B31c)', async () => {
+  const { pasteFits } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  // 900,000 characters in the body and 100,000 in a code block the tree names.
+  session.doc.get('root', Y.XmlText).insert(0, 'a'.repeat(900_000));
+  nameInTree('code');
+  session.payloads.hold('code', true).getText('payload').insert(0, 'c'.repeat(100_000));
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 20_000, structs: 10 }), 'up to the text cap fits').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 20_001, structs: 10 }), 'one character past it is refused').toBe(false);
+  const structs = [...session.doc.store.clients.values(), ...[...session.payloads.docs.values()].flatMap((doc) => [...doc.store.clients.values()])]
+    .reduce((sum, list) => sum + list.length, 0);
+  // A paste's own batches may split up to 256 structs its replay does not.
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 165_000 - structs - 256 }), 'up to the structure cap fits').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 10, structs: 165_000 - structs - 255 }), 'past it is refused').toBe(false);
+});
+it('a paste waits for a payload doc the note names that is still arriving, so its text counts when the paste is checked (T3.B31c)', async () => {
+  const { pasteFits, payloadsArrive } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  session.doc.get('root', Y.XmlText).insert(0, 'a'.repeat(900_000));
+  nameInTree('code');
+  const code = session.payloads.hold('code', true);
+  session.payloads.await('code');
+  const wait = payloadsArrive(session.doc, () => false);
+  expect(wait.next().done, 'waits while the code block\'s text is on its way').toBe(false);
+  expect(wait.next().done).toBe(false);
+  code.getText('payload').insert(0, 'c'.repeat(100_000));
+  session.payloads.arrived('code');
+  expect(wait.next().done, 'goes on once it arrived').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 20_001, structs: 10 }), 'and its text counts').toBe(false);
+});
+it('a paste stops waiting for an arriving payload doc after 10 seconds, or at once when other input lands it (T3.B31c)', async () => {
+  const { payloadsArrive } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  nameInTree('code');
+  session.payloads.hold('code', true);
+  session.payloads.await('code');
+  const wait = payloadsArrive(session.doc, () => false);
+  expect(wait.next().done).toBe(false);
+  vi.advanceTimersByTime(10_001);
+  expect(wait.next().done, 'past the wait').toBe(true);
+  let flushing = false;
+  const flushed = payloadsArrive(session.doc, () => flushing);
+  expect(flushed.next().done).toBe(false);
+  flushing = true;
+  expect(flushed.next().done, 'landed by other input').toBe(true);
+  expect(payloadsArrive(undefined, () => false).next().done, 'no note, nothing to wait for').toBe(true);
+});
+it('a code block deleted in this tab stops counting toward the paste check at once, as the server stops counting it (T3.B31c)', async () => {
+  const { pasteFits } = await import('../large-paste.ts');
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  session.doc.get('root', Y.XmlText).insert(0, 'a'.repeat(900_000));
+  nameInTree('code');
+  session.payloads.hold('code', true).getText('payload').insert(0, 'c'.repeat(100_000));
+  // A payload the tab holds but its tree does not name (one minted, then its block deleted) counts nothing either.
+  session.payloads.hold('stray', true).getText('payload').insert(0, 's'.repeat(50_000));
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 100_000, structs: 10 }), 'with the block named, the paste does not fit').toBe(false);
+  // The block is deleted (the root holds it first), its payload doc still held.
+  session.doc.get('root', Y.XmlText).delete(0, 1);
+  expect(session.payloads.get('code'), 'the tab still holds its doc').toBeDefined();
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_000, structs: 10 }), 'its text no longer counts').toBe(true);
+  expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_001, structs: 10 }), 'up to the limit, and no further').toBe(false);
+});

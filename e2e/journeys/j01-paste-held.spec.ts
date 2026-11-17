@@ -1,25 +1,27 @@
-// j01-paste-held (T3.S6): the cap check counts the payloads the DocDO keeps that this tab does not hold. Deleting a
-// code or HTML block leaves its text on the server (withheld, for an undo) and still counted against the note's size
-// cap (A§5.1), but a tab that opens the note afterwards holds only the payloads its blocks name. A paste that fits
-// beside what the tab holds, but not beside what the server counts, would land in part: its first batches persist and
-// a later one is refused. It must be refused whole before anything is applied, as a paste past the cap is.
+// j01-paste-held (T3.S6, T3.B31c): the paste check counts what the DocDO counts. Deleting a code or HTML block leaves
+// its text on the server (withheld, for an undo), but the note's text limit (A§5.1) counts only the payloads the note
+// names, and a tab that opens the note afterwards holds exactly those. So deleting blocks frees their characters: a
+// paste that fits beside the text the note still names lands whole, though the server keeps the deleted blocks' text,
+// and the tab's own admission agrees with the DocDO's, so nothing is refused part way.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import type { LexicalEditor, LexicalNode } from 'lexical';
-import type * as Y from 'yjs';
 import { grantDoc } from '../lib/grants.ts';
-import { expectRefusedPaste, exported, fence, normalized, setup } from '../lib/paste.ts';
+import { exported, fence, fingerprint, normalized, pastePlain, setup, type Admission } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
-// Ten code and HTML blocks of 190 KB: about 1.9 MB of payload docs, under the import's 2 MB of markdown.
-const BLOCKS = Array.from({ length: 10 }, (_, b) => b % 2
+// Five code and HTML blocks of 190 KB: about 950,000 characters, under the text limit beside the paragraph.
+const BLOCKS = Array.from({ length: 5 }, (_, b) => b % 2
   ? fence('moss-html', 190_000, (i) => `<p>block ${b} line ${i}</p>`)
   : fence('js', 190_000, (i) => `const value${b}_${i} = ${i};`));
 
-test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not beside the deleted ones the server still counts, is refused whole @p:col-1', async ({ actors, stack }) => {
+// 900 paragraphs of 1,000 characters: past the limit beside the deleted blocks' text, well within it without.
+const PASTED = Array.from({ length: 900 }, (_, i) => `Pasted ${String(i).padStart(4, '0')} ${'w'.repeat(988)}`);
+
+test('j01-paste-held: deleted blocks free their characters, so a paste that fits beside the text the note still names lands whole @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(400_000);
-  // Before Ada or Ben open the note, Cy deletes its blocks: the DocDO keeps their 1.9 MB withheld and counts it.
-  const refused = await setup(actors, stack, ['Kept.', ...BLOCKS].join('\n\n'), {
+  // Before Ada or Ben open the note, Cy deletes its blocks: the DocDO keeps their 950,000 characters withheld.
+  const { ada, ben, docId } = await setup(actors, stack, ['Kept.', ...BLOCKS].join('\n\n'), {
     prepare: async (owner, id) => {
       const principal = await actors.principal('cy');
       await grantDoc(owner, id, principal);
@@ -39,46 +41,26 @@ test('j01-paste-held: a paste that fits beside the payloads a tab holds, but not
         }, { discrete: true });
         return count;
       });
-      expect(removed, 'declared setup: the blocks are deleted').toBe(10);
+      expect(removed, 'declared setup: the blocks are deleted').toBe(5);
       await ui.waitAcked(cy, id, 60_000);
       await cy.goto('/');
     },
   });
-  const { ada, docId } = refused;
   await ui.waitAcked(ada, docId, 30_000);
   expect(await exported(ada, docId), 'only the paragraph is left').toBe(await normalized(ada, stack, 'Kept.'));
 
-  // The DocDO's own figure for the payloads it counts, as Ada's session heard it on connect (moss-payload-usage).
-  let usage: { pb: number; limit: number } | undefined;
-  await expect.poll(async () => {
-    usage = await ada.page.evaluate(() => performance.getEntriesByName('moss-payload-usage').map((mark) => (mark as PerformanceMark).detail as { pb: number; limit: number }).at(-1));
-    return usage?.pb ?? 0;
-  }, { message: 'the DocDO reports the withheld payloads it counts', timeout: 30_000 }).toBeGreaterThan(1_500_000);
-  const { pb, limit } = usage!;
-
-  // A paste of about the limit less half the server's payloads: under the limit beside the note Ada holds, past it
-  // with what the server keeps. In the lean layout (A§10.11) a short paragraph's state is about 143 bytes with a 5-byte
-  // client id (100,000 paragraphs added 14,277,208 bytes), and names the id about 8 times, a varint of 1 to 5 bytes.
-  const idBytes = await ui.body(ada, docId).evaluate((element) => {
-    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
-    const undo = (editor as unknown as Record<symbol, { root?: { doc: Y.Doc }; doc?: Y.Doc }>)[Symbol.for('@lexical/yjs/UndoManager')];
-    let id = (undo.root?.doc ?? undo.doc)!.clientID;
-    let bytes = 1;
-    for (; id > 0x7f; id = Math.floor(id / 0x80)) bytes += 1;
-    return bytes;
-  });
-  const count = Math.round((limit - pb / 2) / (142.8 - 8 * (5 - idBytes)));
-  const lines: string[] = [];
-  for (let i = 0; i < count; i += 1) lines.push(`p${i}`);
-  lines.push('Last line of the paste.');
-  // The admission's measured figures put the paste between the two counts, with room either side, before the refusal
-  // is demanded: one that ignored the server's count would admit it.
-  await expectRefusedPaste(refused, stack, lines.join('\n\n'), {
-    admission: ({ adds, heldLocal, heldServer, limit: cap, fit }) => {
-      expect(fit, 'the tab\'s own admission refuses it').toBe(false);
-      const margin = Math.min(250_000, pb / 8);
-      expect(heldLocal + adds, `beside what Ada holds, the paste fits (adds ${adds}, held ${heldLocal}, limit ${cap})`).toBeLessThan(cap - margin);
-      expect(heldServer + adds, `beside what the server counts, it does not (adds ${adds}, held ${heldServer}, limit ${cap})`).toBeGreaterThan(cap + margin);
-    },
-  });
+  await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
+  await ada.page.keyboard.press('End');
+  await pastePlain(ada, docId, PASTED.join('\n\n'));
+  const admission = () => ada.page.evaluate(() => performance.getEntriesByName('moss-paste-admission').map((mark) => (mark as PerformanceMark).detail as Admission).at(-1));
+  let figures: Admission | undefined;
+  await expect.poll(async () => (figures = await admission()) !== undefined, { message: 'the paste is measured', timeout: 120_000 }).toBe(true);
+  expect(figures!.met, `the tab admits it (${JSON.stringify(figures)})`).toBeNull();
+  expect(figures!.heldChars, 'the tab counts only the text the note names').toBeLessThan(100);
+  expect(figures!.heldChars + figures!.chars + 950_000, 'beside the deleted blocks it would not fit').toBeGreaterThan(1_020_000);
+  await ui.waitAcked(ada, docId, 240_000);
+  const landed = await exported(ada, docId);
+  for (const line of [PASTED[0], PASTED[899]]) expect(landed, 'the whole paste lands').toContain(line);
+  const print = await fingerprint(ada, docId);
+  await expect.poll(() => fingerprint(ben, docId), { message: 'and reaches the collaborator', timeout: 120_000 }).toEqual(print);
 });

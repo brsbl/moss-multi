@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CREATE_BUDGET, EXPORT_BUDGET, gcEvents, memoryProblems, NEED_RUNS, phaseFigures, ratio, reliableCap, smallestCap, STRUCT_BOUNDS } from './measure-memory.mjs';
+import { STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP } from '../packages/protocol/src/limits.ts';
+import { gcEvents, memoryProblems, NEED_RUNS, PHASE_LIMIT_MB, phaseFigures, reliableCap, REST_LIMIT_MB, smallestCap, stateAllowance, STRUCT_BOUNDS, STRUCT_CEILING } from './measure-memory.mjs';
 
 const LOG = [
   '[123:0x7f00]     1200 ms: Scavenge 30.5 (40.0) -> 22.1 (41.0) MB, pooled: 0 MB, 3.10 / 0.00 ms  (average mu = 1.000, current mu = 1.000) allocation failure;',
@@ -22,49 +23,131 @@ describe('gcEvents and phaseFigures', () => {
   });
 });
 
-describe('memoryProblems: relative budgets', () => {
-  const REST = 100;
+describe('memoryProblems: absolute budgets at the caps', () => {
+  /** What the save fed search: the note's whole body, as SearchDO receives it. */
+  const FED = { docId: 'measure', bodyChars: 1_000 };
   const note = (name, needs, extra = {}) => ({
     name,
     budget: true,
     needs,
-    plain: { phases: { save: { restMb: REST } } },
+    plain: { phases: { save: { restMb: 40 } }, fed: FED },
     measured: { phases: {} },
     ...extra,
   });
 
-  it('passes notes whose create and export stay within their multiples of the note at rest', () => {
-    expect([CREATE_BUDGET, EXPORT_BUDGET]).toEqual([1.75, 1.95]);
-    expect(memoryProblems([note('a', { create: 175, wake: 500, export: 195 })])).toEqual([]);
+  it('holds every phase to 96 MB less 10% and the note at rest to 64 MB less 10%', () => {
+    expect([PHASE_LIMIT_MB, REST_LIMIT_MB]).toEqual([96 * 0.9, 64 * 0.9]);
+    expect(memoryProblems([note('a', { create: 86, wake: 70, save: 72, export: 86 })])).toEqual([]);
   });
 
-  it('fails a create or an export over its multiple, and a need never found', () => {
+  it('fails a phase over its budget, a need never found, and a note at rest over its own', () => {
     const problems = memoryProblems([
-      note('create', { create: 177, export: REST }),
-      note('export', { create: REST, export: 197 }),
-      note('lost', { create: null, export: REST }),
+      note('create', { create: 88, wake: 60, save: 60, export: 60 }),
+      note('export', { create: 60, wake: 60, save: 60, export: 92 }),
+      note('save', { create: 60, wake: 60, save: 90, export: 60 }),
+      note('lost', { create: null, wake: 60, save: 60, export: 60 }),
+      note('unsaved', { create: 60, wake: 60, export: 60 }),
+      note('rest', { create: 60, wake: 60, save: 60, export: 60 }, { plain: { phases: { save: { restMb: 58 } }, fed: FED } }),
     ]);
-    expect(problems).toHaveLength(3);
-    expect(problems[0]).toMatch(/^create: the create needs 177 MB, 1\.77x the note at rest \(100 MB\), over 1\.75x/);
-    expect(problems[1]).toMatch(/^export: the export needs 197 MB, 1\.97x .* over 1\.95x/);
-    expect(problems[2]).toMatch(/^lost: the create's need is unknown/);
+    expect(problems).toEqual([
+      'create: the create needs 88 MB, over 86.4 MB',
+      'export: the export needs 92 MB, over 86.4 MB',
+      'save: the save needs 90 MB, over 86.4 MB',
+      "lost: the create's need is unknown",
+      "unsaved: the save's need is unknown",
+      'rest: at rest it takes 58 MB, over 57.6 MB',
+    ]);
   });
 
-  it('holds only budgeted notes to the multiples, and fails any note whose run failed', () => {
-    expect(memoryProblems([note('small', { create: REST * 3, export: REST * 3 }, { budget: false })])).toEqual([]);
-    const failed = note('failed', { create: REST, export: REST }, { budget: false, plain: { failed: { phase: 'create', message: 'workerd exited' } } });
+  it('fails a note at a cap whose save fed search nothing, since its save then left out the export and the feed', () => {
+    const unfed = (name, fed) => note(name, { create: 60, wake: 60, save: 60, export: 60 }, { plain: { phases: { save: { restMb: 40 } }, fed } });
+    expect(memoryProblems([unfed('fed', FED)])).toEqual([]);
+    expect(memoryProblems([unfed('none', null), unfed('empty', { docId: 'measure', bodyChars: 0 })])).toEqual([
+      'none: its save fed search no entry of the note',
+      'empty: its save fed search no entry of the note',
+    ]);
+  });
+
+  it('holds a grown table\'s create (the largest table an import takes) and its save like any note\'s', () => {
+    expect(memoryProblems([note('table', { create: 70, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual([]);
+    expect(memoryProblems([note('table', { create: null, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual(["table: the create's need is unknown"]);
+    expect(memoryProblems([note('table', { create: 90, wake: 60, save: 62, export: 60 }, { grow: true })])).toEqual(['table: the create needs 90 MB, over 86.4 MB']);
+  });
+
+  it('holds a note at a cap to within 2% under it, and its state to what its text and structs allow', () => {
+    const sized = (name, size, extra) => note(name, { create: 60, wake: 60, save: 60, export: 60 }, {
+      plain: { phases: { save: { restMb: 40 } }, fed: FED, size, stateBytes: 1_000 },
+      ...extra,
+    });
+    expect(memoryProblems([
+      sized('text', { chars: TEXT_CHAR_CAP, structs: 70_000 }, { cap: 'text', chars: TEXT_CHAR_CAP }),
+      sized('structure', { chars: 400_000, structs: STRUCT_CAP - 8 }, { cap: 'structure' }),
+    ])).toEqual([]);
+    expect(memoryProblems([
+      sized('over', { chars: TEXT_CHAR_CAP + 1, structs: 70_000 }, { cap: 'text' }),
+      sized('short', { chars: 400_000, structs: Math.floor(STRUCT_CAP * 0.9) }, { cap: 'structure' }),
+      sized('miscounted', { chars: TEXT_CHAR_CAP - 10, structs: 70_000 }, { cap: 'text', chars: TEXT_CHAR_CAP }),
+    ])).toEqual([
+      `over: it holds ${TEXT_CHAR_CAP + 1} characters, not at the cap of ${TEXT_CHAR_CAP}`,
+      `short: it holds ${Math.floor(STRUCT_CAP * 0.9)} structs, not at the cap of ${STRUCT_CAP}`,
+      `miscounted: it holds ${TEXT_CHAR_CAP - 10} characters where its markdown counts ${TEXT_CHAR_CAP}`,
+    ]);
+    const heavy = { chars: 10, structs: 10 };
+    expect(memoryProblems([note('heavy', null, { budget: false, plain: { phases: {}, size: heavy, stateBytes: stateAllowance(heavy) + 1 } })]))
+      .toEqual([`heavy: its state is ${stateAllowance(heavy) + 1} bytes, over the ${stateAllowance(heavy)} its text and structs allow`]);
+  });
+
+  it('holds a note past a cap to a refusal with that limit', () => {
+    const past = (refused, got) => ({ name: `past ${refused}`, refused, plain: { phases: {}, refused: got }, measured: { phases: {} } });
+    expect(memoryProblems([past('text', 'text'), past('structure', 'structure')])).toEqual([]);
+    expect(memoryProblems([past('text', undefined), past('structure', 'state')])).toEqual([
+      'past text: the create was not refused with the text limit (admitted)',
+      'past structure: the create was not refused with the structure limit (state)',
+    ]);
+  });
+
+  it('holds only budgeted notes to the budgets, and fails any note whose run failed', () => {
+    expect(memoryProblems([note('small', { create: 300, export: 300 }, { budget: false })])).toEqual([]);
+    const failed = note('failed', { create: 60, wake: 60, save: 60, export: 60 }, { budget: false, plain: { failed: { phase: 'create', message: 'workerd exited' } } });
     expect(memoryProblems([failed])).toEqual(['failed: the untraced run failed (create: workerd exited)']);
   });
+});
 
-  it('reads the note at rest from the untraced run, whose figures no in-phase gc() inflates', () => {
-    const traced = { phases: { save: { restMb: REST * 2 } } };
-    expect(memoryProblems([note('n', { create: REST * 1.8, export: REST }, { measured: traced })])).toHaveLength(1);
+describe('memoryProblems: notes at the structure ceiling (coordinator ruling 2)', () => {
+  const FED = { docId: 'measure', bodyChars: 1_000 };
+  const NEEDS = { create: 80, wake: 70, save: 90, export: 90 };
+  const at = (name, needs, { structs = STRUCT_CEILING, rest = 60, deletions = { landed: 4_000, structs: STRUCT_CEILING, refused: 'structure' } } = {}) => ({
+    name,
+    budget: true,
+    cap: 'ceiling',
+    needs,
+    plain: { phases: { save: { restMb: rest } }, fed: FED, size: { chars: 400_000, structs }, stateBytes: 1_000, deletions },
+    measured: { phases: {} },
   });
 
-  it('gives the ratio only when both figures are known', () => {
-    expect(ratio(150, 100)).toBe(1.5);
-    expect(ratio(null, 100)).toBeNull();
-    expect(ratio(150, undefined)).toBeNull();
+  it('is the structure cap and 5% of it', () => {
+    expect(STRUCT_CEILING).toBe(STRUCT_CAP + STRUCT_HEADROOM);
+    expect(STRUCT_CEILING).toBe(173_250);
+  });
+
+  it('holds a note there to 96 MB a phase and 64 MB at rest: the headroom spends the budgets\' margin', () => {
+    expect(memoryProblems([at('ceiling', { create: 80, wake: 70, save: 95, export: 96 }, { rest: 63 })])).toEqual([]);
+  });
+
+  it('fails one over those budgets, one short of the ceiling, and one whose deletions were not refused past it', () => {
+    expect(memoryProblems([
+      at('heavy', { create: 80, wake: 70, save: 98, export: 90 }, { rest: 65 }),
+      at('short', NEEDS, { structs: STRUCT_CAP }),
+      at('admitted', NEEDS, { deletions: { landed: 4_000, structs: STRUCT_CEILING, refused: null } }),
+      at('stopped', NEEDS, { deletions: { landed: 0, structs: STRUCT_CAP, refused: 'structure within the headroom' } }),
+    ])).toEqual([
+      'heavy: at rest it takes 65 MB, over 64.0 MB',
+      'heavy: the save needs 98 MB, over 96.0 MB',
+      `short: it holds ${STRUCT_CAP} structs, not at the ceiling of ${STRUCT_CEILING}`,
+      'admitted: the deletion past the ceiling was not refused with the structure limit (admitted)',
+      'stopped: no deletion landed in the headroom',
+      'stopped: the deletion past the ceiling was not refused with the structure limit (structure within the headroom)',
+    ]);
   });
 });
 

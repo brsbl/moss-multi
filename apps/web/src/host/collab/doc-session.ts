@@ -7,7 +7,7 @@
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import { base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -761,7 +761,9 @@ export class DocSession {
       // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
       if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
     } else if (event.t === 'write-refused') {
-      this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
+      this.#refusedMessage = event.reason === 'doc-cap' && event.limit && event.limit !== 'state'
+        ? DOC_LIMIT_NOTICE[event.limit]
+        : WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
       refuseInput(this.#refusedMessage);
     } else if (event.t === 'doc-deleted') {
       this.end('deleted');

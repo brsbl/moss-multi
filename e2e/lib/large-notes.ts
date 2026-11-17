@@ -40,6 +40,49 @@ export function mixedMarkdown(size: number): string {
   return parts.join('\n\n');
 }
 
+/** mixedMarkdown's section `i`, with the text a note made from it holds (its characters, as the text limit counts them). */
+function mixedSection(i: number): { markdown: string; chars: number } {
+  const p = [prose(i, 220), prose(i + 1, 220), prose(i + 2, 420), prose(i + 3, 60), prose(i + 4, 60), prose(i + 5, 40), prose(i + 6, 100)];
+  const parts: [string, string[]][] = [
+    [`## Section ${i}`, [`Section ${i}`]],
+    [`${p[0]} It has **bold ${i}**, *italic ${i}* and \`code ${i}\`, then a [link ${i}](https://example.invalid/page/${i}). ${p[1]}`,
+      [`${p[0]} It has bold ${i}, italic ${i} and code ${i}, then a link ${i}. ${p[1]}`]],
+    [p[2], [p[2]]],
+    [`- ${p[3]}\n- ${p[4]}\n  - ${p[5]}`, [p[3], p[4], p[5]]],
+    ...(i % 3 === 0 ? [[`- [ ] open task ${i}\n- [x] done task ${i}`, [`open task ${i}`, `done task ${i}`]] as [string, string[]]] : []),
+    ...(i % 5 === 0 ? [[`1. first ${i}\n2. second ${i}`, [`first ${i}`, `second ${i}`]] as [string, string[]]] : []),
+    [`> ${p[6]}`, [p[6]]],
+    ...(i % 4 === 0 ? [[`| Name ${i} | Value ${i} |\n| --- | --- |\n| row ${i} | ${i * 7} |`, [`Name ${i}`, `Value ${i}`, `row ${i}`, `${i * 7}`]] as [string, string[]]] : []),
+    ...(i % 10 === 0 ? [[`\`\`\`js\nconst value${i} = ${i};\nconsole.log(value${i});\n\`\`\``, [`const value${i} = ${i};\nconsole.log(value${i});`]] as [string, string[]]] : []),
+  ];
+  return { markdown: parts.map(([markdown]) => markdown).join('\n\n'), chars: parts.reduce((sum, [, texts]) => sum + texts.join('').length, 0) };
+}
+
+/**
+ * mixedMarkdown's sections until the note they make holds as close to `chars` characters of text as a section allows
+ * without passing it (the text limit counts text, not markup, A§5.1), with how many it holds.
+ */
+export function mixedMarkdownOfText(chars: number): { markdown: string; chars: number } {
+  const start = 'Pasted start.';
+  const parts = [start];
+  let total = start.length + LAST.length;
+  for (let i = 0; ; i += 1) {
+    const section = mixedSection(i);
+    if (total + section.chars > chars) break;
+    parts.push(section.markdown);
+    total += section.chars;
+  }
+  // Prose up to the count, in one last paragraph.
+  const rest = chars - total;
+  if (rest > 1) {
+    const filler = prose(7, rest).slice(0, rest - 1);
+    parts.push(`${filler}.`);
+    total += filler.length + 1;
+  }
+  parts.push(LAST);
+  return { markdown: parts.join('\n\n'), chars: total };
+}
+
 /** `count` short paragraphs, blank-line separated, ending with a known last line (j01-paste-blocks). */
 export function shortParagraphs(count: number): string {
   const lines: string[] = [];

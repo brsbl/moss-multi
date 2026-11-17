@@ -1,15 +1,16 @@
-// j01-paste-cap (T3.S6): a paste just past the note's size cap (A§5.1) is refused whole, before any of it is applied.
-// The DocDO counts a note's state and its payload docs (code, HTML, formula, chart and sketch fields) against the cap
-// and refuses the write that crosses it; a paste sent in pieces would land up to there and lose the rest. As plain
-// text, 200,000 short paragraphs and the empty lines between them are just over the cap (about 143 bytes each in the
-// lean layout, A§10.11). As markdown, 44,000 short paragraphs encode to about 4 MB, under it, but with 128 code and
-// HTML blocks whose payloads add about 27 MB the paste is over too; few paragraphs keep its parse, which holds the tab,
-// short. A chart whose payload needs a frame past the frame cap cannot be sent at all. Each is refused visibly:
-// nothing in the editor, the server or the collaborator's screen, the socket never closed, and the note stays editable.
+// j01-paste-cap (T3.S6, T3.B31c): a paste past one of the note's limits (A§5.1) is refused whole, before any of it is
+// applied. The DocDO counts a note's text, its own and that of the payloads it names (code, HTML, formula), and its
+// structure, and refuses the write that crosses either; a paste sent in pieces would land up to there and lose the
+// rest. As plain text, 200,000 short paragraphs and the empty lines between them hold about 1.2 million characters,
+// past the text limit (and the structure guard). As markdown, 44,000 short paragraphs are under the text limit, but
+// with 128 code and HTML blocks of 200 KB each the paste holds about 25 million characters; few paragraphs keep its
+// parse, which holds the tab, short. A chart whose payload needs a frame past the frame cap cannot be sent at all.
+// Each is refused visibly with its notice: nothing in the editor, the server or the collaborator's screen, the socket
+// never closed, and the note stays editable.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { expectRefusedPaste, fence, setup } from '../lib/paste.ts';
-import { test } from '../lib/test.ts';
+import { BYTES_NOTICE, expectRefusedPaste, fence, setup, TEXT_NOTICE } from '../lib/paste.ts';
+import { expect, test } from '../lib/test.ts';
 
 function shortParagraphs(count: number): string[] {
   const lines: string[] = [];
@@ -34,12 +35,17 @@ const PASTES: [string, () => string][] = [
 test('j01-paste-cap: a chart whose payload cannot go in one frame is refused whole and visibly, nothing applied @p:col-1', async ({ actors, stack }) => {
   test.setTimeout(300_000);
   const data = Array.from({ length: 30_000 }, () => ({ label: 'x', value: 1 }));
-  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, `Before the chart.\n\n\`\`\`moss-chart\n${JSON.stringify({ type: 'bar', data })}\n\`\`\`\n\nAfter the chart.`);
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, `Before the chart.\n\n\`\`\`moss-chart\n${JSON.stringify({ type: 'bar', data })}\n\`\`\`\n\nAfter the chart.`, {
+    notice: BYTES_NOTICE,
+  });
 });
 
 for (const [label, make] of PASTES) {
-  test(`j01-paste-cap: ${label}, just past the note’s size cap, are refused whole and visibly, nothing applied @p:col-1`, async ({ actors, stack }) => {
+  test(`j01-paste-cap: ${label}, past the note’s text limit, are refused whole and visibly, nothing applied @p:col-1`, async ({ actors, stack }) => {
     test.setTimeout(300_000);
-    await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, make());
+    await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, make(), {
+      notice: TEXT_NOTICE,
+      admission: ({ met }) => expect(met, 'the paste meets the text limit').toBe('text'),
+    });
   });
 }

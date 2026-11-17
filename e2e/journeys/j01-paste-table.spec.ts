@@ -2,21 +2,22 @@
 // several megabytes of Yjs state, which the doc socket sent as one frame the DocDO never took. Now it lands in
 // batches of whole rows with the tab free between them, and goes out in frames within the client frame cap: every
 // row reaches the server and a collaborator, the caret ends in the last cell, one undo step redoes whole, and the
-// socket never closes.
+// socket never closes. It is sized so the paste, its undo and its redo fit the note's structure guard (A§5.1; 16 structs
+// a two-cell row), since an undone paste's structs stay in its history.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
 import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
 import { table } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
-test('j01-paste-table: a 5,000-row table pasted between two paragraphs lands whole, in frames under the cap, without holding the tab, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
+test('j01-paste-table: a 4,500-row table pasted between two paragraphs lands whole, in frames under the cap, without holding the tab, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(900_000);
-  const markdown = table(5_000);
+  const markdown = table(4_500);
   const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
     // The caret ends in the last cell, so typing lands there.
-    references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${table(5_000, 'Z')}\n\nAfter.` },
+    references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${table(4_500, 'Z')}\n\nAfter.` },
   });
-  expect(want.whole.split('\n').filter((line) => line.startsWith('| row ')).length, 'the reference export holds every row').toBe(5_000);
+  expect(want.whole.split('\n').filter((line) => line.startsWith('| row ')).length, 'the reference export holds every row').toBe(4_500);
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
