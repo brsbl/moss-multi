@@ -4576,7 +4576,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               data-note-tab-title="true"
             >
-              <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+              <div className="flex min-w-0 flex-1 items-center overflow-hidden max-[479px]:sr-only" /* moss-multi seam: phone-shell (T9.30): too narrow to read, the location keeps only its accessible name */>
                 <NoteBreadcrumb note={note} onNavigate={isNotesPanelHidden ? onExpandNotesPanel : undefined} />
                 {(note.folderPath === 'Notes' || !note.folderPath) && (
                   <span
@@ -4602,7 +4602,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               )}
             </div>
           ) : (
-            <div className={cn('flex min-w-0 items-center overflow-hidden', offWhileSearching)} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <div className={cn('flex min-w-0 items-center overflow-hidden max-[479px]:sr-only', offWhileSearching)} /* moss-multi seam: phone-shell (T9.30): too narrow to read, the location keeps only its accessible name */ style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               <NoteBreadcrumb note={note} onNavigate={isNotesPanelHidden ? onExpandNotesPanel : undefined} />
               {note.folderPath === 'Notes' && note.title !== 'Untitled' && (
                 <span className="cursor-default truncate text-xs text-ink-faint opacity-50">{note.title}</span>

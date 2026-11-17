@@ -43,7 +43,7 @@ export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
 
 function AttachedRow({ docId }: { docId: string }): ReactNode {
   useAttachedRow(docId);
-  return <SuggestRow docId={docId} className={`order-last ${BOTTOM_ROW}`} />;
+  return <SuggestRow docId={docId} className={`order-last -mt-1.5 ${BOTTOM_ROW}`} />;
 }
 
 /** The Suggesting row at the docked toolbar's place while the toolbar is away (the editor not focused). */
