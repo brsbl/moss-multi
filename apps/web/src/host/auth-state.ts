@@ -50,6 +50,8 @@ export interface AuthDeps {
   setAppState: (state: 'booting' | 'degraded') => void;
   /** Waits before the next lookup; resolves early when `wake` fires. */
   sleep?: (ms: number, wake: Promise<void>) => Promise<void>;
+  /** A call the ended session cut off is held: whatever its action was holding lets go (session-fetch.ts). */
+  onHeld?: () => void;
 }
 
 /** Waits between failed lookups: 1 s, 2 s, 4 s, 8 s, then every 15 s. */
@@ -300,7 +302,10 @@ export function createAuthStore(deps: AuthDeps) {
     sessionAware(fetcher: typeof fetch): typeof fetch {
       return async (input, init) => {
         const response = await fetcher(input, init);
-        if (response.status === 401 && await confirmSession()) return new Promise<never>(() => undefined);
+        if (response.status === 401 && await confirmSession()) {
+          deps.onHeld?.();
+          return new Promise<never>(() => undefined);
+        }
         return response;
       };
     },

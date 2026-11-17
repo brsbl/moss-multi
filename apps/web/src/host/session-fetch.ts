@@ -31,6 +31,11 @@ export function setSessionEnded(next: boolean): void {
   for (const listener of [...listeners]) listener();
 }
 
+/** A call the ended session cut off is held: a "+ Note" begun in the ended tab gives the keyboard back too. */
+export function sessionCallHeld(): void {
+  disarmOpeningGuard();
+}
+
 /** Settles once the session has ended under this tab (at once if it already has). */
 export function whenSessionEnded(): Promise<void> {
   return endedPromise;
