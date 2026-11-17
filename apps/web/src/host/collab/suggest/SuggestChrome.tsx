@@ -15,8 +15,8 @@ import { dismissUnsaved, lockedToSuggest, requestMode, useNoSuggestionRoom, useS
 export const ToolbarCollab: (props: { noteId: string }) => ReactNode = () => null;
 
 /**
- * The pane's bottom row while it suggests: "Suggesting", and for someone who may edit, Stop suggesting. It moves up
- * above Moss's docked toolbar while that shows (styles.css), so the two never overlap.
+ * The pane's bottom row while it suggests: "Suggesting", and for someone who may edit, Stop suggesting. It sits just
+ * above where Moss's docked toolbar shows while typing, so the two never overlap.
  */
 export function SuggestBand({ docId }: { docId: string }): ReactNode {
   const role = useDocRole(docId);
@@ -25,7 +25,7 @@ export function SuggestBand({ docId }: { docId: string }): ReactNode {
   if (mode !== 'suggest' || role === null || terminal !== null) return null;
   const locked = lockedToSuggest(role);
   return (
-    <div {...{ [MODE_ROW_ATTR]: '' }} className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
+    <div {...{ [MODE_ROW_ATTR]: '' }} className="pointer-events-none absolute bottom-20 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
       <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
         <span {...{ [SUGGEST_CHIP_ATTR]: locked ? 'locked' : 'unlocked' }} className="text-xs text-ink-muted">Suggesting</span>
         {locked ? null : (

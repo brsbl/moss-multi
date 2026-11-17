@@ -137,8 +137,3 @@
   pointer-events: auto;
   cursor: pointer;
 }
-
-/* The bottom mode row (T9.30) rises above Moss's docked toolbar while that shows. */
-:root:has([data-toolbar-note]) [data-mode-row] {
-  bottom: 4.75rem;
-}
