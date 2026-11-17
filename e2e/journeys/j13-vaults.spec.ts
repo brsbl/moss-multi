@@ -323,7 +323,9 @@ test('j13-vaults: a search result from Ada’s other vault opens there, by click
   await expect(noteRow(ada, padId)).toHaveCount(0);
   await actors.checkpoint('cross-vault-click');
 
-  // Back in Scratch, Enter on the only result does the same.
+  // Back in Scratch, Enter on the only result does the same. Each note opens once more, and only once more.
+  ada.expectReconnects(1, padId);
+  ada.expectReconnects(1, soup);
   await switchTo(ada, 'Home', 'Scratch', 'Scratch');
   await ui.openNote(ada, padId);
   await search(word);
