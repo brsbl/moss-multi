@@ -544,12 +544,6 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const pinnedAt = pins()[note.id];
     return pinnedAt ? { ...note, pinned: true, pinnedAt } : note;
   };
-  /** Search hits in another of the caller's vaults, by doc id: opening one switches to its vault first. */
-  const elsewhere = new Map<string, string>();
-  const switchVault = async (id: string) => {
-    await load(id);
-    diskListeners.forEach((listener) => listener([], []));
-  };
   /** moss's notes:search: title matches over the listing first, then the index's hits across every doc the caller can discover. */
   const search = async ({ query, limit = 20, excludeNoteId, searchTrashed }: { query: string; limit?: number; excludeNoteId?: string; searchTrashed?: boolean }) => {
     const needle = query.trim().toLowerCase();
@@ -571,18 +565,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       if (!response.ok) throw new Error(`GET /api/search: ${response.status}`);
       return await response.json() as { results: (ApiDoc & { snippet: string; vaultId?: string })[] };
     });
-    elsewhere.clear();
-    for (const hit of results) {
-      if (hit.vaultId && hit.vaultId !== workspaceSnapshot?.vault.id && workspaceSnapshot?.vaults?.some((vault) => vault.id === hit.vaultId)) {
-        elsewhere.set(hit.id, hit.vaultId);
-      }
-    }
     const seen = new Set(titled.map((hit) => hit.id));
-    const indexed: NoteSearchResult[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
+    // Each result carries its own vault, so where a displayed result opens never depends on a later answer (T9.18).
+    const indexed: (NoteSearchResult & { vaultId?: string })[] = results.filter((hit) => hit.id !== excludeNoteId && !seen.has(hit.id)).map((hit) => {
       const listedNote = listed.find((note) => note.id === hit.id);
       const title = listedNote?.title ?? toNoteMetadata(hit).title;
       return { id: hit.id, title, folderPath: listedNote?.folderPath ?? ROOT_FOLDER, updatedAt: listedNote?.updatedAt ?? seconds(hit.updatedAt),
-        ...(title.toLowerCase().includes(needle) ? { matchType: 'title' as const } : { snippet: hit.snippet, matchType: 'content' as const }) };
+        ...(title.toLowerCase().includes(needle) ? { matchType: 'title' as const } : { snippet: hit.snippet, matchType: 'content' as const }),
+        ...(hit.vaultId ? { vaultId: hit.vaultId } : {}) };
     });
     return [...titled, ...indexed].slice(0, limit);
   };
@@ -720,7 +710,16 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         workspaceListeners.add(listener);
         return () => { workspaceListeners.delete(listener); };
       },
-      switchVault,
+      switchVault: async (id: string) => {
+        await load(id);
+        diskListeners.forEach((listener) => listener([], []));
+      },
+      /** The vault a displayed search result opens in, when it is another of the caller's listed vaults (T9.18). */
+      resultVault: (result: object): string | null => {
+        const { vaultId } = result as { vaultId?: unknown };
+        const id = typeof vaultId === 'string' ? vaultId : null;
+        return id && id !== workspaceSnapshot?.vault.id && workspaceSnapshot?.vaults?.some((vault) => vault.id === id) ? id : null;
+      },
       /** The owner trashed this note, as far as this tab knows. */
       isTrashed: (id: string) => known.get(id)?.trashedAt != null,
       surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
@@ -743,12 +742,6 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       getAll: () => notes(),
       getMetadataByIds: async (ids: string[]) => (await notes()).filter((note) => ids.includes(note.id)),
       getById: async (id: string) => {
-        // A search result from another vault opens in that vault, as a switch to it would (T9.18).
-        const into = elsewhere.get(id);
-        if (into) {
-          elsewhere.clear();
-          if (into !== workspaceSnapshot?.vault.id) await switchVault(into).catch(() => undefined);
-        }
         const note = await byId(id);
         if (note && note.trashedAt == null) watchBacklinks(id);
         if (note?.trashedAt != null) {

@@ -1959,8 +1959,8 @@ export function App() {
             return;
           }
         }
-        // moss-multi seam: search-elsewhere (T9.18): a result from another vault switched the listing while it was
-        // fetched; the store re-reads the listing before the note opens, so the active note resolves to it.
+        // moss-multi seam: search-elsewhere (T9.18): a result from another vault switched the listing just before;
+        // the store re-reads the listing before the note opens, so the active note resolves to it.
         if (!store.get(noteEntityAtom(noteId))) await reconcileNotesFromDisk('search-elsewhere', noteId);
 
         setAppMode(targetView);
