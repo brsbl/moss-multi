@@ -6,6 +6,7 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import { SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
 import { grantDoc } from '../lib/grants.ts';
+import { MOSS_UNDO_STEPS, START_MARKDOWN, UNDO_SCENARIOS, undoSteps } from '../lib/undo-steps.ts';
 
 const PEER_TIMEOUT = 10_000;
 /** Past the undo capture window (1 s), so the next edit is its own step. */
@@ -347,5 +348,18 @@ for (const { what, select, deleted } of [
     await expect(ui.pane(ada, id)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: PEER_TIMEOUT });
     await actors.reloadAll();
     for (const actor of [ada, ben]) { await ui.waitLive(actor, id); expect(await docText(actor, id), 'Ben\'s new words survive a reload').toBe(redone); }
+  });
+}
+
+for (const scenario of UNDO_SCENARIOS) {
+  test(`j01 undo: steps as in Moss, ${scenario.name}; each Cmd+Z takes back what pristine Moss's does @p:col-3`, async ({ actors, stack }) => {
+    const ada = await actors.session(await actors.principal('ada'));
+    const result = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title: 'Undo steps', markdown: START_MARKDOWN } });
+    expect(result.status()).toBe(201);
+    const { doc: { id } } = await result.json() as { doc: { id: string } };
+    await ada.goto(`/d/${id}`);
+    await ui.waitLive(ada, id); await ada.observeEditor(id);
+    const steps = await undoSteps(ada.page, ui.body(ada, id), scenario);
+    expect(steps, `${scenario.name}: the same steps as pristine moss (e2e/parity/undo-steps.spec.ts)`).toEqual(MOSS_UNDO_STEPS[scenario.name]);
   });
 }

@@ -58,6 +58,8 @@ function main(out) {
   copyFileSync(join(REPO, 'e2e/fixtures/history.json'), join(TREE, 'packages/desktop/stories/history.json'));
   // The arrow-below-the-last-block probe (T9.2): a trailing callout and a trailing table; oracle-only.
   copyFileSync(join(HERE, 'TrailingBlock.stories.tsx'), join(TREE, 'packages/desktop/stories/TrailingBlock.stories.tsx'));
+  // The undo-step probe (T9.13): a note holding one paragraph; oracle-only.
+  copyFileSync(join(HERE, 'UndoNote.stories.tsx'), join(TREE, 'packages/desktop/stories/UndoNote.stories.tsx'));
   const outDir = resolve(out);
   // Ladle joins --outDir onto its cwd.
   const viteConfig = join(HERE, 'vite.oracle.mjs');
