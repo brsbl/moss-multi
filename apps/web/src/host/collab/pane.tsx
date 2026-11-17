@@ -15,7 +15,7 @@ import {
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
 import { useStore } from 'jotai';
-import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
+import { $createParagraphNode, $getRoot, $setSelection, SKIP_SCROLL_INTO_VIEW_TAG, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
@@ -47,9 +47,20 @@ function scrollBack(editor: LexicalEditor, top: number): void {
     while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
     scroller ??= document.scrollingElement as HTMLElement | null;
     if (!scroller) return;
-    if (scroller.scrollHeight - scroller.clientHeight >= top || Date.now() >= until) scroller.scrollTop = top;
-    else requestAnimationFrame(step);
+    if (scroller.scrollHeight - scroller.clientHeight < top && Date.now() < until) {
+      requestAnimationFrame(step);
+      return;
+    }
+    // The rebound note restores a caret, which would scroll it into view: the place wins for the next 2 s.
+    const target = scroller;
+    const pin = () => {
+      if (target.scrollTop !== top) target.scrollTop = top;
+    };
+    pin();
+    target.addEventListener('scroll', pin);
+    setTimeout(() => target.removeEventListener('scroll', pin), 2_000);
   };
+  editor.update(() => $setSelection(null), { tag: SKIP_SCROLL_INTO_VIEW_TAG });
   requestAnimationFrame(step);
 }
 
