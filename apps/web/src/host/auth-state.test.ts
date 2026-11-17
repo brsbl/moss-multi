@@ -217,3 +217,56 @@ describe('session answers and next paths', () => {
     for (const next of escapes) expect(safeNext(next), next).toBe('/');
   });
 });
+
+describe('an API answer that says the caller is not signed in (T9.17)', () => {
+  const settles = (promise: Promise<unknown>) =>
+    Promise.race([promise.then(() => 'settled', () => 'settled'), new Promise((done) => setTimeout(() => done('pending'), 50))]);
+  const api = (status: number) => vi.fn<typeof globalThis.fetch>(async () => new Response('{}', { status }));
+
+  it('asks the session once and, when it has ended, ends the tab in place and holds the call', async () => {
+    const { auth, deps, seen } = store([{ kind: 'signed-in', user: ADA }, { kind: 'signed-out' }]);
+    await auth.resolve();
+    const fetcher = auth.sessionAware(api(401));
+    const first = fetcher('/api/docs', { method: 'POST' });
+    const second = fetcher('/api/folders/f1', { method: 'PATCH' });
+    expect(await settles(first), 'the failed action never reports its own failure').toBe('pending');
+    expect(await settles(second)).toBe('pending');
+    expect(deps.lookup, 'one lookup for both').toHaveBeenCalledTimes(2);
+    expect(auth.get()).toEqual({ status: 'signed-out', ended: true });
+    expect(seen).toEqual(['signed-in', 'signed-out']);
+    expect(deps.leave, 'the tab stays where it is').not.toHaveBeenCalled();
+    expect(await settles(fetcher('/api/docs/d1/versions')), 'a later 401 in the ended tab is held too').toBe('pending');
+    expect(deps.lookup).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the session when the lookup still says signed in, or cannot answer (R10)', async () => {
+    for (const answer of [{ kind: 'signed-in', user: ADA }, { kind: 'unavailable' }, new Error('network')]) {
+      const { auth, deps } = store([{ kind: 'signed-in', user: ADA }, answer]);
+      await auth.resolve();
+      const response = await auth.sessionAware(api(401))('/api/docs', { method: 'POST' });
+      expect(response.status, 'the 401 reaches its caller').toBe(401);
+      expect(auth.get()).toEqual({ status: 'signed-in', user: ADA });
+      expect(deps.leave).not.toHaveBeenCalled();
+    }
+  });
+
+  it('never ends the session on a 503 or a network failure', async () => {
+    const { auth, deps } = store([{ kind: 'signed-in', user: ADA }, { kind: 'signed-out' }]);
+    await auth.resolve();
+    expect((await auth.sessionAware(api(503))('/api/docs', { method: 'POST' })).status).toBe(503);
+    const down = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    await expect(auth.sessionAware(down)('/api/docs')).rejects.toThrow('Failed to fetch');
+    expect(deps.lookup, 'no lookup: only a 401 is checked').toHaveBeenCalledTimes(1);
+    expect(auth.get()).toEqual({ status: 'signed-in', user: ADA });
+  });
+
+  it('leaves a signed-out link visitor’s 401 as it is', async () => {
+    const { auth, deps } = store([{ kind: 'signed-out' }]);
+    await auth.resolve();
+    expect((await auth.sessionAware(api(401))('/api/docs/d1/content')).status).toBe(401);
+    expect(deps.lookup).toHaveBeenCalledTimes(1);
+    expect(auth.get()).toEqual({ status: 'signed-out' });
+  });
+});

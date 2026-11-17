@@ -2,12 +2,13 @@
 // sign-out from Settings goes to the card and ends only that session (Ada's other browser stays signed in), the
 // keyboard follows a switch between sign-in and sign-up, a too-short password names the minimum, sign-in returns
 // to the doc `next` names (and never off the site), a wrong password says so, no OAuth button renders, the card
-// works at both Tier A widths, and a session lookup that fails or hangs degrades in place (R10).
+// works at both Tier A widths, a session lookup that fails or hangs degrades in place (R10), and a session that ends
+// under an open tab says so with a way to sign in, whichever action meets it first (T9.17).
 import { cookieHeader } from '../lib/doc-client.ts';
 import { signIn, type Principal } from '../lib/principals.ts';
 import type { Page, Request, Route } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
-import { APP_STATE_ATTR } from '../lib/contract.ts';
+import { APP_STATE_ATTR, CONNECTION_BANNER_ATTR, HISTORY_BUTTON_ATTR } from '../lib/contract.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const SHELL = '[data-moss-app-shell]';
@@ -412,4 +413,83 @@ test('a session lookup that never answers degrades in place, asks again and boot
   await expect(settings.getByText(adaPerson.email, { exact: true }), 'the stale "signed out" leaves ada signed in').toBeVisible();
   expect([...new Set(navigations.map((url) => new URL(url).pathname))], 'every commit stayed on the doc: never redirected').toEqual([path]);
   await waitForShell(ben);
+});
+
+/** Sign-out in another tab of the same browser: the session ends on the server and the shared cookie is cleared. */
+async function endSessionElsewhere(actor: Actor): Promise<void> {
+  const origin = new URL(actor.page.url()).origin;
+  const response = await actor.context.request.post(`${origin}/api/auth/sign-out`, {
+    headers: { origin, 'content-type': 'application/json' }, data: {}, timeout: 15_000,
+  });
+  expect(response.status(), 'declared setup: the session ends in another tab').toBe(200);
+}
+
+const ENDED_BANNER = `[${CONNECTION_BANNER_ATTR}="session-ended"]`;
+
+test('a session that ends under an open tab says so on "+ Note", a folder rename, Share and History, and signing in returns to the note @p:R10 @p:ppl-1', async ({ actors }) => {
+  test.setTimeout(240_000);
+  const person = await actors.principal('ada');
+  const ada = await actors.open(person);
+  actors.solo('one person whose own session ends under her open tab');
+  // Each action meets the ended session as a 401 from the API.
+  ada.expectHttp(401, /^\/api\//);
+  const origin = new URL(ada.page.url()).origin;
+  const post = async (path: string, data: object): Promise<unknown> => {
+    const made = await ada.context.request.post(`${origin}${path}`, { headers: { origin, 'content-type': 'application/json' }, data, timeout: 15_000 });
+    expect(made.status(), `declared setup: POST ${path}`).toBe(201);
+    return made.json();
+  };
+  const { vault } = (await (await ada.context.request.get(`${origin}/api/workspace`)).json()) as { vault: { id: string } };
+  const folder = ((await post('/api/folders', { parentId: vault.id, name: 'Trips' })) as { folder: { id: string } }).folder.id;
+  const docId = ((await post('/api/docs', { folderId: folder, title: 'Lisbon' })) as { doc: { id: string } }).doc.id;
+  const path = `/d/${docId}`;
+
+  const expectEnded = async (what: string) => {
+    const banner = ada.page.locator(ENDED_BANNER);
+    await expect(banner, `${what}: the session-ended banner shows`).toBeVisible({ timeout: 2_000 });
+    await expect(banner).toContainText('Your session has ended. Sign in again to continue.');
+    // The failed action's own message would come with the 401; give it a moment to show if it were going to.
+    await ada.page.waitForTimeout(500);
+    await expect(ada.page.getByText(/try again/i), `${what}: no "Try again" message`).toHaveCount(0);
+    expect(new URL(ada.page.url()).pathname, `${what}: the tab stays on the note`).toBe(path);
+  };
+  const signInAgain = async (what: string) => {
+    await ada.page.locator(ENDED_BANNER).getByRole('button', { name: 'Sign in', exact: true }).click();
+    await expect(ada.page, `${what}: "Sign in" goes to the card, returning here`).toHaveURL(atLogin(path), { timeout: BOOT_TIMEOUT });
+    await ui.waitForLoginCard(ada);
+    await ui.signInThroughCard(ada, person);
+    await expect(ada.page, `${what}: signing in returns to the same note`).toHaveURL(atPath(path), { timeout: BOOT_TIMEOUT });
+    await waitForShell(ada);
+    await ui.waitLive(ada, docId);
+  };
+
+  await ada.goto(path);
+  await waitForShell(ada);
+  await ui.waitLive(ada, docId);
+  await endSessionElsewhere(ada);
+  await ada.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }).click();
+  await expectEnded('"+ Note"');
+  await signInAgain('"+ Note"');
+
+  await endSessionElsewhere(ada);
+  const trips = ui.folderRow(ada, 'Trips');
+  if (/collapsed$/.test((await trips.getAttribute('aria-label')) ?? '')) await trips.click();
+  await trips.getByRole('button', { name: 'Click to rename folder' }).click();
+  const rename = trips.getByRole('textbox');
+  await expect(rename, 'the folder name becomes an input').toBeFocused();
+  await rename.fill('Trips 2025');
+  await rename.press('Enter');
+  await expectEnded('a folder rename');
+  await signInAgain('a folder rename');
+
+  await endSessionElsewhere(ada);
+  await ui.pane(ada, docId).getByRole('button', { name: 'Share', exact: true }).click();
+  await expectEnded('Share');
+  await expect(ada.page.getByRole('dialog', { name: 'Share' }), 'Share closes, so the banner can be used').toHaveCount(0);
+  await signInAgain('Share');
+
+  await endSessionElsewhere(ada);
+  await ui.pane(ada, docId).locator(`[${HISTORY_BUTTON_ATTR}]`).click();
+  await expectEnded('History');
+  await signInAgain('History');
 });
