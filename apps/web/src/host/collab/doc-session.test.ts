@@ -647,6 +647,8 @@ function cutPaste(batches: number, landed: number) {
 
 /** The server's copy arrives as the answer to the session's step 1. */
 function answer(socket: FakeSocket, server: Y.Doc): void {
+  // The provider sends a local update only on a socket whose own OPEN matches its state, as a browser's does.
+  Object.assign(socket, { OPEN: FakeSocket.OPEN });
   socket.dispatchEvent(new MessageEvent('message', { data: encodeSyncFrame(1, Y.encodeStateAsUpdate(server)).slice().buffer }));
 }
 
