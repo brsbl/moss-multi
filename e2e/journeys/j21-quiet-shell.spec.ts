@@ -130,6 +130,8 @@ test('j21 at rest the top bar holds only Moss\'s actions, and More actions holds
   await expect(rows, 'still one Suggesting row').toHaveCount(1);
   const [row, tools] = await Promise.all([rows.boundingBox(), toolbar.locator('button[aria-label]').first().boundingBox()]);
   expect(row!.y, 'the state is nearest the bottom, under the editing tools').toBeGreaterThan(tools!.y + tools!.height);
+  // It reads as the toolbar's last line, not a caption below it: within a few px of the toolbar's own surface.
+  expect(row!.y - (tools!.y + tools!.height), 'the row sits right under the toolbar\'s surface').toBeLessThanOrEqual(9);
   expect(await aboveBottom(docId, rows), 'and stays at the bottom edge').toBeLessThanOrEqual(32);
 
   await rows.getByRole('button', { name: 'Stop suggesting', exact: true }).click();
