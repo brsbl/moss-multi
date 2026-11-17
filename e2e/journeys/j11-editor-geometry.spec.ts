@@ -93,11 +93,24 @@ const textStyles = (actor: Actor, id: string) => ui.body(actor, id).evaluate(ele
 
 test('j11 editor geometry: a formula draft is moss\'s padded, rounded chip for the typist only, and nothing of it is shared @p:note-2', async ({ actors, stack }) => {
   const { ada, ben, id, wire } = await note(actors, stack.baseUrl, 'Formula draft', 'Intro.\n\nTotal cost\n\nLast line.', true);
+  // A draft inside a longer text run pads only into the room the text leaves.
   await ui.body(ada, id).locator('p').filter({ hasText: /^Total cost$/ }).click();
+  await ada.page.keyboard.press('End');
+  await ada.page.keyboard.type(' price=12', { delay: 40 });
+  await expect.poll(async () => (await draftGeometry(ada, id, 'Total cost price=12', 'price=12'))?.chip ?? null, { message: 'Ada sees the inline draft chip' }).not.toBeNull();
+  const inline = (await draftGeometry(ada, id, 'Total cost price=12', 'price=12'))!;
+  expect(inline.chip!.left, 'the chip does not cover the word before it').toBeGreaterThanOrEqual(inline.before!.right - 0.5);
+  expect(inline.chip!.right).toBeCloseTo(inline.text.right + 8, 0);
+
+  await ada.page.keyboard.press('Home');
+  await expect(ada.page.locator('[data-formula-draft-chip]'), 'leaving the draft clears its chip').toHaveCount(0);
+  await expect(ui.body(ada, id).locator('[data-lexical-text][style*="padding"]'), 'the padding goes with the chip').toHaveCount(0);
+
+  // A draft alone on its line: moss's chip, 8 px a side, the line plus 2 px above and below.
+  await ui.body(ada, id).locator('p').filter({ hasText: /^Last line\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
   await ada.page.keyboard.type('=2+3', { delay: 40 });
-
   await expect.poll(async () => (await draftGeometry(ada, id, '=2+3', '=2+3'))?.chip ?? null, { message: 'Ada sees the draft chip' }).not.toBeNull();
   const own = (await draftGeometry(ada, id, '=2+3', '=2+3'))!;
   const chip = own.chip!;
@@ -113,20 +126,6 @@ test('j11 editor geometry: a formula draft is moss\'s padded, rounded chip for t
   await expect(ben!.page.locator('[data-formula-draft-chip]'), 'Ben is not drafting, so he sees no chip').toHaveCount(0);
   const theirs = (await draftGeometry(ben!, id, '=2+3', '=2+3'))!;
   expect(theirs.text.left - theirs.paragraph.left, "Ben's line is not padded").toBeCloseTo(0, 0);
-
-  // A draft inside a longer text run pads only into the room the text leaves. The keyboard moves the caret: a click
-  // would land on the committed formula's line.
-  await ada.page.keyboard.press('ArrowUp');
-  await ada.page.keyboard.press('End');
-  await ada.page.keyboard.type(' price=12', { delay: 40 });
-  await expect.poll(async () => (await draftGeometry(ada, id, 'Total cost price=12', 'price=12'))?.chip?.left ?? null).not.toBeNull();
-  const inline = (await draftGeometry(ada, id, 'Total cost price=12', 'price=12'))!;
-  expect(inline.chip!.left, 'the chip does not cover the word before it').toBeGreaterThanOrEqual(inline.before!.right - 0.5);
-  expect(inline.chip!.right).toBeCloseTo(inline.text.right + 8, 0);
-
-  await ada.page.keyboard.press('ArrowUp');
-  await expect(ada.page.locator('[data-formula-draft-chip]'), 'leaving the draft clears its chip').toHaveCount(0);
-  await expect(ui.body(ada, id).locator('[data-lexical-text][style*="padding"]'), 'the padding goes with the chip').toHaveCount(0);
 
   expect(await textStyles(ada, id), 'no draft style is written to the note').toEqual([]);
   await ui.waitAcked(ada, id);
