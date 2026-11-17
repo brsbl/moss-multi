@@ -1,7 +1,11 @@
 // Seam (a) of the vendored plugin (A§10.2, A§10.8): the body's one Cmd+Z stack over the note's UndoManager, which
 // tracks only this client's binding, and one UndoManager per held payload doc, which tracks this client's field
-// edits (A§10.10). Cmd+Z never undoes a peer's or the server's writes, and one typing burst is one step.
-import { UNDO_COMMAND, REDO_COMMAND, type LexicalEditor } from 'lexical';
+// edits (A§10.10). Cmd+Z never undoes a peer's or the server's writes. A step ends where Moss's own history (Lexical's
+// HistoryPlugin) would start a new entry (T9.13), and otherwise after a pause of the capture window.
+import { createEmptyHistoryState, registerHistory } from '@lexical/history';
+import {
+  COLLABORATION_TAG, UNDO_COMMAND, REDO_COMMAND, type EditorState, type LexicalEditor, type NodeKey,
+} from 'lexical';
 import type { Binding } from '@lexical/yjs';
 import {
   ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, isDeleted, type AbstractType, type Doc, type Transaction,
@@ -11,6 +15,8 @@ import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payloa
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
 
 export const UNDO_CAPTURE_TIMEOUT_MS = 1_000;
+/** The merge window of Moss's HistoryPlugin: @lexical/react's useHistory default. */
+export const MOSS_HISTORY_DELAY_MS = 1_000;
 /** Copy-list entries read, written or compared; tests hold a large undo to O(K log K). */
 export const copyBookkeeping = { work: 0 };
 type StackItem = UndoManager['undoStack'][number];
@@ -38,13 +44,70 @@ export function clearUndoOf(doc: Doc): void {
 export function createBindingUndoManager(binding: Binding): UndoManager {
   // A setter and an attribute written in one Lexical update undo together.
   const stack = new BodyUndo(createRootUndoManager(binding), binding.editor ? lexicalAction(binding.editor) : undefined);
+  if (binding.editor) stepRules.set(binding, { stack, rule: lexicalStepRule(binding.editor) });
   const unregister = registerUndoClear(binding.doc, () => stack.clear());
   const destroy = stack.destroy.bind(stack);
-  stack.destroy = () => { unregister(); destroy(); };
+  stack.destroy = () => {
+    unregister();
+    if (stepRules.get(binding)?.stack === stack) stepRules.delete(binding);
+    destroy();
+  };
   const payloads = payloadDocsFor(binding.doc);
   for (const doc of payloads.docs.values()) stack.trackPayload(doc, REGISTER_LOCAL_ORIGIN, UNDO_CAPTURE_TIMEOUT_MS);
   payloads.onHold((_id, doc) => { stack.trackPayload(doc, REGISTER_LOCAL_ORIGIN, UNDO_CAPTURE_TIMEOUT_MS); });
   return stack as unknown as UndoManager;
+}
+
+/** A committed Lexical update, as an update listener receives it. */
+export interface LexicalUpdate {
+  prevEditorState: EditorState;
+  editorState: EditorState;
+  dirtyLeaves: Set<NodeKey>;
+  dirtyElements: Map<NodeKey, boolean>;
+  tags: Set<string>;
+}
+
+const noop = () => {};
+const stepRules = new WeakMap<Binding, { stack: BodyUndo; rule: (update: LexicalUpdate) => 'push' | 'merge' | 'none' }>();
+
+/**
+ * Lexical's own history rule, imported rather than copied: registerHistory runs on a stand-in editor that hands back
+ * its update listener and ignores its commands, over a history of its own. Each update it pushes for is where Moss's
+ * Cmd+Z stack starts a new entry; one it merges joins the entry before it. Its stacks are dropped as they grow.
+ */
+function lexicalStepRule(editor: LexicalEditor): (update: LexicalUpdate) => 'push' | 'merge' | 'none' {
+  const history = createEmptyHistoryState();
+  let listener: ((update: LexicalUpdate) => void) | null = null;
+  const standIn = {
+    registerCommand: () => noop,
+    registerUpdateListener: (next: (update: LexicalUpdate) => void) => { listener = next; return noop; },
+    dispatchCommand: () => false,
+    isComposing: () => editor.isComposing(),
+  } as unknown as LexicalEditor;
+  registerHistory(standIn, history, MOSS_HISTORY_DELAY_MS);
+  return (update) => {
+    const before = history.current;
+    listener?.(update);
+    const pushed = history.undoStack.length > 0 || before === null;
+    history.undoStack.length = 0;
+    history.redoStack.length = 0;
+    if (history.current === before) return 'none';
+    return pushed ? 'push' : 'merge';
+  };
+}
+
+/**
+ * Called by the binding before it writes a local update to the note (seam a): an update Moss's history would push
+ * starts a new undo step. A peer's update reaches the editor tagged as collaboration and leaves the rule as it was, so
+ * typing around a peer's keystrokes stays one step, as it would alone.
+ */
+export function markUndoStep(binding: Binding, update: LexicalUpdate): void {
+  if (update.tags.has(COLLABORATION_TAG)) return;
+  const entry = stepRules.get(binding);
+  if (!entry) return;
+  const kind = entry.rule(update);
+  // A selection change merges in Lexical and writes nothing, so it holds no step open.
+  if (kind === 'push' || (kind === 'merge' && (update.dirtyLeaves.size > 0 || update.dirtyElements.size > 0))) entry.stack.boundary(kind);
 }
 
 /**

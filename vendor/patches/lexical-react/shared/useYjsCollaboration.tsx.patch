@@ -1,7 +1,7 @@
 diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 --- a/shared/useYjsCollaboration.tsx
 +++ b/shared/useYjsCollaboration.tsx
-@@ -60,6 +60,12 @@ import {
+@@ -61,6 +61,12 @@ import {
    useState,
  } from 'react';
  import {createPortal} from 'react-dom';
@@ -10,11 +10,11 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 +import {bindLocalLayout} from '@moss-multi/host/collab/layout-local';
 +import {bindCommentPaint} from '@moss-multi/host/comments/paint';
 +import {bindRegisters} from '@moss-multi/host/collab/registers';
-+import {createBindingUndoManager} from '@moss-multi/host/collab/undo';
++import {createBindingUndoManager, markUndoStep} from '@moss-multi/host/collab/undo';
  import {
    type Doc,
    type Snapshot,
-@@ -114,10 +120,12 @@ export function useYjsCollaboration(
+@@ -115,10 +121,12 @@ export function useYjsCollaboration(
  
    useEffect(() => {
      const {root} = binding;
@@ -28,7 +28,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
          const isFromUndoManger = origin instanceof UndoManager;
          syncYjsChangesToLexical(
            binding,
-@@ -141,21 +149,31 @@ export function useYjsCollaboration(
+@@ -142,21 +150,33 @@ export function useYjsCollaboration(
          tags,
        }) => {
          if (!tags.has(SKIP_COLLAB_TAG)) {
@@ -41,6 +41,8 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 -            dirtyLeaves,
 -            normalizedNodes,
 -            tags,
++          // moss-multi seam: plugin-a (A§10.2 a): an update Moss's history would push starts a new undo step
++          markUndoStep(binding, {prevEditorState, editorState, dirtyLeaves, dirtyElements, tags});
 +          // moss-multi seam: plugin-b (A§10.2 b): derived updates reach Yjs under DERIVED_ORIGIN
 +          syncUnderOrigin(binding, tags, () =>
 +            syncLexicalUpdateToYjs(
@@ -69,7 +71,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
        root.getSharedType().unobserveDeep(onYjsTreeChanges);
        removeListener();
      };
-@@ -193,7 +211,8 @@ export function useYjsCollaboration(
+@@ -194,7 +214,8 @@ export function useYjsCollaboration(
      onBootstrap,
    );
  
@@ -79,7 +81,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
  
    return useYjsCursors(binding, cursorsContainerRef);
  }
-@@ -478,18 +497,19 @@ function useAwareness(
+@@ -479,18 +500,19 @@ function useAwareness(
    binding: Binding | BindingV2,
    provider: Provider,
    selectionHighlight: boolean,
@@ -101,7 +103,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
  }
  
  export function useYjsCursors(
-@@ -543,10 +563,8 @@ export function useYjsHistory(
+@@ -544,10 +566,8 @@ export function useYjsHistory(
    editor: LexicalEditor,
    binding: Binding,
  ): () => void {
@@ -109,7 +111,7 @@ diff --git a/shared/useYjsCollaboration.tsx b/shared/useYjsCollaboration.tsx
 -    () => createUndoManager(binding, binding.root.getSharedType()),
 -    [binding],
 -  );
-+  // moss-multi seam: plugin-a (A§10.2 a): only this binding's writes are undoable, one step per 1000 ms burst
++  // moss-multi seam: plugin-a (A§10.2 a): only this binding's writes are undoable, in the steps Moss's history makes
 +  const undoManager = useMemo(() => createBindingUndoManager(binding), [binding]);
  
    return useYjsUndoManager(editor, undoManager);

@@ -68,7 +68,7 @@ export const MOSS_UNDO_STEPS: Record<string, UndoSteps> = {
     undone: [[s, 'paragraph|abcpasted words'], [s, 'paragraph|abc'], [s, 'paragraph|'], [s], [s]],
   },
   'Cmd+B': {
-    typed: [s, 'paragraph|Bold **me** after'],
+    typed: [s, 'paragraph|Bold **me** **after**'],
     undone: [[s, 'paragraph|Bold **me**'], [s, 'paragraph|Bold me'], [s, 'paragraph|'], [s], [s]],
   },
 };
