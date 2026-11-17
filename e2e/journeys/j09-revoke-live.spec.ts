@@ -249,6 +249,64 @@ test('j09 raise offline: a raise Ben misses while his workspace channel is down 
   await expect.poll(() => ui.fieldText(ada, docId, 'body'), { message: 'his typing reaches Ada', timeout: LIVE_TIMEOUT }).toBe(`${TEXT}${typed}`);
 });
 
+test('j09 raise then lower: a raise whose answers reach Ben only after Ada has lowered him again leaves his note read-only, with no pill and no typing @p:ppl-2', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'viewer');
+  const ben = await openRecorded(actors, benPrincipal, `/d/${docId}`);
+  await ui.waitOpen(ben, docId, 'readonly');
+  await actors.requireDistinct(2);
+  // The lowering's kick rebinds read-only once.
+  ben.expectReconnects(1, docId);
+
+  // Reads Ben starts while he is an editor get the server's answer at once, delivered only once the lowering reached him.
+  let holding = true;
+  let heldAccess = 0;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await ben.context.route((url) => ACCESS_ASK.test(url.pathname) || url.pathname === '/api/workspace', async (route) => {
+    if (!holding || route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    if (ACCESS_ASK.test(new URL(route.request().url()).pathname)) heldAccess += 1;
+    await released;
+    await route.fulfill({ response });
+  });
+  // From here on: whether his body is ever live, or the pill ever says he can edit.
+  await ben.page.evaluate(({ pane, bodyAttr, feedbackAttr, text }) => {
+    const seen = { live: false, pill: false };
+    (window as unknown as { __seen: typeof seen }).__seen = seen;
+    setInterval(() => {
+      if (document.querySelector(`${pane} [${bodyAttr}="live"]`)) seen.live = true;
+      if ([...document.querySelectorAll(`[${feedbackAttr}]`)].some((el) => el.textContent?.includes(text))) seen.pill = true;
+    }, 10);
+  }, { pane: paneSelector(docId), bodyAttr: BODY_BINDING_ATTR, feedbackAttr: ACTION_FEEDBACK_ATTR, text: CAN_EDIT_NOW });
+
+  const origin = new URL(ada.page.url()).origin;
+  const setBen = (role: string) => ada.context.request.patch(`${origin}/api/docs/${docId}/members`,
+    { headers: { origin }, data: { principalId: benPrincipal.id!, role } });
+  expect((await setBen('editor')).status(), 'the raise is saved').toBe(200);
+  await expect.poll(() => heldAccess, { message: 'Ben asks for his raised role', timeout: LIVE_TIMEOUT }).toBeGreaterThan(0);
+  holding = false;
+  const reasked = ben.page.waitForResponse((response) => ACCESS_ASK.test(new URL(response.url()).pathname), { timeout: LIVE_TIMEOUT });
+  expect((await setBen('viewer')).status(), 'the lowering is saved').toBe(200);
+  await reasked;
+  await ben.page.waitForTimeout(500);
+  release();
+
+  await ben.page.waitForTimeout(3_000);
+  const seen = await ben.page.evaluate(() => (window as unknown as { __seen: { live: boolean; pill: boolean } }).__seen);
+  expect(seen.pill, 'the pill never says he can edit').toBe(false);
+  expect(seen.live, 'his note never takes typing').toBe(false);
+  await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
+  await ui.body(ben, docId).click({ force: true });
+  await ben.page.keyboard.type('blocked');
+  expect(await ui.fieldText(ben, docId, 'body'), 'a keystroke changes nothing').toBe(TEXT);
+  await ben.page.waitForTimeout(1_000);
+  expect(await ui.fieldText(ada, docId, 'body'), 'and nothing reaches Ada').toBe(TEXT);
+});
+
 test('j09 removal: removing a member ends the note for them in place (revoked) @p:ppl-2 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
