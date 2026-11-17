@@ -2,7 +2,7 @@ import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type Termina
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
 import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
-import { sessionEnded, useAuthState } from '../auth.ts';
+import { useSessionEnded } from '../session-fetch.ts';
 import { leaveTo } from '../navigation.ts';
 import { reloadUnlessUnacked } from '../reload-guard.ts';
 import { useDocConnection } from './connection.ts';
@@ -47,7 +47,7 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
 export function ConnectionNotice({ docId }: { docId: string | null }) {
   const view = useDocConnection(docId);
   // A session that ended under this tab says so here too when no note is open, or before its note's socket ends.
-  const ended = sessionEnded(useAuthState());
+  const ended = useSessionEnded();
   const terminal = useTerminal(docId) ?? (ended ? 'session-ended' : null);
   const kind = terminal ?? (view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : null);
   const message = terminal ? terminalCopy[terminal] : (kind === 'retrying'

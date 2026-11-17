@@ -10,7 +10,7 @@ import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dial
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
-import { sessionFetch } from '../auth.ts';
+import { sessionFetch } from '../session-fetch.ts';
 import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
 import { openShare } from './ShareDialog.tsx';
 

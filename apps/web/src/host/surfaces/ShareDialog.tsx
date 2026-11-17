@@ -17,7 +17,7 @@ import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } fro
 import { Check, UserPlus, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
-import { sessionEnded, sessionFetch, useAuthState } from '../auth.ts';
+import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
 import { useTerminal } from '../collab/terminal.ts';
 import { heldRead, isLeaveCancelled, leaveAwareSend } from '../leave.ts';
 
@@ -609,7 +609,7 @@ export function ShareDialogHost(): ReactNode {
   const target = useSyncExternalStore(subscribe, () => current, () => null);
   const [shown, setShown] = useState<ShareTarget | null>(null);
   // A session that ended under the dialog closes it: the page's banner says how to sign in again.
-  const ended = sessionEnded(useAuthState());
+  const ended = useSessionEnded();
   useEffect(() => {
     if (target) setShown(target);
   }, [target]);

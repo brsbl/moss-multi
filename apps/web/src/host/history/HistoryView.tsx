@@ -20,7 +20,8 @@ import { useAtomValue } from 'jotai';
 import { ArrowLeft, Clock, History, RotateCcw, Tag } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
-import { sessionEnded, sessionFetch, useAuthState } from '../auth.ts';
+import { useAuthState } from '../auth.ts';
+import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
 import { heldDocOf, waitDocsAcked } from '../collab/doc-session.ts';
 import { showActionFeedback } from '../collab/feedback.ts';
 import { beginOwnRestore, dismissRestoreNotice, useRestoreNotice } from '../collab/restore-notice.ts';
@@ -354,7 +355,7 @@ export function HistoryView({ docId }: { docId: string }): ReactNode {
   // The note as this tab held it when Restore was opened: the restore's base, so what others type after it is kept.
   const restoreBase = useRef<{ base: Omit<RestoreBase, 'age'>; at: number } | null>(null);
   // A session that ended under History closes it: the note's banner says how to sign in again.
-  const ended = sessionEnded(useAuthState());
+  const ended = useSessionEnded();
   useEffect(() => {
     if (ended) setHistoryOpen(docId, false);
   }, [ended, docId]);
