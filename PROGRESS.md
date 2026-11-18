@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 58% done** (176 of 304 planned tasks verified)
+**Overall: 58% done** (177 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 19 / 20 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 30 / 30 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -202,6 +202,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T4.V verified: comments now run on m3's note size limits, lean layout and in-place export, so a comment, reply, resolve or sidecar import counts against the note's structure guard and a refused comment write names the limit, with the full lane green on the m4 head.
 - 2026-11-17 — T5.V verified: suggestions now run on m4's note size limits, lean layout and in-place export, so a suggestion record, an accept and a Suggest-mode paste, undo or redo are held to the note's text and structure limits and a refusal names the limit, with the full lane green on the m5 head.
 - 2026-11-18 — T4.W verified: comments now run on m3's paste rollback, so a paste's held deletes go out on the comments path too, and a comment on words a paste moved follows them onto the pasted text instead of detaching.
+- 2026-11-18 — T5.W verified: suggestions now run on m4's paste rollback, so a large Edit-mode paste cut short by a limit is rolled back in whole blocks, while a Suggest-mode paste keeps writing its own suggestion and is never rolled back, with the full lane green on the m5 head.
 
 ## T1.1s identity audit
 
@@ -782,3 +783,5 @@ Local browser verification remains assigned to the independent checker under the
 - T4.W (m4 with m3's paste rollback) checker P2: the moves ownership check looks only at the destination's endpoints and any of the socket's writes — #ownMoves in packages/sync/src/doc-do.ts keeps a move when its first and last items fall in clock ranges that socket wrote, without checking the interior or that the writes came from the paste, so a malformed client could land a comment on an occurrence whose middle is another writer's text.
 - T4.W (m4 with m3's paste rollback) checker P2: reconnect replay, step 2 and stored whole-paste recovery send a paste's held deletes without the moves hint (doc-session.ts sends it only at release), and the server's per-socket written record resets on reconnect, so if the release is lost the comment shows as detached (text survives).
 - T4.W (m4 with m3's paste rollback) checker P2, owned by m3: the memory job 'structure cap: the largest table' is unstable near its budget — its save step measured 87 MB against 86.4 MB on two attempts and 85 MB on the third, matching 85 MB on the m4 and m3 bases; make the job steadier.
+- T5.W (m5 with m4's paste rollback) checker P2, pre-existing: the paste rollback notice ("The paste didn't fit, so nothing was pasted.") uses the plain full-width notice band in apps/web/src/host/surfaces/RefusalAnnouncer.tsx, not Moss's error notice style (retry-toast--save-failed: centered rounded card, red text on pale red, border, shadow, warning icon).
+- T5.W (m5 with m4's paste rollback) checker P2: no direct test for a role change while a large paste is landing (editor demoted to suggester, or suggester promoted to editor); the paths (#dropRollbacks on demotion, trackPaste resolving only the session body, fork pastes skipping batching) were checked by reading only.
