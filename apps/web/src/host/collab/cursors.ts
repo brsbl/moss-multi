@@ -50,25 +50,45 @@ function dress(name: HTMLElement, color: string, text: string): void {
   name.dataset.presenceColor = color;
 }
 
-/** The nearest ancestor that clips horizontally: the names' gutters end at its edges. */
-function clipOf(element: HTMLElement): DOMRect {
-  for (let at = element.parentElement; at; at = at.parentElement) {
-    if (getComputedStyle(at).overflowX !== 'visible') return at.getBoundingClientRect();
+/** The nearest ancestor that clips horizontally (the names' gutters end at its edges), found once per editor root. */
+const clips = new WeakMap<HTMLElement, HTMLElement>();
+function clipOf(root: HTMLElement): HTMLElement {
+  let clip = clips.get(root);
+  if (clip?.isConnected && clip.contains(root)) return clip;
+  clip = document.documentElement;
+  for (let at = root.parentElement; at; at = at.parentElement) {
+    if (getComputedStyle(at).overflowX !== 'visible') { clip = at; break; }
   }
-  return document.documentElement.getBoundingClientRect();
+  clips.set(root, clip);
+  return clip;
 }
 
-/** The text column of the caret's line: the top-level block the caret's middle falls in, else the whole body. */
+/**
+ * The text column of the caret's line: the top-level block the caret's middle falls in, else the whole body. Blocks
+ * stack top to bottom, so it is found in a few reads however long the note is.
+ */
 function columnAt(root: HTMLElement, y: number): { left: number; right: number } {
-  for (const block of root.children) {
-    const box = block.getBoundingClientRect();
-    if (box.height > 0 && box.top <= y && y <= box.bottom) return { left: box.left, right: box.right };
+  const blocks = root.children;
+  for (let low = 0, high = blocks.length - 1; low <= high;) {
+    const middle = (low + high) >> 1;
+    const box = blocks[middle]!.getBoundingClientRect();
+    if (y < box.top) high = middle - 1;
+    else if (y > box.bottom) low = middle + 1;
+    else if (box.height > 0) return { left: box.left, right: box.right };
+    else break;
   }
   const box = root.getBoundingClientRect();
   return { left: box.left, right: box.right };
 }
 
+/** Sets one inline style only when it changes, so a steady repaint dirties nothing. */
+function setStyle(element: HTMLElement, property: 'display' | 'visibility' | 'left' | 'top', value: string): void {
+  if (element.style[property] !== value) element.style[property] = value;
+}
+
 interface Shown { id: number; caret: HTMLElement; name: HTMLElement; typing: boolean }
+/** Each name's size, measured when its text changes (a name's size does not depend on where it sits). */
+let sizes = new WeakMap<HTMLElement, { text: string; width: number; height: number }>();
 
 /** The official geometry, coalesced with identity and typing-label decoration. */
 export function cursorController(editor: LexicalEditor) {
@@ -77,32 +97,40 @@ export function cursorController(editor: LexicalEditor) {
   let docId: string | null = null;
   let queued = false;
   let stopped = false;
-  /** Puts each shown name in a gutter beside its line; a typing name with no room is left to People here. */
+  /**
+   * Puts each shown name in a gutter beside its line; a typing name with no room is left to People here. All layout
+   * reads come first and every write after them, so a repaint lays the page out at most once more than the cursor
+   * pass itself does: in a long note, each extra layout held the tab during a paste (run 44262371127).
+   */
   const placeNames = (shown: Shown[]) => {
     const root = editor.getRootElement();
     if (!shown.length || !root) { if (docId) setUnplacedTyping(docId, []); return; }
-    const requests: LabelRequest[] = [];
-    for (const { id, caret, name } of shown) {
-      name.style.display = '';
-      name.style.visibility = 'hidden';
-      name.style.left = '0px';
-      name.style.top = '0px';
-      const caretBox = caret.getBoundingClientRect();
-      const nameBox = name.getBoundingClientRect();
-      requests.push({
-        id, caretX: caretBox.left, caretTop: caretBox.top, caretHeight: caretBox.height, width: nameBox.width, height: nameBox.height,
-        column: columnAt(root, caretBox.top + caretBox.height / 2),
-      });
+    const unmeasured = shown.filter(({ name }) => sizes.get(name)?.text !== name.dataset.labelText);
+    for (const { name } of unmeasured) { setStyle(name, 'visibility', 'hidden'); setStyle(name, 'display', ''); }
+    for (const { name } of unmeasured) {
+      const box = name.getBoundingClientRect();
+      sizes.set(name, { text: name.dataset.labelText ?? '', width: box.width, height: box.height });
     }
-    const clip = clipOf(root);
-    const { placed, unplaced } = placeLabels(requests, { left: clip.left, right: clip.right });
-    for (const { id, caret, name } of shown) {
-      const at = placed.get(id);
-      if (!at) { name.style.display = 'none'; continue; }
+    const carets = new Map<number, DOMRect>();
+    const requests: LabelRequest[] = shown.map(({ id, caret, name }) => {
       const caretBox = caret.getBoundingClientRect();
-      name.style.left = `${at.x - caretBox.left}px`;
-      name.style.top = `${at.y - caretBox.top}px`;
-      name.style.visibility = '';
+      carets.set(id, caretBox);
+      const { width, height } = sizes.get(name)!;
+      return {
+        id, caretX: caretBox.left, caretTop: caretBox.top, caretHeight: caretBox.height, width, height,
+        column: columnAt(root, caretBox.top + caretBox.height / 2),
+      };
+    });
+    const clip = clipOf(root).getBoundingClientRect();
+    const { placed, unplaced } = placeLabels(requests, { left: clip.left, right: clip.right });
+    for (const { id, name } of shown) {
+      const at = placed.get(id);
+      if (!at) { setStyle(name, 'display', 'none'); continue; }
+      const caretBox = carets.get(id)!;
+      setStyle(name, 'left', `${at.x - caretBox.left}px`);
+      setStyle(name, 'top', `${at.y - caretBox.top}px`);
+      setStyle(name, 'display', '');
+      setStyle(name, 'visibility', '');
     }
     const typing = new Set(shown.filter((entry) => entry.typing).map((entry) => entry.id));
     if (docId) setUnplacedTyping(docId, unplaced.filter((id) => typing.has(id)).sort((a, b) => a - b));
@@ -124,12 +152,13 @@ export function cursorController(editor: LexicalEditor) {
       selection.caret.dataset.presenceColor = user.color;
       selection.caret.style.backgroundColor = user.color;
       // The person inspected in the roster has a heavier caret, in place: nothing scrolls and the local caret stays.
-      selection.caret.style.width = watched === id ? '2px' : '1px';
+      const width = watched === id ? '2px' : '1px';
+      if (selection.caret.style.width !== width) selection.caret.style.width = width;
       const label = peers.find((peer) => peer.clientId === id)?.label ?? user.name;
       dress(selection.name, user.color, label + (user.isAgent ? ' · Bot' : ''));
       const typing = typeof state?.typingAt === 'number' && Date.now() - state.typingAt < TYPING_LABEL_MS;
       if (typing || watched === id) shown.push({ id, caret: selection.caret, name: selection.name, typing });
-      else selection.name.style.display = 'none';
+      else setStyle(selection.name, 'display', 'none');
       for (const span of selection.selections) {
         span.dataset.remoteSelection = String(id);
         span.dataset.presenceColor = user.color;
@@ -171,8 +200,9 @@ export function cursorController(editor: LexicalEditor) {
     });
     const stopGeometry = setBatchGeometry(editor, flush);
     const timer = setInterval(queue, 250);
-    window.addEventListener('resize', queue);
-    return () => { if (docId) setUnplacedTyping(docId, []); stopped = true; stopGeometry(); clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', queue); };
+    const resized = () => { sizes = new WeakMap(); queue(); };
+    window.addEventListener('resize', resized);
+    return () => { if (docId) setUnplacedTyping(docId, []); stopped = true; stopGeometry(); clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', resized); };
   };
   return { sync, start };
 }
