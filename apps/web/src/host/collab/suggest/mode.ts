@@ -38,6 +38,12 @@ export function modeFor(docId: string, role: Role | null): EditMode {
   return choice === 'edit' ? 'edit' : 'review';
 }
 
+/** The mode Review paused for `role`, or null for a reader. */
+export const pausedMode = (_docId: string, _role: Role | null): 'edit' | 'suggest' | null => null;
+
+/** Where Done takes `role`. */
+export const reviewReturn = (_docId: string, role: Role | null): EditMode => (lockedToSuggest(role) ? 'suggest' : 'edit');
+
 /** Review is entered only while the note has an open suggestion (T9.1). */
 export function requestMode(docId: string, mode: EditMode): void {
   if (chosen.get(docId) === mode) return;

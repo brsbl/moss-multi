@@ -833,8 +833,8 @@ test('j08 access band: a viewer and a commenter see their access, refused typing
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const readers = [
-    ['ben', 'viewer', "View only. You can't edit this note.", "You can view this note, but you can't edit it."],
-    ['cy', 'commenter', "Comment only. You can't edit this note.", "You can comment on this note, but you can't edit it."],
+    ['ben', 'viewer', 'View only', "You can view this note, but you can't edit it."],
+    ['cy', 'commenter', 'Comment only', "You can comment on this note, but you can't edit it."],
   ] as const;
   for (const [label, role, band, refused] of readers) {
     const principal = await actors.principal(label);
@@ -889,7 +889,7 @@ test('j08 raise: Cy at view is raised to comment, then to suggest, and the open 
   cy.expectReconnects(1, docId);
   const band = ui.pane(cy, docId).locator(`[${ROLE_BAND_ATTR}]`);
   const pill = cy.page.locator(`[${ACTION_FEEDBACK_ATTR}]`);
-  await expect(band).toHaveText("View only. You can't edit this note.");
+  await expect(band).toHaveText('View only');
   const raise = async (role: string) => {
     const response = await ada.context.request.patch(`/api/docs/${docId}/members`,
       { headers: { origin: stack.baseUrl }, data: { principalId: cyPrincipal.id!, role } });
@@ -898,7 +898,7 @@ test('j08 raise: Cy at view is raised to comment, then to suggest, and the open 
 
   await raise('commenter');
   await expect(pill, 'the pill says what changed').toHaveText('You can now comment on this note.', { timeout: 2_000 });
-  await expect(band, 'the band follows the role').toHaveText("Comment only. You can't edit this note.");
+  await expect(band, 'the band follows the role').toHaveText('Comment only');
   await expect(ui.pane(cy, docId)).toHaveAttribute(ROLE_ATTR, 'commenter');
   await expect(ui.body(cy, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
   await actors.checkpoint('raised-to-comment');
