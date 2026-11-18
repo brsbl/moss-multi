@@ -7,7 +7,7 @@
 import type { Route } from '@playwright/test';
 import type { Actor, Viewport } from '../lib/actors.ts';
 import { APP_STATE_ATTR, NAMES, SIDEBAR_ROW_ATTR } from '../lib/contract.ts';
-import { grant } from '../lib/grants.ts';
+import { grant, grantDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const DESKTOP: Viewport = { width: 1440, height: 1000 };
@@ -127,6 +127,19 @@ test('j13-vault-nav: the tab, the note\'s location and "+ Note" name the vault; 
   await expect.poll(() => visitor.page.title(), { message: 'a visitor\'s tab names the note only' }).toBe('Lentil soup — Moss');
 });
 
+test('j13-vault-nav: a note shared with you is never labelled with the vault on screen @p:note-4 @p:ppl-2', async ({ actors }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const ben = await actors.open(await actors.principal('ben'), { viewport: DESKTOP });
+  const docId = await makeNote(ben, (await listing(ben)).vault.id, 'Ben plans', 'Picnic.');
+  await grantDoc(ben, docId, adaPrincipal, 'editor');
+  const ada = await actors.open(adaPrincipal, { viewport: DESKTOP });
+  await actors.requireDistinct(2);
+  await expect(noteRow(ada, docId), 'the shared note surfaces in her vault').toBeVisible({ timeout: BIND_TIMEOUT });
+  await ui.openNote(ada, docId);
+  await expect.poll(() => ada.page.title(), { message: 'the tab names the note only' }).toBe('Ben plans — Moss');
+  await expect(ui.pane(ada, docId).getByRole('navigation', { name: 'Note location', exact: true }), 'the location names no vault').toBeVisible();
+});
+
 test('j13-vault-nav: search says Searching… until the index answers, says when it could not, and a result from another vault names it @p:note-7', async ({ actors }) => {
   actors.solo('one owner searches across her own vaults');
   const ada = await actors.open(await actors.principal('ada'), { viewport: DESKTOP });
@@ -174,6 +187,13 @@ test('j13-vault-nav: search says Searching… until the index answers, says when
   await search(`Leek ${run}`);
   await expect(noteRow(ada, leek), 'the title match shows').toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(page.getByText('Couldn’t search right now. Try again.', { exact: true }), 'and the failure is said under it').toBeVisible({ timeout: BIND_TIMEOUT });
+  await page.unroute(/\/api\/search\?/);
+  // A title match shown while the index has not answered still says the search is running.
+  await page.route(/\/api\/search\?/, (route) => { held.push(route); });
+  await search(`Leek ${run}`.toLowerCase());
+  await expect(noteRow(ada, leek), 'the title match shows').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(searching, 'and Searching… is said under it').toBeVisible({ timeout: BIND_TIMEOUT });
+  for (const route of held.splice(0)) await route.continue();
   await page.unroute(/\/api\/search\?/);
 
   // From Pantry, the Home note's result names Home.
