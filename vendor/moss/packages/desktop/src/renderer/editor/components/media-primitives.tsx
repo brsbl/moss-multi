@@ -10,10 +10,9 @@ import {
 } from 'lexical';
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../plugins/CommentPlugin';
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: capabilities (T2.6): a block's writing controls follow the editor's editability, live.
 import { useBlockCanEdit } from '@moss-multi/host/capabilities';
+import { useBlockCanComment } from '@moss-multi/host/comments/adapter'; // moss-multi seam: comments (T4.B3)
 export {
   GapCursor,
   BlockNodeShell,
@@ -396,6 +395,7 @@ export function MediaNodeHeader({
   const editorEditable = useIsEditorEditable();
   editable = editable && editorEditable;
   const canEdit = useBlockCanEdit() && editable; // moss-multi seam: capabilities (T2.6)
+  const canAddComment = useBlockCanComment(editor, canEdit); // moss-multi seam: comments (T4.B3): a commenter has it
 
   return (
     <div
@@ -405,17 +405,18 @@ export function MediaNodeHeader({
     >
       <div className="flex items-center gap-1">
         {children}
-        {/* moss-multi seam: hide-registry (A§9) */}
-        {canEdit && !hidden('comments') && (
+        {canAddComment && (
+          <span className="contents" data-comment-entry="" /* moss-multi seam: comments (T4.B3) */>
           <MediaHeaderButton
             icon={StickyNote}
             title="Add comment"
             onClick={() => {
               // Re-guard: opening the comment popover mutates; no-op read-only.
-              if (!editor.isEditable()) return;
+              if (!canAddComment) return; // moss-multi seam: comments (T4.B3)
               editor.dispatchCommand(OPEN_BLOCK_COMMENT_COMMAND, { nodeKey });
             }}
           />
+          </span>
         )}
         {canEdit && onFullscreen && (
           <MediaHeaderButton

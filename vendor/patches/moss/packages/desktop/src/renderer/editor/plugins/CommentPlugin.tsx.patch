@@ -21,17 +21,19 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx b/pa
  import { $isCommentableDecorator } from '../utils/commentable-node';
  import { $wrapSelectionInMarkNode, $isMarkNode, MarkNode } from '@lexical/mark';
  import { TabGroupNode } from '../nodes/TabGroupNode';
-@@ -37,6 +26,9 @@ import {
+@@ -37,6 +26,11 @@ import {
    type NoteComment
  } from '@moss/shared/state/note-atoms';
  import { isCommentVisibleForStatus } from '../utils/comment-thread-count';
 +// moss-multi seam: converter-split (A§12; S-conv §2.3)
 +import { CREATE_COMMENT_COMMAND } from '../commands';
 +export { CREATE_COMMENT_COMMAND, OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
++// moss-multi seam: comments (comments.md §12)
++import { createFromCommand } from '@moss-multi/host/comments/adapter';
  
  // ---------------------------------------------------------------------------
  // Draft Comment Persistence
-@@ -132,17 +124,6 @@ export interface CreateCommentPayload {
+@@ -132,17 +126,6 @@ export interface CreateCommentPayload {
    imageUrls?: string[];
  }
  
@@ -49,3 +51,13 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/CommentPlugin.tsx b/pa
  interface CommentPluginProps {
    /** Note ID for loading comments from atoms */
    noteId: string;
+@@ -221,6 +204,9 @@ export function CommentPlugin({ noteId }: CommentPluginProps) {
+     return editor.registerCommand(
+       CREATE_COMMENT_COMMAND,
+       (payload) => {
++        // moss-multi seam: comments (comments.md §12): on a bound note a comment is a server record, never a mark
++        const sent = createFromCommand(editor, payload);
++        if (sent !== null) return sent;
+         if (!editor.isEditable()) return false;
+ 
+         const commentId = crypto.randomUUID();

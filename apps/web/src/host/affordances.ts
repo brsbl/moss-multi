@@ -16,7 +16,8 @@ export type Surface =
   | 'slash-menu' // the editor's "/" menu
   | 'browser-split' // the in-app browser's header
   | 'actions-panel' // an open note's actions panel ("Show actions panel")
-  | 'block-toolbar'; // a hovered code, chart, sketch or media block's toolbar
+  | 'block-toolbar' // a hovered code, chart, sketch or media block's toolbar
+  | 'comment-popover'; // an open comment thread
 
 export interface Probe {
   surface: Surface;
@@ -24,6 +25,8 @@ export interface Probe {
   selector: string;
   /** Narrows `selector` to elements whose text is exactly this. */
   text?: string;
+  /** The product leaves a same-size placeholder in its place, so the parity oracle hides it keeping its box. */
+  inPlace?: boolean;
 }
 
 export interface Affordance {
@@ -54,12 +57,13 @@ export const AFFORDANCES = [
   },
   {
     id: 'ai-run-action',
-    sites: [`${R}/App.tsx`, `${R}/panels/BrowserSplitPane.tsx`],
+    sites: [`${R}/App.tsx`, `${R}/panels/BrowserSplitPane.tsx`, `${R}/editor/components/CommentUIWrapper.tsx`, `${R}/panels/CanvasAreaContent.tsx`],
     reason: 'In-app agent execution is out of scope (`agent.execute` rejects): the toolbar action, ⌘K and "Send page to Agent" go together; the panel stays, inert.',
     cite: 'P:Agents',
     probes: [
       { surface: 'editor-toolbar', selector: 'button[aria-label="Open command palette"]' },
       { surface: 'browser-split', selector: '[data-browser-actions-cluster] button[aria-label^="Send page to Agent"]' },
+      { surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label="Send thread to agent"]' },
     ],
   },
   {
@@ -140,20 +144,12 @@ export const AFFORDANCES = [
     cite: 'R4; deviation 7',
     probes: [{ surface: 'browser-split', selector: '[data-browser-actions-cluster] button[aria-label="Search in browser"]' }],
   },
-  // Staged: the entry points stay hidden until their backend lands, so no live control ever 404s.
   {
-    id: 'comments',
-    sites: [
-      `${R}/editor/MarkdownEditor.tsx`, `${R}/editor/nodes/CodeBlockNode.view.tsx`, `${R}/editor/nodes/ChartNode.view.tsx`,
-      `${R}/editor/nodes/SketchNode.view.tsx`, `${R}/editor/components/media-primitives.tsx`,
-    ],
-    reason: "A new comment's thread lives in an atom that only moss's save path persists, and a bound note has none, so its text would vanish on reload. Comments become shared data in M4: the toolbar button, ⌘⇧A and the block buttons go together.",
-    cite: 'T4.2; A§13',
-    staged: 4,
-    probes: [
-      { surface: 'editor-toolbar', selector: 'button[aria-label="Add comment"]' },
-      { surface: 'block-toolbar', selector: '[data-lexical-decorator] button:has(svg.lucide-sticky-note)' },
-    ],
+    id: 'comment-images',
+    sites: [`${R}/editor/components/CommentTextInput.tsx`],
+    reason: 'Commenters cannot upload (PRODUCT reserves uploads to editors), and a comment image needs per-URL media admission the comment API does not take; the thread text works without it.',
+    cite: 'comments.md §14 decision 2; P2 #10',
+    probes: [{ surface: 'comment-popover', selector: '.moss-comment-popover button[aria-label="Attach image"]' }],
   },
 ] as const satisfies readonly Affordance[];
 

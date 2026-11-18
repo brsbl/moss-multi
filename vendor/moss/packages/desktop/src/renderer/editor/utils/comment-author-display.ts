@@ -52,6 +52,9 @@ export function getCommentAuthorDisplayForSource(source: NoteComment['source']):
 
 /** Maps a comment to its display label and accessible attribution color. */
 export function getCommentAuthorDisplay(comment: NoteComment): CommentAuthorDisplay {
+  // moss-multi seam: comments (comments.md §12): a shared note names each author; the record carries the principal
+  const authorLabel = (comment as NoteComment & { authorLabel?: string }).authorLabel;
+  if (authorLabel) return { ...getCommentAuthorDisplayForSource(getCommentSource(comment)), label: authorLabel };
   return getCommentAuthorDisplayForSource(getCommentSource(comment));
 }
 
