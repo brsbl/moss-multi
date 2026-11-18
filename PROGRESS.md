@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (245 of 302 planned tasks verified)
+**Overall: 81% done** (246 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 18 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 19 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -268,6 +268,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.17 verified: when a session ends, "+ Note", a folder rename, Share, History and the vault menu say to sign in again and give the keyboard back instead of dead-ending, the banner clears the window's drag strip with no note open, and signing in returns to the same place.
 - 2026-11-17 — T9.18 verified: choosing a search result from another vault, by click or Enter, switches to that vault the way the vault switcher does and opens the note live; results from the vault on screen open as before.
 - 2026-11-17 — T9.14 verified: after undo or redo the caret lands where the change was, keeping the typing format and style there, so typing next continues in place; a peer's caret stays where they left it.
+- 2026-11-17 — T9.30 verified: a note's top bar at rest holds only Moss's own actions, with Share, Suggestions, Suggest changes and Version history in More actions, the vault, notifications, connection and account in an app menu behind Settings, People here and open counts as quiet cues, and Suggesting, Review and a reader's access in one quiet bottom row.
 
 ## T1.1s identity audit
 
@@ -307,6 +308,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.30's checker (b4d82cd, 2026-11-17)
+
+- T9.30 (The note shell is Moss's at rest, and the web's routes live in Moss's own menus) checker P2: recovery notices are still not in the pane's one bottom region above the state row; moved to T9.41, which puts them there.
+- T9.30 (The note shell is Moss's at rest, and the web's routes live in Moss's own menus) checker P2: the comments count never yields and sits after Copy link, not before Search (brief order: People, Notifications, Suggestions count, comments count, Search, Copy link, More); below 640 px it should move to the right panel, and j21's fit sweep never creates a comment, so this slot is untested.
+- T9.30 (The note shell is Moss's at rest, and the web's routes live in Moss's own menus) checker P2: an open inbox keeps an ordinary dropdown with a fixed max-h-80 scroller and does not fall back to a viewport-bounded sheet with Close when the anchor no longer fits (untested).
+- T9.30 (The note shell is Moss's at rest, and the web's routes live in Moss's own menus) checker P2: the signed-out visitor's bottom region wraps to two text lines at 390 px ('View only. Reviewing suggestions. Done' then 'Sign in to do more'), taller and more text-heavy than Moss's bottom toolbar (no card, border or shadow).
+- T9.30 (The note shell is Moss's at rest, and the web's routes live in Moss's own menus) checker P2: the Suggesting / Stop suggesting row while typing sits centred just below the toolbar's rounded edge on the note background, reading as a caption rather than a line inside the toolbar's surface (light and dark).
+- T9.30 (The note shell is Moss's at rest, and the web's routes live in Moss's own menus) checker P2: People here initials circles carry more visual weight than Moss's faint line icons beside them (neutral fill, small).
+- T9.30 (The note shell is Moss's at rest, and the web's routes live in Moss's own menus) checker P2: inherited from m9, not introduced here: the open Suggestions panel at 640 px has a nested outlined card, a bold author and a filled green Accept button, louder than Moss's quiet shell.
 
 ### From T9.14's checker (6cfc99e, 2026-11-17)
 
