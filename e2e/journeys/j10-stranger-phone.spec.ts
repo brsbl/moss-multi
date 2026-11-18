@@ -263,9 +263,9 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   await expect(folder, 'the notes panel opens over the note').toBeVisible();
   await expectReachable(ada, 'the notes panel', PANEL);
 
-  await page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await expect(page.getByRole('menu')).toBeVisible();
-  await expectReachable(ada, 'the vault switcher', menu);
+  await ui.openVaultList(page);
+  await expectReachable(ada, 'Switch vault…', menu);
+  await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toBeHidden();
 
@@ -292,6 +292,9 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
   const settings = await ui.openSettings(ada);
   await expectReachable(ada, 'Settings', dialog);
   await expect(settings.getByRole('button', { name: 'Sign out', exact: true }), 'Sign out is in reach').toBeVisible();
+  await settings.getByRole('button', { name: 'Manage vaults', exact: true }).click();
+  await expectReachable(ada, 'Settings with Vaults open', dialog);
+  await expect(settings.getByRole('button', { name: 'Rename…', exact: true }), 'Rename… is in reach').toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toBeHidden();
 });

@@ -1,10 +1,10 @@
-// j13-vaults (T3.5; A§11): vaults from the switcher in the notes-panel header. Ada makes a vault from the switcher's
-// inline "New vault" row, lands in it, and creates a note there that stays in that vault across a reload and a
-// switch away and back. Ben, holding a root grant on it, finds it in his switcher with his role as a badge, opens it,
-// and is offered no vault actions; his raw rename and trash get 403. Ada renames the vault from its always-visible
-// actions button and Ben's switcher follows live; then she moves it to Trash through a confirmation, her open note
-// goes terminal in place, and the vault leaves both switchers. Her last vault is never offered to Trash. A note of a
-// trashed vault restores from Trash: the vault row returns without its folders and the note opens at its top.
+// j13-vaults (T3.5, T9.31; A§11): vaults from the footer's app menu and Settings. Ada makes a vault from Switch
+// vault… > New vault…, lands in it, and creates a note there that stays in that vault across a reload and a switch
+// away and back. Ben, holding a root grant on it, finds it in his Switch vault… list with his role, opens it, and is
+// offered no vault actions in Settings; his raw rename and trash get 403. Ada renames the vault in Settings' Vaults and
+// Ben's app menu follows live; then she moves it to Trash through a confirmation, her open note goes terminal in place,
+// and the vault leaves both lists. Her last vault is never offered to Trash. A note of a trashed vault restores from
+// Trash: the vault row returns without its folders and the note opens at its top.
 //
 // The root grant is declared setup through the members API; sharing is not this journey's promise.
 import type { Actor, Actors } from '../lib/actors.ts';
@@ -24,8 +24,8 @@ const PEER_SIDEBAR_MS = 5_000;
 const VAULT = 'Field notes';
 const RENAMED = 'Field journal';
 const NOTE_TITLE = 'Kept in the new vault';
-/** Every vault action a member must not be offered, in the switcher or beside it. */
-const VAULT_ACTIONS = /New vault|Rename|Trash|Delete|Share vault/;
+/** Every action on the vault on screen that a member must not be offered. */
+const VAULT_ACTIONS = /^(Rename…|Move to Trash…|Share vault…)$/;
 
 async function openShell(actors: Actors, label: string): Promise<Actor> {
   const actor = await actors.open(await actors.principal(label));
@@ -33,27 +33,20 @@ async function openShell(actors: Actors, label: string): Promise<Actor> {
   return actor;
 }
 
-const switcher = (actor: Actor, name: string) => actor.page.getByRole('button', { name: `Vault: ${name}`, exact: true });
-const actionsButton = (actor: Actor) => actor.page.getByRole('button', { name: 'Vault actions', exact: true });
 const noteRow = (actor: Actor, docId: string) => actor.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${docId}"]`);
 const trashRow = (actor: Actor, docId: string) => actor.page.locator(`[${TRASH_ROW_ATTR}][${NAMES.docId}="${docId}"]`);
 
-/** Opens the switcher on `current` and picks the vault whose menu item reads `item` (its name, then any badge). */
-async function switchTo(actor: Actor, current: string, item: string, next: string): Promise<void> {
-  await switcher(actor, current).click();
-  await actor.page.getByRole('menuitem', { name: item, exact: true }).click();
-  await expect(switcher(actor, next), `${actor.label}: the switcher shows ${next}`).toBeVisible();
+/** Picks the vault whose Switch vault… row reads `item` (its name, then any role), and lands in `next`. */
+async function switchTo(actor: Actor, item: string, next: string): Promise<void> {
+  await ui.switchVault(actor.page, item);
+  await ui.expectVault(actor.page, next, { message: `${actor.label}: the vault on screen is ${next}` });
 }
 
-/** The switcher's inline "New vault" row: the name, then Enter. */
-async function newVault(actor: Actor, current: string, name: string): Promise<void> {
-  await switcher(actor, current).click();
-  await actor.page.getByRole('menuitem', { name: 'New vault', exact: true }).click();
-  const input = actor.page.getByRole('textbox', { name: 'New vault name', exact: true });
-  await expect(input, `${actor.label}: the inline row takes focus`).toBeFocused();
-  await input.fill(name);
-  await input.press('Enter');
-  await expect(switcher(actor, name), `${actor.label}: the new vault is active`).toBeVisible({ timeout: BIND_TIMEOUT });
+const newVault = (actor: Actor, name: string): Promise<void> => ui.newVault(actor.page, name);
+
+/** Settings' Vaults, disclosed, and one of its actions on the vault on screen. */
+async function vaultAction(actor: Actor, action: 'Rename…' | 'Move to Trash…'): Promise<void> {
+  await (await ui.openVaultSettings(actor.page)).getByRole('button', { name: action, exact: true }).click();
 }
 
 async function listing(actor: Actor, query = ''): Promise<{ vault: { id: string; name: string }; vaults: { id: string; name: string; role?: string }[]; docs: { id: string }[] }> {
@@ -71,7 +64,7 @@ async function grantVault(owner: Actor, vaultId: string, member: Principal, role
 
 test('j13-vaults: Ada creates a vault inline, switches, and creates a note that stays in it @p:note-4@3 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
-  await newVault(ada, 'Home', VAULT);
+  await newVault(ada, VAULT);
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'the new vault starts empty').toHaveCount(0);
 
   const docId = await ui.createNote(ada);
@@ -84,10 +77,10 @@ test('j13-vaults: Ada creates a vault inline, switches, and creates a note that 
   expect(made.docs.map((doc) => doc.id), 'the note was created in the new vault').toContain(docId);
 
   // Home does not hold it; switching back does.
-  await switchTo(ada, VAULT, 'Home', 'Home');
+  await switchTo(ada, 'Home', 'Home');
   await expect(noteRow(ada, docId), 'Home does not list the note').toHaveCount(0);
   await expect(ui.pane(ada, docId), 'the open note stays open across a switch').toBeVisible();
-  await switchTo(ada, 'Home', VAULT, VAULT);
+  await switchTo(ada, VAULT, VAULT);
   await expect(noteRow(ada, docId)).toBeVisible();
 
   // The vault and its note are server state: a reload keeps both.
@@ -95,34 +88,38 @@ test('j13-vaults: Ada creates a vault inline, switches, and creates a note that 
   await ada.page.reload();
   await ui.waitLive(ada, docId);
   await ada.declareRemount(docId);
-  await expect(switcher(ada, VAULT), 'the vault is still active after a reload').toBeVisible();
+  await ui.expectVault(ada.page, VAULT, { message: 'the vault is still active after a reload' });
   await expect(noteRow(ada, docId)).toBeVisible();
 
   // A duplicate name is refused in place with a sentence; nothing is created.
   ada.expectHttp(409, '/api/vaults');
-  await switcher(ada, VAULT).click();
-  await ada.page.getByRole('menuitem', { name: 'New vault', exact: true }).click();
+  await (await ui.openVaultList(ada.page)).getByRole('menuitem', { name: 'New vault…', exact: true }).click();
   const input = ada.page.getByRole('textbox', { name: 'New vault name', exact: true });
+  await expect(input).toBeFocused();
   await input.fill('home');
   await input.press('Enter');
   await expect(ada.page.getByRole('alert').filter({ hasText: /already have a vault/ }), 'a taken name reads as a sentence').toBeVisible();
   await input.press('Escape');
+  await expect(input, 'Escape leaves the field').toHaveCount(0);
+  await ada.page.keyboard.press('Escape');
+  await expect(ada.page.getByRole('dialog')).toHaveCount(0);
   expect((await listing(ada)).vaults.filter((vault) => vault.name.toLowerCase() === 'home')).toHaveLength(1);
 
   // Nobody else discovers a vault that was never shared with them.
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
-  await switcher(ben, 'Home').click();
-  await expect(ben.page.getByRole('menuitem', { name: 'Home', exact: true })).toBeVisible();
-  await expect(ben.page.getByRole('menuitem', { name: new RegExp(VAULT) }), "Ada's unshared vault is not Ben's to see").toHaveCount(0);
+  const benList = await ui.openVaultList(ben.page);
+  await expect(benList.getByRole('menuitemradio', { name: 'Home', exact: true })).toBeVisible();
+  await expect(benList.getByRole('menuitemradio', { name: new RegExp(VAULT) }), "Ada's unshared vault is not Ben's to see").toHaveCount(0);
+  await ben.page.keyboard.press('Escape');
   await ben.page.keyboard.press('Escape');
   await actors.checkpoint('vault-created');
 });
 
-test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and no vault actions; the owner renames and trashes it @p:note-4@3 @evidence', async ({ actors }) => {
+test('j13-vaults: Ben, with a root grant, sees the vault with his role and no vault actions; the owner renames and trashes it @p:note-4@3 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
-  await newVault(ada, 'Home', VAULT);
+  await newVault(ada, VAULT);
   const docId = await ui.createNote(ada);
   await ui.typeTitle(ada, docId, NOTE_TITLE, { enter: true });
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
@@ -130,20 +127,19 @@ test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and n
   expect(vaultId, 'the note is in the new vault').not.toBe((await listing(ada, '?vault=none')).vault.id);
   await grantVault(ada, vaultId, benPrincipal, 'editor');
 
-  // Ben finds it in his own switcher, badged with his role, and opens it.
+  // Ben finds it in his own Switch vault… list, with his role, and opens it.
   const ben = await actors.open(benPrincipal);
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
   await actors.requireDistinct(2);
-  await switchTo(ben, 'Home', `${VAULT} editor`, VAULT);
+  await switchTo(ben, `${VAULT} Can edit`, VAULT);
   await expect(noteRow(ben, docId), "Ben sees Ada's note in her vault").toBeVisible();
 
-  // A member is offered no vault actions: no actions button and nothing in the switcher.
-  await expect(actionsButton(ben), 'a member gets no vault actions button').toHaveCount(0);
-  await switcher(ben, VAULT).click();
-  await expect(ben.page.getByRole('menuitem', { name: `${VAULT} editor`, exact: true })).toBeVisible();
-  await expect(ben.page.getByRole('menuitem', { name: VAULT_ACTIONS }), 'a member gets no vault actions in the switcher').toHaveCount(0);
+  // A member is offered no vault actions: Settings lists the vault with his role and nothing to do to it.
+  const benSettings = await ui.openVaultSettings(ben.page);
+  await expect(benSettings.getByRole('list', { name: 'Vaults' }).getByText('Can edit', { exact: true })).toBeVisible();
+  await expect(benSettings.getByRole('button', { name: VAULT_ACTIONS }), 'a member gets no vault actions').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
-  await expect(actionsButton(ada), 'the owner always sees the vault actions button').toBeVisible();
+  await expect(benSettings).toBeHidden();
 
   // Raw requests from the member are refused and change nothing.
   const origin = new URL(ben.page.url()).origin;
@@ -151,49 +147,52 @@ test('j13-vaults: Ben, with a root grant, sees the vault with a role badge and n
   expect((await ben.context.request.patch(`${origin}/api/vaults/${vaultId}`, { headers, data: { name: 'Taken over' } })).status()).toBe(403);
   expect((await ben.context.request.delete(`${origin}/api/vaults/${vaultId}`, { headers })).status()).toBe(403);
 
-  // Ada renames it from the actions button; Ben's switcher follows without a reload.
-  await actionsButton(ada).click();
-  await ada.page.getByRole('menuitem', { name: 'Rename…', exact: true }).click();
+  // Ada renames it in Settings; Ben's app menu follows without a reload.
+  await vaultAction(ada, 'Rename…');
   const rename = ada.page.getByRole('textbox', { name: 'Vault name', exact: true });
   await expect(rename, 'the vault name becomes an input').toBeFocused();
   await rename.fill(RENAMED);
   await rename.press('Enter');
-  await expect(switcher(ada, RENAMED), 'Ada sees the new name').toBeVisible();
-  await expect(switcher(ben, RENAMED), "Ben's switcher follows the rename live").toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  const adaSettings = ada.page.getByRole('dialog', { name: 'Settings' });
+  await expect(adaSettings.getByRole('list', { name: 'Vaults' }).getByText(RENAMED, { exact: true }), 'Ada sees the new name').toBeVisible();
+  await ada.page.keyboard.press('Escape');
+  await expect(adaSettings).toBeHidden();
+  await ui.expectVault(ada.page, RENAMED);
+  await ui.expectVault(ben.page, RENAMED, { timeout: PEER_SIDEBAR_MS, message: "Ben's app menu follows the rename live" });
   await actors.checkpoint('vault-renamed');
 
   // Cancelling the confirmation keeps the vault.
-  await actionsButton(ada).click();
-  await ada.page.getByRole('menuitem', { name: 'Move to Trash…', exact: true }).click();
-  let confirm = ada.page.getByRole('alertdialog').filter({ hasText: RENAMED });
+  await vaultAction(ada, 'Move to Trash…');
+  const confirm = ada.page.getByRole('alertdialog').filter({ hasText: RENAMED });
   await expect(confirm, 'trash asks first').toBeVisible();
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(confirm).toHaveCount(0);
-  await expect(switcher(ada, RENAMED)).toBeVisible();
+  await expect(adaSettings.getByRole('list', { name: 'Vaults' }).getByText(RENAMED, { exact: true })).toBeVisible();
 
-  // Confirming sends it to Trash: her open note goes terminal in place and the vault leaves both switchers.
-  await actionsButton(ada).click();
-  await ada.page.getByRole('menuitem', { name: 'Move to Trash…', exact: true }).click();
-  confirm = ada.page.getByRole('alertdialog').filter({ hasText: RENAMED });
+  // Confirming sends it to Trash: her open note goes terminal in place and the vault leaves both lists.
+  await adaSettings.getByRole('button', { name: 'Move to Trash…', exact: true }).click();
   await confirm.getByRole('button', { name: 'Move to Trash', exact: true }).click();
+  await expect(confirm).toHaveCount(0);
+  await ada.page.keyboard.press('Escape');
+  await expect(adaSettings).toBeHidden();
   await expect(ui.pane(ada, docId), 'the open note goes terminal').toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_SIDEBAR_MS });
   await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'terminal');
   await expect(ada.page.locator(`[${CONNECTION_BANNER_ATTR}="deleted"]`), 'the notice says why').toBeVisible();
-  await expect(switcher(ada, 'Home'), 'Ada lands in Home').toBeVisible({ timeout: PEER_SIDEBAR_MS });
-  await expect(switcher(ben, 'Home'), 'Ben falls back to his Home').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await ui.expectVault(ada.page, 'Home', { timeout: PEER_SIDEBAR_MS, message: 'Ada lands in Home' });
+  await ui.expectVault(ben.page, 'Home', { timeout: PEER_SIDEBAR_MS, message: 'Ben falls back to his Home' });
   for (const actor of [ada, ben]) {
-    await switcher(actor, 'Home').click();
-    await expect(actor.page.getByRole('menuitem', { name: new RegExp(`^${RENAMED}`) }), `${actor.label}: the vault leaves the switcher`).toHaveCount(0);
-    await actor.page.getByRole('menuitem', { name: 'Home', exact: true }).click();
+    const list = await ui.openVaultList(actor.page);
+    await expect(list.getByRole('menuitemradio', { name: new RegExp(`^${RENAMED}`) }), `${actor.label}: the vault leaves the list`).toHaveCount(0);
+    await list.getByRole('menuitemradio', { name: 'Home', exact: true }).click();
     await expect(actor.page.getByRole('menu')).toHaveCount(0);
     await expect(noteRow(actor, docId)).toHaveCount(0);
   }
   await actors.checkpoint('vault-trashed');
 
   // With Home her only vault, Trash is not offered for it, and a raw trash is refused.
-  await actionsButton(ada).click();
-  await expect(ada.page.getByRole('menuitem', { name: 'Rename…', exact: true })).toBeVisible();
-  await expect(ada.page.getByRole('menuitem', { name: 'Move to Trash…', exact: true }), 'the last vault is never offered to Trash').toHaveCount(0);
+  const last = await ui.openVaultSettings(ada.page);
+  await expect(last.getByRole('button', { name: 'Rename…', exact: true })).toBeVisible();
+  await expect(last.getByRole('button', { name: 'Move to Trash…', exact: true }), 'the last vault is never offered to Trash').toHaveCount(0);
   await ada.page.keyboard.press('Escape');
   const home = (await listing(ada)).vault.id;
   expect((await ada.context.request.delete(`${origin}/api/vaults/${home}`, { headers })).status()).toBe(409);
@@ -203,7 +202,7 @@ test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault 
   const ada = await openShell(actors, 'ada');
   actors.solo('one owner trashes her own vault and restores its notes');
   const TRIP = 'Trip notes';
-  await newVault(ada, 'Home', TRIP);
+  await newVault(ada, TRIP);
   // Declared setup: a folder and two same-titled notes, one at the vault's top and one in the folder.
   const origin = new URL(ada.page.url()).origin;
   const send = (path: string, data: object) => ada.context.request.post(`${origin}${path}`, { headers: { origin }, data, timeout: 15_000 });
@@ -230,20 +229,23 @@ test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault 
   await expect(folderConfirm).toHaveCount(0);
 
   // The vault's confirmation says what a restore brings back; confirming sends it to Trash.
-  await actionsButton(ada).click();
-  await ada.page.getByRole('menuitem', { name: 'Move to Trash…', exact: true }).click();
+  await vaultAction(ada, 'Move to Trash…');
   const confirm = ada.page.getByRole('alertdialog').filter({ hasText: TRIP });
   await expect(confirm, 'the vault confirmation').toContainText(TRASH_COPY.trashVault(TRIP));
   await confirm.getByRole('button', { name: 'Move to Trash', exact: true }).click();
-  await expect(switcher(ada, 'Home'), 'Ada lands in Home').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(confirm).toHaveCount(0);
+  await ada.page.keyboard.press('Escape');
+  await expect(ada.page.getByRole('dialog')).toHaveCount(0);
+  await ui.expectVault(ada.page, 'Home', { timeout: PEER_SIDEBAR_MS, message: 'Ada lands in Home' });
 
-  // Restore from the Trash row's menu: the vault is back in the switcher with the note at its top, open and live.
+  // Restore from the Trash row's menu: the vault is back and on screen with the note at its top, open and live.
   for (const docId of ids) ada.expectReconnects(1, docId);
   const refused = ada.page.getByText(/no longer available|vault is in Trash/);
   await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
   await trashRow(ada, atTop).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
-  await expect(switcher(ada, TRIP), 'the vault is back and on screen').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await expect(noteRow(ada, atTop), 'the note is at the top of its vault').toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await ui.expectVault(ada.page, TRIP, { timeout: PEER_SIDEBAR_MS, message: 'the vault is back and on screen' });
   await expect(noteRow(ada, atTop), 'the note is at the top of its vault').toBeVisible({ timeout: PEER_SIDEBAR_MS });
   await ui.waitLive(ada, atTop);
   await expect(refused, 'no refusal').toHaveCount(0);
@@ -258,7 +260,7 @@ test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault 
   await expect(noteRow(ada, atTop)).toBeVisible();
   await ui.waitLive(ada, inFolder);
   await expect(refused, 'no refusal').toHaveCount(0);
-  await expect(switcher(ada, TRIP)).toBeVisible();
+  await ui.expectVault(ada.page, TRIP);
   const after = (await listing(ada, `?vault=${vaultId}`)) as unknown as { vaults: { name: string }[]; docs: { id: string; filename: string; trashedAt?: number | null }[] };
   expect(after.vaults.map((vault) => vault.name)).toEqual(expect.arrayContaining(['Home', TRIP]));
   const live = after.docs.filter((doc) => ids.includes(doc.id) && !doc.trashedAt);
@@ -278,7 +280,7 @@ test('j13-vaults: a search result from Ada’s other vault opens there, by click
   const home = (await listing(ada)).vault.id;
   // Declared setup: a vault Scratch with notes of its own, and a note only Home holds, made from Scratch so nothing
   // has opened it yet.
-  await newVault(ada, 'Home', 'Scratch');
+  await newVault(ada, 'Scratch');
   const made = await send('/api/docs', { folderId: home, title: `Lentil soup ${run}`, markdown: `Red ${word}, cumin and lemon.` });
   expect(made.status(), 'declared setup: the Home note').toBe(201);
   const soup = ((await made.json()) as { doc: { id: string } }).doc.id;
@@ -310,46 +312,46 @@ test('j13-vaults: a search result from Ada’s other vault opens there, by click
   await noteRow(ada, padId).click();
   await ui.waitLive(ada, padId);
   await ada.declareRemount(padId);
-  await expect(switcher(ada, 'Scratch'), 'a result from the vault on screen keeps the vault').toBeVisible();
+  await ui.expectVault(ada.page, 'Scratch', { message: 'a result from the vault on screen keeps the vault' });
 
   // Clicking the Home result: the switcher shows Home, the panel lists Home's notes, and the note is open and live.
   await search(word);
   await expect(noteRow(ada, soup), 'the Home note is found from Scratch').toBeVisible({ timeout: BIND_TIMEOUT });
   await noteRow(ada, soup).click();
-  await expect(switcher(ada, 'Home'), 'the switcher moves to the note’s vault').toBeVisible({ timeout: BIND_TIMEOUT });
   await ui.waitLive(ada, soup);
   await ada.declareRemount(soup);
   await expect(field, 'choosing a result closes search').toBeHidden();
   await expect(noteRow(ada, soup), 'the panel lists Home’s notes').toBeVisible({ timeout: PEER_SIDEBAR_MS });
   await expect(noteRow(ada, padId)).toHaveCount(0);
+  await ui.expectVault(ada.page, 'Home', { message: 'the app menu moves to the note’s vault' });
   await actors.checkpoint('cross-vault-click');
 
   // Back in Scratch, Enter on the only result does the same. Each note opens once more, and only once more.
   ada.expectReconnects(1, padId);
   ada.expectReconnects(1, soup);
-  await switchTo(ada, 'Home', 'Scratch', 'Scratch');
+  await switchTo(ada, 'Scratch', 'Scratch');
   await ui.openNote(ada, padId);
   await search(word);
   await expect(noteRow(ada, soup)).toBeVisible({ timeout: BIND_TIMEOUT });
   await field.press('Enter');
-  await expect(switcher(ada, 'Home'), 'Enter moves to the note’s vault too').toBeVisible({ timeout: BIND_TIMEOUT });
   await ui.waitLive(ada, soup);
   await ada.declareRemount(soup);
   await expect(field).toBeHidden();
   await expect(noteRow(ada, soup)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
+  await ui.expectVault(ada.page, 'Home', { message: 'Enter moves to the note’s vault too' });
   await actors.checkpoint('cross-vault-enter');
 
   // In Scratch with the Home note still open, choosing its result moves to Home all the same.
-  await switchTo(ada, 'Home', 'Scratch', 'Scratch');
+  await switchTo(ada, 'Scratch', 'Scratch');
   await expect(noteRow(ada, padId), 'the panel lists Scratch’s notes').toBeVisible({ timeout: PEER_SIDEBAR_MS });
   await expect.poll(() => ui.paneIds(ada), { message: 'the Home note stays open across the switch' }).toContain(soup);
   await search(word);
   await expect(noteRow(ada, soup)).toBeVisible({ timeout: BIND_TIMEOUT });
   await noteRow(ada, soup).click();
-  await expect(switcher(ada, 'Home'), 'an open note’s result moves to its vault').toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(field).toBeHidden();
   await expect(noteRow(ada, padId), 'the panel lists Home’s notes').toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
   await expect(noteRow(ada, soup)).toBeVisible({ timeout: PEER_SIDEBAR_MS });
   await ui.waitLive(ada, soup);
+  await ui.expectVault(ada.page, 'Home', { message: 'an open note’s result moves to its vault' });
   await actors.checkpoint('cross-vault-already-open');
 });

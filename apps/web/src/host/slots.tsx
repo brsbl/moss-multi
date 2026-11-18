@@ -8,6 +8,7 @@ import { AppMenu } from './surfaces/AppMenu.tsx';
 import { NoteMenuItems as NoteMenuEntries } from './surfaces/NoteMenuItems.tsx';
 import { FolderShareItem } from './surfaces/ShareEntryPoints.tsx';
 import { TopBarCues } from './surfaces/TopBarCues.tsx';
+import { VaultsSection } from './surfaces/VaultSwitcher.tsx';
 import { getBridge, WORKSPACE } from './bridge/index.ts';
 
 /** True for a doc surfaced at the vault root because it was shared directly (A§11); it offers no move. T1.2. */
@@ -17,8 +18,9 @@ export const surfacedFolder = (path: string): boolean => getBridge()?.[WORKSPACE
 /** Items added to a folder's context menu: "Share…" for its owner (T2.4). */
 export const FolderMenuItems: (props: { folderPath: string }) => ReactNode = ({ folderPath }) => <FolderShareItem folderPath={folderPath} />;
 
-/** Sections added to moss's Settings dialog: Account with Sign out (T0.10), then Agents (T3.6). */
-export const SettingsSections: () => ReactNode = () => <><AccountSection /><AgentsSection /></>;
+/** Sections added to moss's Settings dialog: Vaults (T9.31), Account with Sign out (T0.10), then Agents (T3.6).
+ * `onClose` closes Settings, as Share vault… does before its own dialog opens. */
+export const SettingsSections: (props: { onClose: () => void }) => ReactNode = ({ onClose }) => <><VaultsSection onClose={onClose} /><AccountSection /><AgentsSection /></>;
 
 /** Web cues at the start of an open note's top-bar right group, each only while it has something to say: People
  * here, the unread bell and the open-suggestions count (T9.30). */

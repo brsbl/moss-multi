@@ -1,6 +1,6 @@
 // ported-from: packages/shared/src/components/layout/NotesListPanel.tsx @ 762abb777
-// moss-multi seam: the web vault selector occupies the native drag row.
-import { VaultSwitcher } from '@moss-multi/host/surfaces/VaultSwitcher';
+// moss-multi seam: vault-name (T9.31): "+ Note" says which vault it lands in.
+import { useNewNoteHint } from '@moss-multi/host/vault-name';
 import * as React from 'react';
 import { Search, X, PanelLeft, Plus } from 'lucide-react';
 import { KeyboardShortcut } from '@/components/ui/keyboard-shortcut';
@@ -85,6 +85,7 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
     const searchInputRef = React.useRef<HTMLInputElement>(null);
     const pendingSearchFocusRef = React.useRef(false);
     const [isSearchExpanded, setIsSearchExpanded] = React.useState(false);
+    const newNoteHint = useNewNoteHint(); // moss-multi seam: vault-name (T9.31)
 
     // Compute effective expanded state for rendering and callbacks
     const effectivelyExpanded = alwaysExpandSearch || isSearchExpanded;
@@ -205,7 +206,6 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <div className="flex h-8 items-center justify-end">
-          <VaultSwitcher />
           {onCollapse && (
             <TooltipProvider>
               <Tooltip>
@@ -280,6 +280,9 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
               <div className="flex min-w-0 items-center gap-3">
                 {headerContent}
                 {onCreateNote ? (
+                  /* moss-multi seam: vault-name (T9.31) */
+                  <Tooltip disabled={!newNoteHint}>
+                  <TooltipTrigger asChild>
                   <button
                     type="button"
                     onClick={onCreateNote}
@@ -297,6 +300,9 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
                       </span>
                     )}
                   </button>
+                  </TooltipTrigger>
+                  {newNoteHint ? <TooltipContent side="bottom">{newNoteHint}</TooltipContent> : null}
+                  </Tooltip>
                 ) : null}
                 <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-surface-glass-border bg-surface-raised-control px-1 shadow-none">
                   {topContent}

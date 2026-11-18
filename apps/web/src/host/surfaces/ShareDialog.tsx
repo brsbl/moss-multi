@@ -4,7 +4,7 @@
 // revokes links. Moss has no sharing, so the layout follows glyphdown's ShareDialog
 // (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
 // its segmented choice for access levels, and the DS Input and Button. The note's More actions (useCanShare), a folder's
-// context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Each person's (and invite's)
+// context menu (FolderMenuItems) and Settings' Vaults open it through `openShare`. Each person's (and invite's)
 // access has glyphdown's role select and Remove button; lowering or removing someone closes their open windows through
 // the one kick path (T2.5). An owner also sees, read-only, who reaches the target from the folders and vault above it
 // and which of those places have links, each with a Manage button to that place's own dialog (T9.7). Sharing by email
@@ -25,7 +25,7 @@ export type ShareTarget =
   | { type: 'doc'; id: string }
   | { type: 'folder'; id: string; name: string; vault: boolean };
 
-const ACCESS_LABEL: Record<Role, string> = {
+export const ACCESS_LABEL: Record<Role, string> = {
   viewer: 'Can view',
   commenter: 'Can comment',
   suggester: 'Can suggest',
@@ -600,9 +600,20 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-export function openShare(target: ShareTarget): void {
+// Settings' Share vault… comes back to Settings when the dialog closes (T9.31).
+let onClosed: (() => void) | null = null;
+
+export function openShare(target: ShareTarget, { closed }: { closed?: () => void } = {}): void {
+  onClosed = closed ?? null;
   publish(target);
 }
+
+const closeShare = () => {
+  const closed = onClosed;
+  onClosed = null;
+  publish(null);
+  closed?.();
+};
 
 /** Rendered once beside moss's App (boot.tsx). */
 export function ShareDialogHost(): ReactNode {
@@ -614,10 +625,12 @@ export function ShareDialogHost(): ReactNode {
     if (target) setShown(target);
   }, [target]);
   useEffect(() => {
-    if (ended) publish(null);
+    if (!ended) return;
+    onClosed = null;
+    publish(null);
   }, [ended]);
   if (!shown || ended) return null;
-  return <ShareDialog key={`${shown.type}:${shown.id}`} target={shown} open={target !== null} onOpenChange={(open) => { if (!open) publish(null); }} />;
+  return <ShareDialog key={`${shown.type}:${shown.id}`} target={shown} open={target !== null} onOpenChange={(open) => { if (!open) closeShare(); }} />;
 }
 
 /** Whether More actions offers Share…: only an owner shares (A§8), and an ended window no longer can. */

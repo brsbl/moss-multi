@@ -1,6 +1,14 @@
 diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx
 --- a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx
 +++ b/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx
+@@ -1,6 +1,6 @@
+ import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+ import { atom, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+-import { ArrowDownZA, ArrowUpAZ, ChevronDown, ChevronRight, ChevronUp, ClockArrowDown, ClockArrowUp, Columns2, Copy, Folder, FolderOpen, FolderPlus, Link, Pencil, Pin, SearchX, Trash2, FileX, ExternalLink } from 'lucide-react';
++import { ArrowDownZA, ArrowUpAZ, ChevronDown, ChevronRight, ChevronUp, ClockArrowDown, ClockArrowUp, Columns2, Copy, Folder, FolderOpen, FolderPlus, Link, Pencil, Pin, Search, SearchX, Trash2, FileX, ExternalLink } from 'lucide-react';
+ import {
+   NotesListPanel,
+   NoteCard,
 @@ -48,6 +48,22 @@ import { formatRelativeTime } from './notesPanelUtils';
  import { FolderGroup } from './FolderGroup';
  import { SystemFolderSection } from './SystemFolderSection';
@@ -19,8 +27,8 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
 +import { TRASH_COPY } from '@moss-multi/host/retention';
 +import { canTrashNote } from '@moss-multi/host/trash';
 +import { refuseInput } from '@moss-multi/host/refusal';
-+// moss-multi seam: search-elsewhere (T9.18)
-+import { openInResultVault } from '@moss-multi/host/search-elsewhere';
++// moss-multi seam: search-elsewhere (T9.18); search-state and result vault (T9.31)
++import { openInResultVault, resultVaultName, SEARCH_CAPTION, type SearchState } from '@moss-multi/host/search-elsewhere';
  
  const NOTES_FOLDER_NAME = 'Notes';
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -128,7 +136,15 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            <NoteCard
              id={result.id}
              title={result.title}
-@@ -404,6 +446,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -349,6 +391,7 @@ const SearchResultNoteCard = memo(function SearchResultNoteCard({
+             isContextMenuOpen={isContextMenuOpen}
+             variant="compact"
+             snippet={result.snippet}
++            breadcrumb={resultVaultName(result) /* moss-multi seam: result vault (T9.31): another vault's result names it */}
+             highlightQuery={highlightQuery}
+             pinned={isPinned}
+             onTogglePin={menuHandlers.handleTogglePin}
+@@ -404,6 +447,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
      const [expandedFolders, setExpandedFolders] = useAtom(expandedFoldersAtom);
      const store = useStore();
      const setActiveFolderPath = useSetAtom(activeFolderPathAtom);
@@ -138,7 +154,37 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
      const [sortMode, setSortMode] = useAtom(notesSortModeAtom);
      const [sortDirection, setSortDirection] = useAtom(notesSortDirectionAtom);
      const pinnedNotes = useAtomValue(pinnedNotesAtom);
-@@ -581,9 +626,11 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -434,6 +480,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+     const [ipcSearchResults, setIpcSearchResults] = useState<NoteSearchResult[]>([]);
+     const ipcSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+     const ipcSearchRequestIdRef = useRef(0);
++    // moss-multi seam: search-state (T9.31): the caption waits for the index's answer and says when it failed.
++    const [ipcSearchState, setIpcSearchState] = useState<SearchState>('idle');
+     const hasPanelSearchQuery = searchQuery.trim().length > 0;
+ 
+     // Membership signature of the note list (ids only — not timestamps). Changes
+@@ -486,6 +534,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+       if (ipcSearchTimerRef.current) clearTimeout(ipcSearchTimerRef.current);
+       const requestId = ++ipcSearchRequestIdRef.current;
+       setIpcSearchResults([]);
++      setIpcSearchState(query.trim() ? 'pending' : 'idle'); // moss-multi seam: search-state (T9.31)
+       if (!query.trim()) {
+         return;
+       }
+@@ -498,10 +547,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+           });
+           if (requestId !== ipcSearchRequestIdRef.current) return;
+           setIpcSearchResults(results);
++          setIpcSearchState('settled'); // moss-multi seam: search-state (T9.31)
+         } catch (err) {
+           if (requestId !== ipcSearchRequestIdRef.current) return;
+           console.warn('[NotesListPanel] IPC search failed:', err);
+           setIpcSearchResults([]);
++          setIpcSearchState('error'); // moss-multi seam: search-state (T9.31)
+         }
+       }, 150);
+     }, []);
+@@ -581,9 +632,11 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
      const handleSelectNote = useCallback(
        (id: string) => {
          setLastViewedNoteId(id);
@@ -151,7 +197,15 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
      );
  
      const handleSearchChange = useCallback((value: string) => {
-@@ -756,7 +803,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -596,6 +649,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+       setSelectedIndex(0);
+       ipcSearchRequestIdRef.current += 1;
+       setIpcSearchResults([]);
++      setIpcSearchState('idle'); // moss-multi seam: search-state (T9.31)
+       if (ipcSearchTimerRef.current) clearTimeout(ipcSearchTimerRef.current);
+     }, []);
+ 
+@@ -756,7 +810,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          isSubmittingRef.current = false;
        } catch (err) {
          console.warn('[FolderCreate] Failed to create folder:', err);
@@ -160,7 +214,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          isSubmittingRef.current = false;
        }
      }, [newFolderName, folderList, creatingFolderParentPath, fetchBackendFolders, setExpandedFolders]);
-@@ -954,8 +1001,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -954,8 +1008,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                updates: { folderPath: snap.folderPath }
              });
            }
@@ -171,7 +225,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          }
        },
        [fetchBackendFolders, noteList, store, setExpandedFolders, setActiveFolderPath]
-@@ -971,11 +1019,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -971,11 +1026,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            setDragOverTarget(null);
            setDraggingFolderPath(null);
            if (!isFolderDropValid(folderPath, targetPath)) return;
@@ -186,7 +240,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            return;
          }
  
-@@ -994,17 +1040,20 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -994,17 +1047,20 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
  
          setDragOverTarget(null);
          setDraggingNoteId(null);
@@ -208,7 +262,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        e.preventDefault();
        e.dataTransfer.dropEffect = 'move';
        // Show drop feedback for notes inside a folder or folders not already at root
-@@ -1044,11 +1093,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1044,11 +1100,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            const segments = folderPath.split('/');
            if (segments.length <= 2) return; // already at root
            if (!isFolderDropValid(folderPath, NOTES_FOLDER_NAME)) return;
@@ -223,7 +277,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            return;
          }
  
-@@ -1065,11 +1112,13 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1065,11 +1119,13 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
  
          setDragOverTarget(null);
          setDraggingNoteId(null);
@@ -238,7 +292,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          }
        },
        [moveNoteToFolder, moveFolderToParent, isFolderDropValid, noteList]
-@@ -1188,6 +1237,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1188,6 +1244,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          await fetchBackendFolders();
        } catch (err) {
          console.warn('[NotesListPanel] Failed to trash folder:', err);
@@ -246,7 +300,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        }
        setTrashFolderTarget(null);
      }, [trashFolderTarget, fetchBackendFolders]);
-@@ -1205,7 +1255,10 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1205,7 +1262,10 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          const isExpanded = expandedFolders.has(folder.path);
          // Show inline subfolder creation input if creating inside this folder
          const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
@@ -258,7 +312,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
  
          return (
            <ContextMenu key={folder.path}>
-@@ -1217,9 +1270,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1217,9 +1277,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              noteCount={folder.noteCount}
              depth={depth}
              isDragOver={dragOverTarget === folder.path && (draggingNoteId != null || (draggingFolderPath != null && isFolderDropTargetValid))}
@@ -270,7 +324,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              draggable={isFolderDraggable}
              onDragStart={(e) => {
                e.dataTransfer.setData('application/x-moss-folder', folder.path);
-@@ -1232,8 +1285,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1232,8 +1292,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              }}
              isDragging={draggingFolderPath === folder.path}
              onFolderClick={() => setActiveFolderPath(folder.path)}
@@ -281,7 +335,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                await foldersApi.rename.invoke({
                  currentPath: folder.path,
                  newName
-@@ -1241,6 +1294,11 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1241,6 +1301,11 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                await fetchBackendFolders();
                const parentSegments = folder.path.split('/').slice(0, -1);
                const newPath = [...parentSegments, newName].join('/');
@@ -293,7 +347,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                const notesInFolder = noteList.filter((n) =>
                  n.folderPath === folder.path || n.folderPath.startsWith(folder.path + '/')
                );
-@@ -1253,7 +1311,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1253,7 +1318,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                    updates: { folderPath: updatedFolderPath }
                  });
                }
@@ -302,7 +356,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            >
              {/* Subfolder creation input */}
              {isExpanded && showSubfolderInput && (
-@@ -1306,15 +1364,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1306,15 +1371,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            </div>
            </ContextMenuTrigger>
            <ContextMenuContent>
@@ -327,17 +381,38 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            </ContextMenuContent>
            </ContextMenu>
          );
-@@ -1323,7 +1389,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1323,7 +1396,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
      );
  
      const renderedNotes = useMemo(() => {
 -      if (!hasAnyNotes) {
 +      // moss-multi seam: folders (T2.2): an empty workspace still shows the folder being created and its folders.
-+      if (!hasAnyNotes && !isCreatingFolder && folderList.length === 0) {
++      // moss-multi seam: search-state (T9.31): and a search from it shows its results, which may be in another vault.
++      if (!hasAnyNotes && !isCreatingFolder && folderList.length === 0 && !hasPanelSearchQuery) {
          return (
            <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
              Notes you create will appear here.
-@@ -1643,11 +1710,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1384,8 +1459,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+         // No title or content matches
+         return (
+           <div className="flex flex-col items-center gap-1.5 py-4 text-center">
+-            <SearchX className="h-5 w-5 text-ink-faint" aria-hidden />
+-            <span className="text-micro text-ink-muted">No notes match your search</span>
++            {/* moss-multi seam: search-state (T9.31): no conclusion before the index answers */}
++            {ipcSearchState === 'pending' ? <Search className="h-5 w-5 text-ink-faint" aria-hidden /> : <SearchX className="h-5 w-5 text-ink-faint" aria-hidden />}
++            <span role="status" className="text-micro text-ink-muted">{SEARCH_CAPTION[ipcSearchState] ?? 'No notes match your search'}</span>
+           </div>
+         );
+       }
+@@ -1550,6 +1626,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+       // Stable deps used in nested event handlers
+       fetchBackendFolders,
+       ipcSearchResults,
++      ipcSearchState, // moss-multi seam: search-state (T9.31)
+       searchQuery,
+       selectedSearchNoteId,
+       selectedSearchCardRef,
+@@ -1643,11 +1720,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          <NotesListPanel
            ref={panelRef}
            className="flex h-full min-w-0 w-full"
@@ -352,7 +427,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
                <TooltipProvider>
                  <Tooltip>
-@@ -1666,14 +1734,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1666,14 +1744,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                  </Tooltip>
                </TooltipProvider>
                <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">
@@ -371,7 +446,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                </DropdownMenuContent>
              </DropdownMenu>
            ) : undefined}
-@@ -1693,7 +1765,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1693,7 +1775,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            open={trashFolderTarget !== null}
            onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
            title="Trash folder?"

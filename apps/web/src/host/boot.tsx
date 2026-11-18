@@ -52,7 +52,9 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
     }
     return { default: PdfExportPage };
   }
-  const [{ default: App }, { ShareDialogHost }] = await Promise.all([import('@moss-desktop/renderer/App'), import('./surfaces/ShareDialog.tsx')]);
+  const [{ default: App }, { ShareDialogHost }, { DocumentTitle }] = await Promise.all([
+    import('@moss-desktop/renderer/App'), import('./surfaces/ShareDialog.tsx'), import('./document-title.tsx'),
+  ]);
   function MossShell() {
     useEffect(() => readyWhenShellRenders(), []);
     useEffect(() => installBackspaceGuard(), []);
@@ -74,6 +76,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
         <TrashConfirmation />
         <ReloadConfirmation />
         <ShareDialogHost />
+        <DocumentTitle />
       </>
     );
   }

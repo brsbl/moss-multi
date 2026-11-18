@@ -1,7 +1,7 @@
 // ported-from: packages/desktop/src/renderer/panels/NotesListPanelContent.tsx @ 762abb777
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { atom, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
-import { ArrowDownZA, ArrowUpAZ, ChevronDown, ChevronRight, ChevronUp, ClockArrowDown, ClockArrowUp, Columns2, Copy, Folder, FolderOpen, FolderPlus, Link, Pencil, Pin, SearchX, Trash2, FileX, ExternalLink } from 'lucide-react';
+import { ArrowDownZA, ArrowUpAZ, ChevronDown, ChevronRight, ChevronUp, ClockArrowDown, ClockArrowUp, Columns2, Copy, Folder, FolderOpen, FolderPlus, Link, Pencil, Pin, Search, SearchX, Trash2, FileX, ExternalLink } from 'lucide-react';
 import {
   NotesListPanel,
   NoteCard,
@@ -63,8 +63,8 @@ import { noteCan } from '@moss-multi/host/capabilities';
 import { TRASH_COPY } from '@moss-multi/host/retention';
 import { canTrashNote } from '@moss-multi/host/trash';
 import { refuseInput } from '@moss-multi/host/refusal';
-// moss-multi seam: search-elsewhere (T9.18)
-import { openInResultVault } from '@moss-multi/host/search-elsewhere';
+// moss-multi seam: search-elsewhere (T9.18); search-state and result vault (T9.31)
+import { openInResultVault, resultVaultName, SEARCH_CAPTION, type SearchState } from '@moss-multi/host/search-elsewhere';
 
 const NOTES_FOLDER_NAME = 'Notes';
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -392,6 +392,7 @@ const SearchResultNoteCard = memo(function SearchResultNoteCard({
             isContextMenuOpen={isContextMenuOpen}
             variant="compact"
             snippet={result.snippet}
+            breadcrumb={resultVaultName(result) /* moss-multi seam: result vault (T9.31): another vault's result names it */}
             highlightQuery={highlightQuery}
             pinned={isPinned}
             onTogglePin={menuHandlers.handleTogglePin}
@@ -480,6 +481,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
     const [ipcSearchResults, setIpcSearchResults] = useState<NoteSearchResult[]>([]);
     const ipcSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const ipcSearchRequestIdRef = useRef(0);
+    // moss-multi seam: search-state (T9.31): the caption waits for the index's answer and says when it failed.
+    const [ipcSearchState, setIpcSearchState] = useState<SearchState>('idle');
     const hasPanelSearchQuery = searchQuery.trim().length > 0;
 
     // Membership signature of the note list (ids only — not timestamps). Changes
@@ -532,6 +535,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
       if (ipcSearchTimerRef.current) clearTimeout(ipcSearchTimerRef.current);
       const requestId = ++ipcSearchRequestIdRef.current;
       setIpcSearchResults([]);
+      setIpcSearchState(query.trim() ? 'pending' : 'idle'); // moss-multi seam: search-state (T9.31)
       if (!query.trim()) {
         return;
       }
@@ -544,10 +548,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           });
           if (requestId !== ipcSearchRequestIdRef.current) return;
           setIpcSearchResults(results);
+          setIpcSearchState('settled'); // moss-multi seam: search-state (T9.31)
         } catch (err) {
           if (requestId !== ipcSearchRequestIdRef.current) return;
           console.warn('[NotesListPanel] IPC search failed:', err);
           setIpcSearchResults([]);
+          setIpcSearchState('error'); // moss-multi seam: search-state (T9.31)
         }
       }, 150);
     }, []);
@@ -644,6 +650,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
       setSelectedIndex(0);
       ipcSearchRequestIdRef.current += 1;
       setIpcSearchResults([]);
+      setIpcSearchState('idle'); // moss-multi seam: search-state (T9.31)
       if (ipcSearchTimerRef.current) clearTimeout(ipcSearchTimerRef.current);
     }, []);
 
@@ -1391,7 +1398,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
 
     const renderedNotes = useMemo(() => {
       // moss-multi seam: folders (T2.2): an empty workspace still shows the folder being created and its folders.
-      if (!hasAnyNotes && !isCreatingFolder && folderList.length === 0) {
+      // moss-multi seam: search-state (T9.31): and a search from it shows its results, which may be in another vault.
+      if (!hasAnyNotes && !isCreatingFolder && folderList.length === 0 && !hasPanelSearchQuery) {
         return (
           <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
             Notes you create will appear here.
@@ -1452,8 +1460,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
         // No title or content matches
         return (
           <div className="flex flex-col items-center gap-1.5 py-4 text-center">
-            <SearchX className="h-5 w-5 text-ink-faint" aria-hidden />
-            <span className="text-micro text-ink-muted">No notes match your search</span>
+            {/* moss-multi seam: search-state (T9.31): no conclusion before the index answers */}
+            {ipcSearchState === 'pending' ? <Search className="h-5 w-5 text-ink-faint" aria-hidden /> : <SearchX className="h-5 w-5 text-ink-faint" aria-hidden />}
+            <span role="status" className="text-micro text-ink-muted">{SEARCH_CAPTION[ipcSearchState] ?? 'No notes match your search'}</span>
           </div>
         );
       }
@@ -1618,6 +1627,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
       // Stable deps used in nested event handlers
       fetchBackendFolders,
       ipcSearchResults,
+      ipcSearchState, // moss-multi seam: search-state (T9.31)
       searchQuery,
       selectedSearchNoteId,
       selectedSearchCardRef,

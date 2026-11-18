@@ -159,8 +159,7 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
   await grantVault(ada, cyPrincipal, 'viewer');
 
   const ben = await actors.open(benPrincipal);
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ben.page.getByRole('menuitem', { name: 'Home editor', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home Can edit');
   await newFolder(ben, 'Ben research');
   await expect(ui.folderRow(ben, 'Ben research'), "Ben's folder shows in Ada's vault").toBeVisible();
   await expect(ui.folderRow(ada, 'Ben research'), 'Ada sees it without a reload').toBeVisible({ timeout: PEER_SIDEBAR_MS });
@@ -178,8 +177,7 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
 
   // Cy can read the vault but is offered no folder creation, rename or trash.
   const cy = await actors.open(cyPrincipal);
-  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await cy.page.getByRole('menuitem', { name: 'Home viewer', exact: true }).click();
+  await ui.switchVault(cy.page, 'Home Can view');
   await expect(ui.folderRow(cy, 'Ben research')).toBeVisible();
   await expect(cy.page.getByRole('button', { name: 'Folder actions', exact: true }), 'a viewer gets no New Folder').toHaveCount(0);
   await expandFolder(cy, 'Ben research');
@@ -241,8 +239,7 @@ test('j06-folders: a folder change refused by the server reads as a sentence, ne
   await expect(ui.folderRow(ada, 'Archive')).toBeVisible();
 
   const ben = await actors.open(benPrincipal);
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ben.page.getByRole('menuitem', { name: 'Home editor', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home Can edit');
   await expect(ui.folderRow(ben, 'Archive')).toBeVisible();
 
   // Ben's sidebar falls behind: his workspace refreshes are held while Ada changes the vault.
@@ -351,8 +348,7 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   const openNote = await api.note('Open plan', open);
 
   const ben = await actors.open(benPrincipal);
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ben.page.getByRole('menuitem', { name: 'Home viewer', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home Can view');
   await expect(ui.folderRow(ben, 'Owned')).toBeVisible();
   // Ben's moves kick every socket open on the moved notes to re-ask its access (T2.5), Ada's window's included.
   ada.expectReconnects(2);

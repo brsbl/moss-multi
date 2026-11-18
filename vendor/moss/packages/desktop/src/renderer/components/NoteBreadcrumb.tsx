@@ -9,6 +9,8 @@ import {
   revealFolderPathAtom,
   type NoteEntity,
 } from '@moss/shared';
+// moss-multi seam: vault-name (T9.31): the location's name says which vault it is in.
+import { useNoteLocationLabel } from '@moss-multi/host/vault-name';
 
 const NOTES_FOLDER_NAME = 'Notes';
 
@@ -38,6 +40,7 @@ export function NoteBreadcrumb({
   const revealFolderPath = useSetAtom(revealFolderPathAtom);
   const setExternalFolderNavigate = useSetAtom(externalFolderNavigateAtom);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const locationLabel = useNoteLocationLabel(); // moss-multi seam: vault-name (T9.31)
 
   useEffect(() => {
     return () => {
@@ -168,7 +171,7 @@ export function NoteBreadcrumb({
 
   return (
     <nav
-      aria-label="Note location"
+      aria-label={locationLabel /* moss-multi seam: vault-name (T9.31) */}
       className="flex min-w-0 items-center gap-0.5 overflow-hidden text-xs text-ink-faint"
     >
       {segments.map((segment, idx) => (

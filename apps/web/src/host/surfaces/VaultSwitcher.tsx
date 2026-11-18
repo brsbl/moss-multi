@@ -1,28 +1,30 @@
-// Glyphdown's owned-first vault menu, composed from moss's DS in the notes-panel header (A§11). On a vault the caller
-// owns, the menu ends with "Share vault…" (T2.4) and an inline "New vault" row, and an always-visible actions button
-// beside it offers Rename and Move to Trash (T3.5); members get no vault actions.
-import { useEffect, useRef, useState, useSyncExternalStore, type ComponentProps, type ComponentType, type ReactNode } from 'react';
+// Vaults (A§11; T9.31): the notes-panel header is Moss's, empty but for its toggle. Switching lives in the footer's app
+// menu (AppMenu: Switch vault…, New vault…); managing lives here, as a Settings section in Moss's own vocabulary (a micro
+// label with a header action over a bordered card, as Connected Folders), closed at rest. Opened, it lists the vaults
+// and offers, on the vault on screen, Rename… and Move to Trash… to its owner (T3.5) and Share vault… to an owner or a
+// granted co-owner (T2.4), and New vault to anyone who owns a vault. Share vault… closes Settings first and comes back
+// to it, focus on Share vault…, when the share dialog closes.
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { getDefaultStore } from 'jotai';
 import { activeFolderPathAtom } from '@moss/shared/state/atoms';
-import { Check, ChevronDown, FolderRoot, MoreHorizontal, Pencil, Plus, Trash2, UserPlus } from 'lucide-react';
-import { Button } from '@moss/shared/components/ui/button';
+import { ChevronDown, FolderRoot, Plus } from 'lucide-react';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
+import type { Role } from '@moss-multi/protocol/roles';
+import { useAuthState } from '../auth.ts';
 import { sessionFetch } from '../session-fetch.ts';
-import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
-import { openShare } from './ShareDialog.tsx';
-
-// moss's DropdownMenu is Base UI's Menu root, which takes a controlled `open`; the Content takes `onCloseAutoFocus`.
-const Menu = DropdownMenu as ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
-const MenuContent = DropdownMenuContent as ComponentType<ComponentProps<typeof DropdownMenuContent> & { onCloseAutoFocus?: (event: Event) => void }>;
-
-const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
-const holdHover = { onMouseMoveCapture: stop, onPointerMoveCapture: stop, onMouseOverCapture: stop, onPointerOverCapture: stop };
+import { getBridge, WORKSPACE, type Bridge, type Vault } from '../bridge/index.ts';
+import { ACCESS_LABEL, openShare } from './ShareDialog.tsx';
 
 export const SWITCH_FAILED = 'Could not switch vaults. Please try again.';
 const UNREACHABLE = 'The server couldn’t be reached. Check your connection and try again.';
+
+/** The words for a vault shared with the caller (its role), or null for one they own. */
+export function sharedRoleLabel(vault: Vault): string | null {
+  if (vault.owned ?? vault.role === 'owner') return null;
+  return vault.role && vault.role in ACCESS_LABEL ? ACCESS_LABEL[vault.role as Role] : null;
+}
 
 /** A vault request; a refusal throws the server's sentence. */
 async function vaultRequest(path: string, method: string, body?: unknown): Promise<{ vault?: { id: string } }> {
@@ -42,12 +44,6 @@ async function vaultRequest(path: string, method: string, body?: unknown): Promi
   return answer;
 }
 
-// The app menu's New vault… (T9.30) opens this menu on its inline "New vault" row.
-const newVaultListeners = new Set<() => void>();
-export function requestNewVault(): void {
-  for (const listener of newVaultListeners) listener();
-}
-
 /** Switches to vault `id` and back to its top level; false when the switch failed. */
 export async function switchToVault(bridge: Bridge, id: string): Promise<boolean> {
   try {
@@ -59,46 +55,94 @@ export async function switchToVault(bridge: Bridge, id: string): Promise<boolean
   }
 }
 
-export function VaultSwitcher() {
-  const bridge = getBridge();
-  return bridge ? <VaultMenu bridge={bridge} /> : null;
+// The footer's app menu hands over how Settings opens, so New vault… and a closed share dialog can open it.
+let openSettings: (() => void) | null = null;
+export function registerSettingsOpener(open: () => void): () => void {
+  openSettings = open;
+  return () => {
+    if (openSettings === open) openSettings = null;
+  };
 }
 
-function VaultMenu({ bridge }: { bridge: Bridge }) {
-  const workspace = useSyncExternalStore(bridge[WORKSPACE].subscribe, bridge[WORKSPACE].getSnapshot);
-  const [open, setOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
+type Reveal = 'create' | 'share';
+let reveal: Reveal | null = null;
+
+/** Opens Settings on Vaults, disclosed, its New vault field taking focus (the app menu's New vault…). */
+export function requestNewVault(): void {
+  reveal = 'create';
+  openSettings?.();
+}
+
+/** Focuses `ref` once the dialog's own first focus has run. */
+function focusSoon(ref: RefObject<HTMLElement | null>): void {
+  let tries = 0;
+  const step = () => {
+    const el = ref.current;
+    if (el && document.activeElement !== el) el.focus();
+    if (++tries < 6) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+const noSubscribe = () => () => {};
+const noSnapshot = () => null;
+
+const SECTION_LABEL = 'text-micro font-medium uppercase tracking-wider text-ink-faint';
+// Moss's Settings text actions (Connected Folders' Add, Account's Sign out).
+const ACTION = 'flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-ink-muted transition-colors hover:bg-border-subtle hover:text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:cursor-not-allowed disabled:opacity-60';
+
+/** Settings' Vaults section, for a signed-in person; a link visitor never sees vault names here. */
+export function VaultsSection({ onClose }: { onClose: () => void }): ReactNode {
+  const auth = useAuthState();
+  const bridge = getBridge() ?? null;
+  const workspace = useSyncExternalStore(bridge?.[WORKSPACE].subscribe ?? noSubscribe, bridge?.[WORKSPACE].getSnapshot ?? noSnapshot, noSnapshot);
+  if (auth.status !== 'signed-in' || !bridge || !workspace) return null;
+  return <Vaults bridge={bridge} active={workspace.vault} vaults={workspace.vaults ?? [workspace.vault]} onClose={onClose} />;
+}
+
+function Vaults({ bridge, active, vaults, onClose }: { bridge: Bridge; active: Vault; vaults: Vault[]; onClose: () => void }): ReactNode {
+  const asked = useRef(reveal);
+  const [open, setOpen] = useState(asked.current !== null);
+  const [creating, setCreating] = useState(asked.current === 'create');
   const [renaming, setRenaming] = useState(false);
   const [trashing, setTrashing] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const section = useRef<HTMLDivElement | null>(null);
+  const renameButton = useRef<HTMLButtonElement | null>(null);
+  const shareButton = useRef<HTMLButtonElement | null>(null);
+  const createButton = useRef<HTMLButtonElement | null>(null);
+  const createField = useRef<HTMLInputElement | null>(null);
+  const refocus = useRef<RefObject<HTMLElement | null> | null>(null);
+
   useEffect(() => {
-    const ask = () => {
-      setOpen(true);
-      setCreating(true);
-    };
-    newVaultListeners.add(ask);
-    return () => { newVaultListeners.delete(ask); };
+    const was = asked.current;
+    reveal = null;
+    if (!was) return;
+    section.current?.scrollIntoView({ block: 'nearest' });
+    focusSoon(was === 'create' ? createField : shareButton);
   }, []);
-  if (!workspace) return null;
-  const active = workspace.vault;
-  const vaults = workspace.vaults ?? [active];
+  // A field that closes hands focus back to the action that opened it.
+  useEffect(() => {
+    if (renaming || creating || !refocus.current) return;
+    const target = refocus.current;
+    refocus.current = null;
+    target.current?.focus();
+  }, [renaming, creating]);
+
   const owned = active.owned ?? active.role === 'owner';
+  const ownsAny = vaults.some((vault) => vault.owned ?? vault.role === 'owner');
   const ownedCount = vaults.filter((vault) => vault.owned).length;
 
-  const switchTo = async (id: string) => {
-    setPending(true);
-    setError(null);
-    if (!(await switchToVault(bridge, id))) setError(SWITCH_FAILED);
-    setPending(false);
-  };
   const create = async (name: string) => {
     const { vault } = await vaultRequest('/api/vaults', 'POST', { name });
     setCreating(false);
-    setOpen(false);
-    if (vault) await switchTo(vault.id);
+    if (!vault) return;
+    onClose();
+    if (!(await switchToVault(bridge, vault.id))) setError(SWITCH_FAILED);
   };
   const rename = async (name: string) => {
+    refocus.current = renameButton;
     setRenaming(false);
     if (name === active.name) return;
     setPending(true);
@@ -124,99 +168,99 @@ function VaultMenu({ bridge }: { bridge: Bridge }) {
     }
     setPending(false);
     // The trashed vault is no longer listed, so the listing falls back to the default vault.
-    await switchTo(active.id);
+    if (!(await switchToVault(bridge, active.id))) setError(SWITCH_FAILED);
+  };
+  const share = () => {
+    onClose();
+    openShare({ type: 'folder', id: active.id, name: active.name, vault: true }, {
+      closed: () => {
+        reveal = 'share';
+        openSettings?.();
+      },
+    });
   };
 
   return (
-    <div className="relative mr-auto flex min-w-0 flex-1 items-center gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-      <div className="min-w-0 flex-1">
-        {renaming ? (
-          <NameInput label="Vault name" initial={active.name} commitOnBlur onCommit={(name) => { void rename(name); }} onCancel={() => setRenaming(false)} />
+    <div ref={section} data-collab-chrome="" className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className={SECTION_LABEL}>Vaults</span>
+        <button type="button" className={ACTION} aria-label="Manage vaults" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <span>Manage</span>
+          <ChevronDown aria-hidden className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+      </div>
+      <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
+        {open ? (
+          <>
+            <ul aria-label="Vaults" className="space-y-1.5">
+              {vaults.map((vault) => {
+                const current = vault.id === active.id;
+                const role = sharedRoleLabel(vault);
+                return (
+                  <li key={vault.id} className="flex min-w-0 items-center gap-2">
+                    <FolderRoot aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                    {current && renaming ? (
+                      <NameInput label="Vault name" initial={active.name} commitOnBlur
+                        onCommit={(name) => { void rename(name); }}
+                        onCancel={() => { refocus.current = renameButton; setRenaming(false); }} />
+                    ) : (
+                      <span className={`min-w-0 flex-1 truncate text-xs ${current ? 'text-ink-default' : 'text-ink-muted'}`} title={vault.name}>{vault.name}</span>
+                    )}
+                    {role ? <span className="shrink-0 text-xs text-ink-faint">{role}</span> : null}
+                    {current && !renaming ? <span className="shrink-0 text-xs text-ink-faint">On screen</span> : null}
+                  </li>
+                );
+              })}
+            </ul>
+            {owned || active.role === 'owner' || ownsAny ? (
+              <div className="-mx-1 mt-3 flex flex-wrap items-center gap-1 border-t border-border-subtle pt-2">
+                {owned ? (
+                  <button ref={renameButton} type="button" className={ACTION} disabled={pending || renaming} onClick={() => setRenaming(true)}>Rename…</button>
+                ) : null}
+                {/* A granted co-owner may share the vault (T2.4); create, rename and trash stay with its owner (T3.5). */}
+                {active.role === 'owner' ? (
+                  <button ref={shareButton} type="button" className={ACTION} disabled={pending} onClick={share}>Share vault…</button>
+                ) : null}
+                {owned && ownedCount > 1 ? (
+                  <button type="button" className={`${ACTION} hover:text-accent-terracotta`} disabled={pending} onClick={() => setTrashing(true)}>Move to Trash…</button>
+                ) : null}
+                {ownsAny && !creating ? (
+                  <button ref={createButton} type="button" className={`${ACTION} ml-auto`} disabled={pending} onClick={() => setCreating(true)}>
+                    <Plus aria-hidden className="h-3.5 w-3.5" />
+                    <span>New vault</span>
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {creating ? (
+              <NewVaultRow field={createField} onCreate={create} onCancel={() => { refocus.current = createButton; setCreating(false); }} />
+            ) : null}
+          </>
         ) : (
-          <Menu open={open} onOpenChange={(next) => { setOpen(next); if (!next) setCreating(false); }}>
-            <DropdownMenuTrigger asChild>
-              <Button data-collab-chrome="" variant="ghost" size="sm" disabled={pending} aria-label={`Vault: ${active.name}`} className="max-w-full gap-1.5 px-1.5">
-                <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-muted" aria-hidden />
-                <span className="truncate">{active.name}</span>
-                <ChevronDown className="h-3 w-3 shrink-0 text-ink-faint" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            {/* While the inline row is open, hovering an item must not move focus out of its field. */}
-            <MenuContent align="start" className="w-60 max-w-[calc(100vw-2rem)]" {...(creating ? holdHover : {})}>
-              {vaults.map((vault) => (
-                <DropdownMenuItem key={vault.id} onSelect={() => { void switchTo(vault.id); }}>
-                  <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate">{vault.name}</span>
-                  {!vault.owned && vault.role && <span className="rounded bg-surface-note-hover px-1.5 py-0.5 text-nano text-ink-muted">{vault.role}</span>}
-                  {vault.id === active.id && <Check className="h-3.5 w-3.5 shrink-0 text-ink-muted" aria-hidden />}
-                </DropdownMenuItem>
-              ))}
-              {(owned || active.role === 'owner' || creating) && <div role="separator" className="-mx-1 my-1 h-px bg-border-subtle" />}
-              {/* A granted co-owner may share the vault (T2.4); create, rename and trash stay with its owner (T3.5). */}
-              {active.role === 'owner' && (
-                <DropdownMenuItem onSelect={() => openShare({ type: 'folder', id: active.id, name: active.name, vault: true })}>
-                  <UserPlus className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate">Share vault…</span>
-                </DropdownMenuItem>
-              )}
-              {/* The app menu's New vault… asks from any vault on screen, shared ones included (T9.30). */}
-              {!owned && creating ? <NewVaultRow onCreate={create} onCancel={() => setCreating(false)} /> : null}
-              {owned && (
-                <>
-                  {creating ? (
-                    <NewVaultRow onCreate={create} onCancel={() => setCreating(false)} />
-                  ) : (
-                    // Kept open: the row replaces the item inside the menu (glyphdown's inline create).
-                    <DropdownMenuItem onClick={(event) => { event.preventDefault(); setCreating(true); }}>
-                      <Plus className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate">New vault</span>
-                    </DropdownMenuItem>
-                  )}
-                </>
-              )}
-            </MenuContent>
-          </Menu>
+          <div className="flex min-w-0 items-center gap-2">
+            <FolderRoot aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+            <span className="min-w-0 flex-1 truncate text-xs text-ink-muted" title={active.name}>{active.name}</span>
+            {vaults.length > 1 ? <span className="shrink-0 text-xs text-ink-faint">{vaults.length} vaults</span> : null}
+          </div>
         )}
       </div>
-      {owned && !renaming && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button data-collab-chrome="" type="button" aria-label="Vault actions" disabled={pending}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none">
-              <MoreHorizontal className="h-4 w-4" strokeWidth={1.5} aria-hidden />
-            </button>
-          </DropdownMenuTrigger>
-          {/* The rename input takes focus, so the menu does not hand it back to its trigger. */}
-          <MenuContent align="start" className="w-48" onCloseAutoFocus={(event) => { if (renaming) event.preventDefault(); }}>
-            <DropdownMenuItem onSelect={() => setRenaming(true)}>
-              <Pencil className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
-              <span className="min-w-0 flex-1 truncate">Rename…</span>
-            </DropdownMenuItem>
-            {ownedCount > 1 && (
-              <DropdownMenuItem onSelect={() => setTrashing(true)} className="text-accent-terracotta">
-                <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                <span className="min-w-0 flex-1 truncate">Move to Trash…</span>
-              </DropdownMenuItem>
-            )}
-          </MenuContent>
-        </DropdownMenu>
-      )}
+      {error ? <p role="alert" className="text-xs text-ink-default">{error}</p> : null}
       <ConfirmationDialog open={trashing} onOpenChange={setTrashing} variant="danger" cancelAutoFocus
         title={`Move “${active.name}” to Trash?`}
         description={TRASH_COPY.trashVault(active.name)}
         confirmLabel="Move to Trash" cancelLabel="Cancel" onConfirm={() => { void trash(); }} />
-      {error && <p role="alert" className="absolute left-1 top-full z-10 mt-0.5 text-caption text-accent-terracotta">{error}</p>}
     </div>
   );
 }
 
 /**
- * A name field: Enter commits a non-empty name, Escape cancels, and keys stay out of the surrounding menu. It goes
- * read-only, never disabled, while a request is out, so focus stays in it for a retry (METHOD: login fields).
+ * A name field: Enter commits a non-empty name, Escape cancels without closing Settings, and keys stay out of the
+ * dialog. It goes read-only, never disabled, while a request is out, so focus stays in it for a retry (METHOD: login
+ * fields).
  */
-function NameInput({ label, initial = '', placeholder, busy = false, commitOnBlur = false, onCommit, onCancel }: {
+function NameInput({ label, initial = '', placeholder, busy = false, commitOnBlur = false, field, onCommit, onCancel }: {
   label: string; initial?: string; placeholder?: string; busy?: boolean; commitOnBlur?: boolean;
-  onCommit: (name: string) => void; onCancel: () => void;
+  field?: RefObject<HTMLInputElement | null>; onCommit: (name: string) => void; onCancel: () => void;
 }) {
   const [name, setName] = useState(initial);
   // Enter unmounts a rename field, and its blur must not commit a second time.
@@ -228,35 +272,38 @@ function NameInput({ label, initial = '', placeholder, busy = false, commitOnBlu
     else onCancel();
   };
   return (
-    <Input autoFocus aria-label={label} value={name} placeholder={placeholder} readOnly={busy}
+    <Input ref={field} autoFocus aria-label={label} value={name} placeholder={placeholder} readOnly={busy}
       onFocus={(event) => event.currentTarget.select()}
       onChange={(event) => setName(event.target.value)}
       onBlur={() => {
-        if (busy) return;
-        if (commitOnBlur) commit();
-        else if (!name.trim()) onCancel();
+        if (commitOnBlur && !busy && !done.current) commit();
       }}
       onKeyDown={(event) => {
-        if (event.key === 'Escape') { done.current = true; onCancel(); return; }
         event.stopPropagation();
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          done.current = true;
+          onCancel();
+          return;
+        }
         if (event.key === 'Enter') {
           event.preventDefault();
           commit();
         }
       }}
-      className="h-7 px-1.5 text-sm" />
+      className="h-7 min-w-0 flex-1 px-1.5 text-xs" />
   );
 }
 
-/** The inline "New vault" row: a refusal shows its sentence under the field and keeps the name. */
-function NewVaultRow({ onCreate, onCancel }: { onCreate: (name: string) => Promise<void>; onCancel: () => void }) {
+/** The New vault row: a refusal shows its sentence under the field and keeps the name. */
+function NewVaultRow({ field, onCreate, onCancel }: { field: RefObject<HTMLInputElement | null>; onCreate: (name: string) => Promise<void>; onCancel: () => void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <div className="px-1 py-1">
-      <div className="flex items-center gap-1.5 pl-1">
-        <FolderRoot className="h-3.5 w-3.5 shrink-0 text-ink-faint" aria-hidden />
-        <NameInput label="New vault name" placeholder="Vault name" busy={pending} onCancel={onCancel}
+    <div className="mt-2">
+      <div className="flex items-center gap-2">
+        <FolderRoot aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+        <NameInput field={field} label="New vault name" placeholder="Vault name" busy={pending} onCancel={onCancel}
           onCommit={(name) => {
             setPending(true);
             setError(null);
@@ -266,7 +313,7 @@ function NewVaultRow({ onCreate, onCancel }: { onCreate: (name: string) => Promi
             });
           }} />
       </div>
-      {error && <p role="alert" className="mt-1 px-1 text-caption text-accent-terracotta">{error}</p>}
+      {error ? <p role="alert" className="mt-1 text-xs text-ink-default">{error}</p> : null}
     </div>
   );
 }

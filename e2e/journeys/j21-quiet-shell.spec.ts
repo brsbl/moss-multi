@@ -220,21 +220,11 @@ test('j21 New vault… from the app menu opens its name field while a shared vau
   await actors.requireDistinct(2);
   const page = ada.page;
 
-  // Ada moves to Ben's vault, which she does not own: its owner's vault actions leave the sidebar.
-  await (await ui.openAppMenu(page)).getByRole('menuitem', { name: 'Switch vault…', exact: true }).hover();
-  const list = page.getByRole('menu').filter({ has: page.getByRole('menuitemradio') });
-  await list.getByRole('menuitemradio', { checked: false }).first().click();
-  await expect(page.getByRole('menu'), 'choosing a vault closes the menu').toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Vault actions', exact: true }), 'a shared vault is on screen').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  // Ada moves to Ben's vault, which she does not own.
+  await ui.switchVault(page, 'Home Can edit');
 
-  await (await ui.openAppMenu(page)).getByRole('menuitem', { name: 'Switch vault…', exact: true }).hover();
-  await page.getByRole('menu').getByRole('menuitem', { name: 'New vault…', exact: true }).click();
-  const field = page.getByRole('textbox', { name: 'New vault name', exact: true });
-  await expect(field, 'New vault… opens its name field').toBeVisible();
-  const name = `Vault ${Date.now().toString(36)}`;
-  await field.fill(name);
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the new vault opens').toBeVisible({ timeout: BIND_TIMEOUT });
+  // New vault… opens Settings on the name field, and the new vault opens.
+  await ui.newVault(page, `Vault ${Date.now().toString(36)}`);
 });
 
 test('j21 people, unread and open suggestions are quiet cues that yield by the pane\'s width and never push Moss\'s actions off @p:tech-9 @p:col-2 @p:ppl-3 @p:mean-2', async ({ actors }) => {
