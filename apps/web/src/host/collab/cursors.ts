@@ -65,17 +65,19 @@ function clipOf(root: HTMLElement): HTMLElement {
 
 /**
  * The text column of the caret's line: the top-level block the caret's middle falls in, else the whole body. Blocks
- * stack top to bottom, so it is found in a few reads however long the note is.
+ * stack top to bottom, so it is found in a few reads however long the note is. A collapsed section's blocks stay in
+ * the root with no box (display:none), so a probe that lands on one moves to the next block that has a box.
  */
 export function columnAt(root: HTMLElement, y: number): { left: number; right: number } {
   const blocks = root.children;
   for (let low = 0, high = blocks.length - 1; low <= high;) {
     const middle = (low + high) >> 1;
-    const box = blocks[middle]!.getBoundingClientRect();
-    if (y < box.top) high = middle - 1;
-    else if (y > box.bottom) low = middle + 1;
-    else if (box.height > 0) return { left: box.left, right: box.right };
-    else break;
+    let at = middle;
+    let box = blocks[at]!.getBoundingClientRect();
+    while (box.height === 0 && at < high) box = blocks[++at]!.getBoundingClientRect();
+    if (box.height === 0 || y < box.top) high = middle - 1;
+    else if (y > box.bottom) low = at + 1;
+    else return { left: box.left, right: box.right };
   }
   const box = root.getBoundingClientRect();
   return { left: box.left, right: box.right };
@@ -202,7 +204,10 @@ export function cursorController(editor: LexicalEditor) {
     const timer = setInterval(queue, 250);
     const resized = () => { sizes = new WeakMap(); queue(); };
     window.addEventListener('resize', resized);
-    return () => { if (docId) setUnplacedTyping(docId, []); stopped = true; stopGeometry(); clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', resized); };
+    // A web font that arrives after a name was measured changes its size.
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+    fonts?.addEventListener?.('loadingdone', resized);
+    return () => { if (docId) setUnplacedTyping(docId, []); stopped = true; stopGeometry(); clearInterval(timer); unregister(); awareness.off('update', queue); window.removeEventListener('resize', resized); fonts?.removeEventListener?.('loadingdone', resized); };
   };
   return { sync, start };
 }
