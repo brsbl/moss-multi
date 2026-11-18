@@ -393,7 +393,8 @@ test('j21 a reader in Review has one bottom row with their access and Review, an
   const review = page.locator(`[${REVIEW_BAND_ATTR}]`);
   const inReview = async (what: string) => {
     await expect(pane, what).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
-    await expect(row, `${what}: one row holds the access and Review`).toHaveText('View only. Reviewing suggestions. Done');
+    await expect(row, `${what}: one row holds the access and Review`).toHaveText('Reviewing suggestions · View only Done');
+    await expect(row.getByRole('button', { name: 'Done', exact: true })).toHaveAccessibleDescription('Return to the plain note; your access stays the same');
     await expect(review, `${what}: and it is the Review row`).toHaveCount(1);
     await expect(page.locator(`[${ROLE_BAND_ATTR}], [${REVIEW_BAND_ATTR}]`), `${what}: no second row`).toHaveCount(1);
     expect(await look(row), 'a quiet row').toEqual({ shadow: 'none', border: 0 });
@@ -402,7 +403,7 @@ test('j21 a reader in Review has one bottom row with their access and Review, an
   const leftReview = async (what: string) => {
     await expect(pane, what).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
     await expect(ui.body(carl, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
-    await expect(row, `${what}: the row keeps the reader's access`).toHaveText("View only. You can't edit this note.");
+    await expect(row, `${what}: the row keeps the reader's access`).toHaveText('View only');
     await expect(review).toHaveCount(0);
     // Leaving remounts the body; the next switch waits until it is live again.
     await expect(pane).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
@@ -412,7 +413,9 @@ test('j21 a reader in Review has one bottom row with their access and Review, an
   await row.getByRole('button', { name: 'Done', exact: true }).click();
   await leftReview('Done leaves Review');
 
-  await (reviewSwitch(await openPanel(carl))).click();
+  const entry = reviewSwitch(await openPanel(carl));
+  await expect(entry, 'the entry says the note stays view only').toHaveAccessibleDescription('Read proposed changes; this note stays view only');
+  await entry.click();
   await closePanel(carl);
   await inReview('back in Review from the list');
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

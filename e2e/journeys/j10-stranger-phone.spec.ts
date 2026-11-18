@@ -103,7 +103,7 @@ for (const size of TIER_A) {
     // T9.10, T9.30: the band says the link is view only and holds the sign-in at every width; the top bar has none.
     const band = ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`);
     await expect(band, 'the band shows when the note opens').toBeVisible();
-    await expect(band).toContainText('View only.');
+    await expect(band).toHaveText('View only Sign in to do more');
     await expect(band.getByRole('button', { name: 'Sign in to do more', exact: true }), 'the band holds the sign-in').toBeVisible();
     expect(await band.evaluate((el) => getComputedStyle(el).boxShadow), 'a quiet row at the bottom, not a floating card').toBe('none');
     await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in to do more', exact: true }), 'no sign-in in the top bar').toHaveCount(0);

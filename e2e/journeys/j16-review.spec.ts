@@ -215,20 +215,23 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
   await button(ada).hover();
   await expect(ada.page.getByRole('tooltip').filter({ hasText: /^Suggestions$/ })).toBeVisible();
   await expect(await review(ada), 'one open suggestion offers Review').toBeVisible();
-  await expect(await review(ada)).toHaveAttribute('aria-pressed', 'false');
+  await expect(await review(ada), 'it says what Review pauses').toHaveAccessibleDescription('Editing pauses while you review');
   await closePanel(ada);
 
-  // The viewer stays in Review; the list's header switch shows it pressed.
+  // The viewer stays in Review, said once in the bottom row: the list repeats no active state.
   await expect(ui.pane(carl, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review');
   await expect(topReview(carl)).toHaveCount(0);
-  await expect(await review(carl), "the viewer's list offers the switch, pressed").toHaveAttribute('aria-pressed', 'true');
+  await expect(carl.page.locator(`[${REVIEW_BAND_ATTR}]`)).toHaveText('Reviewing suggestions · View only Done');
+  await expect(await review(carl), "the viewer's list has no second Review state").toHaveCount(0);
   await closePanel(carl);
 
   const enter = async () => {
     await (await review(ada)).click();
     await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
     await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
-    await expect(band, 'the band says why typing does nothing').toHaveText('Reviewing suggestions. Click a change to accept or reject it. Editing is paused. Done');
+    await expect(band, 'the band says why typing does nothing').toHaveText('Reviewing suggestions · Editing paused Done');
+    await expect(band.getByRole('button', { name: 'Done', exact: true }))
+      .toHaveAccessibleDescription('Return to your previous permitted mode. This does not accept or reject changes.');
   };
   const left = async (how: string) => {
     await expect(pane, how).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
@@ -237,7 +240,7 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
   };
 
   await enter();
-  await expect(await review(ada), 'the switch is pressed in Review').toHaveAttribute('aria-pressed', 'true');
+  await expect(await review(ada), 'in Review the list repeats no active state').toHaveCount(0);
   await closePanel(ada);
   await ada.page.mouse.move(0, 0);
   await blur();
@@ -268,11 +271,63 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
 
   await suggestText(ben, docId, 'Second paragraph', 6, ' extra');
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
-  await expect(await review(ada)).toHaveAttribute('aria-pressed', 'false');
+  await expect(await review(ada)).toBeVisible();
   await closePanel(ada);
   await ada.page.waitForTimeout(500);
   await expect(pane, "a colleague's next suggestion leaves the owner editing").toHaveAttribute(EDIT_MODE_ATTR, 'edit');
   await expect(ui.pane(carl, docId), "the viewer's mode never moved").toHaveAttribute(EDIT_MODE_ATTR, 'review');
+});
+
+test('j16-review: Review pauses the mode it was entered from, Done returns there, and a suggester never leaves Suggest @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  // Each switch remounts the body on a fresh socket (§5).
+  ada.expectReconnects(4, docId);
+  // Two entries into Review and two exits.
+  ben.expectReconnects(4, docId);
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  // An editor who is suggesting: Review pauses Suggesting, and Done returns to it, not to Edit.
+  const pane = ui.pane(ada, docId);
+  await (await ui.openNoteMenu(ada, docId)).getByRole('menuitem', { name: 'Suggest changes', exact: true }).click();
+  await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  const entry = reviewSwitch(await openPanel(ada));
+  await expect(entry).toHaveAccessibleDescription('Suggesting pauses while you review');
+  await entry.click();
+  await closePanel(ada);
+  await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+  const band = ada.page.locator(`[${REVIEW_BAND_ATTR}]`);
+  await expect(band).toHaveText('Reviewing suggestions · Suggesting paused Done');
+  await band.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(pane, 'Done returns to Suggest').toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(band).toHaveCount(0);
+
+  // The suggester: the same words, and Done and Escape return to Suggest.
+  const benPane = ui.pane(ben, docId);
+  const benBand = ben.page.locator(`[${REVIEW_BAND_ATTR}]`);
+  for (const how of ['Done', 'Escape'] as const) {
+    const benEntry = reviewSwitch(await openPanel(ben));
+    await expect(benEntry).toHaveAccessibleDescription('Suggesting pauses while you review');
+    await benEntry.click();
+    await closePanel(ben);
+    await expect(benPane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+    await expect(benBand).toHaveText('Reviewing suggestions · Suggesting paused Done');
+    await expect(benBand.getByRole('button', { name: 'Done', exact: true }))
+      .toHaveAccessibleDescription('Return to your previous permitted mode. This does not accept or reject changes.');
+    if (how === 'Done') await benBand.getByRole('button', { name: 'Done', exact: true }).click();
+    else {
+      await ben.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await ben.page.keyboard.press('Escape');
+    }
+    await expect(benPane, `${how} returns the suggester to Suggest`).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
+    await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  }
+  await expect(ben.page.getByRole('button', { name: 'Stop suggesting', exact: true }), 'and still cannot leave it').toHaveCount(0);
 });
 
 test('j16-review: withdraw removes the inserted text from every view while the note stays byte-identical @p:mean-2 @p:R16 @p:R17', async ({ actors }) => {

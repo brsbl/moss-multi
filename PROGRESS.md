@@ -269,7 +269,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.18 verified: choosing a search result from another vault, by click or Enter, switches to that vault the way the vault switcher does and opens the note live; results from the vault on screen open as before.
 - 2026-11-17 — T9.14 verified: after undo or redo the caret lands where the change was, keeping the typing format and style there, so typing next continues in place; a peer's caret stays where they left it.
 - 2026-11-17 — T9.30 verified: a note's top bar at rest holds only Moss's own actions, with Share, Suggestions, Suggest changes and Version history in More actions, the vault, notifications, connection and account in an app menu behind Settings, People here and open counts as quiet cues, and Suggesting, Review and a reader's access in one quiet bottom row.
-- 2026-11-17 — T9.32 verified: People here is one quiet button of neutral initials whose roster names every session, agent and window with its caret colour, choosing a row names that person at their caret, and a peer's typing name sits in the margin beside their line (or the button reads "N typing" when there is no room).
+- 2026-11-18 — T9.33 verified: "Review suggestions" says what it pauses, the Review row names what is paused ("Editing paused", "Suggesting paused", "View only" or "Comment only"), and Done, Escape or the last decision return to the mode Review paused, by the current role.
 
 ## T1.1s identity audit
 
@@ -310,14 +310,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
-### From T9.32's checker (987a155, 2026-11-17)
+### From T9.33's checker (6e89a79, 2026-11-18)
 
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: long roster names (up to 80 characters) are truncated on one line in the 20rem roster, which can hide the '· window N' or '(N)' suffix, with no tooltip or wrapping to show the rest.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: in dark theme the inspected (hovered) roster row may show no background highlight, unlike the light theme and Moss's dark menu.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: the phone (390 px) presence entry is unproven: no frame shows the Suggestions heading holding People here, the phone roster or the 'N typing' fallback.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: at common laptop pane widths (about 1000 to 1100 px) typing names usually fall back to 'N typing', so the toolbar text flips during each burst of typing.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: done-matrix states not exercised: 50 sessions (+47), touch, short viewport, a focused row whose person leaves, and 'Bot' in the roster; the new tests do not assert the aggregate button or that inspection never scrolls.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: j15-social.spec.ts:192 (comment popover text visibility) failed on a first attempt and passed on rerun; whether it is flaky is unproven.
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: at 390 px the signed-out visitor's Review row wraps, "Sign in to do more" dropping to a second centred line (356x44 CSS px), denser than Moss's one-line toolbar; both actions stay reachable and origin/m9 wrapped the same; moved to T9.46.
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: coverage gap: no real-stack journey lowers an editor's role while the note is in Review and then checks the row wording, Done/Escape and the binding; mode.test.ts and the pane's capability gate cover it (no defect found).
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: evidence gaps: no real-stack proof of the commenter's "Comment only" wording (unit tests only), and no short-height or split-pane captures.
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: the empty Suggestions list tells a forced suggester to "Switch to Suggest mode", which a suggester cannot do.
 
 ### From T9.30's checker (b4d82cd, 2026-11-17)
 

@@ -11,6 +11,8 @@ const shown = new Map<string, EditMode>();
 const openCounts = new Map<string, number>();
 const unsaved = new Map<string, string[]>();
 const noRoom = new Set<string>();
+/** The writable mode a doc's Review was entered from, when it was Suggest. */
+const paused = new Map<string, 'suggest'>();
 const listeners = new Set<() => void>();
 
 const notify = () => {
@@ -38,23 +40,45 @@ export function modeFor(docId: string, role: Role | null): EditMode {
   return choice === 'edit' ? 'edit' : 'review';
 }
 
-/** Review is entered only while the note has an open suggestion (T9.1). */
+/**
+ * The mode Review paused for `role`, read from the current role (T9.33): Suggest for a suggester, and for an editor
+ * or owner whichever of Edit and Suggest they entered Review from; null for a reader, who had nothing to pause.
+ */
+export function pausedMode(docId: string, role: Role | null): 'edit' | 'suggest' | null {
+  if (lockedToSuggest(role)) return 'suggest';
+  if (!roleAtLeast(role, 'editor')) return null;
+  return paused.get(docId) === 'suggest' ? 'suggest' : 'edit';
+}
+
+/** Where Done takes `role`: back to the mode Review paused, or a reader's plain read-only note. */
+export const reviewReturn = (docId: string, role: Role | null): EditMode => pausedMode(docId, role) ?? 'edit';
+
+/** Review is entered only while the note has an open suggestion (T9.1). It remembers the mode it pauses. */
 export function requestMode(docId: string, mode: EditMode): void {
   if (chosen.get(docId) === mode) return;
   if (mode === 'review' && !openCounts.get(docId)) return;
+  if (mode === 'review') {
+    const from = shown.get(docId) ?? chosen.get(docId);
+    if (from === 'suggest') paused.set(docId, 'suggest');
+    else paused.delete(docId);
+  }
   chosen.set(docId, mode);
   notify();
 }
 
 /**
  * The note's open suggestions, as a synced pane last read them. When the last one is decided, a stored choice of
- * Review is dropped: an owner, editor or suggester goes back to their own mode, and a colleague's next suggestion
+ * Review is dropped: an owner, editor or suggester goes back to the mode Review paused, and a colleague's next suggestion
  * does not put them back in Review. A viewer's or commenter's default is Review either way.
  */
 export function setOpenSuggestions(docId: string, count: number): void {
   if (openCounts.get(docId) === count) return;
   openCounts.set(docId, count);
-  if (count === 0 && chosen.get(docId) === 'review') chosen.delete(docId);
+  if (count === 0 && chosen.get(docId) === 'review') {
+    // Back to the mode Review paused (T9.33): an editor who was suggesting keeps suggesting.
+    if (paused.get(docId) === 'suggest') chosen.set(docId, 'suggest');
+    else chosen.delete(docId);
+  }
   notify();
 }
 
@@ -68,6 +92,11 @@ export function showMode(docId: string, mode: EditMode | null): void {
   if (mode === null) shown.delete(docId);
   else shown.set(docId, mode);
   notify();
+}
+
+/** pausedMode, re-read as modes change. */
+export function usePausedMode(docId: string | null, role: Role | null): 'edit' | 'suggest' | null {
+  return useSyncExternalStore(subscribeModes, () => (docId ? pausedMode(docId, role) : null), () => null);
 }
 
 export function useShownMode(docId: string | null): EditMode | null {
