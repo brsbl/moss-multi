@@ -27,15 +27,17 @@ export function reloadDocument(): void {
 const ACK_WAIT_MS = 5_000;
 export const LEAVE_UNSYNCED = 'Your latest edits haven’t synced yet, so this page stayed open. Try again in a moment.';
 
-/** Leaves for `href` once every edit in the tab is acked; while any is not, the page stays and says why. */
-export async function departTo(href: string): Promise<void> {
+/** Leaves for `href` once every edit in the tab is acked; while any is not, the page stays and says why. True once
+ * the leave has started. */
+export async function departTo(href: string): Promise<boolean> {
   const guard = armOpeningGuard('Opening…');
   if (await waitForAllAcked(ACK_WAIT_MS)) {
     leaveTo(href);
-    return;
+    return true;
   }
   guard.disarm();
   refuseInput(LEAVE_UNSYNCED);
+  return false;
 }
 
 type DocOpener = (docId: string) => void;
@@ -53,16 +55,21 @@ export function registerDocOpener(open: DocOpener): () => void {
 const MAX_OPENING_MS = 30_000;
 
 /** Opens a note in this tab, in place; without moss mounted, it is a page load like any other leave. Once its body
- * is bound, a live body takes focus, so keys typed straight on through the switch land in the note that opened. */
-export function openDoc(docId: string): void {
-  if (!opener) {
-    void departTo(`/d/${encodeURIComponent(docId)}`);
-    return;
-  }
+ * is bound, a live body takes focus, so keys typed straight on through the switch land in the note that opened. The
+ * promise is true once the note's body is bound, false when it ends refused or gone (a terminal pane) or never binds. */
+export function openDoc(docId: string): Promise<boolean> {
+  if (!opener) return departTo(`/d/${encodeURIComponent(docId)}`);
+  let resolve!: (opened: boolean) => void;
+  const result = new Promise<boolean>((done) => { resolve = done; });
   const guard = armOpeningGuard();
-  const pane = `[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"][${DOC_STATE_ATTR}="live"]`;
+  const ofDoc = `[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"]`;
+  const pane = `${ofDoc}[${DOC_STATE_ATTR}="live"]`;
   const bound = `${pane} [${BODY_BINDING_ATTR}="live"], ${pane} [${BODY_BINDING_ATTR}="readonly"]`;
+  let settled = false;
   const settle = (body: HTMLElement | null) => {
+    if (settled) return;
+    settled = true;
+    resolve(body !== null);
     observer.disconnect();
     clearTimeout(timer);
     const active = document.activeElement;
@@ -81,10 +88,12 @@ export function openDoc(docId: string): void {
   const check = () => {
     const body = document.querySelector<HTMLElement>(bound);
     if (body) settle(body);
+    else if (document.querySelector(`${ofDoc}[${DOC_STATE_ATTR}="terminal"]`)) settle(null);
   };
   const observer = new MutationObserver(check);
   const timer = setTimeout(() => settle(null), MAX_OPENING_MS);
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: [DOC_STATE_ATTR, DOC_ID_ATTR, BODY_BINDING_ATTR] });
   opener(docId);
   check();
+  return result;
 }

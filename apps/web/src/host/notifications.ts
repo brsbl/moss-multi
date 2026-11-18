@@ -19,6 +19,36 @@ export interface Notice {
   suggestionId?: string;
 }
 
+/** Whether the list has been read: `loading` until the first answer (or a retry after a failure), `error` when no
+ * answer has landed yet and the last read failed. A later failed read keeps what was shown, still `ready`. */
+export type InboxStatus = 'loading' | 'ready' | 'error';
+
+/** A note's (or folder's) notices together, by their existing target id; each keeps its own link and read state. */
+export interface NoticeGroup { key: string; target: Notice['target']; notices: Notice[] }
+
+/** Groups `list` (newest first) by target, in the order each target's newest notice appears. */
+export function groupNotices(list: Notice[]): NoticeGroup[] {
+  const groups = new Map<string, NoticeGroup>();
+  for (const notice of list) {
+    const key = `${notice.target.type}:${notice.target.id}`;
+    const group = groups.get(key);
+    if (group) group.notices.push(notice);
+    else groups.set(key, { key, target: notice.target, notices: [notice] });
+  }
+  return [...groups.values()];
+}
+
+/** Opens a notice's target and acknowledges it only once the target is reached; one that never opens stays unread and
+ * is remembered as unreachable, so its row can say why. */
+export async function openNotice(notice: Notice, deps: {
+  open: (notice: Notice) => Promise<boolean>; markRead: (ids: string[]) => void; unreachable: (id: string) => void;
+}): Promise<boolean> {
+  const reached = await deps.open(notice);
+  if (reached) deps.markRead([notice.id]);
+  else deps.unreachable(notice.id);
+  return reached;
+}
+
 export interface NotificationsDeps {
   fetch: typeof fetch;
   signedIn: () => boolean;
@@ -30,13 +60,24 @@ const META_COALESCE_MS = 1_000;
 
 export function createNotifications({ fetch: fetcher, signedIn }: NotificationsDeps) {
   let list: Notice[] = [];
+  let status: InboxStatus = 'loading';
+  let unreachable: ReadonlySet<string> = new Set();
   let generation = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let coalesced: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<() => void>();
-  const publish = (next: Notice[]) => {
-    list = next;
+  const emit = () => {
     for (const listener of listeners) listener();
+  };
+  const publish = (next: Notice[], nextStatus: InboxStatus = status) => {
+    list = next;
+    status = nextStatus;
+    emit();
+  };
+  const setStatus = (next: InboxStatus) => {
+    if (status === next) return;
+    status = next;
+    emit();
   };
 
   async function refresh(): Promise<void> {
@@ -49,6 +90,8 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
       if (list.length) publish([]);
       return;
     }
+    // A retry after a failed first read is pending again; a list already shown stays as it is.
+    if (status === 'error') setStatus('loading');
     try {
       // A metadata push can land as the page reloads; the read is held by the leave (METHOD: WebKit page errors).
       const body = await heldRead(
@@ -62,16 +105,27 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
           return (await response.json()) as { notifications?: Notice[] };
         },
       );
-      if (mine === generation && signedIn()) publish(body.notifications ?? []);
+      if (mine === generation && signedIn()) publish(body.notifications ?? [], 'ready');
     } catch {
       // The bell keeps what it showed and asks again; a push in the meantime asks sooner.
-      if (mine === generation && signedIn()) retry = setTimeout(() => void refresh(), RETRY_MS);
+      if (mine === generation && signedIn()) {
+        if (status === 'loading') setStatus('error');
+        retry = setTimeout(() => void refresh(), RETRY_MS);
+      }
     }
   }
 
   return {
     refresh,
     get: (): Notice[] => list,
+    status: (): InboxStatus => status,
+    /** Notices whose target did not open from the inbox (deleted, or access changed since the list was read). */
+    unreachable: (): ReadonlySet<string> => unreachable,
+    markUnreachable(id: string): void {
+      if (unreachable.has(id)) return;
+      unreachable = new Set([...unreachable, id]);
+      emit();
+    },
     unread: (): number => list.filter((n) => !n.read).length,
     subscribe(listener: () => void): () => void {
       listeners.add(listener);
@@ -110,7 +164,8 @@ export function createNotifications({ fetch: fetcher, signedIn }: NotificationsD
       if (coalesced) clearTimeout(coalesced);
       retry = null;
       coalesced = null;
-      if (list.length) publish([]);
+      unreachable = new Set();
+      publish([], 'loading');
     },
   };
 }
