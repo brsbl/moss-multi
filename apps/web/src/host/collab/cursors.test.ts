@@ -84,8 +84,24 @@ it('valid human and agent presence render with their names, in either relative-p
   await paint(controller, binding, provider);
   expect(carets(container)).toEqual([21, 22]);
   const labels = [...container.querySelectorAll<HTMLElement>('[data-cursor-label]')].map(label => label.textContent).sort();
-  expect(labels).toEqual(['Ada', 'Claude 🤖']);
+  expect(labels).toEqual(['Ada', 'Claude · Bot']);
   for (const caret of container.querySelectorAll<HTMLElement>('[data-remote-caret]')) {
     expect(caret.dataset.presenceColor).toBe(caret.dataset.remoteCaret === '21' ? '#aa0000' : '#0000aa');
   }
+});
+
+it('a name label is Moss tooltip material, never a fill of the peer colour, with a swatch of their caret colour', async () => {
+  const { binding, provider, states, container, at } = mounted();
+  const controller = cursorController(binding.editor);
+  states.set(31, { ...person('Ada', '#aa0000'), focusing: true, anchorPos: at(2), focusPos: at(2), typingAt: Date.now() });
+  await paint(controller, binding, provider);
+  const label = container.querySelector<HTMLElement>('[data-cursor-label]')!;
+  expect(label.style.backgroundColor).toBe('');
+  expect(label.style.color).toBe('');
+  for (const token of ['rounded-md', 'border-border-subtle', 'bg-surface-floating', 'px-2.5', 'py-1', 'text-nano', 'font-light', 'text-ink-default', 'shadow-md']) {
+    expect(label.classList.contains(token), token).toBe(true);
+  }
+  const swatch = label.querySelector<HTMLElement>('[data-presence-swatch]')!;
+  expect(swatch.dataset.presenceColor).toBe('#aa0000');
+  expect(label.textContent).toBe('Ada');
 });
