@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { liveUnits, mintAnchor } from '@moss-multi/core/anchor-frame';
 import { encodeMovesFrame } from '@moss-multi/protocol/sync';
 import { deletesUpdate, PasteWatch, withoutDeletes } from '../../src/paste-rollback.ts';
-import { $block, $caret, scene, type Peer, type Scene } from './comments-scene.ts';
+import { $block, $caret, $searchText, $select, $selectAt, BODY, scene, type Peer, type Scene } from './comments-scene.ts';
 
 /** The anchor positions over the live `quote` in `peer`'s doc (the `nth` occurrence). */
 function placeOf(peer: Peer, quote: string, nth = 0): [string, string] {
@@ -90,4 +90,32 @@ describe('T4.W a paste\'s held-back deletes keep a comment on the text it moved 
     expect(s.text('c1')).toBe('lazy dog.');
     expect(s.text('c2'), 'c2 stays on its own words').toBe('Second paragraph');
   }));
+
+  it('a partial delete shrinks the comment, whatever copy of its words a hint names', () => scene(async (s) => {
+    const a = s.peer();
+    await s.comment('c1', 'lazy dog.');
+    // A copy this socket wrote itself, so only the order of the checks keeps the comment off it.
+    a.edit(() => $caret('Third.', 0, 'end').insertText(' lazy dog.'));
+    for (const verdict of await a.send()) expect(verdict.refused).toBeNull();
+    const [start, end] = placeOf(a, 'lazy dog.', 1);
+    a.edit(() => {
+      $selectAt($searchText().indexOf('lazy dog.'), 1).removeText();
+    });
+    await s.message(encodeMovesFrame([['c1', start, end]]));
+    for (const verdict of await a.send()) expect(verdict.refused).toBeNull();
+    expect(s.status('c1')).toBe('anchored');
+    expect(s.text('c1'), 'the comment shrinks on its own words').toBe('azy dog.');
+  }));
+
+  it('a full delete detaches the comment when a hint names words that were there before', () => scene(async (s) => {
+    const a = s.peer();
+    await s.comment('c1', 'lazy dog.');
+    const [start, end] = placeOf(a, 'lazy dog.', 1);
+    a.edit(() => {
+      $select('lazy dog.').removeText();
+    });
+    await s.message(encodeMovesFrame([['c1', start, end]]));
+    for (const verdict of await a.send()) expect(verdict.refused).toBeNull();
+    expect(s.status('c1'), 'the comment does not jump to the other copy').toBe('orphaned');
+  }, BODY.replace('Third.', 'Third, lazy dog.')));
 });
