@@ -1,5 +1,5 @@
-// The History view (A§14, T6.3): glyphdown's history page (d.$docId.history.tsx) rebuilt from moss's DS. History in
-// the note's top bar turns the editor pane into the version list with its badges and the selected version, shown
+// The History view (A§14, T6.3): glyphdown's history page (d.$docId.history.tsx) rebuilt from moss's DS. More actions →
+// Version history turns the editor pane into the version list with its badges and the selected version, shown
 // as Diff vs current or in a read-only, unbound MarkdownEditor; Restore asks through moss's ConfirmationDialog.
 // With no versions it is moss's VersionHistoryEmptyState, where an editor saves a first named checkpoint. A failed
 // fetch is said as an error, never shown as an empty history. The live editor stays mounted and bound underneath.
@@ -11,13 +11,13 @@ import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dial
 import { Input } from '@moss/shared/components/ui/input';
 import { noteEntityAtom } from '@moss/shared/state/note-atoms';
 import {
-  HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, RESTORE_NOTICE_ATTR, VERSION_BADGE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
+  HISTORY_VIEW_ATTR, RESTORE_NOTICE_ATTR, VERSION_BADGE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
   type HistoryViewState,
 } from '@moss-multi/protocol/dom-contract';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { captureRestoreBase, type RestoreBase } from '@moss-multi/sync/restore-base';
 import { useAtomValue } from 'jotai';
-import { ArrowLeft, Clock, History, RotateCcw, Tag } from 'lucide-react';
+import { ArrowLeft, Clock, RotateCcw, Tag } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
@@ -183,26 +183,11 @@ function VersionBadge({ kind }: { kind: VersionKind }): ReactNode {
   return <span {...{ [VERSION_BADGE_ATTR]: '' }} className={`${BADGE} bg-surface-badge text-ink-muted`}>Auto</span>;
 }
 
-/** In the top bar: History, for a signed-in person who can open the note. */
-export function HistoryButton({ docId }: { docId: string }): ReactNode {
+/** Whether More actions offers Version history: to a signed-in person who can open the note (T9.30). */
+export function useCanOpenHistory(docId: string): boolean {
   const role = useDocRole(docId);
   const auth = useAuthState();
-  const isOpen = useHistoryOpen(docId);
-  if (role === null || auth.status !== 'signed-in') return null;
-  return (
-    <button
-      type="button"
-      data-collab-chrome=""
-      {...{ [HISTORY_BUTTON_ATTR]: '' }}
-      aria-label="History"
-      aria-pressed={isOpen}
-      title="Version history"
-      onClick={() => setHistoryOpen(docId, !isOpen)}
-      className={`flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded transition-colors hover:bg-surface-note-hover/40 focus-visible:outline-none ${isOpen ? 'text-ink-default' : 'text-ink-faint hover:text-ink-muted'}`}
-    >
-      <History aria-hidden className="h-3.5 w-3.5" />
-    </button>
-  );
+  return role !== null && auth.status === 'signed-in';
 }
 
 /**

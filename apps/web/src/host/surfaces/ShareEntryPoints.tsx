@@ -1,9 +1,8 @@
 // Where sharing starts outside the note's top bar (T2.4): a folder's context menu offers "Share…" to its owner, and a
 // link visitor who is not signed in is offered "Sign in to do more", which returns to the same URL, link and all.
 import { ContextMenuItem } from '@moss/shared/components/ui/context-menu';
-import { LogIn, UserPlus } from 'lucide-react';
+import { UserPlus } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useAuthState } from '../auth.ts';
 import { LOGIN_PATH } from '../auth-state.ts';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import { leaveTo } from '../navigation.ts';
@@ -25,25 +24,4 @@ export function FolderShareItem({ folderPath }: { folderPath: string }): ReactNo
 export function signInToDoMore(): void {
   const here = `${window.location.pathname}${window.location.search}`;
   leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(here)}`);
-}
-
-/**
- * For a share-link visitor with no session: sign in, then come back here with the link's ceiling lifted (A§8). Below
- * 640 px the role band holds it instead while it shows (`inBand`), so one copy is on screen at any width (T9.10).
- */
-export function SignInToDoMore({ inBand = false }: { inBand?: boolean }): ReactNode {
-  const auth = useAuthState();
-  // A tab whose session ended offers its banner's "Sign in" instead.
-  if (auth.status !== 'signed-out' || auth.ended) return null;
-  return (
-    <button
-      type="button"
-      data-collab-chrome=""
-      onClick={signInToDoMore}
-      className={`${inBand ? 'hidden sm:flex' : 'flex'} h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs font-medium text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
-    >
-      <LogIn aria-hidden className="h-3.5 w-3.5" />
-      Sign in to do more
-    </button>
-  );
 }

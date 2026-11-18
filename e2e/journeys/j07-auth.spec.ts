@@ -515,7 +515,7 @@ test('a session that ends under an open tab says so on "+ Note", a folder rename
   await expect(ada.page.getByRole('dialog', { name: 'Share' }), 'Share closes, so the banner can be used').toHaveCount(0);
   await signInAgain('Share');
 
-  await ui.pane(ada, docId).locator(`[${HISTORY_BUTTON_ATTR}]`).click();
+  await (await ui.openNoteMenu(ada, docId)).locator(`[${HISTORY_BUTTON_ATTR}]`).click();
   await expect(ui.pane(ada, docId).locator(`[${HISTORY_VIEW_ATTR}]`), 'History opens').toBeVisible();
   await watchTryAgain();
   await endSessionElsewhere(ada);

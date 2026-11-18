@@ -1,6 +1,6 @@
 // UI verbs (S-test §3.3): everything a user does goes through here, located by role, label or a DOM-contract
 // attribute, never by position. The reliable typing path is title, then Enter, then body (L§4.20).
-import { expect, type Locator } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import type { Actor } from './actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, paneSelector,
@@ -44,12 +44,25 @@ export async function signUpThroughCard(actor: Actor, principal: Principal): Pro
   await form.getByRole('button', { name: 'Create account', exact: true }).click();
 }
 
+/** The sidebar footer's Settings opens a short app menu (T9.30); returns it open. */
+export async function openAppMenu(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu, 'the app menu opens').toBeVisible();
+  return menu;
+}
+
+/** Moss's Settings dialog, through the footer's app menu. */
+export async function openSettingsDialog(page: Page): Promise<Locator> {
+  await (await openAppMenu(page)).getByRole('menuitem', { name: 'Settings', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog, 'Settings opens').toBeVisible();
+  return dialog;
+}
+
 /** Opens moss's Settings; the web build's Account section in it names who is signed in. */
 export async function openSettings(actor: Actor): Promise<Locator> {
-  await actor.page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const dialog = actor.page.getByRole('dialog');
-  await expect(dialog, `${actor.label}: Settings opens`).toBeVisible();
-  return dialog;
+  return openSettingsDialog(actor.page);
 }
 
 /** moss's Settings, then the web build's Account section: Sign out. */
@@ -157,9 +170,46 @@ export type Access = 'Can view' | 'Can comment' | 'Can suggest' | 'Can edit' | '
 /** A share link's access (T2.4): never more than edit, and signed-out visitors read at view. */
 export type LinkAccess = 'Can view' | 'Can comment' | 'Can edit';
 
-/** Opens Share from the note's top bar and returns the dialog. */
+/** Opens the note's More actions and returns the open menu. */
+export async function openNoteMenu(actor: Actor, docId: string): Promise<Locator> {
+  await pane(actor, docId).getByRole('button', { name: 'More actions', exact: true }).click();
+  const menu = actor.page.getByRole('menu');
+  await expect(menu, `${actor.label}: More actions opens`).toBeVisible();
+  return menu;
+}
+
+/** The names of the open menu's items, with "—" for each separator, in order. */
+export const menuEntries = (menu: Locator): Promise<string[]> =>
+  menu.locator('[role="menuitem"], [role="menuitemradio"], [role="separator"]').evaluateAll((items) => items
+    .filter((item) => item.getClientRects().length > 0)
+    .map((item) => (item.getAttribute('role') === 'separator' ? '—' : (item.textContent ?? '').replace(/\s+/g, ' ').trim())));
+
+/** The note's More actions entries; the menu is closed again. */
+export async function noteMenuEntries(actor: Actor, docId: string): Promise<string[]> {
+  const menu = await openNoteMenu(actor, docId);
+  const entries = await menuEntries(menu);
+  await actor.page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  return entries;
+}
+
+/**
+ * The note's People here action: in the top bar while the pane has room, else in the Suggestions list's heading,
+ * which this opens through More actions (T9.30).
+ */
+export async function peopleHere(actor: Actor, docId: string): Promise<Locator> {
+  const inBar = pane(actor, docId).locator('[data-top-bar]').getByRole('button', { name: /^People here/ });
+  if ((await pane(actor, docId).boundingBox())!.width >= 640) return inBar;
+  await (await openNoteMenu(actor, docId)).getByRole('menuitem', { name: /^Suggestions/ }).click();
+  return actor.page.locator(`[${NAMES.suggestionsPanel}]`).getByRole('button', { name: /^People here/ });
+}
+
+/** Whether the note's More actions offers Share (T9.30: Share lives there, for its owner). */
+export const offersShare = async (actor: Actor, docId: string): Promise<boolean> => (await noteMenuEntries(actor, docId)).includes('Share…');
+
+/** Opens Share from the note's More actions and returns the dialog. */
 export async function openShare(actor: Actor, docId: string): Promise<Locator> {
-  await pane(actor, docId).getByRole('button', { name: 'Share', exact: true }).click();
+  await (await openNoteMenu(actor, docId)).getByRole('menuitem', { name: 'Share…', exact: true }).click();
   const dialog = actor.page.getByRole('dialog', { name: 'Share' });
   await expect(dialog, `${actor.label}: the Share dialog opens`).toBeVisible();
   return dialog;

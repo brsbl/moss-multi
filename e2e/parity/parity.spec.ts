@@ -201,6 +201,8 @@ async function trashOpenNote(page: Page): Promise<void> {
 async function openSettings(page: Page, target: Target): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   if (!target.webSections) return;
+  // The web's footer Settings opens its app menu first (T9.30).
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Settings', exact: true }).click();
   await expect(page.locator(target.webSections.selector), 'Account and Agents render').toHaveCount(target.webSections.count, { timeout: 15_000 });
   await expect(page.getByText('No agents yet.', { exact: true })).toBeVisible({ timeout: 15_000 });
 }
@@ -270,10 +272,11 @@ async function historyNote(page: Page): Promise<string> {
   return `/d/${encodeURIComponent(id)}`;
 }
 
-/** History from the note's top bar, settled on the newest version's Diff vs current. */
+/** More actions → Version history (T9.30), settled on the newest version's Diff vs current. */
 async function openHistory(page: Page): Promise<void> {
   await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
-  await page.locator(`[${HISTORY_BUTTON_ATTR}]`).click();
+  await page.getByRole('button', { name: 'More actions', exact: true }).click();
+  await page.getByRole('menu').locator(`[${HISTORY_BUTTON_ATTR}]`).click();
   await expect(page.locator(`[${HISTORY_VIEW_ATTR}]`)).toHaveAttribute(HISTORY_VIEW_ATTR, 'ready', { timeout: 15_000 });
   await expect(page.locator(`[${VERSION_CONTENT_ATTR}="diff"] ins`).first(), 'the diff renders').toBeVisible({ timeout: 15_000 });
 }

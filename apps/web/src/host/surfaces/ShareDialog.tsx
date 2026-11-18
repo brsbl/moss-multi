@@ -3,7 +3,7 @@
 // PRODUCT ruling 20), sees who has access (and emails waiting on an invite), and creates, copies and
 // revokes links. Moss has no sharing, so the layout follows glyphdown's ShareDialog
 // (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
-// its segmented choice for access levels, and the DS Input and Button. The note's top bar (ShareControl), a folder's
+// its segmented choice for access levels, and the DS Input and Button. The note's More actions (useCanShare), a folder's
 // context menu (FolderMenuItems) and the vault switcher open it through `openShare`. Each person's (and invite's)
 // access has glyphdown's role select and Remove button; lowering or removing someone closes their open windows through
 // the one kick path (T2.5). An owner also sees, read-only, who reaches the target from the folders and vault above it
@@ -14,7 +14,7 @@ import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
 import { Button } from '@moss/shared/components/ui/button';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { Check, UserPlus, X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
@@ -620,23 +620,9 @@ export function ShareDialogHost(): ReactNode {
   return <ShareDialog key={`${shown.type}:${shown.id}`} target={shown} open={target !== null} onOpenChange={(open) => { if (!open) publish(null); }} />;
 }
 
-/** The top bar's Share button; only an owner shares (A§8), so nobody else is offered it. */
-export function ShareControl({ docId }: { docId: string }): ReactNode {
+/** Whether More actions offers Share…: only an owner shares (A§8), and an ended window no longer can. */
+export function useCanShare(docId: string): boolean {
   const role = useDocRole(docId);
-  // A window whose session ended (or whose note went away) can no longer share it.
   const terminal = useTerminal(docId);
-  if (role !== 'owner' || (terminal !== null && terminal !== 'conn-limit')) return null;
-  return (
-    <button
-      type="button"
-      data-collab-chrome=""
-      aria-haspopup="dialog"
-      aria-label="Share"
-      onClick={() => openShare({ type: 'doc', id: docId })}
-      className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2 text-xs font-medium text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
-    >
-      <UserPlus aria-hidden className="h-3.5 w-3.5" />
-      <span className="hidden sm:inline">Share</span>
-    </button>
-  );
+  return role === 'owner' && (terminal === null || terminal === 'conn-limit');
 }

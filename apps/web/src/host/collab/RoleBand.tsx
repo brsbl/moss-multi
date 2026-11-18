@@ -1,8 +1,8 @@
-// A reader's access (T9.10), in Moss's bottom band (its Trash notice, CanvasAreaContent): a viewer or commenter is told
+// A reader's access (T9.10), in the pane's one bottom row (T9.30): a viewer or commenter is told
 // they cannot edit, signed in or on a link, and the band follows the role. A key typed into a note body or title the
 // role cannot edit is refused out loud through the one refusal notice, once per notice.
 import {
-  BODY_BINDING_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, ROLE_BAND_ATTR, TITLE_BINDING_ATTR,
+  BODY_BINDING_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, TITLE_BINDING_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import type { Role } from '@moss-multi/protocol/roles';
 import type { ReactNode } from 'react';
@@ -11,6 +11,9 @@ import { useAuthState } from '../auth.ts';
 import { useHistoryOpen } from '../history/HistoryView.tsx';
 import { refusalMessage, refuseInput } from '../refusal.ts';
 import { signInToDoMore } from '../surfaces/ShareEntryPoints.tsx';
+import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT } from './bottom-row.ts';
+import { useOpenSuggestions, useShownMode } from './suggest/mode.ts';
+import { leaveReview, useEscapeLeavesReview } from './suggest/SuggestChrome.tsx';
 import { useTerminal } from './terminal.ts';
 
 const LEAD: Partial<Record<Role, string>> = { viewer: 'View only.', commenter: 'Comment only.' };
@@ -33,27 +36,41 @@ export function useRoleBand(docId: string | null): string | null {
 }
 
 /**
- * The band. A signed-out link visitor's holds "Sign in to do more" below 640 px, where the top bar's copy hides; from
- * 640 px up the top bar keeps it and the band says why.
+ * The band. A signed-out link visitor's holds "Sign in to do more" at every width: the top bar has none (T9.30). In
+ * Review with a suggestion open, the same one row says so and offers Done, which Escape also does.
  */
 export function RoleBand({ docId }: { docId: string }): ReactNode {
   const lead = useRoleBand(docId);
-  const signedOut = useAuthState().status === 'signed-out';
+  const role = useDocRole(docId);
+  const mode = useShownMode(docId);
+  const open = useOpenSuggestions(docId);
+  const auth = useAuthState();
+  const reviewing = lead !== null && mode === 'review' && open > 0;
+  useEscapeLeavesReview(docId, role, reviewing);
+  // A tab whose session ended offers its banner's "Sign in" instead (T9.17).
+  const signedOut = auth.status === 'signed-out' && !auth.ended;
   if (!lead) return null;
+  const text = reviewing ? `${lead} Reviewing suggestions.` : signedOut ? lead : `${lead} ${CANNOT_EDIT}`;
   return (
-    <div className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
-      <div {...{ [ROLE_BAND_ATTR]: '' }} className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
-        <span className="text-xs text-ink-muted">
-          {lead}{' '}
-          {signedOut ? (
-            <>
-              <button type="button" onClick={signInToDoMore} className="font-medium text-ink-default hover:text-ink-muted sm:hidden">
-                Sign in to do more
-              </button>
-              <span className="hidden sm:inline">{CANNOT_EDIT}</span>
-            </>
-          ) : CANNOT_EDIT}
-        </span>
+    <div className={BOTTOM_ROW_SLOT}>
+      <div {...{ [ROLE_BAND_ATTR]: '', ...(reviewing ? { [REVIEW_BAND_ATTR]: '' } : {}) }} className={BOTTOM_ROW}>
+        <span>{text}</span>
+        {reviewing ? (
+          <>
+            {' '}
+            <button type="button" onClick={() => leaveReview(docId, role)} className={BOTTOM_ROW_ACTION}>
+              Done
+            </button>
+          </>
+        ) : null}
+        {signedOut ? (
+          <>
+            {' '}
+            <button type="button" onClick={signInToDoMore} className={BOTTOM_ROW_ACTION}>
+              Sign in to do more
+            </button>
+          </>
+        ) : null}
       </div>
     </div>
   );

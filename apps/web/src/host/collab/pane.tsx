@@ -22,7 +22,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import type { Doc, UndoManager } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
-import { TopBarCollab } from '../slots.tsx';
+import { NoteMenuItems, TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
@@ -33,9 +33,8 @@ import { captureCaret, type CaretMark } from './suggest/caret.ts';
 import { modeFor, offerUnsaved, setOpenSuggestions, showMode, subscribeModes } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { readMeta, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { ReviewBand, ReviewButton, SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
-import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
-import { HistoryButton, HistoryView, RestoreNoticeBand, useHistoryOpen } from '../history/HistoryView.tsx';
+import { ReviewBand, SuggestBand, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
+import { HistoryView, RestoreNoticeBand, useHistoryOpen } from '../history/HistoryView.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
@@ -669,13 +668,15 @@ export interface MossMultiPane {
   hasBodyText: boolean;
   /** The pane root's A§19 attributes. */
   paneProps: Record<string, string>;
-  /** Web chrome at the start of the top bar's right group. */
+  /** Web cues at the start of the top bar's right group, each only while it has something to say (T9.30). */
   topBarCollab: ReactNode;
+  /** Web entries in Moss's More actions, before its Trash group (T9.30). */
+  noteMenuItems: ReactNode;
   /** The History view, which occupies the pane in place of the editor canvas while it is open (A§14). */
   history: ReactNode;
   noticeBand: ReactNode;
   /** Moss's bottom band where the docked toolbar was: the Trash notice, else a reader's role band (T9.10), else Review's
-   * band (T9.1). The last two never show together: Review's band is for those who can suggest. */
+   * band (T9.1), else the Suggesting row (T9.30). At most one shows: each is for a different role or mode. */
   bottomBand: ReactNode;
   readOnly: boolean;
 }
@@ -742,6 +743,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
       hasBodyText: false,
       paneProps: { [EDITOR_PANE_ATTR]: '', [DOC_ID_ATTR]: docId, [DOC_STATE_ATTR]: 'terminal', [TERMINAL_REASON_ATTR]: 'deleted' },
       topBarCollab: null,
+      noteMenuItems: null,
       history: null,
     };
   }
@@ -749,7 +751,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
     bound: true,
     readOnly: !live,
     noticeBand: <><ConnectionNotice docId={docId} bare={!docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
-    bottomBand: docId && !historyOpen ? <><RoleBand docId={docId} /><ReviewBand docId={docId} /></> : null,
+    bottomBand: docId && !historyOpen ? <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></> : null,
     collaboration,
     bodyLive: live,
     bodyVisible: state.bodyVisible,
@@ -768,9 +770,8 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
-    topBarCollab: docId
-      ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}<ReviewButton docId={docId} />{terminal ? null : <HistoryButton docId={docId} />}<TopBarCollab docId={docId} /></>
-      : null,
+    topBarCollab: docId ? <TopBarCollab docId={docId} suggestions={binding} /> : null,
+    noteMenuItems: docId ? <NoteMenuItems docId={docId} /> : null,
     history: docId && historyOpen && !terminal ? <HistoryView key={docId} docId={docId} /> : null,
   };
 }

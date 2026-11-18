@@ -47,7 +47,15 @@ test('j01 presence: three clients have stable distinct colors, matching carets a
     return after !== null && after.x !== before!.x;
   }, { timeout: 1000, intervals: [20] }).toBe(true);
   await expect(caret).toHaveAttribute('data-presence-color', benColor!);
-  const chipFill = await peer.evaluate(element => getComputedStyle(element).backgroundColor);
+  // The top bar's initials are neutral (T9.30); the caret and selection paint the colour the chip names.
+  const chipFill = await ada.page.evaluate((color) => {
+    const probe = document.createElement('span');
+    probe.style.backgroundColor = color;
+    document.body.append(probe);
+    const fill = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return fill;
+  }, benColor!);
   expect(chipFill).not.toBe('rgba(0, 0, 0, 0)');
   await expect(caret).toHaveCSS('background-color', chipFill);
   await ben.page.keyboard.press('Shift+ArrowLeft');

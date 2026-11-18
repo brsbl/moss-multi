@@ -208,7 +208,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   await ui.waitOpen(stranger, docId, 'readonly');
   await expect(ui.pane(stranger, docId), 'the link opens at viewer').toHaveAttribute(ROLE_ATTR, 'viewer');
   expect(await ui.fieldText(stranger, docId, 'body'), 'the stranger reads the note').toBe(TEXT);
-  await expect(ui.pane(stranger, docId).getByRole('button', { name: 'Share', exact: true }), 'no Share for a link visitor').toHaveCount(0);
+  expect(await ui.offersShare(stranger, docId), 'no Share for a link visitor').toBe(false);
   await expect(stranger.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" for a viewer link (T2.6)').toHaveCount(0);
   const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
   await expect(signIn, 'the stranger is offered sign-in').toBeVisible();
@@ -253,7 +253,7 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   const cy = await actors.open(cyPrincipal, { path: ui.pathOf(url) });
   await ui.waitOpen(cy, docId, 'live');
   await expect(ui.pane(cy, docId), 'with a grant above the link, the grant').toHaveAttribute(ROLE_ATTR, 'owner');
-  await expect(ui.pane(cy, docId).getByRole('button', { name: 'Share', exact: true }), 'a co-owner may share').toBeVisible();
+  expect(await ui.offersShare(cy, docId), 'a co-owner may share').toBe(true);
   await actors.requireDistinct(3);
 });
 
@@ -385,7 +385,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect(text, 'no email reaches a member').not.toContain('@');
   expect((await ben.context.request.get(`/api/docs/${docId}/links`)).status(), 'a member cannot list links').toBe(403);
   expect((await ben.context.request.post(`/api/docs/${docId}/links`, { headers: { origin: stack.baseUrl }, data: { role: 'viewer' } })).status()).toBe(403);
-  await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+  expect(await ui.offersShare(ben, docId)).toBe(false);
   const reopened = await ui.openShare(ada, docId);
   await expect(ui.accessRow(reopened, benPrincipal), 'redeemed, Ben is listed by name').toContainText(benPrincipal.email);
   await expect(ui.inviteRow(reopened, ghost.email)).toContainText(ui.INVITE_WAITING);
@@ -560,7 +560,7 @@ async function rankedNote(ada: Actor, baseUrl: string): Promise<string> {
 const menuItems = (actor: Actor): Promise<string[]> =>
   actor.page.getByRole('menu').getByRole('menuitem').evaluateAll((items) => items.map((item) => item.textContent?.trim() ?? ''));
 
-/** Every action the caller is offered on the note: its sidebar row's menu, the top bar's More actions and Share. */
+/** Every action the caller is offered on the note: its sidebar row's menu and the top bar's More actions, Share among them. */
 async function offered(actor: Actor, docId: string): Promise<string[]> {
   await actor.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click({ button: 'right' });
   await expect(actor.page.getByRole('menuitem', { name: 'Copy Link', exact: true }), `${actor.label}: the row menu opens`).toBeVisible();
@@ -572,7 +572,8 @@ async function offered(actor: Actor, docId: string): Promise<string[]> {
   const more = (await menuItems(actor)).map((item) => `more:${item}`);
   await actor.page.keyboard.press('Escape');
   await expect(actor.page.getByRole('menu')).toHaveCount(0);
-  const share = (await ui.pane(actor, docId).getByRole('button', { name: 'Share', exact: true }).count()) > 0 ? ['share'] : [];
+  // Share is a More actions entry (T9.30).
+  const share = more.includes('more:Share…') ? ['share'] : [];
   return [...row, ...more, ...share].sort();
 }
 

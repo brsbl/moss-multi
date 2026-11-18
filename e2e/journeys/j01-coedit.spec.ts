@@ -50,7 +50,7 @@ test('j01 setup: Ada shares her note with Ben from the Share dialog, and Ben ope
   await ui.waitBodyLive(ben, docId);
   await expect(ui.pane(ben, docId), 'Ben opens the note at the role Ada chose').toHaveAttribute(ROLE_ATTR, 'editor');
   expect(await ui.fieldText(ben, docId, 'body'), "Ben sees Ada's text").toBe(ADA_TEXT);
-  await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true }), 'only the owner is offered Share').toHaveCount(0);
+  expect(await ui.offersShare(ben, docId), 'only the owner is offered Share').toBe(false);
   await actors.requireDistinct(2);
 
   await ui.typeBody(ben, docId, BEN_TEXT);
@@ -153,7 +153,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   await expect(ui.body(ben, docId), 'the read-only note remains visible').toBeVisible();
   await expect(ui.body(ben, docId)).toHaveAttribute('contenteditable', 'false');
   expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
-  await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+  expect(await ui.offersShare(ben, docId)).toBe(false);
 
   const headers = { origin: stack.baseUrl };
   const reshared = await ben.context.request.post(`/api/docs/${docId}/members`, {

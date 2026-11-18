@@ -1,4 +1,4 @@
-import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type TerminalReason } from '@moss-multi/protocol/dom-contract';
+import { CONNECTION_ATTR, CONNECTION_BANNER_ATTR, NOTICE_BAND_ATTR, type ConnectionState, type TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
 import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
@@ -35,16 +35,22 @@ function terminalAction(terminal: TerminalReason | null, docId: string | null) {
   }
 }
 
-export function ConnectionIndicator({ docId }: { docId: string }) {
+/** The note's connection in words, and its DOM-contract state. */
+export function useConnectionState(docId: string | null): { connection: ConnectionState; label: string } {
   const view = useDocConnection(docId);
   const terminal = useTerminal(docId);
-  const connection = terminal ? 'offline' : (view?.connection ?? 'reconnecting');
+  const connection: ConnectionState = terminal ? 'offline' : (view?.connection ?? 'reconnecting');
   const label = terminal ? 'Disconnected' : connection === 'online' ? 'Connected' : connection === 'offline' ? 'Offline' : 'Connecting…';
-  return <span data-collab-chrome="" {...{ [CONNECTION_ATTR]: connection }} title={label} aria-label={label}
-    className="flex shrink-0 items-center gap-1.5 rounded-full border border-border-subtle px-2 py-0.5 text-micro text-ink-muted">
-    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${connection === 'online' ? 'bg-highlight-chalk-green' : 'bg-accent-terracotta'}`} />
-    <span className="hidden sm:inline">{label}</span>
-  </span>;
+  return { connection, label };
+}
+
+/**
+ * The pane's connection, published in its top bar for the DOM contract and assistive tech. It draws nothing: a healthy
+ * connection is quiet, trouble shows in the notice band, and details are in the app menu's Connection status (T9.30).
+ */
+export function ConnectionIndicator({ docId }: { docId: string }) {
+  const { connection, label } = useConnectionState(docId);
+  return <span {...{ [CONNECTION_ATTR]: connection }} role="status" className="sr-only">{label}</span>;
 }
 
 /** `bare`: no note is open, so no top bar sits above the band; an empty one keeps it clear of the window's drag strip

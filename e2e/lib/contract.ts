@@ -20,6 +20,8 @@ export const NAMES = {
   retentionNotice: dom.RETENTION_NOTICE_ATTR,
   reviewBand: dom.REVIEW_BAND_ATTR,
   roleBand: dom.ROLE_BAND_ATTR,
+  modeRow: dom.MODE_ROW_ATTR,
+  suggestionsPanel: dom.SUGGESTIONS_PANEL_ATTR,
   actionFeedback: dom.ACTION_FEEDBACK_ATTR,
   remote: [dom.REMOTE_CARET_ATTR, dom.REMOTE_SELECTION_ATTR, dom.REMOTE_LABEL_ATTR],
   // moss's table chrome (TableColumnResizePlugin): fixed handles over the table the caret is in.

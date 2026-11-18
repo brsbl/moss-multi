@@ -4,20 +4,22 @@
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { Button } from '@moss/shared/components/ui/button';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
 import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
+  TOP_BAR_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { Check, PencilLine, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Check, FilePenLine, PencilLine, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { sessionFetch } from '../../session-fetch.ts';
+import { handOffWhenGone, HomeTrigger, useFocusHome } from '../../surfaces/footer.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
@@ -55,6 +57,11 @@ export function openSuggestion(docId: string, record: string | null): void {
 
 function closePanel(docId: string): void {
   if (openPanels.delete(docId)) panelChanged();
+}
+
+/** Whether `docId`'s panel is open (T9.30: cues yielding around it keep their place until it closes). */
+export function useSuggestionsOpen(docId: string): boolean {
+  return useSyncExternalStore(subscribePanels, () => openPanels.has(docId), () => false);
 }
 
 // A Reject or Withdraw waiting for its confirmation. It is kept outside the list, so closing the list cannot drop it.
@@ -341,8 +348,16 @@ function CloseConfirmation({ docId }: { docId: string }): ReactNode {
   );
 }
 
-/** In the top bar: the count of open suggestions, opening the panel of cards. */
-export function SuggestionsButton({ docId, source }: { docId: string; source: SuggestionsSource }): ReactNode {
+/**
+ * The panel of cards, and in the top bar the count of open suggestions that opens it. The count shows only while a
+ * suggestion is open and the bar has room for it (`showCount`, T9.30); More actions → Suggestions and a painted mark
+ * open the same panel, at `anchor` when the count is not there. A count that opened the panel keeps its slot until
+ * the panel closes; if it then leaves while it had focus, focus moves to the pane's More actions. `people` is the
+ * People here action, shown in the heading once the bar has no room for it.
+ */
+export function SuggestionsButton({ docId, source, showCount = true, anchor, people = null }: {
+  docId: string; source: SuggestionsSource; showCount?: boolean; anchor?: RefObject<HTMLElement | null>; people?: ReactNode;
+}): ReactNode {
   const records = useRecords(source);
   const body = useSyncExternalStore(source.subscribeMount, () => source.body, () => null);
   const role = useDocRole(docId);
@@ -359,31 +374,52 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
     .filter((record) => record.meta.status !== 'open')
     .sort((a, b) => (b.meta.resolvedAt ?? b.meta.createdAt) - (a.meta.resolvedAt ?? a.meta.createdAt))
     .slice(0, REVIEWED_SHOWN);
-  // Shown once the note has any suggestion, open or reviewed, as Moss shows its Comments button (comment-entry-point).
-  if (role === null || records.length === 0) return null;
+  const [pinned, setPinned] = useState(false);
+  const moreActions = () => anchor?.current?.closest<HTMLElement>(`[${TOP_BAR_ATTR}]`)?.querySelector<HTMLElement>('button[aria-label="More actions"]') ?? null;
+  // A focused count that leaves, unopened, hands focus to More actions, where Suggestions stays.
+  const focusHome = useFocusHome(moreActions);
+  const shown = showCount && open.length > 0;
+  if (isOpen && shown && !pinned) setPinned(true);
+  if (!isOpen && pinned) setPinned(false);
+  if (role === null) return null;
   const reviewing = mode === 'review';
+  // While the panel is open the count it opened from stays, even when the pane narrows or the last suggestion closes.
+  const counted = shown || (isOpen && pinned);
   return (
     <TooltipProvider>
-      <Popover.Root open={isOpen} onOpenChange={(next) => (next ? openSuggestion(docId, null) : closePanel(docId))}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Popover.Trigger asChild>
-              <button
-                type="button"
-                data-collab-chrome=""
-                {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}
-                aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
-                aria-haspopup="dialog"
-                aria-expanded={isOpen}
-                className={`relative ${open.length ? 'flex' : 'hidden sm:flex'} h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none`}
-              >
-                <PencilLine aria-hidden className="h-3.5 w-3.5" />
-                {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
-              </button>
-            </Popover.Trigger>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Suggestions</TooltipContent>
-        </Tooltip>
+      <Popover.Root
+        open={isOpen}
+        onOpenChange={(next) => {
+          if (next) openSuggestion(docId, null);
+          else {
+            closePanel(docId);
+            // The count that opened the list leaves its slot once the list closes: focus goes to More actions.
+            const bar = anchor?.current?.closest<HTMLElement>(`[${TOP_BAR_ATTR}]`);
+            if (pinned && bar) handOffWhenGone(bar, `[${SUGGESTIONS_BUTTON_ATTR}]`, moreActions);
+          }
+        }}
+      >
+        {counted ? (
+          <Tooltip>
+            <HomeTrigger asChild ref={focusHome}>
+              <Popover.Trigger asChild>
+                <button
+                  type="button"
+                  data-collab-chrome=""
+                  {...{ [SUGGESTIONS_BUTTON_ATTR]: String(open.length) }}
+                  aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
+                  aria-haspopup="dialog"
+                  aria-expanded={isOpen}
+                  className="relative flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+                >
+                  <FilePenLine aria-hidden className="h-3.5 w-3.5" />
+                  {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
+                </button>
+              </Popover.Trigger>
+            </HomeTrigger>
+            <TooltipContent side="bottom">Suggestions</TooltipContent>
+          </Tooltip>
+        ) : anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
         <Popover.Portal>
           <Popover.Content
             align="end"
@@ -403,6 +439,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
                 <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-muted" strokeWidth={1.5} />
                 {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
               </div>
+              {people ? <div className="ml-auto flex shrink-0 items-center">{people}</div> : null}
               {open.length ? (
                 <button
                   type="button"

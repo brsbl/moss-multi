@@ -313,15 +313,19 @@ const paneIds = (page) => page.$$eval(`[${DOM.EDITOR_PANE_ATTR}]`, (panes, attr)
 
 /** Opens the note and waits for its body to bind (`live`, or `readonly`). */
 /**
- * Opens the note, waits for its body to bind, and puts the pane in `mode`: an owner toggles between `edit` and
- * `review` with "Review suggestions"; a suggester is locked in `suggest`.
+ * Opens the note, waits for its body to bind, and puts the pane in `mode`: an owner enters `review` from the
+ * Suggestions list and leaves it with Done; a suggester is locked in `suggest`.
  */
 async function openNote(page, id, mode = 'edit') {
   if (!new URL(page.url()).pathname.endsWith(`/d/${id}`)) await visit(page, `/d/${id}`);
   const pane = `${paneOf(id)}[${DOM.DOC_STATE_ATTR}="live"]`;
   await page.waitForSelector(`${pane} [${DOM.BODY_BINDING_ATTR}="live"], ${pane} [${DOM.BODY_BINDING_ATTR}="readonly"]`, { timeout: 20_000 });
   const current = () => page.$eval(paneOf(id), (el, attr) => el.getAttribute(attr), DOM.EDIT_MODE_ATTR);
-  if (mode !== 'suggest' && (await current()) !== mode) await press(page, 'button', 'Review suggestions');
+  // Review is entered from the Suggestions list and left with the bottom row's Done (T9.30).
+  if (mode === 'review' && (await current()) !== mode) {
+    await (await page.waitForSelector(`${paneOf(id)} [${DOM.SUGGESTIONS_BUTTON_ATTR}]`, { visible: true })).click();
+    await press(page, 'button', 'Review');
+  } else if (mode === 'edit' && (await current()) === 'review') await press(page, 'button', 'Done');
   await until(`the note is in ${mode} mode`, async () => (await current()) === mode);
   await page.waitForSelector(`${pane} [${DOM.BODY_BINDING_ATTR}="${mode === 'review' ? 'readonly' : 'live'}"]`, { timeout: 20_000 });
 }
@@ -723,7 +727,8 @@ export const STEPS = {
     const page = await person('ada');
     await openNote(page, docId);
     if (hasVersion((await read(page, `/api/docs/${docId}/versions`)).versions, name)) return { created: false };
-    await (await page.waitForSelector(`${paneOf(docId)} [${DOM.HISTORY_BUTTON_ATTR}]`, { visible: true })).click();
+    await (await page.waitForSelector(`${paneOf(docId)} [aria-label="More actions"]`, { visible: true })).click();
+    await (await page.waitForSelector(`[role="menu"] [${DOM.HISTORY_BUTTON_ATTR}]`, { visible: true })).click();
     const view = `${paneOf(docId)} [${DOM.HISTORY_VIEW_ATTR}]`;
     await until('the versions load', () => page.$eval(view, (el, attr) => el.getAttribute(attr) !== 'loading', DOM.HISTORY_VIEW_ATTR));
     const scope = await page.$(view);
@@ -758,6 +763,7 @@ export const STEPS = {
     const page = await person('ada');
     await visit(page, '/');
     await press(page, 'button', 'Settings');
+    await press(page, 'menuitem', 'Settings');
     await page.waitForSelector(aria('textbox', 'Agent name'), { visible: true });
     for (let old = await page.$(aria('button', `Revoke ${name}`)); old; old = await page.$(aria('button', `Revoke ${name}`))) {
       const before = await count(page, 'ul[aria-label="Agents"] li');
@@ -888,7 +894,8 @@ export const STEPS = {
     const page = await person('ada');
     await openNote(page, docId);
     await calm(page);
-    await (await page.waitForSelector(`${paneOf(docId)} [${DOM.HISTORY_BUTTON_ATTR}]`, { visible: true })).click();
+    await (await page.waitForSelector(`${paneOf(docId)} [aria-label="More actions"]`, { visible: true })).click();
+    await (await page.waitForSelector(`[role="menu"] [${DOM.HISTORY_BUTTON_ATTR}]`, { visible: true })).click();
     const view = `${paneOf(docId)} [${DOM.HISTORY_VIEW_ATTR}]`;
     await until('the versions load', () => page.$eval(view, (el, attr) => el.getAttribute(attr) === 'ready', DOM.HISTORY_VIEW_ATTR));
     await pause(400);
