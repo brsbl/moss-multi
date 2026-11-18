@@ -14,7 +14,7 @@ import {
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
-  type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
+  type AnchorMove, type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
@@ -359,6 +359,8 @@ export class DocDO extends YServer<SyncEnv> {
 
   #store: DocStore | null = null;
   #comments: DocComments | null = null;
+  /** Where a socket's finished paste moved commented text, for its next sync frame (T4.W). */
+  readonly #moves = new WeakMap<Connection, AnchorMove[]>();
   #payloads: PayloadStore | null = null;
   /** The note's body text, exact (A§5.1 Limits). */
   #text: TextCount | null = null;
@@ -725,6 +727,10 @@ export class DocDO extends YServer<SyncEnv> {
       if (this.#payloads) this.#payloadFrame(connection, attachment, store, this.#payloads, frame.payload);
       return;
     }
+    if (frame.kind === 'moves') {
+      if (roleAtLeast(attachment.role, 'editor')) this.#moves.set(connection, frame.moves);
+      return;
+    }
     if (frame.kind === 'awareness') {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
@@ -737,7 +743,11 @@ export class DocDO extends YServer<SyncEnv> {
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     /** A frame Yjs will apply: an editor's write. */
     let applying: ReturnType<typeof Y.decodeUpdate> | null = null;
+    /** Read for this frame only, whatever becomes of it. */
+    let moves: AnchorMove[] | undefined;
     if (frame.kind === 'sync') {
+      moves = this.#moves.get(connection);
+      this.#moves.delete(connection);
       let decoded: ReturnType<typeof Y.decodeUpdate>;
       try {
         decoded = Y.decodeUpdate(frame.update);
@@ -762,10 +772,12 @@ export class DocDO extends YServer<SyncEnv> {
       this.#frameDeletes = deletes;
       if (changes && !this.isReadOnly(connection)) applying = decoded;
     }
+    if (moves && applying) this.#comments?.expectMoves(moves);
     try {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
+      this.#comments?.expectMoves(undefined);
     }
     if (frame.kind === 'sync') this.#afterFrame(connection, store, applying ? applying.structs : []);
   }

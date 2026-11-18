@@ -203,6 +203,50 @@ export function decodePayloadFrame(bytes: Uint8Array): PayloadFrame | null {
   }
 }
 
+/**
+ * Where a finished large paste moved commented text, sent just before the sync frame that sends the paste's held-back
+ * deletes (T4.W): `[MOVES_MESSAGE, length, UTF-8 JSON [[commentId, start, end], …]]`, each pair an anchor's b64
+ * RelativePositions. The DocDO reads it only for that next frame, and only for a comment the frame would detach,
+ * onto text that reads exactly as the comment's did.
+ */
+export const MOVES_MESSAGE = 8;
+export const MOVES_MAX = 256;
+const MOVES_MAX_BYTES = 128 * 1024;
+
+export type AnchorMove = [id: string, start: string, end: string];
+
+export function encodeMovesFrame(moves: AnchorMove[]): Uint8Array {
+  const body = new TextEncoder().encode(JSON.stringify(moves.slice(0, MOVES_MAX)));
+  const head = [MOVES_MESSAGE];
+  writeVarUint(head, body.length);
+  const frame = new Uint8Array(head.length + body.length);
+  frame.set(head);
+  frame.set(body, head.length);
+  return frame;
+}
+
+/** The moves a frame names, or null when it is not a well-formed moves frame. */
+export function decodeMovesFrame(bytes: Uint8Array): AnchorMove[] | null {
+  if (bytes[0] !== MOVES_MESSAGE || bytes.length > MOVES_MAX_BYTES) return null;
+  let at = 1;
+  let size = 0;
+  for (let scale = 1; ; scale *= 0x80) {
+    if (at >= bytes.length || scale > 2 ** 28) return null;
+    const byte = bytes[at++];
+    size += (byte & 0x7f) * scale;
+    if (byte < 0x80) break;
+  }
+  if (at + size !== bytes.length) return null;
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(at)));
+    if (!Array.isArray(parsed) || parsed.length > MOVES_MAX) return null;
+    const ok = parsed.every((move) => Array.isArray(move) && move.length === 3 && move.every((part) => typeof part === 'string' && part.length <= 200));
+    return ok ? (parsed as AnchorMove[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Headers the Worker sets after stripping every client `x-moss-*` and `x-partykit-*` header. */
 export const TRUSTED = {
   principal: 'x-moss-principal',

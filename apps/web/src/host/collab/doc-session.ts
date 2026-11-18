@@ -7,12 +7,15 @@
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import {
+  base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeMovesFrame, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason,
+} from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, namedPayloadIds, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBackPaste, withoutDeletes, type PasteRecord, type PayloadSpan, type Ranges } from '@moss-multi/sync/paste-rollback';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { knownRole, rememberRole } from '../access.ts';
+import { existingModel } from '../comments/model.ts';
 import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput, settleRefusal } from '../refusal.ts';
@@ -568,7 +571,12 @@ export class DocSession {
       track.holding = false;
       const ranges = track.watch.deletes();
       // A socket that is down sends them with the unacked writes when it reconnects.
-      if (ranges.length > 0 && !this.#ended) this.provider.ws?.send(encodeSyncFrame(2, deletesUpdate(ranges)));
+      const ws = this.provider.ws;
+      if (ranges.length === 0 || this.#ended || !ws) continue;
+      // The server sees the moved text's delete only now, after the copy: it is told where the comments on it went.
+      const moves = existingModel(this.doc)?.moves() ?? [];
+      if (moves.length > 0) ws.send(encodeMovesFrame(moves));
+      ws.send(encodeSyncFrame(2, deletesUpdate(ranges)));
     }
   }
 
