@@ -263,7 +263,7 @@ test('j18-agents degenerate: a push deleting most of the doc is refused without 
 });
 
 /** The agent's chip in the note's face pile: its name, with the Bot badge. */
-const botChip = (actor: Actor): Locator => actor.page.locator('[data-presence-client][title="Scribe (agent)"]');
+const botChip = (actor: Actor): Locator => actor.page.locator('[data-presence-client][data-presence-name="Scribe"][data-presence-agent]');
 const UNDO = 'ControlOrMeta+z';
 /** Past the undo capture window, so a later edit is its own step. */
 const NEW_STEP_MS = 1_500;
@@ -293,8 +293,9 @@ test('j18-agents presence: a push shows a Bot-badged chip for about 15 s and add
     const pushedAt = Date.now();
     await expect(ui.body(ada, docId), 'Ada sees the agent\'s edit').toContainText('Broad beans in the first row.', { timeout: BIND_TIMEOUT });
     await expect(botChip(ada), 'the agent appears in Ada\'s face pile').toHaveCount(1, { timeout: 5_000 });
-    await expect(botChip(ada).getByLabel('Agent'), 'with the Bot badge').toHaveCount(1);
-    await expect(botChip(ada)).toHaveAttribute('aria-label', 'Scribe');
+    await expect(botChip(ada).locator('svg'), 'with the Bot badge').toHaveCount(1);
+    await expect(ada.page.locator('[data-top-bar]').getByRole('button', { name: /^People here/ }), 'People here counts the agent')
+      .toHaveAttribute('aria-label', 'People here, 1 other session, 1 agent');
     await actors.checkpoint('agent-chip');
 
     // Cmd+Z takes back Ada's own words; the agent's push is never one of her steps.

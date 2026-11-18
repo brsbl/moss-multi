@@ -7,11 +7,11 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
 import { TOP_BAR_ATTR } from '@moss-multi/protocol/dom-contract';
-import { Bot, Users } from 'lucide-react';
-import { useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { Users } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { FacePile, type Avatar } from '../../../../../packages/ui/src/FacePile.tsx';
 import { ConnectionIndicator } from '../collab/ConnectionNotice.tsx';
-import { usePeers } from '../collab/presence.ts';
+import { inspect, usePeers, useUnplacedTyping } from '../collab/presence.ts';
 import { SuggestionsButton, type SuggestionsSource } from '../collab/suggest/SuggestionsPanel.tsx';
 import { HomeTrigger, useFocusHome } from './footer.ts';
 import { NotificationsBell } from './NotificationsBell.tsx';
@@ -36,26 +36,38 @@ function usePaneWidth(probe: { current: HTMLElement | null }, bar: { current: HT
   return width;
 }
 
-const peopleLabel = (peers: Avatar[]): string => {
+/** “People here, N other sessions, A agents”: every other window counts, an agent's too (T9.32). */
+export const peopleLabel = (peers: Avatar[]): string => {
   const agents = peers.filter((peer) => peer.isAgent).length;
-  const people = peers.length - agents;
-  const parts = [people ? `${people} other ${people === 1 ? 'person' : 'people'}` : '', agents ? `${agents} ${agents === 1 ? 'agent' : 'agents'}` : ''];
-  return `People here, ${parts.filter(Boolean).join(', ')}`;
+  const sessions = `${peers.length} other ${peers.length === 1 ? 'session' : 'sessions'}`;
+  return `People here, ${sessions}${agents ? `, ${agents} ${agents === 1 ? 'agent' : 'agents'}` : ''}`;
 };
 
 /**
  * Others in the note: their initials, or one Users target when the bar is narrow; either opens the list of names.
- * `pinned` reports while its list is open, so the bar keeps it in its slot until the list closes.
+ * While someone types with no room for their name beside the text, the same button reads “N typing” and its list
+ * starts with them. `onOpenChange` reports while its list is open, so the bar keeps it in its slot until it closes.
  */
 export function PeopleHere({ docId, compact, onOpenChange, home }: {
   docId: string; compact: boolean; onOpenChange?: (open: boolean) => void; home?: () => HTMLElement | null;
 }): ReactNode {
   const peers = usePeers(docId);
+  const typingIds = useUnplacedTyping(docId);
   const focusHome = useFocusHome(home ?? (() => null));
   const [open, setOpenState] = useState(false);
-  const setOpen = (next: boolean) => { setOpenState(next); onOpenChange?.(next); };
+  // The sessions listed first: those typing unseen when the list opened. Kept while it is open, so rows hold still.
+  const [first, setFirst] = useState<number[]>([]);
+  const setOpen = (next: boolean) => {
+    if (next) setFirst(typingIds);
+    else inspect(docId, null);
+    setOpenState(next);
+    onOpenChange?.(next);
+  };
+  useEffect(() => () => inspect(docId, null), [docId]);
   if (peers.length === 0) return null;
-  const label = peopleLabel(peers);
+  const typing = peers.filter((peer) => typingIds.includes(peer.clientId));
+  const label = peopleLabel(peers) + (typing.length ? `; typing: ${typing.map((peer) => peer.label).join(', ')}` : '');
+  const rows = [...peers.filter((peer) => first.includes(peer.clientId)), ...peers.filter((peer) => !first.includes(peer.clientId))];
   return (
     <Menu open={open} onOpenChange={setOpen}>
       <TooltipProvider>
@@ -68,20 +80,29 @@ export function PeopleHere({ docId, compact, onOpenChange, home }: {
                 aria-label={label}
                 className="flex h-7 min-w-[28px] shrink-0 cursor-pointer items-center justify-center rounded px-0.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
               >
-                {compact ? <Users aria-hidden className="h-3.5 w-3.5" /> : <FacePile peers={peers} neutral />}
+                {typing.length
+                  ? <span aria-hidden className="whitespace-nowrap px-1 text-xs text-ink-muted">{typing.length} typing</span>
+                  : compact ? <Users aria-hidden className="h-3.5 w-3.5" /> : <FacePile peers={peers} />}
               </button>
             </DropdownMenuTrigger>
           </HomeTrigger>
-          {open ? null : <TooltipContent side="bottom">People here</TooltipContent>}
+          {open ? null : <TooltipContent side="bottom">{typing.length ? typing.map((peer) => peer.label).join(', ') : 'People here'}</TooltipContent>}
         </Tooltip>
       </TooltipProvider>
-      <DropdownMenuContent align="end" side="bottom" sideOffset={6} collisionPadding={16} className="max-h-80 min-w-0 w-max max-w-[calc(100vw-2rem)] overflow-y-auto">
+      <DropdownMenuContent align="end" side="bottom" sideOffset={6} collisionPadding={16} className="max-h-80 min-w-0 w-max max-w-[min(20rem,calc(100vw-2rem))] overflow-y-auto">
         <DropdownMenuLabel className="text-xs font-normal text-ink-faint">People here</DropdownMenuLabel>
-        {peers.map((peer) => (
-          <DropdownMenuItem key={peer.clientId} className="gap-2 text-xs">
-            {peer.isAgent ? <Bot aria-hidden className="h-3.5 w-3.5 text-ink-faint" /> : null}
-            <span className="min-w-0 flex-1 truncate">{peer.name}</span>
-            {peer.isAgent ? <span className="text-ink-faint">agent</span> : null}
+        {rows.map((peer) => (
+          // Focus, hover or a tap names this person at their caret; nothing scrolls and the local caret stays put. A
+          // tap keeps the list open, so it is an inspection, not an action; Escape or a click outside ends it.
+          <DropdownMenuItem
+            key={peer.clientId}
+            className="gap-2 text-xs"
+            onFocus={() => inspect(docId, peer.clientId)}
+            onSelect={(event: Event) => { event.preventDefault(); inspect(docId, peer.clientId); }}
+          >
+            <span aria-hidden data-presence-swatch="" data-presence-color={peer.color} className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: peer.color }} />
+            <span className="min-w-0 flex-1 truncate">{peer.label}</span>
+            {peer.isAgent ? <span className="text-ink-faint">Bot</span> : null}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
