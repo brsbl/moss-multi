@@ -93,6 +93,8 @@ export class DocComments {
   #engine: AnchorEngine;
   #pending = new Map<string, Anchor>();
   #seq = 0;
+  /** Where the frame being applied moved commented text, by comment id (T4.W). */
+  #moves: Map<string, [string, string]> | undefined;
 
   constructor(
     readonly doc: Y.Doc,
@@ -110,7 +112,7 @@ export class DocComments {
     doc.on('afterTransaction', (txn: Y.Transaction) => {
       if (ENGINE_SKIPPED_ORIGINS.has(txn.origin)) return;
       try {
-        for (const [id, anchor] of this.#engine.frame(txn)) this.#pending.set(id, anchor);
+        for (const [id, anchor] of this.#engine.frame(txn, this.#moves)) this.#pending.set(id, anchor);
       } catch (error) {
         // The frame has applied; a forged shape the engine cannot read must not stop it persisting.
         console.error('comment anchor engine failed on a frame', error);
@@ -120,6 +122,11 @@ export class DocComments {
 
   get client(): number {
     return this.#writer.client;
+  }
+
+  /** The places the next client frame names for the comments it moved, or none. */
+  expectMoves(moves: readonly (readonly [string, string, string])[] | undefined): void {
+    this.#moves = moves ? new Map(moves.map(([id, start, end]) => [id, [start, end]])) : undefined;
   }
 
   /** Gate 2b (comments.md §3): null admits the frame. */

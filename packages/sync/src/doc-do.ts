@@ -14,7 +14,7 @@ import {
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
-  type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
+  type AnchorMove, type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
@@ -26,6 +26,7 @@ import { d1Projections, Projections, type ProjectionTarget } from './doc/project
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta, publishReopened, type FanoutEnv, type Holder } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
+import { positionItem } from '@moss-multi/core/anchor-frame';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { seedPayload } from './payload-docs.ts';
 import { growthOf, structCount, TextCount } from './note-size.ts';
@@ -205,6 +206,16 @@ function holdsOf(store: DocStore): Map<string, number> {
 }
 
 /** A socket the DO may still send to and read from. */
+/** The clock ranges kept per client per socket for named moves; contiguous writes merge into one. */
+const WRITTEN_RANGES = 256;
+
+/** Each client a frame writes structs for, with its state before the frame applies. */
+function clientStates(store: Y.Doc['store'], structs: ReturnType<typeof Y.decodeUpdate>['structs']): Map<number, number> {
+  const states = new Map<number, number>();
+  for (const struct of structs) if (!states.has(struct.id.client)) states.set(struct.id.client, Y.getState(store, struct.id.client));
+  return states;
+}
+
 const isOpen = (connection: Connection) => connection.readyState === undefined || connection.readyState === 1;
 
 const sizeOf = (message: WSMessage) => (typeof message === 'string' ? message.length : message.byteLength);
@@ -359,6 +370,10 @@ export class DocDO extends YServer<SyncEnv> {
 
   #store: DocStore | null = null;
   #comments: DocComments | null = null;
+  /** Where a socket's finished paste moved commented text, for its next sync frame (T4.W). */
+  readonly #moves = new WeakMap<Connection, AnchorMove[]>();
+  /** The clocks each socket's own writes added, by client: a named move may only point into them (T4.W). */
+  readonly #written = new WeakMap<Connection, Map<number, [from: number, to: number][]>>();
   #payloads: PayloadStore | null = null;
   /** The note's body text, exact (A§5.1 Limits). */
   #text: TextCount | null = null;
@@ -725,6 +740,10 @@ export class DocDO extends YServer<SyncEnv> {
       if (this.#payloads) this.#payloadFrame(connection, attachment, store, this.#payloads, frame.payload);
       return;
     }
+    if (frame.kind === 'moves') {
+      if (roleAtLeast(attachment.role, 'editor')) this.#moves.set(connection, frame.moves);
+      return;
+    }
     if (frame.kind === 'awareness') {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
@@ -737,7 +756,11 @@ export class DocDO extends YServer<SyncEnv> {
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
     /** A frame Yjs will apply: an editor's write. */
     let applying: ReturnType<typeof Y.decodeUpdate> | null = null;
+    /** Read for this frame only, whatever becomes of it. */
+    let moves: AnchorMove[] | undefined;
     if (frame.kind === 'sync') {
+      moves = this.#moves.get(connection);
+      this.#moves.delete(connection);
       let decoded: ReturnType<typeof Y.decodeUpdate>;
       try {
         decoded = Y.decodeUpdate(frame.update);
@@ -762,12 +785,46 @@ export class DocDO extends YServer<SyncEnv> {
       this.#frameDeletes = deletes;
       if (changes && !this.isReadOnly(connection)) applying = decoded;
     }
+    if (moves && applying) this.#comments?.expectMoves(this.#ownMoves(connection, moves));
+    const before = applying ? clientStates(this.document.store, applying.structs) : null;
     try {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
+      this.#comments?.expectMoves(undefined);
+      if (before) this.#noteWritten(connection, before);
     }
     if (frame.kind === 'sync') this.#afterFrame(connection, store, applying ? applying.structs : []);
+  }
+
+  /** Records the clocks this frame added for each client it wrote, from the states before it applied. */
+  #noteWritten(connection: Connection, before: Map<number, number>): void {
+    let written = this.#written.get(connection);
+    for (const [client, from] of before) {
+      const to = Y.getState(this.document.store, client);
+      if (to <= from) continue;
+      if (!written) this.#written.set(connection, (written = new Map()));
+      const ranges = written.get(client) ?? [];
+      const last = ranges[ranges.length - 1];
+      if (last && last[1] === from) last[1] = to;
+      else ranges.push([from, to]);
+      if (ranges.length > WRITTEN_RANGES) ranges.shift();
+      written.set(client, ranges);
+    }
+  }
+
+  /**
+   * The moves whose start and end both name items this socket's own writes added, so a hint can only carry a comment
+   * onto text its sender wrote (its paste's copy), never onto words that were there before.
+   */
+  #ownMoves(connection: Connection, moves: AnchorMove[]): AnchorMove[] {
+    const written = this.#written.get(connection);
+    if (!written) return [];
+    const own = (position: string) => {
+      const item = positionItem(position);
+      return !!item && !!written.get(item.client)?.some(([from, to]) => item.clock >= from && item.clock < to);
+    };
+    return moves.filter(([, start, end]) => own(start) && own(end));
   }
 
   /**

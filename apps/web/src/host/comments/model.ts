@@ -92,6 +92,20 @@ export class CommentsModel {
     return [...ids];
   }
 
+  /**
+   * Comments this tab's edits moved off the place the server's record names, onto live text: the server re-mints
+   * them only when it sees the edit that moved them, so a large paste names them with its held-back deletes (T4.W).
+   */
+  moves(): [id: string, start: string, end: string][] {
+    const out: [string, string, string][] = [];
+    for (const [id, shown] of this.#anchors) {
+      const stored = this.#map.get(`a:${id}`) as Anchor | undefined;
+      if (shown.status !== 'anchored' || !stored || (stored.start === shown.start && stored.end === shown.end)) continue;
+      if (isLive(this.doc, shown)) out.push([id, shown.start, shown.end]);
+    }
+    return out;
+  }
+
   addPending(id: string, record: CommentRecord, anchor?: Anchor): void {
     this.#pending.set(id, { record, ...(anchor ? { anchor } : {}) });
     this.#changed();
@@ -156,6 +170,9 @@ export class CommentsModel {
 }
 
 const models = new WeakMap<Y.Doc, CommentsModel>();
+
+/** The doc's model, when this tab made one. */
+export const existingModel = (doc: Y.Doc): CommentsModel | undefined => models.get(doc);
 
 /** The one model of a doc in this tab, shared by every pane and painter of it. */
 export function modelFor(doc: Y.Doc): CommentsModel {

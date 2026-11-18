@@ -15,6 +15,7 @@
     "./access-epoch": "./src/access-epoch.ts",
     "./registers": "./src/registers.ts",
     "./search": "./src/search-core.ts",
+    "./paste-rollback": "./src/paste-rollback.ts",
     "./update-pieces": "./src/update-pieces.ts"
   },
   "scripts": {
