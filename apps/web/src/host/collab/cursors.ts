@@ -67,7 +67,7 @@ function clipOf(root: HTMLElement): HTMLElement {
  * The text column of the caret's line: the top-level block the caret's middle falls in, else the whole body. Blocks
  * stack top to bottom, so it is found in a few reads however long the note is.
  */
-function columnAt(root: HTMLElement, y: number): { left: number; right: number } {
+export function columnAt(root: HTMLElement, y: number): { left: number; right: number } {
   const blocks = root.children;
   for (let low = 0, high = blocks.length - 1; low <= high;) {
     const middle = (low + high) >> 1;

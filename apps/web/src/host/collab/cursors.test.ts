@@ -4,7 +4,7 @@ import { createBinding, syncLexicalUpdateToYjs, type Binding, type Provider } fr
 import { $createParagraphNode, $createTextNode, $getRoot, createEditor } from 'lexical';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { cursorController } from './cursors.ts';
+import { columnAt, cursorController } from './cursors.ts';
 
 const noop = () => {};
 let restore: (() => void)[] = [];
@@ -174,4 +174,26 @@ it('a typing name is measured when its text changes, not on every repaint', asyn
   states.set(51, { ...person('Ada Lovelace', '#aa0000'), focusing: true, anchorPos: at(2), focusPos: at(2), typingAt: Date.now() });
   await paint(controller, binding, provider);
   expect(log.nameReads, 'a changed name is measured once').toBe(1);
+});
+
+/** A root whose top-level blocks report these rects; a zero rect is a collapsed section's block (display:none). */
+function stacked(boxes: [top: number, bottom: number][]) {
+  const root = document.createElement('div');
+  root.getBoundingClientRect = () => ({ top: 0, bottom: 2000, left: 0, right: 1440, height: 2000, width: 1440 }) as DOMRect;
+  for (const [top, bottom] of boxes) {
+    const block = document.createElement('p');
+    const hidden = top === 0 && bottom === 0;
+    block.getBoundingClientRect = () => ({ top, bottom, height: bottom - top, left: hidden ? 0 : 300, right: hidden ? 0 : 1150, width: hidden ? 0 : 850 }) as DOMRect;
+    root.appendChild(block);
+  }
+  return root;
+}
+
+it('the text column is found past a collapsed section, whose blocks have no rect', () => {
+  const column = { left: 300, right: 1150 };
+  expect(columnAt(stacked([[100, 130], [150, 170], [0, 0], [0, 0], [180, 210]]), 115), 'a line above the collapsed section').toEqual(column);
+  expect(columnAt(stacked([[100, 130], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [140, 170]]), 160), 'a line below it').toEqual(column);
+  expect(columnAt(stacked([[0, 0], [0, 0], [0, 0], [100, 130]]), 110), 'a line after a collapsed start').toEqual(column);
+  expect(columnAt(stacked([[100, 130], [0, 0], [0, 0], [0, 0]]), 110), 'a line before a collapsed end').toEqual(column);
+  expect(columnAt(stacked([[0, 0], [0, 0]]), 110), 'no visible block: the whole body').toEqual({ left: 0, right: 1440 });
 });
