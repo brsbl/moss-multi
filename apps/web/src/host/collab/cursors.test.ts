@@ -4,7 +4,7 @@ import { createBinding, syncLexicalUpdateToYjs, type Binding, type Provider } fr
 import { $createParagraphNode, $createTextNode, $getRoot, createEditor } from 'lexical';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { cursorController } from './cursors.ts';
+import { columnAt, cursorController } from './cursors.ts';
 
 const noop = () => {};
 let restore: (() => void)[] = [];
@@ -104,4 +104,96 @@ it('a name label is Moss tooltip material, never a fill of the peer colour, with
   const swatch = label.querySelector<HTMLElement>('[data-presence-swatch]')!;
   expect(swatch.dataset.presenceColor).toBe('#aa0000');
   expect(label.textContent).toBe('Ada');
+});
+
+/**
+ * Layout reads and DOM writes during a cursor pass. A read after a write forces a layout: in a long note while someone
+ * types (a paste counts), each one lays the page out again (run 44262371127), so the name pass may add at most one.
+ */
+function layoutLog() {
+  let wrote = false;
+  const log = { forced: 0, nameReads: 0 };
+  const undo: (() => void)[] = [];
+  const wrap = (target: object, key: string, kind: 'read' | 'write', also?: (self: unknown) => void) => {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (!descriptor) return;
+    if (typeof descriptor.value === 'function') {
+      const original = descriptor.value as (...args: unknown[]) => unknown;
+      Object.defineProperty(target, key, { ...descriptor, value(this: unknown, ...args: unknown[]) {
+        if (kind === 'read') { if (wrote) log.forced += 1; wrote = false; also?.(this); } else wrote = true;
+        return original.apply(this, args);
+      } });
+    } else if (descriptor.set) {
+      const set = descriptor.set;
+      Object.defineProperty(target, key, { ...descriptor, set(this: unknown, value: unknown) { wrote = true; set.call(this, value); } });
+    } else return;
+    undo.push(() => Object.defineProperty(target, key, descriptor));
+  };
+  wrap(Element.prototype, 'getBoundingClientRect', 'read', (self) => { if ((self as HTMLElement).dataset?.cursorLabel !== undefined) log.nameReads += 1; });
+  wrap(Element.prototype, 'getClientRects', 'read');
+  wrap(Range.prototype, 'getBoundingClientRect', 'read');
+  wrap(Range.prototype, 'getClientRects', 'read');
+  const style = Object.getPrototypeOf(document.body.style) as object;
+  for (const key of Object.getOwnPropertyNames(style)) {
+    if (key === 'setProperty' || key === 'removeProperty' || Object.getOwnPropertyDescriptor(style, key)?.set) wrap(style, key, 'write');
+  }
+  wrap(Element.prototype, 'replaceChildren', 'write');
+  wrap(Node.prototype, 'appendChild', 'write');
+  // Undone before the layout stubs above are, since it wraps them.
+  restore.unshift(() => { for (const step of undo.reverse()) step(); });
+  return { log, reset: () => { wrote = false; log.forced = 0; log.nameReads = 0; } };
+}
+
+it('the name pass adds at most one forced layout to a repaint, however many people are typing', async () => {
+  const { binding, provider, states, at } = mounted();
+  const controller = cursorController(binding.editor);
+  states.set(41, { ...person('Ada', '#aa0000'), focusing: true, anchorPos: at(2), focusPos: at(2) });
+  states.set(42, { ...person('Ben', '#0000aa'), focusing: true, anchorPos: at(7), focusPos: at(7) });
+  await paint(controller, binding, provider);
+  const { log, reset } = layoutLog();
+  reset();
+  await paint(controller, binding, provider);
+  const quiet = log.forced;
+  for (const id of [41, 42]) states.set(id, { ...states.get(id), typingAt: Date.now() });
+  await paint(controller, binding, provider);
+  reset();
+  await paint(controller, binding, provider);
+  expect(log.forced - quiet, 'forced layouts the typing names add to a repaint').toBeLessThanOrEqual(1);
+});
+
+it('a typing name is measured when its text changes, not on every repaint', async () => {
+  const { binding, provider, states, at } = mounted();
+  const controller = cursorController(binding.editor);
+  const { log, reset } = layoutLog();
+  states.set(51, { ...person('Ada', '#aa0000'), focusing: true, anchorPos: at(2), focusPos: at(2), typingAt: Date.now() });
+  await paint(controller, binding, provider);
+  expect(log.nameReads, 'a new name is measured once').toBe(1);
+  reset();
+  for (let i = 0; i < 3; i += 1) await paint(controller, binding, provider);
+  expect(log.nameReads, 'an unchanged name is not measured again').toBe(0);
+  states.set(51, { ...person('Ada Lovelace', '#aa0000'), focusing: true, anchorPos: at(2), focusPos: at(2), typingAt: Date.now() });
+  await paint(controller, binding, provider);
+  expect(log.nameReads, 'a changed name is measured once').toBe(1);
+});
+
+/** A root whose top-level blocks report these rects; a zero rect is a collapsed section's block (display:none). */
+function stacked(boxes: [top: number, bottom: number][]) {
+  const root = document.createElement('div');
+  root.getBoundingClientRect = () => ({ top: 0, bottom: 2000, left: 0, right: 1440, height: 2000, width: 1440 }) as DOMRect;
+  for (const [top, bottom] of boxes) {
+    const block = document.createElement('p');
+    const hidden = top === 0 && bottom === 0;
+    block.getBoundingClientRect = () => ({ top, bottom, height: bottom - top, left: hidden ? 0 : 300, right: hidden ? 0 : 1150, width: hidden ? 0 : 850 }) as DOMRect;
+    root.appendChild(block);
+  }
+  return root;
+}
+
+it('the text column is found past a collapsed section, whose blocks have no rect', () => {
+  const column = { left: 300, right: 1150 };
+  expect(columnAt(stacked([[100, 130], [150, 170], [0, 0], [0, 0], [180, 210]]), 115), 'a line above the collapsed section').toEqual(column);
+  expect(columnAt(stacked([[100, 130], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [140, 170]]), 160), 'a line below it').toEqual(column);
+  expect(columnAt(stacked([[0, 0], [0, 0], [0, 0], [100, 130]]), 110), 'a line after a collapsed start').toEqual(column);
+  expect(columnAt(stacked([[100, 130], [0, 0], [0, 0], [0, 0]]), 110), 'a line before a collapsed end').toEqual(column);
+  expect(columnAt(stacked([[0, 0], [0, 0]]), 110), 'no visible block: the whole body').toEqual({ left: 0, right: 1440 });
 });
