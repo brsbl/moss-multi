@@ -725,3 +725,14 @@ it('a code block deleted in this tab stops counting toward the paste check at on
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_000, structs: 10 }), 'its text no longer counts').toBe(true);
   expect(pasteFits(session.doc, 1_000, 1_000, { chars: 120_001, structs: 10 }), 'up to the limit, and no further').toBe(false);
 });
+
+it('tracks an Edit-mode paste for rollback but never a Suggest-mode one, whose fork keeps its own path (T5.W)', async () => {
+  const { registerFork } = await import('@moss-multi/sync/suggest/forks');
+  const track = (sessionModule as unknown as { trackPaste?: (doc: Y.Doc, abort: () => void) => unknown }).trackPaste;
+  const socket = latest(); socket.open(); session.provider.synced = true;
+  expect(track?.(session.doc, () => {}) ?? null, 'an Edit-mode paste is tracked').not.toBeNull();
+  const fork = new Y.Doc();
+  registerFork(fork, { body: session.doc, admit: () => null, recordChars: () => 0, recordStructs: () => 0 });
+  expect(track?.(fork, () => {}) ?? null, 'a Suggest-mode paste writes the fork and is not rolled back').toBeNull();
+  fork.destroy();
+});
