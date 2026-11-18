@@ -155,8 +155,6 @@ const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 const PDF_SESSION_KEY = 'moss-multi:pdf-export';
 /** How long Save as Markdown waits for unacked edits before refusing. */
 export const EXPORT_ACK_WAIT_MS = 8_000;
-/** How long after the browser's Back or Forward the focused note may still be on its way to the note it chose. */
-const POP_SETTLE_MS = 3_000;
 /** A listing read with no answer, headers or body, by then is given up and asked again. */
 export const LISTING_DEADLINE_MS = 15_000;
 /** moss reads other notes' content (file-link previews, workspace formulas) at most this many at a time (A§9). */
@@ -311,7 +309,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   // browser's Back or Forward last chose.
   let shownNotes: string[] = [];
   let focused: { id: string | null; panes: string[] } | null = null;
-  let popped: { id: string; until: number } | null = null;
+  let popped: string | null = null;
+  const live = (noteId: string) => known.get(noteId)?.trashedAt == null;
+  /** The address names the focused note again, when it is live and the address names another. */
+  const addressFocused = () => {
+    const id = focused?.id;
+    if (id && live(id) && docIdFromPath(pathname()) !== id) browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
+  };
 
   // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
   const known = new Map<string, NoteMetadata>();
@@ -918,12 +922,26 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         };
         // The browser's Back or Forward opens the note through moss's own switch, which adds no history entry. The
         // listing is read once moss has switched (setFocusedNoteId), as for any visit: read during the switch, it
-        // mounted the pane twice.
+        // mounted the pane twice. Until moss reaches the chosen note, the notes its switch passes are not visits, however
+        // long it takes; a switch that did not happen (moss's switch-result seam) puts the shown note back in the
+        // address. A note trashed since its entry was made opens in moss's Trash view, as moss's own arrow opens it,
+        // and the address keeps naming the note shown before it (A§8).
         const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
           if (!id || !callback) return;
-          popped = { id, until: Date.now() + POP_SETTLE_MS };
-          callback(id);
+          popped = live(id) ? id : null;
+          if (!popped) addressFocused();
+          const result: unknown = (callback as (noteId: string) => unknown)(id);
+          if (!popped || !(result instanceof Promise)) return;
+          void result.then((switched: unknown) => {
+            if (popped !== id || (switched === true && focused?.id !== id)) return;
+            popped = null;
+            addressFocused();
+          }, () => {
+            if (popped !== id) return;
+            popped = null;
+            addressFocused();
+          });
         });
         // The bell's notices open a note through moss's own switch (navigation.ts, A§9).
         const offOpen = callback ? registerDocOpener(open) : noop;
@@ -1032,19 +1050,24 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       setFocusedNoteId: async (id: string | null) => {
         const before = focused;
         focused = { id, panes: shownNotes };
-        const live = (noteId: string) => known.get(noteId)?.trashedAt == null;
         if (id && live(id)) watchBacklinks(id);
-        // A trashed note has no address: a fresh load of it is the one 404 (A§8).
-        if (!id || !live(id)) return;
         const address = docIdFromPath(pathname());
-        if (popped?.id === id && address === id) {
+        // A trashed note has no address: a fresh load of it is the one 404 (A§8). Back or Forward may have reached it.
+        if (!id || !live(id)) {
+          if (id && popped === id) popped = null;
+          if (id && address === id && before?.id && live(before.id)) {
+            browser.replacePath(withShare(`/d/${encodeURIComponent(before.id)}`));
+          }
+          return;
+        }
+        if (popped === id && address === id) {
           popped = null;
           await refreshForNavigation(id);
           return;
         }
         if (address === id) return;
         // Back or Forward chose a note moss is still switching to; the notes it passes on the way are not visits.
-        if (popped && popped.id === address && Date.now() < popped.until) return;
+        if (popped && popped === address) return;
         popped = null;
         const visit = before?.id != null && before.id === address && live(before.id)
           && !before.panes.includes(id) && !shownNotes.includes(before.id);
