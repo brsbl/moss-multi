@@ -53,9 +53,7 @@ test('j13-vault-nav: the notes-panel header holds only Moss\'s toggle, and Switc
     .toEqual(['Home', 'Home Can edit', '—', 'New vault…']);
   await expect(list.getByRole('menuitemradio', { name: 'Home', exact: true }), 'the vault on screen is checked').toHaveAttribute('aria-checked', 'true');
   await expect(list.getByRole('menuitemradio', { name: 'Home Can edit', exact: true })).toHaveAttribute('aria-checked', 'false');
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('menu')).toHaveCount(0);
+  await ui.closeVaultList(page);
 
   await ui.switchVault(page, 'Home Can edit');
   await ui.expectVault(page, 'Home');

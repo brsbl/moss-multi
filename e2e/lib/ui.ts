@@ -93,6 +93,14 @@ export async function openVaultList(page: Page): Promise<Locator> {
   return list;
 }
 
+/** Closes the vault list and the app menu under it: Escape until no menu is left. */
+export async function closeVaultList(page: Page): Promise<void> {
+  await expect(async () => {
+    if (await page.getByRole('menu').count()) await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0, { timeout: 1_000 });
+  }, 'the vault list and the app menu close').toPass({ timeout: 10_000 });
+}
+
 /** Switch vault…, then the vault whose row reads `item`: its name, then the role of a vault shared with them. */
 export async function switchVault(page: Page, item: string): Promise<void> {
   await (await openVaultList(page)).getByRole('menuitemradio', { name: item, exact: true }).click();

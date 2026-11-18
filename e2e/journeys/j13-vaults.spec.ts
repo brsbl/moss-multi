@@ -111,8 +111,7 @@ test('j13-vaults: Ada creates a vault inline, switches, and creates a note that 
   const benList = await ui.openVaultList(ben.page);
   await expect(benList.getByRole('menuitemradio', { name: 'Home', exact: true })).toBeVisible();
   await expect(benList.getByRole('menuitemradio', { name: new RegExp(VAULT) }), "Ada's unshared vault is not Ben's to see").toHaveCount(0);
-  await ben.page.keyboard.press('Escape');
-  await ben.page.keyboard.press('Escape');
+  await ui.closeVaultList(ben.page);
   await actors.checkpoint('vault-created');
 });
 

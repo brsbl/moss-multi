@@ -142,8 +142,7 @@ test('j08 vault: Ada shares her vault from Settings and Ben switches to it @p:pp
     try {
       await expect(list.getByRole('menuitemradio', { name: 'Home Can edit', exact: true }), "Ada's vault reaches Ben's list with his role").toBeVisible({ timeout: 2_000 });
     } finally {
-      await ben.page.keyboard.press('Escape');
-      await ben.page.keyboard.press('Escape');
+      await ui.closeVaultList(ben.page);
     }
   }).toPass({ timeout: LIVE_TIMEOUT });
   await ui.switchVault(ben.page, 'Home Can edit');

@@ -265,9 +265,7 @@ test('j10 Tier B at 390 px: the share dialog, Settings and every chrome menu kee
 
   await ui.openVaultList(page);
   await expectReachable(ada, 'Switch vault…', '[role=menu]:has([role=menuitemradio])');
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('menu')).toBeHidden();
+  await ui.closeVaultList(page);
 
   await folder.click({ button: 'right' });
   await expect(page.getByRole('menu')).toBeVisible();
