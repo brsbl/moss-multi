@@ -1654,17 +1654,19 @@ it.each([
  * history kept and suggesting still on, never refused by the DocDO after it changed the fork.
  */
 function refusedAtLimit(pane: ReturnType<typeof suggesting>, limit: 'text' | 'structure', act: () => void): void {
-  // A peer's edit reaches F first.
+  // A peer's edit (its q's) reaches the editor in its own update, whenever that runs: F is compared without it.
   vi.runAllTimers();
   pane.pump();
-  const text = pane.text();
+  pane.editor.update(() => {}, { discrete: true });
+  const own = () => pane.text().replace(/q+/g, '');
+  const text = own();
   const before = pane.requests();
   act();
   const notice = noticed();
   pane.pump();
   expect(notice, 'refused naming the limit').toContain(DOC_LIMIT_NOTICE[limit]);
   expect(pane.requests(), 'nothing was sent').toBe(before);
-  expect(pane.text(), 'F is unchanged').toBe(text);
+  expect(own(), 'F is unchanged').toBe(text);
   expect(pane.fork.closed, 'suggesting stays on').toBe(false);
   expect(pane.unsaved, 'nothing offered back').toEqual([]);
 }
