@@ -213,7 +213,7 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
   await expect(signIn, 'the stranger is offered sign-in').toBeVisible();
   await expect(signIn, 'exactly once (T9.10)').toHaveCount(1);
-  await expect(ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`), 'the band says the link is view only').toContainText('View only.');
+  await expect(ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`), 'the band says the link is view only').toHaveText('View only Sign in to do more');
   await actors.checkpoint('read-signed-out');
 
   const benPrincipal = await actors.principal('ben');
