@@ -21,8 +21,11 @@ afterEach(() => restore());
 /** The suggester's fork makes `steps`; every forwarded frame goes through ingest as `suggest-ops`. */
 function suggest(steps: readonly Step[]) {
   const live = seededBody();
-  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry() });
-  const [lease] = ingest.lease(SUGGESTER.id);
+  const ingest = new SuggestIngest(live, { stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), mintId: () => 'r1' });
+  const who = { ...SUGGESTER, role: 'suggester', connection: 'census' };
+  const leased = ingest.lease(who, [], 1);
+  if (!leased.ok) throw new Error(leased.reason);
+  const [{ client: lease }] = leased.leases;
   resetIds();
   const fork = new ForkShim(live, lease);
   const atBind = fork.sent.length;
@@ -30,7 +33,7 @@ function suggest(steps: readonly Step[]) {
     if (step === 'undo') fork.undo();
     else fork.act(step);
   }
-  const results = fork.sent.map((update) => ingest.ops(SUGGESTER, 'suggester', 'r1', update));
+  const results = fork.sent.map((op) => ingest.ops(who, 'r1', op));
   return { live, fork, atBind, results, frames: fork.sent.length };
 }
 

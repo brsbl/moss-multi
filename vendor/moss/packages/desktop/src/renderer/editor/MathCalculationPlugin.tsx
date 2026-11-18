@@ -90,6 +90,8 @@ import {
 interface MathCalculationPluginProps {
   noteId: string;
   onDraftPillActiveChange?: (isActive: boolean) => void;
+  /** moss-multi seam: suggest-formulas (T5.B3): false keeps the commit handlers but never writes recalculated results. */
+  backgroundWrites?: boolean;
 }
 
 const FORMULA_REFERENCE_HOVER_HIDE_DELAY_MS = 80;
@@ -775,7 +777,8 @@ function hasFormulaDraftStyle(style: string): boolean {
 
 export function MathCalculationPlugin({
   noteId,
-  onDraftPillActiveChange
+  onDraftPillActiveChange,
+  backgroundWrites = true
 }: MathCalculationPluginProps) {
   const [editor] = useLexicalComposerContext();
   const activeNotes = useAtomValue(activeNotesAtom);
@@ -1286,11 +1289,11 @@ export function MathCalculationPlugin({
       editor.getEditorState().read(() => applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation), { editor });
       return;
     }
-    if (!editor.isEditable()) return;
+    if (!editor.isEditable() || !backgroundWrites) return;
     runDerivedEditorUpdate(editor, () => {
       applyWorkspaceResultsToEditor(noteId, evaluation as FormulaWorkspaceEvaluation);
     }, EDITOR_UPDATE_TAGS.derived.formulaWorkspaceRefresh);
-  }, [buildWorkspaceEvaluation, currentNoteTitle, editor, noteId]);
+  }, [backgroundWrites, buildWorkspaceEvaluation, currentNoteTitle, editor, noteId]);
 
   useEffect(() => {
     return editor.registerMutationListener(FormulaNode, (_mutations, { updateTags }) => {

@@ -182,7 +182,10 @@ export function classifyFormulaSource(
     return 'invalid';
   }
 
-  const storedDisplay = options?.storedDisplay?.trim() ?? '';
+  // moss-multi seam: typed-stored-display (T5.P): a peer's or a suggestion's `__result` that is not a string reads as
+  // no stored display, so a forged value never throws in every reader's text walk.
+  const stored: unknown = options?.storedDisplay;
+  const storedDisplay = typeof stored === 'string' ? stored.trim() : '';
   if (
     storedDisplay.length > 0 &&
     isValidFormulaName(trimmedSource) &&
