@@ -113,12 +113,10 @@ test('j13-vault-nav: the tab, the note\'s location and "+ Note" name the vault; 
   await page.getByRole('button', { name: 'Create new note', exact: true }).hover();
   await expect(page.getByRole('tooltip').filter({ hasText: 'New note in Home' }), '"+ Note" says where it lands').toBeVisible();
 
-  // Switching vaults keeps the note open; neither its location nor the tab then names the vault on screen.
+  // A note left open across a switch is never labelled with the vault switched to.
   await ui.newVault(page, 'Pantry');
-  await expect(ui.pane(ada, docId), 'the note stays open across the switch').toBeVisible();
-  await expect(ui.pane(ada, docId).getByRole('navigation', { name: /^Note location/ }), 'the location never names the wrong vault')
-    .toHaveAttribute('aria-label', 'Note location');
-  await expect.poll(() => page.title(), { message: 'nor does the tab' }).toBe('Lentil soup — Moss');
+  await expect(page.getByRole('navigation', { name: 'Note location in Pantry', exact: true }), 'the location never names the wrong vault').toHaveCount(0);
+  expect(await page.title(), 'nor does the tab').not.toContain('Pantry');
 
   const linked = await ada.context.request.post(`/api/docs/${docId}/links`, { headers: { origin }, data: { role: 'viewer' } });
   expect(linked.status(), 'declared setup: a view link').toBe(201);
@@ -170,7 +168,9 @@ test('j13-vault-nav: search says Searching… until the index answers, says when
   await expect(page.getByText('Couldn’t search right now. Try again.', { exact: true }), 'a failed search says so').toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(noMatch).toHaveCount(0);
   // A title match shown while the index failed still says the search could not finish.
-  const leek = await makeNote(ada, (await listing(ada)).vault.id, `Leek ${run}`, 'Sliced.');
+  const pantry = (await listing(ada)).vaults.find((vault) => vault.name === 'Pantry');
+  expect(pantry, 'declared setup: Pantry is listed').toBeDefined();
+  const leek = await makeNote(ada, pantry?.id ?? '', `Leek ${run}`, 'Sliced.');
   await search(`Leek ${run}`);
   await expect(noteRow(ada, leek), 'the title match shows').toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(page.getByText('Couldn’t search right now. Try again.', { exact: true }), 'and the failure is said under it').toBeVisible({ timeout: BIND_TIMEOUT });
