@@ -180,9 +180,9 @@ function InboxContent({ align, side = 'bottom', anchor, onOpenNotice, paneWidth 
   } else {
     body = groups.map((group) => (
       <div key={group.key} role="group" aria-label={group.target.title} data-inbox-group="" className="pb-1 last:pb-0">
-        <div aria-hidden className="flex min-w-0 items-center gap-2 px-2 pb-1 pt-2 text-xs text-ink-faint">
-          {group.target.type === 'doc' ? <FileText className="h-3.5 w-3.5 shrink-0" /> : <Folder className="h-3.5 w-3.5 shrink-0" />}
-          <span className="min-w-0 flex-1 truncate">{group.target.title}</span>
+        <div aria-hidden className="flex min-w-0 items-start gap-2 px-2 pb-1 pt-2 text-xs leading-4 text-ink-faint">
+          {group.target.type === 'doc' ? <FileText className="h-4 w-3.5 shrink-0" /> : <Folder className="h-4 w-3.5 shrink-0" />}
+          <span className="line-clamp-2 min-w-0 flex-1 break-words">{group.target.title}</span>
         </div>
         {group.notices.map((notice) => {
           const time = timeAgo(notice.createdAt);
