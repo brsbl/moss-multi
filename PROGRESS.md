@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 48% done** (147 of 304 planned tasks verified)
+**Overall: 49% done** (148 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 18 / 20 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 19 / 20 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -170,6 +170,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T3.B33 verified: the note server now puts a body property of the wrong type or a non-finite number, such as a NaN indent, back to its default on every peer, counts that repair against the note's limits, and never overwrites a concurrent valid write with it.
 - 2026-11-17 — T3.B32 verified: a large paste that a size limit cuts short is now rolled back, so the part that landed is deleted in whole blocks before the note shows, every peer converges on it, a reload mid-rollback resumes it, and a block another writer edited is kept whole and the notice says so.
 - 2026-11-17 — T4.V verified: comments now run on m3's note size limits, lean layout and in-place export, so a comment, reply, resolve or sidecar import counts against the note's structure guard and a refused comment write names the limit, with the full lane green on the m4 head.
+- 2026-11-18 — T4.W verified: comments now run on m3's paste rollback, so a paste's held deletes go out on the comments path too, and a comment on words a paste moved follows them onto the pasted text instead of detaching.
 
 ## T1.1s identity audit
 
@@ -655,3 +656,6 @@ Local browser verification remains assigned to the independent checker under the
 - T4.V (m4 on m3's note size limits) checker P2: a reply reserves two structs although it writes one — createComment always checks COMMENT_STRUCTS=2 while the reply branch of comments.create writes a single c:<id> record, so with exactly one struct left a reply is refused with 413 'structure' (off by one, conservative).
 - T4.V (m4 on m3's note size limits) checker P2, owned by m3 (duplicate path): duplicate admission leaves out the replacement title's structs — createFromSnapshot admits the snapshot and payload growth, then writes the new title uncounted, so a snapshot that exactly fills the structure guard can end a few structs over it.
 - T4.V (m4 on m3's note size limits) checker P2: anchor re-mints flushed after an admitted frame are not counted against the structure guard — the comments flush can write changed anchor records that admission never reserved; the 2,000-record cap bounds the live count but not the accumulated history.
+- T4.W (m4 with m3's paste rollback) checker P2: the moves ownership check looks only at the destination's endpoints and any of the socket's writes — #ownMoves in packages/sync/src/doc-do.ts keeps a move when its first and last items fall in clock ranges that socket wrote, without checking the interior or that the writes came from the paste, so a malformed client could land a comment on an occurrence whose middle is another writer's text.
+- T4.W (m4 with m3's paste rollback) checker P2: reconnect replay, step 2 and stored whole-paste recovery send a paste's held deletes without the moves hint (doc-session.ts sends it only at release), and the server's per-socket written record resets on reconnect, so if the release is lost the comment shows as detached (text survives).
+- T4.W (m4 with m3's paste rollback) checker P2, owned by m3: the memory job 'structure cap: the largest table' is unstable near its budget — its save step measured 87 MB against 86.4 MB on two attempts and 85 MB on the third, matching 85 MB on the m4 and m3 bases; make the job steadier.
