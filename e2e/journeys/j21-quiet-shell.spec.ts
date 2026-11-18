@@ -384,8 +384,9 @@ test('j21 the inbox says when its first read is pending or has failed, apart fro
   await page.route(list, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     await gate;
-    await route.fulfill({ status: 500, body: '' });
+    await route.fulfill({ status: 429, body: '' });
   });
+  ada.expectHttp(429, '/api/notifications');
   await page.reload();
   await (await ui.openAppMenu(page)).getByRole('menuitem', { name: 'Notifications', exact: true }).click();
   const inbox = page.getByRole('menu', { name: 'Notifications' });
