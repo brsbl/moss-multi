@@ -620,7 +620,7 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
       docMap.set(id, mounted.doc);
       if (!session.stopPresence) {
         const stopPresence = startPresence(id, session.provider);
-        const stopCursors = cursors.start(session.provider);
+        const stopCursors = cursors.start(session.provider, id);
         const stopDirLift = liftDirOnLargeRemote(editor, session.doc);
         session.stopPresence = () => { stopPresence(); stopCursors(); stopDirLift(); };
       }
