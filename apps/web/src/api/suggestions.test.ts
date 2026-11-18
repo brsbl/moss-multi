@@ -3,6 +3,7 @@
 // rate-limited per principal and re-authorized by the DocDO, whose verdict passes through; the working export; and
 // the bell's row for a new live suggestion, for the people who can review it.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { DOC_LIMIT_NOTICE } from '@moss-multi/protocol/sync';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
 import { handleApi } from './router.ts';
@@ -156,6 +157,15 @@ describe('suggestion review routes @p:mean-2 @p:R17', () => {
     const response = await send('POST', ada.cookie, path('accept'), { previewHash: 'h', digest: 'd' });
     expect(response.status).toBe(status);
     expect(await response.json()).toMatchObject({ error: answer.reason });
+  });
+
+  it('an accept refused for a note limit names it and says so (T5.V) @p:tech-3', async () => {
+    verdict = { ok: false, status: 409, reason: 'doc-cap', limit: 'structure' };
+    const response = await send('POST', ada.cookie, path('accept'), { previewHash: 'h', digest: 'd' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'doc-cap', limit: 'structure', message: DOC_LIMIT_NOTICE.structure });
+    verdict = { ok: false, status: 409, reason: 'doc-cap' };
+    expect(await (await send('POST', ada.cookie, path('accept'), { previewHash: 'h', digest: 'd' })).json(), 'the bytes cap names none').toEqual({ error: 'doc-cap' });
   });
 
   it('GET content?view=working exports the composite; the default export stays the clean body', async () => {

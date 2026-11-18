@@ -165,6 +165,18 @@ describe('version routes @p:mean-3', () => {
     expect(await response.json()).toMatchObject({ error: 'restore-base-stale', message: expect.stringMatching(/Open Restore again/) });
   });
 
+  it('names the limit a restore that no longer fits the note meets (A§5.1 Limits)', async () => {
+    for (const [limit, said] of [['text', /text limit/], ['structure', /too many separate lines/], ['state', /too large/]] as const) {
+      verdict = { ok: false, status: 413, reason: 'doc-cap', limit };
+      const response = await send('POST', ada.cookie, `${versions()}/v1/restore`);
+      expect(response.status).toBe(413);
+      const body = await response.json();
+      expect(body).toMatchObject({ error: 'doc-cap', message: expect.stringMatching(said) });
+      expect(body.message, limit).toMatch(/left as it is/);
+      expect(body.limit ?? 'state').toBe(limit);
+    }
+  });
+
   it("counts an agent's named saves against its owner: one rate across the owner's keys, attributed to the key", async () => {
     const keys = await Promise.all([insertAgent(d1.db, eve), insertAgent(d1.db, eve), insertAgent(d1.db, eve)]);
     for (const agent of keys) expect((await sendAsKey(agent.key, versions(), { name: 'Draft' })).status).toBe(201);

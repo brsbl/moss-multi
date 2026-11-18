@@ -8,6 +8,7 @@ import { MAX_QUOTE } from '@moss-multi/core/anchor-frame';
 import { COMMENT_OP_RATE, COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
 import type { CommentActor, CommentDeleteScope, CommentResult } from '@moss-multi/sync';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
+import { DOC_LIMIT_NOTICE } from '@moss-multi/protocol/sync';
 import { resolvePrincipal, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
@@ -65,7 +66,11 @@ async function takeToken(env: DocsEnv, principal: Actor): Promise<Response | nul
 }
 
 const bad = () => json({ error: 'bad-request' }, 400, NO_STORE);
-const refused = (result: Extract<CommentResult, { ok: false }>) => json({ error: result.error }, result.status, NO_STORE);
+/** A refusal; past the note's text or structure limit it names the limit and says so, as note creation does (A§5.1). */
+const refused = (result: Extract<CommentResult, { ok: false }>) => json(
+  result.limit && result.limit !== 'state' ? { error: result.error, limit: result.limit, message: DOC_LIMIT_NOTICE[result.limit] } : { error: result.error },
+  result.status, NO_STORE,
+);
 const sourceOf = (principal: Actor) => (principal.type === 'agent' ? 'external' : 'user');
 
 export async function createComment(request: Request, env: DocsEnv, docId: string): Promise<Response> {
