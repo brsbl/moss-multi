@@ -219,7 +219,11 @@ export class Scene {
 
   /** A message other than a sync frame over the same socket, ahead of the next frame. */
   async message(bytes: Uint8Array): Promise<void> {
-    if (!this.#socket || this.#socket.closed) this.#socket = await connect(this.opened, { role: 'editor' });
+    if (!this.#socket || this.#socket.closed) {
+      this.#socket = await connect(this.opened, { role: 'editor' });
+      // The reply to the server's step 1 is a sync frame: it goes first, as a provider's does.
+      await this.#socket.pump();
+    }
     await this.#socket.deliver(bytes);
     await this.#socket.pump();
   }
