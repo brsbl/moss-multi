@@ -238,7 +238,7 @@ export function decodeMovesFrame(bytes: Uint8Array): AnchorMove[] | null {
   }
   if (at + size !== bytes.length) return null;
   try {
-    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(at)));
+    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes.subarray(at)));
     if (!Array.isArray(parsed) || parsed.length > MOVES_MAX) return null;
     const ok = parsed.every((move) => Array.isArray(move) && move.length === 3 && move.every((part) => typeof part === 'string' && part.length <= 200));
     return ok ? (parsed as AnchorMove[]) : null;
