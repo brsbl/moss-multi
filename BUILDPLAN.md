@@ -866,6 +866,8 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - Required red-first test (T9.30 checker P2, recovery notices not in the bottom region): with the note's connection lost and a recovery notice showing, the notice sits inside the pane's one bottom region directly above the state row, not elsewhere in the pane.
 - **T9.44 HTML source and formula drafts keep Moss's geometry** `[A·codex]`
   - **Scope:** An HTML block's source editor on a short live preview gets a frame of at least header 40 + source 96 + footer 33 + border 2 px, and returns to the preview's height when closed. A bound editor's formula draft is Moss's chip as local paint (`host/formula-chip.ts`): 8 px inline padding on the spans the draft starts or ends, and a rounded box 2 px above and below the line, never written to the note. **Done:** j11-editor-geometry and the chip-box unit tests pass; before, after and Moss shots at 1440×1000, light and dark; full lane green.
+- **T9.46 The whole product looks like Moss** `[A·codex]` (scope added when built)
+  - Required red-first test (T9.33 checker P2, visitor's Review row wraps at 390 px): a signed-out link visitor in Review at 390×844 sees “Reviewing suggestions · View only”, Done and Sign in to do more on one line, the row no taller than Moss's docked toolbar.
 
 ## The loop
 

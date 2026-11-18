@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (246 of 302 planned tasks verified)
+**Overall: 82% done** (247 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 19 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 20 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -269,6 +269,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.18 verified: choosing a search result from another vault, by click or Enter, switches to that vault the way the vault switcher does and opens the note live; results from the vault on screen open as before.
 - 2026-11-17 — T9.14 verified: after undo or redo the caret lands where the change was, keeping the typing format and style there, so typing next continues in place; a peer's caret stays where they left it.
 - 2026-11-17 — T9.30 verified: a note's top bar at rest holds only Moss's own actions, with Share, Suggestions, Suggest changes and Version history in More actions, the vault, notifications, connection and account in an app menu behind Settings, People here and open counts as quiet cues, and Suggesting, Review and a reader's access in one quiet bottom row.
+- 2026-11-18 — T9.33 verified: "Review suggestions" says what it pauses, the Review row names what is paused ("Editing paused", "Suggesting paused", "View only" or "Comment only"), and Done, Escape or the last decision return to the mode Review paused, by the current role.
 
 ## T1.1s identity audit
 
@@ -308,6 +309,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.33's checker (6e89a79, 2026-11-18)
+
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: at 390 px the signed-out visitor's Review row wraps, "Sign in to do more" dropping to a second centred line (356x44 CSS px), denser than Moss's one-line toolbar; both actions stay reachable and origin/m9 wrapped the same; moved to T9.46.
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: coverage gap: no real-stack journey lowers an editor's role while the note is in Review and then checks the row wording, Done/Escape and the binding; mode.test.ts and the pane's capability gate cover it (no defect found).
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: evidence gaps: no real-stack proof of the commenter's "Comment only" wording (unit tests only), and no short-height or split-pane captures.
+- T9.33 (Suggesting and Review each have one clear active state) checker P2: the empty Suggestions list tells a forced suggester to "Switch to Suggest mode", which a suggester cannot do.
 
 ### From T9.30's checker (b4d82cd, 2026-11-17)
 
