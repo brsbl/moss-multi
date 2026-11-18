@@ -1818,7 +1818,7 @@ it('T5.V: a caret paste inside a long paragraph that splits nothing counts only 
   const pane = suggesting(`Intro line stays.\n\nClosing ${'l'.repeat(3_000)} end.\n`, undefined, true);
   try {
     caps.text = heldSize(pane.live).chars + 40;
-    pane.select('Closing', 1_500);
+    pane.select('Closing', 1_500, 1_500);
     const sent = pane.fork.sent;
     pane.paste(['p'.repeat(5)]);
     expect(noticed(), 'not refused').toBe('');

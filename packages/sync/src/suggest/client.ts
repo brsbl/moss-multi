@@ -1259,6 +1259,40 @@ export class SuggestFork {
   }
 
   /**
+   * The structs the DocDO counts toward the note's structure limit (A§5.1 Limits) for an edit sending `frames` frames
+   * (an op per doc transaction, a delete part), with every frame and merge still unanswered: a new record's own, each
+   * frame's, and each merge of an older open record of the author's it builds on. `edit.updates`: the updates it writes,
+   * which #forward reads for those records; without them, every record #mergedBy finds in `blocks` and `payloads`.
+   */
+  recordStructs(frames: number, edit: { updates?: readonly Uint8Array[]; blocks?: { from: number; to: number }; payloads?: readonly Y.Doc[] } = {}): number {
+    const { create, write, merge } = SUGGEST_LIMITS.structs;
+    // A frame to a record the body does not hold yet, or to an accepted one, opens it (or its continuation).
+    const opens = (id: string) => {
+      const meta = readMeta(this.body, chainHead(id, successorIn(this.body)));
+      return !meta || landingOf(meta.status) === 'continuation';
+    };
+    let structs = 0;
+    const opening = new Set<string>();
+    for (const { request } of [...this.#inflight, ...this.#waiting]) {
+      if (request.t === 'suggest-ops' || request.t === 'suggest-delete') {
+        structs += write;
+        if (opens(request.record)) opening.add(request.record);
+      } else if (request.t === 'suggest-merge') structs += merge;
+      else if (request.t === 'suggest-undelete') structs += write + 1;
+    }
+    structs += opening.size * create;
+    const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
+    if (!lease || frames <= 0) return structs;
+    structs += frames * write + (opens(lease.record) && !opening.has(lease.record) ? create : 0);
+    const head = chainHead(lease.record, successorIn(this.body));
+    const named = new Set<string>();
+    if (edit.updates) for (const update of edit.updates) for (const id of this.#named(update)) named.add(id);
+    else for (const id of this.#mergedBy(head, edit.blocks ?? { from: this.#caretBlock, to: this.#caretBlock }, edit.payloads)) named.add(id);
+    for (const id of named) if (id !== lease.record && id !== head && !this.#merged.has(id)) structs += merge;
+    return structs;
+  }
+
+  /**
    * The author's open records other than `into` that an edit in top-level blocks `from`..`to` may build on or delete,
    * and so merge into its record (#forward): any holding an item of those blocks, or an item of the root from the block
    * before them to the block after. Every block when the blocks are unknown.

@@ -24,7 +24,7 @@ import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
 import { charsAround, idKey, isPending, sharedItem, textIds, toSpans } from './chars.ts';
-import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type UndoStep } from './paste.ts';
+import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type PasteWrites, type UndoStep } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -825,15 +825,16 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       // selection and the paste goes in at its end ($routeRange).
       const native = range !== null && range.body.length === 0 && range.mine.length + range.mineLeaves.length > 0;
       const stack = options.pasteStack?.() ?? null;
-      const inserted = { chars: 0 };
-      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack, inserted) : null;
+      const writes: PasteWrites = { chars: 0, removed: 0, updates: [] };
+      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack, writes) : null;
       const notice = measured === null
         ? UNMEASURED
         : measured === 'cells'
         ? OVER_CELLS
         : $admitPaste(
-          fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0, inserted.chars,
-          range ? range.mine.reduce((sum, { from, to }) => sum + to - from, 0) + range.mineLeaves.reduce((sum, leaf) => sum + leaf.getTextContentSize(), 0) : 0,
+          fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0, writes,
+          // His own text the routing removes; over his own text only the copy removed it, and counted it.
+          range && !native ? range.mine.reduce((sum, { from, to }) => sum + to - from, 0) + range.mineLeaves.reduce((sum, leaf) => sum + leaf.getTextContentSize(), 0) : 0,
         );
       if (notice) {
         event.preventDefault();

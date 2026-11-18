@@ -35,6 +35,16 @@ const PER_JSON_BYTE = 3;
 /** The pane's own paste handlers and content transforms, registered on an editor (suggest/paste-stack.ts). */
 export type PasteStack = (editor: LexicalEditor) => () => void;
 
+/**
+ * What a paste wrote on the copy (measurePaste): the characters of text its ops insert and of the text they remove that
+ * was there before (what its undo restores), and each update, as the fork forwards each as a frame.
+ */
+export interface PasteWrites {
+  chars: number;
+  removed: number;
+  updates: Uint8Array[];
+}
+
 /** What PASTE_COMMAND carries. */
 export type PasteEvent = ClipboardEvent | InputEvent | KeyboardEvent;
 
@@ -133,7 +143,7 @@ export function $overwritesCells(nodes: readonly LexicalNode[], selection: BaseS
  * paste writes over a table's cells ($overwritesCells), which a suggestion cannot strike.
  */
 export function measurePaste(
-  source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack, inserted?: { chars: number },
+  source: LexicalEditor, fork: SuggestFork, event: PasteEvent, at: PasteAt, stack: PasteStack, writes?: PasteWrites,
 ): number | 'cells' | null {
   const cleanup: (() => void)[] = [];
   let counting = false;
@@ -155,15 +165,27 @@ export function measurePaste(
       if (!counting || origin === COPY_LOADED || origin === PAYLOAD_LOADED) return;
       bytes += update.byteLength;
       // The text its ops insert, as the DocDO counts a record's toward the note's text limit.
-      if (!inserted) return;
+      if (!writes) return;
+      writes.updates.push(update);
       for (const struct of Y.decodeUpdate(update).structs) {
-        if (struct instanceof Y.Item && struct.content instanceof Y.ContentString) inserted.chars += struct.length;
+        if (struct instanceof Y.Item && struct.content instanceof Y.ContentString) writes.chars += struct.length;
       }
     };
+    // The text it removes that stood before it, which its undo brings back as new copies.
+    const removes = (txn: Y.Transaction) => {
+      if (!counting || !writes || txn.origin === COPY_LOADED || txn.origin === PAYLOAD_LOADED) return;
+      eachItem(txn.doc, txn.deleteSet, (struct, offset, len) => {
+        if (!(struct.content instanceof Y.ContentString)) return;
+        const stood = (txn.beforeState.get(struct.id.client) ?? 0) - (struct.id.clock + offset);
+        if (stood > 0) writes.removed += Math.min(len, stood);
+      });
+    };
     doc.on('update', count);
+    doc.on('afterTransaction', removes);
     payloads.onHold((_id, payload) => {
       payload.clientID = fork.doc.clientID;
       payload.on('update', count);
+      payload.on('afterTransaction', removes);
     });
     // A fork's doc: the paste handlers take it as Suggest mode's (large-paste.ts pastesInBatches).
     registerFork(doc, fork);
@@ -256,25 +278,10 @@ function $restBytes(selection: BaseSelection | null): number {
   return bytes;
 }
 
-/** The characters of the rest $restBytes measures: the text the split re-creates, as the text limit counts it. */
-function $restChars(selection: BaseSelection | null): number {
-  if (!$isRangeSelection(selection)) return 0;
-  const end = selection.isBackward() ? selection.anchor : selection.focus;
-  const node = end.getNode();
-  if ($isRootOrShadowRoot(node)) return 0;
-  let chars = 0;
-  if ($isTextNode(node)) chars += node.getTextContentSize() - end.offset;
-  else if ($isElementNode(node)) chars += node.getChildren().slice(end.offset).reduce((sum, child) => sum + child.getTextContentSize(), 0);
-  for (let at: LexicalNode = node, parent = at.getParent(); parent && !$isRootOrShadowRoot(parent); at = parent, parent = at.getParent()) {
-    for (let next = at.getNextSibling(); next; next = next.getNextSibling()) chars += next.getTextContentSize();
-  }
-  return chars;
-}
-
 /**
  * The note limit (A§5.1 Limits) an edit's writes would pass, as the DocDO's #recordLimit counts them, or null: the
  * text the record it lands in already holds and the `chars` it adds, beside the note's text, when it adds any; and the
- * `structs` its writes add beside the note's.
+ * `structs` its writes and what is still unanswered add beside the note's (client.ts recordStructs).
  */
 function noteLimit(
   fork: ForkView, chars: number, structs: number, blocks?: { from: number; to: number }, payloads?: readonly Y.Doc[],
@@ -319,11 +326,6 @@ const REFUSED: Partial<Record<SuggestRefusal, string>> & { default: string } = {
   lease: 'Suggesting stopped before the paste went in, so none of it was added.',
 };
 
-/** Structs the DocDO's first write of a record adds to the note (doc/suggest.ts CREATE_STRUCTS and WRITE_STRUCTS). */
-const RECORD_WRITE_STRUCTS = 7;
-/** Structs each further frame (an op or a delete part) adds (doc/suggest.ts WRITE_STRUCTS). */
-const FRAME_STRUCTS = 2;
-
 /** What the pane's own editor may write beyond the copy (its other plugins' transforms): a share and a floor. */
 const COPY_SLACK = 1.05;
 const COPY_FLOOR = 1_024;
@@ -331,8 +333,7 @@ const COPY_FLOOR = 1_024;
 /**
  * Admits, at the selection, a paste whose ops measure `measured` bytes on the fork's copy (measurePaste), striking
  * `targets` (the body text it replaces) and removing `owned` bytes and `ownedChars` characters of the author's own text
- * ($ownedBytes), inserting `chars` characters on the copy: null when it
- * fits every limit, else the notice to show. A record's ops only grow, so it counts the paste, its one undo and its one
+ * ($ownedBytes), with what it wrote on the copy (`writes`): null when it fits every limit, else the notice to show. A record's ops only grow, so it counts the paste, its one undo and its one
  * redo: the paste twice (the redo re-creates it), the rest of the block it splits once more and again as restored
  * copies (stepBytes) for its undo and its redo, the strike twice (the redo strikes again), and the own text once (the
  * undo restores it). It counts them against the record cap with what the record it lands in already holds (client.ts
@@ -341,7 +342,9 @@ const COPY_FLOOR = 1_024;
  * suggestions may fill with the payloads the DocDO counts for the body. Every undo and redo is admitted again on its
  * own (admitStep).
  */
-export function $admitPaste(fork: ForkView, measured: number, targets: IdSpan[], owned = 0, chars = 0, ownedChars = 0): string | null {
+export function $admitPaste(
+  fork: ForkView, measured: number, targets: IdSpan[], owned = 0, writes: PasteWrites = { chars: 0, removed: 0, updates: [] }, ownedChars = 0,
+): string | null {
   const paste = measured > 0 ? measured * COPY_SLACK + COPY_FLOOR : 0;
   const selection = $getSelection();
   // The blocks it spans: an older open record of the author's it builds on merges into its record.
@@ -350,11 +353,12 @@ export function $admitPaste(fork: ForkView, measured: number, targets: IdSpan[],
     : [-1];
   const blocks = { from: Math.min(...tops), to: Math.max(...tops) };
   // The note's text and structure limits (A§5.1 Limits), beside what the note and the record it lands in hold: the
-  // text the paste and its redo insert (the split rest with it), the rest again as restored copies for its undo and its
-  // redo, the own text its undo restores; the structs of a new record's write and its strike.
+  // text the paste and its redo insert, the text it removes and the own text the routing removes, which its undo
+  // restores; the structs of the frames it sends (a frame per update, its strike) and the merges they ask for.
   if (measured > 0) {
-    const text = chars > 0 ? 2 * (chars + $restChars(selection)) + ownedChars : 0;
-    const limit = noteLimit(fork, text, RECORD_WRITE_STRUCTS + (targets.length ? FRAME_STRUCTS : 0), blocks);
+    const text = writes.chars > 0 ? 2 * writes.chars + writes.removed + ownedChars : 0;
+    const structs = fork.recordStructs(writes.updates.length + (targets.length ? 1 : 0), { updates: writes.updates });
+    const limit = noteLimit(fork, text, structs, blocks);
     if (limit) return DOC_LIMIT_NOTICE[limit];
   }
   const adds = 2 * paste + (1 + 2 * PER_BYTE) * $restBytes(selection) + (targets.length ? pendingPartBytes(targets) : 0) + owned;
@@ -549,8 +553,8 @@ export function admitStep(
   const payloads = [...replay.docs].filter((doc) => doc !== root.doc);
   const blocks = stepBlocks(root, replay.run);
   // The note's text and structure limits, as $admitPaste counts them: the text its restored copies insert, and the
-  // structs of a record's first write, a frame per further doc it writes and its strike.
-  const structs = RECORD_WRITE_STRUCTS + FRAME_STRUCTS * (Math.max(0, replay.docs.size - 1) + (targets.length ? 1 : 0));
+  // structs of a frame per doc it writes and its strike, the merges they may ask for and what is still unanswered.
+  const structs = fork.recordStructs(replay.docs.size + (targets.length ? 1 : 0), { blocks, payloads });
   const limit = noteLimit(fork, replay.chars + extraChars, structs, blocks, payloads);
   if (limit) return stepRefused(kind, limit);
   const refusal = fork.admit(adds, targets, blocks, payloads);
