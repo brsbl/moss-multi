@@ -324,7 +324,7 @@ async function openNote(page, id, mode = 'edit') {
   // Review is entered from the Suggestions list and left with the bottom row's Done (T9.30).
   if (mode === 'review' && (await current()) !== mode) {
     await (await page.waitForSelector(`${paneOf(id)} [${DOM.SUGGESTIONS_BUTTON_ATTR}]`, { visible: true })).click();
-    await press(page, 'button', 'Review');
+    await press(page, 'button', 'Review suggestions');
   } else if (mode === 'edit' && (await current()) === 'review') await press(page, 'button', 'Done');
   await until(`the note is in ${mode} mode`, async () => (await current()) === mode);
   await page.waitForSelector(`${pane} [${DOM.BODY_BINDING_ATTR}="${mode === 'review' ? 'readonly' : 'live'}"]`, { timeout: 20_000 });

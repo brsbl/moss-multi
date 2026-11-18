@@ -116,7 +116,7 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
 
   // T9.10: the band says so and stays; once the notice clears, a later key is refused out loud again.
   const band = ui.pane(ben, docId).locator(`[${ROLE_BAND_ATTR}]`);
-  await expect(band, 'the band says he can view only').toHaveText("View only. You can't edit this note.");
+  await expect(band, 'the band says he can view only').toHaveText('View only');
   const refusal = ui.pane(ben, docId).locator('[data-input-refusal]');
   await expect(refusal, 'the demotion notice clears').toHaveText('', { timeout: LIVE_TIMEOUT });
   await expect(band, 'and the band stays').toBeVisible();
@@ -128,7 +128,7 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
 });
 
 const CAN_EDIT_NOW = 'You can now edit this note.';
-const VIEW_BAND = "View only. You can't edit this note.";
+const VIEW_BAND = 'View only';
 
 /**
  * The workspace channel, held down on demand: while down, each new channel socket closes before it opens, as on a dead

@@ -403,7 +403,7 @@ test('j16-suggest offline:suggestions typed offline reach the server after the s
   // The owner reviews the note: both suggestions are there, and the body is unchanged.
   ada.expectReconnects(1, docId);
   await openIn(ada, docId, 'edit');
-  await (await openPanel(ada)).getByRole('button', { name: 'Review', exact: true }).click();
+  await (await openPanel(ada)).getByRole('button', { name: 'Review suggestions', exact: true }).click();
   await expect(ui.pane(ada, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ada, docId)).toContainText('Online words.', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ada, docId), 'the offline suggestion was delivered').toContainText('Offline words.', { timeout: 45_000 });

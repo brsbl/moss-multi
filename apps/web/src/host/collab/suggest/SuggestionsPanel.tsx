@@ -9,12 +9,12 @@ import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
-  TOP_BAR_ATTR,
+  TOP_BAR_ATTR, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
 import { Check, FilePenLine, PencilLine, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
@@ -25,7 +25,6 @@ import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
-import { leaveReview } from './SuggestChrome.tsx';
 import { usePreviewRows } from './rows.ts';
 
 /** Reviewed cards listed under the open ones (glyphdown's cap). */
@@ -136,6 +135,13 @@ async function call(url: string, body?: unknown): Promise<{ ok: boolean; status:
 
 // One loader for every panel: the preview budget is the reader's, across notes.
 const previews = createPreviewLoader((docId, id) => call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(id)}/preview`));
+
+/** What entering Review pauses for `role` in `mode`, or what it leaves a reader able to do (T9.33). */
+export function reviewEntryNote(role: Role, mode: EditMode | null): string {
+  if (role === 'viewer') return 'Read proposed changes; this note stays view only';
+  if (role === 'commenter') return 'Read proposed changes; you can still comment';
+  return mode === 'suggest' || role === 'suggester' ? 'Suggesting pauses while you review' : 'Editing pauses while you review';
+}
 
 const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
 
@@ -378,6 +384,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   const moreActions = () => anchor?.current?.closest<HTMLElement>(`[${TOP_BAR_ATTR}]`)?.querySelector<HTMLElement>('button[aria-label="More actions"]') ?? null;
   // A focused count that leaves, unopened, hands focus to More actions, where Suggestions stays.
   const focusHome = useFocusHome(moreActions);
+  const entryNote = useId();
   const shown = showCount && open.length > 0;
   if (isOpen && shown && !pinned) setPinned(true);
   if (!isOpen && pinned) setPinned(false);
@@ -440,21 +447,23 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
                 {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
               </div>
               {people ? <div className="ml-auto flex shrink-0 items-center">{people}</div> : null}
-              {open.length ? (
-                <button
-                  type="button"
-                  aria-pressed={reviewing}
-                  className={`flex h-6 items-center gap-1 rounded px-1.5 text-micro transition-colors focus:outline-none focus-visible:ring-0 ${reviewing ? 'bg-surface-panel text-ink-default' : 'text-ink-faint hover:bg-surface-panel hover:text-ink-muted'}`}
-                  onClick={() => {
-                    if (reviewing) leaveReview(docId, role);
-                    else requestMode(docId, 'review');
-                    closePanel(docId);
-                  }}
-                >
-                  Review
-                </button>
-              ) : null}
             </div>
+            {open.length && !reviewing ? (
+              // The way into Review, saying what it pauses; in Review the pane's bottom row is its one state and exit.
+              <button
+                type="button"
+                aria-label="Review suggestions"
+                aria-describedby={entryNote}
+                className="mx-2 mt-2 flex shrink-0 flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
+                onClick={() => {
+                  requestMode(docId, 'review');
+                  closePanel(docId);
+                }}
+              >
+                <span className="text-xs text-ink-default">Review suggestions</span>
+                <span id={entryNote} className="text-micro text-ink-faint">{reviewEntryNote(role, mode)}</span>
+              </button>
+            ) : null}
             <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
           </Popover.Content>
         </Popover.Portal>
