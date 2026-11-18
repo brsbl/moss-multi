@@ -10,6 +10,7 @@ import { CommentsWriter, ENGINE_SKIPPED_ORIGINS, newCommentsClient, type GuardRe
 import type { DocStore } from './persistence.ts';
 import type { ImportedMarks } from '../server-doc.ts';
 import { COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
+import type { DocLimit } from '@moss-multi/protocol/sync';
 
 /** A comment's text, in characters (413 past it). */
 export { COMMENT_TEXT_MAX };
@@ -80,7 +81,8 @@ export type CommentResult =
       /** The reply a root delete promoted to root. */
       promoted?: string;
     }
-  | { ok: false; status: 400 | 401 | 403 | 404 | 409 | 413 | 503; error: string };
+  /** `limit`: the note limit a 413 `doc-cap` met, when the text or structure one (A§5.1). */
+  | { ok: false; status: 400 | 401 | 403 | 404 | 409 | 413 | 503; error: string; limit?: DocLimit };
 
 const refuse = (status: 400 | 403 | 404 | 409 | 413, error: string): CommentResult => ({ ok: false, status, error });
 const nowSeconds = () => Math.floor(Date.now() / 1000);

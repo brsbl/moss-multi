@@ -7,6 +7,7 @@
 import { getServerByName } from 'partyserver';
 import { SUGGEST_PREVIEW_RATE, SUGGEST_REVIEW_RATE } from '@moss-multi/protocol/limits';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
+import { DOC_LIMIT_NOTICE } from '@moss-multi/protocol/sync';
 import { resolvePrincipal, sha256Hex, shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { json } from '../worker/route.ts';
@@ -38,6 +39,8 @@ interface Verdict {
   ok: boolean;
   status?: number;
   reason?: string;
+  /** The note limit a refused accept would pass (A§5.1 Limits). */
+  limit?: string;
   hunks?: unknown[];
   hash?: string;
   digest?: string;
@@ -89,7 +92,8 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   else verdict = (await stub.withdrawSuggestion(input)) as Verdict;
   if (!verdict.ok) {
     const status = verdict.status ?? 409;
-    return json({ error: verdict.reason ?? 'refused' }, status === 404 ? 404 : status, NO_STORE);
+    const limit = verdict.reason === 'doc-cap' && (verdict.limit === 'text' || verdict.limit === 'structure') ? verdict.limit : null;
+    return json({ error: verdict.reason ?? 'refused', ...(limit ? { limit, message: DOC_LIMIT_NOTICE[limit] } : {}) }, status === 404 ? 404 : status, NO_STORE);
   }
   if (action === 'preview') {
     return json({ preview: { hunks: verdict.hunks ?? [], hash: verdict.hash, digest: verdict.digest, ...(verdict.closed ? { closed: true } : {}) } }, 200, NO_STORE);

@@ -6,6 +6,7 @@ import type { Binding } from '@lexical/yjs';
 import {
   ContentString, ContentType, Item, Map as YMap, UndoManager, XmlText, findIndexSS, getItem, isDeleted, type AbstractType, type Transaction,
 } from 'yjs';
+import { keepLeanDefault } from '@moss-multi/sync/lean-defaults';
 import { BodyUndo, lexicalAction, payloadDocsFor } from '@moss-multi/sync/payload-docs';
 
 import { REGISTER_LOCAL_ORIGIN } from '@moss-multi/sync/registers';
@@ -175,14 +176,15 @@ function createRootUndoManager(binding: Binding): UndoManager {
     // A property goes with its container: kept while the container the step created is kept.
     const owner = (item.parent as AbstractType<unknown>)._item;
     if (owner && created?.has(owner)) return !keeps(owner);
-    // A first assignment goes: the key was absent before the step (an optional property such as a callout's level).
-    // Yjs links a key's next value after its tombstones, so a value undone earlier, or a peer's concurrent value,
-    // proves nothing: the step replaced a value only if it deleted one it did not write itself.
+    // A first assignment goes: the key was absent before the step (a lean doc's property at its default, A§10.11, or an
+    // optional one such as a callout's level). Yjs links a key's next value after its tombstones, so a value undone
+    // earlier, or a peer's concurrent value, proves nothing: the step replaced a value only if it deleted one it did
+    // not write itself. A lean default takes its place, so a client on the earlier binding reads no empty key.
     let replaced = false;
     for (let left = item.left; left && step && !replaced; left = left.left) {
       replaced = isDeleted(step.deletions, left.id) && !isDeleted(step.insertions, left.id);
     }
-    if (!replaced) return true;
+    if (!replaced) { keepLeanDefault(binding, item); return true; }
     // Yjs has already restored the value the step replaced, where it could. When a peer rewrote the key meanwhile it
     // cannot, and deleting the step's value would leave the key empty: Lexical hands every peer `undefined` for a
     // property its node never allows to be unset (a formula's `__commentIds`, which Lexical rewrites on every clone).
