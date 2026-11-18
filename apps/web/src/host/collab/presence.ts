@@ -104,7 +104,8 @@ export function startPresence(docId: string, provider: YProvider): () => void {
       }, 500);
       try { sessionStorage.setItem(key, String(slot)); } catch { /* storage unavailable */ }
     }
-    peers.sort((a, b) => a.principalId < b.principalId ? -1 : a.principalId > b.principalId ? 1 : a.clientId - b.clientId);
+    // By the name shown, so the list reads alphabetically and a newcomer never reorders the rest (T9.32).
+    peers.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }) || a.clientId - b.clientId);
     publish(docId, peers);
     changing = false;
   };
