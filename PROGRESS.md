@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (247 of 302 planned tasks verified)
+**Overall: 81% done** (246 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 20 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 19 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -269,7 +269,6 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.18 verified: choosing a search result from another vault, by click or Enter, switches to that vault the way the vault switcher does and opens the note live; results from the vault on screen open as before.
 - 2026-11-17 — T9.14 verified: after undo or redo the caret lands where the change was, keeping the typing format and style there, so typing next continues in place; a peer's caret stays where they left it.
 - 2026-11-17 — T9.30 verified: a note's top bar at rest holds only Moss's own actions, with Share, Suggestions, Suggest changes and Version history in More actions, the vault, notifications, connection and account in an app menu behind Settings, People here and open counts as quiet cues, and Suggesting, Review and a reader's access in one quiet bottom row.
-- 2026-11-17 — T9.32 verified: People here is one quiet button of neutral initials whose roster names every session, agent and window with its caret colour, choosing a row names that person at their caret, and a peer's typing name sits in the margin beside their line (or the button reads "N typing" when there is no room).
 
 ## T1.1s identity audit
 
@@ -309,15 +308,6 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
-
-### From T9.32's checker (987a155, 2026-11-17)
-
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: long roster names (up to 80 characters) are truncated on one line in the 20rem roster, which can hide the '· window N' or '(N)' suffix, with no tooltip or wrapping to show the rest.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: in dark theme the inspected (hovered) roster row may show no background highlight, unlike the light theme and Moss's dark menu.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: the phone (390 px) presence entry is unproven: no frame shows the Suggestions heading holding People here, the phone roster or the 'N typing' fallback.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: at common laptop pane widths (about 1000 to 1100 px) typing names usually fall back to 'N typing', so the toolbar text flips during each burst of typing.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: done-matrix states not exercised: 50 sessions (+47), touch, short viewport, a focused row whose person leaves, and 'Bot' in the roster; the new tests do not assert the aggregate button or that inspection never scrolls.
-- T9.32 (Presence is identifiable without coloured avatar discs) checker P2: j15-social.spec.ts:192 (comment popover text visibility) failed on a first attempt and passed on rerun; whether it is flaky is unproven.
 
 ### From T9.30's checker (b4d82cd, 2026-11-17)
 
