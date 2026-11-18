@@ -1454,6 +1454,10 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                   showActiveState: false
                 }))}
               </div>
+              {/* moss-multi seam: search-state (T9.31): title matches alone never hide a failed search */}
+              {ipcSearchState === 'error' && (
+                <span role="status" className="block py-2 text-center text-micro text-ink-muted">{SEARCH_CAPTION.error}</span>
+              )}
             </div>
           );
         }

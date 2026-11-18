@@ -392,7 +392,17 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          return (
            <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
              Notes you create will appear here.
-@@ -1384,8 +1459,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1378,14 +1453,19 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+                   showActiveState: false
+                 }))}
+               </div>
++              {/* moss-multi seam: search-state (T9.31): title matches alone never hide a failed search */}
++              {ipcSearchState === 'error' && (
++                <span role="status" className="block py-2 text-center text-micro text-ink-muted">{SEARCH_CAPTION.error}</span>
++              )}
+             </div>
+           );
+         }
          // No title or content matches
          return (
            <div className="flex flex-col items-center gap-1.5 py-4 text-center">
@@ -404,7 +414,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            </div>
          );
        }
-@@ -1550,6 +1626,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1550,6 +1630,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
        // Stable deps used in nested event handlers
        fetchBackendFolders,
        ipcSearchResults,
@@ -412,7 +422,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        searchQuery,
        selectedSearchNoteId,
        selectedSearchCardRef,
-@@ -1643,11 +1720,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1643,11 +1724,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          <NotesListPanel
            ref={panelRef}
            className="flex h-full min-w-0 w-full"
@@ -427,7 +437,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
                <TooltipProvider>
                  <Tooltip>
-@@ -1666,14 +1744,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1666,14 +1748,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                  </Tooltip>
                </TooltipProvider>
                <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">
@@ -446,7 +456,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                </DropdownMenuContent>
              </DropdownMenu>
            ) : undefined}
-@@ -1693,7 +1775,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1693,7 +1779,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            open={trashFolderTarget !== null}
            onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
            title="Trash folder?"

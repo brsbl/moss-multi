@@ -46,8 +46,8 @@ export function useNewNoteHint(): string | null {
   return name ? `New note in ${name}` : null;
 }
 
-/** The note location's accessible name. */
-export function useNoteLocationLabel(): string {
-  const name = useVaultName();
+/** The note location's accessible name; it names the vault only when the vault on screen lists note `id`. */
+export function useNoteLocationLabel(id: string | null): string {
+  const name = useVaultOfNote(id);
   return name ? `Note location in ${name}` : 'Note location';
 }

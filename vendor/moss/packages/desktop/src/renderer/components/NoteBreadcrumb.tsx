@@ -40,7 +40,7 @@ export function NoteBreadcrumb({
   const revealFolderPath = useSetAtom(revealFolderPathAtom);
   const setExternalFolderNavigate = useSetAtom(externalFolderNavigateAtom);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const locationLabel = useNoteLocationLabel(); // moss-multi seam: vault-name (T9.31)
+  const locationLabel = useNoteLocationLabel(note?.id ?? null); // moss-multi seam: vault-name (T9.31)
 
   useEffect(() => {
     return () => {
