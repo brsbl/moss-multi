@@ -285,7 +285,8 @@ test('j16-review: Review pauses the mode it was entered from, Done returns there
   await actors.requireDistinct(2);
   // Each switch remounts the body on a fresh socket (§5).
   ada.expectReconnects(4, docId);
-  ben.expectReconnects(3, docId);
+  // Two entries into Review and two exits.
+  ben.expectReconnects(4, docId);
   await suggestText(ben, docId, 'original word', 8, ' plus');
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
 
