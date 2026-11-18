@@ -39,7 +39,7 @@ it('a full preferred gutter falls back to the opposite one, then to the People h
 });
 
 it('labels on neighbouring lines never overlap: the second takes the other gutter, a third is aggregated', () => {
-  const { placed, unplaced } = placeLabels([req(1, 500, 200), req(2, 520, 210), req(3, 540, 205)], bounds);
+  const { placed, unplaced } = placeLabels([req(1, 500, 200), req(2, 520, 205), req(3, 540, 210)], bounds);
   const one = placed.get(1)!; const two = placed.get(2)!;
   expect(one.x).toBeLessThan(column.left);
   expect(two.x).toBeGreaterThan(column.right);

@@ -48,14 +48,15 @@ test('j01-paste-geometry: a multi-batch plain paste lands whole when its batches
         inTask -= 1;
       }
     }, delay, ...rest)) as typeof window.setTimeout;
-    const nativeStyle = window.getComputedStyle;
-    window.getComputedStyle = ((element: Element, pseudo?: string | null) => {
-      if (inTask > 0 && element instanceof HTMLElement && element.dataset.cursorLabel !== undefined) {
+    // The cursor pass measures the overlay's offset parent for every remote caret it lays out.
+    const nativeRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (inTask > 0 && this.querySelector(':scope > [data-cursor-overlay]')) {
         probe.__geometryThrows += 1;
         throw new Error('cursor geometry failed');
       }
-      return nativeStyle.call(window, element, pseudo);
-    }) as typeof window.getComputedStyle;
+      return nativeRect.call(this);
+    };
   });
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Top\.$/ }).click();
   await ada.page.keyboard.press('End');
