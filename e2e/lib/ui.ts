@@ -72,6 +72,54 @@ export async function signOutThroughSettings(actor: Actor): Promise<void> {
 
 const BIND_TIMEOUT = 15_000;
 
+/** The app menu's heading names the vault on screen (T9.31); it is asked again until it does. */
+export async function expectVault(page: Page, name: string, { timeout = BIND_TIMEOUT, message = `the vault on screen is ${name}` } = {}): Promise<void> {
+  await expect(async () => {
+    const menu = await openAppMenu(page);
+    try {
+      await expect(menu.getByText(`Current vault: ${name}`, { exact: true })).toBeVisible({ timeout: 1_000 });
+    } finally {
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0);
+    }
+  }, message).toPass({ timeout });
+}
+
+/** Opens the app menu's Switch vault… list and returns it open. */
+export async function openVaultList(page: Page): Promise<Locator> {
+  await (await openAppMenu(page)).getByRole('menuitem', { name: 'Switch vault…', exact: true }).hover();
+  const list = page.getByRole('menu').filter({ has: page.getByRole('menuitemradio') });
+  await expect(list, 'Switch vault… lists the vaults').toBeVisible();
+  return list;
+}
+
+/** Switch vault…, then the vault whose row reads `item`: its name, then the role of a vault shared with them. */
+export async function switchVault(page: Page, item: string): Promise<void> {
+  await (await openVaultList(page)).getByRole('menuitemradio', { name: item, exact: true }).click();
+  await expect(page.getByRole('menu'), 'choosing a vault closes the menu').toHaveCount(0);
+}
+
+/** Settings, with its Vaults section disclosed; closed at rest. */
+export async function openVaultSettings(page: Page): Promise<Locator> {
+  const dialog = await openSettingsDialog(page);
+  const manage = dialog.getByRole('button', { name: 'Manage vaults', exact: true });
+  await expect(manage, 'vault management is closed at rest').toHaveAttribute('aria-expanded', 'false');
+  await manage.click();
+  await expect(manage).toHaveAttribute('aria-expanded', 'true');
+  return dialog;
+}
+
+/** Switch vault… > New vault…: Settings opens on the name field; the name and Enter land in the new vault. */
+export async function newVault(page: Page, name: string): Promise<void> {
+  await (await openVaultList(page)).getByRole('menuitem', { name: 'New vault…', exact: true }).click();
+  const field = page.getByRole('textbox', { name: 'New vault name', exact: true });
+  await expect(field, 'New vault… opens its name field').toBeFocused();
+  await field.fill(name);
+  await field.press('Enter');
+  await expect(page.getByRole('dialog'), 'Settings closes on the new vault').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await expectVault(page, name);
+}
+
 export const pane = (actor: Actor, docId: string): Locator => actor.page.locator(paneSelector(docId));
 export const title = (actor: Actor, docId: string): Locator => pane(actor, docId).locator(`[${TITLE_BINDING_ATTR}]`);
 export const body = (actor: Actor, docId: string): Locator => pane(actor, docId).locator(`[${BODY_BINDING_ATTR}]`);
