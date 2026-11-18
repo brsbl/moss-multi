@@ -1,7 +1,7 @@
 // T4.W: a large paste holds back its deletes until every item of it has landed (T3.B32), so the delete of the words a
 // split moved reaches the DocDO after their copy, in a frame of its own. The pasting tab names where the comments on
 // them went in a moves message just before that frame; the DocDO takes a named place only for a comment that frame
-// would detach, and only when it reads exactly as the comment's text did.
+// would detach, only onto text that socket's own writes added, and only when it reads exactly as the comment's text did.
 import { $createParagraphNode, $createTextNode } from 'lexical';
 import { describe, expect, it } from 'vitest';
 import { liveUnits, mintAnchor } from '@moss-multi/core/anchor-frame';

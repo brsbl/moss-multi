@@ -173,6 +173,15 @@ function unitAt(doc: Y.Doc, id: Y.ID | ItemId | null): Unit | null {
 
 const positionOf = (value: string): Y.ID | null => (value ? Y.decodeRelativePosition(fromBase64(value)).item : null);
 
+/** The item an encoded anchor position names, or null when it names none or does not decode. */
+export function positionItem(value: string): Y.ID | null {
+  try {
+    return positionOf(value);
+  } catch {
+    return null;
+  }
+}
+
 export function encodePosition(unit: Unit, assoc: 0 | -1): string {
   const item = { client: unit.item.id.client, clock: unit.item.id.clock + unit.off };
   return toBase64(Y.encodeRelativePosition(Y.createRelativePositionFromJSON({ type: null, tname: null, item, assoc })));
@@ -806,10 +815,11 @@ export class AnchorEngine {
       quote = textOf(pre);
       const mapped = this.#gapMap(view, s, e, pre);
       if (mapped) return anchoredOn(anchor, ...mapped);
-      const moved = this.#moved(id, pre);
-      if (moved) return anchoredOn(anchor, ...moved);
       const shrunk = shrink(view, entries, s, e);
       if (shrunk) return anchoredOn(anchor, ...shrunk);
+      // Only a comment the frame would detach follows a named place: a partial delete shrinks it, whatever is named.
+      const moved = this.#moved(id, pre);
+      if (moved) return anchoredOn(anchor, ...moved);
       return this.#lose(view, anchor, s, e, entries, quote);
     } catch (error) {
       if (error instanceof OverBudget) return detached(anchor, quote);
