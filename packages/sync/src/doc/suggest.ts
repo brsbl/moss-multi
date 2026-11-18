@@ -309,8 +309,8 @@ const refused = (reason: SuggestRefusal): { ok: false; reason: SuggestRefusal } 
  * Structs a record write adds to the note's doc at most: a new record's map with its meta, ops and parts (and the meta
  * of the accepted record a continuation follows), then one op or part and the meta it patches.
  */
-const CREATE_STRUCTS = 5;
-const WRITE_STRUCTS = 2;
+const CREATE_STRUCTS = SUGGEST_LIMITS.structs.create;
+const WRITE_STRUCTS = SUGGEST_LIMITS.structs.write;
 
 /** The characters of text an op's new structs insert, in the body or a payload doc. O(frame). */
 function insertedChars(decoded: ReturnType<typeof Y.decodeUpdate>): number {
@@ -592,7 +592,7 @@ export class SuggestIngest {
     if (this.#overState(metaWrites, moved + metaWrites)) return refused('doc-cap');
     // The ops and parts it copies are two structs, with the two metas it patches; the text is both records'.
     const fromChars = this.#info.get(b.id)!.chars;
-    const limit = this.#limit(a, { structs: 2 * WRITE_STRUCTS, chars: fromChars > 0 ? this.#info.get(a.id)!.chars + fromChars : 0, headroom: false });
+    const limit = this.#limit(a, { structs: SUGGEST_LIMITS.structs.merge, chars: fromChars > 0 ? this.#info.get(a.id)!.chars + fromChars : 0, headroom: false });
     if (limit) return limit;
     const now = this.#now();
     const source = readRecord(this.doc, b.id)!;

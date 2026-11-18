@@ -1752,3 +1752,83 @@ it('T5.V: a redo of a paste is admitted against the note\'s structure limit: at 
     pane.dispose();
   }
 });
+
+/**
+ * T5.V: with the note's structure limit `room` structs above what it holds, `room` rising from none, an edit is
+ * refused whole naming the limit (nothing sent, F unchanged, suggesting on) until it is admitted, and the one admitted
+ * is stored whole: every frame it sends and every merge it asks for land. The room it was admitted at.
+ */
+function structsSwept(pane: ReturnType<typeof suggesting>, act: () => void, most = 60): number {
+  for (let room = 0; room <= most; room += 1) {
+    vi.runAllTimers();
+    pane.pump();
+    pane.editor.update(() => {}, { discrete: true });
+    caps.structs = heldSize(pane.live).structs + room;
+    const text = pane.text();
+    const before = pane.changes();
+    act();
+    const notice = noticed();
+    if (notice) {
+      expect(notice, `refused naming the limit at ${room}`).toContain(DOC_LIMIT_NOTICE.structure);
+      expect(pane.changes(), 'nothing was sent').toBe(before);
+      expect(pane.text(), 'F is unchanged').toBe(text);
+      pane.pump();
+      expect(pane.fork.closed, 'suggesting stays on').toBe(false);
+      continue;
+    }
+    pane.pump();
+    expect(pane.fork.closed, `admitted with ${room} structs of room, and stored whole`).toBe(false);
+    expect(pane.unsaved, 'nothing offered back').toEqual([]);
+    return room;
+  }
+  throw new Error('never admitted');
+}
+
+it('T5.V: a paste that makes several payload blocks counts a frame per doc it writes against the structure limit: refused whole, or stored whole', { timeout: 120_000 }, () => {
+  const pane = suggesting(undefined, undefined, true);
+  try {
+    const chart = (label: string) => `\`\`\`moss-chart\n${JSON.stringify({ type: 'bar', data: [{ label, value: 1 }] })}\n\`\`\`\n`;
+    structsSwept(pane, () => pane.pasteData(markdownClipboard(`${chart('a')}\n${chart('b')}\n${chart('c')}`)));
+    expect(openRecords(pane.live, SUGGESTER.id), 'one suggestion').toHaveLength(1);
+  } finally {
+    caps.structs = STRUCT_CAP_REAL;
+    pane.dispose();
+  }
+});
+
+it('T5.V: a paste after its group rotated counts the new record and the merge of the older one it builds on against the structure limit: refused whole, or stored whole', { timeout: 120_000 }, () => {
+  const pane = suggesting(undefined, undefined, true);
+  try {
+    pane.paste([`first ${'x'.repeat(20)}`]);
+    vi.runAllTimers();
+    pane.pump();
+    expect(openRecords(pane.live, SUGGESTER.id)).toHaveLength(1);
+    // Past the idle gap the next edit starts a new group; at the same caret it builds on the first, which merges.
+    pane.idle(GROUP_IDLE_MS + 1_000);
+    structsSwept(pane, () => pane.paste(['second']));
+    expect(openRecords(pane.live, SUGGESTER.id), 'merged into one suggestion').toHaveLength(1);
+    expect(pane.text()).toContain('second');
+  } finally {
+    caps.structs = STRUCT_CAP_REAL;
+    pane.dispose();
+  }
+});
+
+it('T5.V: a caret paste inside a long paragraph that splits nothing counts only the text it adds: admitted just under the text limit', { timeout: 120_000 }, () => {
+  const pane = suggesting(`Intro line stays.\n\nClosing ${'l'.repeat(3_000)} end.\n`, undefined, true);
+  try {
+    caps.text = heldSize(pane.live).chars + 40;
+    pane.select('Closing', 1_500);
+    const sent = pane.fork.sent;
+    pane.paste(['p'.repeat(5)]);
+    expect(noticed(), 'not refused').toBe('');
+    pane.pump();
+    expect(pane.fork.sent - sent, 'the paste was sent').toBeGreaterThan(0);
+    expect(pane.fork.closed, 'the DocDO stores it').toBe(false);
+    expect(pane.unsaved).toEqual([]);
+    expect(pane.text()).toContain(`l${'p'.repeat(5)}l`);
+  } finally {
+    caps.text = TEXT_CHAR_CAP_REAL;
+    pane.dispose();
+  }
+});

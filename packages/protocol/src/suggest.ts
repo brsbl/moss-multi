@@ -95,6 +95,11 @@ export const SUGGEST_LIMITS = {
   /** Spans one delete part may name, and items. */
   partSpans: 1024,
   partItems: 20_000,
+  /**
+   * Structs a record write adds to the note at most, as the DocDO counts them toward the structure limit (A§5.1
+   * Limits): a new record's map, meta, ops and parts; each op or delete part with the meta it patches; a merge's copy.
+   */
+  structs: { create: 5, write: 2, merge: 4 },
 } as const;
 
 /** Leases one `suggest-lease` resume may name; a client resumes more in several. */
