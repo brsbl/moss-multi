@@ -153,8 +153,8 @@ test('j13-vault-nav: search says Searching… until the index answers, says when
   await expect(searching, 'pending reads as Searching…').toBeVisible();
   await expect.poll(() => held.length, { message: 'the index request is out' }).toBeGreaterThan(0);
   await expect(noMatch, 'no conclusion before the answer').toHaveCount(0);
-  await page.unroute(/\/api\/search\?/);
   for (const route of held.splice(0)) await route.continue();
+  await page.unroute(/\/api\/search\?/);
   await expect(noMatch, 'an empty answer concludes').toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(searching).toHaveCount(0);
 

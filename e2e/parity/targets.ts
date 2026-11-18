@@ -70,7 +70,7 @@ export const TARGETS: Target[] = [
   // Settings (T3.6). The oracle drops the sections the web withholds (Workspace Location, Default Markdown Editor, Note
   // Intelligence, Connected Folders); the candidate's Account and Agents sections, which moss has no story for, stay in
   // layout against spacers in the oracle, so moss's dialog frame, header and Appearance section compare around them.
-  { id: 'settings', story: 'settings-modal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', webSections: { selector: '[role="dialog"] [data-collab-chrome]', count: 2, container: '[role="dialog"] > .overflow-y-auto' } },
+  { id: 'settings', story: 'settings-modal--empty-new-user', seed: 'fresh', focusEditor: false, masks: [], floor: 0.05, maxBlob: 16, prepare: 'open-settings', crop: '[role="dialog"]', webSections: { selector: '[role="dialog"] [data-collab-chrome]', count: 3, container: '[role="dialog"] > .overflow-y-auto' } },
   { id: 'trash-view', story: 'app--default', seed: 'story-listing', focusEditor: false, masks: ['[data-collab-chrome]', `[${RETENTION_NOTICE_ATTR}]`], floor: 0.05, maxBlob: 16, prepare: 'trash-open-note' },
   // Comments (T4.3): a note with one thread. The highlight (moss's mark, our CSS Custom Highlight) and its gutter icon.
   // In dark mode moss pads its mark by 2px a side and rounds it, which moves the rest of the line; a highlight is paint
