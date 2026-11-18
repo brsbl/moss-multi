@@ -140,13 +140,12 @@ function InboxContent({ align, side = 'bottom', anchor, onOpenNotice, paneWidth 
   const notices = useNotices();
   const status = useSyncExternalStore(inbox.subscribe, inbox.status, () => 'loading' as const);
   const unreachable = useSyncExternalStore(inbox.subscribe, inbox.unreachable, () => NONE);
-  const popup = useRef<HTMLDivElement | null>(null);
   // A notice that navigates keeps focus from returning to the bell, where a typed Space or Enter would reopen it.
   const opening = useRef(false);
   const unread = notices.filter((n) => !n.read);
   const groups = groupNotices(notices.slice(0, SHOWN));
   // A header action that leaves once used hands focus to the inbox itself, which stays open.
-  const keepFocus = () => popup.current?.focus();
+  const keepFocus = (from: HTMLElement) => from.closest<HTMLElement>('[role="menu"]')?.focus();
 
   const open = (notice: Notice) => {
     opening.current = true;
@@ -166,7 +165,7 @@ function InboxContent({ align, side = 'bottom', anchor, onOpenNotice, paneWidth 
         <span>Couldn’t load notifications.</span>
         <button
           type="button"
-          onClick={() => { keepFocus(); void inbox.refresh(); }}
+          onClick={(event) => { keepFocus(event.currentTarget); void inbox.refresh(); }}
           className="rounded px-1.5 py-0.5 text-xs text-ink-default transition-colors hover:bg-surface-panel focus-visible:bg-surface-panel focus-visible:outline-none"
         >
           Try again
@@ -204,7 +203,6 @@ function InboxContent({ align, side = 'bottom', anchor, onOpenNotice, paneWidth 
 
   return (
       <DropdownMenuContent
-        ref={popup}
         aria-label="Notifications"
         align={align}
         side={side}
@@ -232,7 +230,7 @@ function InboxContent({ align, side = 'bottom', anchor, onOpenNotice, paneWidth 
           {unread.length > 0 ? (
             <button
               type="button"
-              onClick={() => { keepFocus(); inbox.markRead(unread.map((n) => n.id)); }}
+              onClick={(event) => { keepFocus(event.currentTarget); inbox.markRead(unread.map((n) => n.id)); }}
               className="-mr-1.5 rounded px-1.5 py-0.5 text-xs text-ink-faint transition-colors hover:bg-surface-panel hover:text-ink-muted focus-visible:bg-surface-panel focus-visible:outline-none"
             >
               Mark all read
