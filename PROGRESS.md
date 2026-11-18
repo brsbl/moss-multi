@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 65% done** (173 of 268 planned tasks verified)
+**Overall: 57% done** (174 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 74 / 74 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 18 / 19 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 29 / 30 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 30 / 30 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -199,6 +199,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-16 — T3.B31c verified: a note now holds up to 1.02 million characters, as in Google Docs, and a structure ceiling of 165,000 structs, checked alike on live edits, pastes, creates, duplicates and imports, with deletions and format changes given headroom and refusals that name the limit.
 - 2026-11-17 — T3.B33 verified: the note server now puts a body property of the wrong type or a non-finite number, such as a NaN indent, back to its default on every peer, counts that repair against the note's limits, and never overwrites a concurrent valid write with it.
 - 2026-11-17 — T4.V verified: comments now run on m3's note size limits, lean layout and in-place export, so a comment, reply, resolve or sidecar import counts against the note's structure guard and a refused comment write names the limit, with the full lane green on the m4 head.
+- 2026-11-17 — T5.V verified: suggestions now run on m4's note size limits, lean layout and in-place export, so a suggestion record, an accept and a Suggest-mode paste, undo or redo are held to the note's text and structure limits and a refusal names the limit, with the full lane green on the m5 head.
 
 ## T1.1s identity audit
 
@@ -772,3 +773,6 @@ Local browser verification remains assigned to the independent checker under the
 - T5.U (m5 on m4's sync and upload fixes) checker P2: WebKit j00-import tables.md invariant 5 intermittently fails with a table column resize handle covering the canvas at 852,947 (1 in 3 on the T5.U head and on each parent, m5 and m4); e2e/lib/detectors.js:21-45 rejects handles mounted on the body while vendor TableColumnResizePlugin.tsx:713-772 portals them there.
 - T5.U (m5 on m4's sync and upload fixes) checker P2: timing budgets are tight: the j01-paste-check stall failed once at 5320 ms against 5300 ms and the converter's entity-tabs import at 260 ms against 250 ms (reruns 4002 ms and 230 ms; parents show the same variance).
 - T5.S15 (A Review view left open across a kept accept shows the note as it now is) checker P2: the kept-accept remount does not keep a long note's Review scroll position; apps/web/src/host/collab/suggest/mounts.ts:250-256 sends a kept accept through PaneBinding.#remount (apps/web/src/host/collab/pane.tsx:249-258, 393-401, 528-538), which saves only a caret, resets the root and opens a new session, and the vendored CanvasAreaContent scroll restore runs only when the note id changes; the same pre-existing path a non-accepted gone record already takes.
+- T5.V (m5 on m4's note size limits) checker P2: undo of a striking paste can land in part at the structure limit and its history is then used up; an edge at the structure guard in Suggest mode where the server never exceeds a limit and the refusal is shown with the unsaved text offered back.
+- T5.V (m5 on m4's note size limits) checker P2: the refusal band is a square, full-width strip with only a bottom border, not Moss's floating, rounded error toast with a full outline (1440 and 390, light and dark); colours, text size and weight match Moss, and on a phone the actions wrap under the message.
+- T5.V (m5 on m4's note size limits) checker P2, owned by m3 (from T3.B31c): a refused paste's size-limit notice under the top bar is a neutral white row with dark text and a neutral rule, not error-styled like Moss's red text on a pale red surface with a red border.
