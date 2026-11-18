@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { modeFor, requestMode, setOpenSuggestions } from './mode.ts';
+import { modeFor, pausedMode, requestMode, reviewReturn, setOpenSuggestions, showMode } from './mode.ts';
 
 describe('T5.1 each role opens in its mode (PRODUCT ruling 17) @p:mean-2 @p:R17', () => {
   it('viewers and commenters open in Review; suggesters in Suggest; editors and owners in Edit', () => {
@@ -53,5 +53,41 @@ describe('T9.1 Review needs an open suggestion for those who can edit or suggest
     requestMode('doc-g', 'edit');
     setOpenSuggestions('doc-g', 0);
     expect(modeFor('doc-g', 'viewer')).toBe('edit');
+  });
+});
+
+describe('T9.33 Done returns to the mode Review paused @p:mean-2 @p:R17', () => {
+  it('an editor who was suggesting goes back to Suggest, by Done and by the last decision', () => {
+    setOpenSuggestions('doc-h', 1);
+    requestMode('doc-h', 'suggest');
+    showMode('doc-h', 'suggest');
+    requestMode('doc-h', 'review');
+    showMode('doc-h', 'review');
+    expect(pausedMode('doc-h', 'editor')).toBe('suggest');
+    expect(reviewReturn('doc-h', 'editor')).toBe('suggest');
+    setOpenSuggestions('doc-h', 0);
+    expect(modeFor('doc-h', 'editor')).toBe('suggest');
+  });
+
+  it('an editor who was editing goes back to Edit; a suggester always to Suggest; a reader to the plain note', () => {
+    setOpenSuggestions('doc-i', 1);
+    showMode('doc-i', 'edit');
+    requestMode('doc-i', 'review');
+    expect(pausedMode('doc-i', 'editor')).toBe('edit');
+    expect(reviewReturn('doc-i', 'owner')).toBe('edit');
+    expect(reviewReturn('doc-i', 'suggester')).toBe('suggest');
+    expect(pausedMode('doc-i', 'suggester')).toBe('suggest');
+    expect(reviewReturn('doc-i', 'viewer')).toBe('edit');
+    expect(reviewReturn('doc-i', 'commenter')).toBe('edit');
+    expect(pausedMode('doc-i', 'viewer')).toBe(null);
+  });
+
+  it('a lowered role recomputes the return from the current role, not the remembered one', () => {
+    setOpenSuggestions('doc-j', 1);
+    showMode('doc-j', 'suggest');
+    requestMode('doc-j', 'suggest');
+    requestMode('doc-j', 'review');
+    expect(reviewReturn('doc-j', 'commenter')).toBe('edit');
+    expect(pausedMode('doc-j', 'commenter')).toBe(null);
   });
 });

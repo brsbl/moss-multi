@@ -13,11 +13,10 @@ import { refusalMessage, refuseInput } from '../refusal.ts';
 import { signInToDoMore } from '../surfaces/ShareEntryPoints.tsx';
 import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT } from './bottom-row.ts';
 import { useOpenSuggestions, useShownMode } from './suggest/mode.ts';
-import { leaveReview, useEscapeLeavesReview } from './suggest/SuggestChrome.tsx';
+import { ReviewRow, useEscapeLeavesReview } from './suggest/SuggestChrome.tsx';
 import { useTerminal } from './terminal.ts';
 
-const LEAD: Partial<Record<Role, string>> = { viewer: 'View only.', commenter: 'Comment only.' };
-const CANNOT_EDIT = "You can't edit this note.";
+const LEAD: Partial<Record<Role, string>> = { viewer: 'View only', commenter: 'Comment only' };
 
 /** What a key aimed at a field the role cannot edit says. */
 const REFUSED: Partial<Record<Role, string>> = {
@@ -36,8 +35,9 @@ export function useRoleBand(docId: string | null): string | null {
 }
 
 /**
- * The band. A signed-out link visitor's holds "Sign in to do more" at every width: the top bar has none (T9.30). In
- * Review with a suggestion open, the same one row says so and offers Done, which Escape also does.
+ * The band: the reader's access in two words (T9.33). A signed-out link visitor's holds "Sign in to do more" at every
+ * width: the top bar has none (T9.30). In Review with a suggestion open, the same one row says so and offers Done back
+ * to the plain read-only note, which Escape also does; with none open it is the access alone.
  */
 export function RoleBand({ docId }: { docId: string }): ReactNode {
   const lead = useRoleBand(docId);
@@ -50,27 +50,26 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
   // A tab whose session ended offers its banner's "Sign in" instead (T9.17).
   const signedOut = auth.status === 'signed-out' && !auth.ended;
   if (!lead) return null;
-  const text = reviewing ? `${lead} Reviewing suggestions.` : signedOut ? lead : `${lead} ${CANNOT_EDIT}`;
+  const signIn = signedOut ? (
+    <>
+      {' '}
+      <button type="button" onClick={signInToDoMore} className={BOTTOM_ROW_ACTION}>
+        Sign in to do more
+      </button>
+    </>
+  ) : null;
+  if (reviewing) {
+    return (
+      <ReviewRow docId={docId} role={role} reader text={`Reviewing suggestions · ${lead}`} attrs={{ [ROLE_BAND_ATTR]: '', [REVIEW_BAND_ATTR]: '' }}>
+        {signIn}
+      </ReviewRow>
+    );
+  }
   return (
     <div className={BOTTOM_ROW_SLOT}>
-      <div {...{ [ROLE_BAND_ATTR]: '', ...(reviewing ? { [REVIEW_BAND_ATTR]: '' } : {}) }} className={BOTTOM_ROW}>
-        <span>{text}</span>
-        {reviewing ? (
-          <>
-            {' '}
-            <button type="button" onClick={() => leaveReview(docId, role)} className={BOTTOM_ROW_ACTION}>
-              Done
-            </button>
-          </>
-        ) : null}
-        {signedOut ? (
-          <>
-            {' '}
-            <button type="button" onClick={signInToDoMore} className={BOTTOM_ROW_ACTION}>
-              Sign in to do more
-            </button>
-          </>
-        ) : null}
+      <div {...{ [ROLE_BAND_ATTR]: '' }} className={BOTTOM_ROW}>
+        <span>{lead}</span>
+        {signIn}
       </div>
     </div>
   );
