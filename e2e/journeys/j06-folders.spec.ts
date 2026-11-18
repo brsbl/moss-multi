@@ -596,3 +596,37 @@ test("j06-folders: the browser's Back and Forward move between the notes she ope
   await ada.page.goForward({ waitUntil: 'commit' });
   await shows(c, 'Forward again');
 });
+
+test('j06-folders: Forward to a note trashed since she left it shows it in Trash, and the address keeps naming a live note (T9.19)', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner moves between her own notes');
+  const api = setup(ada);
+  const trips = await api.folder('Trips', await api.home());
+  const a = await api.note('Lisbon', trips);
+  const b = await api.note('Porto', trips);
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expandFolder(ada, 'Trips');
+  const at = (docId: string) => new RegExp(`/d/${docId}$`);
+  await ui.openNote(ada, a);
+  await expect(ada.page).toHaveURL(at(a));
+  await ui.openNote(ada, b);
+  await expect(ada.page).toHaveURL(at(b));
+  // Back and Forward bind A and B once more each; B may also have opened as the startup note after the reload.
+  ada.expectReconnects(1, a);
+  ada.expectReconnects(2, b);
+  await ada.page.goBack({ waitUntil: 'commit' });
+  await expect(ada.page).toHaveURL(at(a));
+  await ui.waitLive(ada, a);
+
+  // Her other window trashes B (declared setup: that window's API call); this tab hears it live.
+  const { origin } = api;
+  expect((await ada.context.request.delete(`${origin}/api/docs/${b}`, { headers: { origin } })).status(), 'declared setup: B goes to Trash').toBe(200);
+  await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${b}"]`), 'B leaves her notes').toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
+
+  await ada.page.goForward({ waitUntil: 'commit' });
+  // The Trash view is a different editor from the one she left.
+  ada.observations.delete(b);
+  await expect(ada.page.getByText(/This note is in Trash/), "Forward shows B's Trash view, as moss's own arrow does").toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(ada.page, 'a trashed note has no address: it names A, the last live note').toHaveURL(at(a));
+});

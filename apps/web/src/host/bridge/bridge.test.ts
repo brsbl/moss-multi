@@ -569,7 +569,7 @@ it('still rejects a failed listing at once when the page is not leaving', async 
 
 describe("the T9.19 bridge: the browser's Back and Forward move between notes (A§9 navigation)", () => {
   /** A tab's address and its history entries, as the browser keeps them. */
-  function tab(start = '/') {
+  function tab(start = '/', { trashed = new Set<string>(), opener = (): unknown => undefined } = {}) {
     const entries = [start];
     let index = 0;
     let pop: (() => void) | null = null;
@@ -579,15 +579,18 @@ describe("the T9.19 bridge: the browser's Back and Forward move between notes (A
       replacePath: (path: string) => { entries[index] = path; },
       onPopState: (listener: () => void) => { pop = listener; return () => { pop = null; }; },
     };
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(LISTING));
+    const docs = () => ['a', 'b', 'c'].map((id) => ({ id, title: id.toUpperCase(), createdAt: 1, updatedAt: 1, trashedAt: trashed.has(id) ? 2_000 : null }));
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ vault: LISTING.vault, docs: docs() }));
     const api = createBridge({ pathname: () => entries[index].split('?')[0], fetch, browser });
     const opened: string[] = [];
-    const off = api.notes.onInternalFileOpen((id: string) => { opened.push(id); });
+    const off = api.notes.onInternalFileOpen((id: string) => { opened.push(id); return opener(); });
     const go = (delta: number) => { index += delta; pop?.(); };
     return { api, entries, opened, off, go, at: () => entries[index] };
   }
-  /** moss reports the notes its panes show, then the focused one (App.tsx, one effect after the other). */
+  /** moss reports the notes its panes show, then the focused one (App.tsx, one effect after the other, once it has
+   * rendered: a task after its switch settled). */
   const show = async (api: ReturnType<typeof createBridge>, panes: string[], focused: string) => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await api.notes.setOpenFileWatchTargets(panes);
     await api.system.setFocusedNoteId(focused);
   };
@@ -638,6 +641,69 @@ describe("the T9.19 bridge: the browser's Back and Forward move between notes (A
     await show(t.api, ['a'], 'a');
     expect(t.entries).toEqual(['/d/a', '/d/b', '/d/c']);
     expect(t.at()).toBe('/d/a');
+    t.off();
+  });
+
+  it('never puts a note trashed since its entry was made in the address when Back or Forward reaches it', async () => {
+    const trashed = new Set<string>();
+    const t = tab('/', { trashed });
+    for (const id of ['a', 'b', 'c']) await show(t.api, [id], id);
+    t.go(-1);
+    await show(t.api, ['b'], 'b');
+    t.go(-1);
+    trashed.add('b');
+    await show(t.api, ['a'], 'a');
+    t.go(1);
+    expect(t.opened, "moss opens B's Trash view, as its own arrow does").toEqual(['b', 'a', 'b']);
+    await show(t.api, ['b'], 'b');
+    expect(t.at(), 'the address names the last live note, never the trashed one').toBe('/d/a');
+    t.go(1);
+    await show(t.api, ['c'], 'c');
+    t.go(-1);
+    await show(t.api, ['a'], 'a');
+    t.go(-1);
+    await show(t.api, ['a'], 'a');
+    expect(t.entries).toEqual(['/d/a', '/d/a', '/d/c']);
+    t.off();
+  });
+
+  it("keeps Forward's entries however long moss takes to pass the note between two quick Backs", async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const t = tab('/');
+      for (const id of ['a', 'b', 'c']) await show(t.api, [id], id);
+      t.go(-1);
+      t.go(-1);
+      now += 60_000;
+      await show(t.api, ['b'], 'b');
+      now += 60_000;
+      await show(t.api, ['a'], 'a');
+      expect(t.entries).toEqual(['/d/a', '/d/b', '/d/c']);
+      expect(t.at()).toBe('/d/a');
+      t.go(1);
+      await show(t.api, ['b'], 'b');
+      t.go(1);
+      await show(t.api, ['c'], 'c');
+      expect(t.entries).toEqual(['/d/a', '/d/b', '/d/c']);
+      t.off();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('puts the shown note back in the address when the switch Back asked for does not happen', async () => {
+    let went: unknown;
+    const t = tab('/', { opener: () => Promise.resolve(went) });
+    for (const id of ['a', 'b', 'c']) await show(t.api, [id], id);
+    went = false;
+    t.go(-1);
+    await vi.waitFor(() => expect(t.at(), 'C is still shown, so the address names C').toBe('/d/c'));
+    went = true;
+    t.go(-1);
+    await show(t.api, ['a'], 'a');
+    expect(t.at()).toBe('/d/a');
+    expect(t.entries).toEqual(['/d/a', '/d/c', '/d/c']);
     t.off();
   });
 });
