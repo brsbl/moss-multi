@@ -15,6 +15,7 @@
     "./access-epoch": "./src/access-epoch.ts",
     "./registers": "./src/registers.ts",
     "./search": "./src/search-core.ts",
+    "./paste-rollback": "./src/paste-rollback.ts",
     "./suggest/client": "./src/suggest/client.ts",
     "./suggest/forks": "./src/suggest/forks.ts",
     "./suggest/records": "./src/suggest/records.ts",
