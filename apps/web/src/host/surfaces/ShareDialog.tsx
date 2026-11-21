@@ -18,7 +18,7 @@ import {
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
 import { Check, ChevronDown } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
 import { useTerminal } from '../collab/terminal.ts';
@@ -105,8 +105,16 @@ const ROLE_TEXT = 'shrink-0 px-2 text-xs text-ink-faint';
 function RoleMenu<R extends Role>({ label, roles, value, onChange, onRemove, disabled }: {
   label: string; roles: readonly R[]; value: Role; onChange: (role: R) => void; onRemove?: () => void; disabled: boolean;
 }): ReactNode {
+  const [open, setOpen] = useState(false);
+  // Enter and Space on a radio row choose it: the vendored radio item takes only a pointer click inside a dialog.
+  const chooseByKey = (role: R) => (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    setOpen(false);
+    if (role !== value) onChange(role);
+  };
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button type="button" aria-label={label} disabled={disabled} className={`${ACTION} font-normal`}>
           <span>{ACCESS_LABEL[value]}</span>
@@ -116,7 +124,7 @@ function RoleMenu<R extends Role>({ label, roles, value, onChange, onRemove, dis
       <DropdownMenuContent data-dialog-menu="" align="end" sideOffset={4} collisionPadding={16} className="min-w-0 w-max max-w-[calc(100vw-2rem)]">
         <DropdownMenuRadioGroup value={value} onValueChange={(role) => { if (role !== value) onChange(role as R); }}>
           {roles.map((role) => (
-            <DropdownMenuRadioItem key={role} value={role} closeOnClick className={MENU_ROW}>
+            <DropdownMenuRadioItem key={role} value={role} closeOnClick className={MENU_ROW} onKeyDown={chooseByKey(role)}>
               <span className="flex w-3.5 shrink-0 justify-center">{role === value ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}</span>
               <span className="flex-1">{ACCESS_LABEL[role]}</span>
             </DropdownMenuRadioItem>
