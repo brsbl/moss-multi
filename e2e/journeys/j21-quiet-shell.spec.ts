@@ -349,11 +349,71 @@ test('j21 people, unread and open suggestions are quiet cues that yield by the p
   await page.setViewportSize(DESKTOP);
   await expect(bell).toBeVisible();
   await bell.click();
+  // T9.38: a quiet 352 px list in Moss's menu material, the count inside it, grouped under its note, neutral ink.
+  const inbox = page.getByRole('menu', { name: 'Notifications' });
+  await expect(inbox, 'the bell opens the inbox').toBeVisible();
+  expect((await inbox.boundingBox())?.width, 'the inbox is 352 px wide at 1440').toBeCloseTo(352, 0);
+  await expect(inbox.getByText(/^\d+ unread$/), 'the count is inside the inbox').toBeVisible();
+  await expect(inbox.locator('[data-inbox-group]'), 'the note\'s notices sit under it').toHaveCount(1);
+  await expect(inbox.getByRole('menuitem', { name: /suggested changes in “/ }).first(), 'each row still names its note in full').toBeVisible();
+  const saturated = await inbox.evaluate((root) => [root, ...root.querySelectorAll('*')].flatMap((el) => {
+    const style = getComputedStyle(el);
+    return [style.backgroundColor, style.color].flatMap((value) => {
+      const [r, g, b, a = 1] = (value.match(/[\d.]+/g) ?? []).map(Number);
+      return r === undefined || a === 0 || Math.max(r, g, b) - Math.min(r, g, b) <= 24 ? [] : [`${el.tagName} ${value}`];
+    });
+  }));
+  expect(saturated, 'no saturated dot or colour in the inbox').toEqual([]);
   await page.getByRole('button', { name: 'Mark all read', exact: true }).click();
+  await expect(inbox, 'Mark all read keeps the inbox open').toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Notifications', exact: true }), 'and its bell pinned while it is open').toBeVisible();
+  await expect.poll(() => inbox.evaluate((root) => root.contains(document.activeElement)), { message: 'focus stays in the inbox' }).toBe(true);
   await page.keyboard.press('Escape');
   await expect(page.getByText('Mark all read')).toHaveCount(0);
   await expect(bar.getByRole('button', { name: /^Notifications/ }), 'nothing unread: the bell goes').toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Settings', exact: true }), 'focus moves to Settings in the footer').toBeFocused();
+});
+
+test('j21 the inbox says when its first read is pending or has failed, apart from empty, and stays open to retry @p:tech-9 @p:ppl-3', async ({ actors }) => {
+  actors.solo('one person\'s inbox');
+  const ada = await actors.open(await actors.principal('ada'), { viewport: DESKTOP });
+  const page = ada.page;
+  const list = /\/api\/notifications$/;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(list, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    await gate;
+    await route.fulfill({ status: 429, body: '' });
+  });
+  ada.expectHttp(429, '/api/notifications');
+  await page.reload();
+  await (await ui.openAppMenu(page)).getByRole('menuitem', { name: 'Notifications', exact: true }).click();
+  const inbox = page.getByRole('menu', { name: 'Notifications' });
+  await expect(inbox.getByText('Loading notifications…', { exact: true }), 'a first read in flight says so').toBeVisible();
+  await expect(inbox.getByText('No notifications yet.', { exact: true }), 'and never claims to be empty').toHaveCount(0);
+  expect((await inbox.boundingBox())?.width, 'the inbox is 352 px wide').toBeCloseTo(352, 0);
+  release();
+  await expect(inbox.getByText('Couldn’t load notifications.', { exact: true }), 'a failed read says so').toBeVisible();
+  await page.unroute(list);
+  await inbox.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(inbox.getByText('No notifications yet.', { exact: true }), 'an empty answer reads as empty').toBeVisible();
+  await expect(inbox, 'the inbox stayed open').toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(inbox).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Settings', exact: true }), 'focus returns to Settings').toBeFocused();
+
+  // At 390 px the same inbox fits the screen with 16 px to spare on each side.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const settings = page.getByRole('button', { name: 'Settings', exact: true });
+  if (!(await settings.isVisible())) await page.getByRole('button', { name: 'Show notes panel', exact: true }).click();
+  await (await ui.openAppMenu(page)).getByRole('menuitem', { name: 'Notifications', exact: true }).click();
+  await expect(inbox).toBeVisible();
+  const box = (await inbox.boundingBox())!;
+  expect(box.width, '390: the inbox is the screen less 32 px').toBeLessThanOrEqual(390 - 32 + 0.5);
+  expect(box.x, '390: 16 px margin').toBeGreaterThanOrEqual(15.5);
+  await page.keyboard.press('Escape');
+  await expect(inbox).toBeHidden();
 });
 
 test('j21 two panes each keep Moss\'s actions on their own bar @p:tech-9 @p:col-6', async ({ actors }) => {

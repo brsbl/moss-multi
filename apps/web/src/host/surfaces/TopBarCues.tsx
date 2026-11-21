@@ -124,7 +124,7 @@ export function TopBarCues({ docId, suggestions }: { docId: string; suggestions:
     <>
       <span ref={probe} hidden />
       {peopleInBar ? <PeopleHere docId={docId} compact={width < YIELD_AT.people} onOpenChange={setPeopleOpen} home={moreActions} /> : null}
-      <NotificationsBell show={width >= YIELD_AT.bell} bar={bar} />
+      <NotificationsBell show={width >= YIELD_AT.bell} bar={bar} paneWidth={width} />
       {suggestions ? (
         <SuggestionsButton
           docId={docId}
