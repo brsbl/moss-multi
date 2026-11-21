@@ -23,6 +23,8 @@ export const NAMES = {
   modeRow: dom.MODE_ROW_ATTR,
   suggestionsPanel: dom.SUGGESTIONS_PANEL_ATTR,
   actionFeedback: dom.ACTION_FEEDBACK_ATTR,
+  connectionBanner: dom.CONNECTION_BANNER_ATTR,
+  connectionCue: dom.CONNECTION_CUE_ATTR,
   remote: [dom.REMOTE_CARET_ATTR, dom.REMOTE_SELECTION_ATTR, dom.REMOTE_LABEL_ATTR],
   // moss's table chrome (TableColumnResizePlugin): fixed handles over the table the caret is in.
   tableUi: 'data-moss-table-ui-owner',

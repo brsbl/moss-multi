@@ -1,6 +1,6 @@
 // j03-connection (T1.3; A§10.5, A§10.6): connection truth. A socket that stops delivering, whether black-holed by
 // a routeWebSocket sever or stalled by a SIGSTOP of the whole stack, is caught by the client's own heartbeat (4408
-// after 12 s of silence): the window's indicator and the banner in its notice band say so within 14 s, its edits
+// after 12 s of silence): the window's indicator and the notice in its bottom region say so within 14 s, its edits
 // keep buffering, and on reconnect both windows converge byte for byte. A healthy idle socket shows nothing. A late
 // first sync shows `retrying` and binds in place, and a 51st connection is terminal `conn-limit` with a Retry.
 //
@@ -8,8 +8,8 @@
 import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_ATTR, CONNECTION_BANNER_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR,
-  NOTICE_BAND_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TOP_BAR_ATTR,
+  APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_ATTR, CONNECTION_BANNER_ATTR, CONNECTION_CUE_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR,
+  FLOATING_TOOLBAR_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TOP_BAR_ATTR,
 } from '../lib/contract.ts';
 import { acceptInvite } from '../lib/grants.ts';
 import { cookieHeader, holdDocSockets, openDocClient } from '../lib/doc-client.ts';
@@ -28,10 +28,12 @@ const CONN_LIMIT_CLOSE = 4429;
 const OUTDATED_CLOSE = 4426;
 
 interface ConnEvent {
-  kind: 'open' | 'close-call' | 'close' | 'connection' | 'banner';
+  kind: 'open' | 'close-call' | 'close' | 'connection' | 'banner' | 'cue' | 'unacked';
   url?: string;
   code?: number;
   value?: string;
+  /** A cue's words when it changed. */
+  text?: string;
   at: number;
 }
 
@@ -40,7 +42,9 @@ interface ConnEvent {
  * events with theirs) and of every change to the connection indicators and banners. Sockets are recorded only when
  * the page's sockets are real (an unrouted window).
  */
-function recordConnection({ path, connection, banner, sockets }: { path: string; connection: string; banner: string; sockets: boolean }): void {
+function recordConnection({ path, connection, banner, cue, unacked, sockets }: {
+  path: string; connection: string; banner: string; cue: string; unacked: string; sockets: boolean;
+}): void {
   const log: ConnEvent[] = [];
   (window as unknown as { __j03: ConnEvent[] }).__j03 = log;
   if (sockets) {
@@ -64,13 +68,20 @@ function recordConnection({ path, connection, banner, sockets }: { path: string;
   }
   let connections = '';
   let banners = '';
+  let cues = '';
+  let unackeds = '';
   const scan = () => {
     const nowConnections = [...document.querySelectorAll(`[${connection}]`)].map((el) => el.getAttribute(connection)).join(',');
     const nowBanners = [...document.querySelectorAll(`[${banner}]`)].map((el) => el.getAttribute(banner)).join(',');
+    const cueEls = [...document.querySelectorAll(`[${cue}]`)];
+    const nowCues = cueEls.map((el) => el.getAttribute(cue)).join(',');
+    const nowUnacked = [...document.querySelectorAll(`[${unacked}]`)].map((el) => el.getAttribute(unacked)).join(',');
     if (nowConnections !== connections) log.push({ kind: 'connection', value: (connections = nowConnections), at: Date.now() });
     if (nowBanners !== banners) log.push({ kind: 'banner', value: (banners = nowBanners), at: Date.now() });
+    if (nowCues !== cues) log.push({ kind: 'cue', value: (cues = nowCues), text: cueEls.map((el) => el.textContent ?? '').join(','), at: Date.now() });
+    if (nowUnacked !== unackeds) log.push({ kind: 'unacked', value: (unackeds = nowUnacked), at: Date.now() });
   };
-  new MutationObserver(scan).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: [connection, banner] });
+  new MutationObserver(scan).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: [connection, banner, cue, unacked] });
 }
 
 const timeline = (actor: Actor): Promise<ConnEvent[]> => actor.page.evaluate(() => (window as unknown as { __j03?: ConnEvent[] }).__j03 ?? []);
@@ -78,7 +89,9 @@ const timeline = (actor: Actor): Promise<ConnEvent[]> => actor.page.evaluate(() 
 /** A signed-in window for `principal` with the recorder installed, not navigated yet. */
 async function windowFor(actors: Actors, principal: Principal, { label, severable = false }: { label: string; severable?: boolean }): Promise<Actor> {
   const actor = await actors.session(principal, { label, severable });
-  await actor.context.addInitScript(recordConnection, { path: DOC_SOCKET_PATH, connection: CONNECTION_ATTR, banner: CONNECTION_BANNER_ATTR, sockets: !severable });
+  await actor.context.addInitScript(recordConnection, {
+    path: DOC_SOCKET_PATH, connection: CONNECTION_ATTR, banner: CONNECTION_BANNER_ATTR, cue: CONNECTION_CUE_ATTR, unacked: SYNC_UNACKED_ATTR, sockets: !severable,
+  });
   return actor;
 }
 
@@ -89,11 +102,13 @@ async function land(actor: Actor, path: string): Promise<void> {
 
 /** The connection indicator in the pane's top bar. */
 const indicator = (actor: Actor, docId: string): Locator => ui.pane(actor, docId).locator(`[${TOP_BAR_ATTR}] [${CONNECTION_ATTR}]`);
-/** The banner in the pane's notice band. */
-const banner = (actor: Actor, docId: string): Locator => ui.pane(actor, docId).locator(`[${NOTICE_BAND_ATTR}] [${CONNECTION_BANNER_ATTR}]`);
-/** Polls without waiting: the band shows a visible banner of this kind now. */
+/** The connection notice, in the pane's bottom region (T9.40). */
+const banner = (actor: Actor, docId: string): Locator => ui.pane(actor, docId).locator(`[${CONNECTION_BANNER_ATTR}]`);
+/** Polls without waiting: the pane shows a visible notice of this kind now. */
 const bannerShows = (actor: Actor, docId: string, kind: string) => (): Promise<boolean> =>
-  ui.pane(actor, docId).locator(`[${NOTICE_BAND_ATTR}] [${CONNECTION_BANNER_ATTR}="${kind}"]`).isVisible();
+  ui.pane(actor, docId).locator(`[${CONNECTION_BANNER_ATTR}="${kind}"]`).isVisible();
+/** The quiet pending-write cue, in the pane's bottom region (T9.40). */
+const cue = (actor: Actor, docId: string): Locator => ui.pane(actor, docId).locator(`[${CONNECTION_CUE_ATTR}]`);
 
 const bodyText = (actor: Actor, docId: string): Promise<string> => ui.fieldText(actor, docId, 'body');
 
@@ -271,7 +286,8 @@ test('j03-connection: a healthy socket idle for 20 s shows no banner and opens n
   for (const [i, actor] of windows.entries()) {
     const since = (await timeline(actor)).slice(marks[i]);
     expect(since.filter((e) => e.kind === 'connection' || e.kind === 'banner'), `${actor.label}: the indicator stayed online and no banner showed`).toEqual([]);
-    expect(since.filter((e) => e.kind !== 'connection' && e.kind !== 'banner'), `${actor.label}: no socket closed or opened`).toEqual([]);
+    expect(since.filter((e) => e.kind === 'cue'), `${actor.label}: no pending cue showed`).toEqual([]);
+    expect(since.filter((e) => ['open', 'close-call', 'close'].includes(e.kind)), `${actor.label}: no socket closed or opened`).toEqual([]);
     expect(ui.socketsFor(actor, docId).map((s) => s.closedAt), `${actor.label}: one doc socket, still open`).toEqual([null]);
     await expect(indicator(actor, docId)).toHaveAttribute(CONNECTION_ATTR, 'online');
   }
@@ -669,6 +685,99 @@ test('j03-connection: a healthy connection is published in the top bar for assis
     const box = await indicator(ada, docId).boundingBox();
     expect(box === null || box.width <= 1, `${size.width}: no Connected capsule (T9.30)`).toBe(true);
   }
+});
+
+const CUE_DELAY_MS = 2_000;
+const CUE_SETTLE_MS = 1_000;
+const HEALTHY = [' typed', ' and acked', ' well inside two seconds'];
+const SLOW = ' and an edit whose ack never comes';
+
+/** Whether two boxes overlap. */
+const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a): boolean =>
+  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+test('j03-connection: a write waiting 2 s for its ack shows a quiet cue whose words clear at the ack and which leaves after 1 s idle; healthy typing shows nothing, and an outage floats in the bottom region without moving the note (T9.40) @p:col-4', async ({ actors }) => {
+  actors.solo("the cue is about one window's own writes; no peer takes part");
+  const owner = await actors.principal('ada');
+  const ada = await windowFor(actors, owner, { label: 'ada', severable: true });
+  const sever = ada.sever;
+  if (!sever) throw new Error('the window is not severable');
+  await land(ada, '/');
+  const docId = await ui.newNote(ada);
+  await ui.waitBodyLive(ada, docId);
+  await ui.typeTitle(ada, docId, 'Quiet saving');
+
+  // Healthy typing, each burst acked well under 2 s: the cue never shows.
+  const mark = (await timeline(ada)).length;
+  for (const words of HEALTHY) {
+    await ui.typeBody(ada, docId, words);
+    await ui.waitAcked(ada, docId, ACK_TIMEOUT);
+  }
+  await ada.page.waitForTimeout(CUE_DELAY_MS + 500);
+  expect((await timeline(ada)).slice(mark).filter((e) => e.kind === 'cue'), 'healthy typing shows no cue').toEqual([]);
+  await expect(cue(ada, docId)).toHaveCount(0);
+  const titleBox = await ui.title(ada, docId).boundingBox();
+  if (!titleBox) throw new Error('the title is not laid out');
+
+  // The ack is lost: the write stays pending, and the cue shows only once it has waited 2 s.
+  sever.loseAcks();
+  const typedAt = await ada.page.evaluate(() => Date.now());
+  await ui.typeBody(ada, docId, SLOW);
+  await expect(cue(ada, docId), 'the cue shows while the write waits').toHaveAttribute(CONNECTION_CUE_ATTR, 'pending', { timeout: 10_000 });
+  const shown = (await timeline(ada)).find((e) => e.kind === 'cue' && e.value === 'pending');
+  expect((shown?.at ?? 0) - typedAt, 'not before the write has waited 2 s').toBeGreaterThanOrEqual(CUE_DELAY_MS);
+  const anchor = cue(ada, docId).getByRole('button', { name: /saving/i });
+  await expect(anchor, 'the cue says it is saving').toContainText('Saving…');
+  const toolbar = ada.page.locator(`[${FLOATING_TOOLBAR_ATTR}][data-toolbar-note="${docId}"]`);
+  if (await toolbar.isVisible()) {
+    const [cueBox, barBox] = await Promise.all([cue(ada, docId).boundingBox(), toolbar.boundingBox()]);
+    expect(cueBox && barBox && !overlaps(cueBox, barBox), 'the cue stands clear of the editing toolbar').toBe(true);
+  }
+  // The cue is a control: it opens the connection details, and stays while they are open.
+  await anchor.click();
+  const details = ada.page.getByRole('menu');
+  await expect(details.getByText('Connection status', { exact: true })).toBeVisible();
+  await expect(details.getByText('Saving changes…', { exact: true }), 'the details say a write is waiting').toBeVisible();
+  await ada.page.keyboard.press('Escape');
+  await expect(details).toHaveCount(0);
+
+  // Acks flow again: the next write's ack covers the lost one, the cue's words go at once, and it leaves after 1 s idle.
+  sever.restore();
+  await ui.typeBody(ada, docId, '.');
+  await ui.waitAcked(ada, docId, ACK_TIMEOUT);
+  await expect(cue(ada, docId), 'the cue leaves once idle').toHaveCount(0, { timeout: CUE_SETTLE_MS + 4_000 });
+  const events = (await timeline(ada)).filter((e) => e.kind === 'cue');
+  const settled = events.map((e) => e.value).lastIndexOf('settled');
+  expect(settled, 'the cue settled before it left').toBeGreaterThanOrEqual(0);
+  expect(events[settled].text ?? '', 'no saving words once acked').not.toMatch(/sav/i);
+  expect(events.slice(settled + 1).map((e) => e.value), 'then it left').toEqual(['']);
+  expect(events[settled + 1].at - events[settled].at, 'after 1 s idle').toBeGreaterThanOrEqual(CUE_SETTLE_MS - 100);
+  // Its words cleared at the ack: the pane's last write acked no later than the cue settled.
+  const acked = (await timeline(ada)).filter((e) => e.kind === 'unacked' && e.value === '0' && e.at <= events[settled].at + 250).at(-1);
+  expect(acked, 'the cue settled at the ack').toBeDefined();
+  expect(events[settled].at - (acked?.at ?? 0), 'within a frame or two of it').toBeLessThan(500);
+
+  // An outage needs no 2 s wait: its notice floats in the bottom region, clear of the toolbar, and the note stays put.
+  sever.blackhole();
+  await ui.typeBody(ada, docId, ' offline');
+  await expect.poll(bannerShows(ada, docId, 'offline'), { message: 'the outage notice shows', timeout: 25_000 }).toBe(true);
+  await expect(cue(ada, docId), 'the notice stands in for the cue').toHaveCount(0);
+  const [paneBox, noticeBox, titleNow] = await Promise.all([ui.pane(ada, docId).boundingBox(), banner(ada, docId).boundingBox(), ui.title(ada, docId).boundingBox()]);
+  if (!paneBox || !noticeBox || !titleNow) throw new Error('the pane is not laid out');
+  expect(noticeBox.y + noticeBox.height, 'the notice sits in the bottom region').toBeGreaterThan(paneBox.y + paneBox.height - 160);
+  expect(Math.abs(noticeBox.x + noticeBox.width / 2 - (paneBox.x + paneBox.width / 2)), 'centred in the pane').toBeLessThan(2);
+  expect(titleNow.y, 'the note does not move').toBeCloseTo(titleBox.y, 0);
+  if (await toolbar.isVisible()) {
+    const barBox = await toolbar.boundingBox();
+    expect(barBox && !overlaps(noticeBox, barBox), 'the notice stands clear of the editing toolbar').toBe(true);
+  }
+  await expect(banner(ada, docId), 'a live status').toHaveAttribute('role', 'status');
+
+  ada.expectReconnects(2, docId);
+  sever.restore();
+  await expect(banner(ada, docId), 'the notice clears on reconnect').toHaveCount(0, { timeout: RECOVER_TIMEOUT });
+  await ui.waitAcked(ada, docId, RECOVER_TIMEOUT);
+  await expect(cue(ada, docId), 'nothing stays once all is saved').toHaveCount(0, { timeout: CUE_SETTLE_MS + 4_000 });
 });
 
 const UNSYNCED = ' then words only this window holds';

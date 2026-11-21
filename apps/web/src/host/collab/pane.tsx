@@ -47,10 +47,11 @@ import { cursorController } from './cursors.ts';
 import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
-import { ConnectionNotice } from './ConnectionNotice.tsx';
+import { ConnectionNotice, ConnectionSlot } from './ConnectionNotice.tsx';
 import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
 import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
+import { BOTTOM_REGION, REGION_BOTTOM_PX, REGION_GAP_PX, useToolbarHeight } from './bottom-row.ts';
 
 interface PaneState {
   docState: DocState;
@@ -676,7 +677,8 @@ export interface MossMultiPane {
   history: ReactNode;
   noticeBand: ReactNode;
   /** Moss's bottom band where the docked toolbar was: the Trash notice, else a reader's role band (T9.10), else Review's
-   * band (T9.1), else the Suggesting row (T9.30). At most one shows: each is for a different role or mode. */
+   * band (T9.1), else the Suggesting row (T9.30). At most one shows: each is for a different role or mode. The
+   * connection's notice or cue stands above it (T9.40). */
   bottomBand: ReactNode;
   readOnly: boolean;
 }
@@ -750,8 +752,13 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <><ConnectionNotice docId={docId} bare={!docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
-    bottomBand: docId && !historyOpen ? <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></> : null,
+    noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
+    bottomBand: docId ? (
+      <BottomRegion docId={docId}>
+        <ConnectionSlot docId={docId} />
+        {historyOpen ? null : <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></>}
+      </BottomRegion>
+    ) : null,
     collaboration,
     bodyLive: live,
     bodyVisible: state.bodyVisible,
@@ -774,6 +781,16 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
     noteMenuItems: docId ? <NoteMenuItems docId={docId} /> : null,
     history: docId && historyOpen && !terminal ? <HistoryView key={docId} docId={docId} /> : null,
   };
+}
+
+/** The pane's one bottom region (T9.30): while Moss's docked toolbar shows, it stands 8 px above it (T9.40). */
+function BottomRegion({ docId, children }: { docId: string; children: ReactNode }): ReactNode {
+  const toolbar = useToolbarHeight(docId);
+  return (
+    <div className={BOTTOM_REGION} style={toolbar ? { bottom: REGION_BOTTOM_PX + toolbar + REGION_GAP_PX } : undefined}>
+      {children}
+    </div>
+  );
 }
 
 const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };

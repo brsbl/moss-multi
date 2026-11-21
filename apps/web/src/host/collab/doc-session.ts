@@ -22,7 +22,7 @@ import { refuseInput, settleRefusal } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
 import { ownUpdate, readStep1, readUpdate, Replay } from './replay.ts';
 import {
-  connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
+  connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, publishUnacked, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
 import { Outbox, type Frame } from './outbox.ts';
@@ -685,6 +685,7 @@ export class DocSession {
     markUnacked(this, false);
     for (const check of [...ackWaiters]) check();
     publishConnection(this.docId, this, null);
+    publishUnacked(this.docId, this, null);
     if (held.get(this.docId)?.session === this) {
       held.delete(this.docId);
       ownersChanged();
@@ -718,6 +719,7 @@ export class DocSession {
     if (this.#disposed) return;
     const { connection, synced, retrying } = this.#state;
     publishConnection(this.docId, this, { connection, synced, retrying });
+    publishUnacked(this.docId, this, this.#state.unacked);
   }
 
   /** Folds a link event into the connection state. */

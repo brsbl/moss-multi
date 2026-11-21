@@ -7,7 +7,7 @@ import { can, type Role } from '@moss-multi/protocol/roles';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { useEffect, useId, useState, type ReactNode } from 'react';
 import { useDocRole } from '../../access.ts';
-import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT, useAttachedRow, useRowAttached } from '../bottom-row.ts';
+import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT, useAttachedRow, useRowAttached, useToolbarProbe } from '../bottom-row.ts';
 import { useTerminal } from '../terminal.ts';
 import { dismissUnsaved, lockedToSuggest, requestMode, reviewReturn, useNoSuggestionRoom, usePausedMode, useShownMode, useUnsaved } from './mode.ts';
 
@@ -37,9 +37,17 @@ const useSuggesting = (docId: string): boolean => {
 /**
  * MarkdownEditor's suggest-toggle seam, inside Moss's docked toolbar column: while the pane suggests, the Suggesting
  * row joins the toolbar as its last line, nearest the bottom (T9.30). Suggest changes itself is a More actions entry.
+ * Its probe reports the toolbar's height, so the pane's connection notice stands above it (T9.40).
  */
 export function ToolbarCollab({ noteId }: { noteId: string }): ReactNode {
-  return useSuggesting(noteId) ? <AttachedRow docId={noteId} /> : null;
+  const probe = useToolbarProbe(noteId);
+  const suggesting = useSuggesting(noteId);
+  return (
+    <>
+      <span ref={probe} hidden />
+      {suggesting ? <AttachedRow docId={noteId} /> : null}
+    </>
+  );
 }
 
 function AttachedRow({ docId }: { docId: string }): ReactNode {
