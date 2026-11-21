@@ -125,6 +125,8 @@ test('j08 vault: Ada shares her vault from Settings and Ben switches to it @p:pp
   await (await ui.openVaultSettings(ada.page)).getByRole('button', { name: 'Share vault…', exact: true }).click();
   const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
   await expect(dialog, 'the vault share dialog opens').toBeVisible();
+  await expect(ada.page.getByRole('dialog', { name: 'Settings' }), 'Settings closes first: no dialog stacked under Share').toHaveCount(0);
+  await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the vault first').toHaveText('Vault “Home”');
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can edit');
   await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText('Can edit');
   const invite = await ui.inviteLink(dialog, benPrincipal.email);
@@ -419,7 +421,7 @@ test('j08 invite: an invite says no email is sent and offers its link where the 
   expect(posts, 'no request for a bare name').toEqual([]);
 
   await ui.shareInDialog(dialog, ben.email, 'Can view');
-  const copyLink = form.getByRole('button', { name: 'Copy link', exact: true });
+  const copyLink = form.getByRole('button', { name: 'Copy invite link', exact: true });
   await expect(copyLink, 'the status offers the invite link itself').toBeVisible();
   await expect(ui.pendingInvites(dialog).filter({ hasText: ben.email }), 'the invite sits under "Pending invites"').toContainText(ui.INVITE_WAITING);
   await expect(dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: ben.email }), 'and not among the people').toHaveCount(0);
@@ -431,10 +433,10 @@ test('j08 invite: an invite says no email is sent and offers its link where the 
     const clipboard = () => ada.page.evaluate(() => navigator.clipboard.readText());
     await copyLink.click();
     const copied = form.getByRole('button', { name: 'Copied', exact: true });
-    await expect(copied, 'Copy link confirms on itself').toBeVisible();
+    await expect(copied, 'Copy invite link confirms on itself').toBeVisible();
     await expect(copied.locator('svg'), 'with a check').toHaveCount(1);
-    expect(await clipboard(), 'Copy link puts the invite link on the clipboard').toBe(invite);
-    await expect(form.getByRole('button', { name: 'Copy link', exact: true }), 'and reads Copy link again after 2 s').toBeVisible({ timeout: 4_000 });
+    expect(await clipboard(), 'Copy invite link puts the invite link on the clipboard').toBe(invite);
+    await expect(form.getByRole('button', { name: 'Copy invite link', exact: true }), 'and reads Copy invite link again after 2 s').toBeVisible({ timeout: 4_000 });
     await expect(dialog.getByRole('status'), 'the status stays as it was').toHaveText(ui.inviteCreated(ben.email));
 
     await ada.page.evaluate(() => navigator.clipboard.writeText(''));
@@ -454,10 +456,90 @@ test('j08 invite: an invite says no email is sent and offers its link where the 
   const again = await ui.openShare(ada, docId);
   await expect(again.getByText('To share with one of your agents, paste its ID from Settings → Agents.', { exact: true }), 'one hint about the agent').toHaveCount(1);
   await again.getByLabel('Email or agent ID', { exact: true }).fill(agentId);
-  await expect(again.getByRole('button', { name: 'Create invite link', exact: true }), 'an agent id is shared, not invited').toHaveCount(0);
+  await expect(again.getByRole('button', { name: 'Create invite link', exact: true }), 'an agent id is added, not invited').toHaveCount(0);
+  await expect(again.getByRole('button', { name: 'Add agent', exact: true }), 'the submit says it adds the agent').toBeVisible();
   await ui.shareInDialog(again, agentId, 'Can comment', 'Shared with Scout.');
   await expect(again.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Scout' })).toHaveCount(1);
   expect(posts.length, 'one request per share').toBe(2);
+});
+
+test('j08 compact: every role chooser is Moss\'s checked menu, its actions are quiet, and a link keeps its role, Copy and Revoke on one row @p:ppl-2@2 @evidence', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const ben = actors.credentials('ben');
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  const dialog = await ui.openShare(ada, docId);
+  await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the note first').toHaveText(/^Note “.*”$/);
+  await expect(dialog.getByRole('radiogroup'), 'no segmented role strip').toHaveCount(0);
+  await expect(dialog.locator('select'), 'no native select').toHaveCount(0);
+
+  // The invite's role: a quiet trigger reading the role, opening the five roles with the chosen one checked.
+  const access = ui.roleMenu(dialog, 'Access');
+  await expect(access).toHaveText('Can edit');
+  await access.click();
+  const menu = ui.openRoleMenu(dialog);
+  await expect(menu.getByRole('menuitemradio'), 'every role, in order').toHaveText(['Can view', 'Can comment', 'Can suggest', 'Can edit', 'Owner']);
+  await expect(menu.getByRole('menuitemradio', { checked: true }), 'the chosen role is checked').toHaveText('Can edit');
+  const row = await menu.getByRole('menuitemradio').first().evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { height: el.getBoundingClientRect().height, fontSize: style.fontSize };
+  });
+  expect(row, "Moss's 28 px menu row at 12 px").toEqual({ height: 28, fontSize: '12px' });
+  // Typeahead, then Enter, picks a role; the menu closes and hands focus back to its trigger.
+  await ada.page.keyboard.type('o');
+  await expect(menu.getByRole('menuitemradio', { name: 'Owner', exact: true }), 'typing o reaches Owner').toHaveAttribute('data-highlighted', '');
+  await ada.page.keyboard.press('Enter');
+  await expect(menu).toHaveCount(0);
+  await expect(access, 'Owner chosen').toHaveText('Owner');
+  await expect(access, 'focus is back on the trigger').toBeFocused();
+  // Escape closes the menu alone, never the dialog under it.
+  await access.click();
+  await expect(menu).toBeVisible();
+  await ada.page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(dialog, 'one Escape closes one layer').toBeVisible();
+  await ui.chooseRole(dialog, 'Access', 'Can view');
+
+  // Actions are Moss's 24 px neutral text actions: no filled accent button.
+  const create = dialog.getByRole('button', { name: 'Create invite link', exact: true });
+  const quiet = (button: typeof create) => button.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { height: el.getBoundingClientRect().height, fontSize: style.fontSize, filled: style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent' };
+  });
+  expect(await quiet(create), 'Create invite link is a quiet action').toEqual({ height: 24, fontSize: '12px', filled: false });
+  await ui.shareInDialog(dialog, ben.email, 'Can view');
+  await expect(dialog.getByRole('button', { name: 'Copy invite link', exact: true }), 'the completion offers the invite link').toBeVisible();
+  await expect(ui.roleMenu(dialog, `Access for ${ben.email}`), "the invite's role is a menu too").toHaveText('Can view');
+
+  // A link: its role, Copy and Revoke on the address's row.
+  await ui.createLink(dialog, 'Can comment');
+  const link = ui.linkRow(dialog, 'Can comment');
+  const centre = async (locator: typeof create) => {
+    const box = await locator.boundingBox();
+    if (!box) throw new Error('not laid out');
+    return Math.round(box.y + box.height / 2);
+  };
+  const field = await centre(ui.linkField(dialog, 'Can comment'));
+  for (const name of ['Copy', 'Revoke']) {
+    const button = link.getByRole('button', { name, exact: true });
+    expect(Math.abs((await centre(button)) - field), `${name} sits on the link's row`).toBeLessThanOrEqual(2);
+    expect(await quiet(button), `${name} is a quiet action`).toEqual({ height: 24, fontSize: '12px', filled: false });
+  }
+  expect(Math.abs((await centre(link.getByText('Can comment', { exact: true }))) - field), "the link's role sits on its row").toBeLessThanOrEqual(2);
+  expect(await quiet(dialog.getByRole('button', { name: 'Create link', exact: true })), 'Create link is a quiet action').toEqual({ height: 24, fontSize: '12px', filled: false });
+
+  // On a phone the row wraps inside the dialog: nothing overflows, Revoke stays reachable.
+  await ada.page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => dialog.evaluate((el) => {
+    const body = el.querySelector('.overflow-y-auto') ?? el;
+    return body.scrollWidth - body.clientWidth;
+  }), 'no sideways overflow at 390 px').toBeLessThanOrEqual(0);
+  const revoke = link.getByRole('button', { name: 'Revoke', exact: true });
+  await revoke.scrollIntoViewIfNeeded();
+  const [box, frame] = [await revoke.boundingBox(), await dialog.boundingBox()];
+  expect(box && frame && box.x >= frame.x && box.x + box.width <= frame.x + frame.width, 'Revoke inside the dialog').toBe(true);
+  await revoke.click();
+  await expect(ui.linkField(dialog, 'Can comment'), 'Revoke still revokes').toHaveCount(0);
 });
 
 test('j08 inherited: a note\'s Share dialog names it and lists who reaches it from its folder and vault, and a note-only co-owner learns no place @p:ppl-2@2 @evidence', async ({ actors, stack }) => {
@@ -485,14 +567,14 @@ test('j08 inherited: a note\'s Share dialog names it and lists who reaches it fr
   await ada.goto(`/d/${docId}`);
   await ui.waitOpen(ada, docId, 'live');
   const dialog = await ui.openShare(ada, docId);
-  const firstLine = 'Share “Packing list” with people by email, with one of your agents by its ID, or with anyone who has a link.';
+  const firstLine = 'Note “Packing list”';
   // The shell's own description is screen-reader only; the first visible line is the body's.
   await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the note in its first line').toHaveText(firstLine);
   const fromFolder = dialog.getByRole('list', { name: `From folder “${folderName}”`, exact: true });
   await expect(fromFolder.getByRole('listitem').filter({ hasText: benPrincipal.name }), 'Ben, from the folder, at comment').toContainText('Can comment');
   const fromVault = dialog.getByRole('list', { name: 'From vault “Home”', exact: true });
   await expect(fromVault.getByRole('listitem').filter({ hasText: cyPrincipal.name }), 'Cy, from the vault, as owner').toContainText('Owner');
-  await expect(fromFolder.getByRole('combobox'), 'inherited rows are read-only').toHaveCount(0);
+  await expect(fromFolder.getByRole('button', { name: /^Access for / }), 'inherited rows are read-only').toHaveCount(0);
   await expect(dialog.getByText(`Anyone with the link to folder “${folderName}” can view this note.`, { exact: true }), "the folder's link reaches the note")
     .toBeVisible();
   await expect(dialog.getByRole('textbox', { name: 'Can view link', exact: true }), 'no folder link address is shown').toHaveCount(0);

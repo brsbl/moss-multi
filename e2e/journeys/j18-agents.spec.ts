@@ -385,10 +385,10 @@ test('j18-agents grant: an agent Ben granted commenter pulls and comments, its p
   await ada.observeEditor(docId);
   // Ben steps away; his agent keeps exactly the role he gave it.
   let dialog = await ui.openShare(ada, docId);
-  await dialog.getByRole('button', { name: `Remove ${benPrincipal.name}`, exact: true }).click();
-  await expect(dialog.getByRole('combobox', { name: `Access for ${benPrincipal.name}`, exact: true }), 'Ben leaves the list').toHaveCount(0);
+  await ui.chooseRole(dialog, `Access for ${benPrincipal.name}`, 'Remove access');
+  await expect(ui.roleMenu(dialog, `Access for ${benPrincipal.name}`), 'Ben leaves the list').toHaveCount(0);
   const agentRow = dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Scribe' });
-  await expect(agentRow.getByRole('combobox', { name: 'Access for Scribe', exact: true }), 'Scribe stays, at comment').toHaveValue('commenter');
+  await expect(ui.roleMenu(agentRow, 'Access for Scribe'), 'Scribe stays, at comment').toHaveText('Can comment');
   await ada.page.keyboard.press('Escape');
 
   const cli = workspace(stack, scribe.key);
@@ -414,8 +414,8 @@ test('j18-agents grant: an agent Ben granted commenter pulls and comments, its p
     await actors.checkpoint('agent-comment');
 
     dialog = await ui.openShare(ada, docId);
-    await dialog.getByRole('button', { name: 'Remove Scribe', exact: true }).click();
-    await expect(dialog.getByRole('combobox', { name: 'Access for Scribe', exact: true }), 'Scribe leaves the list').toHaveCount(0);
+    await ui.chooseRole(dialog, 'Access for Scribe', 'Remove access');
+    await expect(ui.roleMenu(dialog, 'Access for Scribe'), 'Scribe leaves the list').toHaveCount(0);
     await ada.page.keyboard.press('Escape');
     await expect.poll(live.closeCode, { message: 'the agent\'s live socket closes with a revocation code', timeout: BIND_TIMEOUT }).toBe(4403);
     live.socket.terminate();
