@@ -488,8 +488,10 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
       },
     };
   }, [at, place]);
-  // The thread's drawn height, measured only while it is beside its line (a panel's height is the pane's).
-  const besideRef = useCallback((element: HTMLElement | null) => {
+  // The thread's drawn height, measured only while it is beside its line (a panel's height is the pane's): its header's
+  // parent is the thread.
+  const besideRef = useCallback((header: HTMLElement | null) => {
+    const element = header?.parentElement;
     if (!element) return;
     const observer = new ResizeObserver(() => setThreadHeight(Math.ceil(element.getBoundingClientRect().height)));
     observer.observe(element);
@@ -564,7 +566,6 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
         <Popover.Portal>
           <Popover.Content
             {...contentPlacement}
-            ref={place?.kind === 'beside' ? besideRef : undefined}
             avoidCollisions={!at}
             collisionPadding={16}
             // Never taller than its room: its rows scroll and its decisions and close stay reachable.
@@ -579,7 +580,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
           >
             {at ? (
               // Moss's comment thread header: what it is and its close, or, as the pane's panel, the way back.
-              <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle/30 px-2 py-1.5">
+              <div ref={place?.kind === 'beside' ? besideRef : undefined} className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle/30 px-2 py-1.5">
                 <Popover.Title className="sr-only">Suggestion</Popover.Title>
                 {place && place.kind !== 'beside' ? (
                   <button type="button" className={`-ml-0.5 gap-1 ${ACTION}`} onClick={() => closePanel(docId)}>
