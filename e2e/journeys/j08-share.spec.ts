@@ -1,7 +1,7 @@
 // j08-share (T2.4): sharing a vault, a folder or a note, with a person at a role or with a revocable link. Ada shares
 // a folder from its context menu and her vault from the switcher, and Ben finds each through the invite link she
 // hands him (an invite binds to the email, never to an account, until its holder redeems it; T2.8). A viewer link
-// opened signed out reads at viewer and offers "Sign in to do more", which comes back to the same note. An editor
+// opened signed out reads at viewer and offers "Sign in", which comes back to the same note. An editor
 // link is viewer signed out, editor signed in, and the max of link and grant with a grant. Revoked, forged and
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
@@ -207,10 +207,10 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   expect(await ui.fieldText(stranger, docId, 'body'), 'the stranger reads the note').toBe(TEXT);
   expect(await ui.offersShare(stranger, docId), 'no Share for a link visitor').toBe(false);
   await expect(stranger.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" for a viewer link (T2.6)').toHaveCount(0);
-  const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
+  const signIn = stranger.page.getByRole('button', { name: 'Sign in', exact: true });
   await expect(signIn, 'the stranger is offered sign-in').toBeVisible();
   await expect(signIn, 'exactly once (T9.10)').toHaveCount(1);
-  await expect(ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`), 'the band says the link is view only').toHaveText('View only Sign in to do more');
+  await expect(ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`), 'the band says the link is view only').toHaveText('View only Sign in');
   await actors.checkpoint('read-signed-out');
 
   const benPrincipal = await actors.principal('ben');

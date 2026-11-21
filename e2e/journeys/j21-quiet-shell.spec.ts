@@ -7,7 +7,7 @@
 import type { Locator } from '@playwright/test';
 import type { Actor, Viewport } from '../lib/actors.ts';
 import {
-  BODY_BINDING_ATTR, COLLAB_CHROME_ATTR, CONNECTION_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, FLOATING_TOOLBAR_ATTR, HISTORY_VIEW_ATTR, MODE_ROW_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SIDEBAR_ROW_ATTR,
+  BODY_BINDING_ATTR, COLLAB_CHROME_ATTR, CONNECTION_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, FLOATING_TOOLBAR_ATTR, HISTORY_VIEW_ATTR, INPUT_REFUSAL_ATTR, MODE_ROW_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SIDEBAR_ROW_ATTR,
   SUGGEST_CHIP_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR, TOP_BAR_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grant, grantDoc } from '../lib/grants.ts';
@@ -70,7 +70,7 @@ test('j21 at rest the top bar holds only Moss\'s actions, and More actions holds
 
   await expect.poll(() => visibleChrome(ada, docId), { message: 'no web control in the resting top bar' }).toEqual([]);
   const bar = topBar(ada, docId);
-  for (const name of ['Share', 'History', 'Review suggestions', 'Notifications', 'Sign in to do more']) {
+  for (const name of ['Share', 'History', 'Review suggestions', 'Notifications', 'Sign in']) {
     await expect(bar.getByRole('button', { name, exact: true }), `no ${name} in the top bar`).toHaveCount(0);
   }
   const status = bar.locator(`[${CONNECTION_ATTR}]`);
@@ -481,4 +481,53 @@ test('j21 a reader in Review has one bottom row with their access and Review, an
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press('Escape');
   await leftReview('Escape leaves Review');
+});
+
+// T9.35: restricted access in the one bottom region. A refusal floats as Moss's bottom notice just above the reader's
+// row, at its content's width, and the note under the top bar never moves; the row's words explain themselves by
+// keyboard, pointer and tap.
+test('j21 restricted access: a refused key floats above View only in the bottom region, the note does not move, and View only explains itself by keyboard and tap @p:tech-9 @p:ppl-2', async ({ actors }) => {
+  const ada = await actors.open(await actors.principal('ada'), { viewport: DESKTOP });
+  const docId = await ui.createNote(ada);
+  await ui.typeTitle(ada, docId, 'Read only', { enter: true });
+  await ui.typeBody(ada, docId, 'Words to read');
+  await ui.waitAcked(ada, docId);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, docId, benPrincipal, 'viewer');
+  const ben = await actors.open(benPrincipal, { viewport: DESKTOP, path: `/d/${docId}` });
+  await ui.waitOpen(ben, docId, 'readonly');
+  await actors.requireDistinct(2);
+  const explained = "You can view this note, but you can't edit it.";
+  const pane = ui.pane(ben, docId);
+  const row = pane.locator(`[${ROLE_BAND_ATTR}]`);
+  const refusal = pane.locator(`[${INPUT_REFUSAL_ATTR}]`);
+  await expect(row).toHaveText('View only');
+  await expect(refusal, 'one refusal region in the pane').toHaveCount(1);
+
+  const titleAt = (await ui.title(ben, docId).boundingBox())!.y;
+  await ui.body(ben, docId).getByText('Words to read').click({ force: true });
+  await ben.page.keyboard.type('x');
+  await expect(refusal, 'the key says why').toHaveText(explained);
+  const [notice, band, box] = await Promise.all([refusal.boundingBox(), row.boundingBox(), pane.boundingBox()]);
+  expect((await ui.title(ben, docId).boundingBox())!.y, 'the note under the top bar does not move').toBe(titleAt);
+  expect(notice!.y + notice!.height, 'the notice stands above the row').toBeLessThanOrEqual(band!.y + 0.5);
+  expect(band!.y - (notice!.y + notice!.height), 'just above it, in the same region').toBeLessThanOrEqual(16);
+  expect(notice!.width, 'at its content\'s width, not a strip across the pane').toBeLessThan(box!.width - 32);
+  expect(await aboveBottom(docId, row), 'the row stays at the bottom').toBeLessThanOrEqual(32);
+  await actors.checkpoint('refusal-in-bottom-region');
+  await expect(refusal, 'the notice clears').toHaveText('', { timeout: 6_000 });
+
+  const lead = row.getByRole('button', { name: 'View only', exact: true });
+  await expect(lead, 'the access explains itself to assistive tech').toHaveAccessibleDescription(explained);
+  await lead.focus();
+  await expect(ben.page.getByRole('tooltip'), 'and in Moss\'s tooltip on keyboard focus').toContainText(explained);
+  await ben.page.keyboard.press('Enter');
+  await expect(refusal, 'pressing it says the same out loud').toHaveText(explained);
+  await expect(refusal).toHaveText('', { timeout: 6_000 });
+
+  await ben.page.setViewportSize({ width: 390, height: 844 });
+  await expect(lead, 'at 390 px the row keeps its words').toBeVisible();
+  await lead.tap().catch(() => lead.click());
+  await expect(refusal, 'a tap explains it on a phone').toHaveText(explained);
+  expect(await ui.fieldText(ada, docId, 'body'), 'the owner\'s note is unchanged').toBe('Words to read');
 });
