@@ -33,11 +33,19 @@ export function useVaultName(): string | null {
   return isSignedIn ? workspace?.vault.name ?? null : null;
 }
 
-/** The vault on screen when it lists note `id`; null for a note opened from elsewhere, so a name is never wrong. */
+/**
+ * The vault on screen only when note `id` is known to live in it: listed there, not surfaced as shared directly and
+ * not under a surfaced shared folder (A§11). Otherwise null, so a name is never guessed.
+ */
 export function useVaultOfNote(id: string | null): string | null {
   const name = useVaultName();
   const workspace = useWorkspace();
-  return id && name && workspace?.docs.some((doc) => doc.id === id) ? name : null;
+  const doc = id ? workspace?.docs.find((entry) => entry.id === id) : undefined;
+  if (!name || !doc || doc.surfaced) return null;
+  const path = doc.folderPath ?? '';
+  const underSurfaced = workspace?.folders?.some((folder) => folder.surfaced &&
+    (path === folder.path || path.startsWith(`${folder.path}/`)));
+  return underSurfaced ? null : name;
 }
 
 /** "+ Note"'s tooltip: where the new note lands. */
@@ -46,7 +54,7 @@ export function useNewNoteHint(): string | null {
   return name ? `New note in ${name}` : null;
 }
 
-/** The note location's accessible name; it names the vault only when the vault on screen lists note `id`. */
+/** The note location's accessible name; it names the vault only when note `id` is known to live in it. */
 export function useNoteLocationLabel(id: string | null): string {
   const name = useVaultOfNote(id);
   return name ? `Note location in ${name}` : 'Note location';
