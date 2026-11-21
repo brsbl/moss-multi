@@ -293,6 +293,14 @@ jobs:
       - name: Stop the smoke stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
+      - name: Upload the smoke stack's log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-wrangler-log-${{ github.run_attempt }}
+          path: .local-stack/runs/${{ env.SMOKE_RUN }}/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
       # env.staging laid over a copy of these bytes, then checked by wrangler without credentials (T8.D). The tested
       # dist carries a redirected config, which takes no --env, so this is the staging dry run: the config holds the
       # same keys a CLOUDFLARE_ENV=staging build writes.
