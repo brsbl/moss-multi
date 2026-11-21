@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 68% done** (222 of 325 planned tasks verified)
+**Overall: 73% done** (223 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 19 / 20 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 26 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -249,6 +249,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-18 — T4.W verified: comments now run on m3's paste rollback, so a paste's held deletes go out on the comments path too, and a comment on words a paste moved follows them onto the pasted text instead of detaching.
 - 2026-11-18 — T5.W verified: suggestions now run on m4's paste rollback, so a large Edit-mode paste cut short by a limit is rolled back in whole blocks, while a Suggest-mode paste keeps writing its own suggestion and is never rolled back, with the full lane green on the m5 head.
 - 2026-11-21 — T6.V verified: history now runs on m5's note size limits, lean layout, in-place export and paste rollback, so a restore is held to the text, structure and size limits by what it adds, a refused restore names its limit and changes nothing, and the full lane, j17 included, is green on the m6 head.
+- 2026-11-21 — T7.V verified: agent sync now runs on m6's note size limits, lean layout, in-place export and paste rollback, so a CLI push, `--suggest` push, sync, add or watch is held to the text, structure and storage limits and the 4 MB markdown bound, and a refusal names the limit it met in plain words.
 
 ## T1.1s identity audit
 
@@ -282,6 +283,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T7.V's checker (ddf708a, 2026-11-21)
+
+- T7.V Docs and CLI help leave out the storage limit: the limits paragraphs in docs/SYNC.md:168 and packages/cli/src/program.ts:103 give the text cap, the structure cap and the 4 MB markdown bound but not the storage bound (STATE_CAP_BYTES, about 17 MB); the server enforces it and LIMIT_WORDS.state words it when a push meets it.
+- T7.V A --suggest push past a note limit hits the suggestion size limit first and names that limit: a --suggest push of 1.22M characters or 40,000 paragraphs gets 'the change is too large for one suggestion', never the text or structure limit's words; nothing lands (doc-do.ts #suggestPush refused()).
+- T7.V The merge linear-time test is still sized to the old 2 MB push limit: packages/core/src/merge.test.ts:101-102 times computeMergedTarget with CAP = 2 MiB (and the merge.ts:10 comment), while a push may now carry 4 MB of markdown plus an 8 MB baseText (apps/web/src/api/push.ts:75-76); DIFF_WORK still bounds the diff.
+- T7.V A create past 4 MB from a client other than the CLI gets the storage-limit wording: apps/web/src/api/docs.ts:147 answers markdown past MARKDOWN_MAX_BYTES with docCap() and no limit, so other REST clients see the storage wording; the CLI checks the bound before sending and the request is still refused.
 
 ### From T7.U's checker (5d942c8, 2026-10-20)
 
