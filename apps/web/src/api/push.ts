@@ -5,7 +5,7 @@
 // Every answer is a PushResponse, refusals included, so the CLI can say why.
 import { getServerByName } from 'partyserver';
 import { MARKDOWN_MAX_BYTES, PUSH_RATE } from '@moss-multi/protocol/limits';
-import type { PushResponse } from '@moss-multi/protocol/push';
+import { LIMIT_WORDS, type PushLimit, type PushResponse } from '@moss-multi/protocol/push';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
@@ -20,12 +20,16 @@ const HASH = /^[0-9a-f]{64}$/;
 const encoder = new TextEncoder();
 
 /**
- * The cap on a push body: newText and baseText at the note cap with every UTF-16 unit JSON-escaped as six bytes, plus
- * the envelope. A maximal legitimate push fits; nothing larger is buffered.
+ * The cap on a push body: newText and baseText at the markdown bound with every UTF-16 unit JSON-escaped as six bytes,
+ * plus the envelope. A maximal legitimate push fits; nothing larger is buffered. What lands is held to the note's text,
+ * structure and storage limits by the DocDO (A§5.1).
  */
 export const PUSH_BODY_MAX_BYTES = 6 * 2 * MARKDOWN_MAX_BYTES + 64 * 1024;
 
 const answer = (body: PushResponse, status: number, headers: Record<string, string> = {}) => json(body, status, { ...NO_STORE, ...headers });
+
+/** A 413 naming the limit the push met, with the CLI's words for it. */
+const tooLarge = (limit: PushLimit) => answer({ ok: false, reason: 'too-large', limit, message: `too large: ${LIMIT_WORDS[limit]}` }, 413);
 
 interface Verdict {
   ok: boolean;
@@ -36,6 +40,7 @@ interface Verdict {
   deletedRatio?: number;
   message?: string;
   suggestionId?: string;
+  limit?: PushLimit;
 }
 
 export async function handlePush(request: Request, env: DocsEnv, docId: string): Promise<Response> {
@@ -48,7 +53,7 @@ export async function handlePush(request: Request, env: DocsEnv, docId: string):
   const early = await resolve();
   if (!early || early.deleted) return notFound();
   if (!roleAtLeast(early.role, 'suggester')) return answer({ ok: false, reason: 'forbidden' }, 403);
-  if (Number(request.headers.get('content-length') ?? 0) > PUSH_BODY_MAX_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
+  if (Number(request.headers.get('content-length') ?? 0) > PUSH_BODY_MAX_BYTES) return tooLarge('markdown');
   const person = actingUserId(principal) ?? principal.id;
   const limiter = await getServerByName(env.PrincipalDO, person);
   if (!(await limiter.takePushToken())) {
@@ -56,7 +61,7 @@ export async function handlePush(request: Request, env: DocsEnv, docId: string):
     return answer({ ok: false, reason: 'rate-limited', retryAfterSec: Number(after) }, 429, { 'retry-after': after });
   }
   const text = await readCapped(request, PUSH_BODY_MAX_BYTES);
-  if (text === 'too-large') return answer({ ok: false, reason: 'too-large' }, 413);
+  if (text === 'too-large') return tooLarge('markdown');
   const body = text === null ? null : parseJsonObject(text);
   // Access resolves again once the body is in, so a revocation, demotion or trash during a slow body still wins.
   const access = await resolve();
@@ -67,8 +72,8 @@ export async function handlePush(request: Request, env: DocsEnv, docId: string):
   if (typeof newText !== 'string' || typeof baseHash !== 'string' || !HASH.test(baseHash) || (baseText !== undefined && typeof baseText !== 'string')) {
     return json({ error: 'bad-request', message: 'A push needs newText and a sha-256 baseHash' }, 400, NO_STORE);
   }
-  if (encoder.encode(newText).byteLength > MARKDOWN_MAX_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
-  if (typeof baseText === 'string' && encoder.encode(baseText).byteLength > 2 * MARKDOWN_MAX_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
+  if (encoder.encode(newText).byteLength > MARKDOWN_MAX_BYTES) return tooLarge('markdown');
+  if (typeof baseText === 'string' && encoder.encode(baseText).byteLength > 2 * MARKDOWN_MAX_BYTES) return tooLarge('markdown');
   const stub = await getServerByName(env.DocDO, docId);
   const verdict = (await stub.push({
     newText,
@@ -92,7 +97,7 @@ export async function handlePush(request: Request, env: DocsEnv, docId: string):
   switch (verdict.reason) {
     case 'base-missing': return answer({ ok: false, reason: 'base-missing' }, 409);
     case 'degenerate': return answer({ ok: false, reason: 'degenerate', deletedRatio: verdict.deletedRatio ?? 1 }, 409);
-    case 'too-large': return answer({ ok: false, reason: 'too-large' }, 413);
+    case 'too-large': return tooLarge(verdict.limit ?? 'state');
     case 'suggest-refused': return answer({ ok: false, reason: 'suggest-refused', message: verdict.message ?? 'the suggestion was refused' }, 409);
     case 'push-unverified': return answer({ ok: false, reason: 'push-unverified', message: verdict.message ?? 'the push would not land exactly as pushed' }, 409);
     case 'role': return answer({ ok: false, reason: 'forbidden' }, 403);

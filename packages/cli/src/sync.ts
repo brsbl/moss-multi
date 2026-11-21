@@ -9,7 +9,7 @@ import { basename, dirname, extname, join, relative } from 'node:path';
 import { editsOf, mergeBudget, withoutFinalEol } from '@moss-multi/core/merge';
 import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
-import type { Api, DocRow } from './api.ts';
+import { pushRefusal, type Api, type DocRow } from './api.ts';
 import { CliError, EXIT } from './errors.ts';
 import { noteMedia } from './media.ts';
 import { fieldSafe } from './output.ts';
@@ -216,7 +216,7 @@ function refused(meta: DocMeta, response: Exclude<PushResponse, { ok: true }>): 
   }
   if (response.reason === 'rate-limited') throw new RateLimited(response.retryAfterSec ?? 60);
   if (response.reason === 'push-unverified') return { ...id, action: 'failed', message: response.message };
-  return { ...id, action: 'failed', message: `push refused: ${response.reason}` };
+  return { ...id, action: 'failed', message: `push refused: ${pushRefusal(response)}` };
 }
 
 /** The file's hash when it was last synced. */

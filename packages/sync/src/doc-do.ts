@@ -12,6 +12,7 @@ import {
   DOC_SOCKET_MAX_MS, MAX_CONNECTIONS, RESTORE_BASE_MAX_AGE_MS, STATE_CAP_BYTES, STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP, WORKING_EXPORT_DOC_RATE,
   WRITE_RATE,
 } from '@moss-multi/protocol/limits';
+import { LIMIT_WORDS } from '@moss-multi/protocol/push';
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
@@ -71,7 +72,7 @@ export const CLI_PUSH = 'cli-push';
 export type PushVerdict =
   /** `suggestionId`: a `--suggest` push landed as this open suggestion and the doc is unchanged. */
   | { ok: true; applied: number; failedHunks: string[]; suggestionId?: string }
-  | { ok: false; status: number; reason: string; deletedRatio?: number; message?: string };
+  | { ok: false; status: number; reason: string; deletedRatio?: number; message?: string; limit?: DocLimit };
 
 /** The awareness origin of an agent's Bot-badged presence entry (A§10.7). */
 const AGENT_PRESENCE = Symbol('agent-presence');
@@ -82,7 +83,7 @@ const SUGGEST_REFUSALS: Partial<Record<string, string>> = {
   'ops-cap': 'this note holds too many pending suggestions; review some first',
   'open-cap': 'you have too many open suggestions on this note; withdraw some or wait for them to be reviewed',
   'lease-cap': 'you have too many suggestions in progress on this note; try again shortly',
-  'doc-cap': 'the note is full; a note holds at most 2 MB of markdown',
+  'doc-cap': `too large: ${LIMIT_WORDS.state}`,
   channel: 'a suggestion can change only the note\'s text',
   'node-type': 'the change holds a block this note cannot show',
 };
@@ -1971,7 +1972,7 @@ export class DocDO extends YServer<SyncEnv> {
         }
         return { ok: true, applied: outcome.applied, failedHunks: outcome.failedHunks };
       } catch (error) {
-        if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'too-large' };
+        if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'too-large', limit: error.limit };
         if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'push-unverified', message: error.message };
         throw error;
       }
@@ -1990,8 +1991,9 @@ export class DocDO extends YServer<SyncEnv> {
     const ingest = this.#ingest;
     if (!ingest) throw new Error('DocDO started without the suggestion ingest');
     const who: Suggester = { id: reviewer.id, name, role: reviewer.role, connection: `cli-push:${crypto.randomUUID()}` };
-    const refused = (reason: string): PushVerdict => ({
-      ok: false, status: 409, reason: 'suggest-refused', message: SUGGEST_REFUSALS[reason] ?? `the suggestion was refused (${reason})`,
+    const refused = (reason: string, limit?: DocLimit): PushVerdict => ({
+      ok: false, status: 409, reason: 'suggest-refused',
+      message: reason === 'doc-cap' && limit ? `too large: ${LIMIT_WORDS[limit]}` : SUGGEST_REFUSALS[reason] ?? `the suggestion was refused (${reason})`,
     });
     const leased = ingest.lease(who, [], 1);
     if (!leased.ok) return refused(leased.reason);
@@ -2014,7 +2016,7 @@ export class DocDO extends YServer<SyncEnv> {
         const result = ingest.ops(who, record, op);
         if (!result.ok) {
           if (created) ingest.withdraw(who, record);
-          return refused(result.reason);
+          return refused(result.reason, result.limit);
         }
         record = result.record;
         created = true;

@@ -40,11 +40,12 @@ function dump(backing: Backing): Record<string, unknown[]> {
 /** A created note, its export memoized, then a fresh instance with an editor connected; an export runs in place. */
 async function reopened(markdown: string): Promise<Opened> {
   const created = await start(openDoc());
-  await created.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown });
   let exports = 0;
   during.export = () => {
     exports += 1;
   };
+  // A create answers its export (T7.S4), so the hook runs there and the later read is memoized.
+  await created.dobj.create({ folderId: 'folder', ownerId: 'owner', markdown });
   expect(await created.dobj.exportMarkdown(), 'positive control: the hook runs inside a working export').toBe(markdown);
   expect(exports).toBe(1);
   during.export = null;

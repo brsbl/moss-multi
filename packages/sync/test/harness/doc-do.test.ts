@@ -173,8 +173,13 @@ describe('server writes', () => {
   it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
     const legacy = await start(openDoc());
     await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });
-    // The pre-map server's persisted wire shape, including its fenced YAML and CRLFs.
-    legacy.dobj.document.getText('frontmatter').insert(0, '---\r\nstatus: draft\r\ntags: [keep, both]\r\n---\r\n');
+    // The pre-map server's persisted wire shape, including its fenced YAML and CRLFs, written by a peer: create's
+    // in-place export already read the field here as a map.
+    const peer = new Y.Doc();
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(legacy.dobj.document));
+    peer.getText('frontmatter').insert(0, '---\r\nstatus: draft\r\ntags: [keep, both]\r\n---\r\n');
+    Y.applyUpdate(legacy.dobj.document, Y.encodeStateAsUpdate(peer, Y.encodeStateVector(legacy.dobj.document)));
+    peer.destroy();
     await legacy.dobj.onSave();
     const restored = await start(wake(legacy));
     expect(readFrontmatter(restored.dobj.document)).toEqual({ status: 'draft', tags: ['keep', 'both'] });

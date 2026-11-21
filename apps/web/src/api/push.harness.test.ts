@@ -346,7 +346,7 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
       return out.join('');
     };
     const body = `{"newText":"${escaped(newText)}","baseHash":"${sha(base)}","baseText":"${escaped(base)}","force":false,"suggest":false}`;
-    expect(body.length).toBeGreaterThan(12 * 1024 * 1024);
+    expect(body.length).toBeGreaterThan(12_000_000);
     const response = await raw(docId, cookieOf(ada), body);
     const answer = (await response.json()) as Record<string, unknown>;
     expect(response.status, JSON.stringify(answer)).toBe(200);
