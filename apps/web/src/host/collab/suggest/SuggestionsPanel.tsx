@@ -4,16 +4,16 @@
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
-  SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
-  TOP_BAR_ATTR, type EditMode,
+  BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR,
+  SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, TITLE_BINDING_ATTR, TOP_BAR_ATTR, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { FilePenLine, MoreHorizontal, PencilLine, Undo2 } from 'lucide-react';
+import { ArrowLeft, FilePenLine, MoreHorizontal, PencilLine, Undo2, X } from 'lucide-react';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
@@ -23,6 +23,7 @@ import { handOffWhenGone, HomeTrigger, useFocusHome } from '../../surfaces/foote
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
+import { placeSuggestion, type Box, type Placement } from './place.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
 import { usePreviewRows } from './rows.ts';
@@ -153,6 +154,7 @@ export function reviewEntryNote(role: Role, mode: EditMode | null): string {
 
 /** Moss's compact list action (the comment list's filter buttons): 24 px tall, as wide as its label, no resting fill. */
 const ACTION = 'flex h-6 items-center rounded px-1.5 text-micro text-ink-muted transition-colors hover:bg-surface-panel hover:text-ink-default focus:outline-none focus-visible:bg-surface-panel disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-muted';
+const ANIMATE = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95';
 const QUIET_LINK = 'shrink-0 text-micro text-ink-muted underline underline-offset-2 hover:text-ink-default';
 const STATUS_WORDS: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected', withdrawn: 'Withdrawn' };
 
@@ -178,6 +180,7 @@ function SuggestionCard({ docId, record, me, role, active, single, root, opened,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const acceptWhy = useId();
   const cardRef = useCallback((element: HTMLDivElement | null) => {
     onScreenRef(element);
     if (active) element?.scrollIntoView({ block: 'nearest' });
@@ -222,7 +225,7 @@ function SuggestionCard({ docId, record, me, role, active, single, root, opened,
       {...{ [SUGGESTION_CARD_ATTR]: '', [SUGGESTION_ID_ATTR]: meta.id, [SUGGESTION_STATUS_ATTR]: meta.status }}
       {...(active ? { [SUGGESTION_ACTIVE_ATTR]: '' } : {})}
       ref={cardRef}
-      className={`px-3 py-2.5 transition-colors ${active && !single ? 'bg-surface-panel' : ''} ${open ? '' : 'opacity-70'}`}
+      className={`px-3 ${single ? 'pb-2.5 pt-2' : 'py-2.5'} transition-colors ${active && !single ? 'bg-surface-panel' : ''} ${open ? '' : 'opacity-70'}`}
     >
       <div className="flex min-h-6 min-w-0 items-center gap-1.5">
         <span className="truncate text-caption font-medium text-ink-default">{meta.authorName}{own ? ' (you)' : ''}</span>
@@ -236,7 +239,7 @@ function SuggestionCard({ docId, record, me, role, active, single, root, opened,
                 type="button"
                 disabled={busy}
                 aria-label="Suggestion actions"
-                className="-mr-1 ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-panel hover:text-ink-muted focus:outline-none focus-visible:ring-0"
+                className="-mr-1 ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-panel hover:text-ink-muted focus:outline-none focus-visible:bg-surface-panel focus-visible:text-ink-muted"
               >
                 <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
               </button>
@@ -306,15 +309,26 @@ function SuggestionCard({ docId, record, me, role, active, single, root, opened,
       {error ? <p role="alert" className="mt-1.5 text-micro text-accent-terracotta">{error}</p> : null}
       {open && reviewer ? (
         <div className="-ml-1.5 mt-1.5 flex gap-1">
-          <button
-            type="button"
-            className={ACTION}
-            disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
-            title={allShown ? undefined : 'Show every change before accepting'}
-            onClick={() => void act('accept')}
-          >
-            Accept
-          </button>
+          {allShown ? (
+            <button type="button" className={ACTION} disabled={busy || preview.state !== 'ready' || outdated || broken} onClick={() => void act('accept')}>
+              Accept
+            </button>
+          ) : (
+            // A disabled button gets no pointer events: Moss's tooltip hangs on the slot around it.
+            <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex rounded focus:outline-none focus-visible:bg-surface-panel" tabIndex={0} aria-describedby={acceptWhy}>
+                  <button type="button" className={ACTION} disabled>
+                    Accept
+                  </button>
+                  <span id={acceptWhy} className="sr-only">Show every change before accepting</span>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={4}>Show every change before accepting</TooltipContent>
+            </Tooltip>
+            </TooltipProvider>
+          )}
           <button type="button" className={ACTION} disabled={busy} onClick={() => ask('reject')}>
             Reject
           </button>
@@ -346,7 +360,7 @@ export function SuggestionList({ docId, open: allOpen, reviewed: allReviewed, me
     <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} single={single} root={root} opened={opened} body={body} />
   );
   return (
-    <div ref={setRoot} className="flex min-h-0 flex-1 flex-col overflow-y-auto py-1">
+    <div ref={setRoot} className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${single ? 'pb-1' : 'py-1'}`}>
       {single && open.length === 0 && reviewed.length === 0 ? (
         <p className="px-3 py-2.5 text-caption text-ink-faint">This suggestion is no longer in the note.</p>
       ) : null}
@@ -363,6 +377,34 @@ export function SuggestionList({ docId, open: allOpen, reviewed: allReviewed, me
       {reviewed.map(card)}
     </div>
   );
+}
+
+/** The text line boxes of `roots` between `top` and `bottom` (viewport px). */
+function textLines(roots: readonly Element[], top: number, bottom: number): Box[] {
+  const lines: Box[] = [];
+  const range = document.createRange();
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent?.trim()) continue;
+      const block = node.parentElement?.getBoundingClientRect();
+      if (!block || block.bottom <= top || block.top >= bottom) continue;
+      range.selectNodeContents(node);
+      for (const line of range.getClientRects()) if (line.width > 0 && line.bottom > top && line.top < bottom) lines.push(line);
+    }
+  }
+  return lines;
+}
+
+/** Where `docId`'s suggestion opened at `mark` goes (place.ts), or null without its pane. */
+function placeAt(docId: string, mark: DOMRect | null, height: number): Placement | null {
+  const pane = document.querySelector(`[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"]`);
+  if (!mark || !pane) return null;
+  const box = pane.getBoundingClientRect();
+  const bar = pane.querySelector(`[${TOP_BAR_ATTR}]`)?.getBoundingClientRect();
+  const roots = [...pane.querySelectorAll(`[${TITLE_BINDING_ATTR}], [${BODY_BINDING_ATTR}]`)];
+  const viewport = { width: window.visualViewport?.width ?? window.innerWidth, height: window.visualViewport?.height ?? window.innerHeight };
+  return placeSuggestion({ mark, pane: box, barBottom: bar?.bottom ?? box.top, viewport, height, linesIn: (top, bottom) => textLines(roots, top, bottom) });
 }
 
 /** Moss's danger confirmation for a pending Reject or Withdraw on `docId`, focused on Cancel. */
@@ -413,11 +455,46 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   const active = openPanels.get(docId) ?? null;
   // Opened from a painted mark: that one suggestion, at the mark (Moss's comment thread at its text).
   const at = isOpen && active !== null ? openAt.get(docId) ?? null : null;
+  // Where it goes (place.ts): beside its line while that leaves the text legible, else the pane's panel with Back to
+  // note. Re-placed when the window resizes or the thread's drawn height changes; a thread that fell back to the panel
+  // stays there until it is opened again, so it never flips under the reader.
+  const [threadHeight, setThreadHeight] = useState(200);
+  const [resized, setResized] = useState(0);
+  useEffect(() => {
+    if (!at) return;
+    const changed = () => setResized((version) => version + 1);
+    window.addEventListener('resize', changed);
+    return () => window.removeEventListener('resize', changed);
+  }, [at]);
+  const placement = useMemo(() => {
+    void resized;
+    return at ? placeAt(docId, at(), threadHeight) : null;
+  }, [at, docId, threadHeight, resized]);
+  const [heldFor, setHeldFor] = useState<{ at: unknown; resized: number; placement: Placement } | null>(null);
+  const held = heldFor && heldFor.at === at && heldFor.resized === resized ? heldFor.placement : null;
+  const place = held ?? placement;
+  if (at && placement && placement.kind !== 'beside' && !held) setHeldFor({ at, placement, resized });
   const markAnchor = useMemo(() => {
     // A repaint can replace the mark under it: the last place it was seen holds until the next paint.
     let last: DOMRect | null = null;
-    return { current: { getBoundingClientRect: () => (last = at?.() ?? last ?? new DOMRect()) } };
-  }, [at]);
+    return {
+      current: {
+        getBoundingClientRect: () => {
+          const where = place;
+          if (where && where.kind !== 'beside') return new DOMRect(where.kind === 'docked' ? where.left + where.width : where.left, where.top, 0, 0);
+          const mark = (last = at?.() ?? last ?? new DOMRect());
+          return where ? new DOMRect(where.right, mark.top, 0, mark.height) : mark;
+        },
+      },
+    };
+  }, [at, place]);
+  // The thread's drawn height, measured only while it is beside its line (a panel's height is the pane's).
+  const besideRef = useCallback((element: HTMLElement | null) => {
+    if (!element) return;
+    const observer = new ResizeObserver(() => setThreadHeight(Math.ceil(element.getBoundingClientRect().height)));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   // The note as it stood when the panel opened: a preview kept from an earlier opening is reused only if it has not moved.
   const opened = useMemo(() => (isOpen && body ? Y.encodeStateVector(body).join('.') : ''), [isOpen, body]);
   const open = records.filter((record) => record.meta.status === 'open').sort((a, b) => b.meta.createdAt - a.meta.createdAt);
@@ -437,6 +514,16 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   const reviewing = mode === 'review';
   // While the panel is open the count it opened from stays, even when the pane narrows or the last suggestion closes.
   const counted = shown || (isOpen && pinned);
+  // The list hangs from its count or More actions; a suggestion opened at its mark goes where place.ts put it.
+  const contentPlacement = !at
+    ? ({ side: 'bottom', align: 'end', sideOffset: 6 } as const)
+    : !place || place.kind === 'beside'
+      ? ({ side: place?.side ?? 'bottom', align: place ? 'end' : 'start', sideOffset: 8 } as const)
+      : ({ side: 'bottom', align: place.kind === 'docked' ? 'end' : 'start', sideOffset: 0 } as const);
+  const surfaceClass = place?.kind === 'pane'
+    // The pane's own single view: the note's canvas, no card.
+    ? 'bg-surface-canvas'
+    : `border border-border-subtle bg-surface-floating ${ANIMATE} ${!at || place?.kind === 'docked' ? 'rounded-lg shadow-surface' : 'rounded-xl shadow-sm'} ${place ? '' : 'w-comment-list-popover max-w-floating-popover-viewport'}`;
   return (
     <TooltipProvider>
       <Popover.Root
@@ -476,20 +563,52 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
         {at ? <Popover.Anchor virtualRef={markAnchor as unknown as RefObject<Element | null>} /> : !counted && anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
         <Popover.Portal>
           <Popover.Content
-            align={at ? 'start' : 'end'}
-            side="bottom"
-            sideOffset={at ? 8 : 6}
+            {...contentPlacement}
+            ref={place?.kind === 'beside' ? besideRef : undefined}
+            avoidCollisions={!at}
             collisionPadding={16}
-            // Never taller than the room on its side: its rows scroll and every decision stays reachable.
-            style={{ maxHeight: 'min(60vh, var(--radix-popover-content-available-height, 60vh))' }}
-            className={`z-50 flex w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden border border-border-subtle bg-surface-floating ${at ? 'rounded-xl shadow-sm' : 'rounded-lg shadow-surface'} outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95`}
+            // Never taller than its room: its rows scroll and its decisions and close stay reachable.
+            style={{ maxHeight: place ? `${place.maxHeight}px` : 'min(60vh, var(--available-height, 60vh))', ...(place ? { width: `${place.width}px` } : {}), ...(place?.kind === 'pane' ? { height: `${place.maxHeight}px` } : {}) }}
+            className={`z-50 flex flex-col overflow-hidden outline-none focus:outline-none focus-visible:ring-0 ${surfaceClass}`}
             onOpenAutoFocus={(event) => event.preventDefault()}
             onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onFocusOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             {...{ [SUGGESTIONS_PANEL_ATTR]: '' }}
+            {...(place ? { 'data-suggestion-place': place.kind } : {})}
           >
-            {at ? <Popover.Title className="sr-only">Suggestion</Popover.Title> : null}
+            {at ? (
+              // Moss's comment thread header: what it is and its close, or, as the pane's panel, the way back.
+              <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle/30 px-2 py-1.5">
+                <Popover.Title className="sr-only">Suggestion</Popover.Title>
+                {place && place.kind !== 'beside' ? (
+                  <button type="button" className={`-ml-0.5 gap-1 ${ACTION}`} onClick={() => closePanel(docId)}>
+                    <ArrowLeft aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    Back to note
+                  </button>
+                ) : (
+                  <>
+                    <div aria-hidden className="flex min-w-0 flex-1 items-center gap-1">
+                      <PencilLine className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" strokeWidth={1.5} />
+                      <span className="truncate text-caption font-normal text-ink-faint">Suggestion</span>
+                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="Close"
+                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-panel hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15"
+                          onClick={() => closePanel(docId)}
+                        >
+                          <X className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={6}>Close</TooltipContent>
+                    </Tooltip>
+                  </>
+                )}
+              </div>
+            ) : null}
             {at ? null : <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
               <Popover.Title className="sr-only">Suggestions</Popover.Title>
               <div className="flex min-w-0 items-center gap-1">
