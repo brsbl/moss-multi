@@ -55,6 +55,9 @@ function lane(size, failing) {
   return [...names, ...shards, 'ci-ok'].slice(0, size).map((name, index) => job(name, name === failing ? 'failure' : 'success', 1000 + index));
 }
 
+// Every job of a full lane: the fixed jobs, one shard per engine and group, and ci-ok.
+const FULL = 10 + 2 * presentGroups().length;
+
 const dirs = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -115,8 +118,8 @@ const problems = (jobs) => testedRunProblems({ run: RUN, jobs, groups: presentGr
 
 describe.each(['deploy-pilot.yml', 'deploy-staging.yml'])('%s reads the CI run', (file) => {
   it.each([
-    ['84 jobs, all green', 84, undefined, true],
-    ['84 jobs, one failed on the second page', 84, 'e2e (webkit, share)', false],
+    [`${FULL} jobs, all green`, FULL, undefined, true],
+    [`${FULL} jobs, one failed on the second page`, FULL, 'e2e (webkit, share)', false],
     ['82 jobs, ci-ok failed on the last page', 82, 'ci-ok', false],
     ['40 jobs on one page, the lane incomplete', 40, undefined, false],
   ])('%s: the paged listing is every job, one per line, and judges as one page does', (_, size, failing, green) => {
@@ -134,7 +137,7 @@ describe.each(['deploy-pilot.yml', 'deploy-staging.yml'])('%s reads the CI run',
   });
 
   it('retries a call GitHub fails, with a growing pause', () => {
-    const jobs = lane(84);
+    const jobs = lane(FULL);
     const out = readRun(file, jobs, { failures: 2 });
     expect(out.status, out.stderr).toBe(0);
     expect(out.jobs.split('\n').filter(Boolean).map((line) => JSON.parse(line))).toEqual(jobs);
@@ -144,14 +147,14 @@ describe.each(['deploy-pilot.yml', 'deploy-staging.yml'])('%s reads the CI run',
   });
 
   it('fails the step when a call still fails after its retries', () => {
-    const out = readRun(file, lane(84), { failures: 1000 });
+    const out = readRun(file, lane(FULL), { failures: 1000 });
     expect(out.status).not.toBe(0);
     expect(out.calls).toBeLessThanOrEqual(10);
   });
 
   it('fails the step on a short listing: fewer jobs than the run has', () => {
-    const out = readRun(file, lane(84), { served: 50 });
+    const out = readRun(file, lane(FULL), { served: 50 });
     expect(out.status).not.toBe(0);
-    expect(out.stderr + out.stdout).toMatch(/50 of 84/);
+    expect(out.stderr + out.stdout).toMatch(new RegExp(`50 of ${FULL}`));
   });
 });
