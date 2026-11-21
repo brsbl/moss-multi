@@ -878,6 +878,8 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - Required red-first test (T9.33 checker P2, visitor's Review row wraps at 390 px): a signed-out link visitor in Review at 390×844 sees “Reviewing suggestions · View only”, Done and Sign in on one line, the row no taller than Moss's docked toolbar.
   - Required red-first test (T9.38 checker P2, inbox target refused or gone at open time): on a real stack, a notice whose note is deleted or whose access is removed before it is opened stays unread after the open is tried, and its row says why.
   - Required red-first test (T9.31 checker P2, a failed switch after New vault is hidden): with the switch to a just-created vault failing, the user sees the switch error where she is (Settings stays open on Vaults, or the error shows outside it), not in a closed Settings section.
+  - Required red-first test (T9.35 checker P2, a reader in Review gets no explanation from the access words): a reader in Review with open suggestions who hovers, focuses or presses “View only” or “Comment only” in “Reviewing suggestions · …” gets Moss's tooltip, the accessible description and the refusal sentence, as outside Review.
+  - Required red-first test (T9.35 checker P2, refusal placement states not covered): a refused key with a note in Trash, and with no note open, shows the refusal card above Moss's Trash notice in the pane's bottom region; at a short height, in a split pane, and alongside a recovery or connection notice, the refusal card stays in that one bottom region without covering the reader's row.
 
 ## The loop
 
