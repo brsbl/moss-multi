@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { closesOnRevoke, isLoopback, otherPortOrigin, workerTooLarge } from './sweep.mjs';
+import { JSON_BODY_CAP, closesOnRevoke, createSweep, describeOversized, isLoopback, otherPortOrigin, workerTooLarge } from './sweep.mjs';
 
 describe('otherPortOrigin', () => {
   const cases = [
@@ -39,6 +39,43 @@ describe('workerTooLarge', () => {
     expect(workerTooLarge({ status: 400, type: 'application/json', body: '{"error":"too-large"}' })).toBe(false);
     expect(workerTooLarge({ status: 'no answer' })).toBe(false);
     expect(workerTooLarge({ status: 413, type: 'application/json; charset=UTF-8', body: '{"error":"too-large","message":"The request body is too large."}' })).toBe(true);
+  });
+});
+
+describe('oversized', () => {
+  it('on loopback declares the length and sends no body bytes, so the refusal comes from the header', async () => {
+    const seen = [];
+    const server = createServer((request, response) => {
+      const arrival = { length: request.headers['content-length'], bytes: 0 };
+      seen.push(arrival);
+      request.on('data', (chunk) => {
+        arrival.bytes += chunk.length;
+      });
+      // Read for a moment before answering, so bytes sent with the request are counted every time.
+      setTimeout(() => {
+        response.writeHead(413, { 'content-type': 'application/json', connection: 'close' });
+        response.end(JSON.stringify({ error: 'too-large', message: 'The request body is too large.' }));
+      }, 300);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const sweep = createSweep(`http://127.0.0.1:${server.address().port}`);
+      const answer = await sweep.oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, JSON_BODY_CAP + 1, Buffer.alloc(JSON_BODY_CAP + 1, 0x20));
+      expect(seen).toEqual([{ length: String(JSON_BODY_CAP + 1), bytes: 0 }]);
+      expect(workerTooLarge(answer), JSON.stringify(answer)).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, 15_000);
+});
+
+describe('describeOversized', () => {
+  it("names wrangler dev's lost forward and the time, never the body text", () => {
+    const lost = describeOversized({ status: 503, type: 'text/plain;charset=UTF-8', body: 'Your worker restarted mid-request. Please try sending the request again.', ms: 5 });
+    expect(lost).toBe("503 text/plain;charset=UTF-8 (no JSON error), wrangler dev's proxy lost the forward after 5 ms");
+    expect(describeOversized({ status: 503, type: 'text/plain', body: 'secret text', ms: 7 })).toBe('503 text/plain (no JSON error) after 7 ms');
+    expect(describeOversized({ status: 413, type: 'application/json', body: '{"error":"too-large"}', ms: 3 })).toBe('413 application/json too-large after 3 ms');
   });
 });
 
