@@ -81,6 +81,15 @@ export function workerTooLarge(answer) {
 /** An answer as a check's detail: status, content type and JSON error, never the body text. */
 export const describeAnswer = (answer) => `${answer.status} ${answer.type || '-'} ${errorOf(answer.body ?? '') ?? '(no JSON error)'}`;
 
+/** wrangler dev's proxy answers a forward it lost with a text 503 that starts with this (e2e/lib/principals.ts). */
+const LOST_FORWARD = 'Your worker restarted mid-request';
+
+/** An oversized probe's answer as a check's detail: describeAnswer, the proxy's lost forward named, and its time. */
+export function describeOversized(answer) {
+  const lost = answer.status === 503 && (answer.body ?? '').startsWith(LOST_FORWARD) ? ", wrangler dev's proxy lost the forward" : '';
+  return `${describeAnswer(answer)}${lost}${answer.ms === undefined ? '' : ` after ${answer.ms} ms`}`;
+}
+
 /** A masked client text frame (payload under 126 bytes). */
 function clientText(text) {
   const payload = Buffer.from(text);
@@ -249,29 +258,32 @@ export function createSweep(baseUrl) {
   const docSocket = (docId, query = '') => `/parties/doc-d-o/${docId}?protocol=999${query}`;
 
   /**
-   * The answer ({status, type, body}) an oversized request gets, on a connection of its own (a server that answers
-   * before reading the body closes it): with `body`, sent whole; without, it declares `length` bytes and sends none,
-   * so the refusal must come from the header. Off loopback Cloudflare's edge holds a request until its whole body has
-   * arrived, so there the declared bytes are sent (spaces) and the Worker's answer to the whole body counts. The
-   * answer's body is kept up to 4 KiB, and the timeout holds until it has ended.
+   * The answer ({status, type, body, ms}) an oversized request gets, on a connection of its own (a server that
+   * answers before reading the body closes it). Locally it declares `length` bytes and sends none, so the refusal
+   * must come from the header: a refused body left unread past 64 KiB cuts wrangler dev's forward, which its proxy
+   * answers with its own 503. Off loopback Cloudflare's edge holds a request until its whole body has arrived, so
+   * there the declared bytes are sent (spaces) and the Worker's answer to the whole body counts. The answer's body
+   * is kept up to 4 KiB, and the timeout holds until it has ended.
    */
-  async function oversized(method, path, headers, length, body) {
+  async function oversized(method, path, headers, length) {
     // Locally, wrangler's proxy pools the connection a refused, half-read body left behind, and a POST lost on it is
     // not replayed (patches/wrangler, T3.B22), so each one waits out the pool's 5 s idle close after the last.
     if (!edge) await new Promise((resolve) => setTimeout(resolve, Math.max(0, lastOversized + 5_500 - Date.now())));
     try {
-      return await sendOversized(method, path, headers, length, body);
+      return await sendOversized(method, path, headers, length);
     } finally {
       lastOversized = Date.now();
     }
   }
   let lastOversized = 0;
 
-  function sendOversized(method, path, headers, length, body) {
+  function sendOversized(method, path, headers, length) {
     const url = new URL(path, base);
     const client = url.protocol === 'https:' ? https : http;
-    if (!body && edge) body = Buffer.alloc(length, 0x20);
-    return new Promise((done) => {
+    const body = edge ? Buffer.alloc(length, 0x20) : null;
+    const started = Date.now();
+    return new Promise((resolve) => {
+      const done = (answer) => resolve({ ...answer, ms: Date.now() - started });
       const request = client.request(url, { method, agent: false, headers: { ...headers, 'content-length': String(length) } });
       let answered = false;
       const timer = setTimeout(() => {
@@ -520,14 +532,13 @@ export function createSweep(baseUrl) {
     const how = edge ? 'once the edge has the whole body' : 'from its Content-Length';
     for (const [path, headers] of [['/api/unfurl', {}], ['/api/unfurl', write(ada)], ['/api/feedback', write(ada)], [`/api/docs/${doc.id}/comments`, write(ada)], ['/api/auth/sign-in/email', { origin: base }]]) {
       const answer = await oversized('POST', path, { ...headers, 'content-type': 'application/json' }, 64 * 1024 * 1024);
-      if (!workerTooLarge(answer)) capped.push(`${path}: ${describeAnswer(answer)}`);
+      if (!workerTooLarge(answer)) capped.push(`${path}: ${describeOversized(answer)}`);
     }
     check('limits', `a 64 MiB JSON body is the Worker's too-large 413 ${how} on /api and /api/auth`, capped.length === 0, capped.join('; '));
-    const over = Buffer.from(JSON.stringify({ pad: 'x'.repeat(JSON_BODY_CAP) }));
-    const streamed = await oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, over.byteLength, over);
-    check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is the Worker's too-large 413`, workerTooLarge(streamed), describeAnswer(streamed));
+    const over = await oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, JSON_BODY_CAP + 1);
+    check('limits', `a JSON body just over ${JSON_BODY_CAP} bytes is the Worker's too-large 413 ${how}`, workerTooLarge(over), describeOversized(over));
     const huge = await oversized('POST', `/api/docs/${doc.id}/assets?filename=big.png`, { ...write(ada), 'content-type': 'image/png' }, 10 * 1024 * 1024 + 1);
-    check('limits', `an image over 10 MB is the Worker's too-large 413 ${how}`, workerTooLarge(huge), describeAnswer(huge));
+    check('limits', `an image over 10 MB is the Worker's too-large 413 ${how}`, workerTooLarge(huge), describeOversized(huge));
 
     // ---- rate limits: each answers 429 past its window
     const until429 = async (max, send) => {

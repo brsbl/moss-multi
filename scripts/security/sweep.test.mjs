@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { JSON_BODY_CAP, closesOnRevoke, createSweep, isLoopback, otherPortOrigin, workerTooLarge } from './sweep.mjs';
+import { JSON_BODY_CAP, closesOnRevoke, createSweep, describeOversized, isLoopback, otherPortOrigin, workerTooLarge } from './sweep.mjs';
 
 describe('otherPortOrigin', () => {
   const cases = [
@@ -68,6 +68,15 @@ describe('oversized', () => {
       await new Promise((resolve) => server.close(resolve));
     }
   }, 15_000);
+});
+
+describe('describeOversized', () => {
+  it("names wrangler dev's lost forward and the time, never the body text", () => {
+    const lost = describeOversized({ status: 503, type: 'text/plain;charset=UTF-8', body: 'Your worker restarted mid-request. Please try sending the request again.', ms: 5 });
+    expect(lost).toBe("503 text/plain;charset=UTF-8 (no JSON error), wrangler dev's proxy lost the forward after 5 ms");
+    expect(describeOversized({ status: 503, type: 'text/plain', body: 'secret text', ms: 7 })).toBe('503 text/plain (no JSON error) after 7 ms');
+    expect(describeOversized({ status: 413, type: 'application/json', body: '{"error":"too-large"}', ms: 3 })).toBe('413 application/json too-large after 3 ms');
+  });
 });
 
 // A server frame (unmasked, short) and a client frame's text (masked).
