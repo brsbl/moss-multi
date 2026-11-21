@@ -502,10 +502,16 @@ test('j08 compact: every role chooser is Moss\'s checked menu, its actions are q
 
   // Actions are Moss's 24 px neutral text actions: no filled accent button.
   const create = dialog.getByRole('button', { name: 'Create invite link', exact: true });
-  const quiet = (button: typeof create) => button.evaluate((el) => {
-    const style = getComputedStyle(el);
-    return { height: el.getBoundingClientRect().height, fontSize: style.fontSize, filled: style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent' };
-  });
+  // At rest (the pointer away, its hover fill faded), an action is unfilled 12 px text in a 24 px box.
+  const quiet = async (button: typeof create) => {
+    await ada.page.mouse.move(1, 1);
+    await button.blur();
+    await ada.page.waitForTimeout(300);
+    return button.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { height: el.getBoundingClientRect().height, fontSize: style.fontSize, filled: style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent' };
+    });
+  };
   expect(await quiet(create), 'Create invite link is a quiet action').toEqual({ height: 24, fontSize: '12px', filled: false });
   await ui.shareInDialog(dialog, ben.email, 'Can view');
   await expect(dialog.getByRole('button', { name: 'Copy invite link', exact: true }), 'the completion offers the invite link').toBeVisible();
