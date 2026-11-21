@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 83% done** (250 of 302 planned tasks verified)
+**Overall: 83% done** (251 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 23 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 24 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -273,6 +273,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T9.38 verified: the bell stays a quiet 28 px button with no badge, and its 352 px inbox groups notices under each note's or folder's title with a neutral unread dot, says when it is loading, failed or empty, and marks a notice read only once its note has opened.
 - 2026-11-21 — T9.40 verified: a healthy connection draws nothing; a write unacked for 2 s shows a faint "Saving…" or "Reconnecting…" line that opens the connection details, and outage, late-sync and sign-in/reload notices float as one Moss-style card at the pane bottom so the note never moves.
 - 2026-11-21 — T9.31 verified: the notes-panel header holds only Moss's toggle; vaults are switched from the app menu's Switch vault… and managed in Settings' Vaults, the tab, note location and "+ Note" tooltip name the vault on screen, and search says Searching… until its index answers and names another vault's results.
+- 2026-11-21 — T9.35 verified: a refused key or paste shows its one notice as a small card in the pane's bottom region above the reader's row, so the note never moves; "View only" and "Comment only" explain themselves on hover, focus or press; and a signed-out link visitor's row offers a plain "Sign in".
 
 ## T1.1s identity audit
 
@@ -313,6 +314,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.35's checker (26ee3de, 2026-11-21)
+
+- T9.35 (Restricted access is understandable in Moss's quiet bottom region) checker P2: a reader in Review with open suggestions gets no tooltip, accessible description or press explanation from "View only" or "Comment only" inside "Reviewing suggestions · …" (the words stay truthful); moved to T9.46.
+- T9.35 (Restricted access is understandable in Moss's quiet bottom region) checker P2: j21 does not prove keyboard and tap activation on its own: it clicks the body before pressing Enter, so the capture listener could announce from the remembered body target, and the phone step falls back to a mouse click in a resized desktop context rather than a touch context.
+- T9.35 (Restricted access is understandable in Moss's quiet bottom region) checker P2: evidence gaps: no short-height or split-pane captures, no proof of the refusal's place for a trashed note or with no note open, and none alongside recovery, attention and mode notices; moved to T9.46.
+- T9.35 (Restricted access is understandable in Moss's quiet bottom region) checker P2: after a click in the note body, Enter on a focused bottom-row button also triggers the reader's refusal, because RoleBand's ELSEWHERE list omits buttons (already on m9; the sentence is the same and the button still works).
 
 ### From T9.31's checker (5d7c6aa, 2026-11-21)
 

@@ -97,16 +97,16 @@ for (const size of TIER_A) {
     await expect(ui.pane(stranger, docId), 'the link opens at viewer').toHaveAttribute(ROLE_ATTR, 'viewer');
     await expectReadable(stranger, docId, size);
     await expectReachable(stranger, 'alone');
-    const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
+    const signIn = stranger.page.getByRole('button', { name: 'Sign in', exact: true });
     await expect(signIn, 'the stranger is offered sign-in, label and all').toBeVisible();
     await expect(signIn, 'exactly once at this width (T9.10)').toHaveCount(1);
     // T9.10, T9.30: the band says the link is view only and holds the sign-in at every width; the top bar has none.
     const band = ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`);
     await expect(band, 'the band shows when the note opens').toBeVisible();
-    await expect(band).toHaveText('View only Sign in to do more');
-    await expect(band.getByRole('button', { name: 'Sign in to do more', exact: true }), 'the band holds the sign-in').toBeVisible();
+    await expect(band).toHaveText('View only Sign in');
+    await expect(band.getByRole('button', { name: 'Sign in', exact: true }), 'the band holds the sign-in').toBeVisible();
     expect(await band.evaluate((el) => getComputedStyle(el).boxShadow), 'a quiet row at the bottom, not a floating card').toBe('none');
-    await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in to do more', exact: true }), 'no sign-in in the top bar').toHaveCount(0);
+    await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in', exact: true }), 'no sign-in in the top bar').toHaveCount(0);
     await actors.checkpoint(`${size.name}-stranger-alone`);
     await searchesTheNote(stranger, docId);
 
