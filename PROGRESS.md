@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (247 of 302 planned tasks verified)
+**Overall: 82% done** (248 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 20 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 21 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -270,6 +270,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.14 verified: after undo or redo the caret lands where the change was, keeping the typing format and style there, so typing next continues in place; a peer's caret stays where they left it.
 - 2026-11-17 — T9.30 verified: a note's top bar at rest holds only Moss's own actions, with Share, Suggestions, Suggest changes and Version history in More actions, the vault, notifications, connection and account in an app menu behind Settings, People here and open counts as quiet cues, and Suggesting, Review and a reader's access in one quiet bottom row.
 - 2026-11-18 — T9.33 verified: "Review suggestions" says what it pauses, the Review row names what is paused ("Editing paused", "Suggesting paused", "View only" or "Comment only"), and Done, Escape or the last decision return to the mode Review paused, by the current role.
+- 2026-11-21 — T9.38 verified: the bell stays a quiet 28 px button with no badge, and its 352 px inbox groups notices under each note's or folder's title with a neutral unread dot, says when it is loading, failed or empty, and marks a notice read only once its note has opened.
 
 ## T1.1s identity audit
 
@@ -309,6 +310,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.38's checker (c98945e, 2026-11-21)
+
+- T9.38 (Unread work has a quiet cue and a truthful inbox) checker P2: in the Mark all read state the open 352 px inbox covers the right part of a two-line note title; rendered Moss's 352 px Comments list sits in the same anchor zone and covers a long title the same way, and m9 overlapped too.
+- T9.38 (Unread work has a quiet cue and a truthful inbox) checker P2: markUnreachable keeps a notice's unreachable marker until sign-out, so a notice that later opens and is marked read still says "This didn't open…"; clear the marker once the notice is handled.
+- T9.38 (Unread work has a quiet cue and a truthful inbox) checker P2: folder and opener-less notices are marked read when the leave starts, before the folder route checks access, so an inaccessible folder's notice can be marked read (m9 behaved the same).
+- T9.38 (Unread work has a quiet cue and a truthful inbox) checker P2: a notice opens its note, not the exact comment thread or suggestion; commentId and suggestionId are not passed through (declared deviation, m9 did not either).
+- T9.38 (Unread work has a quiet cue and a truthful inbox) checker P2: evidence gaps: no 640 px, short-viewport or many-row scroll proof, no test for a target refused or gone at open time, the open-before-read unit test injects its open callback, no combined mode/people/proposal states, full lane Chromium only; moved to T9.46.
 
 ### From T9.33's checker (6e89a79, 2026-11-18)
 
