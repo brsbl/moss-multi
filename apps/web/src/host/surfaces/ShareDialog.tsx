@@ -246,7 +246,7 @@ const manage = (place: Place) => openShare({ type: 'folder', id: place.id, name:
 /** Manage, on a place's heading: the text action, opening that place's own dialog. */
 function ManageButton({ place, disabled }: { place: Place; disabled: boolean }): ReactNode {
   return (
-    <button type="button" disabled={disabled} aria-label={`Manage ${placeName(place)}`} onClick={() => manage(place)} className={`${ACTION} -mr-2 font-normal`}>
+    <button type="button" disabled={disabled} aria-label={`Manage ${placeName(place)}`} onClick={() => manage(place)} className={`${ACTION} font-normal`}>
       Manage
     </button>
   );
@@ -550,7 +550,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <span className={SECTION_LABEL}>Share links</span>
-          <div className="-mr-2 flex items-center gap-1">
+          <div className="flex items-center gap-1">
             <RoleMenu label="Link access" roles={LINK_ROLES} value={linkAccess} onChange={setLinkAccess} disabled={pending} />
             <button type="button" disabled={pending} onClick={createLink} className={ACTION}>
               Create link
