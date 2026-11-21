@@ -36,6 +36,13 @@ const REFUSAL: Record<string, string> = {
   'restore-base-stale': 'The note has changed since Restore was opened. Open Restore again to restore this version.',
 };
 
+/** What a person reads when a restore would take the note past one of its limits (A§5.1 Limits). */
+const RESTORE_LIMIT: Record<string, string> = {
+  text: 'Restoring this version would take the note past its text limit (1.02 million characters), so the note was left as it is.',
+  structure: 'Restoring this version would make the note too big: it would have too many separate lines, cells or past edits, so the note was left as it is.',
+  state: 'Restoring this version would make the note too large, so the note was left as it is.',
+};
+
 /**
  * A restore's base as a client sends it (restore-base.ts), bounded; the DocDO decides whether it is usable. A state
  * vector never encodes longer than the state it describes (restore-base.test.ts), and every entry point holds a note and
@@ -72,6 +79,7 @@ interface Verdict {
   versions?: unknown[];
   version?: unknown;
   restorePoint?: string | null;
+  limit?: string;
 }
 
 /** `/api/docs/:id/versions[/:vid[/restore]]`. */
@@ -127,6 +135,10 @@ export async function handleVersions(request: Request, env: DocsEnv, match: RegE
   else verdict = (await stub.restoreVersion({ ...input, id: vid, base: base.ok ? base.base : undefined })) as Verdict;
   if (!verdict.ok) {
     const reason = verdict.reason ?? 'refused';
+    if (reason === 'doc-cap' && action === 'restore') {
+      const limit = verdict.limit === 'text' || verdict.limit === 'structure' ? verdict.limit : null;
+      return json({ error: reason, ...(limit ? { limit } : {}), message: RESTORE_LIMIT[limit ?? 'state'] }, 413, NO_STORE);
+    }
     return json({ error: reason, ...(REFUSAL[reason] ? { message: REFUSAL[reason] } : {}) }, verdict.status ?? 409, NO_STORE);
   }
   if (action === 'list') return json({ versions: verdict.versions ?? [] }, 200, NO_STORE);

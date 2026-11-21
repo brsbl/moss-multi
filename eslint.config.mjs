@@ -20,6 +20,8 @@ export default defineConfig([
     'test-results/**',
     'playwright-report/**',
     'scripts/ci/fixtures/**',
+    // A copy of the published @lexical/yjs binding (T3.B31b), kept byte for byte.
+    'packages/sync/test/fixtures/lexical-yjs-v1/index.mjs',
   ]),
   // Our code. Vendored moss stays byte-identical, so vendor/ gets only the HISTORIC_TAG ban below.
   {

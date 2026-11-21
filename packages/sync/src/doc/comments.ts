@@ -11,6 +11,7 @@ import type { DocStore } from './persistence.ts';
 import type { ImportedMarks } from '../server-doc.ts';
 import type { RestoredSpans } from './version-content.ts';
 import { COMMENT_TEXT_MAX } from '@moss-multi/protocol/limits';
+import type { DocLimit } from '@moss-multi/protocol/sync';
 
 /** A comment's text, in characters (413 past it). */
 export { COMMENT_TEXT_MAX };
@@ -81,7 +82,8 @@ export type CommentResult =
       /** The reply a root delete promoted to root. */
       promoted?: string;
     }
-  | { ok: false; status: 400 | 401 | 403 | 404 | 409 | 413 | 503; error: string };
+  /** `limit`: the note limit a 413 `doc-cap` met, when the text or structure one (A§5.1). */
+  | { ok: false; status: 400 | 401 | 403 | 404 | 409 | 413 | 503; error: string; limit?: DocLimit };
 
 const refuse = (status: 400 | 403 | 404 | 409 | 413, error: string): CommentResult => ({ ok: false, status, error });
 const nowSeconds = () => Math.floor(Date.now() / 1000);
@@ -92,6 +94,8 @@ export class DocComments {
   #engine: AnchorEngine;
   #pending = new Map<string, Anchor>();
   #seq = 0;
+  /** Where the frame being applied moved commented text, by comment id (T4.W). */
+  #moves: Map<string, [string, string]> | undefined;
 
   constructor(
     readonly doc: Y.Doc,
@@ -109,7 +113,7 @@ export class DocComments {
     doc.on('afterTransaction', (txn: Y.Transaction) => {
       if (ENGINE_SKIPPED_ORIGINS.has(txn.origin)) return;
       try {
-        for (const [id, anchor] of this.#engine.frame(txn)) this.#pending.set(id, anchor);
+        for (const [id, anchor] of this.#engine.frame(txn, this.#moves)) this.#pending.set(id, anchor);
       } catch (error) {
         // The frame has applied; a forged shape the engine cannot read must not stop it persisting.
         console.error('comment anchor engine failed on a frame', error);
@@ -119,6 +123,11 @@ export class DocComments {
 
   get client(): number {
     return this.#writer.client;
+  }
+
+  /** The places the next client frame names for the comments it moved, or none. */
+  expectMoves(moves: readonly (readonly [string, string, string])[] | undefined): void {
+    this.#moves = moves ? new Map(moves.map(([id, start, end]) => [id, [start, end]])) : undefined;
   }
 
   /** Gate 2b (comments.md §3): null admits the frame. */
