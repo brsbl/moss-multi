@@ -875,6 +875,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **T9.46 The whole product looks like Moss** `[A·codex]` (scope added when built)
   - Required red-first test (T9.33 checker P2, visitor's Review row wraps at 390 px): a signed-out link visitor in Review at 390×844 sees “Reviewing suggestions · View only”, Done and Sign in to do more on one line, the row no taller than Moss's docked toolbar.
   - Required red-first test (T9.38 checker P2, inbox target refused or gone at open time): on a real stack, a notice whose note is deleted or whose access is removed before it is opened stays unread after the open is tried, and its row says why.
+  - Required red-first test (T9.31 checker P2, a failed switch after New vault is hidden): with the switch to a just-created vault failing, the user sees the switch error where she is (Settings stays open on Vaults, or the error shows outside it), not in a closed Settings section.
 
 ## The loop
 

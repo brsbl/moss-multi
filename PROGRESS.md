@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (249 of 302 planned tasks verified)
+**Overall: 83% done** (250 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 22 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 23 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -272,6 +272,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-18 — T9.33 verified: "Review suggestions" says what it pauses, the Review row names what is paused ("Editing paused", "Suggesting paused", "View only" or "Comment only"), and Done, Escape or the last decision return to the mode Review paused, by the current role.
 - 2026-11-21 — T9.38 verified: the bell stays a quiet 28 px button with no badge, and its 352 px inbox groups notices under each note's or folder's title with a neutral unread dot, says when it is loading, failed or empty, and marks a notice read only once its note has opened.
 - 2026-11-21 — T9.40 verified: a healthy connection draws nothing; a write unacked for 2 s shows a faint "Saving…" or "Reconnecting…" line that opens the connection details, and outage, late-sync and sign-in/reload notices float as one Moss-style card at the pane bottom so the note never moves.
+- 2026-11-21 — T9.31 verified: the notes-panel header holds only Moss's toggle; vaults are switched from the app menu's Switch vault… and managed in Settings' Vaults, the tab, note location and "+ Note" tooltip name the vault on screen, and search says Searching… until its index answers and names another vault's results.
 
 ## T1.1s identity audit
 
@@ -311,6 +312,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.31's checker (5d7c6aa, 2026-11-21)
+
+- T9.31 (No Home in the sidebar header; the vault is named where you work and managed in Settings) checker P2: creating a vault closes Settings before the switch finishes, so a failed switch writes its error into a closed Settings section the user never sees; moved to T9.46.
+- T9.31 (No Home in the sidebar header; the vault is named where you work and managed in Settings) checker P2: evidence gaps: no detail crops, measured rect and style deltas, many-long-name vault case, same-titled note switch or combined composition states.
+- T9.31 (No Home in the sidebar header; the vault is named where you work and managed in Settings) checker P2: "+ Note" has no ⌘ N keycaps where Moss shows them (already on m9).
+- T9.31 (No Home in the sidebar header; the vault is named where you work and managed in Settings) checker P2: settled search results still highlight the matching word where Moss's title-match view has none (already on m9).
+- T9.31 (No Home in the sidebar header; the vault is named where you work and managed in Settings) checker P2: j01-paste-check's 5 s long-task limit is flaky (5287 ms and 5786 ms on first attempts; also failed on earlier m9 runs).
 
 ### From T9.40's checker (d4314d9, 2026-11-21)
 
