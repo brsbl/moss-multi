@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 76% done** (239 of 315 planned tasks verified)
+**Overall: 79% done** (240 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -296,10 +296,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T8.P2 verified: the pilot now deploys from the workflow registered on main, `deploy-staging.yml -f target=pilot`, which runs only its gate and then calls `deploy-pilot.yml` with just the pilot and Cloudflare secrets; staging deploys run unchanged.
 - 2026-10-19 — T8.Q second pass verified: staging and the pilot now carry M7's later fixes (allowlisted scoped sync, stale-save priors, held first-sync pieces) and m3–m6's reply box, read-only controls, folder permissions and upload reader deadline, with the full lane green on the restacked m8 (already counted on 2026-10-15).
 - 2026-10-20 — T8.U verified: m8 now sits on the final M7, so staging carries T3.B4's paste path without reservations, T3.B28/T3.B30, T5.B2–B4 and T5.S14, T7.P3's packed CLI and replicas, and T7.S9, with the full lane green on the restacked m8.
+- 2026-11-21 — T8.V verified: staging and the pilot now carry m3's text, structure and storage limits, the lean stored layout, in-place export and paste rollback, and an outdated protocol-1 web bundle is refused on its doc socket (4426) and REST writes (426) before it can write the old layout.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.V's checker (8902dc4, 2026-11-21)
+
+- T8.V Red-first run demonstrates only the socket leg, not the REST leg: the red run on 99d74a45 stopped at the protocol-1 socket assertion (e2e/lib/doc-client.ts:169, socket not closed within 15 s), so the 426 REST assertion and the route.test.ts unit assertions were never shown red; an evidence gap only, the final test asserts 4426, 426, an unchanged body and title, and a headerless push landing.
+- T8.V j15-comments-drafts.spec.ts:621 is an inherited intermittent failure, not on the known list: the chromium 'large' leg failed attempts 1 and 2 of run 44957497578 at the code-block Cmd+Shift+A composer-focus step ('Node code-block is not registered' from the headless doc-client helper) and passed on attempt 3; the m7 parent failed it too (run 44951170808 attempt 1); also webkit workspace export.spec.ts:67 failed once in run 44957497578 attempt 1 → the intermittent-failure investigation: count both.
 
 ### From T7.V's checker (ddf708a, 2026-11-21)
 
