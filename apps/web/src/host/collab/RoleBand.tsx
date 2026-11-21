@@ -6,7 +6,7 @@ import {
 } from '@moss-multi/protocol/dom-contract';
 import type { Role } from '@moss-multi/protocol/roles';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-import { useId, useState, type ReactNode } from 'react';
+import { useId, useState, type ComponentType, type ReactNode } from 'react';
 import { knownRole, useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
 import { useHistoryOpen } from '../history/HistoryView.tsx';
@@ -16,6 +16,9 @@ import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT } from './bottom-row.ts'
 import { useOpenSuggestions, useShownMode } from './suggest/mode.ts';
 import { ReviewRow, useEscapeLeavesReview } from './suggest/SuggestChrome.tsx';
 import { useTerminal } from './terminal.ts';
+
+// Moss's Tooltip passes Radix's open state through; its declared props name only children.
+const ControlledTooltip = Tooltip as ComponentType<{ children: ReactNode; open: boolean; onOpenChange: (open: boolean) => void }>;
 
 const LEAD: Partial<Record<Role, string>> = { viewer: 'View only', commenter: 'Comment only' };
 
@@ -43,7 +46,7 @@ function Access({ lead, help, describedBy }: { lead: string; help: string; descr
   const [tip, setTip] = useState(false);
   return (
     <TooltipProvider>
-      <Tooltip open={tip} onOpenChange={setTip}>
+      <ControlledTooltip open={tip} onOpenChange={setTip}>
         <TooltipTrigger asChild>
           <button
             type="button"
@@ -55,7 +58,7 @@ function Access({ lead, help, describedBy }: { lead: string; help: string; descr
           </button>
         </TooltipTrigger>
         <TooltipContent side="top">{help}</TooltipContent>
-      </Tooltip>
+      </ControlledTooltip>
     </TooltipProvider>
   );
 }
