@@ -124,8 +124,7 @@ describe("linear rewrites of moss's note-store regexes", () => {
 
   it('classifyNoteContentType is linear on attacker-written notes', async () => {
     for (const attack of [(n: number) => '['.repeat(n), (n: number) => `x\n${'\n'.repeat(n)}`, (n: number) => '[a]('.repeat(n / 4), (n: number) => '---|\n'.repeat(n / 5), (n: number) => '`'.repeat(n), (n: number) => '!['.repeat(n / 2)]) {
-      const steps = await expectLinear(classifyNoteContentType, attack);
-      if (String(attack).includes('---|')) console.log(`table-separator ratios: ${steps.map((step) => `${step.size}: ${step.previous.toFixed(1)} -> ${step.took.toFixed(1)} ms, x${step.ratio.toFixed(2)} (${step.samples.length} samples)`).join('; ')}`);
+      await expectLinear(classifyNoteContentType, attack);
     }
   }, 120_000);
 });
