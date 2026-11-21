@@ -517,3 +517,98 @@ test('j16-review: a code-block edit reads as its changed line before and after, 
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('console.debug(y)');
 });
+
+test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its one suggestion beside it, and the list is flat with quiet actions @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  // Paint: inserted text keeps the note's ink with an underline, struck text no accent colour.
+  const rules = await ada.page.evaluate(() => {
+    const out: Record<string, { background: string; color: string; decoration: string }> = {};
+    for (const sheet of [...document.styleSheets]) {
+      let list: CSSRuleList;
+      try {
+        list = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const rule of [...list]) {
+        if (!(rule instanceof CSSStyleRule)) continue;
+        for (const name of ['suggest-insert', 'suggest-delete']) {
+          if (rule.selectorText.trim() === `::highlight(${name})`) {
+            out[name] = { background: rule.style.backgroundColor, color: rule.style.color, decoration: rule.style.textDecorationColor };
+          }
+        }
+      }
+    }
+    return out;
+  });
+  expect(rules['suggest-insert'], 'the insert rule is found').toBeTruthy();
+  expect(rules['suggest-insert']!.background, 'no fill behind inserted text').toBe('');
+  expect(rules['suggest-insert']!.decoration, 'no brand colour under inserted text').not.toContain('accent');
+  expect(rules['suggest-delete']!.color, 'struck text is not recoloured').not.toContain('accent');
+
+  // Edit mode: the insert stays a mark; its preview is Moss's tooltip material above the line, not over the next.
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  await mark.hover({ force: true });
+  const preview = mark.locator('[data-suggest-preview]');
+  await expect(preview).toBeVisible();
+  const tip = await preview.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const wedge = element.parentElement!.getBoundingClientRect();
+    return { fontSize: style.fontSize, radius: style.borderTopLeftRadius, bottom: element.getBoundingClientRect().bottom, wedgeTop: wedge.top };
+  });
+  expect(tip.fontSize, "Moss's tooltip text").toBe('10px');
+  expect(tip.radius).toBe('6px');
+  expect(tip.bottom, 'the preview sits above the marked line').toBeLessThan(tip.wedgeTop);
+
+  // A click on the mark opens that one suggestion at the mark, as Moss's comment thread opens at its text.
+  await mark.click({ force: true });
+  const surface = panel(ada);
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}]`), 'only the clicked suggestion').toHaveCount(1);
+  const markBox = await mark.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  });
+  const placed = await surface.evaluate((element, at) => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, radius: getComputedStyle(element).borderTopLeftRadius, gap: Math.min(Math.abs(rect.top - at.bottom), Math.abs(at.top - rect.bottom)) };
+  }, markBox);
+  expect(placed.width).toBe(352);
+  expect(placed.radius, "the comment thread's radius").toBe('12px');
+  expect(placed.gap, 'beside the mark').toBeLessThan(24);
+
+  // The suggestion is a flat row; Accept and Reject are compact neutral actions.
+  const card = surface.locator(`[${SUGGESTION_CARD_ATTR}]`);
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  expect(await card.evaluate((element) => getComputedStyle(element).borderTopWidth), 'no nested card frame').toBe('0px');
+  for (const name of ['Accept', 'Reject']) {
+    const action = await card.getByRole('button', { name, exact: true }).evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { height: element.getBoundingClientRect().height, background: style.backgroundColor };
+    });
+    expect(action.height, `${name} keeps Moss's 24 px action rhythm`).toBe(24);
+    expect(action.background, `${name} has no resting fill`).toBe('rgba(0, 0, 0, 0)');
+  }
+  for (const row of await card.locator(`[${SUGGESTION_ROW_ATTR}]`).all()) {
+    expect(await row.evaluate((element) => getComputedStyle(element).backgroundColor), 'rows carry no tint').toBe('rgba(0, 0, 0, 0)');
+  }
+  await closePanel(ada);
+
+  // The list from the count is Moss's 352 px list with radius 8, and the author's Withdraw lives in the row's menu.
+  const list = await openPanel(ada);
+  expect(await list.evaluate((element) => [element.getBoundingClientRect().width, getComputedStyle(element).borderTopLeftRadius])).toEqual([352, '8px']);
+  await closePanel(ada);
+  const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(own.getByRole('button', { name: 'Withdraw' }), 'Withdraw is not a resting button').toHaveCount(0);
+  await own.getByRole('button', { name: 'Suggestion actions' }).click();
+  await expect(ben.page.getByRole('menuitem', { name: 'Withdraw' })).toBeVisible();
+  await ben.page.keyboard.press('Escape');
+});
