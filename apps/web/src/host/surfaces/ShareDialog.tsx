@@ -106,25 +106,30 @@ function RoleMenu<R extends Role>({ label, roles, value, onChange, onRemove, dis
   label: string; roles: readonly R[]; value: Role; onChange: (role: R) => void; onRemove?: () => void; disabled: boolean;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  // Enter and Space on a radio row choose it: the vendored radio item takes only a pointer click inside a dialog.
-  const chooseByKey = (role: R) => (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
+  // Enter and Space choose the highlighted role: the vendored radio item takes only a pointer click inside a dialog, and
+  // WebKit leaves focus on the trigger after a click, so both the menu and its trigger listen.
+  const chooseByKey = (event: KeyboardEvent<HTMLElement>) => {
+    if (!open || (event.key !== 'Enter' && event.key !== ' ')) return;
+    const row = document.querySelector<HTMLElement>('[data-dialog-menu] [role="menuitemradio"][data-highlighted]');
+    const role = roles.find((choice) => choice === row?.dataset.role);
+    if (!role) return;
     event.preventDefault();
+    event.stopPropagation();
     setOpen(false);
     if (role !== value) onChange(role);
   };
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <button type="button" aria-label={label} disabled={disabled} className={`${ACTION} font-normal`}>
+        <button type="button" aria-label={label} disabled={disabled} className={`${ACTION} font-normal`} onKeyDownCapture={chooseByKey}>
           <span>{ACCESS_LABEL[value]}</span>
           <ChevronDown aria-hidden className="h-3 w-3 text-ink-faint" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent data-dialog-menu="" align="end" sideOffset={4} collisionPadding={16} className="min-w-0 w-max max-w-[calc(100vw-2rem)]">
+      <DropdownMenuContent data-dialog-menu="" align="end" sideOffset={4} collisionPadding={16} className="min-w-0 w-max max-w-[calc(100vw-2rem)]" onKeyDownCapture={chooseByKey}>
         <DropdownMenuRadioGroup value={value} onValueChange={(role) => { if (role !== value) onChange(role as R); }}>
           {roles.map((role) => (
-            <DropdownMenuRadioItem key={role} value={role} closeOnClick className={MENU_ROW} onKeyDown={chooseByKey(role)}>
+            <DropdownMenuRadioItem key={role} value={role} data-role={role} closeOnClick className={MENU_ROW}>
               <span className="flex w-3.5 shrink-0 justify-center">{role === value ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}</span>
               <span className="flex-1">{ACCESS_LABEL[role]}</span>
             </DropdownMenuRadioItem>
