@@ -581,17 +581,19 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
             {at ? (
               // Moss's comment thread header: what it is and its close, or, as the pane's panel, the way back.
               <div ref={place?.kind === 'beside' ? besideRef : undefined} className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle/30 px-2 py-1.5">
-                <Popover.Title className="sr-only">Suggestion</Popover.Title>
                 {place && place.kind !== 'beside' ? (
+                  <>
+                  <Popover.Title className="sr-only">Suggestion</Popover.Title>
                   <button type="button" className={`-ml-0.5 gap-1 ${ACTION}`} onClick={() => closePanel(docId)}>
                     <ArrowLeft aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
                     Back to note
                   </button>
+                  </>
                 ) : (
                   <>
-                    <div aria-hidden className="flex min-w-0 flex-1 items-center gap-1">
-                      <PencilLine className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" strokeWidth={1.5} />
-                      <span className="truncate text-caption font-normal text-ink-faint">Suggestion</span>
+                    <div className="flex min-w-0 flex-1 items-center gap-1">
+                      <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" strokeWidth={1.5} />
+                      <Popover.Title className="truncate text-caption font-normal text-ink-faint">Suggestion</Popover.Title>
                     </div>
                     <Tooltip>
                       <TooltipTrigger asChild>
