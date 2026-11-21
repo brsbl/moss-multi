@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 83% done** (251 of 302 planned tasks verified)
+**Overall: 83% done** (252 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 24 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 25 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -274,6 +274,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T9.40 verified: a healthy connection draws nothing; a write unacked for 2 s shows a faint "Saving…" or "Reconnecting…" line that opens the connection details, and outage, late-sync and sign-in/reload notices float as one Moss-style card at the pane bottom so the note never moves.
 - 2026-11-21 — T9.31 verified: the notes-panel header holds only Moss's toggle; vaults are switched from the app menu's Switch vault… and managed in Settings' Vaults, the tab, note location and "+ Note" tooltip name the vault on screen, and search says Searching… until its index answers and names another vault's results.
 - 2026-11-21 — T9.35 verified: a refused key or paste shows its one notice as a small card in the pane's bottom region above the reader's row, so the note never moves; "View only" and "Comment only" explain themselves on hover, focus or press; and a signed-out link visitor's row offers a plain "Sign in".
+- 2026-11-21 — T9.48f verified: the local security sweep's body-cap probe declares an oversize length but sends no body bytes, so on loopback it gets the Worker's 413 from the header instead of wrangler dev's "restarted mid-request" 503, and a failed build job uploads the stack's log.
 
 ## T1.1s identity audit
 
@@ -313,6 +314,10 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.48f's checker (b9b6b55, 2026-11-21)
+
+- T9.48f (The body-cap probe sends no bytes on loopback) checker P2: docs/SECURITY.md says the staging sweep shows a client getting the 413 while its body is still in flight, but the edge buffers the whole body and the staging record shows only a passing sweep; it should say staging verifies the Worker's 413 after the declared body is sent.
 
 ### From T9.35's checker (26ee3de, 2026-11-21)
 
