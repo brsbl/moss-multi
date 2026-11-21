@@ -18,7 +18,7 @@ vi.mock('./bridge/index.ts', () => {
   return { WORKSPACE, getBridge: () => ({ [WORKSPACE]: { subscribe: () => () => {}, getSnapshot: () => workspace } }) };
 });
 
-const { setSignedIn, useNoteLocationLabel } = await import('./vault-name.ts');
+const { setSignedIn, useNewNoteHint, useNoteLocationLabel } = await import('./vault-name.ts');
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function labelFor(id: string | null): string {
@@ -31,6 +31,18 @@ function labelFor(id: string | null): string {
   const label = host.querySelector('nav')?.getAttribute('aria-label') ?? '';
   act(() => root.unmount());
   return label;
+}
+
+function hintFor(folderPath: string): string | null {
+  const host = document.createElement('div');
+  const root = createRoot(host);
+  function Probe() {
+    return createElement('span', { title: useNewNoteHint(folderPath) ?? 'none' });
+  }
+  act(() => root.render(createElement(Probe)));
+  const hint = host.querySelector('span')?.getAttribute('title') ?? '';
+  act(() => root.unmount());
+  return hint === 'none' ? null : hint;
 }
 
 afterEach(() => setSignedIn(false));
@@ -57,4 +69,21 @@ it('leaves the vault out for a note under a folder shared with the caller', () =
 
 it('names no vault for a link visitor', () => {
   expect(labelFor('leek')).toBe('Note location');
+});
+
+it('"+ Note" names the vault on screen when the note lands in one of its folders', () => {
+  setSignedIn(true);
+  expect(hintFor('Notes')).toBe('New note in Pantry');
+  expect(hintFor('Notes/Soups')).toBe('New note in Pantry');
+});
+
+it('"+ Note" names no vault when the note lands in a folder shared from another vault', () => {
+  setSignedIn(true);
+  expect(hintFor('Notes/Trip'), 'the shared folder itself').toBeNull();
+  expect(hintFor('Notes/Trip/Days'), 'a folder under it').toBeNull();
+  expect(hintFor('Notes/Tripod'), 'a sibling sharing a prefix is still the vault on screen').toBe('New note in Pantry');
+});
+
+it('"+ Note" names no vault for a link visitor', () => {
+  expect(hintFor('Notes')).toBeNull();
 });

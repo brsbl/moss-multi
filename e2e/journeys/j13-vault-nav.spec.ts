@@ -2,7 +2,7 @@
 // vault switcher and no vault actions. The footer's app menu names the vault on screen, and Switch vault… lists each
 // vault by name (a shared one with its role) with the one on screen checked, then New vault… after a separator.
 // Managing vaults lives in Settings, closed at rest. The tab, the note's location and "+ Note" name the vault; a link
-// visitor's tab names none. Search says it is searching until the index answers, says when it could not, and a result
+// visitor's tab names none, and neither does anything shared from another vault. Search says it is searching until the index answers, says when it could not, and a result
 // from another vault names that vault.
 import type { Route } from '@playwright/test';
 import type { Actor, Viewport } from '../lib/actors.ts';
@@ -138,6 +138,38 @@ test('j13-vault-nav: a note shared with you is never labelled with the vault on 
   await ui.openNote(ada, docId);
   await expect.poll(() => ada.page.title(), { message: 'the tab names the note only' }).toBe('Ben plans — Moss');
   await expect(ada.page.getByRole('navigation', { name: /^Note location in / }), 'no location names a vault').toHaveCount(0);
+});
+
+test('j13-vault-nav: a folder shared with you is never labelled with the vault on screen, nor is "+ Note" into it @p:note-4 @p:ppl-2', async ({ actors }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const ben = await actors.open(await actors.principal('ben'), { viewport: DESKTOP });
+  const origin = new URL(ben.page.url()).origin;
+  const made = await ben.context.request.post('/api/folders', { headers: { origin }, data: { parentId: (await listing(ben)).vault.id, name: 'Trip' } });
+  expect(made.status(), 'declared setup: Ben\'s folder').toBe(201);
+  const tripId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  const docId = await makeNote(ben, tripId, 'Day one', 'Ferry at nine.');
+  await grant(ben, { folderId: tripId }, adaPrincipal, 'editor');
+  const ada = await actors.open(adaPrincipal, { viewport: DESKTOP });
+  await actors.requireDistinct(2);
+  const page = ada.page;
+  const create = page.getByRole('button', { name: 'Create new note', exact: true });
+  const hint = page.getByRole('tooltip').filter({ hasText: 'New note in' });
+
+  await create.hover();
+  await expect(hint.filter({ hasText: 'New note in Home' }), 'at her vault\'s root "+ Note" names it').toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(hint).toHaveCount(0);
+
+  await expect(ui.folderRow(ada, 'Trip'), 'the shared folder surfaces in her vault').toBeVisible({ timeout: BIND_TIMEOUT });
+  await ui.folderRow(ada, 'Trip').click();
+  await create.hover();
+  await page.waitForTimeout(1_000);
+  await expect(hint, 'a note made in Ben\'s folder is not said to land in her vault').toHaveCount(0);
+  await page.mouse.move(0, 0);
+
+  await ui.openNote(ada, docId);
+  await expect.poll(() => page.title(), { message: 'the tab names the note only' }).toBe('Day one — Moss');
+  await expect(ui.pane(ada, docId).getByRole('navigation', { name: 'Note location', exact: true }), 'the location names no vault').toBeVisible();
 });
 
 test('j13-vault-nav: search says Searching… until the index answers, says when it could not, and a result from another vault names it @p:note-7', async ({ actors }) => {
