@@ -4,7 +4,8 @@
 // converter's linear import and export (T3.S4), so they are held at the function a push calls.
 import { createHeadlessEditor } from '@lexical/headless';
 import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+import { doubling, expectLinearTime } from '../../../../scripts/lib/linear-time.mjs';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { normalizeCommentWrappedAtxHeadings, normalizeCommentWrappedImages } from '@moss-desktop/renderer/editor/utils/comment-import';
 import { scanCommentMarkers } from '@moss-desktop/renderer/editor/utils/comment-marker-scan';
@@ -12,20 +13,19 @@ import { scanCommentMarkers } from '@moss-desktop/renderer/editor/utils/comment-
 // The push cap, MARKDOWN_CAP_BYTES in @moss-multi/protocol/limits.
 const MARKDOWN_CAP_BYTES = 2 * 1024 * 1024;
 
-function expectLinear(run: (text: string) => unknown, attack: (n: number) => string): void {
-  const time = (n: number): number => {
-    const text = attack(n);
-    const start = performance.now();
-    run(text);
-    return performance.now() - start;
-  };
-  time(1024); // warm up
-  let previous = time(2048);
-  for (let n = 4096; n <= MARKDOWN_CAP_BYTES; n *= 2) {
-    const took = time(n);
-    expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 50);
-    previous = took;
-  }
+function expectLinear(run: (text: string) => unknown, attack: (n: number) => string) {
+  return expectLinearTime({
+    shape: String(attack),
+    sizes: doubling(2048, MARKDOWN_CAP_BYTES),
+    warmup: [1024],
+    slack: 50,
+    measure: (n) => {
+      const text = attack(n);
+      const start = performance.now();
+      run(text);
+      return performance.now() - start;
+    },
+  });
 }
 
 /** moss's callback on one bold text node, as the server mirror runs it on a pushed `**text**`. */

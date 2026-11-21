@@ -3,6 +3,7 @@
 /* eslint-disable regexp/no-super-linear-backtracking, regexp/no-super-linear-move -- moss's patterns are the golden references */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { doubling, expectLinearTime } from '../../../../scripts/lib/linear-time.mjs';
 import { URL_IN_HTML } from '../substitutes/url-in-html';
 import { MOSS_CANVAS_FENCE_PATTERN_SOURCE } from '@moss-desktop/common/markdown-fences';
 import {
@@ -87,25 +88,21 @@ const FIXTURES = [
   '<p>moss-asset://n/a.png <img src="https://bb.example/media/x?a=1&amp;b=2">9a:b 1+x.y:z</p>',
 ];
 
-function expectLinear(run: (text: string) => unknown, attack: (n: number) => string): void {
-  const time = (n: number): number => {
-    const text = attack(n);
-    let best = Infinity;
-    // The fastest of three, so a GC pause on a busy runner is not read as growth.
-    for (let i = 0; i < 3; i += 1) {
+/** Fastest of three per size, so a GC pause on a busy runner is not read as growth. */
+function expectLinear(run: (text: string) => unknown, attack: (n: number) => string) {
+  return expectLinearTime({
+    shape: String(attack),
+    sizes: doubling(16 * 1024, 1024 * 1024),
+    warmup: [8 * 1024],
+    samples: 3,
+    slack: 25,
+    measure: (n) => {
+      const text = attack(n);
       const start = performance.now();
       run(text);
-      best = Math.min(best, performance.now() - start);
-    }
-    return best;
-  };
-  time(8 * 1024);
-  let previous = time(16 * 1024);
-  for (let n = 32 * 1024; n <= 1024 * 1024; n *= 2) {
-    const took = time(n);
-    expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 25);
-    previous = took;
-  }
+      return performance.now() - start;
+    },
+  });
 }
 
 describe("linear rewrites of moss's note-store regexes", () => {
@@ -120,14 +117,14 @@ describe("linear rewrites of moss's note-store regexes", () => {
         { numRuns: 20000 },
       );
     });
-    it(`${name} is linear on attacker-written text`, () => {
-      for (const attack of attacks) expectLinear(scan, attack);
+    it(`${name} is linear on attacker-written text`, async () => {
+      for (const attack of attacks) await expectLinear(scan, attack);
     }, 120_000);
   }
 
-  it('classifyNoteContentType is linear on attacker-written notes', () => {
+  it('classifyNoteContentType is linear on attacker-written notes', async () => {
     for (const attack of [(n: number) => '['.repeat(n), (n: number) => `x\n${'\n'.repeat(n)}`, (n: number) => '[a]('.repeat(n / 4), (n: number) => '---|\n'.repeat(n / 5), (n: number) => '`'.repeat(n), (n: number) => '!['.repeat(n / 2)]) {
-      expectLinear(classifyNoteContentType, attack);
+      await expectLinear(classifyNoteContentType, attack);
     }
   }, 120_000);
 });

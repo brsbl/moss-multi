@@ -3,6 +3,7 @@
 /* eslint-disable regexp/no-super-linear-backtracking, regexp/no-super-linear-move -- moss's patterns are the golden references */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { doubling, expectLinearTime } from '../../../scripts/lib/linear-time.mjs';
 import { markerMatches, matchTitleLine } from './title-line.ts';
 
 const TITLE_LINE = /^#(?!#)[^\S\r\n]+(.*?)(?:[^\S\r\n]+#+)?[^\S\r\n]*(?:\r?\n|$)/;
@@ -42,20 +43,19 @@ const FIXTURES = [
   'Some %%m:c1:start%%commented%%m:c1:end%% text %%m: a, b :start%%x%%m:a,b:end%% %%m::start%% %%m:x:stop%%',
 ];
 
-function expectLinear(run: (text: string) => unknown, attack: (n: number) => string): void {
-  const time = (n: number): number => {
-    const text = attack(n);
-    const start = performance.now();
-    run(text);
-    return performance.now() - start;
-  };
-  time(8 * 1024);
-  let previous = time(16 * 1024);
-  for (let n = 32 * 1024; n <= 1024 * 1024; n *= 2) {
-    const took = time(n);
-    expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 25);
-    previous = took;
-  }
+function expectLinear(run: (text: string) => unknown, attack: (n: number) => string) {
+  return expectLinearTime({
+    shape: String(attack),
+    sizes: doubling(16 * 1024, 1024 * 1024),
+    warmup: [8 * 1024],
+    slack: 25,
+    measure: (n) => {
+      const text = attack(n);
+      const start = performance.now();
+      run(text);
+      return performance.now() - start;
+    },
+  });
 }
 
 describe("moss's interchange patterns as linear scans", () => {
@@ -71,8 +71,8 @@ describe("moss's interchange patterns as linear scans", () => {
         { numRuns: 5000 },
       );
     });
-    it(`${name} is linear on attacker-written text`, () => {
-      for (const attack of attacks) expectLinear(scan, attack);
+    it(`${name} is linear on attacker-written text`, async () => {
+      for (const attack of attacks) await expectLinear(scan, attack);
     }, 120_000);
   }
 });
