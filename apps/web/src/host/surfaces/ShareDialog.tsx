@@ -1,20 +1,23 @@
 // Share, v2 (T1.1, T2.4, T3.6): one dialog for a note, a folder or a vault. An owner adds a person by email at view,
 // comment, edit or owner access, or one of their own agents by the id copied from Settings → Agents (at most edit;
 // PRODUCT ruling 20), sees who has access (and emails waiting on an invite), and creates, copies and
-// revokes links. Moss has no sharing, so the layout follows glyphdown's ShareDialog
-// (docs/design/glyphdown-reference.md), built from moss's own parts: Settings' ModalShell, section labels and cards,
-// its segmented choice for access levels, and the DS Input and Button. The note's More actions (useCanShare), a folder's
-// context menu (FolderMenuItems) and Settings' Vaults open it through `openShare`. Each person's (and invite's)
-// access has glyphdown's role select and Remove button; lowering or removing someone closes their open windows through
-// the one kick path (T2.5). An owner also sees, read-only, who reaches the target from the folders and vault above it
-// and which of those places have links, each with a Manage button to that place's own dialog (T9.7). Sharing by email
-// makes an invite link and says nothing is emailed; open invites have their own section, and each Copy confirms on
-// itself (T9.8).
+// revokes links. Moss has no sharing, so it is built from Settings' own parts (T9.36): ModalShell, micro section
+// labels over flat rows, its 24 px text actions, the DS Input, and the application menu's 28 px checked rows for every
+// role chooser (the invite's, each person's and invite's, a new link's), whose last item is Remove access. The first
+// line names the note, folder or vault. The note's More actions (useCanShare), a folder's context menu
+// (FolderMenuItems) and Settings' Vaults open it through `openShare`. Lowering or removing someone closes their open
+// windows through the one kick path (T2.5). An owner also sees, read-only, who reaches the target from the folders and
+// vault above it, one heading per place, and which of those places have links, each with a Manage action to that
+// place's own dialog (T9.7). Sharing by email makes an invite link and says nothing is emailed; an agent's id adds the
+// agent; each Copy confirms on itself (T9.8).
 import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
-import { Button } from '@moss/shared/components/ui/button';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { Check, X } from 'lucide-react';
+import { Check, ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
@@ -85,35 +88,51 @@ type Status = { tone: 'error' | 'done'; text: string; where: Where; invite?: str
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const SECTION_LABEL = 'text-micro font-medium uppercase tracking-wider text-ink-faint';
-const CARD = 'rounded-lg border border-border-subtle bg-surface-raised-card p-3';
+/** Settings' text action (Connected Folders' Add): 24 px, 12 px, neutral ink; it fills only on hover. */
+const ACTION = 'inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium text-ink-muted transition-colors hover:bg-border-subtle hover:text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:cursor-not-allowed disabled:opacity-60';
+/** A read-only address or the invite field: the DS Input at the actions' scale. */
+const FIELD = 'h-7 min-w-0 border-border-default px-2 py-1 text-xs';
+/** The application menu's row recipe (More actions, Switch vault…). */
+const MENU_ROW = 'gap-2 text-xs';
+/** The faint read-only role of the vault's owner and of everyone reaching the target from above. */
+const ROLE_TEXT = 'shrink-0 px-2 text-xs text-ink-faint';
 
-/** Settings' segmented choice (AppearanceSection), here for the access a share or a link grants. */
-function AccessChoice<R extends Role>({ label, roles, value, onChange, disabled }: {
-  label: string; roles: readonly R[]; value: R; onChange: (role: R) => void; disabled: boolean;
+/**
+ * A role chooser: a quiet trigger reading the role, opening Moss's checked menu of the roles `roles` allows (the
+ * current one checked, typeahead by name) and, for someone already listed, Remove access after a separator, in the
+ * terracotta Moss gives Move to Trash. The menu floats above the dialog (styles.css, data-dialog-menu).
+ */
+function RoleMenu<R extends Role>({ label, roles, value, onChange, onRemove, disabled }: {
+  label: string; roles: readonly R[]; value: Role; onChange: (role: R) => void; onRemove?: () => void; disabled: boolean;
 }): ReactNode {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex flex-wrap items-center gap-0.5 rounded-lg bg-surface-raised-control p-0.5">
-      {roles.map((role) => {
-        const selected = role === value;
-        return (
-          <button
-            key={role}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            disabled={disabled}
-            onClick={() => onChange(role)}
-            className={
-              selected
-                ? 'inline-flex h-6 items-center rounded-md bg-surface-raised-card px-3 text-xs font-medium leading-none text-ink-default shadow-sm ring-1 ring-border-strong/40 transition-colors focus-visible:outline-none focus-visible:ring-ink-default/15'
-                : 'inline-flex h-6 items-center rounded-md px-3 text-xs font-medium leading-none text-ink-faint transition-colors hover:bg-surface-raised-control/50 hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15'
-            }
-          >
-            {ACCESS_LABEL[role]}
-          </button>
-        );
-      })}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label={label} disabled={disabled} className={`${ACTION} font-normal`}>
+          <span>{ACCESS_LABEL[value]}</span>
+          <ChevronDown aria-hidden className="h-3 w-3 text-ink-faint" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent data-dialog-menu="" align="end" sideOffset={4} collisionPadding={16} className="min-w-0 w-max max-w-[calc(100vw-2rem)]">
+        <DropdownMenuRadioGroup value={value} onValueChange={(role) => { if (role !== value) onChange(role as R); }}>
+          {roles.map((role) => (
+            <DropdownMenuRadioItem key={role} value={role} closeOnClick className={MENU_ROW}>
+              <span className="flex w-3.5 shrink-0 justify-center">{role === value ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}</span>
+              <span className="flex-1">{ACCESS_LABEL[role]}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        {onRemove ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onRemove} className={`${MENU_ROW} text-accent-terracotta focus:text-accent-terracotta`}>
+              <span className="w-3.5 shrink-0" />
+              <span className="flex-1">Remove access</span>
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -150,44 +169,18 @@ function CopyButton({ text, label = 'Copy', onFail, className }: {
     }, onFail);
   };
   return (
-    <Button type="button" size="sm" variant="ghost" disabled={!text} onClick={press} className={`shrink-0 gap-1.5 ${className ?? ''}`}>
+    <button type="button" disabled={!text} onClick={press} className={`${ACTION} ${className ?? ''}`}>
       {copied ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}
       {copied ? 'Copied' : label}
-    </Button>
+    </button>
   );
 }
 
-/**
- * One person's or invite's access, as glyphdown's ShareDialog offers it: a select of the share roles and a Remove
- * button. A native select, because moss's dropdown menu renders beneath a modal (its positioner is z-50, the dialog 130).
- */
+/** One person's or invite's access: their role menu, with Remove access. */
 function AccessControls({ who, role, roles = SHARE_ROLES, disabled, onChoose }: {
   who: string; role: Role; roles?: readonly ShareRole[]; disabled: boolean; onChoose: (choice: ShareRole | 'remove') => void;
 }): ReactNode {
-  return (
-    <div className="flex shrink-0 items-center gap-1">
-      <select
-        aria-label={`Access for ${who}`}
-        value={role}
-        disabled={disabled}
-        onChange={(event) => onChoose(event.target.value as ShareRole)}
-        className="h-7 rounded-md border border-border-default bg-surface-raised-card px-1.5 text-xs text-ink-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60"
-      >
-        {(roles as readonly Role[]).includes(role) ? null : <option value={role}>{ACCESS_LABEL[role]}</option>}
-        {roles.map((choice) => <option key={choice} value={choice}>{ACCESS_LABEL[choice]}</option>)}
-      </select>
-      <button
-        type="button"
-        aria-label={`Remove ${who}`}
-        title="Remove access"
-        disabled={disabled}
-        onClick={() => onChoose('remove')}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-raised-control hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60"
-      >
-        <X aria-hidden className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  );
+  return <RoleMenu label={`Access for ${who}`} roles={roles} value={role} disabled={disabled} onChange={onChoose} onRemove={() => onChoose('remove')} />;
 }
 
 /** An agent acts at most as an editor (A§8), so its row offers no owner. */
@@ -229,13 +222,16 @@ async function copy(text: string): Promise<void> {
 }
 
 /** The shell keeps a fixed title (Moss prints titles in faint capitals); the body's first line names the target. */
-function titles(target: ShareTarget, name: string | null): { title: string; description: string; lead: string; named: string | null; rest: string } {
+function titles(target: ShareTarget, name: string | null): { title: string; description: string; kind: string; named: string | null } {
   if (target.type === 'doc') {
     const rest = 'with people by email, with one of your agents by its ID, or with anyone who has a link.';
-    return { title: 'Share', description: name ? `Share “${name}” ${rest}` : `Share this note ${rest}`, lead: name ? 'Share' : 'Share this note', named: name || null, rest };
+    return { title: 'Share', description: name ? `Share “${name}” ${rest}` : `Share this note ${rest}`, kind: 'Note', named: name || null };
   }
   const rest = 'with people by email, or with anyone who has a link.';
-  return { title: target.vault ? 'Share vault' : 'Share folder', description: `Share every note in “${target.name}” ${rest}`, lead: 'Share every note in', named: target.name, rest };
+  return {
+    title: target.vault ? 'Share vault' : 'Share folder', description: `Share every note in “${target.name}” ${rest}`,
+    kind: target.vault ? 'Vault' : 'Folder', named: target.name,
+  };
 }
 
 const thisTarget = (target: ShareTarget) => (target.type === 'doc' ? 'this note' : target.vault ? 'this vault' : 'this folder');
@@ -247,13 +243,12 @@ const LINK_ALLOWS: Record<LinkRole, string> = { viewer: 'can view', commenter: '
 /** Opens the place's own Share dialog in this one's stead. */
 const manage = (place: Place) => openShare({ type: 'folder', id: place.id, name: place.name, vault: place.kind === 'vault' });
 
-/** The quiet ghost Button Moss's Properties uses for "Add field", here on a place's line. */
+/** Manage, on a place's heading: the text action, opening that place's own dialog. */
 function ManageButton({ place, disabled }: { place: Place; disabled: boolean }): ReactNode {
   return (
-    <Button type="button" size="sm" variant="ghost" disabled={disabled} aria-label={`Manage ${placeName(place)}`} onClick={() => manage(place)}
-      className="-mr-1.5 h-6 shrink-0 px-1.5 text-micro font-normal text-ink-faint hover:bg-surface-transparent hover:text-ink-muted">
+    <button type="button" disabled={disabled} aria-label={`Manage ${placeName(place)}`} onClick={() => manage(place)} className={`${ACTION} -mr-2 font-normal`}>
       Manage
-    </Button>
+    </button>
   );
 }
 
@@ -261,12 +256,22 @@ function ManageButton({ place, disabled }: { place: Place; disabled: boolean }):
 function Identity({ member, children }: { member: Member; children?: ReactNode }): ReactNode {
   return (
     <div className="min-w-0">
-      <p className="truncate text-sm text-ink-default">
+      <p className="truncate text-xs text-ink-default" title={member.name}>
         {member.name}
-        {member.principalType === 'agent' ? <span className="ml-1.5 text-xs text-ink-faint">agent</span> : null}
+        {member.principalType === 'agent' ? <span className="ml-1.5 text-ink-faint">agent</span> : null}
       </p>
-      {member.email ? <p className="truncate font-mono text-xs text-ink-muted">{member.email}</p> : null}
+      {member.email ? <p className="truncate text-xs text-ink-faint" title={member.email}>{member.email}</p> : null}
       {children}
+    </div>
+  );
+}
+
+/** A heading inside People with access (Pending invites, each place above): faint, with an optional action. */
+function SubHeading({ children, action }: { children: string; action?: ReactNode }): ReactNode {
+  return (
+    <div className="flex min-h-6 items-center justify-between gap-3 pt-2">
+      <p className="truncate text-micro text-ink-faint" title={children}>{children}</p>
+      {action}
     </div>
   );
 }
@@ -286,7 +291,8 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const [linksAbove, setLinksAbove] = useState<LinkAbove[]>([]);
   const [hasAgent, setHasAgent] = useState(false);
   const base = apiBase(target);
-  const { title, description, lead, named, rest } = titles(target, name);
+  const { title, description, kind, named } = titles(target, name);
+  const agentShaped = AGENT_ID.test(email.trim());
 
   // Reads overlap when shares follow each other quickly; only the newest may paint, or an older read would drop a row.
   const reads = useRef(0);
@@ -426,48 +432,49 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
 
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} title={title} description={description}>
-      <p className="text-xs text-ink-muted">
-        {lead}
-        {named ? <>{' '}<span className="inline-block max-w-full truncate align-bottom text-ink-default">“{named}”</span></> : null}
-        {' '}{rest}
+      <p className="-mt-1 truncate text-sm text-ink-default" title={named ?? undefined}>
+        <span className="text-ink-muted">{kind}</span>
+        {named ? ` “${named}”` : null}
       </p>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Invite people</span>
-        <form aria-label="Share with a person" onSubmit={share} className={`${CARD} space-y-3`}>
-          <Input
-            type="text"
-            aria-label="Email or agent ID"
-            placeholder="Email address"
-            autoComplete="off"
-            value={email}
-            readOnly={pending}
-            onChange={(event) => setEmail(event.target.value)}
-            className="border-border-default"
-          />
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <AccessChoice label="Access" roles={SHARE_ROLES} value={access} onChange={setAccess} disabled={pending} />
-            <Button type="submit" size="sm" disabled={pending}>
-              {AGENT_ID.test(email.trim()) ? 'Share' : 'Create invite link'}
-            </Button>
+        <form aria-label="Share with a person" onSubmit={share} className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              type="text"
+              aria-label="Email or agent ID"
+              placeholder="Email address"
+              autoComplete="off"
+              value={email}
+              readOnly={pending}
+              onChange={(event) => setEmail(event.target.value)}
+              className={`${FIELD} flex-1 basis-48`}
+            />
+            <div className="ml-auto flex items-center gap-1">
+              <RoleMenu label="Access" roles={agentShaped ? AGENT_ROLES : SHARE_ROLES} value={access} onChange={setAccess} disabled={pending} />
+              <button type="submit" disabled={pending} className={ACTION}>
+                {agentShaped ? 'Add agent' : 'Create invite link'}
+              </button>
+            </div>
           </div>
           {hasAgent ? <p className="text-xs text-ink-faint">To share with one of your agents, paste its ID from Settings → Agents.</p> : null}
           <StatusLine status={status} where="people"
-            action={status?.invite ? <CopyButton label="Copy link" text={statusInvite?.url} onFail={copyFailed('people', 'invite link')} className="-my-2" /> : undefined} />
+            action={status?.invite ? <CopyButton label="Copy invite link" text={statusInvite?.url} onFail={copyFailed('people', 'invite link')} /> : undefined} />
         </form>
       </div>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>People with access</span>
-        <div className={CARD}>
-          {loadError ? (
-            <p role="alert" className="text-xs text-accent-terracotta">
-              {loadError}
-            </p>
-          ) : members === null ? (
-            <p className="text-xs text-ink-faint">Loading…</p>
-          ) : (
+        {loadError ? (
+          <p role="alert" className="text-xs text-accent-terracotta">
+            {loadError}
+          </p>
+        ) : members === null ? (
+          <p className="text-xs text-ink-faint">Loading…</p>
+        ) : (
+          <div className="space-y-1">
             <ul aria-label="People with access" className="space-y-2">
               {members.map((member, index) => (
-                <li key={member.principalId} className="flex items-center justify-between gap-3">
+                <li key={member.principalId} className="flex min-h-7 items-center justify-between gap-3">
                   <Identity member={member}>
                     {member.also ? (
                       <p className="text-micro text-ink-faint">Also “{ACCESS_LABEL[member.also.role]}” from {placeRef(member.also.place, target)}</p>
@@ -475,7 +482,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                   </Identity>
                   {/* The API lists the vault's owner first; they hold no grant, so their access cannot change. */}
                   {index === 0 ? (
-                    <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
+                    <span className={ROLE_TEXT}>{ACCESS_LABEL[member.role]}</span>
                   ) : (
                     <AccessControls who={member.name} role={member.role} disabled={pending}
                       roles={member.principalType === 'agent' ? AGENT_ROLES : SHARE_ROLES}
@@ -484,105 +491,102 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
                 </li>
               ))}
             </ul>
-          )}
-          {/* Who reaches it from above, read-only; their access changes in that place's own dialog. */}
-          {!loadError && members !== null ? inherited.map((group) => {
-            const heading = `From ${placeRef(group.place, target)}`;
-            return (
-              <div key={group.place?.id ?? 'above'} className="mt-3 space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="truncate text-micro text-ink-faint">{heading}</p>
-                  {group.place ? <ManageButton place={group.place} disabled={pending} /> : null}
-                </div>
-                <ul aria-label={heading} className="space-y-2">
-                  {group.members.map((member) => (
-                    <li key={member.principalId} className="flex items-center justify-between gap-3">
-                      <Identity member={member} />
-                      <span className="shrink-0 px-2 text-xs text-ink-faint">{ACCESS_LABEL[member.role]}</span>
+            {invites.length > 0 ? (
+              <>
+                <SubHeading>Pending invites</SubHeading>
+                <ul aria-label="Pending invites" className="space-y-3">
+                  {invites.map((invite) => (
+                    <li key={`invite:${invite.email}`} className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs text-ink-default" title={invite.email}>{invite.email}</p>
+                          <p className="text-micro text-ink-faint">Waiting for them to open the invite link</p>
+                        </div>
+                        <AccessControls who={invite.email} role={invite.role} disabled={pending}
+                          onChoose={(choice) => changeAccess({ email: invite.email }, invite.email, choice)} />
+                      </div>
+                      {invite.url ? (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            readOnly
+                            aria-label={`Invite link for ${invite.email}`}
+                            value={invite.url}
+                            onFocus={(event) => event.currentTarget.select()}
+                            className={`${FIELD} flex-1 text-ink-muted`}
+                          />
+                          <CopyButton text={invite.url} onFail={copyFailed('invites', 'invite link')} />
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
-              </div>
-            );
-          }) : null}
-        </div>
+                <p className="pt-1 text-xs text-ink-faint">
+                  An invite link works only for someone signed in with the email it names. Copy it and send it to them.
+                </p>
+              </>
+            ) : null}
+            {/* Who reaches it from above, read-only, one heading per place; their access changes in that place's dialog. */}
+            {inherited.map((group) => {
+              const heading = `From ${placeRef(group.place, target)}`;
+              return (
+                <div key={group.place?.id ?? 'above'} className="space-y-1">
+                  <SubHeading action={group.place ? <ManageButton place={group.place} disabled={pending} /> : undefined}>{heading}</SubHeading>
+                  <ul aria-label={heading} className="space-y-2">
+                    {group.members.map((member) => (
+                      <li key={member.principalId} className="flex min-h-7 items-center justify-between gap-3">
+                        <Identity member={member} />
+                        <span className={ROLE_TEXT}>{ACCESS_LABEL[member.role]}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        )}
         <StatusLine status={status} where="members" />
+        <StatusLine status={status} where="invites" />
       </div>
-      {invites.length > 0 && !loadError ? (
-        <div className="space-y-2">
-          <span className={SECTION_LABEL}>Pending invites</span>
-          <div className={CARD}>
-            <ul aria-label="Pending invites" className="space-y-2">
-              {invites.map((invite) => (
-                <li key={`invite:${invite.email}`} className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-mono text-xs text-ink-muted">{invite.email}</p>
-                      <p className="text-micro text-ink-faint">Waiting for them to open the invite link</p>
-                    </div>
-                    <AccessControls who={invite.email} role={invite.role} disabled={pending}
-                      onChoose={(choice) => changeAccess({ email: invite.email }, invite.email, choice)} />
-                  </div>
-                  {invite.url ? (
-                    <div className="flex items-center gap-2">
-                      <Input
-                        readOnly
-                        aria-label={`Invite link for ${invite.email}`}
-                        value={invite.url}
-                        onFocus={(event) => event.currentTarget.select()}
-                        className="h-7 min-w-0 flex-1 border-border-default font-mono text-xs"
-                      />
-                      <CopyButton text={invite.url} onFail={copyFailed('invites', 'invite link')} />
-                    </div>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-            <p className="mt-3 text-xs text-ink-muted">
-              An invite link works only for someone signed in with the email it names. Copy it and send it to them.
-            </p>
-          </div>
-          <StatusLine status={status} where="invites" />
-        </div>
-      ) : <StatusLine status={status} where="invites" />}
       <div className="space-y-2">
-        <span className={SECTION_LABEL}>Share links</span>
-        <div className={`${CARD} space-y-3`}>
-          {linksAbove.map(({ place, role }) => (
-            <div key={place.id} className="flex items-center justify-between gap-3">
-              <p className="min-w-0 text-xs text-ink-muted">Anyone with the link to {placeName(place)} {LINK_ALLOWS[role]} {thisTarget(target)}.</p>
-              <ManageButton place={place} disabled={pending} />
-            </div>
-          ))}
-          <p className="text-xs text-ink-muted">Anyone with a link can open this. Without signing in they can only view it.</p>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <AccessChoice label="Link access" roles={LINK_ROLES} value={linkAccess} onChange={setLinkAccess} disabled={pending} />
-            <Button type="button" size="sm" variant="secondary" disabled={pending} onClick={createLink}>
+        <div className="flex items-center justify-between gap-2">
+          <span className={SECTION_LABEL}>Share links</span>
+          <div className="-mr-2 flex items-center gap-1">
+            <RoleMenu label="Link access" roles={LINK_ROLES} value={linkAccess} onChange={setLinkAccess} disabled={pending} />
+            <button type="button" disabled={pending} onClick={createLink} className={ACTION}>
               Create link
-            </Button>
+            </button>
           </div>
-          {links && links.length > 0 ? (
-            <ul aria-label="Share links" className="space-y-2">
-              {links.map((link) => (
-                <li key={link.token} className="flex flex-wrap items-center gap-2">
-                  <span className="w-24 shrink-0 text-xs text-ink-faint">{ACCESS_LABEL[link.role]}</span>
-                  <Input
-                    readOnly
-                    aria-label={`${ACCESS_LABEL[link.role]} link`}
-                    value={linkUrl(target, link.token)}
-                    onFocus={(event) => event.currentTarget.select()}
-                    className="h-7 min-w-0 flex-1 basis-40 border-border-default font-mono text-xs"
-                  />
-                  <CopyButton text={linkUrl(target, link.token)} onFail={copyFailed('links', 'link')} />
-                  <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => revoke(link)}>
-                    Revoke
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <StatusLine status={status} where="links" />
         </div>
+        {linksAbove.map(({ place, role }) => (
+          <div key={place.id} className="flex items-center justify-between gap-3">
+            <p className="min-w-0 text-xs text-ink-muted">Anyone with the link to {placeName(place)} {LINK_ALLOWS[role]} {thisTarget(target)}.</p>
+            <ManageButton place={place} disabled={pending} />
+          </div>
+        ))}
+        <p className="text-xs text-ink-faint">Anyone with a link can open this. Without signing in they can only view it.</p>
+        {links && links.length > 0 ? (
+          <ul aria-label="Share links" className="space-y-2">
+            {links.map((link) => (
+              <li key={link.token} className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
+                <span className="w-20 shrink-0 text-xs text-ink-muted">{ACCESS_LABEL[link.role]}</span>
+                <Input
+                  readOnly
+                  aria-label={`${ACCESS_LABEL[link.role]} link`}
+                  value={linkUrl(target, link.token)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  className={`${FIELD} flex-1 basis-40 text-ink-muted`}
+                />
+                <div className="ml-auto flex items-center gap-1">
+                  <CopyButton text={linkUrl(target, link.token)} onFail={copyFailed('links', 'link')} />
+                  <button type="button" disabled={pending} onClick={() => revoke(link)} className={ACTION}>
+                    Revoke
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <StatusLine status={status} where="links" />
       </div>
     </ModalShell>
   );
