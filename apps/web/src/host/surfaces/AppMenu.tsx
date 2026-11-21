@@ -12,7 +12,7 @@ import { Bell, Check, CircleUser, Cloud, FolderRoot, Plus, Settings } from 'luci
 import { useRef, useState, useSyncExternalStore, type ComponentType, type ReactElement, type ReactNode, type RefObject } from 'react';
 import { useAuthState } from '../auth.ts';
 import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
-import { useConnectionState } from '../collab/ConnectionNotice.tsx';
+import { ConnectionDetails } from '../collab/ConnectionNotice.tsx';
 import { refuseInput } from '../refusal.ts';
 import { revealAccountSection } from './AccountSection.tsx';
 import { APP_MENU_ATTR } from './footer.ts';
@@ -79,12 +79,11 @@ function SwitchVault({ bridge }: { bridge: Bridge }): ReactNode {
   );
 }
 
-/** Connection status, at the footer target: the focused note's connection, in words. */
+/** Connection status, at the footer target: the focused note's connection and whether its changes are saved. */
 function ConnectionMenu({ open, onOpenChange, anchor }: {
   open: boolean; onOpenChange: (open: boolean) => void; anchor: RefObject<HTMLElement | null>;
 }): ReactNode {
   const docId = useAtomValue(focusedNoteIdAtom);
-  const { label } = useConnectionState(docId);
   return (
     <Menu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuContent
@@ -98,11 +97,7 @@ function ConnectionMenu({ open, onOpenChange, anchor }: {
           anchor.current?.focus();
         }}
       >
-        <DropdownMenuLabel className={HEADING}>Connection status</DropdownMenuLabel>
-        <div role="status" className="flex items-center gap-2 px-2 py-1.5 text-xs text-ink-default">
-          <Cloud aria-hidden className={`${ICON} text-ink-faint`} />
-          {docId ? label : 'No note open'}
-        </div>
+        <ConnectionDetails docId={docId} />
       </DropdownMenuContent>
     </Menu>
   );
