@@ -59,8 +59,31 @@ export const CUSTOM_PREFIX = '__YPS:';
 /** `protected-type`: the frame writes `comments`, `suggestions` or a leased suggestion client id (A§5.1 steps 2b and 4). */
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved' | 'protected-type';
 
-/** The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`. */
-export const isDocCapError = (error: unknown): boolean => error instanceof Error && /^(?:DocCapError: )?doc-cap$/.test(error.message);
+/**
+ * Which of a note's limits a `doc-cap` refusal met (A§5.1): its text (TEXT_CHAR_CAP), its structure (STRUCT_CAP), or its
+ * stored bytes (STATE_CAP_BYTES, which a note within the other two never meets first). Absent means bytes, as before.
+ */
+export type DocLimit = 'text' | 'structure' | 'state';
+
+/** What the refusal band, REST and the CLI say when a write meets the text or structure limit (A§5.1). */
+export const DOC_LIMIT_NOTICE: Record<Exclude<DocLimit, 'state'>, string> = {
+  text: 'This note has reached its size limit (1.02 million characters).',
+  structure: 'This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.',
+};
+
+const DOC_CAP = /^(?:DocCapError: )?doc-cap(?::(text|structure))?$/;
+
+/**
+ * The DocDO's DocCapError, also as DO RPC delivers it to the Worker: an Error whose message is `DocCapError: doc-cap`,
+ * or `doc-cap:text` and `doc-cap:structure` for those limits.
+ */
+export const isDocCapError = (error: unknown): boolean => error instanceof Error && DOC_CAP.test(error.message);
+
+/** The limit a DocCapError met; null for any other error. */
+export const docLimitOf = (error: unknown): DocLimit | null => {
+  const match = error instanceof Error ? DOC_CAP.exec(error.message) : null;
+  return match ? ((match[1] as DocLimit | undefined) ?? 'state') : null;
+};
 
 /**
  * Why the DocDO refused a REST rename in its own serialized turn: the doc is in Trash or held closed (`deleted`), or the
@@ -76,7 +99,7 @@ export const renameRefusalOf = (error: unknown): RenameRefusal | null => {
 
 export type ServerEvent =
   /** A write that did not land; the close follows. */
-  | { t: 'write-refused'; reason: WriteRefusalReason }
+  | { t: 'write-refused'; reason: WriteRefusalReason; limit?: DocLimit }
   /**
    * The server state vector (base64) after persisting this connection's writes, and the deletes those frames
    * carried (base64 `Y.encodeSnapshot` of a snapshot with an empty state vector): a delete never moves a state
@@ -178,6 +201,50 @@ export function decodePayloadFrame(bytes: Uint8Array): PayloadFrame | null {
     const size = varUint();
     if (at + size !== bytes.length) return null;
     return { id, step, data: bytes.subarray(at, at + size) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where a finished large paste moved commented text, sent just before the sync frame that sends the paste's held-back
+ * deletes (T4.W): `[MOVES_MESSAGE, length, UTF-8 JSON [[commentId, start, end], …]]`, each pair an anchor's b64
+ * RelativePositions. The DocDO reads it only for that next frame, and only for a comment the frame would detach,
+ * onto text that reads exactly as the comment's did.
+ */
+export const MOVES_MESSAGE = 8;
+export const MOVES_MAX = 256;
+const MOVES_MAX_BYTES = 128 * 1024;
+
+export type AnchorMove = [id: string, start: string, end: string];
+
+export function encodeMovesFrame(moves: AnchorMove[]): Uint8Array {
+  const body = new TextEncoder().encode(JSON.stringify(moves.slice(0, MOVES_MAX)));
+  const head = [MOVES_MESSAGE];
+  writeVarUint(head, body.length);
+  const frame = new Uint8Array(head.length + body.length);
+  frame.set(head);
+  frame.set(body, head.length);
+  return frame;
+}
+
+/** The moves a frame names, or null when it is not a well-formed moves frame. */
+export function decodeMovesFrame(bytes: Uint8Array): AnchorMove[] | null {
+  if (bytes[0] !== MOVES_MESSAGE || bytes.length > MOVES_MAX_BYTES) return null;
+  let at = 1;
+  let size = 0;
+  for (let scale = 1; ; scale *= 0x80) {
+    if (at >= bytes.length || scale > 2 ** 28) return null;
+    const byte = bytes[at++];
+    size += (byte & 0x7f) * scale;
+    if (byte < 0x80) break;
+  }
+  if (at + size !== bytes.length) return null;
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes.subarray(at)));
+    if (!Array.isArray(parsed) || parsed.length > MOVES_MAX) return null;
+    const ok = parsed.every((move) => Array.isArray(move) && move.length === 3 && move.every((part) => typeof part === 'string' && part.length <= 200));
+    return ok ? (parsed as AnchorMove[]) : null;
   } catch {
     return null;
   }

@@ -282,6 +282,30 @@ describe('T5.1 the refusal copy-back @p:mean-2 @p:tech-7 @p:R17', () => {
   });
 });
 
+describe('T5.V a suggestion past the note\'s limits @p:mean-2 @p:tech-3', () => {
+  it('an op refused for the text limit closes input, offers its block back and names the limit', () => {
+    const live = seededBody();
+    const ingest = new SuggestIngest(live, {
+      stateCap: STATE_CAP_BYTES, registry: nodeRegistry(), limit: ({ chars }) => (chars > 0 ? 'text' : null),
+    });
+    const link = wire(live, 'c1', ingest);
+    const { fork, events, act, dispose } = mount(live, link);
+    try {
+      act(() => select('Hello', 24).insertText(' Too much.'));
+      link.deliver(fork);
+      expect(link.replies.at(-1)).toEqual({ t: 'suggest-refused', record: expect.any(String), reason: 'doc-cap', limit: 'text' });
+      const refusals = events.filter((event): event is Extract<ForkEvent, { type: 'refused' }> => event.type === 'refused');
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toMatchObject({ reason: 'doc-cap', limit: 'text' });
+      expect(refusals[0].unsaved.join('\n')).toContain('Too much.');
+      expect(fork.closed).toBe(true);
+      expect(recordIds(live), 'no record was written').toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+});
+
 describe('T5.S4 a note with no room for suggestions @p:mean-2', () => {
   it('a first lease refused for want of room still fills F, read-only, and sends nothing', () => {
     const live = seededBody();

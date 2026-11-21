@@ -13,7 +13,9 @@ import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
 import { registerFork } from './forks.ts';
-import { chainHead, landingOf, metaBytes, openRecords, partBytes, readMeta, readRecord, recordBytes, recordIds, SUGGESTIONS, successorIn } from './records.ts';
+import {
+  chainHead, landingOf, metaBytes, opChars, openRecords, partBytes, readMeta, readRecord, recordBytes, recordChars, recordIds, SUGGESTIONS, successorIn,
+} from './records.ts';
 import { bindCheck } from './review.ts';
 
 export { openRecords };
@@ -393,8 +395,11 @@ export type ForkEvent =
   | { type: 'closed'; record: string; status: string; clients: number[] }
   /** F holds text of a closed record with nothing unacked: rebuild F. */
   | { type: 'rebuild' }
-  /** Input closed: `unsaved` is each block holding a change the server never acknowledged. */
-  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[] }
+  /**
+   * Input closed: `unsaved` is each block holding a change the server never acknowledged; `limit`, the note limit a
+   * `doc-cap` refusal named (A§5.1 Limits).
+   */
+  | { type: 'refused'; reason: SuggestRefusal; unsaved: string[]; limit?: 'text' | 'structure' }
   /**
    * A rewrite re-created these struck originals and their copies were removed: the step that moved them must never
    * restore them (an undo restore is a new block the editor has not bound yet), so undo of that step leaves them out.
@@ -910,7 +915,7 @@ export class SuggestFork {
     }
     if (this.#resuming) this.#resuming = false;
     this.#leasing = false;
-    this.#halt(reply.reason, entry);
+    this.#halt(reply.reason, entry, reply.limit);
   }
 
   /**
@@ -1230,6 +1235,64 @@ export class SuggestFork {
   }
 
   /**
+   * The text the record an edit in `blocks` and `payloads` lands in would hold before the edit, as the DocDO counts it
+   * toward the note's text limit (doc/suggest.ts Info.chars): the landing record's ops (none for a new record or a
+   * continuation), what is still unanswered for it, and every older open record of the author's it would merge.
+   */
+  recordChars(blocks?: { from: number; to: number }, payloads: readonly Y.Doc[] = []): number {
+    const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
+    if (!lease) return 0;
+    const pending = new Map<string, number>();
+    for (const { request, op } of [...this.#inflight, ...this.#waiting]) {
+      if (request.t === 'suggest-ops' && op) pending.set(request.record, (pending.get(request.record) ?? 0) + opChars(op.update));
+    }
+    const held = (id: string) => {
+      const record = readRecord(this.body, id);
+      return (record ? recordChars(record) : 0) + (pending.get(id) ?? 0);
+    };
+    const head = chainHead(lease.record, successorIn(this.body));
+    const meta = readMeta(this.body, head);
+    const continues = (meta ? landingOf(meta.status) : 'head') === 'continuation';
+    let chars = continues ? (pending.get(lease.record) ?? 0) : held(head) + (head === lease.record ? 0 : (pending.get(lease.record) ?? 0));
+    for (const other of this.#mergedBy(head, blocks ?? { from: this.#caretBlock, to: this.#caretBlock }, payloads)) chars += held(other);
+    return chars;
+  }
+
+  /**
+   * The structs the DocDO counts toward the note's structure limit (A§5.1 Limits) for an edit sending `frames` frames
+   * (an op per doc transaction, a delete part), with every frame and merge still unanswered: a new record's own, each
+   * frame's, and each merge of an older open record of the author's it builds on. `edit.updates`: the updates it writes,
+   * which #forward reads for those records; without them, every record #mergedBy finds in `blocks` and `payloads`.
+   */
+  recordStructs(frames: number, edit: { updates?: readonly Uint8Array[]; blocks?: { from: number; to: number }; payloads?: readonly Y.Doc[] } = {}): number {
+    const { create, write, merge } = SUGGEST_LIMITS.structs;
+    // A frame to a record the body does not hold yet, or to an accepted one, opens it (or its continuation).
+    const opens = (id: string) => {
+      const meta = readMeta(this.body, chainHead(id, successorIn(this.body)));
+      return !meta || landingOf(meta.status) === 'continuation';
+    };
+    let structs = 0;
+    const opening = new Set<string>();
+    for (const { request } of [...this.#inflight, ...this.#waiting]) {
+      if (request.t === 'suggest-ops' || request.t === 'suggest-delete') {
+        structs += write;
+        if (opens(request.record)) opening.add(request.record);
+      } else if (request.t === 'suggest-merge') structs += merge;
+      else if (request.t === 'suggest-undelete') structs += write + 1;
+    }
+    structs += opening.size * create;
+    const lease = this.#rotates() ? this.#leases[1] : this.#leases[0];
+    if (!lease || frames <= 0) return structs;
+    structs += frames * write + (opens(lease.record) && !opening.has(lease.record) ? create : 0);
+    const head = chainHead(lease.record, successorIn(this.body));
+    const named = new Set<string>();
+    if (edit.updates) for (const update of edit.updates) for (const id of this.#named(update)) named.add(id);
+    else for (const id of this.#mergedBy(head, edit.blocks ?? { from: this.#caretBlock, to: this.#caretBlock }, edit.payloads)) named.add(id);
+    for (const id of named) if (id !== lease.record && id !== head && !this.#merged.has(id)) structs += merge;
+    return structs;
+  }
+
+  /**
    * The author's open records other than `into` that an edit in top-level blocks `from`..`to` may build on or delete,
    * and so merge into its record (#forward): any holding an item of those blocks, or an item of the root from the block
    * before them to the block after. Every block when the blocks are unknown.
@@ -1542,7 +1605,7 @@ export class SuggestFork {
    * Closes input in this tick and offers back every block holding a change the server never acknowledged: the
    * refused request's own, and everything still in flight or waiting behind it.
    */
-  #halt(reason: SuggestRefusal, refused?: Pending): void {
+  #halt(reason: SuggestRefusal, refused?: Pending, limit?: 'text' | 'structure'): void {
     if (this.#closed) return;
     this.#closed = true;
     const entries = [...(refused ? [refused] : []), ...this.#inflight, ...this.#waiting];
@@ -1559,7 +1622,7 @@ export class SuggestFork {
       if (!was.length || later.has(block)) unsaved.push(text);
     }
     for (const was of rescued) if (!now.some(([block]) => block === was.block)) unsaved.push(was.text);
-    this.#emit({ type: 'refused', reason, unsaved: [...new Set(unsaved)].filter((text) => text.trim().length > 0) });
+    this.#emit({ type: 'refused', reason, unsaved: [...new Set(unsaved)].filter((text) => text.trim().length > 0), ...(limit ? { limit } : {}) });
     // Refused before its first lease (a note with no room): F still shows the note, read-only.
     if (!this.#ready) this.#start();
   }

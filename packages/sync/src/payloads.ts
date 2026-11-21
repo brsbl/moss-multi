@@ -8,6 +8,7 @@
 // server renames anyone else's element to a fresh, empty id, so nobody's later move or undo of it can reveal the text.
 import * as Y from 'yjs';
 import { fieldsOf, MAP_REGISTERS } from './map-codecs.ts';
+import { payloadSize, type PayloadSize } from './note-size.ts';
 import { isPayloadType, NameIndex, newPayloadId, PAYLOAD_LOADED, REGISTER_FIELDS } from './payload-docs.ts';
 
 export { NameIndex };
@@ -46,7 +47,12 @@ interface Meta {
   /** Rows, and their bytes, appended since the last compaction: what the next one would fold in. */
   rows: number;
   rowBytes: number;
+  /** Its text's characters and its structs, for the note's limits (A§5.1); null until counted (a row from before). */
+  chars: number | null;
+  structs: number | null;
 }
+
+export { payloadSize, type PayloadSize };
 
 /** `payload_updates.part`: the last row of an appended update, a row continued by the next, a compaction's last row. */
 const PART_LAST = 0;
@@ -109,12 +115,27 @@ export class PayloadStore {
     );
     this.#sql.exec('CREATE INDEX IF NOT EXISTS payload_updates_reg ON payload_updates (reg_id, seq)');
     this.#sql.exec('CREATE TABLE IF NOT EXISTS payload_meta (reg_id TEXT PRIMARY KEY, bytes INTEGER NOT NULL, withheld_since INTEGER)');
+    for (const column of ['chars', 'structs']) {
+      try {
+        this.#sql.exec(`ALTER TABLE payload_meta ADD COLUMN ${column} INTEGER`);
+      } catch {
+        // already there
+      }
+    }
     this.#sql.exec('CREATE TABLE IF NOT EXISTS payload_readers (reg_id TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY (reg_id, principal))');
     this.#sql.exec(
       'CREATE TABLE IF NOT EXISTS payload_withheld (reg_id TEXT NOT NULL, principal TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY (reg_id, principal))',
     );
-    for (const row of this.#sql.exec<{ reg_id: string; bytes: number; withheld_since: number | null }>('SELECT reg_id, bytes, withheld_since FROM payload_meta').toArray()) {
-      const meta = { bytes: Number(row.bytes), withheldSince: row.withheld_since === null ? null : Number(row.withheld_since), rows: 0, rowBytes: 0 };
+    type Row = { reg_id: string; bytes: number; withheld_since: number | null; chars: number | null; structs: number | null };
+    for (const row of this.#sql.exec<Row>('SELECT reg_id, bytes, withheld_since, chars, structs FROM payload_meta').toArray()) {
+      const meta: Meta = {
+        bytes: Number(row.bytes),
+        withheldSince: row.withheld_since === null ? null : Number(row.withheld_since),
+        rows: 0,
+        rowBytes: 0,
+        chars: row.chars === null ? null : Number(row.chars),
+        structs: row.structs === null ? null : Number(row.structs),
+      };
       this.#meta.set(row.reg_id, meta);
       this.#totalBytes += meta.bytes;
     }
@@ -159,6 +180,34 @@ export class PayloadStore {
 
   bytesOf(id: string): number {
     return this.#meta.get(id)?.bytes ?? 0;
+  }
+
+  /** A stored payload's size for the note's limits, counted from its doc the first time a row from before needs it. */
+  sizeOf(id: string): PayloadSize {
+    const meta = this.#meta.get(id);
+    if (!meta) return this.#docs.has(id) ? payloadSize(this.#docs.get(id)!) : { chars: 0, structs: 0 };
+    if (meta.chars === null || meta.structs === null) {
+      Object.assign(meta, payloadSize(this.doc(id)));
+      this.#writeMeta(id, meta);
+    }
+    return { chars: meta.chars!, structs: meta.structs! };
+  }
+
+  /** Every payload the note names, summed: what the note's limits count beside its own doc (A§5.1). */
+  namedSize(): PayloadSize {
+    const total = { chars: 0, structs: 0 };
+    for (const id of this.#meta.keys()) {
+      if (!this.names.named(id)) continue;
+      const size = this.sizeOf(id);
+      total.chars += size.chars;
+      total.structs += size.structs;
+    }
+    return total;
+  }
+
+  /** Whether an element names `id` now. */
+  named(id: string): boolean {
+    return this.names.named(id);
   }
 
   /** Bytes `principal` has written into withheld payloads (capped per identity, so nobody crowds out another). */
@@ -371,9 +420,11 @@ export class PayloadStore {
     let meta = this.#meta.get(id);
     if (!meta) {
       // A new payload is withheld until an element names it (a first text can arrive before its element).
-      meta = { bytes: 0, withheldSince: this.names.named(id) ? null : this.#now(), rows: 0, rowBytes: 0 };
+      meta = { bytes: 0, withheldSince: this.names.named(id) ? null : this.#now(), rows: 0, rowBytes: 0, chars: 0, structs: 0 };
       this.#meta.set(id, meta);
     }
+    const doc = this.#docs.get(id);
+    if (doc) Object.assign(meta, payloadSize(doc));
     if (update.byteLength > PART_BYTES) {
       this.#compactWhenSafe(id);
       return;
@@ -411,8 +462,8 @@ export class PayloadStore {
 
   #writeMeta(id: string, meta: Meta): void {
     this.#sql.exec(
-      'INSERT INTO payload_meta (reg_id, bytes, withheld_since) VALUES (?, ?, ?) ON CONFLICT(reg_id) DO UPDATE SET bytes = excluded.bytes, withheld_since = excluded.withheld_since',
-      id, meta.bytes, meta.withheldSince,
+      'INSERT INTO payload_meta (reg_id, bytes, withheld_since, chars, structs) VALUES (?, ?, ?, ?, ?) ON CONFLICT(reg_id) DO UPDATE SET bytes = excluded.bytes, withheld_since = excluded.withheld_since, chars = excluded.chars, structs = excluded.structs',
+      id, meta.bytes, meta.withheldSince, meta.chars, meta.structs,
     );
   }
 

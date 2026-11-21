@@ -173,6 +173,15 @@ function unitAt(doc: Y.Doc, id: Y.ID | ItemId | null): Unit | null {
 
 const positionOf = (value: string): Y.ID | null => (value ? Y.decodeRelativePosition(fromBase64(value)).item : null);
 
+/** The item an encoded anchor position names, or null when it names none or does not decode. */
+export function positionItem(value: string): Y.ID | null {
+  try {
+    return positionOf(value);
+  } catch {
+    return null;
+  }
+}
+
 export function encodePosition(unit: Unit, assoc: 0 | -1): string {
   const item = { client: unit.item.id.client, clock: unit.item.id.clock + unit.off };
   return toBase64(Y.encodeRelativePosition(Y.createRelativePositionFromJSON({ type: null, tname: null, item, assoc })));
@@ -588,6 +597,7 @@ export class AnchorEngine {
   /** Gap walks, left (0) and right (1): each item's next step as first measured, and a jump to where a walk got. */
   readonly #steps: [Map<Y.Item, Step>, Map<Y.Item, Step>] = [new Map(), new Map()];
   readonly #jumps: [Map<Y.Item, Step>, Map<Y.Item, Step>] = [new Map(), new Map()];
+  #moves: ReadonlyMap<string, readonly [string, string]> | undefined;
 
   constructor(readonly doc: Y.Doc) {}
 
@@ -681,12 +691,19 @@ export class AnchorEngine {
     return keys;
   }
 
-  /** The anchor records this transaction changes. Call from afterTransaction, before garbage collection. */
-  frame(txn: Y.Transaction): Map<string, Anchor> {
+  /**
+   * The anchor records this transaction changes. Call from afterTransaction, before garbage collection. `moves` are
+   * places the frame's writer names for comments whose text it moved earlier (a large paste's held-back deletes, T4.W):
+   * one is taken only for a comment this frame would otherwise detach, and only when it reads exactly as the
+   * comment's text did.
+   */
+  frame(txn: Y.Transaction, moves?: ReadonlyMap<string, readonly [start: string, end: string]>): Map<string, Anchor> {
     this.stats = scratch();
+    this.#moves = moves;
     try {
       return this.#frame(txn);
     } finally {
+      this.#moves = undefined;
       this.#walks.clear();
       this.#gaps.clear();
       this.#places.clear();
@@ -710,7 +727,7 @@ export class AnchorEngine {
     for (const id of hits) {
       const anchor = this.get(id);
       if (anchor?.status !== 'anchored') continue;
-      const changed = this.#anchored(view, anchor);
+      const changed = this.#anchored(view, anchor, id);
       if (changed) out.set(id, changed);
     }
 
@@ -784,7 +801,7 @@ export class AnchorEngine {
     return out;
   }
 
-  #anchored(view: View, anchor: Anchor): Anchor | null {
+  #anchored(view: View, anchor: Anchor, id: string): Anchor | null {
     this.stats.comments += 1;
     const s = unitAt(this.doc, positionOf(anchor.start));
     const e = unitAt(this.doc, positionOf(anchor.end));
@@ -800,10 +817,30 @@ export class AnchorEngine {
       if (mapped) return anchoredOn(anchor, ...mapped);
       const shrunk = shrink(view, entries, s, e);
       if (shrunk) return anchoredOn(anchor, ...shrunk);
+      // Only a comment the frame would detach follows a named place: a partial delete shrinks it, whatever is named.
+      const moved = this.#moved(id, pre);
+      if (moved) return anchoredOn(anchor, ...moved);
       return this.#lose(view, anchor, s, e, entries, quote);
     } catch (error) {
       if (error instanceof OverBudget) return detached(anchor, quote);
       throw error;
+    }
+  }
+
+  /** The place the frame's writer named for comment `id`, when it is live and reads exactly as `pre` (the text). */
+  #moved(id: string, pre: Tok[]): [Unit, Unit] | null {
+    const named = this.#moves?.get(id);
+    if (!named || pre.length === 0) return null;
+    try {
+      const s = unitAt(this.doc, positionOf(named[0]));
+      const e = unitAt(this.doc, positionOf(named[1]));
+      if (!s || !e || s.item.deleted || e.item.deleted || !isUnit(s.item) || !isUnit(e.item)) return null;
+      const walk = new Walk(RANGE_BUDGET, this.stats);
+      const post = entryTokens(rangeEntries(s, e, walk), false, isLive, walk);
+      return sameTokens(post, pre) ? [s, e] : null;
+    } catch {
+      // a position that does not decode, or a range that does not end within the budget
+      return null;
     }
   }
 

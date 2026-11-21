@@ -17,6 +17,7 @@ import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
+import { reviewRefusal } from './notices.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
 import { usePreviewRows } from './rows.ts';
@@ -76,18 +77,6 @@ function useRecords(source: SuggestionsSource): SuggestionRecord[] {
   }, [body, version]);
 }
 
-const REASONS: Record<string, string> = {
-  outdated: 'The text it changes was edited since, so it can no longer be applied.',
-  broken: 'It cannot be shown in the note.',
-  changed: 'It changed while you reviewed it. Look again before accepting.',
-  'not-open': 'It was already reviewed.',
-  'doc-cap': 'Accepting it would make the note too large.',
-  'rate-limited': 'Too many reviews at once. Try again in a minute.',
-  role: "You can't review this suggestion.",
-  forbidden: "You can't review this suggestion.",
-  unavailable: 'Its changes could not be loaded.',
-};
-const reasonText = (reason: string) => REASONS[reason] ?? 'It could not be applied.';
 
 async function call(url: string, body?: unknown): Promise<{ ok: boolean; status: number; json: Record<string, unknown>; retryAfter: string | null }> {
   // A role that comes from a share link travels with every call, as the comment API's does.
@@ -135,7 +124,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
   const broken = !!meta.broken || (preview.state === 'failed' && preview.reason === 'broken');
   const rows = usePreviewRows(preview.state === 'ready' ? preview : null);
   // A preview that failed for any other reason is said, with a retry: Accept needs a preview.
-  const failed = preview.state === 'failed' && !outdated && !broken ? reasonText(preview.reason) : null;
+  const failed = preview.state === 'failed' && !outdated && !broken ? reviewRefusal(preview.reason) : null;
   const allShown = expanded || rows.length <= ROWS_SHOWN;
   const shownRows = allShown ? rows : rows.slice(0, ROWS_SHOWN);
 
@@ -147,7 +136,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
       const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, request);
       if (!result.ok) {
         const reason = String(result.json.error ?? 'refused');
-        setError(reasonText(reason));
+        setError(reviewRefusal(reason, result.json.limit));
         // The note changed since this preview: fetch the one an accept must now name.
         if (reason === 'changed') refresh();
       }
@@ -206,7 +195,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
           )}
           {(outdated || broken) ? (
             <div className="flex items-center gap-2">
-              <span className="text-micro text-ink-muted">{reasonText(outdated ? 'outdated' : 'broken')}</span>
+              <span className="text-micro text-ink-muted">{reviewRefusal(outdated ? 'outdated' : 'broken')}</span>
               <button
                 type="button"
                 className="shrink-0 text-micro text-ink-default underline"

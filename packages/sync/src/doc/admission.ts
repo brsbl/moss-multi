@@ -5,7 +5,8 @@ import * as Y from 'yjs';
 import { NAME_MAX_CHARS } from '@moss-multi/protocol/limits';
 import { isRole, type Role } from '@moss-multi/protocol/roles';
 import {
-  CLOSE, decodePartyPrincipal, decodePayloadFrame, PAYLOAD_MESSAGE, TRUSTED, type PayloadFrame, type PrincipalKind,
+  CLOSE, decodeMovesFrame, decodePartyPrincipal, decodePayloadFrame, MOVES_MESSAGE, PAYLOAD_MESSAGE, TRUSTED, type AnchorMove, type PayloadFrame,
+  type PrincipalKind,
 } from '@moss-multi/protocol/sync';
 import type { Revoked } from './persistence.ts';
 
@@ -94,6 +95,8 @@ export type Frame =
   | { kind: 'sync'; update: Uint8Array }
   /** A decorator payload's own sync (A§10.10). */
   | { kind: 'payload'; payload: PayloadFrame }
+  /** Where a finished paste moved commented text, for the next sync frame (T4.W). */
+  | { kind: 'moves'; moves: AnchorMove[] }
   | { kind: 'other' };
 
 /** The y-protocols envelope: message type 0 is sync (step 1, step 2, update), 1 is awareness; 7 is a payload's sync. */
@@ -106,6 +109,10 @@ export function parseFrame(message: ArrayBuffer | ArrayBufferView): Frame {
     if (type === PAYLOAD_MESSAGE) {
       const payload = decodePayloadFrame(bytes);
       return payload ? { kind: 'payload', payload } : { kind: 'other' };
+    }
+    if (type === MOVES_MESSAGE) {
+      const moves = decodeMovesFrame(bytes);
+      return moves ? { kind: 'moves', moves } : { kind: 'other' };
     }
     if (type !== 0) return { kind: 'other' };
     const step = decoding.readVarUint(decoder);

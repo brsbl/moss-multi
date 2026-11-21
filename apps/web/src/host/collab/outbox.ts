@@ -39,7 +39,7 @@ export interface OutboxOptions {
 }
 
 /** `[0, step, varUint8Array]`: the step and the update of a sync step 2 or update frame, else null. */
-function syncWrite(frame: Uint8Array): { step: number; update: Uint8Array } | null {
+export function syncWrite(frame: Uint8Array): { step: number; update: Uint8Array } | null {
   if (frame[0] !== 0 || (frame[1] !== 1 && frame[1] !== 2)) return null;
   let length = 0;
   let at = 2;
