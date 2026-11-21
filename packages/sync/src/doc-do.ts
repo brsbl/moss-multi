@@ -194,8 +194,8 @@ const serializer = () => {
 /** Who a REST comment write stands for, as the Worker resolved it: its principal, session or key, and share token. */
 export type CommentActor = SocketIdentity;
 
-/** A refused review action: the gate's reason, or the actor's (as for comments). */
-export type ReviewRefusal = { ok: false; status: number; reason: string };
+/** A refused review action: the gate's reason, or the actor's (as for comments); `limit`: the note limit a `doc-cap` met. */
+export type ReviewRefusal = { ok: false; status: number; reason: string; limit?: DocLimit };
 export type SuggestionPreview = Preview & { closed?: boolean };
 
 /** A new live suggestion, for the bell. */
@@ -1955,7 +1955,7 @@ export class DocDO extends YServer<SyncEnv> {
         } catch (error) {
           if (error instanceof StaleBase) return stale;
           if (error instanceof ReconcileRefused) return { ok: false, status: 409, reason: 'restore-unverified' };
-          if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap' };
+          if (error instanceof DocCapError) return { ok: false, status: 413, reason: 'doc-cap', ...(error.limit === 'state' ? {} : { limit: error.limit }) };
           console.error('DocDO could not store a restore point; the restore is refused', error);
           return { ok: false, status: 503, reason: 'unstored' };
         }
@@ -2524,18 +2524,23 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   /**
-   * Which limit a server write (an import's diff, a copy's state) would pass, with the payloads it writes, each new and
-   * named by the write, or null.
+   * Which limit a server write (an import's diff, a copy's state, a restore's diff) would pass, with the payloads it
+   * writes, or null: a new payload counts whole, a stored one by what its update adds to it.
    */
   #serverWriteLimit(before: NoteSize, after: NoteSize, payloads: [string, Uint8Array][], headroom = false): DocLimit | null {
     for (const [id, payload] of payloads) {
+      // A stored payload's update (a restore's) counts by what it adds to it; #sizeAfter counted one the note names anew.
+      if (this.#payloads?.has(id)) {
+        const growth = growthOf(this.#payloads.doc(id), payload, 'all');
+        after.chars += growth.chars;
+        after.structs += growth.structs;
+        continue;
+      }
       const doc = new Y.Doc();
       try {
         Y.applyUpdate(doc, payload);
         const size = payloadSize(doc);
-        // A payload the note already names is replaced by what the write leaves in it.
-        const old = this.#payloads?.has(id) && this.#payloads.named(id) ? this.#payloads.sizeOf(id) : { chars: 0, structs: 0 };
-        after.chars += Math.max(0, size.chars - old.chars);
+        after.chars += size.chars;
         after.structs += size.structs;
       } finally {
         doc.destroy();

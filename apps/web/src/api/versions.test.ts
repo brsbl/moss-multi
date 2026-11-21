@@ -170,7 +170,7 @@ describe('version routes @p:mean-3', () => {
       verdict = { ok: false, status: 413, reason: 'doc-cap', limit };
       const response = await send('POST', ada.cookie, `${versions()}/v1/restore`);
       expect(response.status).toBe(413);
-      const body = await response.json();
+      const body = (await response.json()) as { message: string; limit?: string };
       expect(body).toMatchObject({ error: 'doc-cap', message: expect.stringMatching(said) });
       expect(body.message, limit).toMatch(/left as it is/);
       expect(body.limit ?? 'state').toBe(limit);

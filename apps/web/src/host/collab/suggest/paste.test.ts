@@ -1673,7 +1673,9 @@ function refusedAtLimit(pane: ReturnType<typeof suggesting>, limit: 'text' | 'st
 
 /** Text a peer adds to the note's first paragraph, as the DocDO's body takes it. */
 const peerTypes = (pane: ReturnType<typeof suggesting>, text: string) =>
-  serverWrite(pane.live, 'peer', () => textNode('Intro').setTextContent(`Intro line stays.${text}`));
+  serverWrite(pane.live, 'peer', () => {
+    textNode('Intro').setTextContent(`Intro line stays.${text}`);
+  });
 
 it('T5.V: a caret paste counts the text its record already holds: past the note\'s text limit with it, refused whole before anything changes', { timeout: 120_000 }, () => {
   const pane = suggesting(undefined, undefined, true);
