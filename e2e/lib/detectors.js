@@ -25,8 +25,8 @@ export function floatingOverCanvas({ names }) {
   // moss's own floating chrome: its selection and bottom toolbars, and its bottom band (the Trash view's retention
   // notice, and the role, Review and Suggesting bands in its place), its feedback pill, and its table chrome: column
   // handles over the table the caret is in (after a redo, the caret is back in the redone table, as in moss). The
-  // connection notice and pending cue float in that same bottom region (T9.40).
-  const allowed = [names.overlay, names.toolbar, names.retentionNotice, names.roleBand, names.reviewBand, names.modeRow, names.actionFeedback, names.connectionBanner, names.connectionCue, names.tableUi, ...names.remote].map((name) => `[${name}]`).join(', ');
+  // connection notice and pending cue (T9.40) and the input refusal (T9.35) float in that same bottom region.
+  const allowed = [names.overlay, names.toolbar, names.retentionNotice, names.roleBand, names.reviewBand, names.modeRow, names.actionFeedback, names.connectionBanner, names.connectionCue, names.inputRefusal, names.tableUi, ...names.remote].map((name) => `[${name}]`).join(', ');
   const found = new Set();
   for (const canvas of document.querySelectorAll(`[${names.canvas}]`)) {
     const r = canvas.getBoundingClientRect();
