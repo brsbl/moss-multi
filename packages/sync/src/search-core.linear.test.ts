@@ -3,7 +3,7 @@
 /* eslint-disable regexp/no-super-linear-backtracking, regexp/no-super-linear-move -- the old patterns are the golden references */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { MARKDOWN_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { cleanForSnippet, headingMatches, linkTexts, makeSnippet, parseHeadings, wikiLinkContents, wikiLinkTexts, withoutComments, withoutFences, withoutTags } from './search-core.ts';
 
 const SCANS: [string, (text: string) => unknown, (text: string) => unknown, string[], ((n: number) => string)[]][] = [
@@ -105,9 +105,9 @@ describe('search-core scans replace super-linear regexes', () => {
     for (const attack of [(n: number) => '<'.repeat(n), (n: number) => '['.repeat(n), (n: number) => '[a]('.repeat(n / 4), (n: number) => '<!--'.repeat(n / 4)]) expectLinear(cleanForSnippet, attack);
   }, 120_000);
 
-  it('makeSnippet and parseHeadings are linear up to the 2 MB note cap on repeated openers', () => {
+  it('makeSnippet and parseHeadings are linear up to the 4 MB of markdown a note may run to, on repeated openers', () => {
     const attacks = [(n: number) => `quokka ${'<!--'.repeat(n / 4)}`, (n: number) => `${'<!--'.repeat(n / 4)} quokka`, (n: number) => '````a'.repeat(n / 5), (n: number) => `# ${'[[a'.repeat(n / 3)}`];
-    for (const attack of attacks) expectLinear((text) => makeSnippet(text, 'quokka'), attack, MARKDOWN_CAP_BYTES);
-    for (const attack of attacks) expectLinear(parseHeadings, attack, MARKDOWN_CAP_BYTES);
+    for (const attack of attacks) expectLinear((text) => makeSnippet(text, 'quokka'), attack, MARKDOWN_MAX_BYTES);
+    for (const attack of attacks) expectLinear(parseHeadings, attack, MARKDOWN_MAX_BYTES);
   }, 120_000);
 });

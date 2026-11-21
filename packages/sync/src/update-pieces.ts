@@ -8,7 +8,6 @@ import * as encoding from 'lib0/encoding';
 import * as Y from 'yjs';
 
 type Struct = Y.Item | Y.GC | Y.Skip;
-type DeleteSet = ReturnType<typeof Y.createDeleteSet>;
 
 export interface UpdatePiece {
   update: Uint8Array;
@@ -24,7 +23,10 @@ const HEADER_BYTES = 256;
 /** True when `struct` starts an embedded type, the only place a piece may start within one client's run. */
 const startsType = (struct: Struct): boolean => struct instanceof Y.Item && struct.content instanceof Y.ContentType;
 
-function writeDeletes(encoder: Y.UpdateEncoderV1, ds: DeleteSet | null): void {
+/** Deletes as a delete set holds them, per client; a plain object will do. */
+type Deletes = { clients: Map<number, { clock: number; len: number }[]> };
+
+function writeDeletes(encoder: Y.UpdateEncoderV1, ds: Deletes | null): void {
   const clients = ds ? [...ds.clients].filter(([, items]) => items.length > 0) : [];
   encoding.writeVarUint(encoder.restEncoder, clients.length);
   for (const [client, items] of clients) {
@@ -38,7 +40,7 @@ function writeDeletes(encoder: Y.UpdateEncoderV1, ds: DeleteSet | null): void {
   }
 }
 
-function encodePiece(structs: Struct[], ds: DeleteSet | null): UpdatePiece {
+function encodePiece(structs: Struct[], ds: Deletes | null): UpdatePiece {
   const encoder = new Y.UpdateEncoderV1();
   const groups = new Map<number, Struct[]>();
   for (const struct of structs) {
@@ -59,6 +61,9 @@ function encodePiece(structs: Struct[], ds: DeleteSet | null): UpdatePiece {
   writeDeletes(encoder, ds);
   return { update: encoder.toUint8Array(), ends, deletes: ds !== null };
 }
+
+/** `structs` (as Y.decodeUpdate reads them) and `ds` as one update. */
+export const encodeUpdate = (structs: Struct[], ds: Deletes): Uint8Array => encodePiece(structs, ds).update;
 
 /**
  * `update` (Yjs v1) as pieces of at most about `limit` bytes. One text run larger than `limit` stays one piece.

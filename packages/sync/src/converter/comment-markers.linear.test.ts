@@ -1,6 +1,6 @@
 // Each scan that replaced a comment-marker regex on the converter's import path, and moss's formatted-whitespace
-// callback, is linear in attacker text up to the 2 MB push cap. ../push-markers.linear.test.ts runs the shapes whose
-// whole push path is linear here; these shapes (long lines of images or blanks) are linear end to end only with the
+// callback, is linear in attacker text up to the 4 MB a push may carry. ../push-markers.linear.test.ts runs the shapes
+// whose whole push path is linear here; these shapes (long lines of images or blanks) are linear end to end only with the
 // converter's linear import and export (T3.S4), so they are held at the function a push calls.
 import { createHeadlessEditor } from '@lexical/headless';
 import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical';
@@ -9,8 +9,8 @@ import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdo
 import { normalizeCommentWrappedAtxHeadings, normalizeCommentWrappedImages } from '@moss-desktop/renderer/editor/utils/comment-import';
 import { scanCommentMarkers } from '@moss-desktop/renderer/editor/utils/comment-marker-scan';
 
-// The push cap, MARKDOWN_CAP_BYTES in @moss-multi/protocol/limits.
-const MARKDOWN_CAP_BYTES = 2 * 1024 * 1024;
+// The markdown a push may carry, MARKDOWN_MAX_BYTES in @moss-multi/protocol/limits.
+const MARKDOWN_MAX_BYTES = 4 * 1024 * 1024;
 
 function expectLinear(run: (text: string) => unknown, attack: (n: number) => string): void {
   const time = (n: number): number => {
@@ -21,7 +21,7 @@ function expectLinear(run: (text: string) => unknown, attack: (n: number) => str
   };
   time(1024); // warm up
   let previous = time(2048);
-  for (let n = 4096; n <= MARKDOWN_CAP_BYTES; n *= 2) {
+  for (let n = 4096; n <= MARKDOWN_MAX_BYTES; n *= 2) {
     const took = time(n);
     expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 50);
     previous = took;
@@ -51,7 +51,7 @@ const SHAPES: [string, (text: string) => unknown, (n: number) => string][] = [
   ['format-whitespace: bold text around spaces', normalizeBold, (n) => `a${' '.repeat(n - 2)}b`],
 ];
 
-describe('comment-marker scans and the formatted-whitespace callback are linear up to the 2 MB push cap @p:agt-1', () => {
+describe('comment-marker scans and the formatted-whitespace callback are linear up to the 4 MB a push may carry @p:agt-1', () => {
   for (const [name, run, attack] of SHAPES) {
     it(name, () => expectLinear(run, attack), 300_000);
   }

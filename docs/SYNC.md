@@ -165,3 +165,7 @@ retrying; launchd retries every 10 seconds until you fix it.
   and file present, so the images already in those folders upload only under new names after that. If part of the
   workspace cannot be read during the rebuild, nothing uploads anywhere until it can, and sync reports which path it
   could not read.
+- A note holds at most 1.02 million characters of text and 165,000 pieces of structure (every line, list item and
+  table cell, and the note's past edits), and one push or new note carries at most 4 MB of markdown. A push, add or
+  sync that would pass a limit lands nothing; the log names the note and the limit it met. Split a note that reaches
+  one into smaller notes.
