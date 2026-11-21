@@ -1726,6 +1726,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
           ref={panelRef}
           className="flex h-full min-w-0 w-full"
           onCreateNote={canCreateNote(noteTargetFolder(activeFolderPath, backendFolders)) ? onCreateNote : undefined /* moss-multi seam: capabilities (T2.6, T3.B17) */}
+          newNoteFolder={noteTargetFolder(activeFolderPath, backendFolders) /* moss-multi seam: vault-name (T9.31) */}
           onCollapse={onCollapse}
           showTitle={false}
           sortContent={sortDropdown}

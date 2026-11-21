@@ -422,12 +422,13 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        searchQuery,
        selectedSearchNoteId,
        selectedSearchCardRef,
-@@ -1643,11 +1724,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1643,11 +1724,13 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          <NotesListPanel
            ref={panelRef}
            className="flex h-full min-w-0 w-full"
 -          onCreateNote={onCreateNote}
 +          onCreateNote={canCreateNote(noteTargetFolder(activeFolderPath, backendFolders)) ? onCreateNote : undefined /* moss-multi seam: capabilities (T2.6, T3.B17) */}
++          newNoteFolder={noteTargetFolder(activeFolderPath, backendFolders) /* moss-multi seam: vault-name (T9.31) */}
            onCollapse={onCollapse}
            showTitle={false}
            sortContent={sortDropdown}
@@ -437,7 +438,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
                <TooltipProvider>
                  <Tooltip>
-@@ -1666,14 +1748,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1666,14 +1749,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                  </Tooltip>
                </TooltipProvider>
                <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">
@@ -456,7 +457,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                </DropdownMenuContent>
              </DropdownMenu>
            ) : undefined}
-@@ -1693,7 +1779,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1693,7 +1780,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            open={trashFolderTarget !== null}
            onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
            title="Trash folder?"

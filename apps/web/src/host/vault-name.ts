@@ -42,16 +42,24 @@ export function useVaultOfNote(id: string | null): string | null {
   const workspace = useWorkspace();
   const doc = id ? workspace?.docs.find((entry) => entry.id === id) : undefined;
   if (!name || !doc || doc.surfaced) return null;
-  const path = doc.folderPath ?? '';
-  const underSurfaced = workspace?.folders?.some((folder) => folder.surfaced &&
-    (path === folder.path || path.startsWith(`${folder.path}/`)));
-  return underSurfaced ? null : name;
+  return underSurfaced(workspace, doc.folderPath ?? '') ? null : name;
 }
 
-/** "+ Note"'s tooltip: where the new note lands. */
-export function useNewNoteHint(): string | null {
+/** A folder path that is, or sits under, a folder surfaced from another vault. */
+function underSurfaced(workspace: ReturnType<typeof useWorkspace>, path: string): boolean {
+  return workspace?.folders?.some((folder) => folder.surfaced &&
+    (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false;
+}
+
+/**
+ * "+ Note"'s tooltip for a note created in `folderPath` (noteTargetFolder's answer): the vault on screen, or null when
+ * that folder was shared from another vault, whose name is not known here.
+ */
+export function useNewNoteHint(folderPath: string | null): string | null {
   const name = useVaultName();
-  return name ? `New note in ${name}` : null;
+  const workspace = useWorkspace();
+  if (!name || folderPath === null || underSurfaced(workspace, folderPath)) return null;
+  return `New note in ${name}`;
 }
 
 /** The note location's accessible name; it names the vault only when note `id` is known to live in it. */

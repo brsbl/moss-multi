@@ -16,6 +16,8 @@ export interface NotesListPanelProps {
   titleAlign?: 'left' | 'center';
   headerContent?: React.ReactNode;
   onCreateNote?: () => void;
+  /** moss-multi seam: vault-name (T9.31): the folder "+ Note" creates in */
+  newNoteFolder?: string;
   /** Called when the collapse button is clicked */
   onCollapse?: () => void;
   showSearch?: boolean;
@@ -62,6 +64,7 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
       titleAlign = 'left',
       headerContent,
       onCreateNote,
+      newNoteFolder, // moss-multi seam: vault-name (T9.31)
       onCollapse,
       showSearch = true,
       alwaysExpandSearch = false,
@@ -85,7 +88,7 @@ export const NotesListPanel = React.forwardRef<NotesListPanelHandle, NotesListPa
     const searchInputRef = React.useRef<HTMLInputElement>(null);
     const pendingSearchFocusRef = React.useRef(false);
     const [isSearchExpanded, setIsSearchExpanded] = React.useState(false);
-    const newNoteHint = useNewNoteHint(); // moss-multi seam: vault-name (T9.31)
+    const newNoteHint = useNewNoteHint(newNoteFolder ?? null); // moss-multi seam: vault-name (T9.31)
 
     // Compute effective expanded state for rendering and callbacks
     const effectivelyExpanded = alwaysExpandSearch || isSearchExpanded;
