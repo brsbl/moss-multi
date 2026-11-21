@@ -4,7 +4,7 @@
 // `suggest`, a suggester's merge is recorded as an open suggestion instead.
 // Every answer is a PushResponse, refusals included, so the CLI can say why.
 import { getServerByName } from 'partyserver';
-import { MARKDOWN_CAP_BYTES, PUSH_RATE } from '@moss-multi/protocol/limits';
+import { MARKDOWN_MAX_BYTES, PUSH_RATE } from '@moss-multi/protocol/limits';
 import type { PushResponse } from '@moss-multi/protocol/push';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
@@ -23,7 +23,7 @@ const encoder = new TextEncoder();
  * The cap on a push body: newText and baseText at the note cap with every UTF-16 unit JSON-escaped as six bytes, plus
  * the envelope. A maximal legitimate push fits; nothing larger is buffered.
  */
-export const PUSH_BODY_MAX_BYTES = 6 * 2 * MARKDOWN_CAP_BYTES + 64 * 1024;
+export const PUSH_BODY_MAX_BYTES = 6 * 2 * MARKDOWN_MAX_BYTES + 64 * 1024;
 
 const answer = (body: PushResponse, status: number, headers: Record<string, string> = {}) => json(body, status, { ...NO_STORE, ...headers });
 
@@ -67,8 +67,8 @@ export async function handlePush(request: Request, env: DocsEnv, docId: string):
   if (typeof newText !== 'string' || typeof baseHash !== 'string' || !HASH.test(baseHash) || (baseText !== undefined && typeof baseText !== 'string')) {
     return json({ error: 'bad-request', message: 'A push needs newText and a sha-256 baseHash' }, 400, NO_STORE);
   }
-  if (encoder.encode(newText).byteLength > MARKDOWN_CAP_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
-  if (typeof baseText === 'string' && encoder.encode(baseText).byteLength > 2 * MARKDOWN_CAP_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
+  if (encoder.encode(newText).byteLength > MARKDOWN_MAX_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
+  if (typeof baseText === 'string' && encoder.encode(baseText).byteLength > 2 * MARKDOWN_MAX_BYTES) return answer({ ok: false, reason: 'too-large' }, 413);
   const stub = await getServerByName(env.DocDO, docId);
   const verdict = (await stub.push({
     newText,

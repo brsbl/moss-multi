@@ -126,8 +126,12 @@ export class DocStore {
     this.bytes = 0;
     this.#oversized = false;
     this.stateBytes = state.byteLength;
+    this.compacted?.();
     this.onCompacted?.();
   }
+
+  /** Called after each compaction (the DocDO re-counts the note's text there, A§5.1). */
+  compacted: (() => void) | null = null;
 
   meta(key: string): string | null {
     return this.sql.exec<{ value: string }>('SELECT value FROM meta WHERE key = ?', key).toArray()[0]?.value ?? null;

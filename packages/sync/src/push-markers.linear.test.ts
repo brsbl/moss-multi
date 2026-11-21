@@ -1,13 +1,13 @@
 // A push or an import runs the converter's import normalization on the pushed text (pipeline.ts $importNoteBody), and
 // an import with a comments sidecar runs moss's findMarkers on each text node. moss's comment-marker regexes there were
 // cubic in a run of blanks (any `\s`, newlines included) after a marker opener; their scans (comment-marker-scan.ts,
-// golden-equal in converter/comment-markers.golden.test.ts) are linear up to the 2 MB push cap through landPush and
-// importBody. converter/comment-markers.linear.test.ts holds each scan, and moss's formatted-whitespace callback, to
+// golden-equal in converter/comment-markers.golden.test.ts) are linear up to the 4 MB a push may carry, through
+// landPush and importBody. converter/comment-markers.linear.test.ts holds each scan, and moss's formatted-whitespace callback, to
 // linear time at the function; with the converter's linear import (T3.S4) the long single-line shapes hold here too,
 // on an ordinary push and a --suggest (fork) push alike.
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { MARKDOWN_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { landPush } from './push.ts';
 import { ReconcileRefused, type ForkTarget } from './reconcile.ts';
 import { exportDocMarkdown, importBody } from './server-doc.ts';
@@ -40,7 +40,7 @@ function expectLinear(run: (text: string) => void, attack: (n: number) => string
   };
   time(1024); // warm up
   let previous = time(2048);
-  for (let n = 4096; n <= MARKDOWN_CAP_BYTES; n *= 2) {
+  for (let n = 4096; n <= MARKDOWN_MAX_BYTES; n *= 2) {
     const took = time(n);
     expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 250);
     previous = took;
@@ -83,7 +83,7 @@ function importNote(text: string): void {
   importBody(new Y.Doc(), text, undefined, undefined, {});
 }
 
-describe('pushed and imported text runs the converter in linear time up to the 2 MB push cap @p:agt-1', () => {
+describe('pushed and imported text runs the converter in linear time up to the 4 MB a push may carry @p:agt-1', () => {
   for (const [name, attack] of Object.entries(ATTACKS)) {
     it(`landPush: ${name}`, () => expectLinear(push, attack), 300_000);
     it(`landPush --suggest: ${name}`, () => expectLinear(suggest, attack), 300_000);

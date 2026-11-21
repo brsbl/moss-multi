@@ -9,7 +9,7 @@ import { DocDO } from '../../../../packages/sync/src/doc-do.ts';
 import { PrincipalDO } from '../../../../packages/sync/src/principal-do.ts';
 import { Backing, openDoc } from '../../../../packages/sync/test/harness/do-harness.ts';
 import { FakeState } from '../../../../packages/sync/test/harness/workerd.ts';
-import { MARKDOWN_CAP_BYTES, PUSH_RATE } from '@moss-multi/protocol/limits';
+import { MARKDOWN_MAX_BYTES, PUSH_RATE, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertAgent, insertDoc, insertGrant, SECRET, signedUpUser, type TestUser } from '../test/principals.ts';
 import { docAccessCheck } from '../worker/doc-access.ts';
@@ -32,6 +32,11 @@ class SmallDocDO extends PushDocDO {
   static override limits = { ...DocDO.limits, stateCapBytes: 64 * 1024 };
 }
 
+/** A doc whose text and structure limits are small, so a push past either is cheap to build (A§5.1). */
+class LimitedDocDO extends PushDocDO {
+  static override limits = { ...DocDO.limits, textCharCap: 4_000, structCap: 3_000, structHeadroom: 150 };
+}
+
 class PushPrincipalDO extends PrincipalDO {
   static override credentials = () => (sessions: string[], agents: string[]) => liveCredentials(d1.db, sessions, agents);
   static override rechecker = () => async () => undefined;
@@ -48,7 +53,8 @@ function namespace<T extends object>(make: (name: string) => T) {
 }
 
 const small = new Set<string>();
-const docs = namespace((name) => openDoc(new Backing(name), (small.has(name) ? SmallDocDO : PushDocDO) as never));
+const limited = new Set<string>();
+const docs = namespace((name) => openDoc(new Backing(name), (small.has(name) ? SmallDocDO : limited.has(name) ? LimitedDocDO : PushDocDO) as never));
 const docNs = { idFromName: docs.idFromName, get: (id: { name: string }) => docs.get(id.name).dobj };
 
 /** While set, runs once after the Worker took a push token, before the DocDO RPC. */
@@ -125,9 +131,10 @@ async function push(docId: string, creds: Creds, request: Record<string, unknown
   return { status: response.status, body: (await response.json()) as Record<string, unknown>, retryAfter: response.headers.get('retry-after') };
 }
 
-async function seeded(owner: TestUser, markdown: string, options: { small?: boolean } = {}): Promise<string> {
+async function seeded(owner: TestUser, markdown: string, options: { small?: boolean; limited?: boolean } = {}): Promise<string> {
   const docId = await insertDoc(d1.db, owner);
   if (options.small) small.add(docId);
+  if (options.limited) limited.add(docId);
   await docs.get(docId).dobj.create({ folderId: owner.homeId, ownerId: owner.id, markdown });
   return docId;
 }
@@ -278,44 +285,68 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(await content(docId, cookieOf(ada))).toBe(again);
   }, 60_000);
 
-  it('refuses a file past 2 MB and a merged result past the state cap with 413, leaving the doc as it was', async () => {
+  it('refuses a file past 4 MB of markdown and a merged result past the state cap with 413 naming the limit, leaving the doc as it was', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const docId = await seeded(ada, BODY, { small: true });
     const base = await content(docId, cookieOf(ada));
-    const huge = await push(docId, cookieOf(ada), { newText: `${base}\n\n${'x'.repeat(MARKDOWN_CAP_BYTES)}`, baseHash: sha(base), baseText: base });
+    const huge = await push(docId, cookieOf(ada), { newText: `${base}\n\n${'x'.repeat(MARKDOWN_MAX_BYTES)}`, baseHash: sha(base), baseText: base });
     expect(huge.status).toBe(413);
-    expect(huge.body).toMatchObject({ ok: false, reason: 'too-large' });
+    expect(huge.body).toMatchObject({ ok: false, reason: 'too-large', limit: 'markdown' });
+    expect(String(huge.body.message)).toContain('at most 4 MB');
     const paragraphs = Array.from({ length: 400 }, (_, i) => `Paragraph ${i} grows the doc past its small cap.`).join('\n\n');
     const capped = await push(docId, cookieOf(ada), { newText: `${base}\n\n${paragraphs}`, baseHash: sha(base), baseText: base });
     expect(capped.status).toBe(413);
-    expect(capped.body).toMatchObject({ ok: false, reason: 'too-large' });
+    expect(capped.body).toMatchObject({ ok: false, reason: 'too-large', limit: 'state' });
     expect(await content(docId, cookieOf(ada))).toBe(base);
   });
 
-  // T7.R: the route reads its body under its own cap (T3.S7's 64 KiB default refused any real push), after the push token.
-  it('lands a maximal push: newText and baseText at the 2 MB cap, every character JSON-escaped', async () => {
+  // T7.V: a push is held to the note's text and structure limits by what its merge adds (A§5.1), as every write is.
+  it('refuses a push past the text or the structure limit with 413 naming it, and a suggest push past the text limit, landing nothing', async () => {
+    const ada = await signedUpUser(env, 'push-ada', 'Ada');
+    const docId = await seeded(ada, BODY, { limited: true });
+    const base = await content(docId, cookieOf(ada));
+    const words = Array.from({ length: 50 }, (_, i) => `Paragraph ${i} ${'grows the text '.repeat(6)}`.trimEnd()).join('\n\n');
+    expect(words.length).toBeGreaterThan(4_000);
+    const text = await push(docId, cookieOf(ada), { newText: `${base}\n\n${words}`, baseHash: sha(base), baseText: base });
+    expect(text.status).toBe(413);
+    expect(text.body).toMatchObject({ ok: false, reason: 'too-large', limit: 'text' });
+    expect(String(text.body.message)).toContain('1,020,000 characters');
+    const lines = Array.from({ length: 700 }, (_, i) => `L${i}`).join('\n\n');
+    const structure = await push(docId, cookieOf(ada), { newText: `${base}\n\n${lines}`, baseHash: sha(base), baseText: base });
+    expect(structure.status).toBe(413);
+    expect(structure.body).toMatchObject({ ok: false, reason: 'too-large', limit: 'structure' });
+    expect(String(structure.body.message)).toContain('split it into smaller notes');
+    const suggested = await push(docId, cookieOf(ada), { newText: `${base}\n\n${words}`, baseHash: sha(base), baseText: base, suggest: true });
+    expect(suggested.status).toBe(409);
+    expect(suggested.body).toMatchObject({ ok: false, reason: 'suggest-refused' });
+    expect(String(suggested.body.message)).toContain('1,020,000 characters');
+    expect(await content(docId, cookieOf(ada)), 'nothing landed').toBe(base);
+    const within = await push(docId, cookieOf(ada), { newText: `${base}\n\nOne more paragraph fits.`, baseHash: sha(base), baseText: base });
+    expect(within.status, 'a push within both limits lands').toBe(200);
+  });
+
+  // T7.R, resized by T7.V: the route reads its body under its own cap, after the push token, so a push of a note at the
+  // text limit lands even with every character JSON-escaped.
+  it('lands a maximal push: a note at the text limit as newText and baseText, every character JSON-escaped', async () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const paragraph = (i: number) => `Paragraph ${String(i).padStart(5, '0')} ${'lorem ipsum dolor '.repeat(50)}`.trimEnd();
     const paragraphs: string[] = [];
-    for (let size = 0; size + paragraph(paragraphs.length).length + 2 <= MARKDOWN_CAP_BYTES - 4096;) {
-      size += paragraph(paragraphs.length).length + 2;
+    for (let size = 0; size + paragraph(paragraphs.length).length <= TEXT_CHAR_CAP - 2_000;) {
+      size += paragraph(paragraphs.length).length;
       paragraphs.push(paragraph(paragraphs.length));
     }
     const docId = await seeded(ada, paragraphs.join('\n\n'));
     const base = await content(docId, cookieOf(ada));
     const newText = base.replace('Paragraph 00007 lorem', 'Paragraph 00007 LOREM');
     expect(newText).not.toBe(base);
-    for (const text of [base, newText]) {
-      expect(new TextEncoder().encode(text).byteLength).toBeGreaterThan(MARKDOWN_CAP_BYTES - 64 * 1024);
-      expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(MARKDOWN_CAP_BYTES);
-    }
+    for (const text of [base, newText]) expect(text.replace(/\n/g, '').length).toBeGreaterThan(TEXT_CHAR_CAP - 4_000);
     const escaped = (text: string) => {
       const out: string[] = [];
       for (let i = 0; i < text.length; i += 1) out.push(`\\u${text.charCodeAt(i).toString(16).padStart(4, '0')}`);
       return out.join('');
     };
     const body = `{"newText":"${escaped(newText)}","baseHash":"${sha(base)}","baseText":"${escaped(base)}","force":false,"suggest":false}`;
-    expect(body.length).toBeGreaterThan(22 * 1024 * 1024);
+    expect(body.length).toBeGreaterThan(12 * 1024 * 1024);
     const response = await raw(docId, cookieOf(ada), body);
     const answer = (await response.json()) as Record<string, unknown>;
     expect(response.status, JSON.stringify(answer)).toBe(200);
@@ -327,11 +358,11 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     const ada = await signedUpUser(env, 'push-ada', 'Ada');
     const docId = await seeded(ada, BODY);
     const base = await content(docId, cookieOf(ada));
-    const cap = 12 * MARKDOWN_CAP_BYTES + 64 * 1024;
+    const cap = 12 * MARKDOWN_MAX_BYTES + 64 * 1024;
     const unread = new ReadableStream<Uint8Array>({ pull() { throw new Error('the body was read'); } });
     const declared = await raw(docId, cookieOf(ada), unread, { 'content-length': String(cap + 1) });
     expect(declared.status).toBe(413);
-    expect(await declared.json()).toEqual({ ok: false, reason: 'too-large' });
+    expect(await declared.json()).toMatchObject({ ok: false, reason: 'too-large', limit: 'markdown' });
     expect(charged, 'a declared oversize takes no token').toEqual([]);
 
     const chunk = 512 * 1024;
@@ -345,7 +376,7 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     });
     const streamed = await raw(docId, cookieOf(ada), endless);
     expect(streamed.status).toBe(413);
-    expect(await streamed.json()).toEqual({ ok: false, reason: 'too-large' });
+    expect(await streamed.json()).toMatchObject({ ok: false, reason: 'too-large', limit: 'markdown' });
     expect(read.bytes, 'read no further than the cap').toBeLessThanOrEqual(cap + 2 * chunk);
     expect(read.bytes, 'read past the 64 KiB default').toBeGreaterThan(cap);
     expect(charged, 'the token was taken before the body was read').toEqual([ada.id]);
