@@ -63,7 +63,7 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   await closePanel(ada);
   await expect(ada.page.getByRole('button', { name: /Notifications, \d+ unread/ }), 'the owner is notified').toBeVisible({ timeout: BIND_TIMEOUT });
   await ada.page.getByRole('button', { name: /Notifications/ }).click();
-  await expect(ada.page.getByText(/suggested changes in/)).toBeVisible();
+  await expect(ada.page.getByRole('menuitem', { name: /suggested changes in/ })).toBeVisible();
   await ada.page.keyboard.press('Escape');
 
   // The author's own panel lists it with Withdraw and no Accept.
