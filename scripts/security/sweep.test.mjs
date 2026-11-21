@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { closesOnRevoke, isLoopback, otherPortOrigin, workerTooLarge } from './sweep.mjs';
+import { JSON_BODY_CAP, closesOnRevoke, createSweep, isLoopback, otherPortOrigin, workerTooLarge } from './sweep.mjs';
 
 describe('otherPortOrigin', () => {
   const cases = [
@@ -40,6 +40,34 @@ describe('workerTooLarge', () => {
     expect(workerTooLarge({ status: 'no answer' })).toBe(false);
     expect(workerTooLarge({ status: 413, type: 'application/json; charset=UTF-8', body: '{"error":"too-large","message":"The request body is too large."}' })).toBe(true);
   });
+});
+
+describe('oversized', () => {
+  it('on loopback declares the length and sends no body bytes, so the refusal comes from the header', async () => {
+    const seen = [];
+    const server = createServer((request, response) => {
+      const arrival = { length: request.headers['content-length'], bytes: 0 };
+      seen.push(arrival);
+      request.on('data', (chunk) => {
+        arrival.bytes += chunk.length;
+      });
+      // Read for a moment before answering, so bytes sent with the request are counted every time.
+      setTimeout(() => {
+        response.writeHead(413, { 'content-type': 'application/json', connection: 'close' });
+        response.end(JSON.stringify({ error: 'too-large', message: 'The request body is too large.' }));
+      }, 300);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const sweep = createSweep(`http://127.0.0.1:${server.address().port}`);
+      const answer = await sweep.oversized('POST', '/api/unfurl', { 'content-type': 'application/json' }, JSON_BODY_CAP + 1, Buffer.alloc(JSON_BODY_CAP + 1, 0x20));
+      expect(seen).toEqual([{ length: String(JSON_BODY_CAP + 1), bytes: 0 }]);
+      expect(workerTooLarge(answer), JSON.stringify(answer)).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, 15_000);
 });
 
 // A server frame (unmasked, short) and a client frame's text (masked).
