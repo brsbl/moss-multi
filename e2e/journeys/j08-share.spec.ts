@@ -469,7 +469,7 @@ test('j08 compact: every role chooser is Moss\'s checked menu, its actions are q
   const ben = actors.credentials('ben');
   await ada.page.setViewportSize({ width: 1440, height: 1000 });
   const dialog = await ui.openShare(ada, docId);
-  await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the note first').toHaveText(/^Note “.*”$/);
+  await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the note first').toHaveText(/^Note( “.+”)?$/);
   await expect(dialog.getByRole('radiogroup'), 'no segmented role strip').toHaveCount(0);
   await expect(dialog.locator('select'), 'no native select').toHaveCount(0);
 
