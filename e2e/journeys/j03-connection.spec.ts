@@ -697,6 +697,7 @@ const overlaps = (a: { x: number; y: number; width: number; height: number }, b:
   a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
 test('j03-connection: a write waiting 2 s for its ack shows a quiet cue whose words clear at the ack and which leaves after 1 s idle; healthy typing shows nothing, and an outage floats in the bottom region without moving the note (T9.40) @p:col-4', async ({ actors }) => {
+  actors.solo("the cue is about one window's own writes; no peer takes part");
   const owner = await actors.principal('ada');
   const ada = await windowFor(actors, owner, { label: 'ada', severable: true });
   const sever = ada.sever;
@@ -740,21 +741,10 @@ test('j03-connection: a write waiting 2 s for its ack shows a quiet cue whose wo
   await ada.page.keyboard.press('Escape');
   await expect(details).toHaveCount(0);
 
-  // An outage bypasses the cue: its notice floats in the bottom region and the note does not move.
-  sever.blackhole();
-  await expect.poll(bannerShows(ada, docId, 'offline'), { message: 'the outage notice shows', timeout: 25_000 }).toBe(true);
-  await expect(cue(ada, docId), 'the notice stands in for the cue').toHaveCount(0);
-  const [paneBox, noticeBox, titleNow] = await Promise.all([ui.pane(ada, docId).boundingBox(), banner(ada, docId).boundingBox(), ui.title(ada, docId).boundingBox()]);
-  if (!paneBox || !noticeBox || !titleNow) throw new Error('the pane is not laid out');
-  expect(noticeBox.y + noticeBox.height, 'the notice sits in the bottom region').toBeGreaterThan(paneBox.y + paneBox.height - 160);
-  expect(Math.abs(noticeBox.x + noticeBox.width / 2 - (paneBox.x + paneBox.width / 2)), 'centred in the pane').toBeLessThan(2);
-  expect(titleNow.y, 'the note does not move').toBeCloseTo(titleBox.y, 0);
-  await expect(banner(ada, docId), 'a live status').toHaveAttribute('role', 'status');
-
-  ada.expectReconnects(2, docId);
+  // Acks flow again: the next write's ack covers the lost one, the cue's words go at once, and it leaves after 1 s idle.
   sever.restore();
-  await expect(banner(ada, docId), 'the notice clears on reconnect').toHaveCount(0, { timeout: RECOVER_TIMEOUT });
-  await ui.waitAcked(ada, docId, RECOVER_TIMEOUT);
+  await ui.typeBody(ada, docId, '.');
+  await ui.waitAcked(ada, docId, ACK_TIMEOUT);
   await expect(cue(ada, docId), 'the cue leaves once idle').toHaveCount(0, { timeout: CUE_SETTLE_MS + 4_000 });
   const events = (await timeline(ada)).filter((e) => e.kind === 'cue');
   const settled = events.map((e) => e.value).lastIndexOf('settled');
@@ -766,6 +756,28 @@ test('j03-connection: a write waiting 2 s for its ack shows a quiet cue whose wo
   const acked = (await timeline(ada)).filter((e) => e.kind === 'unacked' && e.value === '0' && e.at <= events[settled].at + 250).at(-1);
   expect(acked, 'the cue settled at the ack').toBeDefined();
   expect(events[settled].at - (acked?.at ?? 0), 'within a frame or two of it').toBeLessThan(500);
+
+  // An outage needs no 2 s wait: its notice floats in the bottom region, clear of the toolbar, and the note stays put.
+  sever.blackhole();
+  await ui.typeBody(ada, docId, ' offline');
+  await expect.poll(bannerShows(ada, docId, 'offline'), { message: 'the outage notice shows', timeout: 25_000 }).toBe(true);
+  await expect(cue(ada, docId), 'the notice stands in for the cue').toHaveCount(0);
+  const [paneBox, noticeBox, titleNow] = await Promise.all([ui.pane(ada, docId).boundingBox(), banner(ada, docId).boundingBox(), ui.title(ada, docId).boundingBox()]);
+  if (!paneBox || !noticeBox || !titleNow) throw new Error('the pane is not laid out');
+  expect(noticeBox.y + noticeBox.height, 'the notice sits in the bottom region').toBeGreaterThan(paneBox.y + paneBox.height - 160);
+  expect(Math.abs(noticeBox.x + noticeBox.width / 2 - (paneBox.x + paneBox.width / 2)), 'centred in the pane').toBeLessThan(2);
+  expect(titleNow.y, 'the note does not move').toBeCloseTo(titleBox.y, 0);
+  if (await toolbar.isVisible()) {
+    const barBox = await toolbar.boundingBox();
+    expect(barBox && !overlaps(noticeBox, barBox), 'the notice stands clear of the editing toolbar').toBe(true);
+  }
+  await expect(banner(ada, docId), 'a live status').toHaveAttribute('role', 'status');
+
+  ada.expectReconnects(2, docId);
+  sever.restore();
+  await expect(banner(ada, docId), 'the notice clears on reconnect').toHaveCount(0, { timeout: RECOVER_TIMEOUT });
+  await ui.waitAcked(ada, docId, RECOVER_TIMEOUT);
+  await expect(cue(ada, docId), 'nothing stays once all is saved').toHaveCount(0, { timeout: CUE_SETTLE_MS + 4_000 });
 });
 
 const UNSYNCED = ' then words only this window holds';
