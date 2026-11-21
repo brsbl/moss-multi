@@ -325,7 +325,7 @@ function SuggestionCard({ docId, record, me, role, active, single, root, opened,
 }
 
 /** The panel's cards: the open ones newest first, then the latest reviewed. */
-export function SuggestionList({ docId, open, reviewed, me, role, active, single = false, opened = '', body = null }: {
+export function SuggestionList({ docId, open: allOpen, reviewed: allReviewed, me, role, active, single = false, opened = '', body = null }: {
   docId: string;
   /** Only the active suggestion, opened beside its mark. */
   single?: boolean;
@@ -340,10 +340,8 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, single
 }): ReactNode {
   // The scroll box the cards' visibility is measured in.
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
-  if (single) {
-    open = open.filter((record) => record.meta.id === active);
-    reviewed = reviewed.filter((record) => record.meta.id === active);
-  }
+  const open = single ? allOpen.filter((record) => record.meta.id === active) : allOpen;
+  const reviewed = single ? allReviewed.filter((record) => record.meta.id === active) : allReviewed;
   const card = (record: SuggestionRecord) => (
     <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} single={single} root={root} opened={opened} body={body} />
   );
@@ -474,7 +472,8 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
             <TooltipContent side="bottom">Suggestions</TooltipContent>
           </Tooltip>
         ) : null}
-        {at ? <Popover.Anchor virtualRef={markAnchor} /> : !counted && anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
+        {/* Radix measures a virtual anchor only through getBoundingClientRect. */}
+        {at ? <Popover.Anchor virtualRef={markAnchor as unknown as RefObject<Element | null>} /> : !counted && anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
         <Popover.Portal>
           <Popover.Content
             align={at ? 'start' : 'end'}
