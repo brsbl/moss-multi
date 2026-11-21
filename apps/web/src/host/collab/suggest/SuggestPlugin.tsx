@@ -99,7 +99,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       } else if (built && body) {
         // Strikes: delete-part targets, and body items a record's own ops remove (a join, a split, a restyle).
         paintRanges(owner, [], struckAll.empty ? [] : rangesWhere(editor, binding, (id) => struckAll.has(id)));
-        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding), (record) => openSuggestion(pane.docId, record));
+        if (overlay) drawMarks(editor, overlay, editMarks(body, built, binding), (record, at) => openSuggestion(pane.docId, record, at));
       } else {
         clearPaint(owner);
         overlay?.replaceChildren();
@@ -144,14 +144,23 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         if (!binding) return;
         const under = (range: Range) => [...range.getClientRects()].some((rect) => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom);
         for (const [record, hit] of hitTargets()) {
-          if (rangesWhere(editor, binding, hit).some(under)) {
+          const range = rangesWhere(editor, binding, hit).find(under);
+          if (range) {
             // Inside a link the click opens the card instead of the link: this runs in the capture phase, before
             // moss's link activation on the same root.
             if (event.target instanceof Element && event.target.closest('a')) {
               event.preventDefault();
               event.stopPropagation();
             }
-            openSuggestion(pane.docId, record);
+            // The suggestion opens beside the clicked line of its text.
+            const line = [...range.getClientRects()].find((rect) => event.clientY >= rect.top && event.clientY <= rect.bottom);
+            const offset = line ? line.top - range.getBoundingClientRect().top : 0;
+            openSuggestion(pane.docId, record, () => {
+              if (!range.startContainer.isConnected) return null;
+              const box = range.getBoundingClientRect();
+              const first = [...range.getClientRects()].find((rect) => Math.abs(rect.top - box.top - offset) < 2);
+              return first ?? box;
+            });
             return;
           }
         }

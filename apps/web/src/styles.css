@@ -43,16 +43,19 @@
 [data-theme="dark"] ::highlight(moss-comment-hover-0),
 [data-theme="dark"] ::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
 
-/* Suggestion paint (docs/design/suggestions.md §7): derived highlights and an overlay, never the tree. */
+/* Suggestion paint (docs/design/suggestions.md §7): derived highlights and an overlay, never the tree. Proposed text
+   keeps the note's ink; a faint underline or strike is the only operation cue (T9.34). */
 ::highlight(suggest-insert) {
-  background-color: var(--highlight-green);
   text-decoration: underline;
-  text-decoration-color: var(--accent-brand);
+  text-decoration-color: var(--ink-faint);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
 ::highlight(suggest-delete) {
-  color: var(--accent-terracotta);
+  color: var(--ink-muted);
   text-decoration: line-through;
-  text-decoration-color: var(--accent-terracotta);
+  text-decoration-color: var(--ink-faint);
+  text-decoration-thickness: 1px;
 }
 /* Above moss's block gap cursors (z-20 hit areas at each block edge), so a wedge there takes the hover and click. */
 .moss-suggest-overlay {
@@ -69,12 +72,18 @@
   cursor: pointer;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-bottom: 6px solid var(--accent-brand);
+  border-bottom: 6px solid var(--ink-faint);
 }
+.moss-suggest-wedge:hover,
+.moss-suggest-wedge[data-open] {
+  border-bottom-color: var(--ink-muted);
+}
+/* Moss's tooltip material (TooltipContent), above the marked line so the line below stays readable. */
 .moss-suggest-preview {
   display: none;
   position: absolute;
-  top: 10px;
+  top: auto;
+  bottom: calc(var(--mark-line, 20px) + 10px);
   left: -8px;
   /* Sized to its text, not to the 8px wedge that holds it, and never wider than the viewport; drawMarks shifts it
      back inside the viewport when it opens near an edge. */
@@ -82,14 +91,15 @@
   max-width: min(320px, calc(100vw - 16px));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  padding: 6px 8px;
+  padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid var(--accent-brand);
-  background: var(--surface-floating, #fff);
-  color: var(--ink-default, inherit);
-  font-size: 12px;
-  line-height: 1.4;
-  box-shadow: 0 2px 8px var(--ink-shadow-soft, transparent);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-floating);
+  color: var(--ink-default);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 300;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
 }
 .moss-suggest-wedge:hover .moss-suggest-preview,
 .moss-suggest-wedge[data-open] .moss-suggest-preview {
@@ -99,9 +109,13 @@
   position: absolute;
   width: 3px;
   border-radius: 2px;
-  background: var(--accent-brand);
+  background: var(--ink-faint);
+  opacity: 0.6;
   pointer-events: auto;
   cursor: pointer;
+}
+.moss-suggest-gutter:hover {
+  opacity: 1;
 }
 /* Struck text a rewrite took out of the suggester's fork, drawn above the gap where it stood. */
 .moss-suggest-ghost {
@@ -109,14 +123,14 @@
   transform: translate(-50%, -100%);
   padding: 0 3px;
   border-radius: 3px;
-  border: 1px solid var(--accent-terracotta);
+  border: 1px solid var(--border-subtle);
   background: var(--surface-floating, #fff);
-  color: var(--accent-terracotta);
+  color: var(--ink-muted);
   font-size: 11px;
   line-height: 1.4;
   white-space: pre;
   text-decoration: line-through;
-  text-decoration-color: var(--accent-terracotta);
+  text-decoration-color: var(--ink-muted);
   pointer-events: none;
 }
 .moss-suggest-ghost::after {
@@ -126,14 +140,14 @@
   top: 100%;
   width: 1px;
   height: var(--ghost-line, 1em);
-  background: var(--accent-terracotta);
+  background: var(--ink-faint);
 }
 .moss-suggest-dot {
   position: absolute;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent-brand);
+  background: var(--ink-faint);
   pointer-events: auto;
   cursor: pointer;
 }

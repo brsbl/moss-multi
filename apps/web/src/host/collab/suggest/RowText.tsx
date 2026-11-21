@@ -10,12 +10,14 @@ const described = (space: string) => {
   return names.every((name) => name === names[0]) && names.length > 1 ? `${names.length} × ${names[0]}` : names.join(', ');
 };
 
-export function RowText({ text, struck }: { text: string; struck: boolean }): ReactNode {
+/** Struck or `inserted` (underlined) text keeps its ink; only a faint line says which (T9.34). */
+export function RowText({ text, struck, inserted = false }: { text: string; struck: boolean; inserted?: boolean }): ReactNode {
   const segments = rowSegments(text);
   const only = segments.length === 1 && segments[0].space !== undefined ? segments[0].space : null;
+  const line = struck ? 'line-through decoration-ink-faint' : inserted ? 'underline decoration-ink-faint underline-offset-2' : '';
   return (
     <>
-      <span className={struck ? 'line-through' : ''}>
+      <span className={line}>
         {segments.length === 0 ? <span className="italic text-ink-faint">empty</span> : null}
         {segments.map((segment, i) =>
           segment.space === undefined ? (

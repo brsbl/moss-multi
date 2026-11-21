@@ -2,8 +2,8 @@
 // DS inside the note's top bar, beside the bell. The records are read from the note's own `suggestions` map, so a
 // suggestion, an accept, a reject and a withdraw show in every window as the doc syncs; each open card's hunks come
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
-import { Button } from '@moss/shared/components/ui/button';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
 import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
@@ -13,7 +13,7 @@ import {
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { Check, FilePenLine, PencilLine, X } from 'lucide-react';
+import { FilePenLine, MoreHorizontal, PencilLine, Undo2 } from 'lucide-react';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
@@ -39,8 +39,9 @@ export interface SuggestionsSource {
   subscribeMount(listener: () => void): () => void;
 }
 
-// Which doc's panel is open, and the card a painted suggestion asked for.
+// Which doc's panel is open, the card a painted suggestion asked for, and where that suggestion is painted.
 const openPanels = new Map<string, string | null>();
+const openAt = new Map<string, () => DOMRect | null>();
 const panelListeners = new Set<() => void>();
 let panelVersion = 0;
 const panelChanged = () => {
@@ -48,13 +49,19 @@ const panelChanged = () => {
   for (const listener of panelListeners) listener();
 };
 
-/** Opens `docId`'s panel with `record`'s card active (a click on a painted suggestion). */
-export function openSuggestion(docId: string, record: string | null): void {
+/**
+ * Opens `docId`'s panel with `record`'s card active. With `at` (a click on a painted suggestion: where it is painted)
+ * that one suggestion opens beside its mark, as Moss's comment thread opens at its text (T9.34).
+ */
+export function openSuggestion(docId: string, record: string | null, at?: () => DOMRect | null): void {
   openPanels.set(docId, record);
+  if (record !== null && at) openAt.set(docId, at);
+  else openAt.delete(docId);
   panelChanged();
 }
 
 function closePanel(docId: string): void {
+  openAt.delete(docId);
   if (openPanels.delete(docId)) panelChanged();
 }
 
@@ -80,8 +87,9 @@ function askToClose(next: PendingClose | null): void {
 /** An event the open confirmation caused: the list stays open under it. */
 function fromConfirmation(docId: string, event: Event): boolean {
   if (pendingClose?.docId === docId) return true;
+  // A suggestion's own menu (Withdraw) is portalled outside the list too.
   const within = (node: EventTarget | null | undefined) =>
-    node instanceof Element && !!node.closest('[data-remote-web-surface-blocking-dialog], [data-moss-modal-overlay]');
+    node instanceof Element && !!node.closest('[data-remote-web-surface-blocking-dialog], [data-moss-modal-overlay], [data-suggestion-menu]');
   return within(event.target) || within((event as FocusEvent).relatedTarget);
 }
 
@@ -143,10 +151,15 @@ export function reviewEntryNote(role: Role, mode: EditMode | null): string {
   return mode === 'suggest' || role === 'suggester' ? 'Suggesting pauses while you review' : 'Editing pauses while you review';
 }
 
-const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
+/** Moss's compact list action (the comment list's filter buttons): 24 px tall, as wide as its label, no resting fill. */
+const ACTION = 'flex h-6 items-center rounded px-1.5 text-micro text-ink-muted transition-colors hover:bg-surface-panel hover:text-ink-default focus:outline-none focus-visible:bg-surface-panel disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-muted';
+const QUIET_LINK = 'shrink-0 text-micro text-ink-muted underline underline-offset-2 hover:text-ink-default';
+const STATUS_WORDS: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected', withdrawn: 'Withdrawn' };
 
-function SuggestionCard({ docId, record, me, role, active, root, opened, body }: {
+function SuggestionCard({ docId, record, me, role, active, single, root, opened, body }: {
   docId: string;
+  /** The one suggestion opened beside its mark. */
+  single: boolean;
   record: SuggestionRecord;
   me: string | null;
   role: Role | null;
@@ -201,49 +214,76 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
   // Reject and Withdraw cannot be undone, so they ask first; Accept needs every change shown instead.
   const ask = (action: 'reject' | 'withdraw') => askToClose({ docId, action, author: own ? null : meta.authorName, run: () => void act(action) });
 
+  const status = !open ? (meta.resolvedBy === 'system' ? 'No changes' : STATUS_WORDS[meta.status] ?? meta.status) : outdated ? 'Outdated' : broken ? 'Can’t be shown' : null;
+
+  // A flat row, as Moss's comment list draws one: author, time, the change, then its decisions.
   return (
     <div
       {...{ [SUGGESTION_CARD_ATTR]: '', [SUGGESTION_ID_ATTR]: meta.id, [SUGGESTION_STATUS_ATTR]: meta.status }}
       {...(active ? { [SUGGESTION_ACTIVE_ATTR]: '' } : {})}
       ref={cardRef}
-      className={`rounded-lg border p-2.5 transition-colors ${active ? 'border-accent-brand shadow-sm' : 'border-border-subtle'} ${open ? '' : 'opacity-70'}`}
+      className={`px-3 py-2.5 transition-colors ${active && !single ? 'bg-surface-panel' : ''} ${open ? '' : 'opacity-70'}`}
     >
-      <div className="mb-1 flex flex-wrap items-center gap-1.5">
-        <span className="text-xs font-medium text-ink-default">{meta.authorName}{own ? ' (you)' : ''}</span>
-        <span className="text-micro text-ink-faint">{timeAgo(meta.createdAt)}</span>
-        {!open ? <span className={`${BADGE} bg-surface-badge text-ink-muted`}>{meta.resolvedBy === 'system' ? 'no changes' : meta.status}</span> : null}
-        {open && outdated ? <span className={`${BADGE} bg-surface-badge text-accent-terracotta`}>outdated</span> : null}
-        {open && broken && !outdated ? <span className={`${BADGE} bg-surface-badge text-accent-terracotta`}>broken</span> : null}
+      <div className="flex min-h-6 min-w-0 items-center gap-1.5">
+        <span className="truncate text-caption font-medium text-ink-default">{meta.authorName}{own ? ' (you)' : ''}</span>
+        <span className="shrink-0 text-caption font-extralight text-ink-faint">{timeAgo(meta.createdAt)}</span>
+        {status ? <span className="shrink-0 text-micro text-ink-faint">· {status}</span> : null}
+        {open && own && !reviewer ? (
+          // The author's own way out is secondary: Moss's comment actions menu.
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                disabled={busy}
+                aria-label="Suggestion actions"
+                className="-mr-1 ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-panel hover:text-ink-muted focus:outline-none focus-visible:ring-0"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={4}
+              className="min-w-32"
+              data-suggestion-menu=""
+              onCloseAutoFocus={(event: Event) => {
+                // The confirmation takes focus (Cancel), not the trigger.
+                if (pendingClose) event.preventDefault();
+              }}
+            >
+              <DropdownMenuItem className="gap-2 text-xs text-accent-terracotta focus:text-accent-terracotta data-[highlighted]:text-accent-terracotta" onSelect={() => ask('withdraw')}>
+                <Undo2 className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+                Withdraw
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
-      {meta.note ? <p className="mb-1.5 text-sm italic text-ink-muted">{meta.note}</p> : null}
+      {meta.note ? <p className="mt-0.5 text-caption italic text-ink-muted">{meta.note}</p> : null}
       {open ? (
-        <div className="flex flex-col gap-1 text-xs">
+        <div className="mt-1 flex flex-col gap-0.5 text-caption">
           {preview.state === 'loading' ? <p className="text-micro text-ink-faint">Loading changes…</p> : null}
           {preview.state === 'ready' && rows.length === 0 ? <p className="text-micro text-ink-faint">No visible change yet.</p> : null}
           {failed ? (
             <div className="flex items-center gap-2">
               <span role="alert" className="text-micro text-accent-terracotta">{failed}</span>
-              <button type="button" className="shrink-0 text-micro text-ink-default underline" onClick={refresh}>
+              <button type="button" className={QUIET_LINK} onClick={refresh}>
                 Try again
               </button>
             </div>
           ) : null}
           {shownRows.map((row, i) => (
-            <div
-              key={i}
-              title={row.detail}
-              {...{ [SUGGESTION_ROW_ATTR]: row.kind }}
-              className={`flex gap-1 rounded px-1.5 py-0.5 ${row.kind === 'insert' ? 'bg-accent-brand/10 text-accent-brand-pressed' : row.kind === 'delete' ? 'bg-accent-terracotta/10 text-accent-terracotta' : 'bg-surface-badge text-ink-muted'}`}
-            >
-              <span aria-hidden className="shrink-0">{row.kind === 'insert' ? '+' : row.kind === 'delete' ? '−' : '~'}</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words">
-                <RowText text={row.text} struck={row.kind === 'delete'} />
+            <div key={i} title={row.detail} {...{ [SUGGESTION_ROW_ATTR]: row.kind }} className="flex gap-1.5">
+              {/* The operation is a small faint mark; the text keeps the note's ink, underlined or struck. */}
+              <span aria-hidden className="w-2 shrink-0 text-center text-ink-faint">{row.kind === 'insert' ? '+' : row.kind === 'delete' ? '−' : '~'}</span>
+              <span className={`min-w-0 whitespace-pre-wrap break-words ${row.kind === 'insert' ? 'text-ink-default' : 'text-ink-muted'}`}>
+                <RowText text={row.text} struck={row.kind === 'delete'} inserted={row.kind === 'insert'} />
                 {row.note ? <span className="text-micro text-ink-faint">{' — '}{row.note}</span> : null}
               </span>
             </div>
           ))}
           {allShown ? null : (
-            <button type="button" className="self-start text-micro text-ink-default underline" onClick={() => setExpanded(true)}>
+            <button type="button" className={`self-start ${QUIET_LINK}`} onClick={() => setExpanded(true)}>
               Show all {rows.length} changes
             </button>
           )}
@@ -252,7 +292,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
               <span className="text-micro text-ink-muted">{reasonText(outdated ? 'outdated' : 'broken')}</span>
               <button
                 type="button"
-                className="shrink-0 text-micro text-ink-default underline"
+                className={QUIET_LINK}
                 onClick={() => {
                   void navigator.clipboard?.writeText(suggestedText(record, body)).then(() => setCopied(true), () => setCopied(false));
                 }}
@@ -264,28 +304,20 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
         </div>
       ) : null}
       {error ? <p role="alert" className="mt-1.5 text-micro text-accent-terracotta">{error}</p> : null}
-      {open && (reviewer || own) ? (
-        <div className="mt-2 flex gap-2">
-          {reviewer ? (
-            <>
-              <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
-                title={allShown ? undefined : 'Show every change before accepting'}
-                onClick={() => void act('accept')}>
-                <Check aria-hidden className="h-3 w-3" />
-                Accept
-              </Button>
-              <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('reject')}>
-                <X aria-hidden className="h-3 w-3" />
-                Reject
-              </Button>
-            </>
-          ) : null}
-          {own && !reviewer ? (
-            <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('withdraw')}>
-              <X aria-hidden className="h-3 w-3" />
-              Withdraw
-            </Button>
-          ) : null}
+      {open && reviewer ? (
+        <div className="-ml-1.5 mt-1.5 flex gap-1">
+          <button
+            type="button"
+            className={ACTION}
+            disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
+            title={allShown ? undefined : 'Show every change before accepting'}
+            onClick={() => void act('accept')}
+          >
+            Accept
+          </button>
+          <button type="button" className={ACTION} disabled={busy} onClick={() => ask('reject')}>
+            Reject
+          </button>
         </div>
       ) : null}
     </div>
@@ -293,8 +325,10 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
 }
 
 /** The panel's cards: the open ones newest first, then the latest reviewed. */
-export function SuggestionList({ docId, open, reviewed, me, role, active, opened = '', body = null }: {
+export function SuggestionList({ docId, open, reviewed, me, role, active, single = false, opened = '', body = null }: {
   docId: string;
+  /** Only the active suggestion, opened beside its mark. */
+  single?: boolean;
   open: SuggestionRecord[];
   reviewed: SuggestionRecord[];
   me: string | null;
@@ -306,9 +340,19 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
 }): ReactNode {
   // The scroll box the cards' visibility is measured in.
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  if (single) {
+    open = open.filter((record) => record.meta.id === active);
+    reviewed = reviewed.filter((record) => record.meta.id === active);
+  }
+  const card = (record: SuggestionRecord) => (
+    <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} single={single} root={root} opened={opened} body={body} />
+  );
   return (
-    <div ref={setRoot} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
-      {open.length === 0 && reviewed.length === 0 ? (
+    <div ref={setRoot} className="flex min-h-0 flex-1 flex-col overflow-y-auto py-1">
+      {single && open.length === 0 && reviewed.length === 0 ? (
+        <p className="px-3 py-2.5 text-caption text-ink-faint">This suggestion is no longer in the note.</p>
+      ) : null}
+      {!single && open.length === 0 && reviewed.length === 0 ? (
         <div className="px-3 py-6 text-center">
           <p className="text-xs text-ink-default">No suggestions</p>
           <p className="mt-1 text-micro text-ink-faint">
@@ -316,13 +360,9 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
           </p>
         </div>
       ) : null}
-      {open.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
-      ))}
-      {reviewed.length ? <p className="mt-1 px-1 text-micro font-medium uppercase tracking-wide text-ink-faint">Reviewed</p> : null}
-      {reviewed.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
-      ))}
+      {open.map(card)}
+      {reviewed.length && !single ? <p className="px-3 pb-1 pt-2 text-micro text-ink-faint">Reviewed</p> : null}
+      {reviewed.map(card)}
     </div>
   );
 }
@@ -373,6 +413,13 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   const me = auth.status === 'signed-in' ? auth.user.id : null;
   const isOpen = openPanels.has(docId);
   const active = openPanels.get(docId) ?? null;
+  // Opened from a painted mark: that one suggestion, at the mark (Moss's comment thread at its text).
+  const at = isOpen && active !== null ? openAt.get(docId) ?? null : null;
+  const markAnchor = useMemo(() => {
+    // A repaint can replace the mark under it: the last place it was seen holds until the next paint.
+    let last: DOMRect | null = null;
+    return { current: { getBoundingClientRect: () => (last = at?.() ?? last ?? new DOMRect()) } };
+  }, [at]);
   // The note as it stood when the panel opened: a preview kept from an earlier opening is reused only if it has not moved.
   const opened = useMemo(() => (isOpen && body ? Y.encodeStateVector(body).join('.') : ''), [isOpen, body]);
   const open = records.filter((record) => record.meta.status === 'open').sort((a, b) => b.meta.createdAt - a.meta.createdAt);
@@ -417,7 +464,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
                   aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
                   aria-haspopup="dialog"
                   aria-expanded={isOpen}
-                  className="relative flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+                  className="relative flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
                 >
                   <FilePenLine aria-hidden className="h-3.5 w-3.5" />
                   {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
@@ -426,35 +473,39 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
             </HomeTrigger>
             <TooltipContent side="bottom">Suggestions</TooltipContent>
           </Tooltip>
-        ) : anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
+        ) : null}
+        {at ? <Popover.Anchor virtualRef={markAnchor} /> : !counted && anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
         <Popover.Portal>
           <Popover.Content
-            align="end"
+            align={at ? 'start' : 'end'}
             side="bottom"
-            sideOffset={6}
+            sideOffset={at ? 8 : 6}
             collisionPadding={16}
-            className="z-50 flex max-h-comment-list-popover w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-floating shadow-surface outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+            // Never taller than the room on its side: its rows scroll and every decision stays reachable.
+            style={{ maxHeight: 'min(60vh, var(--radix-popover-content-available-height, 60vh))' }}
+            className={`z-50 flex w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden border border-border-subtle bg-surface-floating ${at ? 'rounded-xl shadow-sm' : 'rounded-lg shadow-surface'} outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95`}
             onOpenAutoFocus={(event) => event.preventDefault()}
             onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onFocusOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             {...{ [SUGGESTIONS_PANEL_ATTR]: '' }}
           >
-            <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
+            {at ? <Popover.Title className="sr-only">Suggestion</Popover.Title> : null}
+            {at ? null : <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
               <Popover.Title className="sr-only">Suggestions</Popover.Title>
               <div className="flex min-w-0 items-center gap-1">
                 <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-muted" strokeWidth={1.5} />
                 {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
               </div>
               {people ? <div className="ml-auto flex shrink-0 items-center">{people}</div> : null}
-            </div>
-            {open.length && !reviewing ? (
+            </div>}
+            {open.length && !reviewing && !at ? (
               // The way into Review, saying what it pauses; in Review the pane's bottom row is its one state and exit.
               <button
                 type="button"
                 aria-label="Review suggestions"
                 aria-describedby={entryNote}
-                className="mx-2 mt-2 flex shrink-0 flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
+                className="mx-1 mt-1 flex shrink-0 flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
                 onClick={() => {
                   requestMode(docId, 'review');
                   closePanel(docId);
@@ -464,7 +515,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
                 <span id={entryNote} className="text-micro text-ink-faint">{reviewEntryNote(role, mode)}</span>
               </button>
             ) : null}
-            <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
+            <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} single={at !== null} opened={opened} body={body} />
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>

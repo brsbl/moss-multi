@@ -11,7 +11,7 @@ import {
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import {
-  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, reviewSwitch, settled as acked,
+  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, pressClose, reviewSwitch, settled as acked,
   sharedNote,
 } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -69,7 +69,7 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   // The author's own panel lists it with Withdraw and no Accept.
   const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
   await expect(own).toHaveCount(1);
-  await expect(own.getByRole('button', { name: 'Withdraw' })).toBeVisible();
+  await expect(own.getByRole('button', { name: 'Suggestion actions' }), 'Withdraw is in its own menu').toBeVisible();
   await expect(own.getByRole('button', { name: 'Accept' })).toHaveCount(0);
   await closePanel(ben);
 
@@ -352,7 +352,7 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   // Withdraw asks first; Escape and Cancel keep the suggestion.
   const withdraw = confirmation(ben, 'Withdraw');
   for (const dismiss of ['Escape', 'Cancel'] as const) {
-    await own.getByRole('button', { name: 'Withdraw' }).click();
+    await pressClose(ben, own, 'Withdraw');
     await expect(withdraw).toBeVisible();
     await expect(withdraw).toContainText('Your proposed change will be discarded. This action cannot be undone.');
     await expect(withdraw.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();
