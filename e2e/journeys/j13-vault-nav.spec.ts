@@ -155,8 +155,12 @@ test('j13-vault-nav: a folder shared with you is never labelled with the vault o
   const create = page.getByRole('button', { name: 'Create new note', exact: true });
   const hint = page.getByRole('tooltip').filter({ hasText: 'New note in' });
 
+  const own = await ada.context.request.post('/api/folders', { headers: { origin }, data: { parentId: (await listing(ada)).vault.id, name: 'Recipes' } });
+  expect(own.status(), 'declared setup: her own folder').toBe(201);
+  await expect(ui.folderRow(ada, 'Recipes')).toBeVisible({ timeout: BIND_TIMEOUT });
+  await ui.folderRow(ada, 'Recipes').click();
   await create.hover();
-  await expect(hint.filter({ hasText: 'New note in Home' }), 'at her vault\'s root "+ Note" names it').toBeVisible();
+  await expect(hint.filter({ hasText: 'New note in Home' }), 'in her own folder "+ Note" names her vault').toBeVisible();
   await page.mouse.move(0, 0);
   await expect(hint).toHaveCount(0);
 
