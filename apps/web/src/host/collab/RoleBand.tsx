@@ -5,7 +5,8 @@ import {
   BODY_BINDING_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, TITLE_BINDING_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import type { Role } from '@moss-multi/protocol/roles';
-import type { ReactNode } from 'react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { useId, useState, type ReactNode } from 'react';
 import { knownRole, useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
 import { useHistoryOpen } from '../history/HistoryView.tsx';
@@ -35,9 +36,35 @@ export function useRoleBand(docId: string | null): string | null {
 }
 
 /**
- * The band: the reader's access in two words (T9.33). A signed-out link visitor's holds "Sign in to do more" at every
- * width: the top bar has none (T9.30). In Review with a suggestion open, the same one row says so and offers Done back
- * to the plain read-only note, which Escape also does; with none open it is the access alone.
+ * The reader's access in two words that explain themselves (T9.35): Moss's tooltip on hover and keyboard focus, the
+ * accessible description, and a press or tap says it in the refusal notice just above, for touch.
+ */
+function Access({ lead, help, describedBy }: { lead: string; help: string; describedBy: string }): ReactNode {
+  const [tip, setTip] = useState(false);
+  return (
+    <TooltipProvider>
+      <Tooltip open={tip} onOpenChange={setTip}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-describedby={describedBy}
+            onClick={() => { setTip(false); refuseInput(help); }}
+            className="cursor-default text-xs text-ink-muted"
+          >
+            {lead}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{help}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/**
+ * The band: the reader's access in two words (T9.33). A signed-out link visitor's holds a plain "Sign in" at every
+ * width, which promises nothing the link does not give (T9.35); the top bar has none (T9.30). In Review with a
+ * suggestion open, the same one row says so and offers Done back to the plain read-only note, which Escape also does;
+ * with none open it is the access alone.
  */
 export function RoleBand({ docId }: { docId: string }): ReactNode {
   const lead = useRoleBand(docId);
@@ -45,6 +72,7 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
   const mode = useShownMode(docId);
   const open = useOpenSuggestions(docId);
   const auth = useAuthState();
+  const id = useId();
   const reviewing = lead !== null && mode === 'review' && open > 0;
   useEscapeLeavesReview(docId, role, reviewing);
   // A tab whose session ended offers its banner's "Sign in" instead (T9.17).
@@ -54,10 +82,11 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
     <>
       {' '}
       <button type="button" onClick={signInToDoMore} className={BOTTOM_ROW_ACTION}>
-        Sign in to do more
+        Sign in
       </button>
     </>
   ) : null;
+  const help = (role ? REFUSED[role] : undefined) ?? lead;
   if (reviewing) {
     return (
       <ReviewRow docId={docId} role={role} reader text={`Reviewing suggestions · ${lead}`} attrs={{ [ROLE_BAND_ATTR]: '', [REVIEW_BAND_ATTR]: '' }}>
@@ -68,9 +97,11 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
   return (
     <div className={BOTTOM_ROW_SLOT}>
       <div {...{ [ROLE_BAND_ATTR]: '' }} className={BOTTOM_ROW}>
-        <span>{lead}</span>
+        <Access lead={lead} help={help} describedBy={id} />
         {signIn}
       </div>
+      {/* Outside the row, so the row reads as its words. */}
+      <span id={id} hidden>{help}</span>
     </div>
   );
 }
