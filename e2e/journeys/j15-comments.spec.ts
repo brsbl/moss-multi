@@ -8,6 +8,7 @@ import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { BODY_BINDING_ATTR, DOC_STATE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
 import { grantDoc, type GrantRole } from '../lib/grants.ts';
+import { exported, pastePlain } from '../lib/paste.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -420,4 +421,39 @@ test('j15-comments: the gutter opens the thread; a reply arrives live, attribute
   await expect(listed, 'with its quote, marked detached').toContainText('lazy dog');
   await expect(listed).toContainText(/detached/i);
   await actors.checkpoint('detached');
+});
+
+test('j15-comments: a large paste at the caret before commented words keeps the comment on them, for the peer and after a reload @p:mean-1 @p:tech-3', async ({ actors, stack }) => {
+  const adaPrincipal = await actors.principal('ada');
+  const ada = await actors.session(adaPrincipal);
+  const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { markdown: SEED } });
+  expect(created.status()).toBe(201);
+  const { doc: { id } } = await created.json() as { doc: { id: string } };
+  await ada.goto(`/d/${id}`);
+  await ui.waitLive(ada, id);
+  const benPrincipal = await actors.principal('ben');
+  await grantDoc(ada, id, benPrincipal, 'editor');
+  const ben = await actors.open(benPrincipal, { path: `/d/${id}` });
+  await expect(ui.body(ben, id)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  // A page applying a large paste can read its socket as silent and reconnect.
+  ben.expectReconnects(2, id);
+  await select(ada, id, 'lazy dog.');
+  await comment(ada, 'Keep me through the paste');
+  await expectPainted(ada, id, 'lazy dog.', 'the comment paints');
+  await waitAcked(ada, id);
+  await ada.page.waitForTimeout(1_500);
+
+  // Lines enough for the paste to land in batches; the words after the caret move into its last line.
+  const lines = Array.from({ length: 6_000 }, (_, i) => `P${i + 1}`).join('\n');
+  await select(ada, id, 'lazy dog.', 0);
+  await pastePlain(ada, id, lines);
+  await expect.poll(async () => (await exported(ada, id)).includes('P6000lazy dog.'), { message: 'the paste lands whole', timeout: 120_000 }).toBe(true);
+  await expect(ui.pane(ada, id), 'every write is acked').toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: 120_000 });
+  await ada.page.waitForTimeout(1_000);
+  await expect.poll(() => painted(ada, id), { message: 'the comment stays on its words', timeout: PEER_TIMEOUT }).toEqual(['lazy dog.']);
+  await expect.poll(() => painted(ben, id), { message: 'for the peer too', timeout: 60_000 }).toEqual(['lazy dog.']);
+  // A declared reload: the fresh page paints from the server's record alone.
+  await ada.page.reload();
+  await expect(ui.pane(ada, id)).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: 60_000 });
+  await expect.poll(() => painted(ada, id), { message: 'a fresh load paints it on its words', timeout: 60_000 }).toEqual(['lazy dog.']);
 });

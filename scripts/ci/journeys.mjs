@@ -43,7 +43,7 @@ export const GROUPS = {
   pastecap: ['j01-paste-cap'],
   // A paste past the cap only with the deleted blocks' payloads the server still counts, refused whole.
   pasteheld: ['j01-paste-held'],
-  // A paste cut short near the cap by another writer (a known limitation): the notice, convergence and undo.
+  // A paste cut short near the cap by another writer, rolled back: the notice, convergence, undo and a resumed rollback.
   pastetail: ['j01-paste-tail'],
   // A peer's edits while a large paste is checked, its redo after a peer's new block, and a check list's order.
   pasterace: ['j01-paste-race', 'j01-paste-check'],
@@ -74,8 +74,9 @@ export const GROUPS = {
   suggest: ['j16'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
   suggestPaste: ['j16-paste'],
-  // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body.
-  suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo'],
+  // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body; a Review
+  // window left open across an accept that keeps the originals (review's WebKit shard is full).
+  suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo', 'j16-review-kept'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
   // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
