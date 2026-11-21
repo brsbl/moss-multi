@@ -137,7 +137,7 @@ test('j13-vault-nav: a note shared with you is never labelled with the vault on 
   await expect(noteRow(ada, docId), 'the shared note surfaces in her vault').toBeVisible({ timeout: BIND_TIMEOUT });
   await ui.openNote(ada, docId);
   await expect.poll(() => ada.page.title(), { message: 'the tab names the note only' }).toBe('Ben plans — Moss');
-  await expect(ui.pane(ada, docId).getByRole('navigation', { name: 'Note location', exact: true }), 'the location names no vault').toBeVisible();
+  await expect(ada.page.getByRole('navigation', { name: /^Note location in / }), 'no location names a vault').toHaveCount(0);
 });
 
 test('j13-vault-nav: search says Searching… until the index answers, says when it could not, and a result from another vault names it @p:note-7', async ({ actors }) => {
