@@ -92,13 +92,15 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   const dialog = await ui.openShare(ada, docId);
   await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveText('Can edit');
   const patched = ada.page.waitForResponse((response) => response.url().endsWith(`/api/docs/${docId}/members`) && response.request().method() === 'PATCH');
-  // The clock starts at the choice itself, once the role menu is open.
-  await accessSelect(dialog, benPrincipal.name).click();
-  const choice = ui.openRoleMenu(dialog).getByRole('menuitemradio', { name: 'Can view', exact: true });
-  await expect(choice).toBeVisible();
-  const sentAt = Date.now();
-  await choice.click();
+  // The clock starts when the demotion leaves the page, not while the role menu opens.
+  let sentAt = Number.POSITIVE_INFINITY;
+  const onRequest = (request: { url(): string; method(): string }) => {
+    if (request.method() === 'PATCH' && request.url().endsWith(`/api/docs/${docId}/members`)) sentAt = Math.min(sentAt, Date.now());
+  };
+  ada.page.on('request', onRequest);
+  await chooseAccess(dialog, benPrincipal.name, 'Can view');
   expect((await patched).status(), 'the demotion is saved').toBe(200);
+  ada.page.off('request', onRequest);
   await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveText('Can view');
   await expect(dialog.getByRole('status'), 'and says so').toContainText('Can view');
 
