@@ -51,6 +51,7 @@ import { ConnectionNotice, ConnectionSlot } from './ConnectionNotice.tsx';
 import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
 import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
+import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
 import { BOTTOM_REGION, REGION_BOTTOM_PX, REGION_GAP_PX, useToolbarHeight } from './bottom-row.ts';
 
 interface PaneState {
@@ -752,10 +753,12 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <><ConnectionNotice docId={docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
+    noticeBand: <><ConnectionNotice docId={docId} refusals={docId === null || trashed} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
     bottomBand: docId ? (
       <BottomRegion docId={docId}>
         <ConnectionSlot docId={docId} />
+        {/* Moss shows its Trash notice in this slot instead, so a trashed note's refusals float from the band. */}
+        {trashed ? null : <RefusalAnnouncer />}
         {historyOpen ? null : <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></>}
       </BottomRegion>
     ) : null,

@@ -11,7 +11,7 @@ import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { AlertTriangle, Cloud, CloudOff, CloudUpload } from 'lucide-react';
 import { useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
-import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
+import { RefusalAnnouncer, useRefusalMessage } from '../surfaces/RefusalAnnouncer.tsx';
 import { SESSION_ENDED_COPY, useSessionEnded } from '../session-fetch.ts';
 import { leaveTo } from '../navigation.ts';
 import { standAboveTrashNotice } from '../notice-stack.ts';
@@ -168,13 +168,21 @@ export function ConnectionSlot({ docId }: { docId: string }): ReactNode {
 }
 
 /**
- * The reserved band under the top bar, in flow and zero-height: input refusals show in it. With no note bound, an
- * ended session's notice floats at the bottom of the screen, above a Trash notice if one shows.
+ * The pane's band under the top bar, in flow and zero-height, holding nothing visible. Where the pane has no bottom
+ * region of its own (no note bound, or a note in Trash) it floats one at the bottom, above a Trash notice if one
+ * shows: an ended session's notice with no note bound, and the input refusals when `refusals` (T9.35).
  */
-export function ConnectionNotice({ docId }: { docId: string | null }) {
+export function ConnectionNotice({ docId, refusals = docId === null }: { docId: string | null; refusals?: boolean }) {
   const notice = useNotice(docId);
+  // A refusal showing re-renders this, so the region stands above a Trash notice that appeared since.
+  useRefusalMessage();
+  const floating = docId === null && notice;
   return <div {...{ [NOTICE_BAND_ATTR]: '' }} className="shrink-0">
-    {docId === null && notice ? <div ref={standAboveTrashNotice} className={BOTTOM_REGION}><NoticeCard docId={null} notice={notice} /></div> : null}
-    <RefusalAnnouncer />
+    {floating || refusals ? (
+      <div ref={(el) => standAboveTrashNotice(el)} className={BOTTOM_REGION}>
+        {refusals ? <RefusalAnnouncer /> : null}
+        {floating ? <NoticeCard docId={null} notice={notice} /> : null}
+      </div>
+    ) : null}
   </div>;
 }
