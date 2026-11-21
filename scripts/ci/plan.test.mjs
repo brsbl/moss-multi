@@ -439,7 +439,7 @@ describe('the canary rehearsal (T8.D)', () => {
       plan: { result: 'success', outputs: { plan: JSON.stringify(plan) } },
       checks: { result: 'success' }, build: { result: 'success' }, e2e: { result: 'success' }, macos: { result: 'skipped' },
       oracle: { result: 'success' }, parity: { result: 'success' }, viewer: { result: 'success' }, editor: { result: 'success' },
-      'editor-host': { result: 'success' }, canary: { result: canary }, demo: { result: 'success' },
+      'editor-host': { result: 'success' }, memory: { result: 'success' }, canary: { result: canary }, demo: { result: 'success' },
     });
     expect(ciOk(needs('success')).ok).toBe(true);
     expect(ciOk(needs('skipped')).problems).toEqual(['canary: skipped (planned to run)']);
@@ -464,7 +464,7 @@ describe('the demo smoke (T8.B2)', () => {
       plan: { result: 'success', outputs: { plan: JSON.stringify(plan) } },
       checks: { result: 'success' }, build: { result: 'success' }, e2e: { result: 'success' }, macos: { result: 'skipped' },
       oracle: { result: 'success' }, parity: { result: 'success' }, viewer: { result: 'success' }, editor: { result: 'success' },
-      'editor-host': { result: 'success' }, canary: { result: 'success' }, demo: { result: demo },
+      'editor-host': { result: 'success' }, memory: { result: 'success' }, canary: { result: 'success' }, demo: { result: demo },
     });
     expect(ciOk(needs('success')).ok).toBe(true);
     expect(ciOk(needs('failure')).problems).toEqual(['demo: failure (planned to run)']);
