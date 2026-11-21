@@ -293,7 +293,7 @@ describe('POST /api/docs/:id/push @p:agt-1 @p:tech-5 @p:tech-7', () => {
     expect(huge.status).toBe(413);
     expect(huge.body).toMatchObject({ ok: false, reason: 'too-large', limit: 'markdown' });
     expect(String(huge.body.message)).toContain('at most 4 MB');
-    const paragraphs = Array.from({ length: 400 }, (_, i) => `Paragraph ${i} grows the doc past its small cap.`).join('\n\n');
+    const paragraphs = Array.from({ length: 2_000 }, (_, i) => `Paragraph ${i} grows the doc past its small cap.`).join('\n\n');
     const capped = await push(docId, cookieOf(ada), { newText: `${base}\n\n${paragraphs}`, baseHash: sha(base), baseText: base });
     expect(capped.status).toBe(413);
     expect(capped.body).toMatchObject({ ok: false, reason: 'too-large', limit: 'state' });
