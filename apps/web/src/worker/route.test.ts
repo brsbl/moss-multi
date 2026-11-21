@@ -142,6 +142,18 @@ describe('client protocol (registers.md rule 10)', () => {
     },
   );
 
+  it('refuses a protocol-1 bundle, from before the lean stored layout, on its doc socket and its REST writes', async () => {
+    const { deps, route } = harness();
+    const socket = await route(`/parties/doc-d-o/d_123?${PROTOCOL_PARAM}=1`, { headers: UPGRADE });
+    expect(socket.headers.get('x-close-code')).toBe('4426');
+    const write = await route('/api/docs/d_123/push', { method: 'POST', headers: { [PROTOCOL_HEADER]: '1' }, body: '{}' });
+    expect(write.status).toBe(426);
+    expect(await write.json()).toMatchObject({ error: OUTDATED_ERROR });
+    expect(deps.authenticateParty).not.toHaveBeenCalled();
+    expect(deps.routeParty).not.toHaveBeenCalled();
+    expect(deps.handleApi).not.toHaveBeenCalled();
+  });
+
   it('answers an older bundle\'s non-upgrade party request 426', async () => {
     const { deps, route } = harness();
     const response = await route('/parties/doc-d-o/d_123');
