@@ -870,6 +870,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - **Scope:** An HTML block's source editor on a short live preview gets a frame of at least header 40 + source 96 + footer 33 + border 2 px, and returns to the preview's height when closed. A bound editor's formula draft is Moss's chip as local paint (`host/formula-chip.ts`): 8 px inline padding on the spans the draft starts or ends, and a rounded box 2 px above and below the line, never written to the note. **Done:** j11-editor-geometry and the chip-box unit tests pass; before, after and Moss shots at 1440×1000, light and dark; full lane green.
 - **T9.46 The whole product looks like Moss** `[A·codex]` (scope added when built)
   - Required red-first test (T9.33 checker P2, visitor's Review row wraps at 390 px): a signed-out link visitor in Review at 390×844 sees “Reviewing suggestions · View only”, Done and Sign in to do more on one line, the row no taller than Moss's docked toolbar.
+  - Required red-first test (T9.38 checker P2, inbox target refused or gone at open time): on a real stack, a notice whose note is deleted or whose access is removed before it is opened stays unread after the open is tried, and its row says why.
 
 ## The loop
 
