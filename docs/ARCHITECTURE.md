@@ -413,7 +413,7 @@ The plugin is passed as MarkdownEditor's `collaboration` prop in place of `<Hist
 
 **Heartbeat.** The provider's 4 s `resyncInterval` keeps frames flowing; `channel-heartbeat` checks `wsLastMessageReceived` every 1 s. If an OPEN socket stays silent for more than 12 s, the client closes it with 4408, detaches it without waiting for its `close` event (a half-open socket may never deliver one), and reconnects. A half-open socket is therefore detected within 13 s, matching L§7.3's "about 13 s". [L§4.6; S-prior §4.3]
 
-**Indicator and banner.** A `connection-truth` reducer combines provider status and heartbeat verdicts; it never consults `navigator.onLine`. It drives `data-connection` on a persistent connection indicator in the top-bar collab slot (glyphdown's ConnectionPill) and the DS Banner, which sits in a reserved notice band under the top bar (z-index below opened surfaces). The same band shows input refusals, so a refusal is always visible. Edits keep buffering in the bound Y.Doc and resync on reconnect. [P:Collab; L§4.1 phone shell; glyphdown `DocEditorPage`]
+**Indicator and banner.** A `connection-truth` reducer combines provider status and heartbeat verdicts; it never consults `navigator.onLine`. It drives `data-connection` on a screen-reader-only indicator in the top bar and the connection notice, which floats as Moss's bottom notice in the pane's bottom region, above the mode row and the docked toolbar, so the note never moves (T9.40). A healthy connection draws nothing; a write waiting more than 2 s for its ack shows one quiet cue there, a presentation delay that outages and refusals skip. Input refusals show in a reserved notice band under the top bar, so a refusal is always visible. Edits keep buffering in the bound Y.Doc and resync on reconnect. [P:Collab; L§4.1 phone shell; glyphdown `DocEditorPage`]
 
 **Handshake failures.** After 3 consecutive handshakes that fail before opening, the client stops and asks REST; a 404 goes terminal `unavailable`. A designed refusal is never retried on a ladder. [L§4.6]
 
@@ -686,8 +686,9 @@ CRLF becomes LF at the boundary. [P:Tech; S-prior §8.2–8.3]
 | `data-comment-entry` | a block header's Add comment (code, chart, canvas, media; vendor seam) | the commenter's block entry point |
 | `data-editor-generation` | body root | +1 on every Lexical editor creation (remount detector) |
 | `data-sync-unacked` | pane | `0` or `1` (§10.6) |
-| `data-notice-band` | reserved band below each pane’s top bar | connection and input-refusal notices |
+| `data-notice-band` | reserved band below each pane’s top bar | input-refusal notices |
 | `data-connection-banner` | connection notice | `offline`, `retrying`, `halted`, or the terminal reason |
+| `data-connection-cue` | pending-write cue in the bottom region | `pending`, `settled` |
 | `data-connection` | connection indicator | `online`, `reconnecting`, `offline` |
 | `data-terminal-reason` | pane | `deleted`, `revoked`, `session-ended`, `unavailable`, `conn-limit` (S-test's `suggest-policy` is not terminal; it is a 4409 resync) |
 | `data-role` | pane | the effective role |

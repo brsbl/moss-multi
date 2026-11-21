@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 82% done** (248 of 302 planned tasks verified)
+**Overall: 82% done** (249 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 21 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 22 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -271,6 +271,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T9.30 verified: a note's top bar at rest holds only Moss's own actions, with Share, Suggestions, Suggest changes and Version history in More actions, the vault, notifications, connection and account in an app menu behind Settings, People here and open counts as quiet cues, and Suggesting, Review and a reader's access in one quiet bottom row.
 - 2026-11-18 — T9.33 verified: "Review suggestions" says what it pauses, the Review row names what is paused ("Editing paused", "Suggesting paused", "View only" or "Comment only"), and Done, Escape or the last decision return to the mode Review paused, by the current role.
 - 2026-11-21 — T9.38 verified: the bell stays a quiet 28 px button with no badge, and its 352 px inbox groups notices under each note's or folder's title with a neutral unread dot, says when it is loading, failed or empty, and marks a notice read only once its note has opened.
+- 2026-11-21 — T9.40 verified: a healthy connection draws nothing; a write unacked for 2 s shows a faint "Saving…" or "Reconnecting…" line that opens the connection details, and outage, late-sync and sign-in/reload notices float as one Moss-style card at the pane bottom so the note never moves.
 
 ## T1.1s identity audit
 
@@ -310,6 +311,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.40's checker (d4314d9, 2026-11-21)
+
+- T9.40 (Connection state shows only when it needs attention) checker P2: a pane kept open after its note is trashed swaps the bottom band for the Trash retention notice, so a later session-ended or outdated Sign in / Reload card is not drawn there; keep the connection card visible alongside the Trash notice.
+- T9.40 (Connection state shows only when it needs attention) checker P2: a large paste still landing does not drive the pending cue (the cue reads only DocSession unacked, not isLanding); the unload guard still covers it.
+- T9.40 (Connection state shows only when it needs attention) checker P2: the outage card sits 24 px above the pane bottom where Moss's Trash notice sits at 32 px.
+- T9.40 (Connection state shows only when it needs attention) checker P2: the outage card is about 588 px wide with a slashed-cloud icon, versus Moss's ~229 px Trash card with a warning triangle; shorter copy would bring it closer.
+- T9.40 (Connection state shows only when it needs attention) checker P2: coverage gaps: j03 overlap checks run only when the toolbar is visible; no test holds details open through an ack or checks keyboard focus return.
 
 ### From T9.38's checker (c98945e, 2026-11-21)
 
