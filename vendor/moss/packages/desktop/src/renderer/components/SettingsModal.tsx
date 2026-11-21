@@ -22,7 +22,7 @@ import { refreshWorkspaceInfoAtom, workspaceInfoAtom } from '../state/workspace-
 import { ModalShell } from './ModalShell';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
-// moss-multi seam: settings-sections (A§2.2: the Agents section slot)
+// moss-multi seam: settings-sections (A§2.2: the Vaults, Account and Agents section slot)
 import { SettingsSections } from '@moss-multi/host/slots';
 
 function toTildePath(fullPath: string): string {
@@ -347,7 +347,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             </div>
             )}
 
-            <SettingsSections />
+            <SettingsSections onClose={() => onOpenChange(false)} />
 
     </ModalShell>
   );

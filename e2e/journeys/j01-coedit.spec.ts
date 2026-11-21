@@ -199,10 +199,10 @@ test('j01 discovery: Ben finds a directly shared note in Home without a URL or m
   await expect(row).toBeVisible();
   await expect(ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"] [draggable="true"]`)).toHaveCount(1);
   await expect(row.locator('[draggable="true"]')).toHaveCount(0);
-  await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
+  await ui.expectVault(ben.page, 'Home');
   await row.click();
   await ui.waitBodyLive(ben, docId);
-  await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
+  await ui.expectVault(ben.page, 'Home');
   await row.click({ button: 'right' });
   await expect(ben.page.getByRole('menuitem', { name: 'Copy Link', exact: true })).toBeVisible();
   await expect(ben.page.getByRole('menuitem', { name: /Move|New folder|Create folder/ })).toHaveCount(0);
@@ -222,12 +222,11 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   expect(grant.status()).toBe(201);
   await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const ben = await actors.open(benPrincipal);
-  const switcher = ben.page.getByRole('button', { name: 'Vault: Home', exact: true });
-  await switcher.click();
-  const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
+  const list = await ui.openVaultList(ben.page);
+  const shared = list.getByRole('menuitemradio', { name: 'Home Can edit', exact: true });
   await expect(shared).toBeVisible();
-  // Ben’s own Home is active, so "Share vault…" and "New vault" are his; its rename and trash sit beside the switcher.
-  await expect(ben.page.getByRole('menuitem', { name: /Rename|Delete|Trash/ })).toHaveCount(0);
+  // Switching only switches: renaming and trashing a vault live in Settings.
+  await expect(list.getByRole('menuitem', { name: /Rename|Delete|Trash/ })).toHaveCount(0);
   await shared.click();
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
@@ -235,8 +234,7 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await expect(row).toBeVisible();
   await row.click();
   await ui.waitBodyLive(ben, docId);
-  await switcher.click();
-  await ben.page.getByRole('menuitem', { name: 'Home', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home');
   await expect(row).toHaveCount(0);
   await expect(ui.pane(ben, docId)).toBeVisible();
   await actors.checkpoint('switched-back-with-doc-open');

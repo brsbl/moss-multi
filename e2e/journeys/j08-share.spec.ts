@@ -106,7 +106,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await ada.page.keyboard.press('Escape');
   const stranger = await actors.anonymous(ui.pathOf(url), { label: 'stranger' });
   await stranger.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
-  await expect(stranger.page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the folder is the workspace').toBeVisible();
+  await expect(stranger.page.getByRole('button', { name: /^Vault: / }), 'a visitor is shown no vault control').toHaveCount(0);
   const strangerRow = stranger.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(strangerRow, 'its note is listed').toBeVisible();
   await expect(stranger.page.locator('[data-sidebar-row]'), 'and nothing else').toHaveCount(1);
@@ -116,14 +116,13 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await actors.checkpoint('folder-link-landing');
 });
 
-test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2@2 @p:note-4 @evidence', async ({ actors }) => {
+test('j08 vault: Ada shares her vault from Settings and Ben switches to it @p:ppl-2@2 @p:note-4 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
   const ben = await actors.open(benPrincipal);
 
-  await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
+  await (await ui.openVaultSettings(ada.page)).getByRole('button', { name: 'Share vault…', exact: true }).click();
   const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
   await expect(dialog, 'the vault share dialog opens').toBeVisible();
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can edit');
@@ -131,23 +130,29 @@ test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @
   const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  await expect(ada.page.getByRole('dialog', { name: 'Settings' }), 'closing it comes back to Settings').toBeVisible();
+  await ada.page.keyboard.press('Escape');
   const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
   await ben.goto(ui.pathOf(invite));
   await expect(ben.page, 'the invite leads to the vault').toHaveURL(new RegExp(`/f/${vault.id}$`), { timeout: 30_000 });
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
-  await expect(shared, "Ada's vault reaches Ben's switcher with his role").toBeVisible({ timeout: LIVE_TIMEOUT });
-  await shared.click();
+  await expect(async () => {
+    const list = await ui.openVaultList(ben.page);
+    try {
+      await expect(list.getByRole('menuitemradio', { name: 'Home Can edit', exact: true }), "Ada's vault reaches Ben's list with his role").toBeVisible({ timeout: 2_000 });
+    } finally {
+      await ui.closeVaultList(ben.page);
+    }
+  }).toPass({ timeout: LIVE_TIMEOUT });
+  await ui.switchVault(ben.page, 'Home Can edit');
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const menu = ben.page.getByRole('menu');
-  await expect(menu.getByRole('menuitem', { name: 'Home editor', exact: true }), 'the switcher is open').toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a member gets no vault actions').toHaveCount(0);
+  const settings = await ui.openVaultSettings(ben.page);
+  await expect(settings.getByRole('list', { name: 'Vaults' }).getByText('Can edit', { exact: true }), 'Settings lists the vault with his role').toBeVisible();
+  await expect(settings.getByRole('button', { name: /^(Share vault…|Rename…|Move to Trash…)$/ }), 'a member gets no vault actions').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
-  await expect(menu).toBeHidden();
+  await expect(settings).toBeHidden();
   await row.click();
   await ui.waitOpen(ben, docId, 'live');
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
@@ -162,8 +167,7 @@ test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no cr
   await cy.goto('/');
   await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
-  await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
+  await (await ui.openVaultSettings(ada.page)).getByRole('button', { name: 'Share vault…', exact: true }).click();
   const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
   await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
   await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is a co-owner of the vault').toContainText('Owner');
@@ -175,18 +179,11 @@ test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no cr
   await cy.page.reload();
   await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
-  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const shared = cy.page.getByRole('menuitem', { name: 'Home owner', exact: true });
-  await expect(shared, "Ada's vault reaches Cy's switcher as owner").toBeVisible({ timeout: LIVE_TIMEOUT });
-  await shared.click();
-  await expect(cy.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeEnabled({ timeout: LIVE_TIMEOUT });
-  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const menu = cy.page.getByRole('menu');
-  await expect(menu.getByRole('menuitem', { name: 'Home owner', exact: true }), 'the switcher is open').toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a co-owner may share the vault').toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: 'New vault', exact: true }), 'New vault belongs to the owned section').toHaveCount(0);
+  await ui.switchVault(cy.page, 'Home Owner');
+  const settings = await ui.openVaultSettings(cy.page);
+  await expect(settings.getByRole('button', { name: 'Share vault…', exact: true }), 'a co-owner may share the vault').toBeVisible();
+  await expect(settings.getByRole('button', { name: /^(Rename…|Move to Trash…)$/ }), "only the vault's owner renames or trashes it").toHaveCount(0);
   await cy.page.keyboard.press('Escape');
-  await expect(cy.page.getByRole('button', { name: 'Vault actions', exact: true }), "only the vault's owner renames or trashes it").toHaveCount(0);
 });
 
 test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2@2 @evidence', async ({ actors, browserName }) => {
@@ -281,7 +278,7 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   await expect(ui.pane(ben, docId), 'a viewer grant below an editor link: the link').toHaveAttribute(ROLE_ATTR, 'editor');
 
   const dee = await actors.open(await actors.principal('dee'), { path: `/f/${folderId}?share=${token}` });
-  await expect(dee.page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the folder is the workspace').toBeVisible({ timeout: LIVE_TIMEOUT });
+  await ui.expectVault(dee.page, name, { timeout: LIVE_TIMEOUT, message: 'the folder is the workspace' });
   const row = dee.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row, 'its note is listed').toBeVisible();
   await row.click();

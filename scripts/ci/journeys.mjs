@@ -69,6 +69,8 @@ export const GROUPS = {
   history: ['j17'],
   // The quiet note shell: its cues, More actions entries and the footer's app menu (shell's WebKit shard is full).
   quietShell: ['j21'],
+  // Vault navigation through the app menu and Settings, and where the vault is named (quietShell's WebKit shard is full).
+  vaultNav: ['j13-vault-nav'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
   // frames and offline comments (meaning's WebKit shard is full).
   social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],

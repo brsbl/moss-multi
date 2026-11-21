@@ -5,6 +5,7 @@
 import { useEffect, type ComponentType } from 'react';
 import { readyWhenShellRenders } from './app-state.ts';
 import { auth } from './auth.ts';
+import { setSignedIn } from './vault-name.ts';
 import { closeDocsToWrites, endTrashedDocs, pauseDocWrites, reaskDocRoles, reopenDocs, severDocSessions, waitDocsAcked } from './collab/doc-session.ts';
 import { anyTerminal, subscribeTerminal } from './collab/terminal.ts';
 import { ImageContextMenu } from './media/ImageContextMenu.tsx';
@@ -52,12 +53,18 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
     }
     return { default: PdfExportPage };
   }
-  const [{ default: App }, { ShareDialogHost }] = await Promise.all([import('@moss-desktop/renderer/App'), import('./surfaces/ShareDialog.tsx')]);
+  const [{ default: App }, { ShareDialogHost }, { DocumentTitle }] = await Promise.all([
+    import('@moss-desktop/renderer/App'), import('./surfaces/ShareDialog.tsx'), import('./document-title.tsx'),
+  ]);
   function MossShell() {
     useEffect(() => readyWhenShellRenders(), []);
     useEffect(() => installBackspaceGuard(), []);
     useEffect(() => { void revealLandingFolder(bridge); }, []);
     useEffect(() => { void inbox.refresh(); }, []);
+    useEffect(() => {
+      setSignedIn(auth.get().status === 'signed-in');
+      return auth.subscribe((state) => { setSignedIn(state.status === 'signed-in'); });
+    }, []);
     useEffect(() => auth.subscribe((state) => {
       if (state.status === 'signed-out') severDocSessions();
       else pauseDocWrites(state.status === 'signing-out');
@@ -74,6 +81,7 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
         <TrashConfirmation />
         <ReloadConfirmation />
         <ShareDialogHost />
+        <DocumentTitle />
       </>
     );
   }
