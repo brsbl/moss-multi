@@ -25,6 +25,25 @@ async function suggestText(actor: Actor, docId: string, at: string, offset: numb
   await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
 }
 
+/** The title and body lines `actor`'s open suggestion surface covers, by their text. */
+async function coveredLines(actor: Actor, docId: string): Promise<string[]> {
+  return panel(actor).evaluate((surface, selector) => {
+    const card = surface.getBoundingClientRect();
+    const covered: string[] = [];
+    for (const root of document.querySelector(selector)!.querySelectorAll('[data-title-binding], [data-body-binding]')) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const line of range.getClientRects()) {
+          if (line.width > 0 && line.right > card.left && line.left < card.right && line.bottom > card.top && line.top < card.bottom) covered.push(node.textContent ?? '');
+        }
+      }
+    }
+    return covered;
+  }, `[data-editor-pane][data-doc-id="${docId}"]`);
+}
+
 /** The centre of `text`'s first occurrence in `actor`'s body. */
 async function pointAt(actor: Actor, docId: string, text: string): Promise<{ x: number; y: number }> {
   return ui.body(actor, docId).evaluate((root, text) => {
@@ -584,6 +603,10 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
   expect(placed.width).toBe(352);
   expect(placed.radius, "the comment thread's radius").toBe('12px');
   expect(placed.gap, 'beside the mark').toBeLessThan(24);
+  expect(await coveredLines(ada, docId), 'the thread covers no line of the title or the text').toEqual([]);
+  // Moss's thread header: what it is, and a way to close it.
+  await expect(surface.getByText('Suggestion', { exact: true }), "the thread's header names it").toBeVisible();
+  await expect(surface.getByRole('button', { name: 'Close', exact: true })).toBeVisible();
 
   // The suggestion is a flat row; Accept and Reject are compact neutral actions.
   const card = surface.locator(`[${SUGGESTION_CARD_ATTR}]`);
@@ -600,7 +623,8 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
   for (const row of await card.locator(`[${SUGGESTION_ROW_ATTR}]`).all()) {
     expect(await row.evaluate((element) => getComputedStyle(element).backgroundColor), 'rows carry no tint').toBe('rgba(0, 0, 0, 0)');
   }
-  await closePanel(ada);
+  await surface.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(surface, 'Close closes the thread').toBeHidden();
 
   // The list from the count is Moss's 352 px list with radius 8, and the author's Withdraw lives in the row's menu.
   const list = await openPanel(ada);
@@ -611,4 +635,28 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
   await own.getByRole('button', { name: 'Suggestion actions' }).click();
   await expect(ben.page.getByRole('menuitem', { name: 'Withdraw' })).toBeVisible();
   await ben.page.keyboard.press('Escape');
+
+  // A 390 px pane has no margin for the thread: the suggestion fills the pane as one view, and Back to note returns
+  // to the note where it was.
+  await ada.page.setViewportSize({ width: 390, height: 844 });
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  const scroller = (root: Element) => {
+    for (let at = root.parentElement; at; at = at.parentElement) if (at.scrollHeight > at.clientHeight && /auto|scroll/.test(getComputedStyle(at).overflowY)) return at.scrollTop;
+    return 0;
+  };
+  const scrolled = await ui.body(ada, docId).evaluate(scroller);
+  await mark.click({ force: true });
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  const back = surface.getByRole('button', { name: 'Back to note', exact: true });
+  await expect(back).toBeVisible();
+  const view = await surface.evaluate((element, selector) => {
+    const rect = element.getBoundingClientRect();
+    const pane = document.querySelector(selector)!.getBoundingClientRect();
+    return { left: Math.round(rect.left - pane.left), right: Math.round(pane.right - rect.right) };
+  }, `[data-editor-pane][data-doc-id="${docId}"]`);
+  expect(view, 'the view fills the pane').toEqual({ left: 0, right: 0 });
+  await expect(surface.getByRole('button', { name: 'Accept' }), 'its decisions stay reachable').toBeInViewport();
+  await back.click();
+  await expect(surface).toBeHidden();
+  expect(await ui.body(ada, docId).evaluate(scroller), 'the note keeps its scroll').toBe(scrolled);
 });
