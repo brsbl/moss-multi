@@ -107,7 +107,8 @@ export interface BridgeOptions {
   pathname: () => string;
   /** The share token this tab was opened with (`?share=`), threaded through every read (A§18). */
   share?: () => string | null;
-  subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void) => () => void;
+  /** `connecting`: the channel's socket is opening, and its reconcile will read what a note open would. */
+  subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void, connecting: (value: boolean) => void) => () => void;
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
@@ -313,6 +314,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   let refreshing = false;
   let refreshRetry: ReturnType<typeof setTimeout> | null = null;
   const pauseWorkspace = () => {
+    readAwaiting();
     channelGeneration += 1;
     pendingIds.clear();
     refreshAll = false;
@@ -440,11 +442,26 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   let tick = 0;
   let invalidatedAt = 0;
   const readSince = new Map<string, number>();
+  /** Notes opened while the channel's socket opens: its reconcile reads them, or they are read when it fails. */
+  const awaiting = new Set<string>();
+  let connecting = false;
+  const readAwaiting = () => {
+    for (const id of [...awaiting]) {
+      awaiting.delete(id);
+      if (watched.includes(id)) void readBacklinks(id);
+    }
+  };
+  const channelConnecting = (value: boolean) => {
+    connecting = value;
+    // An opened socket's reconcile is pending and reads them; a failed or stopped one leaves them to read now.
+    if (!value && !refreshAll) readAwaiting();
+  };
   /** Notes outside the listing that byId opened by their URL through askDocAccess (B238). */
   const admitted = new Set<string>();
   const readBacklinks = async (id: string) => {
     const path = `/api/docs/${encodeURIComponent(id)}/backlinks`;
     const cancel = new AbortController();
+    awaiting.delete(id);
     reading.get(id)?.abort();
     reading.set(id, cancel);
     readSince.set(id, ++tick);
@@ -493,6 +510,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     }
   };
   const unwatch = (id: string) => {
+    awaiting.delete(id);
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
   };
@@ -543,7 +561,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
     watched.splice(BACKLINK_WATCH);
-    if (at === -1 || (!backlinks.has(id) && !reading.has(id))) void readBacklinks(id);
+    if (at !== -1 && (backlinks.has(id) || reading.has(id) || awaiting.has(id))) return;
+    if (connecting) awaiting.add(id);
+    else void readBacklinks(id);
   };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
@@ -934,7 +954,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
-        if (!stopWorkspace && diskListeners.size && subscribe) stopWorkspace = subscribe(receiveWorkspace, pauseWorkspace);
+        if (!stopWorkspace && diskListeners.size && subscribe) stopWorkspace = subscribe(receiveWorkspace, pauseWorkspace, channelConnecting);
         return () => {
           if (callback) diskListeners.delete(callback);
           if (!diskListeners.size) {
@@ -1162,8 +1182,9 @@ export function installBridge(
     sessionEnded: whenSessionEnded,
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: installLeaving(),
-    subscribeWorkspace: (receive, pause) => subscribeWorkspace({
+    subscribeWorkspace: (receive, pause, connecting) => subscribeWorkspace({
       onPause: pause,
+      onConnecting: connecting,
       auth: authStore,
       socket: () => new WebSocket(`${window.location.origin.replace(/^http/, 'ws')}/api/workspace/ws`),
       visible: () => document.visibilityState === 'visible',
