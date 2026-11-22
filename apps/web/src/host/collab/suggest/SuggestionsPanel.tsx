@@ -2,19 +2,19 @@
 // DS inside the note's top bar, beside the bell. The records are read from the note's own `suggestions` map, so a
 // suggestion, an accept, a reject and a withdraw show in every window as the doc syncs; each open card's hunks come
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
-import { Button } from '@moss/shared/components/ui/button';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
-import { Tooltip, TooltipContent, TooltipProvider } from '@moss/shared/components/ui/tooltip';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { Popover } from '@moss/shared/primitives';
 import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
-  SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
-  TOP_BAR_ATTR, type EditMode,
+  BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR,
+  SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, TITLE_BINDING_ATTR, TOP_BAR_ATTR, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { Check, FilePenLine, PencilLine, X } from 'lucide-react';
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { ArrowLeft, FilePenLine, MoreHorizontal, PencilLine, Undo2, X } from 'lucide-react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
@@ -24,6 +24,7 @@ import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
 import { reviewRefusal } from './notices.ts';
+import { dockReserve, panelPlacement, placeSuggestion, type Box, type Placement } from './place.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
 import { usePreviewRows } from './rows.ts';
@@ -40,8 +41,9 @@ export interface SuggestionsSource {
   subscribeMount(listener: () => void): () => void;
 }
 
-// Which doc's panel is open, and the card a painted suggestion asked for.
+// Which doc's panel is open, the card a painted suggestion asked for, and where that suggestion is painted.
 const openPanels = new Map<string, string | null>();
+const openAt = new Map<string, () => DOMRect | null>();
 const panelListeners = new Set<() => void>();
 let panelVersion = 0;
 const panelChanged = () => {
@@ -49,13 +51,19 @@ const panelChanged = () => {
   for (const listener of panelListeners) listener();
 };
 
-/** Opens `docId`'s panel with `record`'s card active (a click on a painted suggestion). */
-export function openSuggestion(docId: string, record: string | null): void {
+/**
+ * Opens `docId`'s panel with `record`'s card active. With `at` (a click on a painted suggestion: where it is painted)
+ * that one suggestion opens beside its mark, as Moss's comment thread opens at its text (T9.34).
+ */
+export function openSuggestion(docId: string, record: string | null, at?: () => DOMRect | null): void {
   openPanels.set(docId, record);
+  if (record !== null && at) openAt.set(docId, at);
+  else openAt.delete(docId);
   panelChanged();
 }
 
 function closePanel(docId: string): void {
+  openAt.delete(docId);
   if (openPanels.delete(docId)) panelChanged();
 }
 
@@ -81,8 +89,9 @@ function askToClose(next: PendingClose | null): void {
 /** An event the open confirmation caused: the list stays open under it. */
 function fromConfirmation(docId: string, event: Event): boolean {
   if (pendingClose?.docId === docId) return true;
+  // A suggestion's own menu (Withdraw) is portalled outside the list too.
   const within = (node: EventTarget | null | undefined) =>
-    node instanceof Element && !!node.closest('[data-remote-web-surface-blocking-dialog], [data-moss-modal-overlay]');
+    node instanceof Element && !!node.closest('[data-remote-web-surface-blocking-dialog], [data-moss-modal-overlay], [data-suggestion-menu]');
   return within(event.target) || within((event as FocusEvent).relatedTarget);
 }
 
@@ -132,10 +141,16 @@ export function reviewEntryNote(role: Role, mode: EditMode | null): string {
   return mode === 'suggest' || role === 'suggester' ? 'Suggesting pauses while you review' : 'Editing pauses while you review';
 }
 
-const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
+/** Moss's compact list action (the comment list's filter buttons): 24 px tall, as wide as its label, no resting fill. */
+const ACTION = 'flex h-6 items-center rounded px-1.5 text-micro text-ink-muted transition-colors hover:bg-surface-panel hover:text-ink-default focus:outline-none focus-visible:bg-surface-panel disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-muted';
+const ANIMATE = 'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95';
+const QUIET_LINK = 'shrink-0 text-micro text-ink-muted underline underline-offset-2 hover:text-ink-default';
+const STATUS_WORDS: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected', withdrawn: 'Withdrawn' };
 
-function SuggestionCard({ docId, record, me, role, active, root, opened, body }: {
+function SuggestionCard({ docId, record, me, role, active, single, root, opened, body }: {
   docId: string;
+  /** The one suggestion opened beside its mark. */
+  single: boolean;
   record: SuggestionRecord;
   me: string | null;
   role: Role | null;
@@ -154,6 +169,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const acceptWhy = useId();
   const cardRef = useCallback((element: HTMLDivElement | null) => {
     onScreenRef(element);
     if (active) element?.scrollIntoView({ block: 'nearest' });
@@ -190,49 +206,76 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
   // Reject and Withdraw cannot be undone, so they ask first; Accept needs every change shown instead.
   const ask = (action: 'reject' | 'withdraw') => askToClose({ docId, action, author: own ? null : meta.authorName, run: () => void act(action) });
 
+  const status = !open ? (meta.resolvedBy === 'system' ? 'No changes' : STATUS_WORDS[meta.status] ?? meta.status) : outdated ? 'Outdated' : broken ? 'Can’t be shown' : null;
+
+  // A flat row, as Moss's comment list draws one: author, time, the change, then its decisions.
   return (
     <div
       {...{ [SUGGESTION_CARD_ATTR]: '', [SUGGESTION_ID_ATTR]: meta.id, [SUGGESTION_STATUS_ATTR]: meta.status }}
       {...(active ? { [SUGGESTION_ACTIVE_ATTR]: '' } : {})}
       ref={cardRef}
-      className={`rounded-lg border p-2.5 transition-colors ${active ? 'border-accent-brand shadow-sm' : 'border-border-subtle'} ${open ? '' : 'opacity-70'}`}
+      className={`px-3 ${single ? 'pb-2.5 pt-2' : 'py-2.5'} transition-colors ${active && !single ? 'bg-surface-panel' : ''} ${open ? '' : 'opacity-70'}`}
     >
-      <div className="mb-1 flex flex-wrap items-center gap-1.5">
-        <span className="text-xs font-medium text-ink-default">{meta.authorName}{own ? ' (you)' : ''}</span>
-        <span className="text-micro text-ink-faint">{timeAgo(meta.createdAt)}</span>
-        {!open ? <span className={`${BADGE} bg-surface-badge text-ink-muted`}>{meta.resolvedBy === 'system' ? 'no changes' : meta.status}</span> : null}
-        {open && outdated ? <span className={`${BADGE} bg-surface-badge text-accent-terracotta`}>outdated</span> : null}
-        {open && broken && !outdated ? <span className={`${BADGE} bg-surface-badge text-accent-terracotta`}>broken</span> : null}
+      <div className="flex min-h-6 min-w-0 items-center gap-1.5">
+        <span className="truncate text-caption font-medium text-ink-default">{meta.authorName}{own ? ' (you)' : ''}</span>
+        <span className="shrink-0 text-caption font-extralight text-ink-faint">{timeAgo(meta.createdAt)}</span>
+        {status ? <span className="shrink-0 text-micro text-ink-faint">· {status}</span> : null}
+        {open && own && !reviewer ? (
+          // The author's own way out is secondary: Moss's comment actions menu.
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                disabled={busy}
+                aria-label="Suggestion actions"
+                className="-mr-1 ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-panel hover:text-ink-muted focus:outline-none focus-visible:bg-surface-panel focus-visible:text-ink-muted"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={4}
+              className="min-w-32"
+              data-suggestion-menu=""
+              onCloseAutoFocus={(event: Event) => {
+                // The confirmation takes focus (Cancel), not the trigger.
+                if (pendingClose) event.preventDefault();
+              }}
+            >
+              <DropdownMenuItem className="gap-2 text-xs text-accent-terracotta focus:text-accent-terracotta data-[highlighted]:text-accent-terracotta" onSelect={() => ask('withdraw')}>
+                <Undo2 className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+                Withdraw
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
-      {meta.note ? <p className="mb-1.5 text-sm italic text-ink-muted">{meta.note}</p> : null}
+      {meta.note ? <p className="mt-0.5 text-caption italic text-ink-muted">{meta.note}</p> : null}
       {open ? (
-        <div className="flex flex-col gap-1 text-xs">
+        <div className="mt-1 flex flex-col gap-0.5 text-caption">
           {preview.state === 'loading' ? <p className="text-micro text-ink-faint">Loading changes…</p> : null}
           {preview.state === 'ready' && rows.length === 0 ? <p className="text-micro text-ink-faint">No visible change yet.</p> : null}
           {failed ? (
             <div className="flex items-center gap-2">
               <span role="alert" className="text-micro text-accent-terracotta">{failed}</span>
-              <button type="button" className="shrink-0 text-micro text-ink-default underline" onClick={refresh}>
+              <button type="button" className={QUIET_LINK} onClick={refresh}>
                 Try again
               </button>
             </div>
           ) : null}
           {shownRows.map((row, i) => (
-            <div
-              key={i}
-              title={row.detail}
-              {...{ [SUGGESTION_ROW_ATTR]: row.kind }}
-              className={`flex gap-1 rounded px-1.5 py-0.5 ${row.kind === 'insert' ? 'bg-accent-brand/10 text-accent-brand-pressed' : row.kind === 'delete' ? 'bg-accent-terracotta/10 text-accent-terracotta' : 'bg-surface-badge text-ink-muted'}`}
-            >
-              <span aria-hidden className="shrink-0">{row.kind === 'insert' ? '+' : row.kind === 'delete' ? '−' : '~'}</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words">
-                <RowText text={row.text} struck={row.kind === 'delete'} />
+            <div key={i} title={row.detail} {...{ [SUGGESTION_ROW_ATTR]: row.kind }} className="flex gap-1.5">
+              {/* The operation is a small faint mark; the text keeps the note's ink, underlined or struck. */}
+              <span aria-hidden className="w-2 shrink-0 text-center text-ink-faint">{row.kind === 'insert' ? '+' : row.kind === 'delete' ? '−' : '~'}</span>
+              <span className={`min-w-0 whitespace-pre-wrap break-words ${row.kind === 'insert' ? 'text-ink-default' : 'text-ink-muted'}`}>
+                <RowText text={row.text} struck={row.kind === 'delete'} inserted={row.kind === 'insert'} />
                 {row.note ? <span className="text-micro text-ink-faint">{' — '}{row.note}</span> : null}
               </span>
             </div>
           ))}
           {allShown ? null : (
-            <button type="button" className="self-start text-micro text-ink-default underline" onClick={() => setExpanded(true)}>
+            <button type="button" className={`self-start ${QUIET_LINK}`} onClick={() => setExpanded(true)}>
               Show all {rows.length} changes
             </button>
           )}
@@ -241,7 +284,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
               <span className="text-micro text-ink-muted">{reviewRefusal(outdated ? 'outdated' : 'broken')}</span>
               <button
                 type="button"
-                className="shrink-0 text-micro text-ink-default underline"
+                className={QUIET_LINK}
                 onClick={() => {
                   void navigator.clipboard?.writeText(suggestedText(record, body)).then(() => setCopied(true), () => setCopied(false));
                 }}
@@ -253,28 +296,31 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
         </div>
       ) : null}
       {error ? <p role="alert" className="mt-1.5 text-micro text-accent-terracotta">{error}</p> : null}
-      {open && (reviewer || own) ? (
-        <div className="mt-2 flex gap-2">
-          {reviewer ? (
-            <>
-              <Button size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy || preview.state !== 'ready' || !allShown || outdated || broken}
-                title={allShown ? undefined : 'Show every change before accepting'}
-                onClick={() => void act('accept')}>
-                <Check aria-hidden className="h-3 w-3" />
-                Accept
-              </Button>
-              <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('reject')}>
-                <X aria-hidden className="h-3 w-3" />
-                Reject
-              </Button>
-            </>
-          ) : null}
-          {own && !reviewer ? (
-            <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={() => ask('withdraw')}>
-              <X aria-hidden className="h-3 w-3" />
-              Withdraw
-            </Button>
-          ) : null}
+      {open && reviewer ? (
+        <div className="-ml-1.5 mt-1.5 flex gap-1">
+          {allShown ? (
+            <button type="button" className={ACTION} disabled={busy || preview.state !== 'ready' || outdated || broken} onClick={() => void act('accept')}>
+              Accept
+            </button>
+          ) : (
+            // A disabled button gets no pointer events: Moss's tooltip hangs on the slot around it.
+            <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex rounded focus:outline-none focus-visible:bg-surface-panel" tabIndex={0} aria-describedby={acceptWhy}>
+                  <button type="button" className={ACTION} disabled>
+                    Accept
+                  </button>
+                  <span id={acceptWhy} className="sr-only">Show every change before accepting</span>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={4}>Show every change before accepting</TooltipContent>
+            </Tooltip>
+            </TooltipProvider>
+          )}
+          <button type="button" className={ACTION} disabled={busy} onClick={() => ask('reject')}>
+            Reject
+          </button>
         </div>
       ) : null}
     </div>
@@ -282,8 +328,10 @@ function SuggestionCard({ docId, record, me, role, active, root, opened, body }:
 }
 
 /** The panel's cards: the open ones newest first, then the latest reviewed. */
-export function SuggestionList({ docId, open, reviewed, me, role, active, opened = '', body = null }: {
+export function SuggestionList({ docId, open: allOpen, reviewed: allReviewed, me, role, active, single = false, opened = '', body = null }: {
   docId: string;
+  /** Only the active suggestion, opened beside its mark. */
+  single?: boolean;
   open: SuggestionRecord[];
   reviewed: SuggestionRecord[];
   me: string | null;
@@ -295,9 +343,17 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
 }): ReactNode {
   // The scroll box the cards' visibility is measured in.
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  const open = single ? allOpen.filter((record) => record.meta.id === active) : allOpen;
+  const reviewed = single ? allReviewed.filter((record) => record.meta.id === active) : allReviewed;
+  const card = (record: SuggestionRecord) => (
+    <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} single={single} root={root} opened={opened} body={body} />
+  );
   return (
-    <div ref={setRoot} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
-      {open.length === 0 && reviewed.length === 0 ? (
+    <div ref={setRoot} className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${single ? 'pb-1' : 'py-1'}`}>
+      {single && open.length === 0 && reviewed.length === 0 ? (
+        <p className="px-3 py-2.5 text-caption text-ink-faint">This suggestion is no longer in the note.</p>
+      ) : null}
+      {!single && open.length === 0 && reviewed.length === 0 ? (
         <div className="px-3 py-6 text-center">
           <p className="text-xs text-ink-default">No suggestions</p>
           <p className="mt-1 text-micro text-ink-faint">
@@ -305,15 +361,42 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
           </p>
         </div>
       ) : null}
-      {open.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
-      ))}
-      {reviewed.length ? <p className="mt-1 px-1 text-micro font-medium uppercase tracking-wide text-ink-faint">Reviewed</p> : null}
-      {reviewed.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
-      ))}
+      {open.map(card)}
+      {reviewed.length && !single ? <p className="px-3 pb-1 pt-2 text-micro text-ink-faint">Reviewed</p> : null}
+      {reviewed.map(card)}
     </div>
   );
+}
+
+/** The text line boxes of `roots` between `top` and `bottom` (viewport px). */
+function textLines(roots: readonly Element[], top: number, bottom: number): Box[] {
+  const lines: Box[] = [];
+  const range = document.createRange();
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent?.trim()) continue;
+      const block = node.parentElement?.getBoundingClientRect();
+      if (!block || block.bottom <= top || block.top >= bottom) continue;
+      range.selectNodeContents(node);
+      for (const line of range.getClientRects()) if (line.width > 0 && line.bottom > top && line.top < bottom) lines.push(line);
+    }
+  }
+  return lines;
+}
+
+/** Where `docId`'s suggestion opened at `mark` goes (place.ts), or null without its pane. */
+const paneOf = (docId: string): Element | null => document.querySelector(`[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"]`);
+
+function placeAt(docId: string, mark: DOMRect | null, height: number, asPanel: boolean): Placement | null {
+  const pane = paneOf(docId);
+  if (!mark || !pane) return null;
+  const box = pane.getBoundingClientRect();
+  const bar = pane.querySelector(`[${TOP_BAR_ATTR}]`)?.getBoundingClientRect();
+  const viewport = { width: window.visualViewport?.width ?? window.innerWidth, height: window.visualViewport?.height ?? window.innerHeight };
+  if (asPanel) return panelPlacement({ pane: box, barBottom: bar?.bottom ?? box.top, viewport });
+  const roots = [...pane.querySelectorAll(`[${TITLE_BINDING_ATTR}], [${BODY_BINDING_ATTR}]`)];
+  return placeSuggestion({ mark, pane: box, barBottom: bar?.bottom ?? box.top, viewport, height, linesIn: (top, bottom) => textLines(roots, top, bottom) });
 }
 
 /** Moss's danger confirmation for a pending Reject or Withdraw on `docId`, focused on Cancel. */
@@ -362,6 +445,105 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   const me = auth.status === 'signed-in' ? auth.user.id : null;
   const isOpen = openPanels.has(docId);
   const active = openPanels.get(docId) ?? null;
+  // Opened from a painted mark: that one suggestion, at the mark (Moss's comment thread at its text).
+  const at = isOpen && active !== null ? openAt.get(docId) ?? null : null;
+  // Where it goes (place.ts): beside its line while that leaves the text legible, else the pane's panel with Back to
+  // note. Re-placed when the window resizes, the note's text changes or reflows, or the thread's drawn height changes;
+  // a thread that fell back to the panel stays the panel until it is opened again, so it never flips under the reader.
+  const [threadHeight, setThreadHeight] = useState(200);
+  const [resized, setResized] = useState(0);
+  useEffect(() => {
+    if (!at) return;
+    const changed = () => setResized((version) => version + 1);
+    window.addEventListener('resize', changed);
+    // A peer's edit or a reflow can bring a line under a thread beside its line: it is placed again on the next frame.
+    let queued = 0;
+    const later = () => {
+      if (!queued) queued = requestAnimationFrame(() => { queued = 0; changed(); });
+    };
+    const body = paneOf(docId)?.querySelector(`[${BODY_BINDING_ATTR}]`);
+    const edits = new MutationObserver(later);
+    if (body) edits.observe(body, { subtree: true, childList: true, characterData: true });
+    // Opening can still move the pane for a moment (a sidebar settling, the page's scrollbar going): it is placed
+    // again whenever the pane moved during the first second.
+    const pane = paneOf(docId);
+    let seen = pane?.getBoundingClientRect();
+    let frame = 0;
+    const until = performance.now() + 1000;
+    const watch = () => {
+      const now = pane?.getBoundingClientRect();
+      if (now && seen && (now.left !== seen.left || now.top !== seen.top || now.width !== seen.width)) changed();
+      seen = now;
+      if (performance.now() < until) frame = requestAnimationFrame(watch);
+    };
+    frame = requestAnimationFrame(watch);
+    return () => {
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(queued);
+      edits.disconnect();
+      window.removeEventListener('resize', changed);
+    };
+  }, [at, docId]);
+  // Once it is the panel it stays the panel for this opening; a resize only chooses again between docked and the pane.
+  const [panelFor, setPanelFor] = useState<unknown>(null);
+  const asPanel = at !== null && panelFor === at;
+  const place = useMemo(() => {
+    void resized;
+    return at ? placeAt(docId, at(), threadHeight, asPanel) : null;
+  }, [at, docId, threadHeight, resized, asPanel]);
+  // `at` is a function: stored as a value, not run as an updater.
+  if (at && place && place.kind !== 'beside' && !asPanel) setPanelFor(() => at);
+  // A docked panel takes its width from the pane: the note reflows beside it, and its source is scrolled into view.
+  useLayoutEffect(() => {
+    const pane = paneOf(docId);
+    if (!(pane instanceof HTMLElement) || !place || place.kind !== 'docked') return;
+    pane.style.setProperty('--suggestion-dock', `${dockReserve(pane.getBoundingClientRect(), place)}px`);
+    pane.setAttribute('data-suggestion-docked', '');
+    const frame = requestAnimationFrame(() => {
+      const mark = at?.();
+      const scroller = pane.querySelector('[data-editor-canvas]');
+      if (!mark || !scroller) return;
+      const view = scroller.getBoundingClientRect();
+      if (mark.top < view.top + 16 || mark.bottom > view.bottom - 16) scroller.scrollTop += mark.top - (view.top + view.height / 3);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      pane.removeAttribute('data-suggestion-docked');
+      pane.style.removeProperty('--suggestion-dock');
+    };
+  }, [docId, place?.kind, place && place.kind !== 'beside' ? place.left : null, at]);
+  const markAnchor = useMemo(() => {
+    // A repaint can replace the mark under it: the last place it was seen holds until the next paint.
+    let last: DOMRect | null = null;
+    // Read from the pane as it is now (it can still be sliding when the sidebar closes); the positioner follows the
+    // pane through `contextElement`.
+    const pane = paneOf(docId);
+    return {
+      current: {
+        contextElement: pane ?? undefined,
+        getBoundingClientRect: () => {
+          const where = place;
+          const box = pane?.getBoundingClientRect();
+          const right = box ? Math.min(box.right, window.innerWidth) - 16 : where && where.kind === 'beside' ? where.right : 0;
+          if (where && where.kind !== 'beside') {
+            const top = box ? Math.max(pane?.querySelector(`[${TOP_BAR_ATTR}]`)?.getBoundingClientRect().bottom ?? box.top, box.top) : where.top;
+            return where.kind === 'docked' ? new DOMRect(right, top + 8, 0, 0) : new DOMRect(box?.left ?? where.left, top, 0, 0);
+          }
+          const mark = (last = at?.() ?? last ?? new DOMRect());
+          return where ? new DOMRect(right, mark.top, 0, mark.height) : mark;
+        },
+      },
+    };
+  }, [at, place, docId]);
+  // The thread's drawn height, measured only while it is beside its line (a panel's height is the pane's): its header's
+  // parent is the thread.
+  const besideRef = useCallback((header: HTMLElement | null) => {
+    const element = header?.parentElement;
+    if (!element) return;
+    const observer = new ResizeObserver(() => setThreadHeight(Math.ceil(element.getBoundingClientRect().height)));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   // The note as it stood when the panel opened: a preview kept from an earlier opening is reused only if it has not moved.
   const opened = useMemo(() => (isOpen && body ? Y.encodeStateVector(body).join('.') : ''), [isOpen, body]);
   const open = records.filter((record) => record.meta.status === 'open').sort((a, b) => b.meta.createdAt - a.meta.createdAt);
@@ -381,6 +563,16 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   const reviewing = mode === 'review';
   // While the panel is open the count it opened from stays, even when the pane narrows or the last suggestion closes.
   const counted = shown || (isOpen && pinned);
+  // The list hangs from its count or More actions; a suggestion opened at its mark goes where place.ts put it.
+  const contentPlacement = !at
+    ? ({ side: 'bottom', align: 'end', sideOffset: 6 } as const)
+    : !place || place.kind === 'beside'
+      ? ({ side: place?.side ?? 'bottom', align: place ? 'end' : 'start', sideOffset: 8 } as const)
+      : ({ side: 'bottom', align: place.kind === 'docked' ? 'end' : 'start', sideOffset: 0 } as const);
+  const surfaceClass = place?.kind === 'pane'
+    // The pane's own single view: the note's canvas, no card.
+    ? 'bg-surface-canvas'
+    : `border border-border-subtle bg-surface-floating ${ANIMATE} ${!at || place?.kind === 'docked' ? 'rounded-lg shadow-surface' : 'rounded-xl shadow-sm'} ${place ? '' : 'w-comment-list-popover max-w-floating-popover-viewport'}`;
   return (
     <TooltipProvider>
       <Popover.Root
@@ -406,7 +598,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
                   aria-label={open.length ? `Suggestions, ${open.length} open` : 'Suggestions'}
                   aria-haspopup="dialog"
                   aria-expanded={isOpen}
-                  className="relative flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
+                  className="relative flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted focus-visible:outline-none"
                 >
                   <FilePenLine aria-hidden className="h-3.5 w-3.5" />
                   {open.length ? <span className="text-micro tabular-nums">{open.length}</span> : null}
@@ -415,45 +607,89 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
             </HomeTrigger>
             <TooltipContent side="bottom">Suggestions</TooltipContent>
           </Tooltip>
-        ) : anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
+        ) : null}
+        {/* Radix measures a virtual anchor only through getBoundingClientRect. */}
+        {at ? <Popover.Anchor virtualRef={markAnchor as unknown as RefObject<Element | null>} /> : !counted && anchor ? <Popover.Anchor virtualRef={anchor} /> : null}
         <Popover.Portal>
           <Popover.Content
-            align="end"
-            side="bottom"
-            sideOffset={6}
+            {...contentPlacement}
+            // place.ts already fitted a suggestion opened at its mark: the positioner neither flips nor shifts it.
+            {...(at && place ? { collisionAvoidance: { side: 'none', align: 'none', fallbackAxisSide: 'none' } as const } : { avoidCollisions: !at })}
             collisionPadding={16}
-            className="z-50 flex max-h-comment-list-popover w-comment-list-popover max-w-floating-popover-viewport flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-floating shadow-surface outline-none focus:outline-none focus-visible:ring-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+            // Never taller than its room: its rows scroll and its decisions and close stay reachable.
+            style={{ maxHeight: place ? `${place.maxHeight}px` : 'min(60vh, var(--available-height, 60vh))', ...(place ? { width: `${place.width}px` } : {}), ...(place?.kind === 'pane' ? { position: 'fixed', left: `${place.left}px`, top: `${place.top}px`, height: `${place.maxHeight}px` } : {}) }}
+            // The pane's single view is laid over the pane where place.ts measured it, not floated from an anchor.
+            {...(place?.kind === 'pane' ? { positionerClassName: 'z-50 ![transform:none] ![will-change:auto]' } : {})}
+            className={`z-50 flex flex-col overflow-hidden outline-none focus:outline-none focus-visible:ring-0 ${surfaceClass}`}
             onOpenAutoFocus={(event) => event.preventDefault()}
             onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onFocusOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             onEscapeKeyDown={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
             {...{ [SUGGESTIONS_PANEL_ATTR]: '' }}
+            {...(place ? { 'data-suggestion-place': place.kind } : {})}
           >
-            <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
+            {at ? (
+              // Moss's comment thread header: what it is and its close, or, as the pane's panel, the way back.
+              <div ref={place?.kind === 'beside' ? besideRef : undefined} className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle/30 px-2 py-1.5">
+                {place && place.kind !== 'beside' ? (
+                  <>
+                    <div className="flex min-w-0 flex-1 items-center gap-1">
+                      <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" strokeWidth={1.5} />
+                      <Popover.Title className="truncate text-caption font-normal text-ink-faint">Suggestion</Popover.Title>
+                    </div>
+                    <button type="button" className={`gap-1 ${ACTION}`} onClick={() => closePanel(docId)}>
+                      <ArrowLeft aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      Back to note
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex min-w-0 flex-1 items-center gap-1">
+                      <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" strokeWidth={1.5} />
+                      <Popover.Title className="truncate text-caption font-normal text-ink-faint">Suggestion</Popover.Title>
+                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="Close"
+                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-panel hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15"
+                          onClick={() => closePanel(docId)}
+                        >
+                          <X className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={6}>Close</TooltipContent>
+                    </Tooltip>
+                  </>
+                )}
+              </div>
+            ) : null}
+            {at ? null : <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle bg-surface-raised-control px-2 py-1.5">
               <Popover.Title className="sr-only">Suggestions</Popover.Title>
               <div className="flex min-w-0 items-center gap-1">
                 <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-muted" strokeWidth={1.5} />
                 {open.length ? <span className="text-micro tabular-nums text-ink-faint">{open.length} open</span> : null}
               </div>
               {people ? <div className="ml-auto flex shrink-0 items-center">{people}</div> : null}
-            </div>
-            {open.length && !reviewing ? (
+            </div>}
+            {open.length && !reviewing && !at ? (
               // The way into Review, saying what it pauses; in Review the pane's bottom row is its one state and exit.
               <button
                 type="button"
                 aria-label="Review suggestions"
                 aria-describedby={entryNote}
-                className="mx-2 mt-2 flex shrink-0 flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
+                className="mx-1 mt-1 flex shrink-0 items-baseline justify-between gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
                 onClick={() => {
                   requestMode(docId, 'review');
                   closePanel(docId);
                 }}
               >
                 <span className="text-xs text-ink-default">Review suggestions</span>
-                <span id={entryNote} className="text-micro text-ink-faint">{reviewEntryNote(role, mode)}</span>
+                <span id={entryNote} className="truncate text-micro text-ink-faint">{reviewEntryNote(role, mode)}</span>
               </button>
             ) : null}
-            <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
+            <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} single={at !== null} opened={opened} body={body} />
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
