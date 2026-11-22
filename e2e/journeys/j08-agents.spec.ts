@@ -83,7 +83,7 @@ test('j08-agents share: Ben adds his own agent by its id and it appears as an "a
   // PRODUCT ruling 20: an agent id is a label, never consent; someone else's agent is refused as an unknown id is.
   ben.expectHttp(404, `/api/docs/${docId}/members`);
   await dialog.getByLabel('Email or agent ID', { exact: true }).fill(adas.agent.id);
-  await dialog.getByRole('button', { name: 'Share', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add agent', exact: true }).click();
   await expect(dialog.getByRole('alert'), 'Ada\'s agent is refused').toHaveText('You have no agent with that ID. Copy it from your agent’s row in Settings → Agents.');
   await expect(dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Courier' }), 'and not listed').toHaveCount(0);
 
@@ -91,9 +91,15 @@ test('j08-agents share: Ben adds his own agent by its id and it appears as an "a
   const row = dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Scribe' });
   await expect(row, 'his agent is listed').toHaveCount(1);
   await expect(row.getByText('agent', { exact: true }), 'tagged as an agent').toBeVisible();
-  const select = row.getByRole('combobox', { name: 'Access for Scribe', exact: true });
-  await expect(select, 'at the role Ben chose').toHaveValue('commenter');
-  await expect(select.locator('option[value="owner"]'), 'an agent is never offered owner').toHaveCount(0);
+  const select = ui.roleMenu(row, 'Access for Scribe');
+  await expect(select, 'at the role Ben chose').toHaveText('Can comment');
+  await select.click();
+  const roles = ui.openRoleMenu(dialog);
+  await expect(roles.getByRole('menuitemradio', { checked: true }), 'his role is checked').toHaveText('Can comment');
+  await expect(roles.getByRole('menuitemradio', { name: 'Owner', exact: true }), 'an agent is never offered owner').toHaveCount(0);
+  await ben.page.keyboard.press('Escape');
+  await expect(roles, 'Escape closes the menu').toHaveCount(0);
+  await expect(dialog, 'and only the menu').toBeVisible();
   await actors.checkpoint('agent-row');
 
   const access = await fetch(`${stack.baseUrl}/api/docs/${docId}/access`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });

@@ -16,6 +16,12 @@
   }
 }
 
+/* A menu opened inside a dialog (Share's role menus, T9.36) floats above it: moss's menu positioner is z-50 and its
+   dialogs z-130, so the positioner holding such a popup takes the nested-content layer (150). */
+div:has(> [data-dialog-menu]) {
+  z-index: 150;
+}
+
 /* Comment paint (T4.3; docs/design/comments.md §11): CSS Custom Highlights in moss's `.comment-mark` colors
    (MarkdownEditor.css), slot 0 user, 3 agent, 4 external. Hover and the open thread underline the text. */
 ::highlight(moss-comment-0) { background-color: var(--highlight-comment-user-light); }

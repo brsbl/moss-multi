@@ -276,6 +276,24 @@ const people = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'P
 /** A person's row in the open Share dialog's "People with access" list. */
 export const accessRow = (dialog: Locator, person: Principal): Locator => people(dialog).filter({ hasText: person.name });
 
+/** A role chooser in the open Share dialog (T9.36): a button reading the role, which opens Moss's checked menu. Its
+ * name is "Access" (the invite's), "Link access" (a new link's) or `Access for <who>` (a person's or an invite's). */
+export const roleMenu = (dialog: Locator, name: string): Locator => dialog.getByRole('button', { name, exact: true });
+
+/** The open role menu; it floats above the dialog, outside it. */
+export const openRoleMenu = (dialog: Locator): Locator =>
+  dialog.page().getByRole('menu').filter({ has: dialog.page().getByRole('menuitemradio') });
+
+/** Picks `choice` in the role chooser `name`, or its "Remove access", and waits for the menu to close. */
+export async function chooseRole(dialog: Locator, name: string, choice: Access | 'Remove access'): Promise<void> {
+  await roleMenu(dialog, name).click();
+  const menu = openRoleMenu(dialog);
+  await expect(menu, `the ${name} menu opens`).toBeVisible();
+  if (choice === 'Remove access') await menu.getByRole('menuitem', { name: 'Remove access', exact: true }).click();
+  else await menu.getByRole('menuitemradio', { name: choice, exact: true }).click();
+  await expect(menu, `the ${name} menu closes`).toHaveCount(0);
+}
+
 /** The open Share dialog's "Pending invites" rows (T9.8). */
 export const pendingInvites = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'Pending invites' }).getByRole('listitem');
 
@@ -290,7 +308,7 @@ export const INVITE_WAITING = 'Waiting for them to open the invite link';
 /** The status after sharing by email (T9.8): an invite link, and no email. */
 export const inviteCreated = (email: string): string => `Invite link created for ${email}. No email is sent. Copy the link and send it to them.`;
 
-/** An agent's id is a UUID (Settings → Agents); the dialog's submit reads "Share" only for one (T9.8). */
+/** An agent's id is a UUID (Settings → Agents); the dialog's submit reads "Add agent" only for one (T9.8, T9.36). */
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The copyable /invite link of a pending invite in the open Share dialog (T2.8), read from its field. */
@@ -310,7 +328,7 @@ export const linkRow = (dialog: Locator, access: LinkAccess): Locator =>
 
 /** Creates a link at `access` in the open dialog and returns its URL, read from the dialog (WebKit cannot read the clipboard). */
 export async function createLink(dialog: Locator, access: LinkAccess): Promise<string> {
-  await dialog.getByRole('radiogroup', { name: 'Link access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
+  await chooseRole(dialog, 'Link access', access);
   await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
   const field = linkField(dialog, access);
   await expect(field, `a ${access} link is listed`).toHaveCount(1);
@@ -329,8 +347,8 @@ export const pathOf = (url: string): string => {
  * open. */
 export async function shareInDialog(dialog: Locator, email: string, access: Access, confirmation = inviteCreated(email)): Promise<void> {
   await dialog.getByLabel('Email or agent ID', { exact: true }).fill(email);
-  await dialog.getByRole('radiogroup', { name: 'Access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
-  await dialog.getByRole('button', { name: AGENT_ID.test(email) ? 'Share' : 'Create invite link', exact: true }).click();
+  await chooseRole(dialog, 'Access', access);
+  await dialog.getByRole('button', { name: AGENT_ID.test(email) ? 'Add agent' : 'Create invite link', exact: true }).click();
   await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(confirmation);
 }
 
