@@ -5,7 +5,7 @@ import { focusOverNote } from './caret.ts';
 const add = (html: string): HTMLElement => {
   const host = document.createElement('div');
   host.innerHTML = html;
-  document.body.append(host);
+  document.body.appendChild(host);
   return host;
 };
 
