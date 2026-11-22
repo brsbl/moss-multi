@@ -238,8 +238,9 @@ test.describe('infrastructure classification', () => {
 
 // What a failed WebKit test carries so the next network-process fault can be diagnosed (T9.48g). Evidence only.
 test.describe('engine evidence', () => {
-  test('a line the browser writes to stderr is kept, and the browser close is timed', async ({ browserType }) => {
-    test.skip(browserType.name() !== 'webkit', 'the WebKit projects carry the engine evidence');
+  test('a line the browser writes to stderr is kept, and the browser close is timed', async ({ playwright, browserName }) => {
+    test.skip(browserName !== 'webkit', 'the WebKit projects carry the engine evidence');
+    const browserType = playwright.webkit;
     const marker = `selftest-stderr-${Date.now()}`;
     const wrapper = test.info().outputPath('browser-wrapper.sh');
     writeFileSync(wrapper, `#!/bin/sh\necho "${marker}" >&2\nexec "${browserType.executablePath()}" "$@"\n`);
