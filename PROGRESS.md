@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 83% done** (252 of 302 planned tasks verified)
+**Overall: 84% done** (253 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 19 / 19 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 25 / 25 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 16 / 16 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 25 / 42 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 26 / 42 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -275,6 +275,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T9.31 verified: the notes-panel header holds only Moss's toggle; vaults are switched from the app menu's Switch vault… and managed in Settings' Vaults, the tab, note location and "+ Note" tooltip name the vault on screen, and search says Searching… until its index answers and names another vault's results.
 - 2026-11-21 — T9.35 verified: a refused key or paste shows its one notice as a small card in the pane's bottom region above the reader's row, so the note never moves; "View only" and "Comment only" explain themselves on hover, focus or press; and a signed-out link visitor's row offers a plain "Sign in".
 - 2026-11-21 — T9.48f verified: the local security sweep's body-cap probe declares an oversize length but sends no body bytes, so on loopback it gets the Worker's 413 from the header instead of wrangler dev's "restarted mid-request" 503, and a failed build job uploads the stack's log.
+- 2026-11-21 — T9.48e verified: the nine linear-time guards share one helper that times each doubling step as the fastest of several runs and re-times a step that misses before failing it, so a noisy runner no longer turns a linear check red while a real quadratic step still fails.
 
 ## T1.1s identity audit
 
@@ -315,6 +316,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.48e's checker (5d044ef, 2026-11-21)
+
+- T9.48e (Linear-time guards compare like with like) checker P2: note-store.linear.test.ts now passes `warmup: [8 * 1024]`, which the helper runs once, where the old fastest-of-three loop warmed up three times; pass the entry three times to restore it.
+- T9.48e (Linear-time guards compare like with like) checker P2: suggest-ingest now compares the fastest of five deliveries, re-timing a miss, instead of the median of five (as the brief orders, factor 3 and slack 10 unchanged), and its test name still says "1.69 MB doc" though the runner measured that doc at 3173130 B.
+- T9.48e (Linear-time guards compare like with like) checker P2: two guards of the same kind outside the brief's nine sites still use the one-shot `3 * x + slack` comparison; move them onto the shared helper in a follow-up.
 
 ### From T9.48f's checker (b9b6b55, 2026-11-21)
 
