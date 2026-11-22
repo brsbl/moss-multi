@@ -721,6 +721,7 @@ test("j17-history: a peer's restore is a card in the pane's bottom region just a
   await standsOnRow(notice, 'the restore notice');
 
   // The connection is lost: the outage leads in the same place, and the restore waits behind its Restore details.
+  cara.expectReconnects(2, id);
   sever.blackhole();
   const outage = region.locator(`[${CONNECTION_BANNER_ATTR}="offline"]`);
   await expect(outage, 'the outage notice shows in the region').toBeVisible({ timeout: 25_000 });
@@ -731,7 +732,6 @@ test("j17-history: a peer's restore is a card in the pane's bottom region just a
   await expect(region.locator(`[${RESTORE_NOTICE_ATTR}]`), 'Restore details shows the restore in the region').toContainText(sentence);
   await actors.checkpoint('history-restore-during-outage');
 
-  cara.expectReconnects(2, id);
   sever.restore();
   await expect(outage, 'the outage clears on reconnect').toHaveCount(0, { timeout: 30_000 });
   await expect(notice, 'the restore notice resumes').toContainText(sentence);
