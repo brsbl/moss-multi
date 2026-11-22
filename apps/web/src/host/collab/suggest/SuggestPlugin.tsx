@@ -9,7 +9,7 @@ import { Composite, destroyView, openRecords, SpanSet, type Built } from '@moss-
 import { useEffect, useSyncExternalStore } from 'react';
 import type * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
-import { restoreCaret, type CaretMark } from './caret.ts';
+import { focusOverNote, restoreCaret, type CaretMark } from './caret.ts';
 import { rangesWhere } from './chars.ts';
 import { ReviewMount, SuggestMount } from './mounts.ts';
 import { clearPaint, drawGhosts, drawMarks, editMarks, ghostsOf, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
@@ -86,10 +86,12 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
       frame = 0;
       const binding = bindingOf(editor);
       if (!binding) return;
-      // The caret goes back once this mount is open for typing; a read-only Review keeps it for the next mode.
+      // The caret goes back once this mount is open for typing; a read-only Review keeps it for the next mode. Focus
+      // the person took into a list, menu or dialog over the note stays there, and the caret is dropped (a rebuilt
+      // fork under the open Suggestions list).
       if (pane.bodyOpen && editor.isEditable()) {
         const caret = pane.takeCaret();
-        if (caret && !restoreCaret(editor, caret)) pane.keepCaret(caret);
+        if (caret && !focusOverNote(document) && !restoreCaret(editor, caret)) pane.keepCaret(caret);
       }
       if (mount instanceof SuggestMount) {
         paintBound(owner, editor, binding, mount.fork.ownClients(), mount.fork.strikes(), body);
