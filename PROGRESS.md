@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 88% done** (268 of 304 planned tasks verified)
+**Overall: 88% done** (269 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 28 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 29 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -290,6 +290,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T7.V verified: agent sync now runs on m6's note size limits, lean layout, in-place export and paste rollback, so a CLI push, `--suggest` push, sync, add or watch is held to the text, structure and storage limits and the 4 MB markdown bound, and a refusal names the limit it met in plain words.
 - 2026-11-21 — T9.41 verified: unsaved suggestion text and a peer's restore show as quiet cards in the pane's bottom region with the connection notices, one leading at a time; each closed suggestion's text can be copied, shown or dismissed on its own, a terminal card offers "Recover unsaved text", and an outdated bundle's reload also waits in the app menu.
 - 2026-11-22 — T9.V verified: the polish fixes now run on m8's text, structure and storage limits, lean stored layout, in-place export, paste rollback and client protocol 2, so comments, suggestions, restore, CLI push and sync, and duplicate all hold a note to the same limits, with the full lane and memory job green in both engines on the m9 head.
+- 2026-11-22 — T9.36 verified: Share is a compact dialog whose first line names the note, folder or vault; every role is chosen from a quiet trigger opening Moss's checked menu of the roles allowed there, with Remove access last, people with access are one flat list, and a link keeps its role, Copy and Revoke on its own row.
 
 ## T1.1s identity audit
 
@@ -338,6 +339,15 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.36's checker (591bf50, 2026-11-22)
+
+- T9.36 (Share is compact: the place is named first and every role is a checked menu) checker P2: the dialog's first visible line is still the shell title SHARE (or SHARE VAULT) in faint capitals, with the named place below it, which scrolls out of view.
+- T9.36 (Share is compact: the place is named first and every role is a checked menu) checker P2: role labels read “Can view / Can comment / Can edit”, not the brief's “Viewer / Commenter / Editor” (the product's existing truthful-role wording from T9.10).
+- T9.36 (Share is compact: the place is named first and every role is a checked menu) checker P2: the close control is a bare X, where Moss Settings uses an X inside a thin circle (from the shared web dialog shell, unchanged by this task).
+- T9.36 (Share is compact: the place is named first and every role is a checked menu) checker P2: at 390 px a long pending-invite email is cut off with an ellipsis beside its role; the full address is in a title tooltip and nothing overflows sideways.
+- T9.36 (Share is compact: the place is named first and every role is a checked menu) checker P2: switching the invite from an Owner email invite to an agent ID leaves the role menu with nothing checked: the allowed roles become AGENT_ROLES while `access` stays 'owner', so the trigger reads Owner (submitting was already refused).
+- T9.36 (Share is compact: the place is named first and every role is a checked menu) checker P2: no test activates Remove access or Revoke from the keyboard (the RoleMenu Enter/Space workaround excludes Remove access); j09-revoke-live.spec.ts now starts its 1 s clock when the PATCH is sent rather than before the menu opens.
 
 ### From T9.V's checker (3c34abf, 2026-11-22)
 
