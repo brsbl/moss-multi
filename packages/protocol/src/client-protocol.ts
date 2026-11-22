@@ -4,12 +4,13 @@
 
 /**
  * The protocol this bundle speaks. Bump it with any client/server change an older bundle cannot follow, and raise
- * MIN_CLIENT_PROTOCOL with it when older bundles must stop writing. 1: decorator payload docs (A§10.10).
+ * MIN_CLIENT_PROTOCOL with it when older bundles must stop writing. 1: decorator payload docs (A§10.10). 2: the lean
+ * stored layout (A§5.1), whose left-out defaults an earlier bundle's undo deletes.
  */
-export const CLIENT_PROTOCOL = 1;
+export const CLIENT_PROTOCOL = 2;
 
 /** The oldest protocol the server admits. A doc socket without one is 0: a bundle from before payload docs. */
-export const MIN_CLIENT_PROTOCOL = 1;
+export const MIN_CLIENT_PROTOCOL = 2;
 
 /** On the doc socket's URL; a browser cannot set headers on a WebSocket. */
 export const PROTOCOL_PARAM = 'protocol';

@@ -4,7 +4,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { doubling, expectLinearTime } from '../../../scripts/lib/linear-time.mjs';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { MARKDOWN_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { cleanForSnippet, headingMatches, linkTexts, makeSnippet, parseHeadings, wikiLinkContents, wikiLinkTexts, withoutComments, withoutFences, withoutTags } from './search-core.ts';
 
 const SCANS: [string, (text: string) => unknown, (text: string) => unknown, string[], ((n: number) => string)[]][] = [
@@ -105,9 +105,9 @@ describe('search-core scans replace super-linear regexes', () => {
     for (const attack of [(n: number) => '<'.repeat(n), (n: number) => '['.repeat(n), (n: number) => '[a]('.repeat(n / 4), (n: number) => '<!--'.repeat(n / 4)]) await expectLinear(cleanForSnippet, attack);
   }, 120_000);
 
-  it('makeSnippet and parseHeadings are linear up to the 2 MB note cap on repeated openers', async () => {
+  it('makeSnippet and parseHeadings are linear up to the 4 MB of markdown a note may run to, on repeated openers', async () => {
     const attacks = [(n: number) => `quokka ${'<!--'.repeat(n / 4)}`, (n: number) => `${'<!--'.repeat(n / 4)} quokka`, (n: number) => '````a'.repeat(n / 5), (n: number) => `# ${'[[a'.repeat(n / 3)}`];
-    for (const attack of attacks) await expectLinear((text) => makeSnippet(text, 'quokka'), attack, MARKDOWN_CAP_BYTES);
-    for (const attack of attacks) await expectLinear(parseHeadings, attack, MARKDOWN_CAP_BYTES);
+    for (const attack of attacks) await expectLinear((text) => makeSnippet(text, 'quokka'), attack, MARKDOWN_MAX_BYTES);
+    for (const attack of attacks) await expectLinear(parseHeadings, attack, MARKDOWN_MAX_BYTES);
   }, 120_000);
 });
