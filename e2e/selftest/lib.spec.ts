@@ -277,7 +277,7 @@ test.describe('engine evidence', () => {
     const system = evidence.system;
     for (const key of ['ps', 'networkProcesses', 'ulimitN', 'meminfo', 'shm', 'dmesg']) expect(system, key).toHaveProperty(key);
     if (process.platform === 'linux') {
-      expect(system.ps).toMatch(/WebKit/);
+      expect(system.ps).toMatch(/NetworkProcess/);
       expect(system.networkProcesses.length, 'the network process is found').toBeGreaterThan(0);
       expect(typeof system.networkProcesses[0].fds, 'its descriptors are counted').toBe('number');
       expect(system.networkProcesses[0].status).toMatch(/VmRSS/);

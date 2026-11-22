@@ -134,9 +134,9 @@ export interface NetworkProcess { pid: string; line: string; fds: number | strin
 
 /** The runner's state as WebKit sees it: its processes, each network process's descriptors, limits and memory. */
 export async function systemSnapshot(): Promise<Record<string, unknown>> {
-  const ps = await shell('ps', ['-eo', 'pid,ppid,rss,nlwp,etime,args']);
+  const ps = await shell('ps', ['-ww', '-eo', 'pid,ppid,rss,nlwp,etime,args']);
   const [header, ...rows] = ps.split('\n');
-  const webkit = rows.filter((row) => /WebKit|pw_run|MiniBrowser|Playwright\.app/.test(row));
+  const webkit = rows.filter((row) => /webkit|wpe|pw_run|minibrowser|playwright\.app/i.test(row));
   const network: NetworkProcess[] = webkit
     .filter((row) => /NetworkProcess/.test(row))
     .map((row) => {
