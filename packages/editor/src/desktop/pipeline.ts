@@ -14,7 +14,6 @@ import {
   serializeCommentMetadata,
   type CommentMetadataMap,
 } from '@moss-desktop/common/markdown-layers';
-import { migrateLegacyCommentMarkersToModern } from '@moss-desktop/common/comment-markers';
 import { runReadOnlyMarkdownMigrations } from '@moss-desktop/common/note-markdown-migrations';
 import type {
   MossCompanionExpectation,
@@ -36,6 +35,7 @@ import {
   coerceLayoutMetadata,
   extractFirstH1TitleFromMarkdown,
   isNoteRelativeCompanionPath,
+  migrateLegacyCommentMarkersToModern,
   layoutMetadataHasWidths,
   preserveUnknownMetadataFields,
   readLayoutMetadataText,

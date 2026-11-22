@@ -17,6 +17,8 @@ import { countMarkdownTables, extractLeadingH1, getMarkdownTabGroupShapes } from
 import { hasLegacyCommentFooter, parseCommentFooter, splitFrontmatter, stripCommentAnchors } from '@moss-desktop/common/markdown-layers';
 import { stripWikiLinks } from '@moss-desktop/common/utils';
 
+export { migrateLegacyCommentMarkersToModern } from '@moss-desktop/common/comment-markers';
+
 export type NoteMetadataFile = { id: string; title: string; createdAt: number; updatedAt: number; stickyTabs: any[] } & Record<string, any>;
 export type StickyTabMetadataFile = Record<string, any> & { id: string; status: string; createdAt: number };
 

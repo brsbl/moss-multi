@@ -13,7 +13,9 @@ import {
   codeBlockSpans,
   countMarkdownTableSeparators,
   imageMarkdownSpans,
+  migrateLegacyCommentMarkersToModern,
 } from './note-store.port';
+import { deriveRead, planSave } from './pipeline';
 
 const count = (text: string, pattern: RegExp): number => (text.match(pattern) ?? []).length;
 const spans = (text: string, pattern: RegExp): [number, number][] => [...text.matchAll(pattern)].map((match) => [match.index!, match.index! + match[0].length]);
@@ -105,7 +107,45 @@ function expectLinear(run: (text: string) => unknown, attack: (n: number) => str
   });
 }
 
+/** One save of `body` over a plain note, through the editor's whole save path. */
+function saveOf(body: string) {
+  const meta = JSON.stringify({ id: 'n1', title: 'Plan', createdAt: 1, updatedAt: 1, stickyTabs: [], frontmatterMeta: {}, folderPath: 'Notes' });
+  const disk = {
+    files: { markdown: '# Plan\n', comments: null, layout: null, meta },
+    location: { folderPath: 'Notes', folderName: 'Plan', markdownName: 'Plan.md' },
+    version: 'v1',
+    metaVersion: 'm1',
+  };
+  const read = deriveRead(disk as Parameters<typeof deriveRead>[0], '# Plan\n', []);
+  const snapshot = { content: `# Plan\n\n${body}`, commentMetadata: {}, layoutMetadata: { version: 1 as const, tableCount: 0, tables: [] }, intents: { frontmatterMetaUpdates: {} } };
+  return () => planSave(read, snapshot as Parameters<typeof planSave>[1], { now: 2 });
+}
+
+// A comment-marker opener followed by a run of whitespace: moss's marker regexes put three quantifiers over it.
+const MARKER_OPENERS = ['{%c:', '%%m:'];
+const WHITESPACE = [' ', '\t', '\n'];
+
 describe("linear rewrites of moss's note-store regexes", () => {
+  describe('a save over a comment-marker opener and 2,000 whitespace characters', () => {
+    for (const opener of MARKER_OPENERS) {
+      for (const space of WHITESPACE) {
+        const text = `x${opener}${space.repeat(2000)}x`;
+        const runs: [string, () => unknown][] = [
+          ['planSave', saveOf(text)],
+          ['classifyNoteContentType', () => classifyNoteContentType(text)],
+          ['migrateLegacyCommentMarkersToModern', () => migrateLegacyCommentMarkersToModern(text)],
+        ];
+        for (const [name, run] of runs) {
+          it(`${name} on ${JSON.stringify(opener)} and ${JSON.stringify(space)} x 2000 takes under 200 ms`, () => {
+            const start = performance.now();
+            run();
+            expect(performance.now() - start).toBeLessThan(200);
+          }, 120_000);
+        }
+      }
+    }
+  });
+
   for (const [name, scan, regex, alphabet, attacks] of REWRITES) {
     it(`${name} is golden-equal to the regex it replaced`, () => {
       for (const text of FIXTURES) expect(scan(text), JSON.stringify(text)).toEqual(regex(text));
