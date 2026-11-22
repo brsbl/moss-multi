@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 91% done** (275 of 302 planned tasks verified)
+**Overall: 91% done** (276 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 35 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 36 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -297,6 +297,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.37 verified: `/login` is a quiet 400 px form column with Moss's heading, fields and action and an inline terracotta error that never moves the form; a signed-out link visitor finds Sign in in the bottom row and in More actions, and the denial page offers only Sign in, or Go to your notes and Use another account.
 - 2026-11-22 — T9.48b verified: pasting a 10,000-item check list no longer freezes Chrome; the tab is held under a second at a time instead of 3 to 5 s, because the comment and suggestion highlight rules now name the editor root, and WebKit still paints them through a per-element copy.
 - 2026-11-22 — T9.39 verified: Resolve closes the open thread as Moss's does, the comment actions menu has no emoji strip, each message has one quiet Add reaction that opens a small row of five quick reactions, and reaction chips are neutral with a faint fill when they are yours.
+- 2026-11-22 — T9.48c verified: saving, counting comments, pasting or selecting on a note no longer stalls the tab when its text holds a comment-marker opener followed by thousands of blanks, because moss's marker functions on those paths now find markers in one linear pass.
 
 ## T1.1s identity audit
 
@@ -368,6 +369,11 @@ Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` for
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.48c's checker (6c45ca5, 2026-11-22)
+
+- T9.48c (A save never stalls on a comment-marker opener) checker P2: `detectCommentSyntax`, `stripCommentAnchorsForIds`, `findCommentMarkerIds`, `hasLegacyCommentMarkers` and `hasModernCommentMarkers` still use moss's cubic marker regexes; no runtime caller reaches them today, but a future caller would bring the stall back.
+- T9.48c (A save never stalls on a comment-marker opener) checker P2: j13-vaults.spec.ts:118 "the notice says why" (the deleted connection banner is not shown) failed once in WebKit on the full lane and passed on retry; it is outside the marker code and its cause is not yet found.
 
 ### From T9.39's checker (18011d7, 2026-11-22)
 
