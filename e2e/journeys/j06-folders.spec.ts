@@ -585,6 +585,8 @@ test('j06-folders: a window with no note chosen keeps the note it shows while a 
 
   // Ben creates a second note and types its title: a create, a first touch and, 5 s later, a trailing touch.
   await ui.switchVault(ben.page, 'Home Can edit');
+  // Ben chose nothing in Ada's vault either: his window shows its one note before he makes another.
+  await ui.waitLive(ben, first);
   const second = await ui.createNote(ben);
   await ui.typeTitle(ben, second, 'Second plan');
   const doc = async () => (await api.listing()).docs.find((d) => d.id === second);
