@@ -340,6 +340,19 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - Not changed by the pin: j12-search's wiki-link test (run 44931221611, attempt 1) failed opening the target from its sidebar row while another note's socket closed and reopened; both notes there were chosen through "+ Note", so it is not this switching. It reads like the row reorder under a click that j00-persist describes; not investigated further.
 - No other journey expects a note created over the API after its shell opened to come on screen unopened: the rest create before the shell loads (j01-autolink) or open the note by address or row.
 
+### T9.48c — who runs moss's comment-marker regexes
+
+Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` forms) are cubic in a run of blanks after an opener. `common/comment-markers.ts` and `common/markdown-layers.ts` now find markers with the linear `commentMarkerAt` (recorded patches), held to moss's regexes by `note-store.linear.test.ts`. Each user of those sources:
+
+- Save path, `packages/editor/src/desktop/pipeline.ts` (`migrateLegacyCommentMarkersToModern`) and `note-store.port.ts` (`classifyNoteContentType` → `stripCommentAnchors`): linear, golden and doubling tests, plus the bounded 2,000-blank test that was [red first](https://github.com/brsbl/moss-multi/actions/runs/45034951410) at 2.3 to 6.7 s.
+- `packages/editor/src/mount.tsx` (`extractCommentAnchorIds` on every save's snapshot): linear, same tests.
+- `packages/editor/src/selection.ts` and `packages/viewer/src/selection.ts` (`stripCommentMarkerTokens` on a selection's lines): linear, same tests.
+- `vendor/.../renderer/panels/CanvasAreaContent.tsx` (`extractCommentAnchorIds` when a web-app save prunes comments) and `editor/utils/comment-thread-count.ts` (comment counts): linear, same tests. Before, a collaborator's `{%c:` and a few thousand blanks froze every other tab that saved or counted comments on the note.
+- `vendor/.../renderer/editor/MarkdownEditor.tsx` (`containsCommentAnchors` on pasted text): linear, same tests.
+- `editor/utils/comment-markdown.ts`: re-exports the functions above; its other marker users (`detectCommentSyntax`, and in the two common files `stripCommentAnchorsForIds`, `findCommentMarkerIds`, `hasLegacyCommentMarkers`, `hasModernCommentMarkers`) have no caller in the vendored tree or the web app, so no text another person wrote reaches them; they still run the regexes.
+- `apps/web/src/host/history/HistoryView.tsx`, `packages/viewer/src/moss-file.ts`, `packages/sync/src/doc-do.ts`, `push.ts`, `title-line.ts`, `editor/plugins/FileLinkPlugin.tsx`, `editor/utils/noteFrontmatter.ts`: only `splitFrontmatter` and `disassembleNote`, no marker regex; the frontmatter pattern is anchored at the start, so linear.
+- `editor/markdown/normalize.ts`: imports only a type.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
