@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { modeFor, pausedMode, requestMode, reviewReturn, setOpenSuggestions, showMode } from './mode.ts';
+import { dismissUnsaved, modeFor, offerUnsaved, pausedMode, requestMode, reviewReturn, setOpenSuggestions, showMode, unsavedOf } from './mode.ts';
 
 describe('T5.1 each role opens in its mode (PRODUCT ruling 17) @p:mean-2 @p:R17', () => {
   it('viewers and commenters open in Review; suggesters in Suggest; editors and owners in Edit', () => {
@@ -89,5 +89,22 @@ describe('T9.33 Done returns to the mode Review paused @p:mean-2 @p:R17', () => 
     requestMode('doc-j', 'review');
     expect(reviewReturn('doc-j', 'commenter')).toBe('edit');
     expect(pausedMode('doc-j', 'commenter')).toBe(null);
+  });
+});
+
+describe('T9.41 each closed suggestion\'s unsaved text is its own payload', () => {
+  it('dismissing one leaves the other byte for byte, and nothing else clears them', () => {
+    const first = ['Line one\n  indented', 'Second block'];
+    const second = ['Another fork’s text\twith a tab'];
+    offerUnsaved('doc-unsaved', first);
+    offerUnsaved('doc-unsaved', second);
+    const held = unsavedOf('doc-unsaved');
+    expect(held.map((payload) => payload.blocks)).toEqual([first, second]);
+    expect(new Set(held.map((payload) => payload.id)).size).toBe(2);
+    dismissUnsaved('doc-unsaved', held[0].id);
+    expect(unsavedOf('doc-unsaved').map((payload) => payload.blocks)).toEqual([second]);
+    expect(unsavedOf('doc-unsaved')[0].blocks.join('\n\n')).toBe('Another fork’s text\twith a tab');
+    dismissUnsaved('doc-unsaved', held[1].id);
+    expect(unsavedOf('doc-unsaved')).toEqual([]);
   });
 });

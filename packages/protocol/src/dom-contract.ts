@@ -47,6 +47,8 @@ export type TerminalReason = (typeof TERMINAL_REASONS)[number];
 
 /** The reserved notice band under each pane's top bar (A§10.5): in flow and zero-height; input refusals show in it. */
 export const NOTICE_BAND_ATTR = 'data-notice-band';
+/** The pane's one bottom region (T9.30): its mode or capability row nearest the bottom, its notices just above (T9.41). */
+export const BOTTOM_REGION_ATTR = 'data-bottom-region';
 
 /**
  * The connection notice, floating in the pane's bottom region (T9.40): `retrying` while a first sync is late, `offline` while a synced doc is not
