@@ -630,6 +630,42 @@ test('j06-folders: Forward to a note trashed since she left it shows it in Trash
   await expect(ada.page, 'a trashed note has no address: it names A, the last live note').toHaveURL(at(a));
 });
 
+test('j06-folders: Back through two notes trashed since she left them shows each in Trash, and the address keeps naming the live note (T9.19)', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner moves between her own notes');
+  const api = setup(ada);
+  const trips = await api.folder('Trips', await api.home());
+  const a = await api.note('Lisbon', trips);
+  const b = await api.note('Porto', trips);
+  const c = await api.note('Faro', trips);
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expandFolder(ada, 'Trips');
+  const at = (docId: string) => new RegExp(`/d/${docId}$`);
+  for (const docId of [a, b, c]) {
+    await ui.openNote(ada, docId);
+    await expect(ada.page).toHaveURL(at(docId));
+  }
+  // C may also have opened as the startup note after the reload.
+  ada.expectReconnects(1, c);
+
+  // Her other window trashes A and B (declared setup: that window's API calls); this tab hears it live.
+  const { origin } = api;
+  for (const docId of [a, b]) {
+    expect((await ada.context.request.delete(`${origin}/api/docs/${docId}`, { headers: { origin } })).status(), 'declared setup: the note goes to Trash').toBe(200);
+    await expect(noteRow(ada, docId), 'the note leaves her notes').toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
+  }
+  // The Trash views are different editors from the ones she left.
+  ada.observations.delete(a);
+  ada.observations.delete(b);
+  for (const [docId, when] of [[b, 'Back'], [a, 'Back again']] as const) {
+    await ada.page.goBack({ waitUntil: 'commit' });
+    await expect.poll(() => ui.paneIds(ada), { message: `${when}: the trashed note is the one pane`, timeout: BIND_TIMEOUT }).toEqual([docId]);
+    await expect(ada.page.getByText(/This note is in Trash/), `${when}: its Trash view, as moss's own arrow shows it`).toBeVisible({ timeout: BIND_TIMEOUT });
+    await expect(ada.page, `${when}: a trashed note has no address: it names C, the last live note`).toHaveURL(at(c));
+  }
+});
+
 // T9.48a: a window where no note was ever chosen shows the newest note. It stays on that note while collaborators
 // create notes and edit others, which reorders the listing; it used to follow the newest one.
 

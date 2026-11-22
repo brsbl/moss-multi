@@ -692,6 +692,46 @@ describe("the T9.19 bridge: the browser's Back and Forward move between notes (A
     }
   });
 
+  it('keeps the last live note in the address when Back passes two notes trashed since their entries were made', async () => {
+    const trashed = new Set<string>();
+    const t = tab('/', { trashed });
+    await show(t.api, ['a'], 'a');
+    await show(t.api, ['b'], 'b');
+    // A and B go to Trash; opening C reads the listing that says so.
+    trashed.add('a');
+    trashed.add('b');
+    await show(t.api, ['c'], 'c');
+    expect(t.entries).toEqual(['/d/a', '/d/b', '/d/c']);
+    t.go(-1);
+    await show(t.api, ['b'], 'b');
+    expect(t.at(), "B's Trash view: the address names C").toBe('/d/c');
+    t.go(-1);
+    await show(t.api, ['a'], 'a');
+    expect(t.opened, "moss opens each note's Trash view").toEqual(['b', 'a']);
+    expect(t.at(), "A's Trash view: the address still names C, the last live note").toBe('/d/c');
+    t.off();
+  });
+
+  it('keeps the last live note in the address when Forward reaches a note trashed while it showed in the other pane', async () => {
+    const trashed = new Set<string>();
+    const t = tab('/', { trashed });
+    await show(t.api, ['a'], 'a');
+    await show(t.api, ['a', 'b'], 'b');
+    await show(t.api, ['a', 'c'], 'c');
+    expect(t.entries).toEqual(['/d/b', '/d/c']);
+    t.go(-1);
+    // C goes to Trash while it shows in the other pane; reaching B reads the listing that says so.
+    trashed.add('c');
+    await show(t.api, ['b', 'c'], 'b');
+    // moss shows C's Trash view in the other pane, and focus goes to it.
+    await show(t.api, ['b', 'c'], 'c');
+    expect(t.at()).toBe('/d/b');
+    t.go(1);
+    await show(t.api, ['c'], 'c');
+    expect(t.at(), 'a trashed note has no address: it names B').toBe('/d/b');
+    t.off();
+  });
+
   it('puts the shown note back in the address when the switch Back asked for does not happen', async () => {
     let went: unknown;
     const t = tab('/', { opener: () => Promise.resolve(went) });
