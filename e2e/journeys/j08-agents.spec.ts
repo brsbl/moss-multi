@@ -67,13 +67,13 @@ test('j08-agents keys: a minted key is shown once; revoking it 401s a raw bearer
   await expect(agentRow(settings, 'Scribe').getByRole('button', { name: 'Copy ID for Scribe', exact: true }), 'with Copy ID').toHaveCount(1);
   const agentId = await agentIdOf(ada, 'Scribe');
   expect(agentId).toMatch(UUID);
-  await actors.checkpoint('minted');
 
   await ada.page.keyboard.press('Escape');
   await expect(settings).toBeHidden();
   settings = await ui.openSettings(ada);
   await expect(agentRow(settings, 'Scribe'), 'the agent is still listed').toHaveCount(1);
   await expect(settings.getByRole('textbox', { name: 'API key for Scribe', exact: true }), 'but its key is not shown again').toHaveCount(0);
+  await actors.checkpoint('minted');
   expect(await (await ada.context.request.get('/api/agents')).text(), 'nor sent again').not.toContain(key);
 
   const before = await me(stack.baseUrl, key);
@@ -113,15 +113,25 @@ test('j08-agents settings: Agents is a quiet inventory; New key discloses the na
   await expect(settings, 'Escape in the field closes only the field').toBeVisible();
   await expect(settings.getByLabel('Agent name', { exact: true })).toHaveCount(0);
   await expect(disclose, 'and focus returns to New key').toBeFocused();
+  await disclose.click();
+  await ada.page.keyboard.press('Tab');
+  await expect(settings.getByRole('button', { name: 'Create key', exact: true }), 'Tab reaches Create key').toBeFocused();
+  await ada.page.keyboard.press('Escape');
+  await expect(settings, 'Escape on Create key closes only the field').toBeVisible();
+  await expect(settings.getByLabel('Agent name', { exact: true })).toHaveCount(0);
+  await expect(disclose, 'and focus returns to New key from there too').toBeFocused();
 
   await mintInSettings(settings, 'Scribe');
   const first = settings.getByRole('textbox', { name: 'API key for Scribe', exact: true });
   await expect(first, 'the key is shown once').toHaveValue(KEY);
   const firstKey = await first.inputValue();
+  // A second key cannot replace one still on screen: the server keeps only its hash, so it would be lost.
+  await expect(disclose, 'New key waits while a key is on screen').toBeDisabled();
+  await expect(first, 'and the shown key stays').toHaveValue(firstKey);
 
   await stubClipboard(ada, false);
   await settings.getByRole('button', { name: 'Copy key', exact: true }).click();
-  await expect(settings.getByRole('alert'), 'a refused copy says so').toHaveText('Couldn’t copy. Select the key and copy it yourself.');
+  await expect(settings.getByRole('group', { name: 'Key for Scribe', exact: true }).getByRole('alert'), 'a refused copy says so beside the key').toHaveText('Couldn’t copy. Select the key and copy it yourself.');
   await expect(settings.getByRole('button', { name: 'Copied', exact: true }), 'and never claims Copied').toHaveCount(0);
   await expect(first, 'the key is focused to copy by hand').toBeFocused();
   await stubClipboard(ada, true);
@@ -130,6 +140,7 @@ test('j08-agents settings: Agents is a quiet inventory; New key discloses the na
   expect(await copied(ada), 'with the key itself').toEqual([firstKey]);
   await settings.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(settings.getByRole('textbox', { name: 'API key for Scribe', exact: true }), 'Done puts the key away').toHaveCount(0);
+  await expect(disclose, 'and New key is available again').toBeEnabled();
 
   const firstId = await agentIdOf(ada, 'Scribe');
   await stubClipboard(ada, true);
@@ -164,6 +175,9 @@ test('j08-agents settings: Agents is a quiet inventory; New key discloses the na
   await expect(list.getByRole('listitem'), 'the older record leaves').toHaveCount(1, { timeout: LIVE_TIMEOUT });
   await expect(list.getByRole('listitem'), 'the newer one stays').toContainText('scribe');
   await expect(settings.getByRole('textbox', { name: 'API key for scribe', exact: true }), 'and its key is still on screen').toHaveValue(secondKey);
+  // The evidence screenshot never holds a key.
+  await settings.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(settings.getByRole('textbox', { name: /^API key for /i })).toHaveCount(0);
   await actors.checkpoint('agents-settings');
 });
 

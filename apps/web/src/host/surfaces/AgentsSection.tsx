@@ -10,13 +10,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import { useAuthState } from '../auth.ts';
 import { UNREACHABLE } from '../auth-state.ts';
 import { isLeaveCancelled } from '../leave.ts';
+import { createdLabel, sameName, type AgentRecord as Agent } from './agent-label.ts';
 import { call } from './ShareDialog.tsx';
-
-interface Agent {
-  id: string;
-  name: string;
-  createdAt: number;
-}
 
 const SECTION_LABEL = 'text-micro font-medium uppercase tracking-wider text-ink-faint';
 // Moss's Settings text action (Connected Folders' Add).
@@ -24,8 +19,6 @@ const ACTION = 'flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs fo
 // Connected Folders' row action: shown on the row's hover or its own focus, always on a touch screen.
 const ROW_ACTION = 'flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint opacity-0 transition-all group-hover/agent:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:opacity-60 [@media(hover:none)]:opacity-100';
 const COPY_FAILED = (what: string) => `Couldn’t copy. Select the ${what} and copy it yourself.`;
-const sameName = (a: string, b: string) => a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
-const created = (at: number) => new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
 /** Writes `text` to the clipboard; true only once the browser says it landed. */
 const copyText = (text: string): Promise<boolean> =>
@@ -233,8 +226,8 @@ export function AgentsSection(): ReactNode {
                   <div className="flex min-w-0 items-center gap-2">
                     <KeyRound aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
                     <span className="min-w-0 flex-1 truncate text-xs text-ink-muted" title={agent.name}>{agent.name}</span>
-                    {agents.some((other) => other.id !== agent.id && sameName(other.name, agent.name)) ? (
-                      <span className="shrink-0 text-xs text-ink-faint">{created(agent.createdAt)}</span>
+                    {createdLabel(agent, agents) ? (
+                      <span className="shrink-0 text-xs text-ink-faint">{createdLabel(agent, agents)}</span>
                     ) : null}
                     <Tooltip>
                       <TooltipTrigger asChild>
