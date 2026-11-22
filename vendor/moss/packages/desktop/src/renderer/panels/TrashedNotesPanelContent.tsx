@@ -23,6 +23,8 @@ import { notesApi } from '../api/electron';
 import { hidden } from '@moss-multi/host/affordances';
 // moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
 import { TRASH_COPY } from '@moss-multi/host/retention';
+// moss-multi seam: trash-vault (T9.43): a row of a vault in Trash names the vault its restore brings back
+import { trashCaption } from '@moss-multi/host/trash';
 
 export type TrashedNotesPanelContentProps = {
   onSelectNote: (id: string) => void;
@@ -238,7 +240,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
                     id={result.id}
                     title={result.title}
                     updatedAt={result.updatedAt ?? 0}
-                    formattedTime={result.updatedAt ? `Deleted ${formatRelativeTime(result.updatedAt)}` : ''}
+                    formattedTime={result.updatedAt ? trashCaption(result.id, `Deleted ${formatRelativeTime(result.updatedAt)}`) /* moss-multi seam: trash-vault (T9.43) */ : ''}
                     isActive={result.id === activeNoteId}
                     isContextMenuOpen={isContextMenuOpen}
                     variant="trash"
@@ -279,7 +281,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
                   id={note.id}
                   title={note.title}
                   updatedAt={note.updatedAt}
-                  formattedTime={note.trashedAt != null ? `Deleted ${formatRelativeTime(note.trashedAt)}` : 'Unknown'}
+                  formattedTime={note.trashedAt != null ? trashCaption(note.id, `Deleted ${formatRelativeTime(note.trashedAt)}`) /* moss-multi seam: trash-vault (T9.43) */ : 'Unknown'}
                   isActive={note.id === activeNoteId}
                   isContextMenuOpen={isContextMenuOpen}
                   variant="trash"

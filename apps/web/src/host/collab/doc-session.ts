@@ -15,6 +15,7 @@ import {
 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, namedPayloadIds, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBackPaste, withoutDeletes, type PasteRecord, type PayloadSpan, type Ranges } from '@moss-multi/sync/paste-rollback';
+import { removeAwarenessStates } from 'y-protocols/awareness';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { knownRole, startRoleRead, supersedeRoleReads } from '../access.ts';
@@ -766,6 +767,10 @@ export class DocSession {
     }
     const ws = this.provider.ws;
     if (ws && ws.readyState <= WebSocket.OPEN) ws.close(CLOSE.normal, 'ended');
+    // Nobody is in an ended note: its carets and roster go now, not at the stale sweep, and as a remote change (never sent).
+    const { awareness } = this.provider;
+    const others = [...awareness.getStates().keys()].filter((id) => id !== awareness.clientID);
+    if (others.length) removeAwarenessStates(awareness, others, this.provider);
   }
 
   /** After `deleted` on a note REST still has live: the terminal state clears and the socket reopens at the role REST

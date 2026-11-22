@@ -16,7 +16,7 @@ import { ensureDefaultVault } from './vaults.ts';
 
 interface VaultRow { id: string; name: string; role: Role; owned: boolean }
 interface FolderRow { id: string; name: string; path: string; role: Role; surfaced: boolean; createdAt: number; noteCount: number }
-interface DocRow { id: string; title: string; filename: string; createdAt: number; updatedAt: number; role: Role; folderPath: string; surfaced: boolean; trashedAt?: number }
+interface DocRow { id: string; title: string; filename: string; createdAt: number; updatedAt: number; role: Role; folderPath: string; surfaced: boolean; trashedAt?: number; vaultName?: string }
 interface TrashedRow { id: string; title: string; filename: string; folderId: string; createdAt: number; updatedAt: number; trashedAt: number }
 
 /** A lookup of the roles granted on each id among `rows`, empty for an id with none. */
@@ -32,7 +32,7 @@ function rolesById(rows: { id: string; role: Role }[]): (id: string) => Role[] {
  * folder chain; the caller's grants are then folded per row as resolveDocAccess does (the check trash and restore
  * make), so a co-owner who trashes a note finds it in Trash. Three queries, however large Trash grows.
  */
-async function managedTrash(db: D1Database, userId: string, only: readonly string[] | null): Promise<(TrashedRow & { vaultId: string })[]> {
+async function managedTrash(db: D1Database, userId: string, only: readonly string[] | null): Promise<(TrashedRow & { vaultId: string; ownVault: string | null })[]> {
   const [chains, folderGrants, docGrants] = await Promise.all([
     db.prepare(`WITH RECURSIVE granted(id, depth) AS (
       SELECT folder_id, 1 FROM folder_members WHERE principal_id = ?1
@@ -44,23 +44,24 @@ async function managedTrash(db: D1Database, userId: string, only: readonly strin
       UNION ALL SELECT up.doc_id, f.id, f.parent_id, f.kind, up.depth + 1 FROM folders f JOIN up ON f.id = up.parent_id
         WHERE up.depth < ${MAX_FOLDER_DEPTH}
     ) SELECT d.id, d.title, d.filename, d.folder_id AS folderId, d.created_at AS createdAt, d.updated_at AS updatedAt,
-        d.deleted_at AS trashedAt, d.owner_user_id AS ownerUserId, up.id AS chainId, up.kind
+        d.deleted_at AS trashedAt, d.owner_user_id AS ownerUserId, up.id AS chainId, up.kind,
+        CASE WHEN up.kind = 'vault' THEN (SELECT name FROM folders WHERE id = up.id AND owner_user_id = ?1) END AS ownVault
       FROM docs d JOIN up ON up.doc_id = d.id ORDER BY d.id, up.depth`)
-      .bind(userId, only && JSON.stringify(only)).all<TrashedRow & { ownerUserId: string; chainId: string; kind: string }>(),
+      .bind(userId, only && JSON.stringify(only)).all<TrashedRow & { ownerUserId: string; chainId: string; kind: string; ownVault: string | null }>(),
     db.prepare('SELECT folder_id AS id, role FROM folder_members WHERE principal_id = ?').bind(userId).all<{ id: string; role: Role }>(),
     db.prepare('SELECT doc_id AS id, role FROM doc_members WHERE principal_id = ?').bind(userId).all<{ id: string; role: Role }>(),
   ]);
   const onFolder = rolesById(folderGrants.results);
   const onDoc = rolesById(docGrants.results);
-  const byDoc = new Map<string, { row: TrashedRow & { ownerUserId: string }; grants: Role[]; vaultId: string | null }>();
-  for (const { chainId, kind, ...row } of chains.results) {
-    const entry = byDoc.get(row.id) ?? byDoc.set(row.id, { row, grants: [...onDoc(row.id)], vaultId: null }).get(row.id)!;
+  const byDoc = new Map<string, { row: TrashedRow & { ownerUserId: string }; grants: Role[]; vaultId: string | null; ownVault: string | null }>();
+  for (const { chainId, kind, ownVault, ...row } of chains.results) {
+    const entry = byDoc.get(row.id) ?? byDoc.set(row.id, { row, grants: [...onDoc(row.id)], vaultId: null, ownVault: null }).get(row.id)!;
     entry.grants.push(...onFolder(chainId));
-    if (kind === 'vault') entry.vaultId = chainId;
+    if (kind === 'vault') Object.assign(entry, { vaultId: chainId, ownVault });
   }
-  return [...byDoc.values()].flatMap(({ row: { ownerUserId, ...row }, grants, vaultId }) => {
+  return [...byDoc.values()].flatMap(({ row: { ownerUserId, ...row }, grants, vaultId, ownVault }) => {
     const role = foldRole({ owner: ownerUserId === userId, grants, link: null, anonymous: false });
-    return vaultId && role && can(role, 'manage') ? [{ ...row, vaultId }] : [];
+    return vaultId && role && can(role, 'manage') ? [{ ...row, vaultId, ownVault }] : [];
   });
 }
 
@@ -309,7 +310,9 @@ export async function workspace(request: Request, env: AuthEnv): Promise<Respons
   const trashed = (await managedTrash(env.DB, principal.id, wanted)).filter((doc) => doc.vaultId === vault.id || !byId.has(doc.vaultId))
     .map((doc): DocRow => ({ id: doc.id, title: doc.title,
     filename: doc.filename, createdAt: doc.createdAt, updatedAt: doc.updatedAt, role: 'owner', folderPath: pathFor(doc.folderId) ?? 'Notes',
-    surfaced: false, trashedAt: doc.trashedAt }));
+    surfaced: false, trashedAt: doc.trashedAt,
+    // A note from another vault of the caller's own (one in Trash) names it, as that is where a restore takes it (T9.43).
+    ...(doc.vaultId !== vault.id && doc.ownVault !== null ? { vaultName: doc.ownVault } : {}) }));
   rows.push(...trashed);
   rows.sort(byUpdated);
   return json({ vault, vaults, docs: only(rows), folders }, 200, NO_STORE);

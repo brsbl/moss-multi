@@ -5123,6 +5123,12 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             <div data-retention-notice="" /* moss-multi seam: trash-copy (T2.3) */ className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
               <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-accent-terracotta/80" />
               <span className="text-xs text-ink-muted">{trashCountdownMessage}</span>
+              {/* moss-multi seam: trash (T9.43): Restore where the note says it is in Trash, for whoever may restore it, in the action recipe of Moss's bottom notice */}
+              {note && canTrashNote(note.id) ? (
+                <button type="button" onClick={handleRestoreClick} className="text-xs text-ink-muted underline underline-offset-2 opacity-70 hover:opacity-100">
+                  Restore
+                </button>
+              ) : null}
             </div>
           </div>
         ) : mossMultiPane.bottomBand /* moss-multi seam: review-band (T9.1): one band in this slot, the Trash notice first */}

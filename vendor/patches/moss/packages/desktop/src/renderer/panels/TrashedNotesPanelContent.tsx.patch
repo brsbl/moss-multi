@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx b/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx
 --- a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx
 +++ b/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx
-@@ -18,6 +18,10 @@ import {
+@@ -18,6 +18,12 @@ import {
  import type { NoteSearchResult } from '../../common/noteTypes';
  import { formatRelativeTime } from './notesPanelUtils';
  import { notesApi } from '../api/electron';
@@ -9,10 +9,12 @@ diff --git a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx b
 +import { hidden } from '@moss-multi/host/affordances';
 +// moss-multi seam: trash-copy (T2.3): one module says how long Trash keeps a note
 +import { TRASH_COPY } from '@moss-multi/host/retention';
++// moss-multi seam: trash-vault (T9.43): a row of a vault in Trash names the vault its restore brings back
++import { trashCaption } from '@moss-multi/host/trash';
  
  export type TrashedNotesPanelContentProps = {
    onSelectNote: (id: string) => void;
-@@ -48,17 +52,21 @@ function TrashedNoteContextMenu({
+@@ -48,17 +54,21 @@ function TrashedNoteContextMenu({
    return (
      <ContextMenu onOpenChange={setIsContextMenuOpen}>
        <ContextMenuTrigger asChild>
@@ -35,7 +37,7 @@ diff --git a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx b
        </ContextMenuContent>
      </ContextMenu>
    );
-@@ -212,7 +220,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
+@@ -212,7 +222,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
        if (!hasAnyNotes) {
          return (
            <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
@@ -44,3 +46,21 @@ diff --git a/packages/desktop/src/renderer/panels/TrashedNotesPanelContent.tsx b
            </div>
          );
        }
+@@ -229,7 +239,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
+                     id={result.id}
+                     title={result.title}
+                     updatedAt={result.updatedAt ?? 0}
+-                    formattedTime={result.updatedAt ? `Deleted ${formatRelativeTime(result.updatedAt)}` : ''}
++                    formattedTime={result.updatedAt ? trashCaption(result.id, `Deleted ${formatRelativeTime(result.updatedAt)}`) /* moss-multi seam: trash-vault (T9.43) */ : ''}
+                     isActive={result.id === activeNoteId}
+                     isContextMenuOpen={isContextMenuOpen}
+                     variant="trash"
+@@ -270,7 +280,7 @@ export const TrashedNotesPanelContent = forwardRef<TrashedNotesPanelContentHandl
+                   id={note.id}
+                   title={note.title}
+                   updatedAt={note.updatedAt}
+-                  formattedTime={note.trashedAt != null ? `Deleted ${formatRelativeTime(note.trashedAt)}` : 'Unknown'}
++                  formattedTime={note.trashedAt != null ? trashCaption(note.id, `Deleted ${formatRelativeTime(note.trashedAt)}`) /* moss-multi seam: trash-vault (T9.43) */ : 'Unknown'}
+                   isActive={note.id === activeNoteId}
+                   isContextMenuOpen={isContextMenuOpen}
+                   variant="trash"
