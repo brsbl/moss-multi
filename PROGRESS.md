@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 84% done** (267 of 317 planned tasks verified)
+**Overall: 88% done** (268 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 27 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 28 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -289,6 +289,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T6.V verified: history now runs on m5's note size limits, lean layout, in-place export and paste rollback, so a restore is held to the text, structure and size limits by what it adds, a refused restore names its limit and changes nothing, and the full lane, j17 included, is green on the m6 head.
 - 2026-11-21 — T7.V verified: agent sync now runs on m6's note size limits, lean layout, in-place export and paste rollback, so a CLI push, `--suggest` push, sync, add or watch is held to the text, structure and storage limits and the 4 MB markdown bound, and a refusal names the limit it met in plain words.
 - 2026-11-21 — T9.41 verified: unsaved suggestion text and a peer's restore show as quiet cards in the pane's bottom region with the connection notices, one leading at a time; each closed suggestion's text can be copied, shown or dismissed on its own, a terminal card offers "Recover unsaved text", and an outdated bundle's reload also waits in the app menu.
+- 2026-11-22 — T9.V verified: the polish fixes now run on m8's text, structure and storage limits, lean stored layout, in-place export, paste rollback and client protocol 2, so comments, suggestions, restore, CLI push and sync, and duplicate all hold a note to the same limits, with the full lane and memory job green in both engines on the m9 head.
 
 ## T1.1s identity audit
 
@@ -330,6 +331,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.V's checker (3c34abf, 2026-11-22)
+
+- T9.V (Restack m9 on the lean layout) checker P2: duplicate admits the source bytes rather than the finished copy (inherited from m8): createFromSnapshot checks the encoded source plus payload bytes, then deletes the destination seed and replaces the title without re-checking, so a source at the stored-byte boundary can yield a slightly over-cap copy.
+- T9.V (Restack m9 on the lean layout) checker P2: restore admits the body before its uncounted comment-anchor writes (inherited from m8): restoreVersion's flush and comment re-anchoring do not reserve structure growth, so a restore that reaches STRUCT_CAP can finish slightly beyond it (bounded by the comment limits).
+- T9.V (Restack m9 on the lean layout) checker P2: the light no-room notice card lets blurred bands of the busy note text show through behind its message at both widths, busier than Moss's flat notices (card surface from T9.41; text stays readable).
+- T9.V (Restack m9 on the lean layout) checker P2: the mixedMarkdown doc comment in the near-cap fixtures still says formatting every few words "would encode past the doc's state cap at 2 MB"; the cap was re-derived by T3.B31c and only the comment is stale.
+- T9.V (Restack m9 on the lean layout) checker P2: five first-attempt failures off the known-intermittent list, each green on rerun of the same commit (run 45000681300 attempt 1): memory "structure ceiling: the largest table" (create: fetch failed); chromium pasterace j01-paste-check at 6187 ms against a 5000 ms budget (also m9 run 44963597037 attempt 1); chromium social j15-social:169 at the visible-comment assertion; webkit coedit j01-coedit:213 invariant 3 with an unheard socket at 91 ms (ARTIFACT_MS 50); webkit suggestPasteCells j16-review-kept socket hang up on POST /api/docs (m8 run 44964282659 attempt 1 also cited).
 
 ### From T9.41's checker (e01d7b3, 2026-11-21)
 
