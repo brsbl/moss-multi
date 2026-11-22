@@ -107,6 +107,8 @@ for (const size of TIER_A) {
     await expect(band.getByRole('button', { name: 'Sign in', exact: true }), 'the band holds the sign-in').toBeVisible();
     expect(await band.evaluate((el) => getComputedStyle(el).boxShadow), 'a quiet row at the bottom, not a floating card').toBe('none');
     await expect(stranger.page.locator('[data-top-bar]').getByRole('button', { name: 'Sign in', exact: true }), 'no sign-in in the top bar').toHaveCount(0);
+    // T9.37: More actions is another route to the same plain Sign in.
+    expect(await ui.noteMenuEntries(stranger, docId), 'More offers Sign in to a signed-out visitor').toContain('Sign in');
     await actors.checkpoint(`${size.name}-stranger-alone`);
     await searchesTheNote(stranger, docId);
 

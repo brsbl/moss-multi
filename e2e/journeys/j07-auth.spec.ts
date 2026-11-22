@@ -278,9 +278,34 @@ test('the login card works at 390x844 and 1440x1000 @p:tech-9 @tierA @evidence',
     await actor.page.setViewportSize(size);
     await ui.waitForLoginCard(actor);
     await expectNoOAuth(actor);
-    // With no invite and no share link the card is unchanged: its own tagline, and no way back to anything.
-    await expect(actor.page.locator('[data-login-card]').getByText('Multiplayer moss: your notes, written together in real time.')).toBeVisible();
+    // With no invite and no share link the card is a quiet task (T9.37): a short heading, no promotional tagline or
+    // logo tile, and no way back to anything.
+    const column = actor.page.locator('[data-login-card]');
+    await expect(column.getByRole('heading', { level: 1, name: 'Sign in', exact: true })).toBeVisible();
+    await expect(column.getByText(/Multiplayer moss/)).toHaveCount(0);
+    await expect(column.locator('svg')).toHaveCount(0);
     await expect(actor.page.getByRole('button', { name: /^Back to the/ })).toHaveCount(0);
+    // A plain form column on the canvas: no card box, Moss's 18 px task heading, its 36 px action, at most 400 px wide.
+    expect(await column.evaluate((el) => {
+      const style = getComputedStyle(el);
+      const heading = getComputedStyle(el.querySelector('h1')!);
+      const submit = el.querySelector('form button[type="submit"]')!.getBoundingClientRect();
+      return {
+        border: style.borderTopWidth,
+        shadow: style.boxShadow,
+        background: style.backgroundColor,
+        narrow: el.getBoundingClientRect().width <= Math.min(400, window.innerWidth - 32),
+        heading: heading.fontSize,
+        action: Math.round(submit.height),
+      };
+    }), `${size.width}x${size.height}: a quiet form column`).toEqual({
+      border: '0px',
+      shadow: 'none',
+      background: 'rgba(0, 0, 0, 0)',
+      narrow: true,
+      heading: '18px',
+      action: 36,
+    });
 
     const fit = await actor.page.evaluate(() => {
       const form = document.querySelector('form[aria-label="Sign in"]');
@@ -308,6 +333,24 @@ test('the login card works at 390x844 and 1440x1000 @p:tech-9 @tierA @evidence',
     await expect(ui.loginForm(actor).getByRole('button', { name: 'Sign in', exact: true })).toHaveCSS('opacity', '1');
     await expect(actor.page.getByRole('button', { name: 'Create an account', exact: true })).toHaveCSS('opacity', '1');
     await actors.checkpoint(`login-card-${size.width}x${size.height}`);
+
+    // A validation message is Moss's inline form error: 12 px text, no filled box or border, and the form never moves.
+    const form = ui.loginForm(actor);
+    const submitTop = () => form.getByRole('button', { name: 'Sign in', exact: true }).evaluate((el) => el.getBoundingClientRect().top);
+    const before = await submitTop();
+    await form.getByLabel('Email', { exact: true }).fill('not-an-email');
+    await form.getByLabel('Password', { exact: true }).fill('typed');
+    await form.getByRole('button', { name: 'Sign in', exact: true }).click();
+    const alert = form.getByRole('alert');
+    await expect(alert).toHaveText('That doesn’t look like an email address.');
+    expect(await alert.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { size: style.fontSize, border: style.borderTopWidth, background: style.backgroundColor };
+    }), `${size.width}x${size.height}: an inline error, not a boxed alert`).toEqual({ size: '12px', border: '0px', background: 'rgba(0, 0, 0, 0)' });
+    expect(await submitTop(), `${size.width}x${size.height}: the error does not move the form`).toBe(before);
+    await expect(form.getByLabel('Email', { exact: true }), 'the malformed field is marked').toHaveAttribute('aria-invalid', 'true');
+    await expect(form.getByLabel('Password', { exact: true }), 'typed values are kept').toHaveValue('typed');
+    await actors.checkpoint(`login-card-error-${size.width}x${size.height}`);
 
     await ui.signInThroughCard(actor, person);
     await expect(actor.page, `${size.width}x${size.height}: sign-in completes`).toHaveURL(atPath('/'), { timeout: BOOT_TIMEOUT });
