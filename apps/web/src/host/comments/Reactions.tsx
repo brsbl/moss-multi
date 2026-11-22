@@ -93,6 +93,13 @@ export function AddReaction({ noteId, comment }: { noteId: string; comment: { id
               aria-label={`React with ${emoji}`}
               data-mine={mine || undefined}
               onSelect={() => react(noteId, comment.id, emoji, !mine)}
+              // The menu's items answer a click; Enter and Space choose here, and the menu closes back to the button
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                react(noteId, comment.id, emoji, !mine);
+                setOpen(false);
+              }}
               className="h-7 w-7 justify-center p-0 text-sm data-[mine]:bg-surface-panel"
             >
               {emoji}
