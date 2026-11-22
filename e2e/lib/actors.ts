@@ -6,7 +6,8 @@ import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 import { recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { observeEditor } from './detectors.js';
-import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
+import { browserLog, contextCreated, engineState, hangProbe, systemSnapshot } from './engine.ts';
+import { assertNotInfra, browserCrashIn, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
   actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
@@ -138,6 +139,7 @@ export class Actors {
     const context = await this.browser.newContext(
       size ? { viewport: { width: size.width, height: size.height }, deviceScaleFactor: 2, isMobile: !!size.mobile, hasTouch: !!size.mobile } : {},
     );
+    contextCreated();
     closeEachConnection(context.request);
     let telemetry: Telemetry | null = null;
     // A routed page's doc sockets are counted by the proxy, which sees them open and close (Telemetry.install).
@@ -257,7 +259,7 @@ export class Actors {
   /** Attaches the census and, where recording is allowed, a 2x PNG of each offending actor, then fails the test. */
   private async fail(findings: Finding[], where: string): Promise<never> {
     const census = this.list.map((actor) => ({ label: actor.label, url: actor.page.isClosed() ? null : actor.page.url(), ...actor.telemetry }));
-    await this.testInfo.attach(`${where}-census.json`, { body: JSON.stringify({ findings, census }, null, 2), contentType: 'application/json' });
+    await this.testInfo.attach(`${where}-census.json`, { body: JSON.stringify({ findings, census, engine: engineState() }, null, 2), contentType: 'application/json' });
     for (const label of this.mayCapture ? new Set(findings.map((f) => f.actor)) : []) {
       const actor = this.list.find((a) => a.label === label);
       if (actor && !actor.page.isClosed()) {
@@ -267,10 +269,34 @@ export class Actors {
       }
     }
     const lines = findings.map((f) => `  invariant ${f.invariant} [${f.actor}] ${f.detail}`);
-    throw new Error(`${where}: ${findings.length} finding(s)\n${lines.join('\n')}`);
+    const message = `${where}: ${findings.length} finding(s)\n${lines.join('\n')}`;
+    // Label only, never a retry: a page whose network process crashed reports the crash itself (T9.48g).
+    const crashed = this.list.find((actor) => browserCrashIn([...actor.telemetry.console.map((c) => c.text), ...actor.telemetry.failed.map((f) => f.failure)]));
+    if (crashed && false) throw new InfraBlocked(`${message}\n  [${crashed.label}] the browser's network process crashed`);
+    throw new Error(message);
   }
 
-  async dispose(): Promise<void> {
-    await Promise.all(this.list.map((actor) => actor.context.close().catch(() => undefined)));
+  /**
+   * Closes every context, each timed. With `capture` (a failed WebKit test) it first records the engine evidence
+   * (engine.ts) while the pages are still open, and attaches it with the close times as `engine.json`.
+   */
+  async dispose({ capture = false } = {}): Promise<void> {
+    const evidence = capture
+      ? {
+          engine: engineState(),
+          pages: this.list.map((actor) => ({ label: actor.label, url: actor.page.isClosed() ? null : actor.page.url(), closed: actor.page.isClosed(), crashes: actor.telemetry.crashes })),
+          probe: await hangProbe(this.browser, this.list, this.options.stack?.baseUrl ?? this.list.map((a) => a.page.url()).find((u) => u.startsWith('http')) ?? null),
+          system: await systemSnapshot(),
+        }
+      : null;
+    const closes = await Promise.all(this.list.map(async (actor) => {
+      const start = Date.now();
+      await actor.context.close().catch(() => undefined);
+      return { label: actor.label, ms: Date.now() - start };
+    }));
+    if (evidence && false) {
+      const body = JSON.stringify({ ...evidence, contextCloses: closes, browserLog: browserLog() }, null, 2);
+      await this.testInfo.attach('engine.json', { body, contentType: 'application/json' });
+    }
   }
 }

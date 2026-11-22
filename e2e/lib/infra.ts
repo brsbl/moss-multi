@@ -11,6 +11,9 @@ export class InfraBlocked extends Error {
 
 export const isInfraBlocked = (message: string | undefined): boolean => /\bInfraBlocked: /.test(message ?? '');
 
+/** The one engine signature a page's own console or failed-request text may carry. */
+export const NETWORK_PROCESS_CRASHED = "the browser's network process crashed";
+
 const SIGNATURES: [RegExp, string][] = [
   [/<!--\[if lt IE 7\]>[\s\S]*\bie6 oldie\b/i, 'a Cloudflare error page'],
   [/\bD1(?:_ERROR)?\b[^\n]*\b7429\b/i, 'D1 7429 (overloaded)'],
@@ -24,6 +27,11 @@ const SIGNATURES: [RegExp, string][] = [
 /** The infrastructure signature in a response body, log or error text, or null for a product outcome. */
 export function classifyInfra(text: string): string | null {
   return SIGNATURES.find(([pattern]) => pattern.test(text))?.[1] ?? null;
+}
+
+/** The network-process crash signature in any of a page's console or failed-request texts, or null. */
+export function browserCrashIn(texts: string[]): string | null {
+  return texts.some((text) => classifyInfra(text) === NETWORK_PROCESS_CRASHED) ? NETWORK_PROCESS_CRASHED : null;
 }
 
 /** Throws InfraBlocked when `text` carries an infrastructure signature. */
