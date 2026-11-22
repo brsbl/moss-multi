@@ -45,16 +45,8 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       testInfo.annotations.push({ type: 'browser', description: `${browser.browserType().name()} ${browser.version()}` });
       const actors = new Actors(browser, testInfo, { stack: stackW, runToken });
       await use(actors);
-      let failed = testInfo.status !== testInfo.expectedStatus;
-      try {
-        await actors.assertInvariants();
-      } catch (error) {
-        failed = true;
-        throw error;
-      } finally {
-        // Every WebKit failure carries the engine evidence, so the next network-process fault can be diagnosed.
-        await actors.dispose({ capture: failed && browser.browserType().name() === 'webkit' });
-      }
+      // Every WebKit failure carries the engine evidence, so the next network-process fault can be diagnosed.
+      await actors.settle();
     },
     { auto: true },
   ],

@@ -197,14 +197,21 @@ export async function hangProbe(browser: Browser, actors: { label: string; conte
     Promise.all(open.map(async (actor) => ({ label: actor.label, ...(await timed(() => actor.page.evaluate(() => 1))) }))),
     url ? Promise.all(open.map(async (actor) => ({ label: actor.label, ...(await timed(() => loadIn(actor.context, url))) }))) : [],
     url
-      ? timed(async () => {
-          const context = await browser.newContext();
-          try {
-            return await loadIn(context, url);
-          } finally {
-            await context.close().catch(() => undefined);
-          }
-        })
+      ? (() => {
+          // A context that answers after the race gave up is closed as soon as it arrives, not left open.
+          const created = browser.newContext();
+          return timed(async () => {
+            const context = await created;
+            try {
+              return await loadIn(context, url);
+            } finally {
+              await context.close().catch(() => undefined);
+            }
+          }).then(async (result) => {
+            if (result.error) void created.then((context) => context.close().catch(() => undefined), () => undefined);
+            return result;
+          });
+        })()
       : null,
     url ? timed(async () => (await fetch(url, { signal: AbortSignal.timeout(PROBE_MS) })).status) : null,
   ]);

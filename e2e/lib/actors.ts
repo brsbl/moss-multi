@@ -276,36 +276,45 @@ export class Actors {
     throw new Error(message);
   }
 
-  /** A fixture's teardown: asserts the invariants (unless `assert` is false) and closes every context. */
+  /**
+   * A fixture's teardown: asserts the invariants (unless `assert` is false) and closes every context. A failed WebKit
+   * test, whether its body or the invariants failed, carries the engine evidence (T9.48g).
+   */
   async settle({ assert = true } = {}): Promise<void> {
+    let failed = this.testInfo.status !== this.testInfo.expectedStatus;
     try {
       if (assert) await this.assertInvariants();
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await this.dispose();
+      await this.dispose({ capture: failed && this.browser.browserType().name() === 'webkit' });
     }
   }
 
   /**
    * Closes every context, each timed. With `capture` (a failed WebKit test) it first records the engine evidence
-   * (engine.ts) while the pages are still open, and attaches it with the close times as `engine.json`.
+   * (engine.ts) while the pages are still open and attaches it as `engine.json`, before any close can hang, then
+   * attaches the close times as `engine-closes.json`.
    */
   async dispose({ capture = false } = {}): Promise<void> {
-    const evidence = capture
-      ? {
-          engine: engineState(),
-          pages: this.list.map((actor) => ({ label: actor.label, url: actor.page.isClosed() ? null : actor.page.url(), closed: actor.page.isClosed(), crashes: actor.telemetry.crashes })),
-          probe: await hangProbe(this.browser, this.list, this.options.stack?.baseUrl ?? this.list.map((a) => a.page.url()).find((u) => u.startsWith('http')) ?? null),
-          system: await systemSnapshot(),
-        }
-      : null;
+    if (capture) {
+      const evidence = {
+        engine: engineState(),
+        pages: this.list.map((actor) => ({ label: actor.label, url: actor.page.isClosed() ? null : actor.page.url(), closed: actor.page.isClosed(), crashes: actor.telemetry.crashes })),
+        probe: await hangProbe(this.browser, this.list, this.options.stack?.baseUrl ?? this.list.map((a) => a.page.url()).find((u) => u.startsWith('http')) ?? null),
+        system: await systemSnapshot(),
+        browserLog: browserLog(),
+      };
+      await this.testInfo.attach('engine.json', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
+    }
     const closes = await Promise.all(this.list.map(async (actor) => {
       const start = Date.now();
       await actor.context.close().catch(() => undefined);
       return { label: actor.label, ms: Date.now() - start };
     }));
-    if (evidence) {
-      const body = JSON.stringify({ ...evidence, contextCloses: closes, browserLog: browserLog() }, null, 2);
-      await this.testInfo.attach('engine.json', { body, contentType: 'application/json' });
+    if (capture) {
+      await this.testInfo.attach('engine-closes.json', { body: JSON.stringify({ contextCloses: closes }, null, 2), contentType: 'application/json' });
     }
   }
 }

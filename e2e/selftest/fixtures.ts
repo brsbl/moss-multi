@@ -29,6 +29,6 @@ export const test = base.extend<{ actors: Actors }, { server: FixtureServer }>({
     const actors = new Actors(browser, testInfo, { stack: null, runToken: 'selftest' });
     actors.solo('fixture pages have no principals; the guard has its own selftest');
     await use(actors);
-    await actors.dispose();
+    await actors.settle({ assert: false });
   },
 });
