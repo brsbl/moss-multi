@@ -7,12 +7,13 @@ import { pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /**
- * Its own bounds, on CI as locally: the longest hold is the 2 s target (paste.ts MAX_STALL_MS), and the total held stays
- * under 4 s, well below the 5.3-6.3 s it was before the highlight rules were scoped (run 45018468321), so splitting
- * one hold in two cannot pass.
+ * Its own bounds, on CI as locally: the longest hold is the 2 s target (paste.ts MAX_STALL_MS). In Chromium the total
+ * held stays under 4 s, well below the 5.3-6.3 s it was before the highlight rules were scoped (run 45018468321), so
+ * splitting one hold in two cannot pass; WebKit holds the tab in many short pieces (3.7-4.3 s in all, run 45020729644)
+ * and is bounded at 6 s.
  */
 const STALL_MS = 2_000;
-const HELD_MS = 4_000;
+const HELD_MS: Record<string, number> = { chromium: 4_000, webkit: 6_000 };
 
 /** A check list of `count` items, open and done alternating, as written: moss sorts done items first only on a toggle. */
 function checklist(count: number): string {
@@ -31,5 +32,8 @@ test('j01-paste-check: a 10,000-item check list pasted between two paragraphs la
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
-  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 300_000, { maxStallMs: STALL_MS, maxHeldMs: HELD_MS });
+  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 300_000, {
+    maxStallMs: STALL_MS,
+    maxHeldMs: HELD_MS[ada.page.context().browser()?.browserType().name() ?? 'chromium'] ?? HELD_MS.chromium,
+  });
 });
