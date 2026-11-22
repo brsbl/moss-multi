@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { withoutQuery } from '../ci/deps.mjs';
+import { doubling, expectLinearTime } from '../lib/linear-time.mjs';
 
 const REPO = new URL('../../', import.meta.url);
 const source = (file) => readFileSync(new URL(file, REPO), 'utf8');
@@ -174,19 +175,18 @@ const FIXTURES = ['', 'a', ' ', '\n', 'a\nb', '  key: value  ', '<meta property=
 
 /** Doubling the input at most roughly doubles the time, from 16 K to 1 M characters. */
 function expectLinear(run, attack) {
-  const time = (n) => {
-    const text = attack(n);
-    const start = performance.now();
-    run(text);
-    return performance.now() - start;
-  };
-  time(8 * 1024);
-  let previous = time(16 * 1024);
-  for (let n = 32 * 1024; n <= 1024 * 1024; n *= 2) {
-    const took = time(n);
-    expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 25);
-    previous = took;
-  }
+  return expectLinearTime({
+    shape: String(attack),
+    sizes: doubling(16 * 1024, 1024 * 1024),
+    warmup: [8 * 1024],
+    slack: 25,
+    measure: (n) => {
+      const text = attack(n);
+      const start = performance.now();
+      run(text);
+      return performance.now() - start;
+    },
+  });
 }
 
 describe('regex rewrites for regexp/no-super-linear-*', () => {

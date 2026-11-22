@@ -2,6 +2,7 @@
 // human changed is returned as failed and the human's text stays; every failed hunk is reported, however long; and
 // non-ASCII text never throws. @p:agt-1 @p:tech-5
 import { describe, expect, it } from 'vitest';
+import { doubling, expectLinearTime } from '../../../scripts/lib/linear-time.mjs';
 import { computeMergedTarget } from './merge.ts';
 
 describe('computeMergedTarget keeps concurrent human edits @p:agt-1', () => {
@@ -120,21 +121,21 @@ describe('computeMergedTarget runs in linear time on pushed text up to the 2 MB 
     },
   };
   for (const [name, shape] of Object.entries(SHAPES)) {
-    it(`doubling the input at most roughly doubles the time (${name})`, () => {
-      const time = (n: number): number => {
-        const { current, base, next } = shape(n);
-        const start = Date.now();
-        computeMergedTarget(current, base, next);
-        return Date.now() - start;
-      };
-      time(16 * 1024); // warm up
-      let previous = time(32 * 1024);
-      for (let n = 64 * 1024; n <= CAP; n *= 2) {
-        const took = time(n);
-        expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 250);
-        expect(took, `${n} chars`).toBeLessThan(5_000);
-        previous = took;
-      }
+    it(`doubling the input at most roughly doubles the time (${name})`, async () => {
+      await expectLinearTime({
+        shape: name,
+        sizes: doubling(32 * 1024, CAP),
+        warmup: [16 * 1024],
+        slack: 250,
+        measure: (n) => {
+          const { current, base, next } = shape(n);
+          const start = Date.now();
+          computeMergedTarget(current, base, next);
+          const took = Date.now() - start;
+          expect(took, `${n} chars`).toBeLessThan(5_000);
+          return took;
+        },
+      });
     }, 120_000);
   }
 });
