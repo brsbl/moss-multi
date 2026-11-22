@@ -15,9 +15,18 @@ for (const mime of ['text/markdown', 'text/plain']) {
       });
       expect(response.status()).toBe(201);
       const { doc } = await response.json();
+      // One note open reads its backlinks once: opening and focusing the note do not cancel and resend the read.
+      const backlinksPath = `/api/docs/${doc.id}/backlinks`;
+      const isBacklinks = (url: string) => new URL(url).pathname === backlinksPath;
+      const backlinksSent: string[] = [];
+      actor.page.on('request', (request) => { if (isBacklinks(request.url())) backlinksSent.push(request.url()); });
+      const backlinksAnswered = actor.page.waitForEvent('requestfinished', { predicate: (request) => isBacklinks(request.url()), timeout: 30_000 });
       await actor.goto(`/d/${doc.id}`);
       const body = ui.body(actor, doc.id);
       await expect(body).toHaveAttribute('data-body-binding', 'live', { timeout: 30_000 });
+      await backlinksAnswered;
+      expect(actor.telemetry.failed.filter((entry) => isBacklinks(entry.url)), 'no backlinks read is cancelled').toEqual([]);
+      expect(backlinksSent, 'one backlinks read for the open').toHaveLength(1);
       const paste = async () => {
         await body.click();
         await actor.page.keyboard.press('ControlOrMeta+End');

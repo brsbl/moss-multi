@@ -113,3 +113,38 @@ it('ignores a backlinks read in flight when the note’s session ends as revoked
   expect((await bridge.notes.getById('d1'))?.incomingLinks).toBeUndefined();
   expect(server.reads('d1')).toBe(1);
 });
+
+it('reads an opened note’s backlinks once when it is focused before the read answers, and again after a failed read', async () => {
+  const server = fakeServer();
+  server.state.hold.add('d1');
+  const { bridge } = open(server);
+  await bridge.notes.getAll();
+  await bridge.notes.getById('d1');
+  await bridge.system.setFocusedNoteId('d1').catch(() => undefined);
+  await vi.waitFor(() => expect(server.state.held.has('d1')).toBe(true));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(server.reads('d1'), 'open then focus: one read').toBe(1);
+  const first = server.calls.find((call) => call.path === '/api/docs/d1/backlinks');
+  expect(first?.signal?.aborted, 'and it is not aborted').toBe(false);
+
+  // The read fails (an answer that is not JSON): the next focus reads again.
+  server.state.hold.delete('d1');
+  server.state.held.get('d1')!(new Response('not json', { status: 200 }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await bridge.system.setFocusedNoteId('d1').catch(() => undefined);
+  await vi.waitFor(async () => expect((await bridge.notes.getById('d1'))?.incomingLinks?.map((link) => link.noteId)).toEqual(['d2']));
+  expect(server.reads('d1'), 'the failed read is read again on focus').toBe(2);
+});
+
+it('lets a workspace event replace an opened note’s backlinks read in flight', async () => {
+  const server = fakeServer();
+  server.state.hold.add('d1');
+  const { bridge, event } = open(server);
+  await bridge.notes.getAll();
+  await bridge.notes.getById('d1');
+  await vi.waitFor(() => expect(server.state.held.has('d1')).toBe(true));
+  const first = server.calls.find((call) => call.path === '/api/docs/d1/backlinks');
+  await event(['d2']);
+  await vi.waitFor(() => expect(server.reads('d1')).toBe(2));
+  expect(first?.signal?.aborted, 'the links may have changed: the event replaces the read').toBe(true);
+});
