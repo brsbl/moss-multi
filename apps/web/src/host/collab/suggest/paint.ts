@@ -299,8 +299,24 @@ function openPreview(wedge: HTMLElement, preview: HTMLElement): void {
   if (shift !== 0) preview.style.left = `${parseFloat(getComputedStyle(preview).left) + shift}px`;
 }
 
+/**
+ * Where a clicked mark is now: the element itself, or after a repaint replaced it, the overlay's mark of the same kind
+ * for the same record. Null when none is left.
+ */
+export function markPlace(overlay: HTMLElement, element: HTMLElement): () => DOMRect | null {
+  const kind = element.getAttribute(SUGGEST_MARK_ATTR) ?? '';
+  const record = element.dataset.suggestionId ?? '';
+  const key = element.dataset.markKey;
+  return () => {
+    if (element.isConnected) return element.getBoundingClientRect();
+    const same = [...overlay.querySelectorAll<HTMLElement>(`[${SUGGEST_MARK_ATTR}="${kind}"]`)].filter((mark) => mark.dataset.suggestionId === record);
+    const found = same.find((mark) => key !== undefined && mark.dataset.markKey === key) ?? same[0];
+    return found ? found.getBoundingClientRect() : null;
+  };
+}
+
 /** Draws Edit-mode marks into `overlay` (pointer-transparent; wedges and gutter bars take hover and a click). */
-export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Mark[], onOpen?: (record: string) => void): void {
+export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Mark[], onOpen?: (record: string, at: () => DOMRect | null) => void): void {
   // A repaint (an edit, a resize) replaces the wedges; the one whose preview is open stays open.
   const open = overlay.querySelector<HTMLElement>('.moss-suggest-wedge[data-open]')?.dataset.markKey;
   overlay.replaceChildren();
@@ -320,7 +336,7 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
       if (mark.record) {
         dot.dataset.suggestionId = mark.record;
         dot.setAttribute('aria-label', 'Suggested change to this block');
-        if (onOpen) dot.addEventListener('click', () => onOpen(mark.record));
+        if (onOpen) dot.addEventListener('click', () => onOpen(mark.record, markPlace(overlay, dot)));
       }
       overlay.appendChild(dot);
       continue;
@@ -333,7 +349,9 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
     wedge.setAttribute('aria-label', `Suggested insert: ${mark.text.trim()}`);
     wedge.style.left = `${(mark.after ? rect.right : rect.left) - host.left - 4}px`;
     wedge.style.top = `${rect.bottom - host.top - 2}px`;
-    if (onOpen && mark.record) wedge.addEventListener('click', () => onOpen(mark.record));
+    if (onOpen && mark.record) wedge.addEventListener('click', () => onOpen(mark.record, markPlace(overlay, wedge)));
+    // The preview stands above the marked line, clear of the line being read below it.
+    wedge.style.setProperty('--mark-line', `${rect.height}px`);
     const preview = document.createElement('span');
     preview.setAttribute(OVERLAY_SURFACE_ATTR, '');
     preview.dataset.suggestPreview = '';
@@ -357,7 +375,7 @@ export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Ma
       bar.style.top = `${box.top - host.top}px`;
       bar.style.height = `${box.height}px`;
       if (mark.record) bar.dataset.suggestionId = mark.record;
-      if (onOpen && mark.record) bar.addEventListener('click', () => onOpen(mark.record));
+      if (onOpen && mark.record) bar.addEventListener('click', () => onOpen(mark.record, markPlace(overlay, bar)));
       overlay.appendChild(bar);
     }
   }
