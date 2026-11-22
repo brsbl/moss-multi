@@ -466,8 +466,24 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
     if (!at) return;
     const changed = () => setResized((version) => version + 1);
     window.addEventListener('resize', changed);
-    return () => window.removeEventListener('resize', changed);
-  }, [at]);
+    // Opening can still move the pane for a moment (a sidebar settling, the page's scrollbar going): it is placed
+    // again whenever the pane moved during the first second.
+    const pane = paneOf(docId);
+    let seen = pane?.getBoundingClientRect();
+    let frame = 0;
+    const until = performance.now() + 1000;
+    const watch = () => {
+      const now = pane?.getBoundingClientRect();
+      if (now && seen && (now.left !== seen.left || now.top !== seen.top || now.width !== seen.width)) changed();
+      seen = now;
+      if (performance.now() < until) frame = requestAnimationFrame(watch);
+    };
+    frame = requestAnimationFrame(watch);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', changed);
+    };
+  }, [at, docId]);
   const placement = useMemo(() => {
     void resized;
     return at ? placeAt(docId, at(), threadHeight) : null;
@@ -577,11 +593,13 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
         <Popover.Portal>
           <Popover.Content
             {...contentPlacement}
-            avoidCollisions={!at}
-            // The pane's single view is the pane's own size: no margin to keep from the screen's edge.
-            collisionPadding={place?.kind === 'pane' ? 0 : 16}
+            // place.ts already fitted a suggestion opened at its mark: the positioner neither flips nor shifts it.
+            {...(at && place ? { collisionAvoidance: { side: 'none', align: 'none', fallbackAxisSide: 'none' } as const } : { avoidCollisions: !at })}
+            collisionPadding={16}
             // Never taller than its room: its rows scroll and its decisions and close stay reachable.
-            style={{ maxHeight: place ? `${place.maxHeight}px` : 'min(60vh, var(--available-height, 60vh))', ...(place ? { width: `${place.width}px` } : {}), ...(place?.kind === 'pane' ? { height: `${place.maxHeight}px` } : {}) }}
+            style={{ maxHeight: place ? `${place.maxHeight}px` : 'min(60vh, var(--available-height, 60vh))', ...(place ? { width: `${place.width}px` } : {}), ...(place?.kind === 'pane' ? { position: 'fixed', left: `${place.left}px`, top: `${place.top}px`, height: `${place.maxHeight}px` } : {}) }}
+            // The pane's single view is laid over the pane where place.ts measured it, not floated from an anchor.
+            {...(place?.kind === 'pane' ? { positionerClassName: 'z-50 ![transform:none] ![will-change:auto]' } : {})}
             className={`z-50 flex flex-col overflow-hidden outline-none focus:outline-none focus-visible:ring-0 ${surfaceClass}`}
             onOpenAutoFocus={(event) => event.preventDefault()}
             onPointerDownOutside={(event) => { if (fromConfirmation(docId, event)) event.preventDefault(); }}
