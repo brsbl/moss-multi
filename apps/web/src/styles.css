@@ -57,6 +57,10 @@
   text-decoration-color: var(--ink-faint);
   text-decoration-thickness: 1px;
 }
+/* A suggestion docked as the pane's Suggestions panel takes its width from the note, which reflows beside it (T9.34). */
+[data-editor-pane][data-suggestion-docked] [data-editor-canvas] {
+  padding-right: var(--suggestion-dock, 368px);
+}
 /* Above moss's block gap cursors (z-20 hit areas at each block edge), so a wedge there takes the hover and click. */
 .moss-suggest-overlay {
   position: absolute;

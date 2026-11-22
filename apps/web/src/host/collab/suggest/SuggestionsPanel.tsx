@@ -14,7 +14,7 @@ import {
 import { can, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { readRecord, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
 import { ArrowLeft, FilePenLine, MoreHorizontal, PencilLine, Undo2, X } from 'lucide-react';
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
@@ -24,7 +24,7 @@ import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
 import { suggestedText } from './copy-text.ts';
 import { requestMode, useShownMode } from './mode.ts';
 import { reviewRefusal } from './notices.ts';
-import { placeSuggestion, type Box, type Placement } from './place.ts';
+import { dockReserve, panelPlacement, placeSuggestion, type Box, type Placement } from './place.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
 import { usePreviewRows } from './rows.ts';
@@ -388,13 +388,14 @@ function textLines(roots: readonly Element[], top: number, bottom: number): Box[
 /** Where `docId`'s suggestion opened at `mark` goes (place.ts), or null without its pane. */
 const paneOf = (docId: string): Element | null => document.querySelector(`[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"]`);
 
-function placeAt(docId: string, mark: DOMRect | null, height: number): Placement | null {
+function placeAt(docId: string, mark: DOMRect | null, height: number, asPanel: boolean): Placement | null {
   const pane = paneOf(docId);
   if (!mark || !pane) return null;
   const box = pane.getBoundingClientRect();
   const bar = pane.querySelector(`[${TOP_BAR_ATTR}]`)?.getBoundingClientRect();
-  const roots = [...pane.querySelectorAll(`[${TITLE_BINDING_ATTR}], [${BODY_BINDING_ATTR}]`)];
   const viewport = { width: window.visualViewport?.width ?? window.innerWidth, height: window.visualViewport?.height ?? window.innerHeight };
+  if (asPanel) return panelPlacement({ pane: box, barBottom: bar?.bottom ?? box.top, viewport });
+  const roots = [...pane.querySelectorAll(`[${TITLE_BINDING_ATTR}], [${BODY_BINDING_ATTR}]`)];
   return placeSuggestion({ mark, pane: box, barBottom: bar?.bottom ?? box.top, viewport, height, linesIn: (top, bottom) => textLines(roots, top, bottom) });
 }
 
@@ -447,14 +448,22 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   // Opened from a painted mark: that one suggestion, at the mark (Moss's comment thread at its text).
   const at = isOpen && active !== null ? openAt.get(docId) ?? null : null;
   // Where it goes (place.ts): beside its line while that leaves the text legible, else the pane's panel with Back to
-  // note. Re-placed when the window resizes or the thread's drawn height changes; a thread that fell back to the panel
-  // stays there until it is opened again, so it never flips under the reader.
+  // note. Re-placed when the window resizes, the note's text changes or reflows, or the thread's drawn height changes;
+  // a thread that fell back to the panel stays the panel until it is opened again, so it never flips under the reader.
   const [threadHeight, setThreadHeight] = useState(200);
   const [resized, setResized] = useState(0);
   useEffect(() => {
     if (!at) return;
     const changed = () => setResized((version) => version + 1);
     window.addEventListener('resize', changed);
+    // A peer's edit or a reflow can bring a line under a thread beside its line: it is placed again on the next frame.
+    let queued = 0;
+    const later = () => {
+      if (!queued) queued = requestAnimationFrame(() => { queued = 0; changed(); });
+    };
+    const body = paneOf(docId)?.querySelector(`[${BODY_BINDING_ATTR}]`);
+    const edits = new MutationObserver(later);
+    if (body) edits.observe(body, { subtree: true, childList: true, characterData: true });
     // Opening can still move the pane for a moment (a sidebar settling, the page's scrollbar going): it is placed
     // again whenever the pane moved during the first second.
     const pane = paneOf(docId);
@@ -470,17 +479,38 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
     frame = requestAnimationFrame(watch);
     return () => {
       cancelAnimationFrame(frame);
+      cancelAnimationFrame(queued);
+      edits.disconnect();
       window.removeEventListener('resize', changed);
     };
   }, [at, docId]);
-  const placement = useMemo(() => {
+  // Once it is the panel it stays the panel for this opening; a resize only chooses again between docked and the pane.
+  const [panelFor, setPanelFor] = useState<unknown>(null);
+  const asPanel = at !== null && panelFor === at;
+  const place = useMemo(() => {
     void resized;
-    return at ? placeAt(docId, at(), threadHeight) : null;
-  }, [at, docId, threadHeight, resized]);
-  const [heldFor, setHeldFor] = useState<{ at: unknown; resized: number; placement: Placement } | null>(null);
-  const held = heldFor && heldFor.at === at && heldFor.resized === resized ? heldFor.placement : null;
-  const place = held ?? placement;
-  if (at && placement && placement.kind !== 'beside' && !held) setHeldFor({ at, placement, resized });
+    return at ? placeAt(docId, at(), threadHeight, asPanel) : null;
+  }, [at, docId, threadHeight, resized, asPanel]);
+  if (at && place && place.kind !== 'beside' && !asPanel) setPanelFor(at);
+  // A docked panel takes its width from the pane: the note reflows beside it, and its source is scrolled into view.
+  useLayoutEffect(() => {
+    const pane = paneOf(docId);
+    if (!(pane instanceof HTMLElement) || !place || place.kind !== 'docked') return;
+    pane.style.setProperty('--suggestion-dock', `${dockReserve(pane.getBoundingClientRect(), place)}px`);
+    pane.setAttribute('data-suggestion-docked', '');
+    const frame = requestAnimationFrame(() => {
+      const mark = at?.();
+      const scroller = pane.querySelector('[data-editor-canvas]');
+      if (!mark || !scroller) return;
+      const view = scroller.getBoundingClientRect();
+      if (mark.top < view.top + 16 || mark.bottom > view.bottom - 16) scroller.scrollTop += mark.top - (view.top + view.height / 3);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      pane.removeAttribute('data-suggestion-docked');
+      pane.style.removeProperty('--suggestion-dock');
+    };
+  }, [docId, place?.kind, place?.left, at]);
   const markAnchor = useMemo(() => {
     // A repaint can replace the mark under it: the last place it was seen holds until the next paint.
     let last: DOMRect | null = null;
@@ -602,11 +632,14 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
               <div ref={place?.kind === 'beside' ? besideRef : undefined} className="flex shrink-0 items-center justify-between gap-1 border-b border-border-subtle/30 px-2 py-1.5">
                 {place && place.kind !== 'beside' ? (
                   <>
-                  <Popover.Title className="sr-only">Suggestion</Popover.Title>
-                  <button type="button" className={`-ml-0.5 gap-1 ${ACTION}`} onClick={() => closePanel(docId)}>
-                    <ArrowLeft aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
-                    Back to note
-                  </button>
+                    <div className="flex min-w-0 flex-1 items-center gap-1">
+                      <PencilLine aria-hidden className="ml-1 mr-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" strokeWidth={1.5} />
+                      <Popover.Title className="truncate text-caption font-normal text-ink-faint">Suggestion</Popover.Title>
+                    </div>
+                    <button type="button" className={`gap-1 ${ACTION}`} onClick={() => closePanel(docId)}>
+                      <ArrowLeft aria-hidden className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      Back to note
+                    </button>
                   </>
                 ) : (
                   <>
@@ -645,14 +678,14 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
                 type="button"
                 aria-label="Review suggestions"
                 aria-describedby={entryNote}
-                className="mx-1 mt-1 flex shrink-0 flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
+                className="mx-1 mt-1 flex shrink-0 items-baseline justify-between gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
                 onClick={() => {
                   requestMode(docId, 'review');
                   closePanel(docId);
                 }}
               >
                 <span className="text-xs text-ink-default">Review suggestions</span>
-                <span id={entryNote} className="text-micro text-ink-faint">{reviewEntryNote(role, mode)}</span>
+                <span id={entryNote} className="truncate text-micro text-ink-faint">{reviewEntryNote(role, mode)}</span>
               </button>
             ) : null}
             <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} single={at !== null} opened={opened} body={body} />

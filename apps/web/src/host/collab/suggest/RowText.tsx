@@ -1,5 +1,5 @@
 // A suggestion card row's text (docs/design/suggestions.md §8): its exact characters, never trimmed. Whitespace a
-// reader could not otherwise see is drawn as marked glyphs (· space, → tab, ↵ line break, ⍽ no-break space).
+// reader could not otherwise see is drawn as faint glyphs (· space, → tab, ↵ line break, ⍽ no-break space).
 import { rowSegments } from '@moss-multi/core/suggest/describe';
 import type { ReactNode } from 'react';
 
@@ -23,7 +23,7 @@ export function RowText({ text, struck, inserted = false }: { text: string; stru
           segment.space === undefined ? (
             segment.text
           ) : (
-            <span key={i} data-row-space="" title={described(segment.space)} aria-label={described(segment.space)} className="mx-px rounded-sm border border-current/40 px-0.5 font-semibold">
+            <span key={i} data-row-space="" title={described(segment.space)} aria-label={described(segment.space)} className="px-px text-ink-faint">
               {segment.text}
             </span>
           ),

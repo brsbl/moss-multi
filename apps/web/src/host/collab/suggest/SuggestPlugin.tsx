@@ -113,6 +113,13 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     stops.push(pane.subscribeMount(repaint));
     window.addEventListener('resize', repaint);
     stops.push(() => window.removeEventListener('resize', repaint));
+    // The column can reflow without a window resize (a docked Suggestions panel narrows it): the marks follow its text.
+    const root = editor.getRootElement();
+    if (root) {
+      const observer = new ResizeObserver(repaint);
+      observer.observe(root);
+      stops.push(() => observer.disconnect());
+    }
 
     if (mount instanceof SuggestMount) {
       mount.editor = editor;
