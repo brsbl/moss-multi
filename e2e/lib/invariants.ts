@@ -145,16 +145,35 @@ export async function actorFindings(actor: ActorView, journey: string, version: 
   return [...findings, ...(await domFindings(actor))];
 }
 
-/** Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. */
-export async function typedFindings(actors: ActorView[], typed: Typed[], options: { settleMs?: number } = {}): Promise<Finding[]> {
-  void options;
+/** How long invariant 7 waits on a pane still binding (one mounting after a note switch) before judging it. */
+const PANE_SETTLE_MS = 15_000;
+
+/** The doc's panes once none is still binding, or as they stand at the deadline. */
+async function settledPanes(page: Page, docId: string, settleMs: number) {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const panes = await page.evaluate(fieldTexts, { names: NAMES, docId });
+    if (panes.every((pane) => pane.settled) || Date.now() >= deadline) return panes;
+    await page.waitForTimeout(100);
+  }
+}
+
+/**
+ * Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. A pane is judged
+ * once its title and body bindings have settled; one that never does is its own finding, not a missing string.
+ */
+export async function typedFindings(actors: ActorView[], typed: Typed[], { settleMs = PANE_SETTLE_MS }: { settleMs?: number } = {}): Promise<Finding[]> {
   const findings: Finding[] = [];
   const docs = [...new Set(typed.map((entry) => entry.docId))];
   for (const actor of actors) {
     if (actor.page.isClosed()) continue;
     for (const docId of docs) {
-      const panes = await actor.page.evaluate(fieldTexts, { names: NAMES, docId });
+      const panes = await settledPanes(actor.page, docId, settleMs);
       for (const pane of panes) {
+        if (!pane.settled) {
+          findings.push(finding(7, actor.label)(`${docId}: pane never bound within ${settleMs} ms (title "${pane.title}", body ${pane.body.length} chars)`));
+          continue;
+        }
         for (const field of ['title', 'body'] as const) {
           const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
           if (entries.length === 0) continue;
