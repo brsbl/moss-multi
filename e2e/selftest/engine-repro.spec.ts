@@ -1,7 +1,7 @@
 // A product-free reproduction of WebKit's network-process fault (T9.48g): no product code on the page, only the
 // request pattern a note open makes against the stack. It runs only when a dispatch greps @repro, never in the gated
 // lane. A crash or hang here is the engine's or the image's, not the product's. The second variant adds the harness's
-// own interception (a context route and the sever's WebSocket proxy), which every journey that met the crash used.
+// own interception (a context route and the sever's WebSocket proxy), which most journeys that met the crash use.
 import { Actors } from '../lib/actors.ts';
 import { DOC_SOCKET_PATH } from '../lib/contract.ts';
 import { InfraBlocked } from '../lib/infra.ts';

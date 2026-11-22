@@ -334,6 +334,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T9.48e measured: the table-separator shape (`---|\n` repeated) of `classifyNoteContentType` on a CI runner ([run 44957664348](https://github.com/brsbl/moss-multi/actions/runs/44957664348), fastest of three) doubles from 16 K to 1 M characters at x2.37, x1.98, x2.26, x2.34, x2.01 and x2.14 (39.3 to 84.0 ms at the 1 MiB step), well under the guard's 3x.
 - 2026-11-21 — T8.V verified: staging and the pilot now carry m3's text, structure and storage limits, the lean stored layout, in-place export and paste rollback, and an outdated protocol-1 web bundle is refused on its doc socket (4426) and REST writes (426) before it can write the old layout.
 - 2026-11-22 — T9.48b measured: a 10,000-item check-list paste held the Chrome tab 2.9-4.6 s at a time and 5.3-6.3 s in all ([run 45018468321](https://github.com/brsbl/moss-multi/actions/runs/45018468321)); with the comment and suggestion highlight rules naming the editor root it holds it 0.9-1.0 s at a time and 2.2-3.5 s in all ([run 45024599133](https://github.com/brsbl/moss-multi/actions/runs/45024599133), 10 of 10 under 2 s).
+- 2026-11-22 — T9.48g measured: WebKit's network process crashed in 39 of 37,264 WebKit e2e jobs since Oct 1, on every runner image since Oct 5; a product-free page reproduced its silent hang once in 800 contexts, only with Playwright's request interception on, with libsoup reporting a reference count below zero in that process (details under T9.48g below).
 
 ### T9.48b — the check-list paste stall
 
@@ -343,6 +344,29 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - WebKit: same-runner pairs of the paste with the per-element rules and with the old universal rules held the tab 884-1135 against 875-978 ms at a time and 5656-6270 against 5213-5341 ms in all (calibrations 46-78 ms), no difference beyond runner noise.
 - Other paste journeys, longest hold in ms before ([run 45015179081](https://github.com/brsbl/moss-multi/actions/runs/45015179081)) and after ([run 45024592085](https://github.com/brsbl/moss-multi/actions/runs/45024592085)), Chromium then WebKit: paste-blocks 12,000 paragraphs 657→859, 1215→1488; 23,500 paragraphs 1660→1367, 1327→1594; paste-list 11,000 items 444→634, 633→577; nested 9,500 items 556→733, 645→499; paste-table 4,500 rows 545→506, 485→469; j01-paste 1,019,000 characters 1242→1023, 1677→1009; 200k between paragraphs 369→314, 764→805; paste-cap 44,000 paragraphs with code and HTML 3664→4472, 4277→4100; paste-check 4058→968, 577→958. The single runs move with the runner; only paste-check moved beyond that. `MAX_STALL_MS` stays at 5 s on CI: paste-cap's refused 44,000-paragraph paste holds 3.7-4.5 s in both engines.
 - The collaborator's tab, now timed: it held 5.3-5.4 s at a time and 16 s in all while applying the paste before, 1.1-1.8 s and 4.1-5.2 s after; each hold is a doc socket message whose time is almost all forced style and layout.
+
+### T9.48g — WebKit's network process
+
+- Labelled, not retried: an invariant failure whose page logged "Network process crashed" is now BLOCKED with its census attached; "WebKit encountered an internal error" alone and "Target crashed" stay FAILED. Every failed WebKit test attaches `engine.json` (step 2 of the brief). Selftests red in [run 45040888159](https://github.com/brsbl/moss-multi/actions/runs/45040888159), green in [run 45042426650](https://github.com/brsbl/moss-multi/actions/runs/45042426650).
+- Scan: every WebKit e2e job of `ci.yml` since 2026-10-01 (all attempts, to 2026-11-22 17:05 UTC), read from its failure annotations; runner images from the job logs of the hits. A fault whose test failed without the text in its error (a silent hang, a timeout) is not counted.
+
+| Jobs started (UTC) | WebKit e2e jobs | Failed | "Network process crashed" | "Target crashed" | Runner images of the hits |
+|---|---|---|---|---|---|
+| Oct 1-15 | 19,846 | 766 | 20 | 7 | ubuntu-24.04 20260927.320.1, 20261004.327.1, 20261012.334.1 |
+| Oct 16-31 | 5,842 | 142 | 1 | 0 | ubuntu-24.04 20261012.334.1 |
+| Nov 1-10 | 0 | | | | no WebKit job ran |
+| Nov 11-15 | 2,622 | 44 | 8 | 1 | ubuntu-24.04 20261101.360.1, 20261111.127.1, 20261111.370.1 |
+| Nov 16-20 | 4,435 | 85 | 6 | 3 | ubuntu-26.04 20261111.196.1 |
+| Nov 21 | 1,638 | 37 | 3 | 3 | ubuntu-26.04 20261116.202.1, 20261116.88.1 |
+| Nov 22 | 2,881 | 67 | 1 | 1 | ubuntu-26.04 20261116.202.1 |
+
+- The rate is about 1 network-process crash per 950 WebKit jobs (39 in 37,264) and has been there since Oct 5 on every runner image, both Ubuntu releases: its onset does not match image 20261116.
+- 33 of the 39 are in three journeys: j01-registers (14), j00-import G1 (10) and j11-embeds `:120` (9); then j01-editing (2) and one each in j01-presence, j01-paste-list, j03-connection and j11-editor-geometry. 13 of the 15 "Target crashed" (a page process) are in `export.spec.ts`, a separate recurring fault.
+- After T9.48d (merged 2026-11-22 14:11 UTC) the scan saw 562 WebKit jobs and no crash. At the rate above that is what chance gives too, so it says nothing yet.
+- Reproduction (`e2e/selftest/engine-repro.spec.ts`, `-f grep=@repro -f browsers=webkit -f repeat_each=10`): a same-origin JSON page on the stack, no product code, that aborts backlinks reads as they answer, cancels frame loads and opens the workspace and doc sockets, in 20 or 40 fresh contexts per repeat. Plain: no fault in 30 repeats and 1,000 contexts ([45043993736](https://github.com/brsbl/moss-multi/actions/runs/45043993736), [45044775980](https://github.com/brsbl/moss-multi/actions/runs/45044775980), [45044785400](https://github.com/brsbl/moss-multi/actions/runs/45044785400)). With the harness's interception (`context.route('**/*')` continuing every request, and the sever's WebSocket proxy): one silent hang in 20 repeats and 800 contexts (run 45044775980, repeat 9, context 9 of 40, 55 s and 49 contexts into the browser).
+- At that hang the page's main thread answered in 58 ms, a fresh page in the same context got no answer in 5 s, a fresh context loaded `/api/version` in 460 ms and Node in 12 ms. The network process (15 s old, 26 descriptors, 67 MB resident, limit 65,536) wrote `GLib-CRITICAL g_atomic_ref_count_dec: assertion 'old_value > 0' failed`, then `libsoup-CRITICAL soup_session_feature_request_queued: assertion 'SOUP_IS_SESSION_FEATURE (feature)' failed` with `g_object_ref: assertion 'G_IS_OBJECT (object)' failed` for each later request. Memory, descriptors and `/dev/shm` (2% used) were not short.
+- Engine finding (Playwright 1.61 WebKit, WPE build 2311, Linux): a reference count in the network process's libsoup session drops below zero, and every request queued on that session afterwards meets a freed object and never completes. It happened with no product code on the page and only with Playwright's interception on. That this is also the crash form (the freed object touched instead of skipped) is inferred, not shown, and Safari was not tried. j00-import G1 routes every page request and j01-registers severs Ben in several tests; j11-embeds `:120` routes nothing itself (later tests in its file do).
+- j07's sign-in leg now checks the session cookie carries an expiry, which the claim that a normal window recovers from a network-process restart rests on; it does in both engines. The restart itself was not exercised.
 
 ### T9.48a — what the pin leaves for the owner (deviation 38)
 
