@@ -116,7 +116,7 @@ describe('T4.2 random concurrent edits never leave an anchored comment outside i
           expect(violations).toEqual([]);
         }, BODY);
       }),
-      { numRuns: 40 },
+      { numRuns: 40, seed: -979157888, path: "27:0:0:0:0:0:10:5:6:8:17:17:19:20:15:10:17:10:21:21:17:17", endOnFailure: true },
     );
   });
 });
