@@ -299,6 +299,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.39 verified: Resolve closes the open thread as Moss's does, the comment actions menu has no emoji strip, each message has one quiet Add reaction that opens a small row of five quick reactions, and reaction chips are neutral with a faint fill when they are yours.
 - 2026-11-22 — T9.48c verified: saving, counting comments, pasting or selecting on a note no longer stalls the tab when its text holds a comment-marker opener followed by thousands of blanks, because moss's marker functions on those paths now find markers in one linear pass.
 - 2026-11-22 — T9.42 verified: Version history opens the chosen version as the read-only note beside a 280 px list of quiet rows, with automatic saves folded, kind, time and size in a Details tooltip, Compare with current off until pressed, and a neutral Restore that waits for the preview and asks by name with Cancel focused.
+- 2026-11-22 — T9.48c verified (focus fix): when a collaborator withdraws, accepts or rejects a suggestion, the author's open Suggestions list, menu or dialog stays open with its focus, because the caret a rebuilt fork puts back no longer takes focus from an overlay over the note.
 
 ## T1.1s identity audit
 
@@ -377,6 +378,12 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T9.42 (Version history is a readable recovery view) checker P2: a More actions tooltip can overlap Restore when focus stays on the top-bar trigger and a keyboard Escape closes the confirmation (same cause as the focus item above; not seen in a mouse flow).
 - T9.42 (Version history is a readable recovery view) checker P2: Done evidence lacks measured rects, computed-style deltas, detail crops, 640 px and short-viewport records, and the Pending save and Restoring… states.
 - T9.42 (Version history is a readable recovery view) checker P2: Compare with current diffs raw markdown, so headings show as `## Clothes` and list items as `- Rain shell` instead of rendered text.
+
+### From T9.48c's checker (4cea0bb, 2026-11-22)
+
+- T9.48c (A save never stalls on a comment-marker opener) checker P2: one red-first run named for the focus fix failed at an earlier, since-replaced editor-generation probe, not at "the list stays open"; the valid red-first run is 45055400279 (same test file as the head, 3/3 red in Chromium and WebKit at "the list stays open").
+- T9.48c (A save never stalls on a comment-marker opener) checker P2: the `focusOverNote` unit tests do not cover the toolbar popovers, the slash/typeahead menu or the comment composer; source reading found no regression there and j16-suggest's T5.1 legs are green.
+- T9.48c (A save never stalls on a comment-marker opener) checker P2: with the Suggestions list closed, after Ben typed " again" after "original" and Ada rejected it, Ben's next keystroke landed after the space ("original Zword") instead of before it; the caret-restore code predates this change.
 
 ### From T9.48c's checker (6c45ca5, 2026-11-22)
 
