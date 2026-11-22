@@ -6,12 +6,12 @@
 // never reject.
 import type { Actor } from '../lib/actors.ts';
 import {
-  BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, REVIEW_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
+  BODY_BINDING_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, FLOATING_TOOLBAR_ATTR, REVIEW_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
   SUGGESTION_STATUS_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import {
-  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, pressClose, reviewSwitch, settled as acked,
+  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, frames, openIn, openPanel, panel, pressClose, reviewSwitch, settled as acked,
   sharedNote,
 } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -393,6 +393,38 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   await expect(ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"]`), 'its mark leaves Edit mode').toHaveCount(0, { timeout: BIND_TIMEOUT });
   for (const actor of [ben, carl, ada]) await expect(ui.body(actor, docId)).toContainText('Keep every original word.');
   expect(await content(ada, docId), 'the note is byte-identical').toBe(before);
+});
+
+test("j16-review: a rebuilt fork leaves the author's open list and its focus where they are @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  // The reject rebuilds the author's fork (§5).
+  ben.expectReconnects(1, docId);
+  ben.expectHttp(409, new RegExp(`/api/docs/${docId}/suggestions/[^/]+/preview$`));
+
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  // Ben opens his list from the keyboard: the caret stays in his editor's state and focus stays on the count.
+  const count = button(ben);
+  await expect(count).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  await count.focus();
+  await ben.page.keyboard.press('Enter');
+  await expect(cards(ben, 'open')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(count).toBeFocused();
+  const generation = await ui.body(ben, docId).getAttribute(EDITOR_GENERATION_ATTR);
+
+  // Ada rejects it while Ben watches the list.
+  await confirmClose(ada, (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`), 'Reject');
+  await expect(ui.body(ben, docId), 'the rebuilt fork').not.toHaveAttribute(EDITOR_GENERATION_ATTR, generation ?? '', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId)).not.toContainText('plus');
+  // The rebuilt editor paints on the next frames; it must not take focus from the list Ben has open.
+  await frames(ben);
+  await frames(ben);
+  await expect(cards(ben, 'rejected'), 'the list stays open').toHaveCount(1);
+  await expect(count, 'focus stays on the count').toBeFocused();
 });
 
 test("j16-review: a struck delete opens its card from the owner's body, and the card lists what it deletes @p:mean-2 @p:R17", async ({ actors }) => {
