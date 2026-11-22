@@ -21,12 +21,13 @@ test('j16-review-kept: a Review window left open across an accept that keeps the
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, docId, benPrincipal, 'suggester');
   const ben = await actors.session(benPrincipal);
-  // Ben's fork rebuilds on the kept accept (T5.S14); the Review window switches mode once and remounts once on it.
+  // Ben's fork rebuilds on the kept accept (T5.S14); the Review window enters Review, remounts on the accept and leaves
+  // Review once no suggestion is open (T9.1).
   ben.expectReconnects(1, docId);
   await openIn(ben, docId, 'suggest');
   await openIn(ada, docId, 'edit');
   const review = await actors.sameAs(ada);
-  review.expectReconnects(2, docId);
+  review.expectReconnects(3, docId);
   await openIn(review, docId, 'edit');
   await actors.requireDistinct(2);
   const blocks = (actor: Actor) => ui.body(actor, docId).evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
@@ -61,10 +62,12 @@ test('j16-review-kept: a Review window left open across an accept that keeps the
   await expect(panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="accepted"]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { message: 'the accepted note', timeout: BIND_TIMEOUT }).toContain(expected.join('\n\n'));
 
-  // The Review window, never reloaded, takes the accept (nothing left to paint) and reads as the stored note.
+  // The Review window, never reloaded, takes the accept (nothing left to paint) and reads as the stored note. With no
+  // open suggestion left it goes back to the mode Review paused (T9.1), here Edit.
   await expect.poll(async () => [...await painted(review, 'suggest-insert'), ...await painted(review, 'suggest-delete')], { message: 'Review took the accept', timeout: BIND_TIMEOUT }).toEqual([]);
   await expect.poll(() => blocks(review), { message: 'Review shows the note as it now is', timeout: BIND_TIMEOUT }).toEqual(expected);
-  await expect(ui.pane(review, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review');
+  await expect(ui.pane(review, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
+  await expect.poll(() => blocks(review), { message: 'Edit shows the note as it now is', timeout: BIND_TIMEOUT }).toEqual(expected);
   const stored = (await content(ada, docId)).trim();
   expect((await blocks(review)).join('\n\n'), "Review's text is the stored note's export").toBe(stored);
 });

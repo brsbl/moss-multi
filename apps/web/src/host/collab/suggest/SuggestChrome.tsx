@@ -1,16 +1,15 @@
 // Suggest-mode chrome (docs/design/suggestions.md §5, §8): the pane's bottom row while suggesting (Stop suggesting
-// for editors and owners; a suggester is locked), in Moss's docked toolbar while it shows; the row shown in Review;
-// and the band that offers back text a closed suggestion could not keep. Suggest changes and Review start from More
-// actions and the Suggestions list.
-import { MODE_ROW_ATTR, REVIEW_BAND_ATTR, SUGGEST_CHIP_ATTR, SUGGEST_UNSAVED_ATTR } from '@moss-multi/protocol/dom-contract';
+// for editors and owners; a suggester is locked), in Moss's docked toolbar while it shows; and the row shown in Review.
+// Suggest changes and Review start from More actions and the Suggestions list. Text a closed suggestion could not keep
+// is offered back by UnsavedCard.
+import { MODE_ROW_ATTR, REVIEW_BAND_ATTR, SUGGEST_CHIP_ATTR } from '@moss-multi/protocol/dom-contract';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, type ReactNode } from 'react';
 import { useDocRole } from '../../access.ts';
 import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT, useAttachedRow, useRowAttached, useToolbarProbe } from '../bottom-row.ts';
 import { useTerminal } from '../terminal.ts';
-import { dismissUnsaved, lockedToSuggest, requestMode, reviewReturn, useNoSuggestionRoom, usePausedMode, useShownMode, useUnsaved } from './mode.ts';
-import { noRoomNotice } from './notices.ts';
+import { lockedToSuggest, requestMode, reviewReturn, usePausedMode, useShownMode } from './mode.ts';
 
 /** "Suggesting", and for someone who may edit, Stop suggesting: the one Suggesting state and its exit. */
 function SuggestRow({ docId, className }: { docId: string; className: string }): ReactNode {
@@ -147,37 +146,4 @@ export function ReviewBand({ docId }: { docId: string }): ReactNode {
   if (!shown) return null;
   const text = `Reviewing suggestions · ${paused === 'suggest' ? 'Suggesting paused' : 'Editing paused'}`;
   return <ReviewRow docId={docId} role={role} text={text} attrs={{ [REVIEW_BAND_ATTR]: '' }} />;
-}
-
-/** In the notice band: what a closed suggestion could not keep, until dismissed (§5 refusal path). */
-export function SuggestUnsavedBand({ docId }: { docId: string | null }): ReactNode {
-  const blocks = useUnsaved(docId);
-  const full = useNoSuggestionRoom(docId);
-  const [copied, setCopied] = useState(false);
-  if (!docId || (blocks.length === 0 && !full)) return null;
-  const text = blocks.join('\n\n');
-  return (
-    <div {...{ [SUGGEST_UNSAVED_ATTR]: '' }} role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-status-error-border bg-status-error-surface px-4 py-2 text-xs text-status-error-text">
-      {/* Moss's error notice; on a phone the actions wrap below the message rather than squeezing it. */}
-      <span className="min-w-0 basis-full sm:flex-1 sm:basis-auto">
-        {full
-          ? noRoomNotice(full === 'room' ? null : full, blocks.length > 0)
-          : 'This suggestion was closed while you typed, so your last changes were not saved.'}
-      </span>
-      {blocks.length ? (
-        <button
-          type="button"
-          className="underline"
-          onClick={() => {
-            void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => setCopied(false));
-          }}
-        >
-          {copied ? 'Copied' : 'Copy what wasn’t saved'}
-        </button>
-      ) : null}
-      <button type="button" className="underline opacity-80" onClick={() => { setCopied(false); dismissUnsaved(docId); }}>
-        Dismiss
-      </button>
-    </div>
-  );
 }

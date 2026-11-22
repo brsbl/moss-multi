@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 84% done** (266 of 317 planned tasks verified)
+**Overall: 84% done** (267 of 317 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 26 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 27 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -288,6 +288,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-18 — T5.W verified: suggestions now run on m4's paste rollback, so a large Edit-mode paste cut short by a limit is rolled back in whole blocks, while a Suggest-mode paste keeps writing its own suggestion and is never rolled back, with the full lane green on the m5 head.
 - 2026-11-21 — T6.V verified: history now runs on m5's note size limits, lean layout, in-place export and paste rollback, so a restore is held to the text, structure and size limits by what it adds, a refused restore names its limit and changes nothing, and the full lane, j17 included, is green on the m6 head.
 - 2026-11-21 — T7.V verified: agent sync now runs on m6's note size limits, lean layout, in-place export and paste rollback, so a CLI push, `--suggest` push, sync, add or watch is held to the text, structure and storage limits and the 4 MB markdown bound, and a refusal names the limit it met in plain words.
+- 2026-11-21 — T9.41 verified: unsaved suggestion text and a peer's restore show as quiet cards in the pane's bottom region with the connection notices, one leading at a time; each closed suggestion's text can be copied, shown or dismissed on its own, a terminal card offers "Recover unsaved text", and an outdated bundle's reload also waits in the app menu.
 
 ## T1.1s identity audit
 
@@ -329,6 +330,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.41's checker (e01d7b3, 2026-11-21)
+
+- T9.41 (Unify update, refusal and restore feedback without hiding recovery) checker P2: the multi-payload unsaved list has no height bound or scrolling in the bottom region, so with many payloads (or several with Show text open) the earliest entries' controls can extend above the viewport.
+- T9.41 (Unify update, refusal and restore feedback without hiding recovery) checker P2: pressing Show text stretches the unsaved card to nearly the full pane width (about 1142 CSS px from 797 at 1440), the text filling only its left half with the actions at the far right.
+- T9.41 (Unify update, refusal and restore feedback without hiding recovery) checker P2: the notice actions ("See the note before the restore", "Restore details", "Recover unsaved text (1)") are font-medium default ink, heavier than Moss's notice action text, and in dark mode the recovered-text inset reads as a nested panel.
+- T9.41 (Unify update, refusal and restore feedback without hiding recovery) checker P2: the bottom overlay reserves only the toolbar height; the canvas keeps a fixed 96 px bottom padding, so a taller overlay (recovered text, a disclosed restore card) or the keyboard inset can cover the note's last lines.
+- T9.41 (Unify update, refusal and restore feedback without hiding recovery) checker P2: coverage gaps: no real-stack journey covers the unsaved card's Copy failure, note switching, the terminal "Recover unsaved text" disclosure, or a refused suggestion's text arriving through the stack (unit tests only).
+- T9.41 (Unify update, refusal and restore feedback without hiding recovery) checker P2: when unsaved text and an outage happen together the unsaved card leads and both the outage card and the pending cue are hidden, with no "Connection lost" line or action on the lead card.
+- T9.41 (Unify update, refusal and restore feedback without hiding recovery) checker P2: outside this task: a suggester offline for about 2 s and back got the terminal "This note has reached its connection limit" with one window open (stale server sockets may count against the limit), and the T9.40 outage sentence tells a viewer "Your edits are kept".
 
 ### From T9.48e's checker (5d044ef, 2026-11-21)
 
