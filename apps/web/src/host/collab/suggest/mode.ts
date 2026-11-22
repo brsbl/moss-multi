@@ -9,7 +9,10 @@ import { useSyncExternalStore } from 'react';
 const chosen = new Map<string, EditMode>();
 const shown = new Map<string, EditMode>();
 const openCounts = new Map<string, number>();
-const unsaved = new Map<string, string[]>();
+/** One closed suggestion's text that could not be kept, as it was typed, and when it was offered. */
+export interface UnsavedPayload { id: number; blocks: string[]; at: number }
+const unsaved = new Map<string, UnsavedPayload[]>();
+let nextPayload = 1;
 const noRoom = new Set<string>();
 /** The writable mode a doc's Review was entered from, when it was Suggest. */
 const paused = new Map<string, 'suggest'>();
@@ -104,19 +107,28 @@ export function useShownMode(docId: string | null): EditMode | null {
 }
 
 /**
- * Text a closed suggestion could not keep, offered back until dismissed (§5 refusal path). `full`: the DocDO refused
- * because the note has no room for more suggestions, which the band says even when nothing was unsaved.
+ * Text a closed suggestion could not keep, offered back until dismissed (§5 refusal path), one payload per closed
+ * suggestion. `full`: the DocDO refused because the note has no room for more suggestions, which the notice says even
+ * when nothing was unsaved.
  */
 export function offerUnsaved(docId: string, blocks: string[], full = false): void {
   if (!blocks.length && !full) return;
-  if (blocks.length) unsaved.set(docId, [...(unsaved.get(docId) ?? []), ...blocks]);
+  if (blocks.length) unsaved.set(docId, [...(unsaved.get(docId) ?? []), { id: nextPayload++, blocks: [...blocks], at: Date.now() }]);
   if (full) noRoom.add(docId);
   notify();
 }
 
-export function dismissUnsaved(docId: string, _payload?: number): void {
-  const had = noRoom.delete(docId);
-  if (!unsaved.delete(docId) && !had) return;
+/** Dismisses one payload, or with none named the no-room notice; nothing else discards a payload. */
+export function dismissUnsaved(docId: string, payload?: number): void {
+  if (payload === undefined) {
+    if (noRoom.delete(docId)) notify();
+    return;
+  }
+  const held = unsaved.get(docId) ?? [];
+  const left = held.filter((entry) => entry.id !== payload);
+  if (left.length === held.length) return;
+  if (left.length) unsaved.set(docId, left);
+  else unsaved.delete(docId);
   notify();
 }
 
@@ -125,11 +137,9 @@ export function useNoSuggestionRoom(docId: string | null): boolean {
   return useSyncExternalStore(subscribeModes, () => (docId ? noRoom.has(docId) : false), () => false);
 }
 
-const NONE: string[] = [];
-export function useUnsaved(docId: string | null): string[] {
-  return useSyncExternalStore(subscribeModes, () => (docId ? (unsaved.get(docId) ?? NONE) : NONE), () => NONE);
-}
+const NONE: UnsavedPayload[] = [];
+export const unsavedOf = (docId: string): UnsavedPayload[] => unsaved.get(docId) ?? NONE;
 
-export function unsavedOf(_docId: string): { id: number; blocks: string[] }[] {
-  return [];
+export function useUnsaved(docId: string | null): UnsavedPayload[] {
+  return useSyncExternalStore(subscribeModes, () => (docId ? unsavedOf(docId) : NONE), () => NONE);
 }

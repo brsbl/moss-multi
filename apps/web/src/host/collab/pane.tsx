@@ -9,7 +9,7 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import type { Provider } from '@lexical/yjs';
 import { CollaborationPlugin } from '@moss-multi/lexical-react/LexicalCollaborationPlugin';
 import {
-  BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
+  BODY_BINDING_ATTR, BOTTOM_REGION_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
   SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
 import type { SuggestRefusal } from '@moss-multi/protocol/suggest';
@@ -33,8 +33,8 @@ import { captureCaret, type CaretMark } from './suggest/caret.ts';
 import { modeFor, offerUnsaved, setOpenSuggestions, showMode, subscribeModes } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { readMeta, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { ReviewBand, SuggestBand, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
-import { HistoryView, RestoreNoticeBand, useHistoryOpen } from '../history/HistoryView.tsx';
+import { ReviewBand, SuggestBand } from './suggest/SuggestChrome.tsx';
+import { HistoryView, useHistoryOpen } from '../history/HistoryView.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
@@ -47,7 +47,7 @@ import { cursorController } from './cursors.ts';
 import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
-import { ConnectionNotice, ConnectionSlot } from './ConnectionNotice.tsx';
+import { NoticeBand, NoticeStack } from './NoticeStack.tsx';
 import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
 import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
@@ -679,7 +679,7 @@ export interface MossMultiPane {
   noticeBand: ReactNode;
   /** Moss's bottom band where the docked toolbar was: the Trash notice, else a reader's role band (T9.10), else Review's
    * band (T9.1), else the Suggesting row (T9.30). At most one shows: each is for a different role or mode. The
-   * connection's notice or cue stands above it (T9.40). */
+   * pane's notices stand above it, one card leading (T9.41). */
   bottomBand: ReactNode;
   readOnly: boolean;
 }
@@ -735,7 +735,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
     return {
       bound: false,
       readOnly: true,
-      noticeBand: <ConnectionNotice docId={null} />,
+      noticeBand: <NoticeBand docId={null} trashed={docId} />,
       bottomBand: null,
       collaboration: null,
       bodyLive: false,
@@ -753,12 +753,11 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <><ConnectionNotice docId={docId} refusals={docId === null || trashed} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
+    noticeBand: <NoticeBand docId={docId} refusals={docId === null || trashed} trashed={docId && trashed ? docId : null} />,
     bottomBand: docId ? (
       <BottomRegion docId={docId}>
-        <ConnectionSlot docId={docId} />
-        {/* Moss shows its Trash notice in this slot instead, so a trashed note's refusals float from the band. */}
-        {trashed ? null : <RefusalAnnouncer />}
+        {/* Moss shows its Trash notice in this slot instead, so a trashed note's refusals and notices float from the band. */}
+        {trashed ? null : <><RefusalAnnouncer /><NoticeStack docId={docId} /></>}
         {historyOpen ? null : <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></>}
       </BottomRegion>
     ) : null,
@@ -790,7 +789,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
 function BottomRegion({ docId, children }: { docId: string; children: ReactNode }): ReactNode {
   const toolbar = useToolbarHeight(docId);
   return (
-    <div className={BOTTOM_REGION} style={toolbar ? { bottom: REGION_BOTTOM_PX + toolbar + REGION_GAP_PX } : undefined}>
+    <div {...{ [BOTTOM_REGION_ATTR]: '' }} className={BOTTOM_REGION} style={toolbar ? { bottom: REGION_BOTTOM_PX + toolbar + REGION_GAP_PX } : undefined}>
       {children}
     </div>
   );

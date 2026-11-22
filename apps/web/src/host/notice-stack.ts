@@ -14,10 +14,40 @@ export function standAboveTrashNotice(el: HTMLElement | null): void {
   el.style.bottom = `${Math.max(parseFloat(getComputedStyle(el).bottom) || 0, below)}px`;
 }
 
-export type NoticeKind = 'terminal' | 'unsaved' | 'outage' | 'restore' | 'update';
-export interface NoticeInputs { terminal: boolean; unsaved: boolean; outage: boolean; restore: boolean; update: boolean; trashNotice: boolean }
-export interface NoticeArrangement { lead: NoticeKind | null; recover: boolean; restoreDetails: boolean }
+/** A notice's action: Moss's text action in default ink (the agent bell's "Actions Panel"). */
+export const NOTICE_ACTION = 'font-medium text-ink-default transition-colors hover:text-ink-muted';
+/** A notice's Dismiss, quieter than its action. */
+export const NOTICE_DISMISS = 'text-ink-faint transition-colors hover:text-ink-muted';
 
-export function arrangeNotices(_input: NoticeInputs): NoticeArrangement {
-  return { lead: null, recover: false, restoreDetails: false };
+// The pane's notices (T9.41) take turns rather than stacking up: one card leads, in this order, and those it hides stay
+// reachable from it. Precedence decides only what is shown; every payload stays in its own store until dismissed.
+export type NoticeKind = 'terminal' | 'unsaved' | 'outage' | 'restore' | 'update';
+export interface NoticeInputs {
+  /** The note is closed for good here: deleted, access ended, the session ended, unavailable or at its limit. */
+  terminal: boolean;
+  /** Text a closed suggestion could not keep, or the note's no-room notice. */
+  unsaved: boolean;
+  /** The note is out of touch: its connection is lost or its first sync is late. */
+  outage: boolean;
+  /** Someone else restored an earlier version while the note was open here. */
+  restore: boolean;
+  /** This bundle is outdated and asks for a reload. */
+  update: boolean;
+  /** Moss's own Trash notice shows for the note, and is its terminal notice. */
+  trashNotice: boolean;
+}
+export interface NoticeArrangement {
+  lead: NoticeKind | null;
+  /** The lead offers "Recover unsaved text (N)". */
+  recover: boolean;
+  /** The lead offers "Restore details" for a restore it hides. */
+  restoreDetails: boolean;
+}
+
+const ORDER: readonly NoticeKind[] = ['terminal', 'unsaved', 'outage', 'restore', 'update'];
+
+export function arrangeNotices(input: NoticeInputs): NoticeArrangement {
+  const shown = { ...input, terminal: input.terminal && !input.trashNotice };
+  const lead = ORDER.find((kind) => shown[kind]) ?? null;
+  return { lead, recover: lead === 'terminal' && input.unsaved, restoreDetails: input.restore && lead !== null && lead !== 'restore' };
 }

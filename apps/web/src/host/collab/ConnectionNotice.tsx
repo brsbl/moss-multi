@@ -1,23 +1,21 @@
 // The note's connection (T9.40): a healthy connection draws nothing. An outage, a late first sync or a terminal close
 // floats as Moss's bottom notice in the pane's bottom region, never as a strip that moves the note; a write waiting
 // for its ack past PENDING_CUE_AFTER_MS shows one quiet cue there instead. The details (state, whether changes are
-// saved, and Retry where a retry is supported) open from the cue and from the app menu's Connection status.
+// saved, and Retry where a retry is supported) open from the cue and from the app menu's Connection status. Which
+// card leads the region, the connection's or another notice's, is NoticeStack's to decide (T9.41).
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
 import {
-  CONNECTION_ATTR, CONNECTION_BANNER_ATTR, CONNECTION_CUE_ATTR, NOTICE_BAND_ATTR, type ConnectionBanner, type ConnectionState,
-  type TerminalReason,
+  CONNECTION_ATTR, CONNECTION_BANNER_ATTR, CONNECTION_CUE_ATTR, type ConnectionBanner, type ConnectionState, type TerminalReason,
 } from '@moss-multi/protocol/dom-contract';
 import { TRASH_COPY } from '@moss-multi/protocol/retention';
 import { AlertTriangle, Cloud, CloudOff, CloudUpload } from 'lucide-react';
 import { useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
-import { RefusalAnnouncer, useRefusalMessage } from '../surfaces/RefusalAnnouncer.tsx';
 import { SESSION_ENDED_COPY, useSessionEnded } from '../session-fetch.ts';
 import { leaveTo } from '../navigation.ts';
-import { standAboveTrashNotice } from '../notice-stack.ts';
+import { NOTICE_ACTION as ACTION } from '../notice-stack.ts';
 import { reloadUnlessUnacked } from '../reload-guard.ts';
-import { BOTTOM_REGION } from './bottom-row.ts';
-import { holdCue, useCue, useDocConnection, useUnacked, type Cue } from './connection.ts';
+import { holdCue, useDocConnection, useUnacked, type Cue } from './connection.ts';
 import { retryDoc } from './doc-session.ts';
 import { useTerminal } from './terminal.ts';
 
@@ -32,8 +30,6 @@ const terminalCopy: Record<TerminalReason, string> = {
   outdated: 'Moss has been updated. Reload to keep editing.',
 };
 
-/** A notice's action: Moss's text action in default ink (the agent bell's "Actions Panel"). */
-const ACTION = 'font-medium text-ink-default transition-colors hover:text-ink-muted';
 const ICON = 'h-3.5 w-3.5 shrink-0';
 const HEADING = 'px-2 py-1.5 text-xs font-normal text-ink-faint';
 
@@ -69,8 +65,10 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
   return <span {...{ [CONNECTION_ATTR]: connection }} role="status" className="sr-only">{label}</span>;
 }
 
+export type ConnectionNoticeView = NonNullable<ReturnType<typeof useNotice>>;
+
 /** What needs saying about the connection now, if anything: these never wait for the cue's delay. */
-function useNotice(docId: string | null): { kind: ConnectionBanner; terminal: TerminalReason | null; message: string } | null {
+export function useNotice(docId: string | null): { kind: ConnectionBanner; terminal: TerminalReason | null; message: string } | null {
   const view = useDocConnection(docId);
   // A session that ended under this tab says so here too when no note is open, or before its note's socket ends.
   const ended = useSessionEnded();
@@ -83,12 +81,14 @@ function useNotice(docId: string | null): { kind: ConnectionBanner; terminal: Te
   return { kind, terminal, message };
 }
 
-function NoticeCard({ docId, notice }: { docId: string | null; notice: NonNullable<ReturnType<typeof useNotice>> }): ReactNode {
+/** The connection's card; `extra` holds the actions for what it leads over (T9.41), its own action first. */
+export function NoticeCard({ docId, notice, extra }: { docId: string | null; notice: ConnectionNoticeView; extra?: ReactNode }): ReactNode {
   const icon = notice.terminal
     ? <AlertTriangle aria-hidden className={`${ICON} text-accent-terracotta/80`} />
     : <CloudOff aria-hidden className={`${ICON} text-ink-faint`} />;
+  const own = terminalAction(notice.terminal, docId);
   return (
-    <Banner {...{ [CONNECTION_BANNER_ATTR]: notice.kind }} icon={icon} action={terminalAction(notice.terminal, docId)}>
+    <Banner {...{ [CONNECTION_BANNER_ATTR]: notice.kind }} icon={icon} action={own || extra ? <>{extra}{own}</> : undefined}>
       {notice.message}
     </Banner>
   );
@@ -127,7 +127,7 @@ export function ConnectionDetails({ docId }: { docId: string | null }): ReactNod
  * a write has waited, then the bare cloud for the idle second after the ack. It opens the details, and holds its place
  * while they are open or it has focus, so a focused control never vanishes under the keyboard.
  */
-function PendingCue({ docId, cue }: { docId: string; cue: Exclude<Cue, 'hidden'> }): ReactNode {
+export function PendingCue({ docId, cue }: { docId: string; cue: Exclude<Cue, 'hidden'> }): ReactNode {
   const view = useDocConnection(docId);
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -157,32 +157,4 @@ function PendingCue({ docId, cue }: { docId: string; cue: Exclude<Cue, 'hidden'>
       </Menu>
     </div>
   );
-}
-
-/** The connection's place in the pane's bottom region: its notice, else the cue, else nothing. */
-export function ConnectionSlot({ docId }: { docId: string }): ReactNode {
-  const notice = useNotice(docId);
-  const cue = useCue(docId);
-  if (notice) return <NoticeCard docId={docId} notice={notice} />;
-  return cue === 'hidden' ? null : <PendingCue docId={docId} cue={cue} />;
-}
-
-/**
- * The pane's band under the top bar, in flow and zero-height, holding nothing visible. Where the pane has no bottom
- * region of its own (no note bound, or a note in Trash) it floats one at the bottom, above a Trash notice if one
- * shows: an ended session's notice with no note bound, and the input refusals when `refusals` (T9.35).
- */
-export function ConnectionNotice({ docId, refusals = docId === null }: { docId: string | null; refusals?: boolean }) {
-  const notice = useNotice(docId);
-  // A refusal showing re-renders this, so the region stands above a Trash notice that appeared since.
-  useRefusalMessage();
-  const floating = docId === null && notice;
-  return <div {...{ [NOTICE_BAND_ATTR]: '' }} className="shrink-0">
-    {floating || refusals ? (
-      <div ref={(el) => standAboveTrashNotice(el)} className={BOTTOM_REGION}>
-        {refusals ? <RefusalAnnouncer /> : null}
-        {floating ? <NoticeCard docId={null} notice={notice} /> : null}
-      </div>
-    ) : null}
-  </div>;
 }
