@@ -514,14 +514,17 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (admitted.has(id) && known.get(id)?.trashedAt == null) return true;
     return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   };
-  /** Opening or focusing a note reads its backlinks once; workspace events keep a watched note's current. */
+  /**
+   * Opening or focusing a note reads its backlinks once, and never replaces a read in flight (one open does both);
+   * workspace events keep a watched note's current.
+   */
   const watchBacklinks = (id: string) => {
     if (!watchable(id)) return;
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
     watched.splice(BACKLINK_WATCH);
-    if (at === -1 || !backlinks.has(id)) void readBacklinks(id);
+    if (at === -1 || (!backlinks.has(id) && !reading.has(id))) void readBacklinks(id);
   };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
