@@ -661,3 +661,30 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
   await expect(surface).toBeHidden();
   expect(await ui.body(ada, docId).evaluate(scroller), 'the note keeps its scroll').toBe(scrolled);
 });
+
+test('j16-review proposals (T9.34): a mark in a full-width paragraph opens the Suggestions panel beside the note, which reflows so no line is under it @p:mean-2 @p:R17', async ({ actors }) => {
+  const prose = 'The river runs past the old mill and along the bank under the willows, where the path turns toward the bridge and the town beyond it, and every spring the water rises over the lower meadow before it falls back again.';
+  const { ada, ben, docId } = await sharedNote(actors, `${prose}\n\n${prose}\n\nA closing line.`);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  await suggestText(ben, docId, 'old mill', 3, ' stone');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const edge = () => ui.body(ada, docId).evaluate((root) => Math.round(root.getBoundingClientRect().right));
+  const before = await edge();
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  await mark.click({ force: true });
+  const surface = panel(ada);
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(surface, 'the wrapped lines leave no margin: it opens as the panel').toHaveAttribute('data-suggestion-place', 'docked');
+  await expect(surface.getByText('Suggestion', { exact: true }), 'the panel names what it holds').toBeVisible();
+  await expect(surface.getByRole('button', { name: 'Back to note', exact: true })).toBeVisible();
+  // The note reflows beside the panel: no title or body line sits under it, and the source stays on screen.
+  await expect.poll(() => coveredLines(ada, docId), { message: 'the panel covers no line of the title or the text' }).toEqual([]);
+  await expect(mark, 'its source stays in view').toBeInViewport();
+  await surface.getByRole('button', { name: 'Back to note', exact: true }).click();
+  await expect(surface).toBeHidden();
+  await expect.poll(edge, { message: 'the note takes its place back' }).toBe(before);
+});

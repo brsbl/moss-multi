@@ -35,9 +35,9 @@ it('when the margin would cover the next line it opens the panel docked at the r
   expect(at).toEqual({ kind: 'docked', left: 1072, top: 52, width: 352, maxHeight: 600 });
 });
 
-it('a docked panel that would cover its own source fills the pane instead', () => {
-  const at = placeSuggestion(input({ linesIn: linesOf(long), mark: box(1100, 160, 1150, 184) }));
-  expect(at).toEqual({ kind: 'pane', left: 253, top: 44, width: 1187, maxHeight: 956 });
+it('a pane too narrow to keep the note beside a docked panel fills the pane instead', () => {
+  const at = placeSuggestion(input({ pane: box(500, 0, 1300, 1000), linesIn: linesOf(long), mark: box(600, 160, 640, 184) }));
+  expect(at).toEqual({ kind: 'pane', left: 500, top: 44, width: 800, maxHeight: 956 });
 });
 
 it('a 390 px pane has no margin and no room for a docked panel: the suggestion fills the pane', () => {
@@ -48,9 +48,19 @@ it('a 390 px pane has no margin and no room for a docked panel: the suggestion f
   expect(at).toEqual({ kind: 'pane', left: 0, top: 44, width: 390, maxHeight: 800 });
 });
 
+it('a narrow pane always opens the pane view, even with a free margin', () => {
+  const at = placeSuggestion(input({ pane: box(0, 0, 390, 844), viewport: { width: 390, height: 844 }, linesIn: () => [] }));
+  expect(at).toMatchObject({ kind: 'pane', left: 0, width: 390 });
+});
+
 it('the thread is never wider than the pane or the screen less 32 px', () => {
-  const at = placeSuggestion(input({ pane: box(0, 0, 360, 1000), viewport: { width: 360, height: 1000 }, linesIn: () => [] }));
-  expect(at).toMatchObject({ kind: 'beside', width: 328, right: 344 });
+  const at = placeSuggestion(input({ pane: box(0, 0, 700, 1000), viewport: { width: 690, height: 1000 }, linesIn: () => [] }));
+  expect(at).toMatchObject({ kind: 'beside', width: 352, right: 674 });
+});
+
+it('the docked panel is chosen whenever the pane is wide enough: the note reflows beside it, so its own line never hides', () => {
+  const at = placeSuggestion(input({ linesIn: linesOf(long), mark: box(1100, 160, 1150, 184) }));
+  expect(at).toEqual({ kind: 'docked', left: 1072, top: 52, width: 352, maxHeight: 600 });
 });
 
 it('a tall thread is capped at 60% of the screen and the room on its side', () => {
