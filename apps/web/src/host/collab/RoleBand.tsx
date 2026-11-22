@@ -11,7 +11,7 @@ import { knownRole, useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
 import { useHistoryOpen } from '../history/HistoryView.tsx';
 import { refusalMessage, refuseInput } from '../refusal.ts';
-import { signInToDoMore } from '../surfaces/ShareEntryPoints.tsx';
+import { signInHere } from '../surfaces/ShareEntryPoints.tsx';
 import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT } from './bottom-row.ts';
 import { useOpenSuggestions, useShownMode } from './suggest/mode.ts';
 import { ReviewRow, useEscapeLeavesReview } from './suggest/SuggestChrome.tsx';
@@ -84,7 +84,7 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
   const signIn = signedOut ? (
     <>
       {' '}
-      <button type="button" onClick={signInToDoMore} className={BOTTOM_ROW_ACTION}>
+      <button type="button" onClick={signInHere} className={BOTTOM_ROW_ACTION}>
         Sign in
       </button>
     </>
