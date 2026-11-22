@@ -418,6 +418,12 @@ test('j05-trash: on a narrow window, a refused restore’s notice stands clear o
   const made = await ada.context.request.post(`${origin}/api/docs`, { headers: { origin }, data: { title: TITLE, markdown: BODY } });
   expect(made.status(), 'declared setup: a note').toBe(201);
   const docId = ((await made.json()) as { doc: { id: string } }).doc.id;
+  // As in the folder leg: the shell follows the new note, so the trash waits until it is open (at staging round trips
+  // a trash during the load cut its socket before it connected), and moss's reads of its content and backlinks can
+  // still be on the wire when the trash lands.
+  await ui.waitLive(ada, docId);
+  ada.expectHttp(404, `/api/docs/${docId}/content`);
+  declareTrashRace(docId, ada);
   expect((await ada.context.request.delete(`${origin}/api/docs/${docId}`, { headers: { origin } })).status(), 'declared setup: it goes to Trash').toBe(200);
 
   await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();

@@ -129,6 +129,13 @@ test('j01 registers: a synthetic code composition merges peer text on compositio
   await ben.page.keyboard.type('BBBB');
   await expect(field(ben)).toHaveValue('seedBBBB');
   await expect(field(ada)).toHaveValue('seed漢');
+  // The composition ends once Ben's text has reached Ada's doc (her field holds the preedit): off loopback it can still
+  // be on its way when his field shows it.
+  await expect.poll(() => ui.body(ada, id).evaluate(element => {
+    const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+    return editor.read(() => [...editor.getEditorState()._nodeMap.values()].filter(n => n.getType() === 'code-block')
+      .map(n => (n as unknown as { getCode(): string }).getCode()));
+  }), { message: 'Ben’s text reaches Ada while she composes' }).toEqual(['seedBBBB']);
   await field(ada).evaluate(input => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '漢' })));
   for (const actor of [ada, ben]) {
     await expect(field(actor)).toHaveValue(/^(seed漢BBBB|seedBBBB漢)$/);
