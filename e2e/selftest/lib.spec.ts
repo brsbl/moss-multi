@@ -337,7 +337,7 @@ test.describe('setup resends', () => {
   // The run log and summary count these (scripts/deploy/canary-reporter.mjs), so a resend is never silent.
   test('a sign-in resent after a 429 and after a lost forward is recorded on the test, with its count', async () => {
     let posts = 0;
-    const server = createServer((req, res) => {
+    const server = createServer((_req, res) => {
       posts += 1;
       if (posts === 1) {
         res.writeHead(429, { 'x-retry-after': '1' });
