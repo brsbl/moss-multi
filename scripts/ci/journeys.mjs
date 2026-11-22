@@ -53,8 +53,8 @@ export const GROUPS = {
   session: ['j03'],
   // Hibernation and wake, including the staging canary's owner-route leg (T8.D).
   hibernation: ['j04'],
-  // Trash, folders, search, vaults, export.
-  workspace: ['j05', 'j06', 'j12', 'j13', 'export'],
+  // Trash, folders, vaults, export.
+  workspace: ['j05', 'j06', 'j13', 'export'],
   // Media, embeds and the demo note.
   media: ['j11', 'j14'],
   // Comments and agents.
@@ -69,8 +69,9 @@ export const GROUPS = {
   history: ['j17'],
   // The quiet note shell: its cues, More actions entries and the footer's app menu (shell's WebKit shard is full).
   quietShell: ['j21'],
-  // Vault navigation through the app menu and Settings, and where the vault is named (quietShell's WebKit shard is full).
-  vaultNav: ['j13-vault-nav'],
+  // Vault navigation through the app menu and Settings, where the vault is named, and search (quietShell's and
+  // workspace's WebKit shards are full).
+  vaultNav: ['j13-vault-nav', 'j12'],
   // Reactions, mentions, edit and delete, and the comment bell; sharing with an agent; the comments guard's raw
   // frames and offline comments (meaning's WebKit shard is full).
   social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],
