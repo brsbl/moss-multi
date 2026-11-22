@@ -734,6 +734,7 @@ export const STEPS = {
     const view = `${paneOf(docId)} [${DOM.HISTORY_VIEW_ATTR}]`;
     await until('the versions load', () => page.$eval(view, (el, attr) => el.getAttribute(attr) !== 'loading', DOM.HISTORY_VIEW_ATTR));
     const scope = await page.$(view);
+    await press(scope, 'button', 'Save named version');
     await (await scope.waitForSelector(aria('textbox', 'Version name'), { visible: true })).type(name);
     await press(scope, 'button', 'Save version');
     await until(`"${name}" is listed`, () => page.$$eval(`${view} [${DOM.VERSION_ROW_ATTR}]`, (rows, name) => rows.some((r) => r.textContent.includes(name)), name));
