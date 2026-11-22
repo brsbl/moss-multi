@@ -403,8 +403,8 @@ test('j15-comments: the gutter opens the thread; a reply arrives live, attribute
   await gutter(ada).first().click();
   await expect(thread(ada).getByText('Fast enough'), "Ben's reply reaches Ada").toBeVisible({ timeout: PEER_TIMEOUT });
   await thread(ada).getByRole('button', { name: 'Resolve thread' }).click();
+  await expect(thread(ada), 'resolving closes the thread, as in Moss (T9.39)').toHaveCount(0);
   await expect.poll(() => painted(ben, id), { message: 'a resolved thread leaves the open view', timeout: PEER_TIMEOUT }).toEqual([]);
-  await ada.page.keyboard.press('Escape');
 
   await select(ada, id, 'lazy dog');
   await comment(ada, 'Detach me');
