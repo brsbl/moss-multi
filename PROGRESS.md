@@ -310,6 +310,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-18 — T8.P2 verified: the pilot now deploys from the workflow registered on main, `deploy-staging.yml -f target=pilot`, which runs only its gate and then calls `deploy-pilot.yml` with just the pilot and Cloudflare secrets; staging deploys run unchanged.
 - 2026-10-19 — T8.Q second pass verified: staging and the pilot now carry M7's later fixes (allowlisted scoped sync, stale-save priors, held first-sync pieces) and m3–m6's reply box, read-only controls, folder permissions and upload reader deadline, with the full lane green on the restacked m8 (already counted on 2026-10-15).
 - 2026-10-20 — T8.U verified: m8 now sits on the final M7, so staging carries T3.B4's paste path without reservations, T3.B28/T3.B30, T5.B2–B4 and T5.S14, T7.P3's packed CLI and replicas, and T7.S9, with the full lane green on the restacked m8.
+- 2026-11-21 — T9.48e measured: the table-separator shape (`---|\n` repeated) of `classifyNoteContentType` on a CI runner ([run 44957664348](https://github.com/brsbl/moss-multi/actions/runs/44957664348), fastest of three) doubles from 16 K to 1 M characters at x2.37, x1.98, x2.26, x2.34, x2.01 and x2.14 (39.3 to 84.0 ms at the 1 MiB step), well under the guard's 3x.
 
 ## Follow-ups (P2)
 

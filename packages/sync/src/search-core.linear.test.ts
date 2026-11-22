@@ -3,6 +3,7 @@
 /* eslint-disable regexp/no-super-linear-backtracking, regexp/no-super-linear-move -- the old patterns are the golden references */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { doubling, expectLinearTime } from '../../../scripts/lib/linear-time.mjs';
 import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { cleanForSnippet, headingMatches, linkTexts, makeSnippet, parseHeadings, wikiLinkContents, wikiLinkTexts, withoutComments, withoutFences, withoutTags } from './search-core.ts';
 
@@ -68,20 +69,19 @@ const FIXTURES = [
   '```\n# not\n```\n# yes\n````\n```` `` ``` tail ```` ```',
 ];
 
-function expectLinear(run: (text: string) => unknown, attack: (n: number) => string, max = 1024 * 1024): void {
-  const time = (n: number): number => {
-    const text = attack(n);
-    const start = performance.now();
-    run(text);
-    return performance.now() - start;
-  };
-  time(8 * 1024);
-  let previous = time(16 * 1024);
-  for (let n = 32 * 1024; n <= max; n *= 2) {
-    const took = time(n);
-    expect(took, `${n} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 25);
-    previous = took;
-  }
+function expectLinear(run: (text: string) => unknown, attack: (n: number) => string, max = 1024 * 1024) {
+  return expectLinearTime({
+    shape: String(attack),
+    sizes: doubling(16 * 1024, max),
+    warmup: [8 * 1024],
+    slack: 25,
+    measure: (n) => {
+      const text = attack(n);
+      const start = performance.now();
+      run(text);
+      return performance.now() - start;
+    },
+  });
 }
 
 describe('search-core scans replace super-linear regexes', () => {
@@ -96,18 +96,18 @@ describe('search-core scans replace super-linear regexes', () => {
         { numRuns: 5000 },
       );
     });
-    it(`${name} is linear on attacker-written text`, () => {
-      for (const attack of attacks) expectLinear(scan, attack);
+    it(`${name} is linear on attacker-written text`, async () => {
+      for (const attack of attacks) await expectLinear(scan, attack);
     }, 120_000);
   }
 
-  it('cleanForSnippet is linear on attacker-written bodies', () => {
-    for (const attack of [(n: number) => '<'.repeat(n), (n: number) => '['.repeat(n), (n: number) => '[a]('.repeat(n / 4), (n: number) => '<!--'.repeat(n / 4)]) expectLinear(cleanForSnippet, attack);
+  it('cleanForSnippet is linear on attacker-written bodies', async () => {
+    for (const attack of [(n: number) => '<'.repeat(n), (n: number) => '['.repeat(n), (n: number) => '[a]('.repeat(n / 4), (n: number) => '<!--'.repeat(n / 4)]) await expectLinear(cleanForSnippet, attack);
   }, 120_000);
 
-  it('makeSnippet and parseHeadings are linear up to the 2 MB note cap on repeated openers', () => {
+  it('makeSnippet and parseHeadings are linear up to the 2 MB note cap on repeated openers', async () => {
     const attacks = [(n: number) => `quokka ${'<!--'.repeat(n / 4)}`, (n: number) => `${'<!--'.repeat(n / 4)} quokka`, (n: number) => '````a'.repeat(n / 5), (n: number) => `# ${'[[a'.repeat(n / 3)}`];
-    for (const attack of attacks) expectLinear((text) => makeSnippet(text, 'quokka'), attack, MARKDOWN_CAP_BYTES);
-    for (const attack of attacks) expectLinear(parseHeadings, attack, MARKDOWN_CAP_BYTES);
+    for (const attack of attacks) await expectLinear((text) => makeSnippet(text, 'quokka'), attack, MARKDOWN_CAP_BYTES);
+    for (const attack of attacks) await expectLinear(parseHeadings, attack, MARKDOWN_CAP_BYTES);
   }, 120_000);
 });
