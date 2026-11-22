@@ -3,7 +3,7 @@
 // it, never buffered further. Uploads stream with their own bounds (assets.test.ts); the largest note creation runs
 // through the real DocDO in body-cap.harness.test.ts.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CREATE_BODY_MAX_BYTES, MARKDOWN_CAP_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { CREATE_BODY_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { PayloadDocs } from '@moss-multi/sync/payload-docs';
 import { captureRestoreBase } from '@moss-multi/sync/restore-base';
 import * as Y from 'yjs';
@@ -288,15 +288,6 @@ describe('JSON bodies are capped on every route that reads one', () => {
     const response = await comment('POST', `/api/docs/${docId}/versions`, JSON.stringify({ name: '\u0001'.repeat(80) }));
     expect(response.status, await response.clone().text()).toBe(201);
   }, 30_000);
-
-  it('note creation takes 2 MB of markdown, every byte escaped, with a full comments sidecar', async () => {
-    const markdown = '\u0001'.repeat(MARKDOWN_CAP_BYTES - 1024);
-    const comments = { version: 1, comments: { c1: { text: '\u0001'.repeat(Math.floor((MARKDOWN_CAP_BYTES - 1024) / 6)) } } };
-    const sent = JSON.stringify({ title: 'Imported', markdown, comments });
-    expect(sent.length, 'longer than a body of markdown alone').toBeGreaterThan(MARKDOWN_CAP_BYTES * 6 + 64 * 1024);
-    const status = await send(ROUTES[0]!, sent).then((r) => r.status, () => 500);
-    expect(status).not.toBe(413);
-  }, 60_000);
 });
 
 describe('auth bodies are capped before better-auth reads them', () => {

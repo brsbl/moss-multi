@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline/promises';
 import { ASSET_DIR } from '@moss-multi/protocol/media';
 import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
 import { TRASH_COPY, TRASHED_ACTION } from '@moss-multi/protocol/retention';
-import { createApi, type Api } from './api.ts';
+import { createApi, pushRefusal, type Api } from './api.ts';
 import { clearCredentials, configPath, deviceLogin, normalizeServer, resolveConfig, writeConfig } from './config.ts';
 import { resolveDocId } from './docref.ts';
 import { CliError, EXIT } from './errors.ts';
@@ -99,6 +99,10 @@ export const USAGE = `moss-multi: pull, push and manage moss-multi notes from a 
 
 <doc> is a doc id, its URL, or the start of its title. Credentials: MOSS_MULTI_API_KEY, MOSS_MULTI_SERVER, or the
 config file that \`login\` writes. Exit codes: 0 done, 1 error, 2 a push left failed hunks, 3 a push was refused as degenerate.
+
+A note holds at most 1.02 million characters of text and 165,000 pieces of structure (every line, list item and table
+cell, and its past edits), and a push or a new note carries at most 4 MB of markdown. A push, add or sync past a limit
+lands nothing and says which limit it met.
 `;
 
 interface Parsed {
@@ -366,7 +370,7 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
         if (media.renames.size > 0) {
           const base = created.content ?? decoder.decode(await client.content(doc.id, true));
           const pushed = await client.push(doc.id, { newText: rewriteRefs(base, media.renames), baseHash: sha256Hex(base), baseText: base });
-          if (!pushed.ok) media.results.push({ docId: doc.id, file: confined(root, path), action: 'failed', message: `the doc still references the old media names: push refused (${pushed.reason})` });
+          if (!pushed.ok) media.results.push({ docId: doc.id, file: confined(root, path), action: 'failed', message: `the doc still references the old media names: push refused (${pushRefusal(pushed)})` });
         }
         reportMedia(media.results, true);
       }
@@ -468,8 +472,9 @@ export async function runCli(args: string[], deps: ProgramDeps = {}): Promise<nu
           throw new CliError(EXIT.degenerate, `push refused: it deletes ${Math.round(response.deletedRatio * 100)}% of the doc; pull again, or push with --force`);
         }
         if (response.reason === 'rate-limited') throw new CliError(1, `push refused: rate limited${response.retryAfterSec ? `; try again in ${response.retryAfterSec} s` : ''}`);
-        if (response.reason === 'too-large') throw new CliError(1, 'push refused: too large; a note holds at most 2 MB of markdown');
-        if (response.reason === 'push-unverified' || response.reason === 'suggest-refused') throw new CliError(1, `push refused: ${f(response.message)}`);
+        if (response.reason === 'too-large' || response.reason === 'push-unverified' || response.reason === 'suggest-refused') {
+          throw new CliError(1, `push refused: ${f(pushRefusal(response))}`);
+        }
         if (response.reason === 'forbidden') {
           throw new CliError(1, parsed.flags.has('suggest')
             ? 'push refused: you can\'t suggest changes to this doc (it needs suggest access or more)'

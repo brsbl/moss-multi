@@ -7,6 +7,7 @@ import { useState, type ReactNode } from 'react';
 import { Banner } from '../../../../../../packages/ui/src/Banner.tsx';
 import { NOTICE_ACTION, NOTICE_DISMISS } from '../../notice-stack.ts';
 import { dismissUnsaved, useNoSuggestionRoom, useUnsaved, type UnsavedPayload } from './mode.ts';
+import { noRoomNotice } from './notices.ts';
 
 type Copy = 'idle' | 'copied' | 'failed';
 
@@ -79,7 +80,7 @@ export function UnsavedCard({ docId, extra }: { docId: string; extra?: ReactNode
     />
   );
   const message = full
-    ? `This note has no room for more suggestions${payloads.length ? ', so your last changes were not saved' : ''}. An editor can still edit it.`
+    ? noRoomNotice(full === 'room' ? null : full, payloads.length > 0)
     : payloads.length > 1
       ? `${payloads.length} suggestions were closed while you typed, so those changes were not saved.`
       : 'This suggestion was closed while you typed, so your last changes were not saved.';

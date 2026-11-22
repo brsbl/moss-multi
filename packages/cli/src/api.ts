@@ -1,7 +1,8 @@
 // The REST client (A§17). Every call carries the agent key or the device-flow session as a bearer, never a cookie,
 // so the origin gate passes it (A§18). Content is read as raw bytes: nothing here decodes, trims or appends.
 // No request follows a redirect: a 3xx is an error, so a credential is only ever sent to the configured server.
-import type { PushRequest, PushResponse } from '@moss-multi/protocol/push';
+import { MARKDOWN_MAX_BYTES } from '@moss-multi/protocol/limits';
+import { LIMIT_WORDS, type PushLimit, type PushRequest, type PushResponse } from '@moss-multi/protocol/push';
 import { CliError, NOT_SIGNED_IN } from './errors.ts';
 
 export interface DocRow {
@@ -81,6 +82,32 @@ function messageOf(text: string): string | null {
   }
 }
 
+const LIMITS = new Set<string>(['text', 'structure', 'state', 'markdown']);
+
+/** The words for a 413: the note limit a write met (A§5.1), else the server's own message. */
+function tooLargeWords(text: string): string {
+  try {
+    const body = JSON.parse(text) as { error?: unknown; limit?: unknown; message?: unknown };
+    if (typeof body.limit === 'string' && LIMITS.has(body.limit)) return `too large: ${LIMIT_WORDS[body.limit as PushLimit]}`;
+    if (body.error === 'doc-cap') return `too large: ${LIMIT_WORDS.state}`;
+    if (typeof body.message === 'string') return `too large: ${body.message}`;
+  } catch {
+    // Not JSON: the bare words below.
+  }
+  return 'too large';
+}
+
+/** What a refused push says: the limit it met, in plain words, or the server's reason. */
+export function pushRefusal(response: Exclude<PushResponse, { ok: true }>): string {
+  if (response.reason === 'too-large') return `too large: ${LIMIT_WORDS[response.limit && LIMITS.has(response.limit) ? response.limit : 'state']}`;
+  if (response.reason === 'push-unverified' || response.reason === 'suggest-refused') return response.message;
+  return response.reason;
+}
+
+const encoder = new TextEncoder();
+/** Markdown past the bound a push or create may carry is refused here, before it is sent. */
+const overMarkdown = (text: string | undefined): boolean => text !== undefined && encoder.encode(text).byteLength > MARKDOWN_MAX_BYTES;
+
 /** A refused request as a CliError with exit code 1; `what` names the thing asked for in a 404. */
 export async function refusal(response: Response, what = 'that doc', read?: string): Promise<CliError> {
   const status = response.status;
@@ -90,8 +117,9 @@ export async function refusal(response: Response, what = 'that doc', read?: stri
     const after = response.headers.get('retry-after');
     return new CliError(1, `rate limited${after ? `: try again in ${after} s` : ''}`, status);
   }
-  if (status === 413) return new CliError(1, 'too large: a note holds at most 2 MB of markdown', status);
-  const message = messageOf(read ?? (await response.text().catch(() => '')));
+  const text = read ?? (await response.text().catch(() => ''));
+  if (status === 413) return new CliError(1, tooLargeWords(text), status);
+  const message = messageOf(text);
   if (status === 403) return new CliError(1, `forbidden${message && message !== 'forbidden' ? `: ${message}` : ''}`, status);
   return new CliError(1, `the server refused the request (HTTP ${status})${message ? `: ${message}` : ''}`, status);
 }
@@ -155,6 +183,7 @@ export function createApi(options: ApiOptions) {
      * answer's `content` is the created revision's export (absent from a server that predates it).
      */
     create: async (input: { title?: string; markdown?: string; folderId?: string; titleLine?: boolean; comments?: Record<string, unknown> }) => {
+      if (overMarkdown(input.markdown)) throw new CliError(1, `too large: ${LIMIT_WORDS.markdown}`, 413);
       const created = await json<{ doc: { id: string; title: string; filename: string; folderId: string }; content?: unknown }>('/api/docs', { method: 'POST', body: body(input) }, 'that folder');
       return { doc: created.doc, content: typeof created.content === 'string' ? created.content : undefined };
     },
@@ -167,6 +196,7 @@ export function createApi(options: ApiOptions) {
     },
     /** A push answers a PushResponse even when it refuses; anything else is an error. */
     push: async (id: string, request: PushRequest): Promise<PushResponse> => {
+      if (overMarkdown(request.newText)) return { ok: false, reason: 'too-large', limit: 'markdown' };
       const response = await call(`${doc(id)}/push`, { method: 'POST', body: body(request) });
       const text = await response.text();
       try {

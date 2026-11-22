@@ -2,6 +2,7 @@
 // payload it touches would have after it, not the payload's stored bytes plus the update, so a restore that replaces a
 // large block with a smaller or same-size version is never refused 413. One that would end past the cap still is,
 // with nothing written and no restore point.
+import { $getRoot } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { DocDO } from '../../src/doc-do.ts';
 import { captureRestoreBase } from '../../src/restore-base.ts';
@@ -26,12 +27,16 @@ class Capped extends DocDO {
 
 async function note(): Promise<{ opened: Opened; ada: LiveClient }> {
   Capped.limits.stateCapBytes = CAP;
+  Capped.limits.textCharCap = DocDO.limits.textCharCap;
+  Capped.limits.structCap = DocDO.limits.structCap;
   const opened = await start(openDoc(new Backing(), Capped as never));
   await opened.dobj.create({ folderId: 'folder-1', ownerId: 'ada', markdown: 'Intro.\n' });
   const ada = await LiveClient.open(opened, { id: 'ada', role: 'editor' });
   onTestFinished(() => {
     ada.dispose();
     Capped.limits.stateCapBytes = CAP;
+    Capped.limits.textCharCap = DocDO.limits.textCharCap;
+    Capped.limits.structCap = DocDO.limits.structCap;
   });
   return { opened, ada };
 }
@@ -92,5 +97,50 @@ describe('a server write near the cap counts each touched payload at its size af
     expect(await opened.dobj.exportMarkdown()).toBe(markdown);
     expect(ada.texts()).toEqual(['b'.repeat(100)]);
     expect(await kinds(opened)).toEqual(before);
+  });
+});
+
+// T6.V (T3.B31c on m6): a restore is held to the note's text and structure limits as every server write is, its
+// payloads counted by what the restore adds to them, and a refusal names the limit it met.
+describe("a restore meets the note's text and structure limits and names the one it meets @p:tech-8", () => {
+  it('refuses 413 text a version whose code block no longer fits the text limit, writing nothing', async () => {
+    const { opened, ada, id } = await retyped('a'.repeat(6_000), 'b'.repeat(100));
+    Capped.limits.textCharCap = 3_000;
+    const markdown = await opened.dobj.exportMarkdown();
+    const before = await kinds(opened);
+    expect(await restore(opened, ada, id)).toMatchObject({ ok: false, status: 413, reason: 'doc-cap', limit: 'text' });
+    await settle(ada);
+    expect(await opened.dobj.exportMarkdown()).toBe(markdown);
+    expect(ada.texts()).toEqual(['b'.repeat(100)]);
+    expect(await kinds(opened)).toEqual(before);
+  });
+
+  it('refuses 413 structure a version whose paragraphs no longer fit the structure limit, writing nothing', async () => {
+    const { opened, ada } = await note();
+    for (let i = 0; i < 60; i += 1) ada.insertParagraph(`Line ${i}.`);
+    await settle(ada);
+    const saving = await opened.dobj.saveVersion({ name: 'Long', reviewer: ADA });
+    if (!saving.ok) throw new Error(saving.reason);
+    ada.editor.update(() => {
+      for (const node of $getRoot().getChildren()) if (node.getTextContent().startsWith('Line ')) node.remove();
+    }, { discrete: true });
+    await settle(ada);
+    expect(ada.paragraphs()).toEqual(['Intro.']);
+    Capped.limits.structCap = (await opened.dobj.noteSize()).structs + 5;
+    const markdown = await opened.dobj.exportMarkdown();
+    const before = await kinds(opened);
+    expect(await restore(opened, ada, saving.version.id)).toMatchObject({ ok: false, status: 413, reason: 'doc-cap', limit: 'structure' });
+    await settle(ada);
+    expect(await opened.dobj.exportMarkdown()).toBe(markdown);
+    expect(ada.paragraphs()).toEqual(['Intro.']);
+    expect(await kinds(opened)).toEqual(before);
+  });
+
+  it('restores the same version once the limits leave room for it', async () => {
+    const { opened, ada, id } = await retyped('a'.repeat(6_000), 'b'.repeat(100));
+    Capped.limits.textCharCap = 6_100;
+    expect(await restore(opened, ada, id)).toMatchObject({ ok: true });
+    await settle(ada);
+    expect(ada.texts()).toEqual(['a'.repeat(6_000)]);
   });
 });

@@ -17,7 +17,7 @@ import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
 import { useStore } from 'jotai';
-import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
+import { $createParagraphNode, $getRoot, $setSelection, SKIP_SCROLL_INTO_VIEW_TAG, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc, UndoManager } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
@@ -53,6 +53,35 @@ import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
 import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
 import { BOTTOM_REGION, REGION_BOTTOM_PX, REGION_GAP_PX, useToolbarHeight } from './bottom-row.ts';
+
+/**
+ * A paste rolled back (T3.B32): the note shows where the pane was when the paste began, not where the paste had
+ * scrolled it. Set once the binding has laid out enough of the note to reach it, or after 5 s, whichever is first.
+ */
+function scrollBack(editor: LexicalEditor, top: number): void {
+  const until = Date.now() + 5_000;
+  const step = () => {
+    const root = editor.getRootElement();
+    let scroller: HTMLElement | null = root;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    scroller ??= document.scrollingElement as HTMLElement | null;
+    if (!scroller) return;
+    if (scroller.scrollHeight - scroller.clientHeight < top && Date.now() < until) {
+      requestAnimationFrame(step);
+      return;
+    }
+    // The rebound note restores a caret, which would scroll it into view: the place wins for the next 2 s.
+    const target = scroller;
+    const pin = () => {
+      if (target.scrollTop !== top) target.scrollTop = top;
+    };
+    pin();
+    target.addEventListener('scroll', pin);
+    setTimeout(() => target.removeEventListener('scroll', pin), 2_000);
+  };
+  editor.update(() => $setSelection(null), { tag: SKIP_SCROLL_INTO_VIEW_TAG });
+  requestAnimationFrame(step);
+}
 
 interface PaneState {
   docState: DocState;
@@ -358,7 +387,7 @@ class PaneBinding implements SuggestPane {
           this.#apply(session.state);
           this.#mountChanged();
         },
-        refused: (unsaved, reason) => {
+        refused: (unsaved, reason, limit) => {
           // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
           // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
           // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more.
@@ -367,7 +396,7 @@ class PaneBinding implements SuggestPane {
           if (full) this.#noRoom = true;
           this.#inputClosed = true;
           this.#editor?.setEditable(false);
-          offerUnsaved(this.docId, unsaved, full);
+          offerUnsaved(this.docId, unsaved, full, limit);
           this.#apply(session.state);
           this.#mountChanged();
           if (!again) this.#remount();
@@ -378,7 +407,7 @@ class PaneBinding implements SuggestPane {
       });
       mount.editor = this.#editor;
       // A pane letting go with suggestions unanswered leaves the mount delivering them (A§10.1).
-      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason))));
+      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason, limit) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason), limit)));
       this.#mount = mount;
       return { doc: mount.doc, provider: mount.provider as unknown as Provider };
     }
@@ -500,6 +529,10 @@ class PaneBinding implements SuggestPane {
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked || isLanding(editor) ? '1' : '0');
     const session = this.#session;
     if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live' && this.#mode === 'edit');
+    if (session && state.synced && !state.resync && session.rolledBackScroll !== null) {
+      scrollBack(editor, session.rolledBackScroll);
+      session.rolledBackScroll = null;
+    }
     this.set({
       bodyState,
       bodyVisible: state.synced && !state.resync && this.#mountReady,

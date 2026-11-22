@@ -361,6 +361,8 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   // The withdraw rebuilds the author's fork, and Review remounts on a closed record (§5).
   ben.expectReconnects(1, docId);
   carl.expectReconnects(1, docId);
+  // The card's preview may still be in flight when the withdraw lands: it answers 409 not-open.
+  ben.expectHttp(409, new RegExp(`/api/docs/${docId}/suggestions/[^/]+/preview$`));
   const before = await content(ada, docId);
 
   await suggestText(ben, docId, 'original word', 8, ' plus');

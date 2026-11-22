@@ -247,8 +247,8 @@ describe('cat', () => {
     expect(result.out).toBe('# Garden notes\n\nWater daily.\n');
   });
 
-  it('pulls a 2 MB doc byte for byte', async () => {
-    const big = new Uint8Array(2 * 1024 * 1024 - 7).fill(0x61);
+  it('pulls a 4 MB doc byte for byte', async () => {
+    const big = new Uint8Array(4 * 1024 * 1024 - 7).fill(0x61);
     big[big.length - 1] = 0x7a;
     server.content.set(ID_C, big);
     const pulled = await cli(['pull', ID_C, 'big.md']);
@@ -1999,5 +1999,94 @@ describe('--version (T7.P3)', () => {
       expect(result.out).toMatch(/^moss-multi \d+\.\d+\.\d+ \(commit (?:[0-9a-f]{40}|unbundled)\)\n$/);
       expect(server.seen).toEqual([]);
     }
+  });
+});
+
+describe('note limits (T7.V)', () => {
+  const TEXT = 'a note holds at most 1,020,000 characters of text';
+  const STRUCTURE = 'split it into smaller notes';
+  const MARKDOWN = 'a note\'s markdown can be at most 4 MB';
+  const tooLarge = (limit: string) => ({ status: 413, body: { ok: false, reason: 'too-large', limit } });
+
+  it('push says which limit refused it, in plain words, and keeps the file and its base', async () => {
+    await cli(['pull', ID_A, 'plan.md']);
+    const meta = () => readFileSync(join(dir, '.moss-multi', ID_A, 'meta.json'), 'utf8');
+    const before = meta();
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nMuch more.');
+    for (const [limit, words] of [['text', TEXT], ['structure', STRUCTURE], ['state', 'a note stores at most 17 MB']] as const) {
+      server.state.pushAnswers.push(tooLarge(limit));
+      const refused = await cli(['push', 'plan.md']);
+      expect(refused.code, limit).toBe(1);
+      expect(refused.err).toContain('push refused: too large');
+      expect(refused.err).toContain(words);
+      expect(refused.err).not.toContain('2 MB');
+    }
+    expect(readFileSync(join(dir, 'plan.md'), 'utf8')).toBe('# Garden plan\n\nMuch more.');
+    expect(meta(), 'the base is kept').toBe(before);
+  });
+
+  it('push and add refuse a file past 4 MB of markdown before sending it', async () => {
+    await cli(['pull', ID_A, 'plan.md']);
+    const big = `# Garden plan\n\n${'x'.repeat(4 * 1024 * 1024)}`;
+    writeFileSync(join(dir, 'plan.md'), big);
+    const pushed = await cli(['push', 'plan.md']);
+    expect(pushed.code).toBe(1);
+    expect(pushed.err).toContain(MARKDOWN);
+    expect(server.state.pushes, 'nothing was sent').toEqual([]);
+    writeFileSync(join(dir, 'huge.md'), big);
+    const added = await cli(['add', 'huge.md']);
+    expect(added.code).toBe(1);
+    expect(added.err).toContain(MARKDOWN);
+    expect(server.seen.filter((call) => call.method === 'POST' && call.path === '/api/docs'), 'no create was sent').toEqual([]);
+  });
+
+  it('add names the limit a create met', async () => {
+    writeFileSync(join(dir, 'long.md'), 'Long.\n');
+    server.state.refuseRoute = { method: 'POST', path: '/api/docs', status: 413, body: { error: 'doc-cap', limit: 'text', message: 'This note has reached its size limit (1.02 million characters).' } };
+    const added = await cli(['add', 'long.md']);
+    expect(added.code).toBe(1);
+    expect(added.err).toContain(`too large: ${TEXT}`);
+    server.state.refuseRoute = { method: 'POST', path: '/api/docs', status: 413, body: { error: 'doc-cap' } };
+    const state = await cli(['add', 'long.md']);
+    expect(state.err).toContain('too large: a note stores at most 17 MB');
+  });
+
+  it('sync reports a push and a create a limit refused, by file, and exits 1', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nMuch more.');
+    writeFileSync(join(dir, 'Lines.md'), 'Many lines.\n');
+    server.state.pushAnswers.push(tooLarge('text'));
+    server.state.refuseRoute = { method: 'POST', path: '/api/docs', status: 413, body: { error: 'doc-cap', limit: 'structure', message: 'too big' } };
+    const result = await cli(['sync', '--json']);
+    expect(result.code).toBe(1);
+    const rows = JSON.parse(result.out) as { file?: string; action: string; message?: string }[];
+    expect(rows.find((row) => row.file === 'plan.md')).toMatchObject({ action: 'failed', message: expect.stringContaining(TEXT) as unknown });
+    expect(rows.find((row) => row.file === 'Lines.md')).toMatchObject({ action: 'failed', message: expect.stringContaining(STRUCTURE) as unknown });
+    server.state.pushAnswers.push(tooLarge('text'));
+    const human = await cli(['sync']);
+    expect(human.code).toBe(1);
+    expect(human.err).toContain('plan.md');
+    expect(human.err).toContain(TEXT);
+  });
+
+  it('watch reports a refused push in plain words and keeps watching', async () => {
+    expect((await cli(['pull', ID_A, 'plan.md'])).code).toBe(0);
+    server.state.pushAnswers.push(tooLarge('structure'));
+    const controller = new AbortController();
+    const running = cli(['watch', '--interval', '0.2'], undefined, { signal: controller.signal });
+    const deadline = Date.now() + 5_000;
+    while (!server.seen.some((call) => call.path === `/api/docs/${ID_A}/content`) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(join(dir, 'plan.md'), '# Garden plan\n\nMany lines.');
+    while (server.state.pushes.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    const result = await running;
+    expect(result.err).toContain(STRUCTURE);
+    expect(server.state.pushes.length, 'the next pass pushed again').toBeGreaterThanOrEqual(2);
+  });
+
+  it('the usage states the note limits', async () => {
+    const result = await cli(['help'], {});
+    expect(result.out).toContain('1.02 million characters');
+    expect(result.out).toContain('4 MB');
   });
 });
