@@ -114,7 +114,7 @@ export function offerUnsaved(docId: string, blocks: string[], full = false): voi
   notify();
 }
 
-export function dismissUnsaved(docId: string): void {
+export function dismissUnsaved(docId: string, _payload?: number): void {
   const had = noRoom.delete(docId);
   if (!unsaved.delete(docId) && !had) return;
   notify();
@@ -128,4 +128,8 @@ export function useNoSuggestionRoom(docId: string | null): boolean {
 const NONE: string[] = [];
 export function useUnsaved(docId: string | null): string[] {
   return useSyncExternalStore(subscribeModes, () => (docId ? (unsaved.get(docId) ?? NONE) : NONE), () => NONE);
+}
+
+export function unsavedOf(_docId: string): { id: number; blocks: string[] }[] {
+  return [];
 }

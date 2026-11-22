@@ -13,3 +13,11 @@ export function standAboveTrashNotice(el: HTMLElement | null): void {
   const below = window.innerHeight - trash.getBoundingClientRect().top + NOTICE_GAP_PX;
   el.style.bottom = `${Math.max(parseFloat(getComputedStyle(el).bottom) || 0, below)}px`;
 }
+
+export type NoticeKind = 'terminal' | 'unsaved' | 'outage' | 'restore' | 'update';
+export interface NoticeInputs { terminal: boolean; unsaved: boolean; outage: boolean; restore: boolean; update: boolean; trashNotice: boolean }
+export interface NoticeArrangement { lead: NoticeKind | null; recover: boolean; restoreDetails: boolean }
+
+export function arrangeNotices(_input: NoticeInputs): NoticeArrangement {
+  return { lead: null, recover: false, restoreDetails: false };
+}

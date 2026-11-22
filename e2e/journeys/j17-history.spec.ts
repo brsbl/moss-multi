@@ -7,7 +7,7 @@ import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  ACTION_FEEDBACK_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, LEXICAL_EDITOR_SELECTOR, paneSelector,
+  ACTION_FEEDBACK_ATTR, BODY_BINDING_ATTR, BOTTOM_REGION_ATTR, CONNECTION_BANNER_ATTR, ROLE_BAND_ATTR, DOC_STATE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, LEXICAL_EDITOR_SELECTOR, paneSelector,
   RESTORE_NOTICE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc, linkDoc } from '../lib/grants.ts';
@@ -682,4 +682,60 @@ test("j17-history: someone else's restore is named in a band in every open windo
   await expect(restoreNotice(visitor, id), 'Dismiss clears the band').toHaveCount(0);
   await restoreNotice(ben, id).getByRole('button', { name: 'Dismiss', exact: true }).click();
   await expect(restoreNotice(ben, id)).toHaveCount(0);
+});
+
+/** The gap between the region's notice and the row under it (T9.30). */
+const REGION_GAP_PX = 8;
+
+test("j17-history: a peer's restore is a card in the pane's bottom region just above the reader's row; when the connection is lost the outage leads there, its Restore details shows the restore, and the restore comes back once the connection does (T9.41) @p:mean-3", async ({ actors, stack }) => {
+  const { id, ada, adaPrincipal } = await sharedNote(actors, stack.baseUrl);
+  const caraPrincipal = await actors.principal('cara');
+  await grantDoc(ada, id, caraPrincipal, 'viewer');
+  const cara = await actors.open(caraPrincipal, { path: `/d/${id}`, severable: true, viewport: { width: 1440, height: 1000 } });
+  await ui.waitOpen(cara, id, 'readonly');
+  const sever = cara.sever;
+  if (!sever) throw new Error('Cara must be severable');
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'Before the change');
+  await closeHistory(ada, id);
+  await ui.typeBody(ada, id, ' Ada added this.');
+  actors.typed.splice(actors.typed.findIndex((entry) => entry.text === ' Ada added this.'), 1);
+  await ui.waitAcked(ada, id);
+  await expect.poll(() => bodyText(cara, id), { timeout: PEER_TIMEOUT }).toContain('Ada added this.');
+  await restoreNamed(ada, id, 'Before the change');
+  await expectSeed(cara, id);
+
+  const region = ui.pane(cara, id).locator(`[${BOTTOM_REGION_ATTR}]`);
+  const roleRow = region.locator(`[${ROLE_BAND_ATTR}]`);
+  const notice = restoreNotice(cara, id);
+  const sentence = `${adaPrincipal.name} restored an earlier version of this note.`;
+  await expect(notice, 'the restore is named').toContainText(sentence, { timeout: 2_000 });
+  await expect(region.locator(`[${RESTORE_NOTICE_ATTR}]`), 'in the pane\'s one bottom region').toHaveCount(1);
+  await expect(roleRow, 'above the reader\'s row').toBeVisible();
+  /** `card` stands directly above the reader's row, 8 px clear of it. */
+  const standsOnRow = async (card: Locator, what: string) => {
+    const [cardBox, rowBox] = await Promise.all([card.boundingBox(), roleRow.boundingBox()]);
+    if (!cardBox || !rowBox) throw new Error(`${what} is not laid out`);
+    expect(Math.abs(rowBox.y - (cardBox.y + cardBox.height) - REGION_GAP_PX), `${what} stands ${REGION_GAP_PX} px above the row`).toBeLessThan(1.5);
+  };
+  await standsOnRow(notice, 'the restore notice');
+
+  // The connection is lost: the outage leads in the same place, and the restore waits behind its Restore details.
+  sever.blackhole();
+  const outage = region.locator(`[${CONNECTION_BANNER_ATTR}="offline"]`);
+  await expect(outage, 'the outage notice shows in the region').toBeVisible({ timeout: 25_000 });
+  await expect(ui.pane(cara, id).locator(`[${CONNECTION_BANNER_ATTR}]`), 'one connection notice').toHaveCount(1);
+  await expect(notice, 'the restore yields to the outage').toHaveCount(0);
+  await standsOnRow(outage, 'the outage notice');
+  await outage.getByRole('button', { name: 'Restore details', exact: true }).click();
+  await expect(region.locator(`[${RESTORE_NOTICE_ATTR}]`), 'Restore details shows the restore in the region').toContainText(sentence);
+  await actors.checkpoint('history-restore-during-outage');
+
+  cara.expectReconnects(2, id);
+  sever.restore();
+  await expect(outage, 'the outage clears on reconnect').toHaveCount(0, { timeout: 30_000 });
+  await expect(notice, 'the restore notice resumes').toContainText(sentence);
+  await standsOnRow(notice, 'the resumed restore notice');
+  await notice.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(notice).toHaveCount(0);
 });
