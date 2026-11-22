@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 92% done** (277 of 302 planned tasks verified)
+**Overall: 92% done** (278 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 37 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 38 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -300,6 +300,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.48c verified: saving, counting comments, pasting or selecting on a note no longer stalls the tab when its text holds a comment-marker opener followed by thousands of blanks, because moss's marker functions on those paths now find markers in one linear pass.
 - 2026-11-22 — T9.42 verified: Version history opens the chosen version as the read-only note beside a 280 px list of quiet rows, with automatic saves folded, kind, time and size in a Details tooltip, Compare with current off until pressed, and a neutral Restore that waits for the preview and asks by name with Cancel focused.
 - 2026-11-22 — T9.48c verified (focus fix): when a collaborator withdraws, accepts or rejects a suggestion, the author's open Suggestions list, menu or dialog stays open with its focus, because the caret a rebuilt fork puts back no longer takes focus from an overlay over the note.
+- 2026-11-22 — T9.45 verified: Settings names who is signed in beside Sign out, and Agents is a quiet card of key rows with + New key, Copy ID and Revoke on hover or focus; a new key stays shown until Done, Copy key says Copied only when the clipboard took it, and same-name keys are told apart by their creation time.
 
 ## T1.1s identity audit
 
@@ -371,6 +372,13 @@ Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` for
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.45's checker (60c8481, 2026-11-22)
+
+- T9.45 (Account and agent keys are quiet Settings tasks) checker P2: the Copy ID tooltip now opens to the left, so it no longer covers + New key, but on a same-name row it covers that row's creation date and time, including the seconds that tell the two keys apart (only while the pointer is on Copy ID).
+- T9.45 (Account and agent keys are quiet Settings tasks) checker P2: the Revoke confirmation (Moss's ConfirmationDialog) stacks a second modal backdrop over the Settings dialog, where the brief asks for one; inherited from m9, no control becomes unreachable.
+- T9.45 (Account and agent keys are quiet Settings tasks) checker P2: two same-name keys made in the same second (API or two sessions) still get identical labels; same-name keys from the same month and day in different years show only month and day; at 390 px same-name rows shorten their names to 'Claude Co...' while the times stay readable.
+- T9.45 (Account and agent keys are quiet Settings tasks) checker P2: after a successful revoke of another agent while a new key is shown, the refocus effect targets New key, which is disabled while a key is shown, so keyboard focus does not return to a usable control.
 
 ### From T9.42's checker (863febb, 2026-11-22)
 
