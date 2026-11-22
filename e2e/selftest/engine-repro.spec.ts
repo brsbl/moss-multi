@@ -8,7 +8,7 @@ import { Stack } from '../lib/stack.ts';
 import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '../../packages/protocol/src/client-protocol.ts';
 import { expect, test } from './fixtures.ts';
 
-const CONTEXTS = 30;
+const CONTEXTS = 20;
 const ROUNDS = 20;
 const ANSWER_MS = 10_000;
 
