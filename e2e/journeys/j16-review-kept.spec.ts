@@ -6,7 +6,7 @@ import {
   BODY_BINDING_ATTR, EDIT_MODE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { BIND_TIMEOUT, caret, content, openIn, painted, settled } from '../lib/suggest.ts';
+import { BIND_TIMEOUT, caret, content, openIn, openPanel, painted, reviewSwitch, settled } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 test('j16-review-kept: a Review window left open across an accept that keeps the originals shows the note as it now is, without a reload @p:mean-2 @p:R17', async ({ actors }) => {
@@ -28,9 +28,6 @@ test('j16-review-kept: a Review window left open across an accept that keeps the
   const review = await actors.sameAs(ada);
   review.expectReconnects(2, docId);
   await openIn(review, docId, 'edit');
-  await review.page.getByRole('button', { name: 'Review suggestions' }).click();
-  await expect(ui.pane(review, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
-  await expect(ui.body(review, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
   await actors.requireDistinct(2);
   const blocks = (actor: Actor) => ui.body(actor, docId).evaluate((root) => [...root.children].map((block) => block.textContent ?? ''));
   const expected = ['Intro line stays.', 'ab', 'xc tail.', 'Closing line stays too.'];
@@ -46,6 +43,10 @@ test('j16-review-kept: a Review window left open across an accept that keeps the
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
   });
   await settled(ben, docId, 'the paste');
+  // Review is offered once a suggestion is open (T9.1), from the Suggestions list (T9.30).
+  await reviewSwitch(await openPanel(review)).click();
+  await expect(ui.pane(review, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(review, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
   await expect.poll(() => blocks(review), { message: 'Review shows the suggestion', timeout: BIND_TIMEOUT }).toEqual(expected);
   await expect.poll(() => painted(review, 'suggest-insert'), { message: 'Review paints it', timeout: BIND_TIMEOUT }).not.toEqual([]);
 
