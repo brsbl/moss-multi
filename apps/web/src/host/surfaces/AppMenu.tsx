@@ -8,11 +8,14 @@ import {
 } from '@moss/shared/components/ui/dropdown-menu';
 import { focusedNoteIdAtom } from '@moss/shared/state/atoms';
 import { useAtomValue } from 'jotai';
-import { Bell, Check, CircleUser, Cloud, FolderRoot, Plus, Settings } from 'lucide-react';
+import { Bell, Check, CircleUser, Cloud, FolderRoot, Plus, RotateCw, Settings } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore, type ComponentType, type ReactElement, type ReactNode, type RefObject } from 'react';
 import { useAuthState } from '../auth.ts';
 import { getBridge, WORKSPACE, type Bridge } from '../bridge/index.ts';
+import { clientOutdated, onOutdated } from '../client-protocol.ts';
 import { ConnectionDetails } from '../collab/ConnectionNotice.tsx';
+import { useTerminal } from '../collab/terminal.ts';
+import { reloadUnlessUnacked } from '../reload-guard.ts';
 import { refuseInput } from '../refusal.ts';
 import { revealAccountSection } from './AccountSection.tsx';
 import { APP_MENU_ATTR } from './footer.ts';
@@ -111,6 +114,7 @@ function ConnectionMenu({ open, onOpenChange, anchor }: {
 /** Wraps the footer's Settings button (`children`) as the menu's trigger. */
 export function AppMenu({ children, onOpenSettings }: { children: ReactElement; onOpenSettings: () => void }): ReactNode {
   const trigger = useRef<HTMLElement | null>(null);
+  const focused = useAtomValue(focusedNoteIdAtom);
   const auth = useAuthState();
   const bridge = getBridge() ?? null;
   const workspace = useWorkspace(bridge);
@@ -118,6 +122,10 @@ export function AppMenu({ children, onOpenSettings }: { children: ReactElement; 
   const signedIn = auth.status === 'signed-in';
   const vault = signedIn ? workspace?.vault ?? null : null;
   const close = (open: boolean) => { if (!open) setDetail(null); };
+  // An update waits here, never taking focus, whatever leads the note's bottom region meanwhile (T9.41).
+  const outdated = useSyncExternalStore(onOutdated, clientOutdated, () => false);
+  const focusedTerminal = useTerminal(focused);
+  const updateWaiting = outdated || focusedTerminal === 'outdated';
   useEffect(() => registerSettingsOpener(onOpenSettings), [onOpenSettings]);
   return (
     <>
@@ -140,6 +148,12 @@ export function AppMenu({ children, onOpenSettings }: { children: ReactElement; 
             <DropdownMenuItem className={ROW} onSelect={() => { revealAccountSection(); onOpenSettings(); }}>
               <CircleUser aria-hidden className={ICON} />
               Account
+            </DropdownMenuItem>
+          ) : null}
+          {updateWaiting ? (
+            <DropdownMenuItem className={ROW} onSelect={reloadUnlessUnacked}>
+              <RotateCw aria-hidden className={ICON} />
+              Reload to update
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem className={ROW} onSelect={onOpenSettings}>
