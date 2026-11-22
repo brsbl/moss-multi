@@ -1,5 +1,8 @@
-// T9.48a: a window showing a note only because nothing is chosen pins that note as the choice.
+// T9.48a: a window where no note is chosen shows the newest note (moss's `activeNoteIdAtom` fallback) and would follow
+// whichever note a collaborator creates or edits next. Pinning makes the note on screen the choice, once.
 import type { createStore } from 'jotai';
+import { activeNoteSelectionAtom, splitTabNoteIdAtom } from '@moss/shared/state/atoms';
+import { activeNotesAtom } from '@moss/shared/state/note-atoms';
 
 type Store = ReturnType<typeof createStore>;
 
@@ -16,8 +19,21 @@ export interface PinInput {
 }
 
 /** Pins the derived active note when the gates allow; returns the note pinned, or null. */
-export function pinActiveNote(store: Store, input: PinInput): string | null {
-  void store;
-  void input;
-  return null;
+export function pinActiveNote(store: Store, { startupDone, view, navigate, memory }: PinInput): string | null {
+  const { storedId, derived } = store.get(activeNoteSelectionAtom);
+  if (!derived) {
+    memory.seen = storedId;
+    return null;
+  }
+  // Before startup ends, a pin would write last-viewed before startup reads it; an empty Trash chooses nothing.
+  if (!startupDone || view !== 'notes') return null;
+  // A stored note whose record is gone re-pins; one whose record has not arrived yet is a navigation still loading.
+  if (storedId && storedId !== memory.seen) return null;
+  // The setter closes a split showing the new note, so the pin never takes the split's note.
+  const split = store.get(splitTabNoteIdAtom);
+  const target = store.get(activeNotesAtom).find((note) => note.id !== split)?.id ?? null;
+  if (!target) return null;
+  memory.seen = target;
+  navigate(target);
+  return target;
 }

@@ -347,12 +347,14 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   await grant(ada, { folderId: open }, benPrincipal, 'editor');
   const ownedNote = await api.note('Owned plan', owned);
   const openNote = await api.note('Open plan', open);
+  // Ada chose no note: her window shows one of the two and keeps it from here on (T9.48a).
+  await expect.poll(() => ui.paneIds(ada), { message: "Ada's window shows a setup note", timeout: BIND_TIMEOUT })
+    .toEqual([expect.stringMatching(new RegExp(`^(${ownedNote}|${openNote})$`))]);
+  await ui.waitLive(ada, (await ui.paneIds(ada))[0]);
 
   const ben = await actors.open(benPrincipal);
   await ui.switchVault(ben.page, 'Home Can view');
   await expect(ui.folderRow(ben, 'Owned')).toBeVisible();
-  // Ben's moves kick every socket open on the moved notes to re-ask its access (T2.5), Ada's window's included.
-  ada.expectReconnects(2);
   const creates = sent(ben, 'POST', /^\/api\/docs$/);
   const moves = sent(ben, 'PATCH', MOVES);
 

@@ -112,6 +112,7 @@ declare module '@moss/shared/state/atoms' {
   export const syncNoteEntityAtom: WritableAtom<null, [{ noteId: string; updates: { title?: string; updatedAt?: number } }], void>;
   export const activeNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const lastViewedNoteIdAtom: WritableAtom<string | null, [string | null], void>;
+  export const activeNoteSelectionAtom: import('jotai').Atom<{ storedId: string | null; derived: boolean }>;
   export const activeFolderPathAtom: WritableAtom<string, [string], void>;
   export const revealFolderPathAtom: WritableAtom<null, [string | null | undefined], void>;
   export const hydrateNotesAtom: WritableAtom<null, [], Promise<void>>;
@@ -130,6 +131,7 @@ declare module '@moss/shared/state/note-atoms' {
   export function frontmatterDirtySignalAtom(noteId: string): PrimitiveAtom<number>;
   export const noteIdsAtom: PrimitiveAtom<Set<string>>;
   export const removeNoteEntityAtom: import('jotai').WritableAtom<null, [string], Promise<void>>;
+  export const activeNotesAtom: import('jotai').Atom<{ id: string }[]>;
   export function noteCommentsMapAtom(noteId: string): PrimitiveAtom<Record<string, object>>;
   export function commentThreadFilterAtom(noteId: string): PrimitiveAtom<'open' | 'resolved' | 'all'>;
 }
