@@ -404,7 +404,10 @@ test('j05-trash: a note trashed under open windows says so once: the owner’s o
   await expect(notices(ben)).toHaveText(TRASH_COPY.peerTrashed);
   await expect(ben.page.getByRole('button', { name: 'Restore', exact: true }), 'no Restore for a suggester').toHaveCount(0);
 
-  other.expectReconnects(1, docId);
+  // The restore brings the note back live in every window that had it: each opens one more socket, and Ada's first
+  // window, which Moss moved off the note she trashed, mounts it again.
+  for (const actor of [ada, other, ben]) actor.expectReconnects(1, docId);
+  ada.observations.delete(docId);
   await ownNotice.getByRole('button', { name: 'Restore', exact: true }).click();
   await expect(ui.pane(other, docId), 'Restore brings the note back live in place').toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await expect(notices(other), 'and its notice goes').toHaveCount(0);
