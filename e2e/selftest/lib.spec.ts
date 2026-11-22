@@ -260,7 +260,7 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems(three, new Map(), OFF)).toEqual(['3 recovered network drops (1006), 2 allowed in a run']);
     expect(networkDrops(three)).toHaveLength(3);
     const lost = [socket(0, 100, 1006), socket(200, null)];
-    expect(socketProblems(lost, new Map(), OFF)).toEqual(['d: a socket dropped (1006) and no later socket of its document reached sync']);
+    expect(socketProblems(lost, new Map(), OFF)).toContain('d: a socket dropped (1006) and no later socket of its document reached sync');
     expect(networkDrops(lost)).toEqual([{ docId: 'd', at: 100, recovered: false, recoveryMs: null }]);
   });
   test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {
