@@ -511,7 +511,7 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
       pane.removeAttribute('data-suggestion-docked');
       pane.style.removeProperty('--suggestion-dock');
     };
-  }, [docId, place?.kind, place?.left, at]);
+  }, [docId, place?.kind, place && place.kind !== 'beside' ? place.left : null, at]);
   const markAnchor = useMemo(() => {
     // A repaint can replace the mark under it: the last place it was seen holds until the next paint.
     let last: DOMRect | null = null;
