@@ -54,12 +54,11 @@ async function noteWithText(ada: Actor): Promise<string> {
   return docId;
 }
 
-/** A person's (or an invite's) access in the owner's Share dialog: glyphdown's role select and Remove button. */
-const accessSelect = (dialog: Locator, who: string): Locator => dialog.getByRole('combobox', { name: `Access for ${who}`, exact: true });
+/** A person's (or an invite's) access in the owner's Share dialog: a role menu whose last item is Remove access (T9.36). */
+const accessSelect = (dialog: Locator, who: string): Locator => ui.roleMenu(dialog, `Access for ${who}`);
 
 async function chooseAccess(dialog: Locator, who: string, choice: ui.Access | 'Remove access'): Promise<void> {
-  if (choice === 'Remove access') await dialog.getByRole('button', { name: `Remove ${who}`, exact: true }).click();
-  else await accessSelect(dialog, who).selectOption({ label: choice });
+  await ui.chooseRole(dialog, `Access for ${who}`, choice);
 }
 
 /** Opens `path` as a signed-in principal with doc-socket closes recorded. */
@@ -91,12 +90,18 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   ben.expectReconnects(1, docId);
 
   const dialog = await ui.openShare(ada, docId);
-  await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveValue('editor');
+  await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveText('Can edit');
   const patched = ada.page.waitForResponse((response) => response.url().endsWith(`/api/docs/${docId}/members`) && response.request().method() === 'PATCH');
-  const sentAt = Date.now();
+  // The clock starts when the demotion leaves the page, not while the role menu opens.
+  let sentAt = Number.POSITIVE_INFINITY;
+  const onRequest = (request: { url(): string; method(): string }) => {
+    if (request.method() === 'PATCH' && request.url().endsWith(`/api/docs/${docId}/members`)) sentAt = Math.min(sentAt, Date.now());
+  };
+  ada.page.on('request', onRequest);
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
   expect((await patched).status(), 'the demotion is saved').toBe(200);
-  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveValue('viewer');
+  ada.page.off('request', onRequest);
+  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveText('Can view');
   await expect(dialog.getByRole('status'), 'and says so').toContainText('Can view');
 
   await expect.poll(async () => (await closes(ben.page)).filter((c) => c.url.includes(`/parties/doc-d-o/${docId}`)).map((c) => c.code),
@@ -197,8 +202,8 @@ test('j09 raise: Ada raises Ben from view to edit and his open note takes typing
   await actors.checkpoint('raise-before');
 
   const dialog = await ui.openShare(ada, docId);
-  await accessSelect(dialog, benPrincipal.name).selectOption({ label: 'Can edit' });
-  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the raise").toHaveValue('editor');
+  await chooseAccess(dialog, benPrincipal.name, 'Can edit');
+  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the raise").toHaveText('Can edit');
   await expectRaisedToEdit(ben, docId, 2_000);
   await actors.checkpoint('raise-after-2s');
   expect((await closes(ben.page)).filter((c) => c.code === 4403), 'a raise closes nothing from the server').toEqual([]);
@@ -209,11 +214,11 @@ test('j09 raise: Ada raises Ben from view to edit and his open note takes typing
 
   // Lowered, then raised again: the note he holds after the lowering takes the second raise too.
   await ui.waitAcked(ben, docId);
-  await accessSelect(dialog, benPrincipal.name).selectOption({ label: 'Can view' });
+  await chooseAccess(dialog, benPrincipal.name, 'Can view');
   await ui.waitOpen(ben, docId, 'readonly');
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
   await expect(ben.page.locator(`[${ACTION_FEEDBACK_ATTR}]`), 'the first pill has gone').toHaveCount(0, { timeout: LIVE_TIMEOUT });
-  await accessSelect(dialog, benPrincipal.name).selectOption({ label: 'Can edit' });
+  await chooseAccess(dialog, benPrincipal.name, 'Can edit');
   await expectRaisedToEdit(ben, docId, 2_000);
   const second = ' and again';
   await ui.typeBody(ben, docId, second);
