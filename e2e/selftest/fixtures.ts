@@ -2,11 +2,20 @@
 // selftest decides which findings it expects.
 import { test as base } from '@playwright/test';
 import { Actors } from '../lib/actors.ts';
+import { closeBrowserTimed, watchBrowser } from '../lib/engine.ts';
 import { startFixtureServer, type FixtureServer } from './server.ts';
 
 export { expect } from '@playwright/test';
 
 export const test = base.extend<{ actors: Actors }, { server: FixtureServer }>({
+  browser: [
+    async ({ browser }, use, workerInfo) => {
+      watchBrowser(browser);
+      await use(browser);
+      await closeBrowserTimed(browser, workerInfo.project.outputDir, workerInfo.project.name);
+    },
+    { scope: 'worker' },
+  ],
   server: [
     async ({}, use) => {
       const server = await startFixtureServer();
@@ -20,6 +29,6 @@ export const test = base.extend<{ actors: Actors }, { server: FixtureServer }>({
     const actors = new Actors(browser, testInfo, { stack: null, runToken: 'selftest' });
     actors.solo('fixture pages have no principals; the guard has its own selftest');
     await use(actors);
-    await actors.dispose();
+    await actors.settle({ assert: false });
   },
 });
