@@ -764,6 +764,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   useLayoutEffect(() => fields.title.show(docId), [fields, docId]);
   useLayoutEffect(() => binding?.attachFields(fields), [binding, fields]);
   useLayoutEffect(() => fields.title.setOpen(titleLive), [fields, titleLive]);
+  const gone = trashed || terminal === 'deleted';
   if (docId && trashView) {
     return {
       bound: false,
@@ -812,8 +813,9 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
-    topBarCollab: docId ? <TopBarCollab docId={docId} suggestions={binding} /> : null,
-    noteMenuItems: docId ? <NoteMenuItems docId={docId} /> : null,
+    // A note in Trash has nothing to share, review or count, as in the Trash view (T9.43).
+    topBarCollab: docId && !gone ? <TopBarCollab docId={docId} suggestions={binding} /> : null,
+    noteMenuItems: docId && !gone ? <NoteMenuItems docId={docId} /> : null,
     history: docId && historyOpen && !terminal ? <HistoryView key={docId} docId={docId} /> : null,
   };
 }
