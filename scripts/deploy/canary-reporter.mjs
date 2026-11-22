@@ -127,7 +127,8 @@ const route = (path) => path.split('/').map((segment) => (segment === '' || /^[a
 
 /**
  * The invariant findings in an e2e/lib/actors.ts failure, as fixed facts: the invariant, the actor's label, and for
- * invariants 1, 3 and 7 the HTTP status, method and route, the socket counts, or the field and counts. Never the text.
+ * invariants 1, 3, 7 and 8 the HTTP status, method and route, the socket counts, the field and counts, or the principal
+ * count. Never the text.
  * @param {string} message
  */
 export function findingFacts(message) {
@@ -152,6 +153,11 @@ export function findingFacts(message) {
       if (/\ba socket dropped \(1006\) and no later socket of its document reached sync/.test(detail)) fact = 'a 1006 drop never recovered to sync';
       const tryAgain = /\b(\d{1,6}) try-again closes \(1013\), (\d{1,6}) declared/.exec(detail);
       if (tryAgain) fact = `${tryAgain[1]} try-again closes (1013), ${tryAgain[2]} declared`;
+    } else if (n === '8') {
+      const distinct = /^(\d{1,3}) distinct principal\(s\)/.exec(detail);
+      if (distinct) fact = `${distinct[1]} distinct principal(s)`;
+      else if (/ is not a test principal /.test(detail)) fact = 'not a test principal';
+      else if (/needs a reason/.test(detail)) fact = 'solo without a reason';
     } else if (n === '7') {
       const field = / (title|body): /.exec(detail)?.[1] ?? '';
       const counts = /appears (\d+) time\(s\), typed (\d+)/.exec(detail);
