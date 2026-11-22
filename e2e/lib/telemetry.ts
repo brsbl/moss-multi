@@ -168,9 +168,12 @@ export class Telemetry {
 
   /** The page closed the doc socket at `url` at page time `at` (each socket's URL carries its own `_pk`). */
   pageClosed(url: string, at: number, close: string | null = null): void {
-    const entry = [...this.sockets].reverse().find((socket) => socket.url === url && socket.closedAt === null);
+    // The browser's close event can reach the census before this binding call (a socket closed while connecting);
+    // the page's ask still names the close, which always precedes the close the page then hears.
+    const entry = [...this.sockets].reverse().find((socket) => socket.url === url && (socket.closedAt === null || socket.close === null));
     if (!entry) return;
-    entry.closedAt = Math.max(entry.openedAt, at);
+    const asked = Math.max(entry.openedAt, at);
+    entry.closedAt = entry.closedAt === null ? asked : Math.min(entry.closedAt, asked);
     entry.close ??= close;
   }
 
