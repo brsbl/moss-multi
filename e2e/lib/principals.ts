@@ -1,6 +1,7 @@
 // Per-run principals (S-test §3.3). Sign-up and sign-in go through the real auth API as declared setup (the auth
 // journey uses the login UI instead); the guard makes the owner's accounts unreachable by construction.
 import { createHmac, randomBytes } from 'node:crypto';
+import { test } from '@playwright/test';
 import { claimSlot, seedEmail } from '../../scripts/deploy/seed.mjs';
 import { authHeadroom, type AuthKind, extendTimeout, recordAuth, RESERVE } from './auth-pace.ts';
 import type { CanaryState } from './stack.ts';
@@ -125,23 +126,39 @@ export async function seededPrincipal(baseUrl: string, seed: NonNullable<CanaryS
 async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Promise<{ response: Response; lost: boolean }> {
   await authHeadroom(kind, RESERVE);
   let response = await post();
-  for (let attempt = 0; attempt < 6 && response.status === 429; attempt += 1) {
+  let limited = 0;
+  for (; limited < 6 && response.status === 429; limited += 1) {
     const waitMs = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65) * 1000 + 500;
     extendTimeout(waitMs);
     await new Promise((done) => setTimeout(done, waitMs));
     response = await post();
   }
+  noteResend(kind, '429', limited);
   // wrangler dev's proxy answers a POST whose forward was lost on a closing keep-alive connection with this 503 (see
   // patches/wrangler@4.113.0.patch); the request is sent again, at most three times. `lost` says a resend happened,
   // so the first may have been applied.
-  let lost = false;
-  for (let attempt = 0; attempt < 3 && response.status === 503 && (await response.clone().text()).startsWith(LOST_FORWARD); attempt += 1) {
-    lost = true;
+  let resent = 0;
+  for (; resent < 3 && response.status === 503 && (await response.clone().text()).startsWith(LOST_FORWARD); resent += 1) {
     await new Promise((done) => setTimeout(done, 1_000));
     response = await post();
   }
+  noteResend(kind, 'lost forward', resent);
+  const lost = resent > 0;
   if (response.status !== 429) recordAuth(kind);
   return { response, lost };
+}
+
+/**
+ * Records `count` resends of a setup `kind` request on the running test, for the run's credential-free summary
+ * (scripts/deploy/canary-artifacts.mjs resendsOf); a no-op outside a test.
+ */
+function noteResend(kind: AuthKind, cause: '429' | 'lost forward', count: number): void {
+  if (count === 0) return;
+  try {
+    test.info().annotations.push({ type: 'setup-resend', description: JSON.stringify({ kind, cause, count }) });
+  } catch {
+    // Outside a test.
+  }
 }
 
 export function parseSetCookie(header: string, url: string): SessionCookie {

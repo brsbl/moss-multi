@@ -505,9 +505,10 @@ describe('deploy-staging.yml target', () => {
     expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary', 'drops']);
     expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
     expect(Object.keys(runningFor(WORKFLOW, 'staging', 'full'))).toEqual(['preflight', 'deploy', 'canary', 'sp9', 'tail', 'suite', 'drops']);
-    // deploy-staging.yml at t/T8.2 a6de39be (T8.2's canary, SP9 probe and full suite) through stagingView: the same jobs,
-    // steps, triggers, env and concurrency. A deliberate change to the staging jobs updates this hash.
-    expect(sha256(stagingView(WORKFLOW))).toBe('51e99934ea5d3232993df31992ead0142b62c617991e23d8193adcd5ecf34463');
+    // deploy-staging.yml at t/T8.F (T8.2's canary, SP9 probe and full suite; T8.F's suite-only growth count and the
+    // network drops job) through stagingView: the same jobs, steps, triggers, env and concurrency. A deliberate change to
+    // the staging jobs updates this hash.
+    expect(sha256(stagingView(WORKFLOW))).toBe('08973cda3e2f98cd9e356bd6becce0c067b7406806d36266bd52426ad00d0438');
   });
 
   it('target=pilot runs only the gate, then deploy-pilot.yml: no staging deploy, canary or upload', () => {

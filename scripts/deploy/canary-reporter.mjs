@@ -4,6 +4,8 @@
 // kind of error, numeric expected and received values, and which invariants it broke; error text and test output are
 // withheld. The JSON reporter keeps the detail on the runner, which nothing uploads.
 
+import { resendsOf } from './canary-artifacts.mjs';
+import { dropLine, dropsOf } from './network-drops.mjs';
 import { retryClass } from './retry-gate.mjs';
 
 /** @param {number} ms */
@@ -145,8 +147,8 @@ export function findingFacts(message) {
       if (sockets) fact = `${sockets[1]} socket opens, ${sockets[2]} allowed`;
       const ended = /\((\d{1,6}) errored; (#\d[^()]{0,2000})\)$/.exec(detail);
       if (sockets && ended) fact += ` (${ended[1]} errored; ${ended[2].split('; ').slice(0, 20).map(socketEnd).join(', ')})`;
-      const drops = /\b(\d{1,6}) network drops \(1006\) in one document/.exec(detail);
-      if (drops) fact = `${drops[1]} network drops (1006), 1 allowed`;
+      const drops = /\b(\d{1,6}) recovered network drops \(1006\), (\d{1,3}) allowed/.exec(detail);
+      if (drops) fact = `${drops[1]} recovered network drops (1006), ${drops[2]} allowed`;
       if (/\ba socket dropped \(1006\) and no later socket of its document reached sync/.test(detail)) fact = 'a 1006 drop never recovered to sync';
       const tryAgain = /\b(\d{1,6}) try-again closes \(1013\), (\d{1,6}) declared/.exec(detail);
       if (tryAgain) fact = `${tryAgain[1]} try-again closes (1013), ${tryAgain[2]} declared`;
@@ -166,6 +168,11 @@ export default class CanaryReporter {
   counts = new Map();
   /** @type {string[]} Every retry this run allowed, with its infrastructure class. */
   retried = [];
+  /** @type {string[]} Each leg's setup resends, by fixed label. */
+  resent = [];
+  resends = 0;
+  /** @type {string[]} Every network drop a leg recorded (network-drops.mjs). */
+  drops = [];
 
   printsToStdio() {
     return true;
@@ -181,7 +188,7 @@ export default class CanaryReporter {
 
   /**
    * @param {{ retries?: number, titlePath(): string[] }} test
-   * @param {{ status: string, duration: number, retry?: number, errors?: { message?: string, stack?: string }[] }} result
+   * @param {{ status: string, duration: number, retry?: number, errors?: { message?: string, stack?: string }[], annotations?: { type?: string, description?: string }[] }} result
    */
   onTestEnd(test, result) {
     this.counts.set(result.status, (this.counts.get(result.status) ?? 0) + 1);
@@ -189,6 +196,18 @@ export default class CanaryReporter {
     const title = test.titlePath().filter(Boolean).slice(1).join(' › ');
     console.log(`  ${result.status} ${title} (${seconds(result.duration)})`);
     for (const line of failureTrace(result)) console.log(`      ${line}`);
+    const resends = Object.entries(resendsOf(result.annotations ?? []));
+    if (resends.length > 0) {
+      const line = resends.map(([label, n]) => `${label} x${n}`).join(', ');
+      console.log(`      setup resends: ${line}`);
+      this.resent.push(`${title}: ${line}`);
+      this.resends += resends.reduce((sum, [, n]) => sum + n, 0);
+    }
+    for (const drop of dropsOf(result.annotations ?? [])) {
+      const line = dropLine({ leg: title, ...drop });
+      console.log(`      network drop: ${line.slice(title.length + 2)}`);
+      this.drops.push(line);
+    }
     // A failed attempt that has a retry left: the retry runs only after a named infrastructure class (retry-gate.mjs;
     // e2e/lib/reporter.ts records the verdict the retry reads).
     const retry = result.retry ?? 0;
@@ -208,5 +227,7 @@ export default class CanaryReporter {
     const counts = [...this.counts].map(([status, n]) => `${n} ${status}`).join(', ') || 'no tests';
     console.log(`${result.status}: ${counts} in ${seconds(result.duration)}`);
     console.log(`${this.retried.length} retr${this.retried.length === 1 ? 'y' : 'ies'} on infrastructure${this.retried.map((line) => `\n  ${line}`).join('')}`);
+    console.log(`${this.resends} setup resend${this.resends === 1 ? '' : 's'}${this.resent.map((line) => `\n  ${line}`).join('')}`);
+    console.log(`${this.drops.length} network drop${this.drops.length === 1 ? '' : 's'} (1006)${this.drops.map((line) => `\n  ${line}`).join('')}`);
   }
 }

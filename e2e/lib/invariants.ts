@@ -1,6 +1,7 @@
 // The 9 global invariants (A§20, S-test §3.5), checked on every actor of every journey. Each check is a pure
 // function of telemetry or a browser-side detector, and e2e/selftest proves each one can fail.
 import type { Page } from '@playwright/test';
+import { DROP_ALLOWANCE } from '../../scripts/deploy/network-drops.mjs';
 import { isAllowed } from './allowlist.ts';
 import { NAMES } from './contract.ts';
 import { editableUnbound, fieldTexts, floatingOverCanvas, markerLeak, remountSince } from './detectors.js';
@@ -53,13 +54,32 @@ const SOCKET_FAILED = /^WebSocket connection to '([^']+)' failed/;
 const FAILED_LOG_MS = 2_000;
 
 export interface Network {
-  /** Against a deployed stack: one network drop per doc and document, recovered to sync, is not a finding (A§21). */
+  /**
+   * Against a deployed stack: a network drop recovered to sync is the reconnect path working, not a finding (A§21). Each
+   * is listed in the run's summary, and a run allows DROP_ALLOWANCE of them (scripts/deploy/network-drops.mjs).
+   */
   offLoopback?: boolean;
 }
 
+/** The later socket of its doc and document that received the server's sync step 2 first, if any. */
+const replacement = (dropped: SocketEntry, group: SocketEntry[]): SocketEntry | undefined =>
+  group.filter((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.synced === true)
+    .sort((a, b) => (a.syncedAt ?? a.openedAt) - (b.syncedAt ?? b.openedAt))[0];
+
 /** A dropped socket is recovered when a later socket of its doc and document received the server's sync step 2. */
-const recovered = (dropped: SocketEntry, group: SocketEntry[]): boolean =>
-  group.some((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.synced === true);
+const recovered = (dropped: SocketEntry, group: SocketEntry[]): boolean => replacement(dropped, group) !== undefined;
+
+export interface NetworkDrop { docId: string; at: number; recovered: boolean; recoveryMs: number | null }
+
+/** Every network drop (a heard 1006) in a census: when it closed, and whether and how fast a later socket resynced. */
+export function networkDrops(sockets: SocketEntry[]): NetworkDrop[] {
+  return [...socketGroups(sockets).values()].flatMap((group) => group.filter((s) => s.code === NETWORK_DROP).map((dropped) => {
+    const at = dropped.closedAt ?? dropped.openedAt;
+    const next = replacement(dropped, group);
+    const syncedAt = next?.syncedAt;
+    return { docId: dropped.docId, at, recovered: next !== undefined, recoveryMs: syncedAt === undefined ? null : Math.max(0, syncedAt - at) };
+  }));
+}
 
 /**
  * Off loopback, whether a 1006 drop's replacement is still connecting: a later socket of its doc and document is open
@@ -80,14 +100,11 @@ const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
 };
 
 /**
- * Off loopback, the recovered network drops: the single 1006 of its doc and document whose replacement reached sync.
- * Only the browser's own failure line for that socket, logged while it lived or just after, is left to invariant 3.
+ * Off loopback, the recovered network drops: each 1006 whose replacement reached sync. Only the browser's own failure
+ * line for that socket, logged while it lived or just after, is left to invariant 3.
  */
 const recoveredDrops = (sockets: SocketEntry[]): SocketEntry[] =>
-  [...socketGroups(sockets).values()].flatMap((group) => {
-    const drops = group.filter((s) => s.code === NETWORK_DROP);
-    return drops.length === 1 && recovered(drops[0], group) ? drops : [];
-  });
+  [...socketGroups(sockets).values()].flatMap((group) => group.filter((s) => s.code === NETWORK_DROP && recovered(s, group)));
 
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
@@ -135,9 +152,10 @@ const ARTIFACT_MS = 50;
 
 /**
  * Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. A socket's
- * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback, one
- * network drop per doc and document (a heard 1006) is allowed only when a later socket of that document reached sync,
- * and every 1013 (the server's try-again) is a finding unless the journey declared it (`expectTryAgain`).
+ * document is the one the page reported constructing it, else the navigation count when it was seen. Off loopback, a
+ * network drop (a heard 1006) is allowed, with the reopen it causes, only when a later socket of that document reached
+ * sync, and at most DROP_ALLOWANCE of them (the run's allowance, so one leg past it already fails the run); every 1013
+ * (the server's try-again) is a finding unless the journey declared it (`expectTryAgain`).
  */
 export function socketProblems(
   sockets: SocketEntry[],
@@ -148,6 +166,7 @@ export function socketProblems(
   const groups = socketGroups(sockets);
   const problems: string[] = [];
   const tryAgainSeen = new Map<string, number>();
+  let recoveredSeen = 0;
   for (const all of groups.values()) {
     const { docId } = all[0];
     // A socket the browser reported closed within ARTIFACT_MS of opening, that the page never closed nor heard close, is
@@ -160,12 +179,11 @@ export function socketProblems(
       for (const socket of group) {
         if (socket.code === TRY_AGAIN) tryAgainSeen.set(docId, (tryAgainSeen.get(docId) ?? 0) + 1);
       }
-      const drops = group.filter((s) => s.code === NETWORK_DROP);
-      if (drops.length > 1) problems.push(`${docId}: ${drops.length} network drops (1006) in one document, 1 allowed`);
-      for (const dropped of drops) {
-        if (!recovered(dropped, group)) problems.push(`${docId}: a socket dropped (1006) and no later socket of its document reached sync`);
+      for (const dropped of group.filter((s) => s.code === NETWORK_DROP)) {
+        if (recovered(dropped, group)) drop += 1;
+        else problems.push(`${docId}: a socket dropped (1006) and no later socket of its document reached sync`);
       }
-      drop = drops.length === 1 && recovered(drops[0], group) ? 1 : 0;
+      recoveredSeen += drop;
     }
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0) + drop;
     if (group.length > allowed) {
@@ -180,6 +198,7 @@ export function socketProblems(
     for (const [, delta] of events) peak = Math.max(peak, (open += delta));
     if (peak > 1) problems.push(`${docId}: ${peak} doc sockets open at once`);
   }
+  if (recoveredSeen > DROP_ALLOWANCE) problems.push(`${recoveredSeen} recovered network drops (1006), ${DROP_ALLOWANCE} allowed in a run`);
   for (const [docId, seen] of tryAgainSeen) {
     const declared = (tryAgain.get(docId) ?? 0) + (tryAgain.get('*') ?? 0);
     if (seen > declared) problems.push(`${docId}: ${seen} try-again closes (1013), ${declared} declared`);

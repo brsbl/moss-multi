@@ -18,6 +18,8 @@ export interface SocketEntry {
   document?: string | null;
   /** It received the server's sync step 2 (y-protocols message 0, 1): the doc reached sync on it. */
   synced?: boolean;
+  /** When it first received sync step 2. */
+  syncedAt?: number;
 }
 export interface StampEntry { url: string; status: number | null; meta: string | null; client: string | null; at: number }
 
@@ -128,7 +130,10 @@ export class Telemetry {
       socket.on('close', () => { entry.closedAt ??= Date.now(); });
       socket.on('socketerror', (error) => { entry.error = String(error); });
       socket.on('framereceived', ({ payload }) => {
-        if (typeof payload !== 'string' && payload[0] === 0 && payload[1] === 1) entry.synced = true;
+        if (typeof payload !== 'string' && payload[0] === 0 && payload[1] === 1 && !entry.synced) {
+          entry.synced = true;
+          entry.syncedAt = Date.now();
+        }
       });
     });
     page.on('load', () => {
@@ -184,7 +189,10 @@ export class Telemetry {
     return {
       // Sync step 2 relayed from the server leg, as the page-socket census reads it from CDP.
       received(message) {
-        if (entry && typeof message !== 'string' && message[0] === 0 && message[1] === 1) entry.synced = true;
+        if (entry && typeof message !== 'string' && message[0] === 0 && message[1] === 1 && !entry.synced) {
+          entry.synced = true;
+          entry.syncedAt = Date.now();
+        }
       },
       // `code`: the server leg's close, so invariant 3 judges a routed 1006 or 1013 as it does a page socket's.
       closed(code, reason = '') {

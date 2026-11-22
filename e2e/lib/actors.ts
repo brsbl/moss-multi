@@ -9,7 +9,7 @@ import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor } from './detectors.js';
 import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
-  actorFindings, awaitingRecovery, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
+  actorFindings, awaitingRecovery, domFindings, networkDrops, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
 import { mintPrincipal, newPrincipal, poolPrincipal, seededPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
@@ -288,10 +288,22 @@ export class Actors {
 
   async assertInvariants(): Promise<void> {
     await this.awaitRecoveries();
+    this.noteDrops();
     const findings = await this.findings();
     this.testInfo.annotations.push({ type: 'invariants', description: JSON.stringify({ findings: findings.length }) });
     if (findings.length > 0) await this.fail(findings, 'invariants');
     this.options.stack?.budget?.assert(this.journey);
+  }
+
+  /**
+   * Off loopback, every network drop this leg's actors heard, for the run's credential-free summary: doc id, actor label,
+   * when it dropped and how long its document took to resync (scripts/deploy/network-drops.mjs judges the run).
+   */
+  private noteDrops(): void {
+    if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
+    const drops = this.list.flatMap((actor) => networkDrops(actor.telemetry.sockets).map(({ docId, at, recovered, recoveryMs }) =>
+      ({ doc: docId, actor: actor.label, at, recovered, recoveryMs })));
+    if (drops.length > 0) this.testInfo.annotations.push({ type: 'network-drops', description: JSON.stringify(drops) });
   }
 
   /**

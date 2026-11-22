@@ -206,6 +206,7 @@ jobs:
           if [ -s "$dir/delete.sql" ]; then d1 --yes --file "$dir/delete.sql" > /dev/null; echo "pruned"; fi
       # A§21: nothing else reclaims what the full suite creates, so it stops at a cap and the owner decides past it. The
       # prune shrinks only D1, so the Worker's DocDOs and PrincipalDOs are counted from Cloudflare's list; only counts print.
+      # The caps count the suite's own principals and docs; outsiders' sign-ups are reported, never a refusal.
       - name: Staging has room for a full suite
         if: inputs.suite == 'full'
         env:
@@ -213,7 +214,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           node "$WRANGLER" d1 execute moss-multi-staging --remote --json --config apps/web/dist/server/wrangler.json \
-            --command "SELECT (SELECT count(*) FROM docs) AS docs, (SELECT count(*) FROM user) AS users" > "$RUNNER_TEMP/growth.json"
+            --command "$(node scripts/deploy/growth.mjs count-sql)" > "$RUNNER_TEMP/growth.json"
           node scripts/deploy/growth.mjs objects "$RUNNER_TEMP/objects.json"
           node scripts/deploy/growth.mjs check "$RUNNER_TEMP/growth.json" "$RUNNER_TEMP/objects.json"
       # Staging allows 30 sign-ups a day per address (auth.ts), far fewer than the suite's fresh accounts: this run's
@@ -577,6 +578,33 @@ jobs:
             e2e/canary-artifacts/summary.json
           retention-days: 7
           if-no-files-found: ignore
+
+  # The run's network drops (T8.F): each leg lists the 1006 drops its actors heard, recovered or not, in its summary;
+  # across the canary, the probe and every suite shard the run allows DROP_ALLOWANCE recovered ones and none that never
+  # recovered (scripts/deploy/network-drops.mjs). Only the summaries are read: doc ids, actor labels and times.
+  drops:
+    name: Network drops
+    needs: [preflight, canary, sp9, suite]
+    if: always() && inputs.target == 'staging' && needs.canary.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: staging-*-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/summaries
+      - name: At most the allowance, every one recovered
+        shell: bash
+        run: |
+          mapfile -t files < <(find "$RUNNER_TEMP/summaries" -name summary.json | sort)
+          if [ "${#files[@]}" -eq 0 ]; then echo "::error::no summaries to read"; exit 1; fi
+          node scripts/deploy/network-drops.mjs check "${files[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The pilot, after the same gate: its own gate, secret check, deploy and read-only smoke. It is passed only the pilot
   # secrets and the shared Cloudflare ones, and never the staging or canary ones.
