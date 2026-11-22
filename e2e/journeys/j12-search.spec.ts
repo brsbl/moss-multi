@@ -157,6 +157,31 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
   await expect(benActor.page.getByRole('button', { name: sourceTitle }), "Ben's panel shows no backlink").toHaveCount(0);
 });
 
+test('j12-search: opening a note from the notes list reads its backlinks once and cancels no read @p:note-7', async ({ actors, stack }) => {
+  actors.solo('the promise is one tab’s backlinks reads for one note open');
+  const ada = await actors.session(await actors.principal('ada'));
+  const create = async (title: string) => {
+    const created = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data: { title } });
+    expect(created.status()).toBe(201);
+    return ((await created.json()) as { doc: { id: string } }).doc.id;
+  };
+  const first = await create(`First ${token()}`);
+  await ada.goto(`/d/${first}`);
+  await ui.waitLive(ada, first);
+  const opened = await create(`Opened ${token()}`);
+  await expect(row(ada, opened), 'the new note reaches the notes list').toBeVisible({ timeout: BIND_TIMEOUT });
+
+  const path = `/api/docs/${opened}/backlinks`;
+  const isBacklinks = (url: string) => new URL(url).pathname === path;
+  const sent: string[] = [];
+  ada.page.on('request', (request) => { if (isBacklinks(request.url())) sent.push(request.url()); });
+  const answered = ada.page.waitForEvent('requestfinished', { predicate: (request) => isBacklinks(request.url()), timeout: BIND_TIMEOUT });
+  await ui.openNote(ada, opened);
+  await answered;
+  expect(ada.telemetry.failed.filter((entry) => isBacklinks(entry.url)), 'no backlinks read is cancelled').toEqual([]);
+  expect(sent, 'one backlinks read for the open').toHaveLength(1);
+});
+
 test('j12-search: an edit only inside a code block reaches the index without another note edit @p:note-7', async ({ actors, stack }) => {
   actors.solo('the promise is the server feeding search after one author edits a code block');
   const ada = await actors.session(await actors.principal('ada'));

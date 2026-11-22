@@ -157,3 +157,24 @@ it('reconciles a healthy channel in full on a bounded period, so one lost notifi
     expect(reconciles, 'bounded: no more than one a minute').toBeLessThanOrEqual(5);
   } finally { off(); }
 });
+
+it('says when a socket is opening, until it opened and asked its reconcile or failed', async () => {
+  vi.useFakeTimers();
+  const auth = await signedIn();
+  const sockets: Socket[] = [];
+  const said: string[] = [];
+  const receive = vi.fn(() => { said.push('reconcile'); });
+  const deps = { auth, socket: () => { const s = new Socket(); sockets.push(s); return s as unknown as WebSocket; },
+    visible: () => true, onVisible: () => () => undefined, onConnecting: (value: boolean) => { said.push(`connecting ${value}`); } };
+  const off = subscribeWorkspace(deps as Parameters<typeof subscribeWorkspace>[0], receive);
+  try {
+    expect(said).toEqual(['connecting true']);
+    sockets[0].onopen?.();
+    expect(said, 'the reconcile is asked before the opening ends').toEqual(['connecting true', 'reconcile', 'connecting false']);
+    sockets[0].onclose?.({ code: 1006 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(said.slice(3)).toEqual(['connecting true']);
+    sockets[1].onerror?.();
+    expect(said.slice(3), 'a failed opening ends too').toEqual(['connecting true', 'connecting false']);
+  } finally { off(); }
+});
