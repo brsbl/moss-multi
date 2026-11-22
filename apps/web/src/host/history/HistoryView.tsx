@@ -30,6 +30,8 @@ import { displayTitle } from '../collab/title-binding.ts';
 import { versionPreviewNoteId } from '../media/web-asset-url.ts';
 import { timeAgo } from '../surfaces/NotificationsBell.tsx';
 import { diffStats, diffText } from './diff.ts';
+import { Banner } from '../../../../../packages/ui/src/Banner.tsx';
+import { NOTICE_ACTION, NOTICE_DISMISS } from '../notice-stack.ts';
 
 type VersionKind = 'auto' | 'named' | 'restore-point';
 
@@ -191,8 +193,8 @@ export function useCanOpenHistory(docId: string): boolean {
 }
 
 /**
- * Someone else's restore of the open note, in the pane's notice band (built as SuggestUnsavedBand is) until dismissed.
- * Whoever can open History can open it on the restore point, which holds the note as it was before.
+ * Someone else's restore of the open note, as a card in the pane's bottom region (T9.41) until dismissed. Whoever can
+ * open History can open it on the restore point, which holds the note as it was before.
  */
 export function RestoreNoticeBand({ docId }: { docId: string }): ReactNode {
   const notice = useRestoreNotice(docId);
@@ -201,17 +203,22 @@ export function RestoreNoticeBand({ docId }: { docId: string }): ReactNode {
   if (!notice) return null;
   const canOpen = role !== null && auth.status === 'signed-in' && notice.point !== null;
   return (
-    <div {...{ [RESTORE_NOTICE_ATTR]: '' }} role="status" className="flex items-center gap-3 border-b border-border-subtle bg-surface-raised-card px-4 py-2 text-xs text-ink-default">
-      <span className="min-w-0 flex-1">{notice.by} restored an earlier version of this note.</span>
-      {canOpen ? (
-        <button type="button" className="underline" onClick={() => openHistoryAt(docId, notice.point!)}>
-          See the note before the restore
+    <Banner
+      {...{ [RESTORE_NOTICE_ATTR]: '' }}
+      icon={<RotateCcw aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-faint" />}
+      action={<>
+        {canOpen ? (
+          <button type="button" className={NOTICE_ACTION} onClick={() => openHistoryAt(docId, notice.point!)}>
+            See the note before the restore
+          </button>
+        ) : null}
+        <button type="button" className={NOTICE_DISMISS} onClick={() => dismissRestoreNotice(docId)}>
+          Dismiss
         </button>
-      ) : null}
-      <button type="button" className="text-ink-muted underline" onClick={() => dismissRestoreNotice(docId)}>
-        Dismiss
-      </button>
-    </div>
+      </>}
+    >
+      {notice.by} restored an earlier version of this note.
+    </Banner>
   );
 }
 
