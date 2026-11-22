@@ -6,6 +6,8 @@ export interface WorkspaceChannelDeps {
   socket: () => WebSocket;
   visible: () => boolean;
   onPause?: () => void;
+  /** True while a socket is opening; false once it opened (after its reconcile) or failed, or the channel stopped. */
+  onConnecting?: (connecting: boolean) => void;
   onVisible: (callback: () => void) => () => void;
 }
 
@@ -25,6 +27,12 @@ export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: 
   let attempts = 0;
   let lastPong = 0;
   let lastReconcile = 0;
+  let connecting = false;
+  const setConnecting = (value: boolean) => {
+    if (connecting === value) return;
+    connecting = value;
+    deps.onConnecting?.(value);
+  };
   const allowed = () => !disposed && !terminal && deps.auth.get().status === 'signed-in';
   const stop = () => {
     if (retry) clearTimeout(retry);
@@ -39,6 +47,7 @@ export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: 
       old.onopen = old.onmessage = old.onclose = old.onerror = null;
       old.close();
     }
+    setConnecting(false);
   };
   const reconnect = () => {
     stop();
@@ -50,12 +59,14 @@ export function subscribeWorkspace(deps: WorkspaceChannelDeps, receive: (event: 
     let current: WebSocket;
     try { current = deps.socket(); } catch { reconnect(); return; }
     socket = current;
+    setConnecting(true);
     current.onopen = () => {
       if (!allowed() || socket !== current) return;
       attempts = 0;
       lastPong = Date.now();
       // Includes the initial connection, covering changes between the boot read and this handshake.
       reconcile();
+      setConnecting(false);
       heartbeat = setInterval(() => {
         if (!deps.visible()) return;
         if (Date.now() - lastPong > 60_000) { reconnect(); return; }

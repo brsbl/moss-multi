@@ -1,5 +1,6 @@
 // Where sharing starts outside the note's top bar (T2.4): a folder's context menu offers "Share…" to its owner, and a
-// link visitor who is not signed in is offered "Sign in", which returns to the same URL, link and all.
+// link visitor who is not signed in is offered a plain "Sign in" (T9.37: it promises nothing more), which returns to
+// the same URL, link and all.
 import { ContextMenuItem } from '@moss/shared/components/ui/context-menu';
 import { UserPlus } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -21,7 +22,7 @@ export function FolderShareItem({ folderPath }: { folderPath: string }): ReactNo
 }
 
 /** Sign in, then come back here, link and all. */
-export function signInToDoMore(): void {
+export function signInHere(): void {
   const here = `${window.location.pathname}${window.location.search}`;
   leaveTo(`${LOGIN_PATH}?next=${encodeURIComponent(here)}`);
 }

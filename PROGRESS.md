@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 89% done** (271 of 304 planned tasks verified)
+**Overall: 91% done** (274 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 31 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 34 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -293,6 +293,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.36 verified: Share is a compact dialog whose first line names the note, folder or vault; every role is chosen from a quiet trigger opening Moss's checked menu of the roles allowed there, with Remove access last, people with access are one flat list, and a link keeps its role, Copy and Revoke on its own row.
 - 2026-11-22 — T9.48a verified: a window with nothing chosen now stays on the note it shows when a collaborator creates or edits another note, and a multi-pane typing check waits for each pane to bind and names a pane that never binds, with j06 green in both engines at ten repeats.
 - 2026-11-22 — T9.34 verified: suggestions use Moss's comment surfaces: the list is flat rows with proposed text in the note's ink and quiet Accept and Reject, and a click on a suggestion's mark opens it as Moss's comment thread beside its line, or docked as a panel the note reflows beside, or filling a narrow pane.
+- 2026-11-22 — T9.48d verified: opening or focusing a note now sends one backlinks read instead of racing several, a note opened while the workspace socket connects gets its backlinks from that socket's reconcile (or within 2 s if the handshake hangs), and a failed read is retried on the next focus.
+- 2026-11-22 — T9.37 verified: `/login` is a quiet 400 px form column with Moss's heading, fields and action and an inline terracotta error that never moves the form; a signed-out link visitor finds Sign in in the bottom row and in More actions, and the denial page offers only Sign in, or Go to your notes and Use another account.
+- 2026-11-22 — T9.48b verified: pasting a 10,000-item check list no longer freezes Chrome; the tab is held under a second at a time instead of 3 to 5 s, because the comment and suggestion highlight rules now name the editor root, and WebKit still paints them through a per-element copy.
 
 ## T1.1s identity audit
 
@@ -330,6 +333,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-20 — T8.U verified: m8 now sits on the final M7, so staging carries T3.B4's paste path without reservations, T3.B28/T3.B30, T5.B2–B4 and T5.S14, T7.P3's packed CLI and replicas, and T7.S9, with the full lane green on the restacked m8.
 - 2026-11-21 — T9.48e measured: the table-separator shape (`---|\n` repeated) of `classifyNoteContentType` on a CI runner ([run 44957664348](https://github.com/brsbl/moss-multi/actions/runs/44957664348), fastest of three) doubles from 16 K to 1 M characters at x2.37, x1.98, x2.26, x2.34, x2.01 and x2.14 (39.3 to 84.0 ms at the 1 MiB step), well under the guard's 3x.
 - 2026-11-21 — T8.V verified: staging and the pilot now carry m3's text, structure and storage limits, the lean stored layout, in-place export and paste rollback, and an outdated protocol-1 web bundle is refused on its doc socket (4426) and REST writes (426) before it can write the old layout.
+- 2026-11-22 — T9.48b measured: a 10,000-item check-list paste held the Chrome tab 2.9-4.6 s at a time and 5.3-6.3 s in all ([run 45018468321](https://github.com/brsbl/moss-multi/actions/runs/45018468321)); with the comment and suggestion highlight rules naming the editor root it holds it 0.9-1.0 s at a time and 2.2-3.5 s in all ([run 45024599133](https://github.com/brsbl/moss-multi/actions/runs/45024599133), 10 of 10 under 2 s).
+
+### T9.48b — the check-list paste stall
+
+- Cause, by experiment (each a `repeat_each=5` Chromium run of j01-paste-check against the capture build, [control run 45018468321](https://github.com/brsbl/moss-multi/actions/runs/45018468321): longest hold 2930-4648 ms, total 5331-6301 ms). Removing the app's `::highlight()` rules took it to 815-1319 ms and 2542-2869 ms ([run 45018478211](https://github.com/brsbl/moss-multi/actions/runs/45018478211)). Comment paint skipping notes without comments ([45018483348](https://github.com/brsbl/moss-multi/actions/runs/45018483348), 2959-3007 ms), keeping the gap paragraph ([45018493106](https://github.com/brsbl/moss-multi/actions/runs/45018493106), 2234-2592 ms), leaving `dir` lifted ([45018488218](https://github.com/brsbl/moss-multi/actions/runs/45018488218), 1803-2456 ms) and no second session ([45018497982](https://github.com/brsbl/moss-multi/actions/runs/45018497982), 3113-4904 ms) did not separate. Unchanged m9 alongside: 3165-3588 ms ([45018473274](https://github.com/brsbl/moss-multi/actions/runs/45018473274)).
+- Mechanism: the last batch and the `dir` restore after it each restyle the whole list (a style recalc, not layout: 1933 and 1894 ms with the rules, 409 and 333 ms without; [run 45019741565](https://github.com/brsbl/moss-multi/actions/runs/45019741565) against [45019750041](https://github.com/brsbl/moss-multi/actions/runs/45019750041)). M4 added 9 comment highlight names to moss's 5 (and M5 2 suggestion names), all unscoped, and Chromium resolves every unscoped highlight name on every element during a restyle. In a 10,000-item list the restyle took 17 ms with no rules, 35 ms with moss's 5, 64 ms with all 16, and 40 ms with the app's rules on the editor root (local Chromium bench). Those two whole-list restyles are still there at about 0.4 s each.
+- Engine finding (Chromium 149): an unscoped `::highlight(name)` rule costs a highlight style resolution per element per name on every restyle, even with no highlight registered under that name. A rule on an ancestor reaches the text inside through highlight inheritance. WebKit has no highlight inheritance: a rule on the editor root paints nothing on text in a nested element, and `getComputedStyle(child, '::highlight(name)')` tells the two apart (it returns the ancestor's style in Chromium and the initial value in WebKit), so the app adds the per-element rules only where the probe says so. Adding per-element rules alongside the root's, even gated off, cost Chromium 25% more, and turning them on in one subtree was 20 times slower.
+- WebKit: same-runner pairs of the paste with the per-element rules and with the old universal rules held the tab 884-1135 against 875-978 ms at a time and 5656-6270 against 5213-5341 ms in all (calibrations 46-78 ms), no difference beyond runner noise.
+- Other paste journeys, longest hold in ms before ([run 45015179081](https://github.com/brsbl/moss-multi/actions/runs/45015179081)) and after ([run 45024592085](https://github.com/brsbl/moss-multi/actions/runs/45024592085)), Chromium then WebKit: paste-blocks 12,000 paragraphs 657→859, 1215→1488; 23,500 paragraphs 1660→1367, 1327→1594; paste-list 11,000 items 444→634, 633→577; nested 9,500 items 556→733, 645→499; paste-table 4,500 rows 545→506, 485→469; j01-paste 1,019,000 characters 1242→1023, 1677→1009; 200k between paragraphs 369→314, 764→805; paste-cap 44,000 paragraphs with code and HTML 3664→4472, 4277→4100; paste-check 4058→968, 577→958. The single runs move with the runner; only paste-check moved beyond that. `MAX_STALL_MS` stays at 5 s on CI: paste-cap's refused 44,000-paragraph paste holds 3.7-4.5 s in both engines.
+- The collaborator's tab, now timed: it held 5.3-5.4 s at a time and 16 s in all while applying the paste before, 1.1-1.8 s and 4.1-5.2 s after; each hold is a doc socket message whose time is almost all forced style and layout.
 
 ### T9.48a — what the pin leaves for the owner (deviation 38)
 
@@ -342,6 +355,24 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+### From T9.48b's checker (1013dcf, 2026-11-22)
+
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: the Chromium total-held bound in j01-paste-check is 5,500 ms, and one control run held 5,331 ms in all, so the old work split into holds under 2,000 ms could still pass; the fix does cut the total (2.2-3.5 s against 5.3-6.3 s).
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: the paint checks cover only part of what changed: j15 checks one comment's background in light mode and j16 reads the CSS rule's text; nothing rendered checks dark ink, the hover and active underlines, or suggestion paint in WebKit (a manual pixel comparison showed no change).
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: pasteAndCheck asserts the author's bounds before it reads and prints the collaborator's stall, so a failing run loses the collaborator's numbers.
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: highlight-scope.ts copies only the root-scoped rules present when it first runs; a rule added later in a lazily loaded sheet gets no per-element copy in WebKit, and a rule inside @media or @supports would lose its condition (neither happens with today's rules).
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: already there before the change: dark-mode comment ink about 10 levels brighter than Moss, square comment corners where Moss rounds them slightly, and in WebKit a taller comment band and no black ink while hovering; a suggestion's inserted-text underline was not checked visually.
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: the branch was 25 commits behind origin/m9 (a944935b) when checked; merged in at integration.
+
+### From T9.37's checker (0d114c0, 2026-11-22)
+
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: a server-side refusal that names a field (a password too short, an email rejected on sign-up) shows its sentence and keeps the typed values but marks no field invalid; transport and credential-pair refusals should stay at form level.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: the one reserved error line sits under Password, so an invalid email's error reads one field away from Email (which does get the terracotta border); Moss's error also has a circled-exclamation icon and a tinted invalid fill, and the neutral focus ring on an invalid field is strong in dark mode (T9.46).
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: the 36 px Sign in / Create account action spans the 400 px column, where Moss's Save is as wide as its text with a faint shadow and slightly tighter corners.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: the denial page's signed-out branch (an invalid or revoked share link) was not captured; confirm its look with a revoked-link capture.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: no e2e test presses the denial page's Use another account or More actions' Sign in; both were driven by hand and work.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: full-lane run 45027231004 attempt 1 failed j15-comments-drafts.spec.ts:621 (Cmd+Shift+A block composer retry) in 'e2e (chromium, large)' with "Node code-block is not registered" Yjs errors, green on rerun of the same commit (for the flake investigation).
+
 ### From T9.34's checker (76677dc, 2026-11-22)
 
 - T9.34 (Suggestions use Moss's comment surfaces, and proposed text keeps the note's ink) checker P2: the insert's hover preview, Moss's tooltip above its line, can briefly cover the last letter of the line above while the pointer stays on the wedge.
@@ -349,6 +380,11 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T9.34 (Suggestions use Moss's comment surfaces, and proposed text keeps the note's ink) checker P2: the one-line Review suggestions entry (kept for T9.1) and its gap push the list's first row down compared with Moss's comments list; tighten its spacing in T9.46.
 - T9.34 (Suggestions use Moss's comment surfaces, and proposed text keeps the note's ink) checker P2: Withdraw in the row's actions menu is terracotta, the surface's only coloured decision (no Moss open-menu reference settled it).
 - T9.34 (Suggestions use Moss's comment surfaces, and proposed text keeps the note's ink) checker P2: a thread placed beside its line is not placed again for layout-only changes after opening (a wrapping title edit, a later pane layout change): the observer watches only body text and pane geometry is polled only in the first second.
+
+### From T9.48d's checker (65fae77, 2026-11-22)
+
+- T9.48d (One note open reads its backlinks once) checker P2: a note opened while the workspace socket stays stuck connecting waits the full 2 s fallback before its backlinks read (2493 ms instead of about 460 ms on the local stack with the socket held CONNECTING); the backlinks still arrive.
+- T9.48d (One note open reads its backlinks once) checker P2: the full-lane run 45027110464 went green only on its second attempt; attempt 1 failed two unrelated WebKit tests, j00-import G1 (HTML block height) and j16-review withdraw. The push run 45027105058 on the same head was green first time.
 
 ### From T9.48a's checker (f95db38, 2026-11-22)
 

@@ -110,6 +110,9 @@ test('j01 setup: a signed-in stranger opening the note URL gets the denial page;
   await cy.goto(`/d/${docId}`);
   await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   await expect(cy.page.getByRole('heading', { name: DENIAL }), 'the stranger sees the denial page').toBeVisible();
+  // Only the next steps that exist (T9.37): back to his notes, or another account; no request-access promise.
+  await expect(cy.page.locator('main').getByRole('button'), 'the denial offers back and another account')
+    .toHaveText(['Go to your notes', 'Use another account']);
   await expect(cy.page.locator('[data-moss-app-shell]'), 'no moss shell opens behind it').toHaveCount(0);
   await expect(cy.page.locator(`[${EDITOR_PANE_ATTR}]`), 'no note opens in its place').toHaveCount(0);
   expect(new URL(cy.page.url()).pathname, 'the address stays on the note').toBe(`/d/${docId}`);
