@@ -912,6 +912,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **T9.48d One note open reads its backlinks once**
   - **Scope:** A plain open or focus of a note never replaces its backlinks read in flight, so the open's `getById` and focus send one `GET /api/docs/<id>/backlinks`; a workspace event still replaces a read in flight unless the read started after that event (a first load's channel reconcile leaves the open's read alone), and a failed read is read again on the next focus. **Done:** the bridge unit test and the j12 notes-list open leg's one-read census are red before and green after; one e2e shard's `wrangler.log` shows about one backlinks answer per note open.
 - **T9.V Restack m9 on the lean layout** `[B·fresh]`: merge `origin/m8` (T8.V: m3's text, structure and storage limits, lean stored layout, in-place export, paste rollback, memory job and client protocol 2) into m9 keeping both sides, every T9.x fix and its tests intact, and size fixtures resized to the new limits. **Done:** the full lane, memory job included, green in both engines on the m9 head.
+- **T9.48a An untouched window stays on its note** — a window with nothing chosen pins the note it shows, so a collaborator's create or edit no longer swaps it; invariant 7 judges a pane once its bindings settle. **Done:** the pin unit tests and two j06 legs red before and green after, j06 green in both engines at repeat_each=10 with no reconnect allowance for Ada, full lane green.
 
 ## The loop
 

@@ -81,6 +81,15 @@ export function stampProblems(stamps: StampEntry[], version: Provenance | null):
 /** The longest a socket the page never saw close may have lived and still be a browser artifact (invariant 3). */
 const ARTIFACT_MS = 50;
 
+/**
+ * The sockets the page opened. A socket the browser reported closed within ARTIFACT_MS of opening, that the page never
+ * closed nor heard close, is not one the page opened: a WebKit census once listed such a socket, closed 1 ms after it
+ * opened, beside the page's only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes
+ * sockets unreported.
+ */
+export const pageSockets = (sockets: SocketEntry[]): SocketEntry[] =>
+  sockets.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
+
 /** Invariant 3: per doc and document, at most one open doc socket at a time and at most 1 + declared opens. */
 export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, number>): string[] {
   const groups = new Map<string, SocketEntry[]>();
@@ -91,10 +100,7 @@ export function socketProblems(sockets: SocketEntry[], reconnects: Map<string, n
   const problems: string[] = [];
   for (const all of groups.values()) {
     const { docId } = all[0];
-    // A socket the browser reported closed within ARTIFACT_MS of opening, that the page never closed nor heard close, is
-    // not one the page opened: a WebKit census once listed such a socket, closed 1 ms after it opened, beside the page's
-    // only one (run 38332852937). A longer-lived socket counts even unheard: a navigation closes sockets unreported.
-    const group = all.filter((s) => s.closedAt === null || s.close !== null || s.closedAt - s.openedAt > ARTIFACT_MS);
+    const group = pageSockets(all);
     if (group.length === 0) continue;
     const allowed = 1 + (reconnects.get(docId) ?? 0) + (reconnects.get('*') ?? 0);
     if (group.length > allowed) {
@@ -139,20 +145,41 @@ export async function actorFindings(actor: ActorView, journey: string, version: 
   return [...findings, ...(await domFindings(actor))];
 }
 
-/** Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. */
-export async function typedFindings(actors: ActorView[], typed: Typed[]): Promise<Finding[]> {
+/** How long invariant 7 waits on a pane still binding (one mounting after a note switch) before judging it. */
+const PANE_SETTLE_MS = 15_000;
+
+/** The doc's panes once none is still binding, or as they stand at the deadline. */
+async function settledPanes(page: Page, docId: string, settleMs: number) {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const panes = await page.evaluate(fieldTexts, { names: NAMES, docId });
+    if (panes.every((pane) => pane.settled) || Date.now() >= deadline) return panes;
+    await page.waitForTimeout(100);
+  }
+}
+
+/**
+ * Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. A pane is judged
+ * once its title and body bindings have settled; one that never does is its own finding, not a missing string.
+ */
+export async function typedFindings(actors: ActorView[], typed: Typed[], { settleMs = PANE_SETTLE_MS }: { settleMs?: number } = {}): Promise<Finding[]> {
   const findings: Finding[] = [];
   const docs = [...new Set(typed.map((entry) => entry.docId))];
   for (const actor of actors) {
     if (actor.page.isClosed()) continue;
     for (const docId of docs) {
-      const panes = await actor.page.evaluate(fieldTexts, { names: NAMES, docId });
+      const panes = await settledPanes(actor.page, docId, settleMs);
       for (const pane of panes) {
-        for (const field of ['title', 'body'] as const) {
+        const problems = (['title', 'body'] as const).flatMap((field) => {
           const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
-          if (entries.length === 0) continue;
-          findings.push(...typedProblems(pane[field], entries).map((detail) => finding(7, actor.label)(`${docId} ${field}: ${detail}`)));
+          return entries.length === 0 ? [] : typedProblems(pane[field], entries).map((detail) => `${docId} ${field}: ${detail}`);
+        });
+        // A pane still unbound at the deadline that shows what was typed passes, as it did before the wait.
+        if (!pane.settled && problems.length > 0) {
+          findings.push(finding(7, actor.label)(`${docId}: pane never bound within ${settleMs} ms (title "${pane.title}", body ${pane.body.length} chars)`));
+          continue;
         }
+        findings.push(...problems.map(finding(7, actor.label)));
       }
     }
   }
