@@ -149,6 +149,7 @@ declare module '@moss-desktop/common/markdown-layers' {
   export function hasLegacyCommentFooter(markdown: string): boolean;
   export function parseCommentFooter(markdown: string): { strippedContent: string; metadata: CommentMetadataMap };
   export function stripCommentAnchors(markdown: string): string;
+  export function containsCommentAnchors(markdown: string): boolean;
   export function extractCommentAnchorIds(markdown: string): Set<string>;
   export function collectReachableCommentThreadIds(anchorIds: Iterable<string>, commentsMap: Record<string, object | undefined>): Set<string>;
 }

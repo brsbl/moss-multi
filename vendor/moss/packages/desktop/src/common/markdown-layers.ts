@@ -1,6 +1,7 @@
 // ported-from: packages/desktop/src/common/markdown-layers.ts @ 762abb777
 import jsYaml from 'js-yaml';
 import { extractLeadingH1 } from './markdown-utils';
+import { commentMarkersOf, removeCommentMarkers } from './comment-markers';
 
 // ---------------------------------------------------------------------------
 // Frontmatter
@@ -336,15 +337,19 @@ export function hasLegacyCommentFooter(markdown: string): boolean {
   return parseCommentFooter(markdown).strippedContent !== markdown;
 }
 
+// moss-multi seam: linear-markers (T9.48c): containsCommentAnchors, extractCommentAnchorIds and stripCommentAnchors
+// find moss's markers with commentMarkersOf (comment-markers.ts), not the regexes, which are cubic in a run of blanks
+// after an opener.
 export function containsCommentAnchors(markdown: string): boolean {
-  return LEGACY_COMMENT_OPEN_MARKER.test(markdown) || MODERN_COMMENT_OPEN_MARKER.test(markdown);
+  return (
+    commentMarkersOf(markdown, '{%', ['legacy-open']).length > 0 ||
+    commentMarkersOf(markdown, '%%m:', ['open']).length > 0
+  );
 }
 
-const collectMarkerIds = (value: string, pattern: RegExp, result: Set<string>): void => {
-  const re = new RegExp(pattern.source, pattern.flags + 'g');
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(value)) !== null) {
-    for (const id of match[1].split(',').map((entry) => entry.trim()).filter(Boolean)) {
+const collectMarkerIds = (value: string, prefix: '{%' | '%%m:', kind: 'legacy-open' | 'open', result: Set<string>): void => {
+  for (const match of commentMarkersOf(value, prefix, [kind])) {
+    for (const id of (match.ids as string).split(',').map((entry) => entry.trim()).filter(Boolean)) {
       result.add(id);
     }
   }
@@ -352,8 +357,8 @@ const collectMarkerIds = (value: string, pattern: RegExp, result: Set<string>): 
 
 export function extractCommentAnchorIds(markdown: string): Set<string> {
   const result = new Set<string>();
-  collectMarkerIds(markdown, LEGACY_COMMENT_OPEN_MARKER, result);
-  collectMarkerIds(markdown, MODERN_COMMENT_OPEN_MARKER, result);
+  collectMarkerIds(markdown, '{%', 'legacy-open', result);
+  collectMarkerIds(markdown, '%%m:', 'open', result);
   return result;
 }
 
@@ -424,11 +429,13 @@ export function collectReachableCommentThreadIds(
 }
 
 export function stripCommentAnchors(markdown: string): string {
-  return markdown
-    .replace(new RegExp(LEGACY_COMMENT_OPEN_MARKER.source, 'g'), '')
-    .replace(new RegExp(LEGACY_COMMENT_CLOSE_MARKER.source, 'g'), '')
-    .replace(new RegExp(MODERN_COMMENT_OPEN_MARKER.source, 'g'), '')
-    .replace(new RegExp(MODERN_COMMENT_CLOSE_MARKER.source, 'g'), '');
+  const steps = [
+    ['{%', 'legacy-open'],
+    ['{%', 'legacy-close'],
+    ['%%m:', 'open'],
+    ['%%m:', 'close']
+  ] as const;
+  return steps.reduce((text, [prefix, kind]) => removeCommentMarkers(text, commentMarkersOf(text, prefix, [kind])), markdown);
 }
 
 const removeIdsFromMarker = (
