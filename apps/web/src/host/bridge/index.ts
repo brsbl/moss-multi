@@ -320,6 +320,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     refreshRetry = null;
   };
   let refreshAll = false;
+  /** Workspace events received so far; a backlinks read sent after an event already reflects it. */
+  let workspaceEvents = 0;
   const pendingIds = new Set<string>();
   /** Docs a push named, offered to `reopenDocs` once a refresh has read them. */
   const reopenIds = new Set<string>();
@@ -361,6 +363,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const generation = channelGeneration;
     try {
       while (generation === channelGeneration && (refreshAll || pendingIds.size)) {
+        const covers = workspaceEvents;
         const ids = [...pendingIds];
         const pushed = [...reopenIds];
         const full = refreshAll;
@@ -393,7 +396,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
         const namedAfter = named(data.docs);
-        rereadBacklinks(full ? null : ids, (id) => namedBefore.get(id) !== namedAfter.get(id));
+        rereadBacklinks(full ? null : ids, (id) => namedBefore.get(id) !== namedAfter.get(id), covers);
         // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
         // restore, which remounts its pane with a fresh session.
         for (const id of pushed) reopenIds.delete(id);
@@ -432,6 +435,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   const watched: string[] = [];
   /** Each watched note's backlinks read in flight; dropping the note aborts it, and a newer read supersedes it. */
   const reading = new Map<string, AbortController>();
+  /** The workspace event count when each note's read in flight, or last answered read, was sent. */
+  const readAfter = new Map<string, number>();
   /** Notes outside the listing that byId opened by their URL through askDocAccess (B238). */
   const admitted = new Set<string>();
   const readBacklinks = async (id: string) => {
@@ -439,6 +444,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const cancel = new AbortController();
     reading.get(id)?.abort();
     reading.set(id, cancel);
+    readAfter.set(id, workspaceEvents);
     try {
       const { status, answer } = await heldRead((signal) => {
         // Checked at each send: a trash or revocation may have landed while the read waited out a leave.
@@ -452,13 +458,17 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       if (reading.get(id) !== cancel) return;
       reading.delete(id);
       if (!answer) {
+        readAfter.delete(id);
         if (status === 404) {
           admitted.delete(id);
           drop(id);
         }
         return;
       }
-      if (!Array.isArray(answer.backlinks)) return;
+      if (!Array.isArray(answer.backlinks)) {
+        readAfter.delete(id);
+        return;
+      }
       const links = answer.backlinks.map((row): NoteLink => {
         const live = liveTitle(row.id);
         return { noteId: row.id, title: live === null ? toNoteMetadata(row).title : displayTitle(live),
@@ -473,7 +483,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       diskListeners.forEach((listener) => listener([id], []));
     } catch {
       /* The next workspace event or note switch reads them again. */
-      if (reading.get(id) === cancel) reading.delete(id);
+      if (reading.get(id) === cancel) {
+        reading.delete(id);
+        readAfter.delete(id);
+      }
     }
   };
   const unwatch = (id: string) => {
@@ -485,6 +498,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     unwatch(id);
     reading.get(id)?.abort();
     reading.delete(id);
+    readAfter.delete(id);
     backlinks.delete(id);
   };
   // A session that ends as deleted or revoked drops its note at once, before any listing says so (B178).
@@ -497,11 +511,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   /**
    * After the listing caught up with a workspace event for `changed` (null: every doc): a watched note that left it
    * (trashed, unshared) is dropped, and the rest are read again unless the only change was the note's own edit, which
-   * changes no note's links to it; its rename does.
+   * changes no note's links to it; its rename does. A note whose read was sent after the refresh's last event (`covers`
+   * events in all) already reflects it and is not read again: the socket's reconcile on open no longer repeats the
+   * open's read.
    */
-  const rereadBacklinks = (changed: string[] | null, renamed: (id: string) => boolean) => {
+  const rereadBacklinks = (changed: string[] | null, renamed: (id: string) => boolean, covers: number) => {
     for (const id of [...watched]) {
       if (!watchable(id)) unwatch(id);
+      else if ((readAfter.get(id) ?? -1) >= covers) continue;
       else if (changed === null || renamed(id) || changed.some((other) => other !== id)) void readBacklinks(id);
     }
   };
@@ -528,6 +545,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
+    workspaceEvents += 1;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') {
       for (const id of event.docIds) {
