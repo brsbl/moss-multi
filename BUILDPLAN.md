@@ -886,7 +886,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
 - **T9.48f The body-cap probe sends no bytes on loopback**
   - **Scope:** The security sweep's just-over-1-MiB probe declares its length and sends no body locally, so wrangler dev's proxy never loses its forward; its detail names that proxy's 503 and the time taken, and the build job uploads the stack log on failure.
 - **T9.48d One note open reads its backlinks once**
-  - **Scope:** A plain open or focus of a note never replaces its backlinks read in flight, so the open's `getById` and focus send one `GET /api/docs/<id>/backlinks`; a workspace event still replaces a read in flight, and a failed read is read again on the next focus. **Done:** the bridge unit test and the j00 import leg's one-read census are red before and green after; one e2e shard's `wrangler.log` shows about one backlinks answer per note open.
+  - **Scope:** A plain open or focus of a note never replaces its backlinks read in flight, so the open's `getById` and focus send one `GET /api/docs/<id>/backlinks`; a workspace event still replaces a read in flight, and a failed read is read again on the next focus. **Done:** the bridge unit test and the j12 notes-list open leg's one-read census are red before and green after; one e2e shard's `wrangler.log` shows about one backlinks answer per note open.
 
 ## The loop
 
