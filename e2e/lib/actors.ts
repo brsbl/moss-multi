@@ -276,6 +276,15 @@ export class Actors {
     throw new Error(message);
   }
 
+  /** A fixture's teardown: asserts the invariants (unless `assert` is false) and closes every context. */
+  async settle({ assert = true } = {}): Promise<void> {
+    try {
+      if (assert) await this.assertInvariants();
+    } finally {
+      await this.dispose();
+    }
+  }
+
   /**
    * Closes every context, each timed. With `capture` (a failed WebKit test) it first records the engine evidence
    * (engine.ts) while the pages are still open, and attaches it with the close times as `engine.json`.
