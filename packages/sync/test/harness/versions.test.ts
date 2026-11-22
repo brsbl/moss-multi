@@ -6,7 +6,7 @@ import { $createTextNode, $getRoot, type ElementNode, type TextNode } from 'lexi
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { anchorText, type Anchor } from '@moss-multi/core/anchor-frame';
 import { DocDO } from '../../src/doc-do.ts';
-import { NAMED_VERSIONS_PER_PERSON } from '@moss-multi/protocol/limits';
+import { NAMED_VERSIONS_PER_PERSON, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import { VERSION_SPILL_BYTES, VERSION_TITLE_LIST_MAX, type VersionBlobs, type VersionMeta } from '../../src/doc/versions.ts';
 import { bindLexical, connect, openDoc, start, wake, type Opened, type TestClient } from './do-harness.ts';
 import { LiveClient, syncAll } from './live-client.ts';
@@ -200,7 +200,10 @@ describe('version storage @p:mean-3', () => {
 
   it('spills a version above 1.5 MB to R2 and reads it back', async () => {
     const bucket = blobs();
-    const body = `${'spill '.repeat(Math.ceil((VERSION_SPILL_BYTES * 1.05) / 6))}\n`;
+    // Three-byte characters pass the spill size in bytes well within the note's text limit (A§5.1 Limits).
+    const words = '溢出 ';
+    const body = `${words.repeat(Math.ceil((VERSION_SPILL_BYTES * 1.05) / new TextEncoder().encode(words).byteLength))}\n`;
+    expect(body.length).toBeLessThan(TEXT_CHAR_CAP);
     const opened = await created(body);
     const saved = await named(opened, 'Big');
     if (!saved.ok) throw new Error(saved.reason);

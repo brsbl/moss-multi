@@ -6,11 +6,15 @@ import type { EditMode } from '@moss-multi/protocol/dom-contract';
 import { roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { useSyncExternalStore } from 'react';
 
+/** Why a note has no room for more suggestions: a note limit (A§5.1 Limits), or the state bytes (`room`). */
+export type NoRoom = 'room' | 'text' | 'structure';
+
 const chosen = new Map<string, EditMode>();
 const shown = new Map<string, EditMode>();
 const openCounts = new Map<string, number>();
 const unsaved = new Map<string, string[]>();
-const noRoom = new Set<string>();
+/** Notes with no room for more suggestions: the note limit the refusal named, or `room` for the state bytes. */
+const noRoom = new Map<string, NoRoom>();
 /** The writable mode a doc's Review was entered from, when it was Suggest. */
 const paused = new Map<string, 'suggest'>();
 const listeners = new Set<() => void>();
@@ -105,12 +109,13 @@ export function useShownMode(docId: string | null): EditMode | null {
 
 /**
  * Text a closed suggestion could not keep, offered back until dismissed (§5 refusal path). `full`: the DocDO refused
- * because the note has no room for more suggestions, which the band says even when nothing was unsaved.
+ * because the note has no room for more suggestions, which the band says even when nothing was unsaved, naming
+ * `limit` when the refusal named one.
  */
-export function offerUnsaved(docId: string, blocks: string[], full = false): void {
+export function offerUnsaved(docId: string, blocks: string[], full = false, limit?: 'text' | 'structure'): void {
   if (!blocks.length && !full) return;
   if (blocks.length) unsaved.set(docId, [...(unsaved.get(docId) ?? []), ...blocks]);
-  if (full) noRoom.add(docId);
+  if (full) noRoom.set(docId, limit ?? 'room');
   notify();
 }
 
@@ -120,9 +125,9 @@ export function dismissUnsaved(docId: string): void {
   notify();
 }
 
-/** The note has no room for more suggestions (the DocDO refused `doc-cap` or `ops-cap`), until dismissed. */
-export function useNoSuggestionRoom(docId: string | null): boolean {
-  return useSyncExternalStore(subscribeModes, () => (docId ? noRoom.has(docId) : false), () => false);
+/** Why the note has no room for more suggestions (the DocDO refused `doc-cap` or `ops-cap`), until dismissed; else null. */
+export function useNoSuggestionRoom(docId: string | null): NoRoom | null {
+  return useSyncExternalStore(subscribeModes, () => (docId ? (noRoom.get(docId) ?? null) : null), () => null);
 }
 
 const NONE: string[] = [];

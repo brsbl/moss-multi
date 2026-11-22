@@ -25,7 +25,7 @@ import { refuseInput } from '../../refusal.ts';
 import { bindingOf } from '../binding-registry.ts';
 import { keepCaptureSteps } from '../undo.ts';
 import { charsAround, idKey, isPending, sharedItem, textIds, toSpans } from './chars.ts';
-import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type UndoStep } from './paste.ts';
+import { $admitPaste, $ownedBytes, $pasteAt, admitStep, measurePaste, type PasteStack, type PasteWrites, type UndoStep } from './paste.ts';
 import { traceStrikes, type Spot } from './trace.ts';
 
 type Routed = 'none' | 'struck' | 'own' | 'skip';
@@ -764,19 +764,21 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
     const strike = last && stack.length <= expected ? last : null;
     const native = !strike || (strike.native && stack.length === expected);
     let extra = 0;
+    let extraChars = 0;
     let targets: IdSpan[] = [];
     if (strike && kind === 'undo') {
       for (const run of strike.runs) {
         let gone = 0;
         for (let i = 0; i < run.len; i += 1) if (removed(Y.createID(run.id.client, run.id.clock + i))) gone += 1;
         if (gone) extra += gone * 5 + 64;
+        extraChars += gone;
       }
     }
     if (strike && kind === 'redo') targets = standing(strike.targets);
     const steps: UndoStep[] = native
       ? stack.map((step) => ('entries' in step ? step : { entries: [{ manager: undo, item: step }] }))
       : [];
-    const notice = admitStep(fork, kind, root, steps, extra, targets);
+    const notice = admitStep(fork, kind, root, steps, extra, targets, extraChars);
     if (notice) refuseInput(notice);
     return notice !== null;
   };
@@ -825,12 +827,17 @@ export function registerSuggestRouting(editor: LexicalEditor, fork: SuggestFork,
       // selection and the paste goes in at its end ($routeRange).
       const native = range !== null && range.body.length === 0 && range.mine.length + range.mineLeaves.length > 0;
       const stack = options.pasteStack?.() ?? null;
-      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack) : null;
+      const writes: PasteWrites = { chars: 0, removed: 0, updates: [] };
+      const measured = stack ? measurePaste(editor, fork, event, $pasteAt(range !== null && !native), stack, writes) : null;
       const notice = measured === null
         ? UNMEASURED
         : measured === 'cells'
         ? OVER_CELLS
-        : $admitPaste(fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0);
+        : $admitPaste(
+          fork, measured, range ? toSpans(range.body) : [], range ? $ownedBytes(range.mine, range.mineLeaves) : 0, writes,
+          // His own text the routing removes; over his own text only the copy removed it, and counted it.
+          range && !native ? range.mine.reduce((sum, { from, to }) => sum + to - from, 0) + range.mineLeaves.reduce((sum, leaf) => sum + leaf.getTextContentSize(), 0) : 0,
+        );
       if (notice) {
         event.preventDefault();
         refuseInput(notice);

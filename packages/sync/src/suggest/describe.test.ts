@@ -116,7 +116,10 @@ const CASES: CensusCase[] = [
   keyCase("a text node's stored text", 'body/root/Map/key', 'Any', (doc) => textMap(doc).set('__text', 'stored-secret'), ['text', 'stored-secret']),
   keyCase("a text node's stored key", 'body/root/Map/key', 'Any', (doc) => textMap(doc).set('__hidden', 'map-secret'), ['hidden', 'map-secret']),
   keyCase('a nested map on a text node', 'body/root/Map/key', 'Type:Map', (doc) => textMap(doc).set('__extra', new Y.Map([['k', 'map-deep']])), ['extra', 'map-deep']),
-  keyCase('a removed text field', 'body/root/Map/key', 'Deleted', (doc) => textMap(doc).delete('__style'), ['style', 'none']),
+  // The lean layout stores a text node's style only once it differs from the default, so the note holds one to remove.
+  keyCase('a removed text field', 'body/root/Map/key', 'Deleted', (doc) => textMap(doc).delete('__style'), ['style', 'color: red', 'none'], 'body', (live) => {
+    textMap(live).set('__style', 'color: red');
+  }),
   // A compound payload's fields.
   keyCase('a payload field', 'payload/payload-map/Map/key', 'Any', (doc) => doc.getMap('payload-map').set('lang', 'python'), ['lang', 'python'], 'payload'),
   keyCase('a removed payload field', 'payload/payload-map/Map/key', 'Deleted', (doc) => doc.getMap('payload-map').delete('lang'), ['lang', 'ruby', 'none'], 'payload', (live) => {
