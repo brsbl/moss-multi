@@ -2,6 +2,7 @@
 // character beside it (never a pending insert, which another mode's doc may not hold), or of its empty block, and put
 // back, focused, once the remounted editor holds that item and is editable.
 import { $getNodeByKey, $getSelection, $isElementNode, $isRangeSelection, $isTextNode, type LexicalEditor } from 'lexical';
+import { OVERLAY_SURFACE_ATTR } from '@moss-multi/protocol/dom-contract';
 import type * as Y from 'yjs';
 import { bindingOf } from '../binding-registry.ts';
 import { charIndex, idKey, isPending, sharedItem, textIds } from './chars.ts';
@@ -38,6 +39,17 @@ export function captureCaret(editor: LexicalEditor, own: ReadonlySet<number> = n
     const item = block && sharedItem(binding, block.getKey());
     return item && !pending(item.id) ? { client: item.id.client, clock: item.id.clock, after: false } : null;
   });
+}
+
+/**
+ * Whether focus is on something laid over the note: inside an open list, menu or dialog, or on the control holding one
+ * open. A remount's caret does not take focus from there: the person moved on, and taking it would close the list.
+ */
+export function focusOverNote(doc: Document): boolean {
+  const active = doc.activeElement;
+  if (!(active instanceof HTMLElement) || active === doc.body) return false;
+  return active.getAttribute('aria-expanded') === 'true'
+    || active.closest(`[${OVERLAY_SURFACE_ATTR}], [role="dialog"], [role="alertdialog"], [role="menu"]`) !== null;
 }
 
 /** Focuses the editor and puts the caret back; false while the editor does not hold the item yet. */

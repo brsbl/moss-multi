@@ -33,8 +33,12 @@ export function AccountSection(): ReactNode {
       <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Account</span>
       <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate font-mono text-xs text-ink-muted" title={state.user.email}>
-            {state.user.email}
+          <span className="min-w-0 truncate text-xs" title={state.user.email}>
+            {state.user.name && state.user.name !== state.user.email ? (
+              <><span className="text-ink-default">{state.user.name}</span> <span className="text-ink-faint">{state.user.email}</span></>
+            ) : (
+              <span className="text-ink-muted">{state.user.email}</span>
+            )}
           </span>
           <button
             type="button"
